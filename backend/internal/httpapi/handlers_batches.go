@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/tasks"
@@ -50,9 +51,29 @@ const (
 	batchObjectType = "batch"
 )
 
+// batchPersistenceTimeout 是批次持久化步骤的显式上限（R-16）。
+//
+// 30s 与单个计费事务的上限同量级：批次事务只写父行 + 最多 100 条关联，
+// 远低于该值；显式超时是为了让「客户端已断开」不至于演变成无限期占用连接。
+const batchPersistenceTimeout = 30 * time.Second
+
+// batchPersistenceContext 返回与请求取消解耦的持久化上下文（R-16）。
+//
+// 保留 context 值（principal / 追踪 id），只去掉取消信号；超时由本函数
+// 自己兜底，避免请求取消后落库无限期挂起。
+func batchPersistenceContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), batchPersistenceTimeout)
+}
+
 // BatchRepository 是批次聚合的存储接缝（生产 *tasks.Repo）。
+//
+// R-16 的三段式顺序由接口形状表达：InsertBatch 只落父行（任何计费之前），
+// LinkBatchItem 在每条子任务提交成功后立即关联。不提供「父行 + 全部关联
+// 一次写入」的接口——那必然把提交放在落库之前，导致「已计费任务不可见、
+// 客户端重试重复扣费」。
 type BatchRepository interface {
-	InsertBatch(ctx context.Context, b *tasks.Batch, itemPublicIDs []string) error
+	InsertBatch(ctx context.Context, b *tasks.Batch) error
+	LinkBatchItem(ctx context.Context, batchID string, userID int64, publicID string) error
 	GetBatchByID(ctx context.Context, userID int64, id string) (*tasks.Batch, error)
 }
 
@@ -105,12 +126,13 @@ type batchItemObject struct {
 	ProgressPercent int    `json:"progress_percent"`
 }
 
-// handleBatchesSubmit 是 POST /v1/batches：校验全部行 → 逐行提交 → 一个事务
-// 写入父批次与全部关联。
+// handleBatchesSubmit 是 POST /v1/batches：校验全部行 → 落父行 → 逐行提交 →
+// 逐行关联（R-16 冻结顺序）。
 //
-// 校验（行形状 / 自定义 id / url / model 可解析）在任何提交与计费之前完成：
-// 参数错误必须零副作用。提交阶段的行失败（额度不足、上游拒绝）不回滚整批——
-// 那些行没有任务行、退款由提交管线自己完成；它们计入 request_counts.failed。
+// 校验（行形状 / custom_id / url / model / seconds）与父行插入都在任何提交与
+// 计费之前完成：参数或落库错误必须零副作用。提交阶段的行失败（额度不足、
+// 上游拒绝）不回滚整批——那些行没有任务行、退款由提交管线自己完成；它们与
+// 关联失败的行一起计入 request_counts.failed（total - 已关联数）。
 func (h *TasksHandler) handleBatchesSubmit(w http.ResponseWriter, r *http.Request) {
 	requestID := newRelayRequestID()
 	principal, ok := auth.PrincipalFrom(r.Context())
@@ -139,15 +161,16 @@ func (h *TasksHandler) handleBatchesSubmit(w http.ResponseWriter, r *http.Reques
 		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request_error", "request body must be a JSON object")
 		return
 	}
+	// M4：只要给了 input_file_id 就 501（即使同时给了 requests[]）。静默忽略
+	// 客户端明确指定的输入源会让它以为文件被读取；没有 /v1/files 数据面时
+	// 这条路径永远无法表达真实语义（R-13）。
+	if strings.TrimSpace(req.InputFileID) != "" {
+		writeBatchUnsupported(w, requestID,
+			"batch input_file_id is not supported",
+			"this gateway has no /v1/files data plane; send the JSONL rows inline as requests[]")
+		return
+	}
 	if len(req.Requests) == 0 {
-		if strings.TrimSpace(req.InputFileID) != "" {
-			// R-13：没有 /v1/files，读不到 JSONL；返回明确的不支持，而不是
-			// 解析出一个空批次（客户端会误以为任务已受理）。
-			writeBatchUnsupported(w, requestID,
-				"batch input_file_id is not supported",
-				"this gateway has no /v1/files data plane; send the JSONL rows inline as requests[]")
-			return
-		}
 		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request_error", "requests is required")
 		return
 	}
@@ -172,24 +195,12 @@ func (h *TasksHandler) handleBatchesSubmit(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// 逐个提交：每行沿用 /v1/videos 的同一提交管线（渠道/预扣/退款/落库）。
-	succeeded := make([]string, 0, len(req.Requests))
-	for _, item := range req.Requests {
-		publicID, ok := h.submitBatchVideo(r, item.Body)
-		if !ok {
-			// 提交失败已在提交管线内退款；这里只记事实供运维排查，响应只带计数。
-			slog.Warn("tasks: batch item submission failed",
-				"user_id", principal.UserID, "custom_id", item.CustomID)
-			continue
-		}
-		succeeded = append(succeeded, publicID)
-	}
-
+	// R-16 第 1 步：先落父行（单条 INSERT，任何计费/上游调用之前）。
+	// 失败即 500 且零副作用——客户端可以安全重试而不会重复扣费。
 	batch := &tasks.Batch{
 		UserID:  principal.UserID,
 		Status:  tasks.BatchStatusInProgress,
 		Total:   len(req.Requests),
-		Items:   nil,
 		TokenID: tokenIDOf(principal),
 	}
 	id, err := tasks.NewBatchID()
@@ -198,16 +209,52 @@ func (h *TasksHandler) handleBatchesSubmit(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	batch.ID = id
-	if err := h.batches.InsertBatch(r.Context(), batch, succeeded); err != nil {
-		// 事务已回滚：批次与关联都不存在。已提交的子任务仍是有效的独立任务
-		// （各自已落库/计费），不会因为批次创建失败而丢失或重复扣费。
+	// R-16：持久化与请求取消解耦（WithoutCancel + 30s 显式超时）。父行是在
+	// 任何计费之前的单条 INSERT，客户端此刻断开只应放弃后续提交，不应让
+	// 父行落库失败——否则客户端没有 batch id 可查询。
+	insertCtx, cancelInsert := batchPersistenceContext(r.Context())
+	insertErr := h.batches.InsertBatch(insertCtx, batch)
+	cancelInsert()
+	if insertErr != nil {
 		writeRelayError(w, http.StatusInternalServerError, requestID, "database_error", "failed to persist the batch")
 		return
 	}
-	view, err := h.batches.GetBatchByID(r.Context(), principal.UserID, id)
+
+	// R-16 第 2/3 步：逐行提交 → 逐行关联。
+	//
+	// 关联用与客户端连接解耦的上下文（R-16 续）：客户在 100 行顺序提交中途
+	// 断开时，已提交且已预扣的子任务仍必须建立关联，否则任务只留在 /v1/tasks
+	// 台账里、批次计数还会把它们误判成 failed。父行已经存在，客户端始终拿得到
+	// batch id，不存在「已扣费但不可见」。
+	//
+	// 每次关联独立取一次 30s 超时：提交本身是网络 I/O，若整批复用一个截止
+	// 时间，长批次会在提交阶段耗尽额度并让后续关联全部失败。
+	for _, item := range req.Requests {
+		publicID, ok := h.submitBatchVideo(r, item.Body)
+		if !ok {
+			// 提交失败已在提交管线内退款；这里只记事实供运维排查，响应只带计数。
+			slog.Warn("tasks: batch item submission failed",
+				"user_id", principal.UserID, "batch_id", batch.ID, "custom_id", item.CustomID)
+			continue
+		}
+		linkCtx, cancelLink := batchPersistenceContext(r.Context())
+		linkErr := h.batches.LinkBatchItem(linkCtx, batch.ID, batch.UserID, publicID)
+		cancelLink()
+		if linkErr != nil {
+			// 任务已落库/计费但未关联：父行仍在，该行按 failed 计入聚合
+			// （total - 已关联数），不把整批 500 掉。
+			slog.Warn("tasks: batch item could not be linked",
+				"user_id", principal.UserID, "batch_id", batch.ID, "task_id", publicID, "error", linkErr)
+			continue
+		}
+	}
+
+	viewCtx, cancelView := batchPersistenceContext(r.Context())
+	view, err := h.batches.GetBatchByID(viewCtx, principal.UserID, id)
+	cancelView()
 	if err != nil {
-		// 批次已落库；聚合读取失败不回滚（那会让已受理的批次消失），
-		// 用创建期快照兜底响应。
+		// 聚合读取失败不回滚也不隐藏批次：父行已落库，用创建期快照兜底响应，
+		// 下一条 GET 会重新现算。
 		view = batch
 		view.ID = tasks.FormatBatchPublicID(batch.ID)
 		view.Status = tasks.BatchStatusInProgress
@@ -218,8 +265,8 @@ func (h *TasksHandler) handleBatchesSubmit(w http.ResponseWriter, r *http.Reques
 // validateBatchItems 在提交/计费之前校验全部行。
 //
 // 返回 (status, code, message, ok)；ok=true 表示全部行可提交。model 的解析
-// 与 /v1/videos 同一实现（taskPluginKeyForModel），避免两个入口对「同一模型
-// 属于哪个插件」给出两套答案。
+// 与 /v1/videos 同一实现（videoPluginKeyForModel，含 openai_video 协议门），
+// 避免两个入口对「同一模型属于哪个插件」给出两套答案。
 func (h *TasksHandler) validateBatchItems(principal *auth.Principal, items []batchItemInput) (int, string, string, bool) {
 	seen := make(map[string]struct{}, len(items))
 	for _, item := range items {
@@ -252,7 +299,14 @@ func (h *TasksHandler) validateBatchItems(principal *auth.Principal, items []bat
 			return http.StatusForbidden, "distributor_token_model_forbidden",
 				"this token is not allowed to access the requested model", false
 		}
-		_, ambiguous, found := h.taskPluginKeyForModel(model)
+		// M5：seconds 是计费乘数，必须在任何提交之前按与 /v1/videos 完全
+		// 相同的规则（taskDurationSeconds）校验；否则非法值落到该行的
+		// handleSubmit 才 400，其余行已经扣费，整体却仍返回 200。
+		if _, ok := taskDurationSeconds(item.Body["seconds"]); !ok {
+			return http.StatusBadRequest, "invalid_request_error",
+				"seconds must be a positive number no greater than the task duration limit", false
+		}
+		_, ambiguous, found := h.videoPluginKeyForModel(model)
 		if !found {
 			return http.StatusNotFound, "model_not_found", "no task plugin serves the requested model", false
 		}
@@ -320,7 +374,9 @@ func (h *TasksHandler) handleBatchesGet(w http.ResponseWriter, r *http.Request) 
 		writeBatchNotFound(w, requestID)
 		return
 	}
-	batch, err := h.batches.GetBatchByID(r.Context(), principal.UserID, batchID)
+	getCtx, cancelGet := batchPersistenceContext(r.Context())
+	defer cancelGet()
+	batch, err := h.batches.GetBatchByID(getCtx, principal.UserID, batchID)
 	if err != nil {
 		if errors.Is(err, tasks.ErrBatchNotFound) {
 			writeBatchNotFound(w, requestID)
@@ -358,7 +414,9 @@ func (h *TasksHandler) handleBatchesCancel(w http.ResponseWriter, r *http.Reques
 		writeBatchNotFound(w, requestID)
 		return
 	}
-	if _, err := h.batches.GetBatchByID(r.Context(), principal.UserID, batchID); err != nil {
+	cancelCtx, cancelCancel := batchPersistenceContext(r.Context())
+	defer cancelCancel()
+	if _, err := h.batches.GetBatchByID(cancelCtx, principal.UserID, batchID); err != nil {
 		if errors.Is(err, tasks.ErrBatchNotFound) {
 			writeBatchNotFound(w, requestID)
 			return

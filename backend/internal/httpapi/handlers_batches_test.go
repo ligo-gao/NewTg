@@ -3,15 +3,19 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/plugin"
+	"newtg/gateway/internal/relay/billingseam"
 	"newtg/gateway/internal/tasks"
 )
 
@@ -30,6 +34,18 @@ type fakeBatchTaskStore struct {
 	items    map[string][]string
 	inserted int
 	saveErr  error
+	// beforeInsert 在落库前触发（测试用它模拟「持久化时请求 context 已取消」）。
+	beforeInsert func()
+	// checkCtx 模拟真实驱动：上下文已取消即返回错误。R-16 要求持久化用
+	// WithoutCancel 的上下文，因此该检查在修复后必须不被触发。
+	checkCtx bool
+}
+
+func (f *fakeBatchTaskStore) ctxErr(ctx context.Context) error {
+	if f.checkCtx && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return nil
 }
 
 func newFakeBatchTaskStore() *fakeBatchTaskStore {
@@ -40,37 +56,52 @@ func newFakeBatchTaskStore() *fakeBatchTaskStore {
 	}
 }
 
-// InsertBatch 复刻生产仓储的语义：每条 public_task_id 必须属于本用户，
-// 否则整体失败（事务回滚由真实实现保证）。
-func (f *fakeBatchTaskStore) InsertBatch(ctx context.Context, b *tasks.Batch, itemPublicIDs []string) error {
+// InsertBatch 复刻生产仓储：只落父行（R-16 的第 1 步）。
+func (f *fakeBatchTaskStore) InsertBatch(ctx context.Context, b *tasks.Batch) error {
+	if f.beforeInsert != nil {
+		f.beforeInsert()
+	}
+	if err := f.ctxErr(ctx); err != nil {
+		return err
+	}
 	if f.saveErr != nil {
 		return f.saveErr
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for _, publicID := range itemPublicIDs {
-		found := false
-		for _, row := range f.fakeTaskStore.rows {
-			if row.PublicTaskID == publicID && row.UserID == b.UserID {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("batch item %q: task not found for user", publicID)
-		}
-	}
 	copied := *b
 	copied.CreatedAt = time.Now().UTC()
 	copied.UpdatedAt = copied.CreatedAt
 	f.batches[b.ID] = &copied
-	f.items[b.ID] = append([]string(nil), itemPublicIDs...)
 	f.inserted++
 	return nil
 }
 
+// LinkBatchItem 复刻生产仓储：任务必须存在且属于本用户，否则报错。
+func (f *fakeBatchTaskStore) LinkBatchItem(ctx context.Context, batchID string, userID int64, publicID string) error {
+	if err := f.ctxErr(ctx); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	stored, ok := f.batches[batchID]
+	if !ok || stored.UserID != userID {
+		return tasks.ErrBatchNotFound
+	}
+	for _, row := range f.fakeTaskStore.rows {
+		if row.PublicTaskID == publicID && row.UserID == userID {
+			f.items[batchID] = append(f.items[batchID], publicID)
+			return nil
+		}
+	}
+	return fmt.Errorf("batch item %q: task not found for user", publicID)
+}
+
 // GetBatchByID 与生产实现同一套聚合口径（completed/failed/status）。
-func (f *fakeBatchTaskStore) GetBatchByID(_ context.Context, userID int64, id string) (*tasks.Batch, error) {
+func (f *fakeBatchTaskStore) GetBatchByID(ctx context.Context, userID int64, id string) (*tasks.Batch, error) {
+	if err := f.ctxErr(ctx); err != nil {
+		return nil, err
+	}
 	f.mu.Lock()
 	stored, ok := f.batches[id]
 	itemIDs := append([]string(nil), f.items[id]...)
@@ -130,7 +161,7 @@ const brokenPluginSource = `globalThis.__NEWTG_PLUGIN__ = {
   auth: { type: "api_key" },
   channelTypes: [],
   routes: [],
-  protocols: {},
+  protocols: { openai_video: {} },
   usageSchema: {
     seconds: { type: "number", unit: "second", description: { en: "Video generation unit price", zh: "视频生成单价" } }
   },
@@ -142,7 +173,9 @@ const brokenPluginSource = `globalThis.__NEWTG_PLUGIN__ = {
   },
   parseSubmitResponse: function () { return {}; },
   buildQueryRequest: function (ctx) { return { url: ctx.baseUrl + "/t/" + ctx.taskId, method: "GET" }; },
-  parseTaskResult: function () { return { state: "SUCCESS" }; }
+  parseTaskResult: function () { return { state: "SUCCESS" }; },
+  decodeRequest: function (ctx) { return ctx.body; },
+  render: function () { return {}; }
 };`
 
 func newBatchManager(t *testing.T, sources map[string]string) *plugin.Manager {
@@ -157,9 +190,86 @@ func newBatchManager(t *testing.T, sources map[string]string) *plugin.Manager {
 	return manager
 }
 
-func newBatchEnv(t *testing.T, manager *plugin.Manager) (*fakeBatchTaskStore, *http.ServeMux) {
+// batchTestEnv 聚合批次用例需要的接缝：存储、mux、计费记录器、渠道计数与
+// 上游命中计数（M6 要求「零副作用」断言到计费与上游调用，而不只是任务行）。
+type batchTestEnv struct {
+	store        *fakeBatchTaskStore
+	mux          *http.ServeMux
+	billing      *billingCallLog
+	channels     *fakeTaskChannels
+	upstreamHits *atomic.Int32
+}
+
+// billingCallLog 记录每次提交管线对计费接缝的调用（跨多个请求共享）。
+//
+// 不能复用 taskBillingRecorder：它是**单会话**实现（底层 billingseam.Stub
+// 只能 PreConsume 一次），批次有 N 个子请求，共享一个会话会让第二行开始
+// 全部计费失败。这里每个请求新建会话，只共享调用日志——零副作用断言只关心
+// 「有没有发生 PreConsume」。
+type billingCallLog struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (l *billingCallLog) add(name string) {
+	l.mu.Lock()
+	l.calls = append(l.calls, name)
+	l.mu.Unlock()
+}
+
+func (l *billingCallLog) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.calls...)
+}
+
+type perRequestBilling struct {
+	*billingseam.Stub
+	log *billingCallLog
+}
+
+func (b *perRequestBilling) PreConsume(est contract.QuotaEstimate) error {
+	b.log.add("preconsume")
+	return b.Stub.PreConsume(est)
+}
+
+func (b *perRequestBilling) Reserve(delta int64) error {
+	b.log.add("reserve")
+	return b.Stub.Reserve(delta)
+}
+
+func (b *perRequestBilling) Terminate(fact contract.UsageFact) error {
+	b.log.add("terminate")
+	return b.Stub.Terminate(fact)
+}
+
+func (b *perRequestBilling) Refund() error {
+	b.log.add("refund")
+	return b.Stub.Refund()
+}
+
+func (b *perRequestBilling) Detach(string) error {
+	b.log.add("detach")
+	return nil
+}
+
+func (b *perRequestBilling) TerminateByRequestID(string, contract.UsageFact) error {
+	b.log.add("terminate_by_id")
+	return nil
+}
+
+func (e *batchTestEnv) hits() int32 {
+	if e.upstreamHits == nil {
+		return 0
+	}
+	return e.upstreamHits.Load()
+}
+
+func newBatchEnv(t *testing.T, manager *plugin.Manager) *batchTestEnv {
 	t.Helper()
+	hits := &atomic.Int32{}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"up_1"}`))
 	}))
@@ -169,15 +279,15 @@ func newBatchEnv(t *testing.T, manager *plugin.Manager) (*fakeBatchTaskStore, *h
 	channels := &fakeTaskChannels{target: &tasks.ChannelTarget{
 		ID: 9, BaseURL: upstream.URL, Credentials: sealedCredential(t, sealer, "sk-test"),
 	}}
-	handler, _ := newTaskTestHandler(t, store, channels, manager, nil)
-	return store, newTaskRelayMux(handler)
-}
-
-// newBatchEnvFor 只取 mux（不需要直接操作存储的用例）。
-func newBatchEnvFor(t *testing.T, manager *plugin.Manager) *http.ServeMux {
-	t.Helper()
-	_, mux := newBatchEnv(t, manager)
-	return mux
+	billing := &billingCallLog{}
+	handler, _ := newTaskTestHandler(t, store, channels, manager,
+		func(*contract.RelayContext) contract.BillingSession {
+			return &perRequestBilling{Stub: billingseam.NewStub(), log: billing}
+		})
+	return &batchTestEnv{
+		store: store, mux: newTaskRelayMux(handler),
+		billing: billing, channels: channels, upstreamHits: hits,
+	}
 }
 
 func postBatch(t *testing.T, mux *http.ServeMux, body string) *httptest.ResponseRecorder {
@@ -215,9 +325,9 @@ func TestBatchesSubmitCreatesOneTaskPerRowAndAggregates(t *testing.T) {
 		"fast": videoPluginSource("fast", "fast-model", true),
 		"slow": videoPluginSource("slow", "slow-model", false),
 	})
-	store, mux := newBatchEnv(t, manager)
+	env := newBatchEnv(t, manager)
 
-	rec := postBatch(t, mux, twoItemBatchBody())
+	rec := postBatch(t, env.mux, twoItemBatchBody())
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
@@ -235,14 +345,14 @@ func TestBatchesSubmitCreatesOneTaskPerRowAndAggregates(t *testing.T) {
 	if created.Status != tasks.BatchStatusInProgress {
 		t.Fatalf("status = %q, want in_progress", created.Status)
 	}
-	if store.fakeTaskStore.inserted != 2 {
-		t.Fatalf("inserted tasks = %d, want 2 (one per batch row)", store.inserted)
+	if env.store.fakeTaskStore.inserted != 2 {
+		t.Fatalf("inserted tasks = %d, want 2 (one per batch row)", env.store.inserted)
 	}
 	if len(created.Items) != 2 {
 		t.Fatalf("items = %d, want 2", len(created.Items))
 	}
 
-	got := getBatch(t, mux, created.ID)
+	got := getBatch(t, env.mux, created.ID)
 	if got.Code != http.StatusOK {
 		t.Fatalf("get status = %d, body=%s", got.Code, got.Body.String())
 	}
@@ -255,13 +365,13 @@ func TestBatchesSubmitCreatesOneTaskPerRowAndAggregates(t *testing.T) {
 	}
 
 	// 把仍在进行的那条任务推进到终态：批次下一次读取即 completed。
-	for _, row := range store.fakeTaskStore.rows {
+	for _, row := range env.store.fakeTaskStore.rows {
 		if row.PluginKey == "slow" {
 			row.State = tasks.StateSuccess
 			row.ProgressPercent = 100
 		}
 	}
-	got = getBatch(t, mux, created.ID)
+	got = getBatch(t, env.mux, created.ID)
 	if got.Code != http.StatusOK {
 		t.Fatalf("get after terminal: status = %d, body=%s", got.Code, got.Body.String())
 	}
@@ -278,12 +388,12 @@ func TestBatchesCountsFailedSubmissions(t *testing.T) {
 		"fast":   videoPluginSource("fast", "fast-model", true),
 		"broken": brokenPluginSource,
 	})
-	store, mux := newBatchEnv(t, manager)
+	env := newBatchEnv(t, manager)
 	body := `{"requests":[
 	  {"custom_id":"ok","url":"/v1/videos","body":{"model":"fast-model"}},
 	  {"custom_id":"bad","url":"/v1/videos","body":{"model":"broken-model"}}
 	]}`
-	rec := postBatch(t, mux, body)
+	rec := postBatch(t, env.mux, body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (row failure must not fail the batch); body=%s", rec.Code, rec.Body.String())
 	}
@@ -298,17 +408,12 @@ func TestBatchesCountsFailedSubmissions(t *testing.T) {
 	if created.Status != tasks.BatchStatusCompleted {
 		t.Fatalf("status = %q, want completed", created.Status)
 	}
-	if store.fakeTaskStore.inserted != 1 {
-		t.Fatalf("inserted tasks = %d, want 1 (failed row has no task row)", store.inserted)
+	if env.store.fakeTaskStore.inserted != 1 {
+		t.Fatalf("inserted tasks = %d, want 1 (failed row has no task row)", env.store.inserted)
 	}
 }
 
 func TestBatchesRejectsUnsupportedInputsBeforeBilling(t *testing.T) {
-	manager := newBatchManager(t, map[string]string{
-		"fast": videoPluginSource("fast", "fast-model", true),
-	})
-	store, mux := newBatchEnv(t, manager)
-
 	cases := []struct {
 		name string
 		body string
@@ -325,13 +430,28 @@ func TestBatchesRejectsUnsupportedInputsBeforeBilling(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := postBatch(t, mux, tc.body)
+			// 每个用例独立环境：M6 要求零副作用断言到渠道选择、计费接缝与
+			// 上游调用，共享计数器会让断言失去意义。
+			manager := newBatchManager(t, map[string]string{
+				"fast": videoPluginSource("fast", "fast-model", true),
+			})
+			env := newBatchEnv(t, manager)
+			rec := postBatch(t, env.mux, tc.body)
 			if rec.Code != tc.want {
 				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tc.want, rec.Body.String())
 			}
-			if store.inserted != 0 || store.fakeTaskStore.inserted != 0 {
+			if env.store.inserted != 0 || env.store.fakeTaskStore.inserted != 0 {
 				t.Fatalf("validation failure must not submit: batches=%d tasks=%d",
-					store.inserted, store.fakeTaskStore.inserted)
+					env.store.inserted, env.store.fakeTaskStore.inserted)
+			}
+			if env.channels.calls != 0 {
+				t.Fatalf("channel selection calls = %d, want 0 (before billing)", env.channels.calls)
+			}
+			if calls := env.billing.snapshot(); len(calls) != 0 {
+				t.Fatalf("billing calls = %v, want none (before any submission)", calls)
+			}
+			if hits := env.hits(); hits != 0 {
+				t.Fatalf("upstream requests = %d, want 0", hits)
 			}
 		})
 	}
@@ -341,17 +461,17 @@ func TestBatchesOverLimitIsRejected(t *testing.T) {
 	manager := newBatchManager(t, map[string]string{
 		"fast": videoPluginSource("fast", "fast-model", true),
 	})
-	store, mux := newBatchEnv(t, manager)
+	env := newBatchEnv(t, manager)
 	rows := make([]string, 0, maxBatchItems+1)
 	for i := 0; i < maxBatchItems+1; i++ {
 		rows = append(rows, fmt.Sprintf(`{"custom_id":"r%d","url":"/v1/videos","body":{"model":"fast-model"}}`, i))
 	}
-	rec := postBatch(t, mux, `{"requests":[`+strings.Join(rows, ",")+`]}`)
+	rec := postBatch(t, env.mux, `{"requests":[`+strings.Join(rows, ",")+`]}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
 	}
-	if store.fakeTaskStore.inserted != 0 {
-		t.Fatalf("inserted = %d, want 0", store.fakeTaskStore.inserted)
+	if env.store.fakeTaskStore.inserted != 0 {
+		t.Fatalf("inserted = %d, want 0", env.store.fakeTaskStore.inserted)
 	}
 }
 
@@ -359,8 +479,8 @@ func TestBatchesCancelFailsClosed(t *testing.T) {
 	manager := newBatchManager(t, map[string]string{
 		"fast": videoPluginSource("fast", "fast-model", true),
 	})
-	mux := newBatchEnvFor(t, manager)
-	rec := postBatch(t, mux,
+	env := newBatchEnv(t, manager)
+	rec := postBatch(t, env.mux,
 		`{"requests":[{"custom_id":"x","url":"/v1/videos","body":{"model":"fast-model"}}]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("create status = %d, body=%s", rec.Code, rec.Body.String())
@@ -372,7 +492,7 @@ func TestBatchesCancelFailsClosed(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/batches/"+created.ID+"/cancel", nil)
 	req.Header.Set("Authorization", "Bearer nkt-test-token")
 	cancel := httptest.NewRecorder()
-	mux.ServeHTTP(cancel, req)
+	env.mux.ServeHTTP(cancel, req)
 	if cancel.Code != http.StatusNotImplemented {
 		t.Fatalf("cancel status = %d, want 501; body=%s", cancel.Code, cancel.Body.String())
 	}
@@ -380,7 +500,7 @@ func TestBatchesCancelFailsClosed(t *testing.T) {
 		t.Fatalf("Content-Type = %q, want application/problem+json", ct)
 	}
 	// 取消不改变任何状态：批次仍按子任务聚合。
-	if view := getBatch(t, mux, created.ID); view.Code != http.StatusOK {
+	if view := getBatch(t, env.mux, created.ID); view.Code != http.StatusOK {
 		t.Fatalf("get after cancel = %d", view.Code)
 	}
 }
@@ -389,15 +509,15 @@ func TestBatchesNotFoundAndOwnership(t *testing.T) {
 	manager := newBatchManager(t, map[string]string{
 		"fast": videoPluginSource("fast", "fast-model", true),
 	})
-	store, mux := newBatchEnv(t, manager)
+	env := newBatchEnv(t, manager)
 
 	for _, id := range []string{"batch_not-a-uuid", "batch_00000000-0000-0000-0000-000000000000", "nope"} {
-		if rec := getBatch(t, mux, id); rec.Code != http.StatusNotFound {
+		if rec := getBatch(t, env.mux, id); rec.Code != http.StatusNotFound {
 			t.Fatalf("id %q: status = %d, want 404; body=%s", id, rec.Code, rec.Body.String())
 		}
 	}
 
-	rec := postBatch(t, mux,
+	rec := postBatch(t, env.mux,
 		`{"requests":[{"custom_id":"x","url":"/v1/videos","body":{"model":"fast-model"}}]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("create status = %d, body=%s", rec.Code, rec.Body.String())
@@ -411,7 +531,67 @@ func TestBatchesNotFoundAndOwnership(t *testing.T) {
 	if !ok {
 		t.Fatalf("created id is not parseable: %q", created.ID)
 	}
-	if _, err := store.GetBatchByID(t.Context(), 7, rawID); err != tasks.ErrBatchNotFound {
+	if _, err := env.store.GetBatchByID(t.Context(), 7, rawID); err != tasks.ErrBatchNotFound {
 		t.Fatalf("foreign batch err = %v, want ErrBatchNotFound", err)
+	}
+}
+
+// TestBatchesAllSubmissionsFailedIsFailed 覆盖 BatchStatusFailed 分支：
+// 两行都提交失败（没有任务行）→ status=failed、total=2/completed=0/failed=2。
+// 该用例会杀掉「全失败 → in_progress」的变异。
+func TestBatchesAllSubmissionsFailedIsFailed(t *testing.T) {
+	manager := newBatchManager(t, map[string]string{
+		"broken": brokenPluginSource,
+	})
+	env := newBatchEnv(t, manager)
+	body := `{"requests":[
+	  {"custom_id":"a","url":"/v1/videos","body":{"model":"broken-model"}},
+	  {"custom_id":"b","url":"/v1/videos","body":{"model":"broken-model"}}
+	]}`
+	rec := postBatch(t, env.mux, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (row failures are aggregated); body=%s", rec.Code, rec.Body.String())
+	}
+	var created batchObject
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if created.Status != tasks.BatchStatusFailed {
+		t.Fatalf("status = %q, want failed", created.Status)
+	}
+	if created.RequestCounts.Total != 2 || created.RequestCounts.Completed != 0 || created.RequestCounts.Failed != 2 {
+		t.Fatalf("request_counts = %#v, want total=2 completed=0 failed=2", created.RequestCounts)
+	}
+	if env.store.fakeTaskStore.inserted != 0 {
+		t.Fatalf("inserted tasks = %d, want 0", env.store.fakeTaskStore.inserted)
+	}
+}
+
+// TestBatchesPersistFailureIsZeroCost 覆盖 R-16 第 1 步：父行落库失败必须发生
+// 在任何计费/上游调用之前。记录型计费与渠道/上游计数证明零副作用，客户端可
+// 以安全重试而不会重复建任务、重复扣费。
+func TestBatchesPersistFailureIsZeroCost(t *testing.T) {
+	manager := newBatchManager(t, map[string]string{
+		"fast": videoPluginSource("fast", "fast-model", true),
+	})
+	env := newBatchEnv(t, manager)
+	env.store.saveErr = errors.New("database is unavailable")
+
+	rec := postBatch(t, env.mux,
+		`{"requests":[{"custom_id":"x","url":"/v1/videos","body":{"model":"fast-model"}}]}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%s", rec.Code, rec.Body.String())
+	}
+	if env.store.fakeTaskStore.inserted != 0 {
+		t.Fatalf("task rows = %d, want 0 (no submission before the parent row)", env.store.fakeTaskStore.inserted)
+	}
+	if env.channels.calls != 0 {
+		t.Fatalf("channel selection calls = %d, want 0", env.channels.calls)
+	}
+	if calls := env.billing.snapshot(); len(calls) != 0 {
+		t.Fatalf("billing calls = %v, want none", calls)
+	}
+	if hits := env.hits(); hits != 0 {
+		t.Fatalf("upstream requests = %d, want 0", hits)
 	}
 }

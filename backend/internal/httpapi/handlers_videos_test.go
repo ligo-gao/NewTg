@@ -38,7 +38,8 @@ func videoPluginSource(key, model string, immediate bool) string {
   auth: { type: "api_key" },
   channelTypes: [],
   routes: [],
-  protocols: {},
+  // R-15：Videos 端点只接管声明该协议的插件（音乐/图片插件即使模型同名也不行）。
+  protocols: { openai_video: {} },
   usageSchema: {
     seconds: { type: "number", unit: "second", description: { en: "Video generation unit price", zh: "视频生成单价" } }
   },
@@ -48,11 +49,17 @@ func videoPluginSource(key, model string, immediate bool) string {
   buildSubmitRequest: function (ctx) {
     return { url: ctx.baseUrl + "/tasks", method: "POST", body: { model: ctx.upstreamModel } };
   },
+  decodeRequest: function (ctx) { return (ctx && ctx.body) || {}; },
+  render: function () { return {}; },
   parseSubmitResponse: function () {
     return { taskId: "up_%s", %s taskData: { usage: { seconds: 5 } } };
   },
   buildQueryRequest: function (ctx) { return { url: ctx.baseUrl + "/t/" + ctx.taskId, method: "GET" }; },
-  parseTaskResult: function () { return { state: "SUCCESS" }; }
+  parseTaskResult: function () { return { state: "SUCCESS" }; },
+  // openai_video 协议要求的钩子（validateProtocolHooks）；本测试只验证宿主
+  // 是否按协议收口，钩子内容保持最小。
+  decodeRequest: function (ctx) { return ctx.body; },
+  render: function () { return {}; }
 };`, key, key, model, key, immediateJS)
 }
 
@@ -284,5 +291,113 @@ func TestVideosRequireBearerToken(t *testing.T) {
 	}
 	if store.inserted != 0 {
 		t.Fatalf("inserted = %d, want 0", store.inserted)
+	}
+}
+
+// TestVideosRequireOpenAIVideoProtocol 覆盖 R-15：只有声明 openai_video 的
+// 插件任务才能被 Videos 端点接管。仅声明 models[] 的插件（音乐/图片）即使
+// 模型名命中，也不得创建/检索/取内容——否则同一任务会被两种协议语义解释。
+func TestVideosRequireOpenAIVideoProtocol(t *testing.T) {
+	musicSource := strings.Replace(videoPluginSource("music", "music-model", true),
+		"protocols: { openai_video: {} }", "protocols: {}", 1)
+	manager := newVideoManager(t, map[string]string{"music": musicSource})
+	_, mux, store := newVideoEnv(t, manager)
+
+	// 未声明协议的模型不能经 /v1/videos 创建。
+	rec := postVideo(t, mux, `{"model":"music-model"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("create status = %d, want 404 (protocol not declared); body=%s", rec.Code, rec.Body.String())
+	}
+	if store.inserted != 0 {
+		t.Fatalf("inserted = %d, want 0", store.inserted)
+	}
+
+	// 正常经 /v1/tasks/{key} 建出的音乐任务，不得被投影成 video。
+	submit := httptest.NewRequest(http.MethodPost, "/v1/tasks/music",
+		strings.NewReader(`{"model":"music-model"}`))
+	submit.Header.Set("Authorization", "Bearer nkt-test-token")
+	submit.Header.Set("Content-Type", "application/json")
+	submitRec := httptest.NewRecorder()
+	mux.ServeHTTP(submitRec, submit)
+	if submitRec.Code != http.StatusAccepted {
+		t.Fatalf("task submit status = %d, want 202; body=%s", submitRec.Code, submitRec.Body.String())
+	}
+	var accepted taskSubmitResponse
+	if err := json.Unmarshal(submitRec.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("decode submit: %v", err)
+	}
+	videoID := videoPublicID(accepted.PublicTaskID)
+	if rec := getVideo(t, mux, videoID); rec.Code != http.StatusNotFound {
+		t.Fatalf("retrieve status = %d, want 404 (plugin does not declare openai_video); body=%s", rec.Code, rec.Body.String())
+	}
+	contentReq := httptest.NewRequest(http.MethodGet, "/v1/videos/"+videoID+"/content", nil)
+	contentReq.Header.Set("Authorization", "Bearer nkt-test-token")
+	contentRec := httptest.NewRecorder()
+	mux.ServeHTTP(contentRec, contentReq)
+	if contentRec.Code != http.StatusNotFound {
+		t.Fatalf("content status = %d, want 404; body=%s", contentRec.Code, contentRec.Body.String())
+	}
+}
+
+// musicPluginSource 只声明 models[]、不声明 openai_video：它不得被 /v1/videos
+// 接管（R-15），其任务也不得被投影成 video 对象。
+const musicPluginSource = `globalThis.__NEWTG_PLUGIN__ = {
+  apiVersion: 1,
+  key: "music",
+  name: "Music",
+  version: "1.0.0",
+  author: { name: "NewTG" },
+  description: { en: "Music plugin", zh: "音乐插件" },
+  models: ["music-model"],
+  fetchMode: "per_task",
+  auth: { type: "api_key" },
+  channelTypes: [],
+  routes: [],
+  protocols: {},
+  usageSchema: {
+    seconds: { type: "number", unit: "second", description: { en: "Music generation unit price", zh: "音乐生成单价" } }
+  },
+  usageProfiles: [],
+  usageExamples: [{ seconds: 5 }],
+  requiredCapabilities: [],
+  buildSubmitRequest: function (ctx) {
+    return { url: ctx.baseUrl + "/tasks", method: "POST", body: { model: ctx.upstreamModel } };
+  },
+  parseSubmitResponse: function () { return { taskId: "up_music" }; },
+  buildQueryRequest: function (ctx) { return { url: ctx.baseUrl + "/t/" + ctx.taskId, method: "GET" }; },
+  parseTaskResult: function () { return { state: "SUCCESS" }; }
+};`
+
+// TestVideosRequiresOpenAIVideoProtocol 是 R-15 的硬性证据：
+//   - 未声明协议的插件模型不能被 /v1/videos 提交（404，不是走任务提交）；
+//   - 未声明协议的插件任务（例如经 /v1/tasks 建的音乐任务）不能由
+//     GET /v1/videos/{id} 投影成 video 对象（404，不是 200/403）。
+func TestVideosRequiresOpenAIVideoProtocol(t *testing.T) {
+	manager := newVideoManager(t, map[string]string{
+		"music": musicPluginSource,
+	})
+	_, mux, store := newVideoEnv(t, manager)
+
+	rec := postVideo(t, mux, `{"model":"music-model"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("submit music model: status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	if store.inserted != 0 {
+		t.Fatalf("inserted = %d, want 0 (no openai_video protocol)", store.inserted)
+	}
+
+	// 经任务数据面创建的音乐任务：GET /v1/videos/{id} 必须 404。
+	musicTask := &tasks.Task{
+		PublicTaskID: "task_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		UserID:       42,
+		State:        tasks.StateSuccess,
+		PluginKey:    "music",
+	}
+	if err := store.Insert(t.Context(), musicTask); err != nil {
+		t.Fatalf("insert music task: %v", err)
+	}
+	got := getVideo(t, mux, "video_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if got.Code != http.StatusNotFound {
+		t.Fatalf("music task via /v1/videos: status = %d, want 404; body=%s", got.Code, got.Body.String())
 	}
 }

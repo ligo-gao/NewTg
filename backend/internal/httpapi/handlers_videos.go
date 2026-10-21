@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/tasks"
 )
 
@@ -83,7 +84,7 @@ func (h *TasksHandler) handleVideosSubmit(w http.ResponseWriter, r *http.Request
 			"this token is not allowed to access the requested model")
 		return
 	}
-	key, ambiguous, found := h.taskPluginKeyForModel(model)
+	key, ambiguous, found := h.videoPluginKeyForModel(model)
 	if !found {
 		writeRelayError(w, http.StatusNotFound, requestID, "model_not_found",
 			"no task plugin serves the requested model")
@@ -196,15 +197,27 @@ func (h *TasksHandler) lookupOwnedVideo(w http.ResponseWriter, r *http.Request, 
 		writeVideoNotFound(w, requestID)
 		return nil, false
 	}
+	// R-15：检索/内容与提交同口径——任务所属插件必须仍在装且声明
+	// openai_video。否则任意插件任务（音乐/图片）都能被投影成 video 对象，
+	// 客户端会按视频语义解析一份与任务无关的结果。插件卸载同样 404（P-02）。
+	compiled, ok := h.plugins.Snapshot().Plugin(task.PluginKey)
+	if !ok || !pluginClaimsVideoProtocol(compiled.Manifest()) {
+		writeVideoNotFound(w, requestID)
+		return nil, false
+	}
 	return task, true
 }
 
-// taskPluginKeyForModel 把客户端模型解析为唯一的生效插件 key。
+// videoPluginKeyForModel 把客户端模型解析为**唯一**能接管 Videos 协议的插件。
 //
-// models 列表是插件 manifest 的声明面；快照里只会保留可执行插件
-// （disabled/compile_failed 的 entry.Plugin 为 nil）。多个插件声明同一模型
-// 是配置歧义：返回 ambiguous 由调用方 400，绝不按 key 字典序静默择一。
-func (h *TasksHandler) taskPluginKeyForModel(model string) (key string, ambiguous, found bool) {
+// R-15（与 P-02 同口径）：只考虑声明了 `meta.protocols.openai_video` 且在装
+// 的插件。仅声明 models[] 的插件（例如音乐/图片插件）不得被 /v1/videos 接管
+// ——否则同一个模型在 /v1/tasks/{key} 与 /v1/videos 之间会得到两种语义，
+// 且「模型名碰撞」会把请求路由到错误的任务族。
+//
+// 多个视频插件声明同一模型是配置歧义：返回 ambiguous 由调用方 400，绝不按
+// key 字典序静默择一（快照重建会让结果漂移）。
+func (h *TasksHandler) videoPluginKeyForModel(model string) (key string, ambiguous, found bool) {
 	snapshot := h.plugins.Snapshot()
 	for _, candidate := range snapshot.Keys() {
 		compiled, ok := snapshot.Plugin(candidate)
@@ -212,7 +225,7 @@ func (h *TasksHandler) taskPluginKeyForModel(model string) (key string, ambiguou
 			continue
 		}
 		manifest := compiled.Manifest()
-		if manifest == nil || !containsStringValue(manifest.Models, model) {
+		if manifest == nil || !containsStringValue(manifest.Models, model) || !pluginClaimsVideoProtocol(manifest) {
 			continue
 		}
 		if found {
@@ -221,6 +234,19 @@ func (h *TasksHandler) taskPluginKeyForModel(model string) (key string, ambiguou
 		key, found = candidate, true
 	}
 	return key, false, found
+}
+
+// videoProtocolName 是插件声明「接管 OpenAI Videos 协议」时使用的键
+// （manifest meta.protocols.openai_video，relay-06 §3.1 / R-15）。
+const videoProtocolName = "openai_video"
+
+// pluginClaimsVideoProtocol 判定插件 manifest 是否声明 openai_video。
+func pluginClaimsVideoProtocol(m *plugin.Manifest) bool {
+	if m == nil {
+		return false
+	}
+	_, ok := m.Protocols[videoProtocolName]
+	return ok
 }
 
 func containsStringValue(values []string, want string) bool {
@@ -281,18 +307,23 @@ type videoError struct {
 
 // videoStatusForState 把任务的 7 态映射为 OpenAI Videos 的 4 值状态。
 //
-// UNKNOWN 映射为 failed 而不是 in_progress：设计禁止把无法识别的上游状态
-// 默认成进行中（客户端会无限轮询），而 Videos 状态机没有 unknown 值。
+// UNKNOWN 映射为 queued（**非终态**），与 poller/repo 的口径一致：轮询器
+// （poller.go）把 unknown 当未完成继续重试，repo.ListPending 也不会把它当
+// 终态；如果这里投影成 failed，客户端会把它当终态停止轮询，而服务端仍在
+// 推进同一任务，两侧状态从此分叉。
+//
+// 不用 in_progress：设计禁止把无法识别的上游状态默认成「进行中」（会暗示
+// 有可观测进度）；queued 只表达「尚未完成」，不承诺进度。
 func videoStatusForState(state tasks.State) string {
 	switch state {
 	case tasks.StateSuccess:
 		return "completed"
-	case tasks.StateFailure, tasks.StateUnknown:
+	case tasks.StateFailure:
 		return "failed"
 	case tasks.StateInProgress:
 		return "in_progress"
 	default:
-		// not_start / submitted / queued
+		// not_start / submitted / queued / unknown：非终态，等待轮询推进。
 		return "queued"
 	}
 }
@@ -302,7 +333,7 @@ func videoProgressForState(state tasks.State, progress int) int {
 	switch state {
 	case tasks.StateSuccess:
 		return 100
-	case tasks.StateFailure, tasks.StateUnknown:
+	case tasks.StateFailure:
 		return 0
 	}
 	if progress < 0 {
@@ -314,23 +345,20 @@ func videoProgressForState(state tasks.State, progress int) int {
 	return progress
 }
 
-// videoErrorForTask 只为 failure/unknown 生成错误对象。
+// videoErrorForTask 只为 failure 生成错误对象。
 //
 // FailReason 是插件解析出的失败原因（已通过 /v1/tasks 查询对本人可见），
-// 原样回显不会扩大暴露面；unknown 给出固定文案而不是伪造上游错误。
+// 原样回显不会扩大暴露面。unknown 不是终态（见 videoStatusForState），
+// 因此也不得附带 error 子对象——那会让客户端把未知状态当失败。
 func videoErrorForTask(task *tasks.Task) *videoError {
-	switch task.State {
-	case tasks.StateFailure:
-		message := task.FailReason
-		if strings.TrimSpace(message) == "" {
-			message = "video generation failed"
-		}
-		return &videoError{Code: "generation_failed", Message: message}
-	case tasks.StateUnknown:
-		return &videoError{Code: "unknown_state", Message: "upstream reported an unrecognized task state"}
-	default:
+	if task.State != tasks.StateFailure {
 		return nil
 	}
+	message := task.FailReason
+	if strings.TrimSpace(message) == "" {
+		message = "video generation failed"
+	}
+	return &videoError{Code: "generation_failed", Message: message}
 }
 
 // videoCreatedAt 返回 video 对象的 created_at（Unix 秒）：优先 submit_time，

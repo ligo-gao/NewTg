@@ -357,8 +357,13 @@ func TestRepoBatchCreateAndAggregate(t *testing.T) {
 	}
 	// total=3 但只关联两条任务：第三条模拟「上游提交失败、没有任务行」的行。
 	batch := &Batch{ID: batchID, UserID: userID, Status: BatchStatusInProgress, Total: 3}
-	if err := repo.InsertBatch(ctx, batch, []string{done.PublicTaskID, pending.PublicTaskID}); err != nil {
+	if err := repo.InsertBatch(ctx, batch); err != nil {
 		t.Fatalf("InsertBatch: %v", err)
+	}
+	for _, publicID := range []string{done.PublicTaskID, pending.PublicTaskID} {
+		if err := repo.LinkBatchItem(ctx, batchID, userID, publicID); err != nil {
+			t.Fatalf("LinkBatchItem(%s): %v", publicID, err)
+		}
 	}
 	view, err := repo.GetBatchByID(ctx, userID, batchID)
 	if err != nil {
@@ -388,20 +393,31 @@ func TestRepoBatchCreateAndAggregate(t *testing.T) {
 		t.Fatalf("foreign batch err = %v, want ErrBatchNotFound", err)
 	}
 
-	// 关联不存在的任务 → 整个事务回滚，父批次行不得残留。
+	// 关联不存在的任务 → 该条关联失败且不落行；父批次与已有链接不受影响
+	// （R-16 的三段式：父行先落，单条关联的失败只让该行计入 failed）。
 	badID, err := NewBatchID()
 	if err != nil {
 		t.Fatalf("NewBatchID: %v", err)
 	}
 	bad := &Batch{ID: badID, UserID: userID, Status: BatchStatusInProgress, Total: 1}
-	if err := repo.InsertBatch(ctx, bad, []string{"task_does_not_exist"}); err == nil {
-		t.Fatal("InsertBatch must fail when an item task does not exist")
+	if err := repo.InsertBatch(ctx, bad); err != nil {
+		t.Fatalf("InsertBatch(bad): %v", err)
+	}
+	if err := repo.LinkBatchItem(ctx, badID, userID, "task_does_not_exist"); err == nil {
+		t.Fatal("LinkBatchItem must fail when the task does not exist")
 	}
 	var count int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM task_batches WHERE id = $1`, badID).Scan(&count); err != nil {
-		t.Fatalf("count rolled back batch: %v", err)
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM task_batches_items WHERE batch_id = $1`, badID).Scan(&count); err != nil {
+		t.Fatalf("count links: %v", err)
 	}
 	if count != 0 {
-		t.Fatalf("batch row survived a failed transaction: count=%d", count)
+		t.Fatalf("failed link left rows behind: count=%d", count)
+	}
+	badView, err := repo.GetBatchByID(ctx, userID, badID)
+	if err != nil {
+		t.Fatalf("GetBatchByID(bad): %v", err)
+	}
+	if badView.Failed != 1 || badView.Status != BatchStatusFailed {
+		t.Fatalf("unlinked row must count as failed: %#v", badView)
 	}
 }

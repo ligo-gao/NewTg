@@ -8698,7 +8698,8 @@ paths:
       summary: 创建视频生成任务（任务插件）
       description: |
         请求体为 JSON（**不支持 multipart**，返回 400）。`model` 决定任务插件：
-        宿主在当前插件快照的 `meta.models` 中解析唯一命中的插件；0 命中 404
+        宿主在当前插件快照中解析**同时声明 `meta.protocols.openai_video` 且
+        `meta.models` 命中该模型**的唯一插件（R-15）；0 命中 404
         `model_not_found`，多命中 400（歧义不做静默择优）。
 
         提交与 `/v1/tasks/{key}` 完全同一条管线（渠道选择 → 预扣 → 上游提交 →
@@ -8737,8 +8738,10 @@ paths:
       summary: 取回视频任务
       description: |
         `video_<x>` 映射为 `task_<x>` 后按 (user_id, public_task_id) 读取。
-        状态映射：success→completed、failure/unknown→failed、in_progress→
-        in_progress、其余→queued。`unknown` 不会默认成进行中（客户端会无限轮询）。
+        任务所属插件必须仍在装且声明 `openai_video`，否则 404（R-15，与
+        Responses 的 P-02 同口径，不泄露存在性）。
+        状态映射：success→completed、failure→failed、in_progress→in_progress、
+        其余（含 unknown）→queued（非终态，与轮询器口径一致）。
       security:
         - bearerToken: []
       parameters:
@@ -8762,10 +8765,11 @@ paths:
       operationId: getVideoContent
       summary: 取视频内容（Bearer 归属校验）
       description: |
-        代理任务的首个视频产物（优先 `type=video`，否则第一项）。与
-        `/v1/tasks/{key}/artifacts/{artifact_key}/content` 不同，这里用 Bearer
-        归属校验而不是能力票据（OpenAI SDK 的约定）。没有可检索产物时 404。
-        HEAD 只返回头部。
+        代理任务中 `type=video` 的产物；**不回落**到其它类型（封面图/字幕
+        不得被当视频返回）。任务所属插件必须声明 `openai_video`（R-15）。
+        与 `/v1/tasks/{key}/artifacts/{artifact_key}/content` 不同，这里用
+        Bearer 归属校验而不是能力票据（OpenAI SDK 的约定）。没有视频产物时
+        404。HEAD 只返回头部。
       security:
         - bearerToken: []
       parameters:
@@ -8795,10 +8799,14 @@ paths:
         同形：`custom_id/method/url/body`）；只给 `input_file_id` 时返回 501
         `problem+json`，绝不伪造空批次。每行 `url` 目前只支持 `/v1/videos`。
 
-        全部行的参数（custom_id 唯一、url、model 可解析）在**任何计费之前**校验，
-        参数错误零副作用。逐行提交复用 `/v1/videos` 的提交管线；提交失败的行
-        没有任务行、计入 `request_counts.failed`，其余行照常成立。父批次与全部
-        子任务关联在一个事务里写入（失败整体回滚）。
+        顺序冻结为 R-16：全部行校验 → **先落父批次行**（失败即 500 且零计费）
+        → 逐行提交（复用 `/v1/videos` 的提交管线）→ 逐行关联。提交失败或关联
+        失败的行计入 `request_counts.failed`，不把整批 500 掉；父行先落库保证
+        客户端始终拿得到 batch id。
+
+        **非幂等**：本端点没有幂等键，重试会重新提交每一行——已成功的行会重复
+        建任务并重复计费。`custom_id` 只在请求内做唯一性校验，不落库、服务端
+        不做去重；幂等键与批次列表端点不在本批（已登记）。
       security:
         - bearerToken: []
       externalDocs:
