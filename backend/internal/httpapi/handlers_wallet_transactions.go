@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"newtg/gateway/internal/auth"
@@ -440,6 +441,9 @@ func parseWalletTransactionQuery(q url.Values, now time.Time) (
 		if utf8.RuneCountInString(ref) > walletRefMaxRunes {
 			return filter, 0, 0, "ref must not exceed 64 characters"
 		}
+		if !utf8.ValidString(ref) || walletRefHasControl(ref) {
+			return filter, 0, 0, "ref contains invalid characters"
+		}
 		filter.ref = ref
 	}
 	return filter, page, pageSize, ""
@@ -456,6 +460,21 @@ func parseWalletAmountBound(raw string) (*int64, string) {
 		return nil, "invalid"
 	}
 	return &value, ""
+}
+
+// walletRefHasControl 报告 ref 是否含控制字符（含 NUL）。
+//
+// Postgres 文本协议拒绝 NUL 字节（SQLSTATE 22021），非法 UTF-8 同样无法
+// 作为 text 参数；若不在这里拦截，`?ref=%00` 会变成 500。关联号只可能是
+// ASCII 十六进制/数字，拒绝控制字符不会损失任何合法查询（R-M3-02：非法
+// 参数统一 422）。
+func walletRefHasControl(value string) bool {
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // --- 详情 -----------------------------------------------------------------

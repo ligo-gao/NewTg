@@ -498,7 +498,6 @@
     "action_details": "Chi tiết",
     "total": "{count} giao dịch",
     "refresh": "Làm mới",
-    "loading": "Đang tải giao dịch…",
     "page": "Trang {page} / {pages}",
     "prev": "Trang trước",
     "next": "Trang sau",

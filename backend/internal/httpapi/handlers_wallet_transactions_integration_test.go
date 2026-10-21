@@ -33,7 +33,9 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/redis/go-redis/v9"
 
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/rbac"
 )
 
 // walletTxnFixedNow 是所有时间窗用例的固定时钟：默认窗口断言不依赖机器时间。
@@ -424,6 +426,46 @@ func TestWalletTransactionsListFilters(t *testing.T) {
 		}
 	})
 
+	// 实现期解释：只给 to 时窗口为 [to−30d, to)（相对 to 回退，而不是
+	// 字面默认 from=now−30d 造成 from > to）。
+	t.Run("only to uses a 30-day window ending at to", func(t *testing.T) {
+		windowUser := walletTxnUser(t, env.db, 1_000_000)
+		to := walletTxnFixedNow.Add(-time.Hour)
+		walletTxnInsert(t, env.db, windowUser, walletTxnSeed{
+			Type: "bonus", Amount: 1, BalanceAfter: 1, CreatedAt: to.Add(-31 * 24 * time.Hour)}) // 窗外
+		walletTxnInsert(t, env.db, windowUser, walletTxnSeed{
+			Type: "bonus", Amount: 2, BalanceAfter: 2, CreatedAt: to.Add(-29 * 24 * time.Hour)}) // 窗内
+		walletTxnInsert(t, env.db, windowUser, walletTxnSeed{
+			Type: "bonus", Amount: 3, BalanceAfter: 3, CreatedAt: to.Add(-time.Second)}) // 窗内（右开前一刻）
+		walletTxnInsert(t, env.db, windowUser, walletTxnSeed{
+			Type: "bonus", Amount: 4, BalanceAfter: 4, CreatedAt: to}) // to 右开 → 窗外
+		page := walletTxnDecodePage(t, walletTxnRequest(t, env.handler, windowUser,
+			"/api/wallet/transactions",
+			url.Values{"to": {to.Format(time.RFC3339)}}))
+		if page.Total != 2 {
+			t.Fatalf("only-to total=%d, want 2 (items=%+v)", page.Total, page.Items)
+		}
+	})
+
+	// 跨度恰 90 天必须允许（上限是 ≤90 天，不是 <90）。
+	t.Run("exactly 90 days is allowed", func(t *testing.T) {
+		windowUser := walletTxnUser(t, env.db, 1_000_000)
+		from := walletTxnFixedNow.Add(-walletMaxWindow)
+		walletTxnInsert(t, env.db, windowUser, walletTxnSeed{
+			Type: "bonus", Amount: 1, BalanceAfter: 1, CreatedAt: from.Add(-time.Second)}) // 窗外
+		walletTxnInsert(t, env.db, windowUser, walletTxnSeed{
+			Type: "bonus", Amount: 2, BalanceAfter: 2, CreatedAt: from.Add(time.Minute)})
+		rec := walletTxnRequest(t, env.handler, windowUser, "/api/wallet/transactions",
+			url.Values{
+				"from": {from.Format(time.RFC3339)},
+				"to":   {walletTxnFixedNow.Format(time.RFC3339)},
+			})
+		page := walletTxnDecodePage(t, rec)
+		if page.Total != 1 || page.Items[0].Amount != 2 {
+			t.Fatalf("90-day span total=%d items=%+v, want 1/amount 2", page.Total, page.Items)
+		}
+	})
+
 	t.Run("min/max apply to ABS(amount), inclusive", func(t *testing.T) {
 		amountUser := walletTxnUser(t, env.db, 1_000_000)
 		for _, amount := range []int64{100, -100, 500, -500, 1000, -1000} {
@@ -808,6 +850,27 @@ func TestWalletTransactionsDetailOrderRedemptionAdjustmentReversal(t *testing.T)
 		}
 	})
 
+	// 非机器格式的 note（未来 module 07 会写入人类理由）必须原样返回；
+	// 解析不出 mode 时 adjustment 为 null，不能伪造成 add/subtract。
+	t.Run("admin human note is returned as-is", func(t *testing.T) {
+		note := "goodwill credit for the outage on 2026-10-18"
+		rowID := walletTxnInsert(t, env.db, userID, walletTxnSeed{
+			Type: "admin_adjustment", Amount: 500, BalanceAfter: 1_000_500,
+			RefType: "admin_op", RefID: "human-key", Note: note})
+		rec := walletTxnRequest(t, env.handler, userID,
+			fmt.Sprintf("/api/wallet/transactions/%d", rowID), nil)
+		detail := walletTxnDecodeDetail(t, rec)
+		if detail.Note == nil || *detail.Note != note {
+			t.Fatalf("note = %v, want %q", detail.Note, note)
+		}
+		if detail.Adjustment != nil {
+			t.Fatalf("adjustment = %+v, want null for an unparseable human note", detail.Adjustment)
+		}
+		if strings.Contains(rec.Body.String(), "idem:") {
+			t.Fatalf("fingerprint marker leaked: %s", rec.Body.String())
+		}
+	})
+
 	t.Run("reversal corrects the same order's wallet purchase", func(t *testing.T) {
 		orderID := insertOrder("subscribe")
 		purchaseID := walletTxnInsert(t, env.db, userID, walletTxnSeed{
@@ -889,6 +952,11 @@ func TestWalletTransactionsValidation(t *testing.T) {
 		{"non-integer max", url.Values{"max": {"1.5"}}},
 		{"bad timestamp", url.Values{"from": {"2026-10-01"}}},
 		{"ref too long", url.Values{"ref": {strings.Repeat("x", 65)}}},
+		// Postgres 文本协议拒绝 NUL（22021）；非法 UTF-8/控制字符同样不可
+		// 能是合法关联号。R-M3-02：一律 422，不能漏成 500。
+		{"ref with NUL", url.Values{"ref": {"a\x00b"}}},
+		{"ref with invalid utf8", url.Values{"ref": {string([]byte{0xff, 0xfe})}}},
+		{"ref with control character", url.Values{"ref": {"a\x01b"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -952,5 +1020,83 @@ func TestWalletTransactionsRateLimitFailsOpen(t *testing.T) {
 	rec := walletTxnRequest(t, env.handler, userID, "/api/wallet/transactions", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 when redis is down (fail-open)", rec.Code)
+	}
+}
+
+// TestWalletTransactionsAssemblyRoutes 端到端验证生产装配（BuildGatewayRouter
+// 的 assembly.go 分支）确实把两个流水端点挂进受保护链：会话 Cookie → 认证链
+// → handler → 真实 PG。只测路由注册与身份传递，不复测查询细节。
+func TestWalletTransactionsAssemblyRoutes(t *testing.T) {
+	env := newWalletTxnEnv(t, walletTxnEnvOptions{})
+	userID := walletTxnUser(t, env.db, 1_000_000)
+	rowID := walletTxnInsert(t, env.db, userID, walletTxnSeed{
+		Type: "bonus", Amount: 7, BalanceAfter: 1_000_007})
+
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	sessions := auth.NewSessionManager(rdb, []byte(testSessionSecret))
+
+	walletHandlers, err := NewWalletHandlers(WalletHandlerConfig{
+		DB:     env.db,
+		LogDB:  env.logsDB,
+		Logger: testLogger(),
+		Now:    func() time.Time { return walletTxnFixedNow },
+	})
+	if err != nil {
+		t.Fatalf("NewWalletHandlers: %v", err)
+	}
+	rt, err := BuildGatewayRouter(GatewayDeps{
+		DB:                      env.db,
+		LogDB:                   env.logsDB,
+		Redis:                   rdb,
+		Sessions:                sessions,
+		Config:                  mapConfig{},
+		Audit:                   audit.New(env.logsDB),
+		Authz:                   rbac.NewAuthzMiddleware(),
+		TokenService:            &fakeTokenService{},
+		SessionSecret:           []byte(testSessionSecret),
+		CredentialEncryptionKey: "m3-assembly-integration-key",
+		PublicBaseURL:           "http://localhost:3000",
+		Logger:                  testLogger(),
+		WalletHandlers:          walletHandlers,
+	})
+	if err != nil {
+		t.Fatalf("BuildGatewayRouter: %v", err)
+	}
+
+	sid := mustSession(t, sessions, userID, "user")
+	req := httptest.NewRequest(http.MethodGet, "/api/wallet/transactions", nil)
+	req.Host = "app.example.com"
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: sid})
+	rec := httptest.NewRecorder()
+	rt.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	page := walletTxnDecodePage(t, rec)
+	if page.Total != 1 || page.Items[0].ID != rowID {
+		t.Fatalf("list via assembly = %+v, want row %d", page, rowID)
+	}
+
+	detailReq := httptest.NewRequest(http.MethodGet,
+		fmt.Sprintf("/api/wallet/transactions/%d", rowID), nil)
+	detailReq.Host = "app.example.com"
+	detailReq.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: sid})
+	detailRec := httptest.NewRecorder()
+	rt.ServeHTTP(detailRec, detailReq)
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want 200 (body=%s)", detailRec.Code, detailRec.Body.String())
+	}
+	detail := walletTxnDecodeDetail(t, detailRec)
+	if detail.ID != rowID {
+		t.Fatalf("detail id = %d, want %d", detail.ID, rowID)
+	}
+
+	// 未认证请求走同一装配链 → 401（证明端点没有绕过 SessionAuth）。
+	anon := httptest.NewRecorder()
+	rt.ServeHTTP(anon, httptest.NewRequest(http.MethodGet, "/api/wallet/transactions", nil))
+	if anon.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous status = %d, want 401", anon.Code)
 	}
 }

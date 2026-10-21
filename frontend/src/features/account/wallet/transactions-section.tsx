@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { apiClient } from '@/api/client'
 import { ApiError } from '@/api/errors'
@@ -102,11 +102,17 @@ export function TransactionsSection({
     setToDraft(search.to ?? '')
   }, [search.to])
 
-  const rangeError = validateWalletRange(
-    search.from ?? fromDraft,
-    search.to ?? toDraft,
-  )
-  const amountError = validateWalletAmountRange(minDraft, maxDraft)
+  // 草稿校验只影响「能否提交」与行内报错；查询是否可发只看已提交的 search。
+  // 否则用户草稿里输错一个字符就会把已提交列表的查询禁用（切筛选后表格
+  // 变骨架）。已提交值仍可能来自手工 URL（>90 天 / min>max），后端 422 是
+  // 兜底，但前端在这里先拦住不发请求。
+  const draftRangeError = validateWalletRange(fromDraft, toDraft)
+  const draftAmountError = validateWalletAmountRange(minDraft, maxDraft)
+  const committedRangeError = validateWalletRange(search.from, search.to)
+  const committedAmountError =
+    search.min !== undefined &&
+    search.max !== undefined &&
+    search.max < search.min
 
   const query = buildWalletTransactionsQuery(search)
   // query-core 在每次 fetch 开始时把 fetchFailureCount 归零（fetchState），
@@ -121,8 +127,9 @@ export function TransactionsSection({
           params: { query },
         }),
       ),
-    // 校验错误时不发请求（后端 422 仍是兜底）。
-    enabled: rangeError === null && amountError === null,
+    // 切换筛选时保留上一页数据（P3）：新键加载期间不闪骨架。
+    placeholderData: keepPreviousData,
+    enabled: committedRangeError === null && !committedAmountError,
     // R-M3-14：仅当本次结果含 hold 行时 30s 轮询；连续 2 次失败停止。
     // 成功一次即清零，因此"失败两次后用户手动刷新成功"会重新开启轮询。
     refetchInterval: (queryState) => {
@@ -168,7 +175,7 @@ export function TransactionsSection({
   }
 
   function commitAmounts(): void {
-    if (amountError !== null) return
+    if (draftAmountError !== null) return
     apply({
       min: minDraft.trim() === '' ? undefined : Number(minDraft.trim()),
       max: maxDraft.trim() === '' ? undefined : Number(maxDraft.trim()),
@@ -176,7 +183,7 @@ export function TransactionsSection({
   }
 
   function commitRange(): void {
-    if (rangeError !== null) return
+    if (draftRangeError !== null) return
     apply({
       from: fromDraft === '' ? undefined : fromDraft,
       to: toDraft === '' ? undefined : toDraft,
@@ -353,16 +360,16 @@ export function TransactionsSection({
         </Button>
       </div>
 
-      {rangeError !== null ? (
+      {draftRangeError !== null ? (
         <p role="alert" className="text-xs text-danger">
-          {rangeError === 'too_long'
+          {draftRangeError === 'too_long'
             ? t('account.wallet.range_error')
             : t('account.wallet.range_order')}
         </p>
       ) : null}
-      {amountError !== null ? (
+      {draftAmountError !== null ? (
         <p role="alert" className="text-xs text-danger">
-          {amountError === 'order'
+          {draftAmountError === 'order'
             ? t('account.wallet.amount_error')
             : t('account.wallet.amount_invalid')}
         </p>

@@ -498,7 +498,6 @@
     "action_details": "Details",
     "total": "{count} transactions",
     "refresh": "Refresh",
-    "loading": "Loading transactions...",
     "page": "Page {page} / {pages}",
     "prev": "Previous page",
     "next": "Next page",

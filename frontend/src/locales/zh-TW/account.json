@@ -498,7 +498,6 @@
     "action_details": "詳情",
     "total": "共 {count} 筆記錄",
     "refresh": "重新整理",
-    "loading": "正在載入流水…",
     "page": "第 {page} / {pages} 頁",
     "prev": "上一頁",
     "next": "下一頁",

@@ -309,6 +309,70 @@ describe('TransactionsSection list (F-03-02)', () => {
       })
     }
   })
+
+  it('keeps the previous rows while an invalid draft blocks a filter change', async () => {
+    let calls = 0
+    let releaseSecond: (() => void) | undefined
+    server.use(
+      http.get(`${ORIGIN}/api/wallet/transactions`, async () => {
+        calls += 1
+        if (calls === 1) {
+          return HttpResponse.json(page([transaction({})]))
+        }
+        // 第二个请求故意挂起：验证新筛选加载期间仍显示上一页数据。
+        await new Promise<void>((resolve) => {
+          releaseSecond = resolve
+        })
+        return HttpResponse.json(page([transaction({ id: 2, type: 'consume', amount: -100 })]))
+      }),
+    )
+    await renderWithProviders(<Harness />, ['common', 'account'])
+    expect(await screen.findByText('+1,000')).toBeTruthy()
+
+    const user = userEvent.setup()
+    fireEvent.change(screen.getByLabelText('Min amount'), {
+      target: { value: '-1' },
+    })
+    expect(
+      await screen.findByText('Enter a non-negative whole number'),
+    ).toBeTruthy()
+
+    await user.selectOptions(screen.getByLabelText('Type'), 'consume')
+    // 草稿非法只禁用提交；已提交查询切换时保留旧行，不闪骨架。
+    expect(screen.getByText('+1,000')).toBeTruthy()
+    expect(document.querySelector('[aria-busy="true"]')).toBeNull()
+    releaseSecond?.()
+  })
+
+  it('opens the detail sheet from a row', async () => {
+    const item = transaction({ id: 7 })
+    server.use(
+      http.get(`${ORIGIN}/api/wallet/transactions`, () =>
+        HttpResponse.json(page([item])),
+      ),
+      http.get(`${ORIGIN}/api/wallet/transactions/7`, () =>
+        HttpResponse.json({
+          ...item,
+          note: null,
+          usage: null,
+          order: null,
+          redemption: null,
+          adjustment: null,
+          segments: null,
+          corrects_transaction_id: null,
+        }),
+      ),
+    )
+    await renderWithProviders(<Harness />, ['common', 'account'])
+    const user = userEvent.setup()
+    await user.click(await screen.findByText('+1,000'))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(
+      await within(dialog).findByText('Transaction details'),
+    ).toBeTruthy()
+    expect(within(dialog).getByText('+1,000')).toBeTruthy()
+  })
 })
 
 describe('TransactionsSection hold polling (R-M3-14)', () => {
