@@ -132,7 +132,16 @@ globalThis.__NEWTG_PLUGIN__ = {
     var state = mapStatus(body.status);
     var out = { taskId: String(id), taskData: body };
     if (state === "SUCCESS" || state === "FAILURE") {
-      // 即时终态：落库即终态，不再轮询（relay-06 §6.2）。
+      // 即时终态：落库即终态，不再轮询（relay-06 §6.2）。成功时把用量与
+      // 产物清单写进 taskData，让提交期结算与产物投影与轮询终态同形
+      // （宿主只从持久化 task.data 读取 usage/artifacts）。
+      if (state === "SUCCESS") {
+        var seconds = Number(body.seconds);
+        if (isFinite(seconds) && seconds > 0) {
+          body.usage = { seconds: seconds };
+        }
+        body.artifacts = [{ key: "video", type: "video", mimeType: "video/mp4" }];
+      }
       out.immediate = { status: state };
     } else if (state !== "") {
       out.state = state;

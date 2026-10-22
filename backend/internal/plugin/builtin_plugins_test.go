@@ -406,6 +406,26 @@ func TestBuiltinSoraHooksUseFrozenOpenAIVideosContract(t *testing.T) {
 		}
 	})
 
+	t.Run("submit_immediate_success_carries_usage_and_artifacts", func(t *testing.T) {
+		parsed := callBuiltinObject(t, compiled, "parseSubmitResponse", map[string]any{
+			"statusCode": 200,
+			"body":       `{"id":"video_789","status":"completed","seconds":"8"}`,
+		})
+		immediate, _ := parsed["immediate"].(map[string]any)
+		if got := builtinString(immediate["status"]); got != "SUCCESS" {
+			t.Fatalf("immediate.status=%q，期望 SUCCESS", got)
+		}
+		taskData, _ := parsed["taskData"].(map[string]any)
+		usage, _ := taskData["usage"].(map[string]any)
+		if got, ok := builtinNumber(usage["seconds"]); !ok || got != 8 {
+			t.Fatalf("即时终态必须把用量写入 taskData.usage: %v", taskData)
+		}
+		artifacts, _ := taskData["artifacts"].([]any)
+		if len(artifacts) != 1 {
+			t.Fatalf("即时终态必须把产物清单写入 taskData.artifacts: %v", taskData)
+		}
+	})
+
 	t.Run("query", func(t *testing.T) {
 		desc := callBuiltinObject(t, compiled, "buildQueryRequest", map[string]any{
 			"baseUrl":    baseURL,
