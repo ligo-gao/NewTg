@@ -6662,6 +6662,22 @@ type PatchMeRequest struct {
 	DisplayName string `json:"display_name"`
 }
 
+// PaymentComplianceConfirmRequest defines model for PaymentComplianceConfirmRequest.
+type PaymentComplianceConfirmRequest struct {
+	// Confirmation 精确确认文本，必须逐字符等于「我已了解支付合规责任」。
+	// 前后空白、标点或其它语言均返回 400（服务端校验，零写入）。
+	Confirmation string `json:"confirmation"`
+}
+
+// PaymentComplianceStatus defines model for PaymentComplianceStatus.
+type PaymentComplianceStatus struct {
+	// Confirmed 该管理员是否已确认支付设置合规责任。
+	Confirmed bool `json:"confirmed"`
+
+	// ConfirmedAt 首次确认时刻；`confirmed=false` 时为 null。
+	ConfirmedAt time.Time `json:"confirmed_at"`
+}
+
 // PaymentMethod 支付令牌的**公开投影**：只有 brand/last4/exp 与句柄 id，
 // token_cipher（AES-GCM 密文）永不出现在任何响应中（P-14 零回显）。
 type PaymentMethod struct {
@@ -10697,6 +10713,13 @@ type ResumeWebhookNotificationsParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// ConfirmPaymentComplianceParams defines parameters for ConfirmPaymentCompliance.
+type ConfirmPaymentComplianceParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
 // TestWebhookSettingsParams defines parameters for TestWebhookSettings.
 type TestWebhookSettingsParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
@@ -11575,6 +11598,9 @@ type UpdateSelfSettingsJSONRequestBody = UpdateSelfSettingsRequest
 
 // UpdateSettingsSectionJSONRequestBody defines body for UpdateSettingsSection for application/json ContentType.
 type UpdateSettingsSectionJSONRequestBody = SettingsUpdateRequest
+
+// ConfirmPaymentComplianceJSONRequestBody defines body for ConfirmPaymentCompliance for application/json ContentType.
+type ConfirmPaymentComplianceJSONRequestBody = PaymentComplianceConfirmRequest
 
 // CompleteSetupJSONRequestBody defines body for CompleteSetup for application/json ContentType.
 type CompleteSetupJSONRequestBody = SetupRequest

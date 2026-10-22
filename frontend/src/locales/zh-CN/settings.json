@@ -63,6 +63,22 @@
     "cross_webhook_url": "启用 Webhook 时必须填写端点 URL。",
     "cross_webhook_secret": "启用 Webhook 时必须配置签名密钥。"
   },
+  "payment_compliance": {
+    "title": "支付配置合规确认",
+    "description": "打开支付设置前，请确认您的合规责任。",
+    "responsibility": "您负责本站点支付网关的配置：妥善保管密钥、遵守支付渠道条款与当地法规，并通过渠道处理退款与争议。",
+    "input_label": "确认文本",
+    "instruction": "请输入「{text}」以继续",
+    "expected_text": "我已了解支付合规责任",
+    "cancel": "取消",
+    "confirm": "确认",
+    "confirming": "确认中…",
+    "error_mismatch": "文本不匹配，请输入完全一致的短语后重试。",
+    "status_loading": "正在检查支付合规确认状态…",
+    "status_error": "无法读取支付合规确认状态。",
+    "blocked_hint": "完成合规确认前，支付设置保持隐藏。",
+    "confirmed_badge": "已完成合规确认"
+  },
   "tab": {
     "site": "站点",
     "auth": "认证",

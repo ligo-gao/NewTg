@@ -63,6 +63,22 @@
     "cross_webhook_url": "Webhook を有効にするにはエンドポイント URL が必要です。",
     "cross_webhook_secret": "Webhook を有効にするには署名シークレットが必要です。"
   },
+  "payment_compliance": {
+    "title": "支払い設定のコンプライアンス確認",
+    "description": "支払い設定を開く前に、コンプライアンス上の責任を確認してください。",
+    "responsibility": "このデプロイの支払いゲートウェイ設定はお客様の責任です。認証情報を秘密に保ち、決済プロバイダーの規約と現地法規を遵守し、返金と異議申し立てはプロバイダー経由で処理してください。",
+    "input_label": "確認テキスト",
+    "instruction": "続行するには「{text}」と入力してください。",
+    "expected_text": "我已了解支付合规责任",
+    "cancel": "キャンセル",
+    "confirm": "確認",
+    "confirming": "確認中…",
+    "error_mismatch": "テキストが一致しません。正確なフレーズを入力して再試行してください。",
+    "status_loading": "支払いコンプライアンスの確認状態を確認しています…",
+    "status_error": "支払いコンプライアンスの確認状態を読み取れませんでした。",
+    "blocked_hint": "コンプライアンス確認が完了するまで、支払い設定は表示されません。",
+    "confirmed_badge": "コンプライアンス確認済み"
+  },
   "tab": {
     "site": "サイト",
     "auth": "認証",

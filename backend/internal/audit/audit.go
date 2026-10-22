@@ -110,6 +110,12 @@ const (
 	// paused 这类布尔事实；secret/URL 与队列内容一律不记。
 	ActionSettingsWebhookResume = "settings.webhook_resume"
 
+	// ActionSettingsPaymentComplianceConfirmed 是管理员首次进入支付设置 Tab 时
+	// 输入指定文本的确认事件（modules-08 §3.4 / F-08-13 / F-08-14）。
+	// detail 只允许 event/confirmed_at 这类非秘密事实；输入文本是固定合规
+	// 短语，仍不落库，支付密钥/凭据更不得进入审计。
+	ActionSettingsPaymentComplianceConfirmed = "settings.payment_compliance_confirmed"
+
 	// ActionNotificationTemplateUpdate 是通知模板编辑的写审计
 	// （modules-08 §3.9 / F-08-25；brief 要求所有写操作审计）。模板行虽不在
 	// system_settings，但属于管理配置，归 operation 类。
@@ -292,6 +298,8 @@ var actionCategories = map[string]string{
 	ActionSettingsUpdate:        categoryOperation,
 	ActionSettingsTestWebhook:   categoryOperation,
 	ActionSettingsWebhookResume: categoryOperation,
+	// 支付设置合规确认是管理配置的前置授权动作，归 operation。
+	ActionSettingsPaymentComplianceConfirmed: categoryOperation,
 
 	ActionNotificationTemplateUpdate: categoryOperation,
 

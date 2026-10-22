@@ -242,6 +242,54 @@ export async function testWebhook(signal?: AbortSignal): Promise<WebhookTestResu
   return (await response.json()) as WebhookTestResult
 }
 
+/** Payment settings compliance status for the current administrator. */
+export interface PaymentComplianceStatus {
+  confirmed: boolean
+  /** First confirmation time; null until confirmed. */
+  confirmed_at: string | null
+}
+
+/** Shared cache key for the payment-tab compliance read. */
+export const PAYMENT_COMPLIANCE_QUERY_KEY = ['settings', 'payment-compliance'] as const
+
+export async function fetchPaymentCompliance(
+  signal?: AbortSignal,
+): Promise<PaymentComplianceStatus> {
+  const response = await fetch(apiUrl('/api/settings/payment-compliance'), {
+    method: 'GET',
+    credentials: 'same-origin',
+    headers: { Accept: 'application/json' },
+    signal,
+  })
+  if (!response.ok) throw await normalizeError(response)
+  return (await response.json()) as PaymentComplianceStatus
+}
+
+/**
+ * Submits the exact confirmation text (modules-08 §3.4). The server re-checks
+ * it character by character; the disabled button in the gate is only a local
+ * usability aid. The endpoint is idempotent, so no Idempotency-Key is needed.
+ */
+export async function confirmPaymentCompliance(
+  confirmation: string,
+): Promise<PaymentComplianceStatus> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+  }
+  const csrfToken = getCsrfToken()
+  if (csrfToken !== undefined) headers[CSRF_HEADER] = csrfToken
+
+  const response = await fetch(apiUrl('/api/settings/payment-compliance'), {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers,
+    body: JSON.stringify({ confirmation }),
+  })
+  if (!response.ok) throw await normalizeError(response)
+  return (await response.json()) as PaymentComplianceStatus
+}
+
 /** Minted once per save intent so a retried request is replayed, not doubled. */
 export function createIdempotencyKey(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {

@@ -63,6 +63,22 @@
     "cross_webhook_url": "Une URL de point de terminaison est requise lorsque le Webhook est activé.",
     "cross_webhook_secret": "Un secret de signature est requis lorsque le Webhook est activé."
   },
+  "payment_compliance": {
+    "title": "Conformité de la configuration des paiements",
+    "description": "Confirmez votre responsabilité de conformité avant d'ouvrir les paramètres de paiement.",
+    "responsibility": "Vous êtes responsable de la configuration de la passerelle de paiement de ce déploiement : gardez les identifiants secrets, respectez les conditions du fournisseur et la réglementation locale, et traitez les remboursements et litiges via le fournisseur.",
+    "input_label": "Texte de confirmation",
+    "instruction": "Saisissez « {text} » pour continuer.",
+    "expected_text": "我已了解支付合规责任",
+    "cancel": "Annuler",
+    "confirm": "Confirmer",
+    "confirming": "Confirmation…",
+    "error_mismatch": "Le texte ne correspond pas. Saisissez la phrase exacte et réessayez.",
+    "status_loading": "Vérification de la confirmation de conformité des paiements…",
+    "status_error": "Impossible de lire l'état de conformité des paiements.",
+    "blocked_hint": "Les paramètres de paiement restent masqués jusqu'à la confirmation de conformité.",
+    "confirmed_badge": "Conformité confirmée"
+  },
   "tab": {
     "site": "Site",
     "auth": "Authentification",

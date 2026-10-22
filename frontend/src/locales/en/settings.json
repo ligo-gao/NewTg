@@ -63,6 +63,22 @@
     "cross_webhook_url": "An endpoint URL is required when the webhook is enabled.",
     "cross_webhook_secret": "A signing secret is required when the webhook is enabled."
   },
+  "payment_compliance": {
+    "title": "Payment configuration compliance",
+    "description": "Confirm your compliance responsibility before opening the payment settings.",
+    "responsibility": "You are responsible for the payment gateway configuration on this deployment: keep credentials secret, comply with the payment provider's terms and local regulations, and handle refunds and disputes through the provider.",
+    "input_label": "Confirmation text",
+    "instruction": "Type \"{text}\" to continue.",
+    "expected_text": "我已了解支付合规责任",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "confirming": "Confirming…",
+    "error_mismatch": "The text does not match. Type the exact phrase and try again.",
+    "status_loading": "Checking payment compliance confirmation…",
+    "status_error": "Could not read the payment compliance status.",
+    "blocked_hint": "Payment settings stay hidden until the compliance confirmation is complete.",
+    "confirmed_badge": "Compliance confirmed"
+  },
   "tab": {
     "site": "Site",
     "auth": "Authentication",

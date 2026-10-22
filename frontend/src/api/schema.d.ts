@@ -3008,6 +3008,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings/payment-compliance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 读取当前管理员的支付设置合规确认状态
+         * @description `confirmed=false` 时管理端必须展示合规确认遮罩并禁止渲染支付设置；
+         *     `confirmed=true` 时返回首次确认时刻 `confirmed_at`，后续进入不再提示。
+         *     该端点只读，不写审计。
+         */
+        get: operations["getPaymentCompliance"];
+        put?: never;
+        /**
+         * 确认支付设置合规责任
+         * @description 必须提交**逐字符精确**的 `confirmation` 文本
+         *     「我已了解支付合规责任」；前后空白、标点或其它语言均返回 400，
+         *     且零写入、零审计。文本校验在服务端完成，前端禁用态不是授权证据。
+         *     首次成功确认写入 `users.payment_compliance_confirmed_at=now()` 并写
+         *     一条 `settings.payment_compliance_confirmed` 审计（who/when）；
+         *     重复调用是幂等重放：返回首次时刻、不再写审计、不改写时间。
+         *     响应与审计均不包含任何支付密钥或输入原文之外的敏感信息。
+         */
+        post: operations["confirmPaymentCompliance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/settings/test/webhook": {
         parameters: {
             query?: never;
@@ -8555,6 +8587,22 @@ export interface components {
             values: {
                 [key: string]: unknown;
             };
+        };
+        PaymentComplianceStatus: {
+            /** @description 该管理员是否已确认支付设置合规责任。 */
+            confirmed: boolean;
+            /**
+             * Format: date-time
+             * @description 首次确认时刻；`confirmed=false` 时为 null。
+             */
+            confirmed_at: string | null;
+        };
+        PaymentComplianceConfirmRequest: {
+            /**
+             * @description 精确确认文本，必须逐字符等于「我已了解支付合规责任」。
+             *     前后空白、标点或其它语言均返回 400（服务端校验，零写入）。
+             */
+            confirmation: string;
         };
         /** @description POST /api/settings/test/webhook 的响应；测试样例非事件契约。 */
         WebhookTestResult: {
@@ -15759,6 +15807,89 @@ export interface operations {
             409: components["responses"]["Error409"];
             /** @description 锁定键（服务端只读，如 nav.console.require_auth）被修改 */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            500: components["responses"]["Error500"];
+        };
+    };
+    getPaymentCompliance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 当前管理员的确认状态 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaymentComplianceStatus"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            /** @description 当前会话对应的用户已不存在（并发删除/脏会话） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            500: components["responses"]["Error500"];
+        };
+    };
+    confirmPaymentCompliance: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PaymentComplianceConfirmRequest"];
+            };
+        };
+        responses: {
+            /** @description 已确认（首次或幂等重放） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaymentComplianceStatus"];
+                };
+            };
+            /** @description 文本不匹配或请求体非法；响应 Problem 带 `fields=["confirmation"]` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            /** @description 当前会话对应的用户已不存在（并发删除/脏会话） */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

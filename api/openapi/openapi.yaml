@@ -310,6 +310,10 @@ paths:
   # 通用设置面（modules-08 §3.2）：一个 section = 注册表里的一组键。
   /api/settings:
     $ref: './paths/admin.yaml#/paths/~1api~1settings'
+  # 支付设置 Tab 的合规确认（modules-08 §3.4 / F-08-13 / F-08-14）。
+  # GET 是「该管理员是否已确认」的读面，POST 是首次确认写入（精确文本）。
+  /api/settings/payment-compliance:
+    $ref: './paths/admin.yaml#/paths/~1api~1settings~1payment-compliance'
   # 通知渠道 · 测试 Webhook 事件（modules-08 F-08-20）。
   /api/settings/test/webhook:
     $ref: './paths/admin.yaml#/paths/~1api~1settings~1test~1webhook'

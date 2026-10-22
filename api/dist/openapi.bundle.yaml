@@ -6442,6 +6442,87 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '500':
           $ref: '#/components/responses/Error500'
+  /api/settings/payment-compliance:
+    get:
+      tags:
+        - admin
+      operationId: getPaymentCompliance
+      x-required-permission: settings:manage
+      summary: 读取当前管理员的支付设置合规确认状态
+      description: |
+        `confirmed=false` 时管理端必须展示合规确认遮罩并禁止渲染支付设置；
+        `confirmed=true` 时返回首次确认时刻 `confirmed_at`，后续进入不再提示。
+        该端点只读，不写审计。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 当前管理员的确认状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentComplianceStatus'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          description: 当前会话对应的用户已不存在（并发删除/脏会话）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/Error500'
+    post:
+      tags:
+        - admin
+      operationId: confirmPaymentCompliance
+      x-required-permission: settings:manage
+      summary: 确认支付设置合规责任
+      description: |
+        必须提交**逐字符精确**的 `confirmation` 文本
+        「我已了解支付合规责任」；前后空白、标点或其它语言均返回 400，
+        且零写入、零审计。文本校验在服务端完成，前端禁用态不是授权证据。
+        首次成功确认写入 `users.payment_compliance_confirmed_at=now()` 并写
+        一条 `settings.payment_compliance_confirmed` 审计（who/when）；
+        重复调用是幂等重放：返回首次时刻、不再写审计、不改写时间。
+        响应与审计均不包含任何支付密钥或输入原文之外的敏感信息。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentComplianceConfirmRequest'
+      responses:
+        '200':
+          description: 已确认（首次或幂等重放）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentComplianceStatus'
+        '400':
+          description: 文本不匹配或请求体非法；响应 Problem 带 `fields=["confirmation"]`
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          description: 当前会话对应的用户已不存在（并发删除/脏会话）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/Error500'
   /api/settings/test/webhook:
     post:
       tags:
@@ -18025,6 +18106,32 @@ components:
           type: object
           additionalProperties: true
           description: 本次实际写入的键与归一化后的值。
+    PaymentComplianceStatus:
+      type: object
+      additionalProperties: false
+      required:
+        - confirmed
+        - confirmed_at
+      properties:
+        confirmed:
+          type: boolean
+          description: 该管理员是否已确认支付设置合规责任。
+        confirmed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 首次确认时刻；`confirmed=false` 时为 null。
+    PaymentComplianceConfirmRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - confirmation
+      properties:
+        confirmation:
+          type: string
+          description: |
+            精确确认文本，必须逐字符等于「我已了解支付合规责任」。
+            前后空白、标点或其它语言均返回 400（服务端校验，零写入）。
     WebhookTestResult:
       type: object
       additionalProperties: false

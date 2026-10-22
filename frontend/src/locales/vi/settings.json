@@ -63,6 +63,22 @@
     "cross_webhook_url": "Cần URL điểm cuối khi bật Webhook.",
     "cross_webhook_secret": "Cần khóa bí mật ký khi bật Webhook."
   },
+  "payment_compliance": {
+    "title": "Xác nhận tuân thủ cấu hình thanh toán",
+    "description": "Xác nhận trách nhiệm tuân thủ của bạn trước khi mở cài đặt thanh toán.",
+    "responsibility": "Bạn chịu trách nhiệm về cấu hình cổng thanh toán của triển khai này: giữ bí mật thông tin xác thực, tuân thủ điều khoản của nhà cung cấp thanh toán và pháp luật địa phương, đồng thời xử lý hoàn tiền và tranh chấp qua nhà cung cấp.",
+    "input_label": "Văn bản xác nhận",
+    "instruction": "Nhập \"{text}\" để tiếp tục.",
+    "expected_text": "我已了解支付合规责任",
+    "cancel": "Hủy",
+    "confirm": "Xác nhận",
+    "confirming": "Đang xác nhận…",
+    "error_mismatch": "Văn bản không khớp. Hãy nhập chính xác cụm từ và thử lại.",
+    "status_loading": "Đang kiểm tra xác nhận tuân thủ thanh toán…",
+    "status_error": "Không thể đọc trạng thái tuân thủ thanh toán.",
+    "blocked_hint": "Cài đặt thanh toán vẫn bị ẩn cho đến khi hoàn tất xác nhận tuân thủ.",
+    "confirmed_badge": "Đã xác nhận tuân thủ"
+  },
   "tab": {
     "site": "Trang",
     "auth": "Xác thực",
