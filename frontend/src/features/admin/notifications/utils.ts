@@ -2,6 +2,52 @@
  * 通知页的小工具。纯函数，便于单测与抽屉/表格复用。
  */
 
+import type { DeliveryTimeRange } from './types'
+
+/** UI §6.9 冻结的自定义范围上限（服务端同样按 90 天拒绝）。 */
+const MAX_DELIVERY_RANGE_MS = 90 * 24 * 60 * 60 * 1000
+
+export interface DeliveryBounds {
+  from?: string
+  to?: string
+  /** 自定义日期非法或超过 90 天时给出错误码（页面据此阻断查询）。 */
+  error?: 'invalid' | 'too_large'
+}
+
+/**
+ * 把时间范围预设/自定义日期换算成 RFC3339 闭区间。
+ *
+ * 自定义日期按 UTC 日界处理：from=当天 00:00:00.000Z，to=当天
+ * 23:59:59.999Z。这样筛选结果不随浏览器时区漂移，也与后端「时间一律
+ * 注入 UTC」的口径一致。
+ */
+export function deliveryBounds(
+  range: DeliveryTimeRange | undefined,
+  fromDate: string | undefined,
+  toDate: string | undefined,
+  now: Date = new Date(),
+): DeliveryBounds {
+  if (range === undefined) return {}
+  if (range === 'custom') {
+    if (fromDate === undefined || toDate === undefined) return {}
+    const from = Date.parse(`${fromDate}T00:00:00.000Z`)
+    const to = Date.parse(`${toDate}T23:59:59.999Z`)
+    if (Number.isNaN(from) || Number.isNaN(to) || from > to) {
+      return { error: 'invalid' }
+    }
+    if (to - from > MAX_DELIVERY_RANGE_MS) {
+      return { error: 'too_large' }
+    }
+    return { from: new Date(from).toISOString(), to: new Date(to).toISOString() }
+  }
+  const duration =
+    range === '24h' ? 24 * 60 * 60 * 1000 : range === '7d' ? 7 * 24 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000
+  return {
+    from: new Date(now.getTime() - duration).toISOString(),
+    to: now.toISOString(),
+  }
+}
+
 /**
  * 收件人邮箱中间打码（UI §6.9 投递记录列）。
  * `alice@example.com` → `a***e@example.com`，短本地部分退化为 `a***@…`。

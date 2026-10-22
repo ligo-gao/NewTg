@@ -482,7 +482,8 @@
       "trigger_success": "Tâche mise en file (exécution #{run_id}).",
       "trigger_already_running": "La tâche est déjà en cours ou en file.",
       "trigger_forbidden": "Vous n'avez pas la permission de déclencher cette tâche."
-    }},
+    }
+  },
   "notification_templates": {
     "entry": {
       "title": "Modèles de notification",
@@ -520,7 +521,8 @@
     },
     "toolbar": {
       "rows": "{count} lignes",
-      "modified_rows": "{count} modifiées"
+      "modified_rows": "{count} modifiées",
+      "restore_all": "Restaurer tous les modèles par défaut"
     },
     "table": {
       "key": "Clé du modèle",
@@ -540,7 +542,8 @@
       "disabled": "Désactivé",
       "locked": "Verrouillé",
       "empty": "Aucun modèle ne correspond à ces filtres.",
-      "not_seeded": "Les modèles n’ont pas été initialisés."
+      "not_seeded": "Les modèles n’ont pas été initialisés.",
+      "restore": "Restaurer le modèle"
     },
     "pagination": {
       "label": "Pagination",
@@ -662,7 +665,40 @@
       "status_sent": "Envoyé",
       "status_failed": "Échec",
       "status_bounced": "Rejeté",
-      "status_suppressed": "Supprimé"
+      "status_suppressed": "Supprimé",
+      "attempt": "Tentative",
+      "details": "Détails",
+      "detail_title": "Détails de la livraison",
+      "detail_attempt": "Tentative",
+      "detail_next_retry": "Nouvelle tentative",
+      "detail_dedupe_key": "Clé de déduplication",
+      "detail_provider_message_id": "ID de message du fournisseur",
+      "detail_close": "Fermer",
+      "detail_refresh_error": "Impossible d'actualiser cet enregistrement. Affichage des valeurs de la liste.",
+      "time_range": "Période",
+      "range_all": "Toute la période",
+      "range_24h": "Dernières 24 heures",
+      "range_7d": "7 derniers jours",
+      "range_30d": "30 derniers jours",
+      "range_custom": "Période personnalisée",
+      "from": "Du",
+      "to": "Au",
+      "time_range_too_large": "La période est trop longue. Réduisez-la à moins de 90 jours.",
+      "time_range_invalid": "La date de début doit être antérieure ou égale à la date de fin."
+    },
+    "restore": {
+      "single_title": "Restaurer ce modèle aux valeurs par défaut ?",
+      "single_body": "Les modifications manuelles de cette langue seront perdues et le texte par défaut rétabli. L'état d'activation reste inchangé.",
+      "single_confirm": "Restaurer le modèle",
+      "single_success": "Modèle restauré aux valeurs par défaut.",
+      "all_title": "Restaurer les modèles par défaut ?",
+      "all_body": "{count} lignes de modèles seront restaurées aux valeurs par défaut. Les modifications manuelles seront perdues.",
+      "all_input_label": "Saisissez le nombre de lignes concernées pour confirmer",
+      "all_input_mismatch": "Saisissez {count} pour confirmer.",
+      "all_confirm": "Tout restaurer",
+      "all_success": "{count} lignes de modèles restaurées.",
+      "cancel": "Annuler",
+      "working": "Restauration…"
     }
   },
   "webhook": {

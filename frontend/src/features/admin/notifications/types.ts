@@ -6,7 +6,8 @@
  * - 模板行是 key × channel × locale 的**行**，不是 key 的聚合；
  * - `customized` 是 DB 的 `is_modified`，`updated_at` 可为 null（未落库的
  *   内置默认行）；
- * - 投递记录没有 attempt / next_retry_at / dedupe_key（见 G-NOTIFY-02）。
+ * - 投递记录携带 attempt / next_retry_at / dedupe_key / provider_message_id
+ *   （G-M6C-06 收口，用于详情抽屉排障）。
  */
 
 /** 模板载体。投递表的 `webhook` 不走模板，见 §3.9.2 末的两处枚举差异。 */
@@ -109,6 +110,9 @@ export type DeliveryStatus =
   | 'bounced'
   | 'suppressed'
 
+/** 投递记录的时间范围筛选（UI §6.9：24h / 7d / 30d / 自定义 ≤90 天）。 */
+export type DeliveryTimeRange = '24h' | '7d' | '30d' | 'custom'
+
 export const DELIVERY_STATUSES = [
   'pending',
   'sent',
@@ -132,6 +136,14 @@ export interface NotificationDelivery {
   recipient: string
   locale?: string
   status: DeliveryStatus | 'queued'
+  /** 已尝试次数；queued/sent/failed 都可能大于 0。 */
+  attempt: number
+  /** 下次重试时刻；终态或首投为 null。 */
+  next_retry_at: string | null
+  /** 幂等锚；同一通知只投递一次（§3.9.6b）。 */
+  dedupe_key: string
+  /** 上游 Message-ID（email）；webhook 通常为空。 */
+  provider_message_id?: string
   error?: string
   created_at: string
 }
@@ -160,4 +172,29 @@ export interface DeliveryListParams {
   category?: string
   channel?: NotificationDeliveryChannel
   status?: DeliveryStatus
+  /** RFC3339 时刻；闭区间。 */
+  from?: string
+  to?: string
+}
+
+/** 单行恢复默认（POST /api/notification-templates/{key}:restore-default）。 */
+export interface RestoreTemplateInput {
+  locale: NotificationLocale
+  channel: NotificationTemplateChannel
+}
+
+/**
+ * 批量恢复默认（POST /api/notification-templates:restore-default）。
+ * 范围与模板列表筛选同口径；categories 为空表示全部 16 类。
+ */
+export interface RestoreAllInput {
+  categories?: string[]
+  channel?: NotificationTemplateChannel
+  locale?: NotificationLocale
+  modifiedOnly?: boolean
+}
+
+export interface RestoreAllResponse {
+  items: NotificationTemplate[]
+  restored: number
 }

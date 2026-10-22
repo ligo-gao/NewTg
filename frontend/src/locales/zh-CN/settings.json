@@ -482,7 +482,8 @@
       "trigger_success": "任务已入队（运行 #{run_id}）。",
       "trigger_already_running": "任务正在运行或已入队。",
       "trigger_forbidden": "你没有触发该任务的权限。"
-    }},
+    }
+  },
   "notification_templates": {
     "entry": {
       "title": "通知模板",
@@ -520,7 +521,8 @@
     },
     "toolbar": {
       "rows": "共 {count} 行",
-      "modified_rows": "已修改 {count} 行"
+      "modified_rows": "已修改 {count} 行",
+      "restore_all": "恢复全部默认"
     },
     "table": {
       "key": "模板 key",
@@ -540,7 +542,8 @@
       "disabled": "已停用",
       "locked": "锁定",
       "empty": "没有匹配的模板。",
-      "not_seeded": "模板尚未播种。"
+      "not_seeded": "模板尚未播种。",
+      "restore": "恢复默认"
     },
     "pagination": {
       "label": "分页",
@@ -662,7 +665,40 @@
       "status_sent": "已发送",
       "status_failed": "失败",
       "status_bounced": "退信",
-      "status_suppressed": "已抑制"
+      "status_suppressed": "已抑制",
+      "attempt": "尝试次数",
+      "details": "详情",
+      "detail_title": "投递详情",
+      "detail_attempt": "尝试次数",
+      "detail_next_retry": "下次重试",
+      "detail_dedupe_key": "去重键",
+      "detail_provider_message_id": "上游消息 ID",
+      "detail_close": "关闭",
+      "detail_refresh_error": "无法刷新该记录，当前显示列表中的值。",
+      "time_range": "时间范围",
+      "range_all": "全部时间",
+      "range_24h": "最近 24 小时",
+      "range_7d": "最近 7 天",
+      "range_30d": "最近 30 天",
+      "range_custom": "自定义范围",
+      "from": "开始",
+      "to": "结束",
+      "time_range_too_large": "时间范围过大，请缩小至 90 天以内。",
+      "time_range_invalid": "开始日期不能晚于结束日期。"
+    },
+    "restore": {
+      "single_title": "将此模板恢复为内置默认？",
+      "single_body": "将丢弃本语言的手工修改并恢复为内置默认文案，启用状态保持不变。",
+      "single_confirm": "恢复默认",
+      "single_success": "已恢复为内置默认文案。",
+      "all_title": "恢复模板默认？",
+      "all_body": "将恢复 {count} 行模板为内置默认文案，手工修改将丢失。",
+      "all_input_label": "输入受影响行数以确认",
+      "all_input_mismatch": "请输入 {count} 以确认。",
+      "all_confirm": "恢复全部",
+      "all_success": "已恢复 {count} 行模板。",
+      "cancel": "取消",
+      "working": "正在恢复…"
     }
   },
   "webhook": {

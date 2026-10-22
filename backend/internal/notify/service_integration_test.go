@@ -17,6 +17,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -395,6 +396,230 @@ func TestTestSendRecordsFailedStatus(t *testing.T) {
 	}
 	if status != "failed" {
 		t.Fatalf("DB 状态 = %q，want failed", status)
+	}
+}
+
+func TestRestoreDefaultRestoresBundleAndPreservesEnabled(t *testing.T) {
+	db := openNotifyTestDB(t)
+	service := resetNotifyTables(t, db)
+	ctx := context.Background()
+
+	view, err := service.Get(ctx, "billing.balance_low", ChannelEmail, LocaleEN)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	disabled := false
+	custom, err := service.Update(ctx, UpdateInput{
+		Key: "billing.balance_low", Channel: ChannelEmail, Locale: LocaleEN,
+		Subject: "Custom", Body: "Custom {{.balance}}", Enabled: &disabled,
+		ExpectUpdatedAt: view.UpdatedAt, Actor: 7,
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if !custom.Customized || custom.Enabled {
+		t.Fatalf("前置状态 = %+v，want customized=true enabled=false", custom)
+	}
+
+	restored, err := service.RestoreDefault(ctx, "billing.balance_low", ChannelEmail, LocaleEN, 9)
+	if err != nil {
+		t.Fatalf("RestoreDefault: %v", err)
+	}
+	spec, _ := LookupTemplate("billing.balance_low", ChannelEmail)
+	want, _ := spec.DefaultContent(LocaleEN)
+	if restored.Subject != want.Subject || restored.Body != want.Body {
+		t.Fatalf("恢复内容 = %+v，want bundle %+v", restored, want)
+	}
+	if restored.Customized {
+		t.Fatal("恢复后 customized 必须为 false")
+	}
+	if restored.Enabled {
+		t.Fatal("恢复默认只重置内容，不得重新启用管理员停用的模板")
+	}
+
+	// 幂等：再恢复一次结果不变（不产生新行、不改变内容）。
+	again, err := service.RestoreDefault(ctx, "billing.balance_low", ChannelEmail, LocaleEN, 9)
+	if err != nil {
+		t.Fatalf("second RestoreDefault: %v", err)
+	}
+	if again.Subject != restored.Subject || again.Body != restored.Body || again.Customized {
+		t.Fatalf("重复恢复结果漂移：%+v vs %+v", again, restored)
+	}
+	var rows int
+	if err := db.QueryRow(`SELECT count(*) FROM notification_templates
+		WHERE "key" = 'billing.balance_low' AND channel = 'email' AND locale = 'en'`).Scan(&rows); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("恢复默认不得产生重复行，得到 %d", rows)
+	}
+}
+
+func TestRestoreDefaultFallsBackToEnAndInsertsMissingRow(t *testing.T) {
+	db := openNotifyTestDB(t)
+	service := resetNotifyTables(t, db)
+	ctx := context.Background()
+
+	// 内置 bundle 只有 zh-CN / en；fr 的默认值就是 en 文案（§3.9.6a）。
+	if _, err := db.Exec(`DELETE FROM notification_templates
+		WHERE "key" = 'billing.balance_low' AND channel = 'email' AND locale = 'fr'`); err != nil {
+		t.Fatalf("delete fr: %v", err)
+	}
+	restored, err := service.RestoreDefault(ctx, "billing.balance_low", ChannelEmail, LocaleFR, 1)
+	if err != nil {
+		t.Fatalf("RestoreDefault fr: %v", err)
+	}
+	spec, _ := LookupTemplate("billing.balance_low", ChannelEmail)
+	want, _ := spec.DefaultContent(LocaleEN)
+	if restored.Locale != LocaleFR || restored.Subject != want.Subject || restored.Body != want.Body {
+		t.Fatalf("fr 恢复 = %+v，want locale=fr + en 文案", restored)
+	}
+	if restored.Customized {
+		t.Fatal("插入的恢复行 customized 应为 false")
+	}
+}
+
+func TestRestoreDefaultsBulkFilterAndModifiedOnly(t *testing.T) {
+	db := openNotifyTestDB(t)
+	service := resetNotifyTables(t, db)
+	ctx := context.Background()
+
+	// 修改两行：一行 email/en，一行 inapp/en；另留一行未修改作对照。
+	view, err := service.Get(ctx, "billing.balance_low", ChannelEmail, LocaleEN)
+	if err != nil {
+		t.Fatalf("Get email: %v", err)
+	}
+	if _, err := service.Update(ctx, UpdateInput{
+		Key: "billing.balance_low", Channel: ChannelEmail, Locale: LocaleEN,
+		Subject: "Custom email", Body: "Custom {{.balance}}",
+		ExpectUpdatedAt: view.UpdatedAt,
+	}); err != nil {
+		t.Fatalf("Update email: %v", err)
+	}
+	inapp, err := service.Get(ctx, "billing.balance_low", ChannelInApp, LocaleEN)
+	if err != nil {
+		t.Fatalf("Get inapp: %v", err)
+	}
+	if _, err := service.Update(ctx, UpdateInput{
+		Key: "billing.balance_low", Channel: ChannelInApp, Locale: LocaleEN,
+		Body:            "Custom inapp {{.balance}}",
+		ExpectUpdatedAt: inapp.UpdatedAt,
+	}); err != nil {
+		t.Fatalf("Update inapp: %v", err)
+	}
+
+	// 只恢复已修改的行：仅 email/en 被改过，因此只应回写 1 行。
+	items, err := service.RestoreDefaults(ctx, RestoreFilter{
+		Categories: []string{"billing.balance_low"}, Channel: ChannelEmail, ModifiedOnly: true,
+	}, 5)
+	if err != nil {
+		t.Fatalf("RestoreDefaults: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("仅已修改恢复行数 = %d，want 1（只改了 email/en）", len(items))
+	}
+	for _, item := range items {
+		if item.Customized {
+			t.Fatalf("恢复后仍有 customized 行：%+v", item)
+		}
+	}
+	still, err := service.Get(ctx, "billing.balance_low", ChannelInApp, LocaleEN)
+	if err != nil {
+		t.Fatalf("Get inapp after: %v", err)
+	}
+	if !still.Customized {
+		t.Fatal("未命中筛选的 inapp 行不应被恢复")
+	}
+
+	// 不带「仅已修改」时，分类×渠道的全集（7 语）都回写默认。
+	channelWide, err := service.RestoreDefaults(ctx, RestoreFilter{
+		Categories: []string{"billing.balance_low"}, Channel: ChannelEmail,
+	}, 5)
+	if err != nil {
+		t.Fatalf("RestoreDefaults channel: %v", err)
+	}
+	if len(channelWide) != 7 {
+		t.Fatalf("email 渠道恢复行数 = %d，want 7（7 语）", len(channelWide))
+	}
+
+	// 全量恢复（无筛选）：133 行全部 is_modified=false。
+	all, err := service.RestoreDefaults(ctx, RestoreFilter{}, 5)
+	if err != nil {
+		t.Fatalf("RestoreDefaults all: %v", err)
+	}
+	if len(all) != 133 {
+		t.Fatalf("全量恢复行数 = %d，want 133", len(all))
+	}
+	var modified int
+	if err := db.QueryRow(`SELECT count(*) FROM notification_templates WHERE is_modified = true`).Scan(&modified); err != nil {
+		t.Fatalf("count modified: %v", err)
+	}
+	if modified != 0 {
+		t.Fatalf("全量恢复后仍有 %d 行 is_modified=true", modified)
+	}
+}
+
+func TestDeliveryFilterTimeRangeAndDetailFields(t *testing.T) {
+	db := openNotifyTestDB(t)
+	service := resetNotifyTables(t, db)
+	ctx := context.Background()
+
+	base := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	insert := func(dedupe string, createdAt time.Time, attempt int, next *time.Time) Delivery {
+		t.Helper()
+		row, ok, err := service.store.InsertDelivery(ctx, Delivery{
+			Category: "billing.balance_low", Channel: ChannelEmail,
+			Recipient: "user@example.com", DedupeKey: dedupe, Status: "queued",
+			Attempt: attempt, NextRetryAt: next, ProviderMessageID: stringPtr("<" + dedupe + "@example.com>"),
+		})
+		if err != nil || !ok {
+			t.Fatalf("insert %s: ok=%v err=%v", dedupe, ok, err)
+		}
+		if _, err := db.Exec(`UPDATE notification_deliveries
+			SET created_at = $2, next_retry_at = $3 WHERE id = $1`, row.ID, createdAt, next); err != nil {
+			t.Fatalf("set delivery times: %v", err)
+		}
+		return row
+	}
+	old := insert("range:old", base.Add(-48*time.Hour), 1, nil)
+	fresh := insert("range:fresh", base, 2, &base)
+	_ = old
+
+	from := base.Add(-time.Hour)
+	to := base.Add(time.Hour)
+	items, total, err := service.ListDeliveries(ctx, DeliveryFilter{From: &from, To: &to})
+	if err != nil {
+		t.Fatalf("ListDeliveries range: %v", err)
+	}
+	if total != 1 || len(items) != 1 || items[0].DedupeKey != "range:fresh" {
+		t.Fatalf("时间范围筛选 = total %d items %+v", total, items)
+	}
+	got := items[0]
+	if got.Attempt != 2 || got.NextRetryAt == nil || !got.NextRetryAt.Equal(base) ||
+		got.ProviderMessageID != "<range:fresh@example.com>" {
+		t.Fatalf("列表 DTO 未带排障字段：%+v", got)
+	}
+
+	detail, err := service.GetDelivery(ctx, fresh.ID)
+	if err != nil {
+		t.Fatalf("GetDelivery: %v", err)
+	}
+	if detail.DedupeKey != "range:fresh" || detail.Attempt != 2 || detail.ProviderMessageID == "" {
+		t.Fatalf("详情 DTO = %+v", detail)
+	}
+	if _, err := service.GetDelivery(ctx, 999999); !errors.Is(err, ErrDeliveryNotFound) {
+		t.Fatalf("不存在的投递应返回 ErrDeliveryNotFound，得到 %v", err)
+	}
+
+	// 倒置与 >90 天都由 Service 拒绝。
+	before := base.Add(time.Hour)
+	after := base.Add(-time.Hour)
+	if _, _, err := service.ListDeliveries(ctx, DeliveryFilter{From: &before, To: &after}); !errors.Is(err, ErrInvalidTimeRange) {
+		t.Fatalf("倒置范围应返回 ErrInvalidTimeRange，得到 %v", err)
+	}
+	longFrom := base.Add(-91 * 24 * time.Hour)
+	if _, _, err := service.ListDeliveries(ctx, DeliveryFilter{From: &longFrom, To: &to}); !errors.Is(err, ErrInvalidTimeRange) {
+		t.Fatalf("超 90 天应返回 ErrInvalidTimeRange，得到 %v", err)
 	}
 }
 

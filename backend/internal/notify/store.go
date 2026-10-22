@@ -115,8 +115,21 @@ type DeliveryFilter struct {
 	Category string
 	Channel  Channel
 	Status   string
+	// From/To 限定 created_at 的闭区间（UTC）。nil 表示该侧不设边界；
+	// 跨度上限由 Service 校验（UI §6.9：自定义范围 ≤90 天）。
+	From     *time.Time
+	To       *time.Time
 	Page     int
 	PageSize int
+}
+
+// RestoreTarget 是一次「恢复默认」要写回的行。Content 由 Service 从注册表
+// bundle 取出；Store 只负责落库，避免存储层成为文案的第二真源。
+type RestoreTarget struct {
+	Key     string
+	Channel Channel
+	Locale  Locale
+	Content Content
 }
 
 // Store 持有主库连接，可并发使用。
@@ -315,6 +328,70 @@ func (s *Store) Update(ctx context.Context, in UpdateInput) (TemplateRow, error)
 	return updated, nil
 }
 
+// RestoreDefaults 把一批模板行回写为内置默认文案，is_modified=false。
+//
+// 与 Update 的关键差异：恢复默认**不接受乐观锁前置条件**。语义是「丢弃当前
+// 内容、回到 bundle」，重复调用结果相同（幂等）；要求调用方先读 updated_at
+// 只会让并发编辑者互相卡住，而确认对话框已经是管理员的同意边界。enabled
+// 不在此重置：管理员停用某类通知的意图与文案修改是两件事（§3.9.2 的
+// 「恢复默认」只描述内容回写）。
+//
+// 行不存在时插入（播种异常/被删除的行也应当能被恢复），插入默认 enabled=true。
+// 整批在一个事务内完成：批量恢复要么全部可见，要么一条都不改。
+func (s *Store) RestoreDefaults(ctx context.Context, targets []RestoreTarget, actor int64) ([]TemplateRow, error) {
+	if len(targets) == 0 {
+		return []TemplateRow{}, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("notify: begin restore defaults: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, target := range targets {
+		var subject any
+		if target.Channel == ChannelEmail {
+			subject = target.Content.Subject
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO notification_templates
+			("key", channel, locale, category, subject, body_markdown, cta_text, cta_url,
+			 is_modified, enabled, updated_by, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, true, $9, now())
+			ON CONFLICT ("key", channel, locale) DO UPDATE SET
+				subject = EXCLUDED.subject,
+				body_markdown = EXCLUDED.body_markdown,
+				cta_text = EXCLUDED.cta_text,
+				cta_url = EXCLUDED.cta_url,
+				is_modified = false,
+				updated_by = EXCLUDED.updated_by,
+				updated_at = now()`,
+			target.Key, string(target.Channel), string(target.Locale),
+			categoryForKey(target.Key), subject, target.Content.Body,
+			nullableString(target.Content.CTAText), nullableString(target.Content.CTAURL),
+			nullableInt64(actor)); err != nil {
+			return nil, fmt.Errorf("notify: restore %s/%s/%s: %w",
+				target.Key, target.Channel, target.Locale, err)
+		}
+	}
+
+	out := make([]TemplateRow, 0, len(targets))
+	for _, target := range targets {
+		row := tx.QueryRowContext(ctx, `SELECT "key", category, channel, locale, subject, body_markdown,
+			cta_text, cta_url, is_modified, enabled, updated_by, created_at, updated_at
+			FROM notification_templates WHERE "key" = $1 AND channel = $2 AND locale = $3`,
+			target.Key, string(target.Channel), string(target.Locale))
+		restored, err := scanTemplateRow(row)
+		if err != nil {
+			return nil, fmt.Errorf("notify: read restored template: %w", err)
+		}
+		out = append(out, restored)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("notify: commit restore defaults: %w", err)
+	}
+	return out, nil
+}
+
 // InsertDelivery 写入一条投递记录。dedupe_key 冲突时**不重复投递**（§3.9.6b：
 // 至少一次 + 幂等键 = 有效一次）。返回 inserted=false 表示命中去重。
 func (s *Store) InsertDelivery(ctx context.Context, d Delivery) (Delivery, bool, error) {
@@ -375,6 +452,16 @@ func (s *Store) ListDeliveries(ctx context.Context, filter DeliveryFilter) ([]De
 		args = append(args, filter.Status)
 		where = append(where, fmt.Sprintf("status = $%d", len(args)))
 	}
+	// 时间范围按 created_at 做闭区间过滤；UI 的 24h/7d/30d 与自定义范围都
+	// 归一成这两个边界，存储层只认时刻，不认预设名。
+	if filter.From != nil {
+		args = append(args, filter.From.UTC())
+		where = append(where, fmt.Sprintf("created_at >= $%d", len(args)))
+	}
+	if filter.To != nil {
+		args = append(args, filter.To.UTC())
+		where = append(where, fmt.Sprintf("created_at <= $%d", len(args)))
+	}
 	clause := ""
 	if len(where) > 0 {
 		clause = " WHERE " + strings.Join(where, " AND ")
@@ -418,6 +505,14 @@ func (s *Store) ListDeliveries(ctx context.Context, filter DeliveryFilter) ([]De
 		return nil, 0, fmt.Errorf("notify: list deliveries: %w", err)
 	}
 	return out, total, nil
+}
+
+// GetDelivery 按 id 读取一条投递记录（管理面详情抽屉）。不存在返回
+// sql.ErrNoRows，由 Service 归一成 ErrDeliveryNotFound。
+func (s *Store) GetDelivery(ctx context.Context, id int64) (Delivery, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+webhookDeliveryColumns+`
+		FROM notification_deliveries WHERE id = $1`, id)
+	return scanDelivery(row)
 }
 
 // InAppAudience 是站内通知的一个收件人：用户 id + 该用户的语言。

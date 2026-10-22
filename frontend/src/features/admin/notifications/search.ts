@@ -12,6 +12,7 @@ import {
   isDeliveryStatus,
   isNotificationLocale,
   type DeliveryStatus,
+  type DeliveryTimeRange,
   type NotificationDeliveryChannel,
   type NotificationLocale,
   type NotificationTemplateChannel,
@@ -31,7 +32,19 @@ export interface NotificationTemplatesSearch {
   d_category?: string
   d_channel?: NotificationDeliveryChannel
   d_status?: DeliveryStatus
+  d_range?: DeliveryTimeRange
+  /** 自定义范围的起止日期（YYYY-MM-DD，UTC 日界）。 */
+  d_from?: string
+  d_to?: string
   d_page?: number
+}
+
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
+
+function deliveryTimeRange(value: unknown): DeliveryTimeRange | undefined {
+  return value === '24h' || value === '7d' || value === '30d' || value === 'custom'
+    ? value
+    : undefined
 }
 
 function positiveInt(value: unknown): number | undefined {
@@ -81,6 +94,14 @@ export function parseNotificationTemplatesSearch(
   const delivery = deliveryChannel(raw.d_channel)
   if (delivery !== undefined) search.d_channel = delivery
   if (isDeliveryStatus(raw.d_status)) search.d_status = raw.d_status
+  const range = deliveryTimeRange(raw.d_range)
+  if (range !== undefined) search.d_range = range
+  if (typeof raw.d_from === 'string' && DATE_ONLY.test(raw.d_from)) {
+    search.d_from = raw.d_from
+  }
+  if (typeof raw.d_to === 'string' && DATE_ONLY.test(raw.d_to)) {
+    search.d_to = raw.d_to
+  }
   const deliveryPage = positiveInt(raw.d_page)
   if (deliveryPage !== undefined) search.d_page = deliveryPage
 

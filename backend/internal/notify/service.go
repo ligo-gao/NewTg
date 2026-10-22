@@ -38,6 +38,11 @@ var (
 	ErrTemplateDisabled = errors.New("notify: template is disabled")
 	// ErrLockedTemplate：P4 锁定类别不接受 enabled=false。
 	ErrLockedTemplate = errors.New("notify: this template cannot be disabled")
+	// ErrInvalidTimeRange：投递记录时间范围非法（to < from 或跨度 >90 天）。
+	// 属于查询参数错误，HTTP 层映射 400，不是服务故障。
+	ErrInvalidTimeRange = errors.New("notify: delivery time range must be ordered and no longer than 90 days")
+	// deliveryTimeRangeMax 是 UI §6.9 冻结的自定义范围上限。
+	deliveryTimeRangeMax = 90 * 24 * time.Hour
 )
 
 // ServiceConfig 是 Service 的装配输入。
@@ -234,8 +239,123 @@ func (s *Service) isModified(spec Template, in UpdateInput) bool {
 		in.CTAURL != defaults.CTAURL
 }
 
-// Preview 用样例值渲染保存中的模板（§3.9.6a）。不落投递记录。
+// RestoreFilter 是批量「恢复默认」的范围。空字段表示不限制；Categories
+// 为空表示全部 16 类。ModifiedOnly 只恢复当前 is_modified=true 的行，
+// 与列表的「仅已修改」筛选同口径。
+type RestoreFilter struct {
+	Categories   []string
+	Channel      Channel
+	Locale       Locale
+	ModifiedOnly bool
+}
+
+// RestoreDefault 把单个 (key,channel,locale) 回写为内置默认文案（§3.9.2）。
+// 返回恢复后的权威视图。行缺失时由 Store 插入，保证「恢复默认」在播种
+// 异常时仍是可用的修复动作。
+func (s *Service) RestoreDefault(ctx context.Context, key string, channel Channel, locale Locale, actor int64) (TemplateView, error) {
+	spec, ok := LookupTemplate(key, channel)
+	if !ok {
+		return TemplateView{}, ErrUnknownTemplate
+	}
+	content, ok := spec.DefaultContent(locale)
+	if !ok {
+		// 注册表初始化保证 en 存在；走到这里说明 bundle 被改坏。
+		return TemplateView{}, ErrTemplateMissing
+	}
+	rows, err := s.store.RestoreDefaults(ctx, []RestoreTarget{{
+		Key: spec.Key, Channel: spec.Channel, Locale: locale, Content: content,
+	}}, actor)
+	if err != nil {
+		return TemplateView{}, err
+	}
+	if len(rows) != 1 {
+		return TemplateView{}, errors.New("notify: restore default returned no row")
+	}
+	return viewFromRow(rows[0]), nil
+}
+
+// RestoreDefaults 按筛选批量恢复。范围先在注册表上展开，再交给 Store 在
+// 单事务内落库；返回值只含被恢复的行（顺序同注册表：key → channel → locale）。
+func (s *Service) RestoreDefaults(ctx context.Context, filter RestoreFilter, actor int64) ([]TemplateView, error) {
+	selected := make(map[string]struct{}, len(filter.Categories))
+	for _, category := range filter.Categories {
+		if !IsRegisteredCategory(category) {
+			return nil, ErrUnknownCategory
+		}
+		selected[category] = struct{}{}
+	}
+
+	// 「仅已修改」只能在真实行上判断；先读当前命中集，避免恢复本来就等于
+	// 内置默认的行（那只会制造无意义的 updated_at 变化）。
+	var modified map[string]struct{}
+	if filter.ModifiedOnly {
+		rows, err := s.store.List(ctx, TemplateFilter{
+			Category:     firstCategory(filter.Categories),
+			Channel:      filter.Channel,
+			Locale:       filter.Locale,
+			ModifiedOnly: true,
+		})
+		if err != nil {
+			return nil, err
+		}
+		modified = make(map[string]struct{}, len(rows))
+		for _, row := range rows {
+			modified[templateRowKey(row.Key, row.Channel, row.Locale)] = struct{}{}
+		}
+	}
+
+	locales := localeOrder
+	if filter.Locale != "" {
+		locales = []Locale{filter.Locale}
+	}
+	targets := make([]RestoreTarget, 0, len(templateSpecs)*len(locales))
+	for _, spec := range templateSpecs {
+		if len(selected) > 0 {
+			if _, ok := selected[spec.Category]; !ok {
+				continue
+			}
+		}
+		if filter.Channel != "" && spec.Channel != filter.Channel {
+			continue
+		}
+		for _, locale := range locales {
+			if modified != nil {
+				if _, ok := modified[templateRowKey(spec.Key, spec.Channel, locale)]; !ok {
+					continue
+				}
+			}
+			content, ok := spec.DefaultContent(locale)
+			if !ok {
+				return nil, ErrTemplateMissing
+			}
+			targets = append(targets, RestoreTarget{
+				Key: spec.Key, Channel: spec.Channel, Locale: locale, Content: content,
+			})
+		}
+	}
+	rows, err := s.store.RestoreDefaults(ctx, targets, actor)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TemplateView, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, viewFromRow(row))
+	}
+	return out, nil
+}
+
+// firstCategory 是 ModifiedOnly 读取当前命中集时的兼容入口：Store.List 只
+// 接受单个 category。多分类时先取全部再在内存里按键过滤（见 RestoreDefaults）。
+// 注意这里返回空串表示不限，不能只取第一个分类——那会漏掉其它分类的已修改行。
+func firstCategory(categories []string) string {
+	if len(categories) == 1 {
+		return categories[0]
+	}
+	return ""
+}
+
 // variables 覆盖同名样例；未提供的必填变量沿用样例值。
+// Preview 用样例值渲染保存中的模板（§3.9.6a）。不落投递记录。
 func (s *Service) Preview(ctx context.Context, key string, channel Channel, locale Locale, variables map[string]any) (Rendered, error) {
 	spec, ok := LookupTemplate(key, channel)
 	if !ok {
@@ -375,6 +495,13 @@ func (s *Service) ListDeliveries(ctx context.Context, filter DeliveryFilter) ([]
 	if filter.Category != "" && !IsRegisteredCategory(filter.Category) {
 		return nil, 0, ErrUnknownCategory
 	}
+	// 时间范围是列表与详情共享的契约：倒置或超过 90 天的范围一律 400，
+	// 不静默截断（静默截断会让管理员以为看到了完整区间）。
+	if filter.From != nil && filter.To != nil {
+		if filter.To.Before(*filter.From) || filter.To.Sub(*filter.From) > deliveryTimeRangeMax {
+			return nil, 0, ErrInvalidTimeRange
+		}
+	}
 	rows, total, err := s.store.ListDeliveries(ctx, filter)
 	if err != nil {
 		return nil, 0, err
@@ -384,6 +511,22 @@ func (s *Service) ListDeliveries(ctx context.Context, filter DeliveryFilter) ([]
 		out = append(out, viewFromDelivery(row))
 	}
 	return out, total, nil
+}
+
+// GetDelivery 返回一条投递记录的详情视图。不存在统一归一为
+// ErrDeliveryNotFound（HTTP 404）。
+func (s *Service) GetDelivery(ctx context.Context, id int64) (DeliveryView, error) {
+	if id <= 0 {
+		return DeliveryView{}, ErrDeliveryNotFound
+	}
+	row, err := s.store.GetDelivery(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return DeliveryView{}, ErrDeliveryNotFound
+	}
+	if err != nil {
+		return DeliveryView{}, err
+	}
+	return viewFromDelivery(row), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -645,16 +788,25 @@ func (s *Service) MarkUserNotificationRead(ctx context.Context, userID, id int64
 // DeliveryView 是冻结合同 GET /api/notification-deliveries 的 item。
 // 契约只列 failed|sent|pending；DB 另有 bounced/suppressed，按真实值返回
 // （它们是可观测的终态，压成 failed 会丢失退信信息）。
+//
+// attempt / next_retry_at / dedupe_key / provider_message_id 是 §6.9 投递
+// 详情抽屉的排障字段（G-M6C-06）。dedupe_key 与 provider_message_id 不是
+// 秘密：前者是幂等锚（不含正文），后者是上游 Message-ID；last_error 已由
+// 写入侧脱敏并截断到 512 字符。
 type DeliveryView struct {
-	ID          int64     `json:"id"`
-	TemplateKey string    `json:"template_key,omitempty"`
-	Category    string    `json:"category"`
-	Channel     Channel   `json:"channel"`
-	Recipient   string    `json:"recipient"`
-	Locale      string    `json:"locale,omitempty"`
-	Status      string    `json:"status"`
-	Error       string    `json:"error,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID                int64      `json:"id"`
+	TemplateKey       string     `json:"template_key,omitempty"`
+	Category          string     `json:"category"`
+	Channel           Channel    `json:"channel"`
+	Recipient         string     `json:"recipient"`
+	Locale            string     `json:"locale,omitempty"`
+	Status            string     `json:"status"`
+	Attempt           int        `json:"attempt"`
+	NextRetryAt       *time.Time `json:"next_retry_at"`
+	Error             string     `json:"error,omitempty"`
+	DedupeKey         string     `json:"dedupe_key"`
+	ProviderMessageID string     `json:"provider_message_id,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
 }
 
 // APIDeliveryStatus 把 DB 状态映射为 API 口径：queued → pending（契约词汇）。
@@ -736,12 +888,15 @@ func viewFromRow(row TemplateRow) TemplateView {
 
 func viewFromDelivery(row Delivery) DeliveryView {
 	view := DeliveryView{
-		ID:        row.ID,
-		Category:  row.Category,
-		Channel:   row.Channel,
-		Recipient: row.Recipient,
-		Status:    APIDeliveryStatus(row.Status),
-		CreatedAt: row.CreatedAt,
+		ID:          row.ID,
+		Category:    row.Category,
+		Channel:     row.Channel,
+		Recipient:   row.Recipient,
+		Status:      APIDeliveryStatus(row.Status),
+		Attempt:     row.Attempt,
+		NextRetryAt: row.NextRetryAt,
+		DedupeKey:   row.DedupeKey,
+		CreatedAt:   row.CreatedAt,
 	}
 	if row.TemplateKey != nil {
 		view.TemplateKey = *row.TemplateKey
@@ -751,6 +906,9 @@ func viewFromDelivery(row Delivery) DeliveryView {
 	}
 	if row.LastError != nil {
 		view.Error = *row.LastError
+	}
+	if row.ProviderMessageID != nil {
+		view.ProviderMessageID = *row.ProviderMessageID
 	}
 	return view
 }

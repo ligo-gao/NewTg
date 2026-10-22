@@ -51,6 +51,22 @@ type fakeNotificationService struct {
 	deliveriesTotal    int
 	deliveriesErr      error
 	lastDeliveryFilter notify.DeliveryFilter
+
+	restoreView       notify.TemplateView
+	restoreErr        error
+	lastRestoreKey    string
+	lastRestoreChan   notify.Channel
+	lastRestoreLocale notify.Locale
+	lastRestoreActor  int64
+
+	restoreItems      []notify.TemplateView
+	restoreAllErr     error
+	lastRestoreFilter notify.RestoreFilter
+	lastRestoreAllBy  int64
+
+	deliveryView   notify.DeliveryView
+	deliveryErr    error
+	lastDeliveryID int64
 }
 
 func (f *fakeNotificationService) List(_ context.Context, filter notify.TemplateFilter) ([]notify.TemplateView, error) {
@@ -97,6 +113,31 @@ func (f *fakeNotificationService) ListDeliveries(_ context.Context, filter notif
 	defer f.mu.Unlock()
 	f.lastDeliveryFilter = filter
 	return f.deliveries, f.deliveriesTotal, f.deliveriesErr
+}
+
+func (f *fakeNotificationService) RestoreDefault(_ context.Context, key string, channel notify.Channel, locale notify.Locale, actor int64) (notify.TemplateView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastRestoreKey = key
+	f.lastRestoreChan = channel
+	f.lastRestoreLocale = locale
+	f.lastRestoreActor = actor
+	return f.restoreView, f.restoreErr
+}
+
+func (f *fakeNotificationService) RestoreDefaults(_ context.Context, filter notify.RestoreFilter, actor int64) ([]notify.TemplateView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastRestoreFilter = filter
+	f.lastRestoreAllBy = actor
+	return f.restoreItems, f.restoreAllErr
+}
+
+func (f *fakeNotificationService) GetDelivery(_ context.Context, id int64) (notify.DeliveryView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastDeliveryID = id
+	return f.deliveryView, f.deliveryErr
 }
 
 func notificationTestMux(t *testing.T, service NotificationTemplateService) *http.ServeMux {
@@ -458,6 +499,203 @@ func TestNotificationTemplateUpdateAudited(t *testing.T) {
 	}
 	if detail := fmt.Sprint(args[9]); !strings.Contains(detail, "auth.verify_code") {
 		t.Fatalf("审计 detail 未保留 template_key：%v", args[9])
+	}
+}
+
+func TestNotificationTemplateRestoreDefaultPermissionAndAudit(t *testing.T) {
+	exec := &recordingExec{}
+	service := &fakeNotificationService{
+		getView:     notify.TemplateView{Key: "billing.balance_low", Channel: notify.ChannelEmail, Locale: notify.LocaleEN, Customized: true},
+		restoreView: notify.TemplateView{Key: "billing.balance_low", Channel: notify.ChannelEmail, Locale: notify.LocaleEN, Enabled: true},
+	}
+	handlers, err := NewNotificationTemplateHandlers(NotificationTemplateHandlerConfig{
+		Service: service,
+		Authz:   rbac.NewAuthzMiddleware(),
+		Audit:   audit.New(exec),
+	})
+	if err != nil {
+		t.Fatalf("NewNotificationTemplateHandlers: %v", err)
+	}
+	mux := http.NewServeMux()
+	handlers.Register(mux)
+
+	body := `{"locale":"en","channel":"email"}`
+	adminNoPerm := &auth.Principal{UserID: 2, Role: rbac.RoleAdmin, Permissions: []string{rbac.PermUsersRead}}
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPost,
+		"/api/notification-templates/billing.balance_low:restore-default", body, adminNoPerm, nil))
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("缺 settings:manage = %d，期望 403", rr.Code)
+	}
+
+	manager := &auth.Principal{UserID: 9, Role: rbac.RoleAdmin, Permissions: []string{rbac.PermSettingsManage}}
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPost,
+		"/api/notification-templates/billing.balance_low:restore-default", body, manager, nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("恢复默认 = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	if service.lastRestoreKey != "billing.balance_low" ||
+		service.lastRestoreChan != notify.ChannelEmail ||
+		service.lastRestoreLocale != notify.LocaleEN ||
+		service.lastRestoreActor != 9 {
+		t.Fatalf("恢复参数未透传：key=%s channel=%s locale=%s actor=%d",
+			service.lastRestoreKey, service.lastRestoreChan, service.lastRestoreLocale, service.lastRestoreActor)
+	}
+
+	// 未登记字段由 RBAC 写策略拒绝（BOPLA）。
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPost,
+		"/api/notification-templates/billing.balance_low:restore-default",
+		`{"locale":"en","unexpected":1}`, manager, nil))
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("未登记字段 = %d，期望 403", rr.Code)
+	}
+
+	exec.mu.Lock()
+	defer exec.mu.Unlock()
+	if len(exec.args) != 1 {
+		t.Fatalf("恢复默认审计写入次数 = %d，期望 1", len(exec.args))
+	}
+	if detail := fmt.Sprint(exec.args[0][9]); !strings.Contains(detail, "notification_template.restore_default") ||
+		!strings.Contains(detail, "billing.balance_low") {
+		t.Fatalf("审计 detail 未记录恢复动作：%v", exec.args[0][9])
+	}
+}
+
+func TestNotificationTemplateRestoreAllFiltersAndAudit(t *testing.T) {
+	exec := &recordingExec{}
+	service := &fakeNotificationService{
+		restoreItems: []notify.TemplateView{
+			{Key: "billing.balance_low", Channel: notify.ChannelEmail, Locale: notify.LocaleEN},
+			{Key: "billing.balance_low", Channel: notify.ChannelInApp, Locale: notify.LocaleEN},
+		},
+	}
+	handlers, err := NewNotificationTemplateHandlers(NotificationTemplateHandlerConfig{
+		Service: service,
+		Authz:   rbac.NewAuthzMiddleware(),
+		Audit:   audit.New(exec),
+	})
+	if err != nil {
+		t.Fatalf("NewNotificationTemplateHandlers: %v", err)
+	}
+	mux := http.NewServeMux()
+	handlers.Register(mux)
+
+	adminNoPerm := &auth.Principal{UserID: 2, Role: rbac.RoleAdmin, Permissions: []string{rbac.PermUsersRead}}
+	body := `{"categories":["billing.balance_low"],"channel":"email","locale":"en","modified_only":true}`
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPost,
+		"/api/notification-templates:restore-default", body, adminNoPerm, nil))
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("缺 settings:manage = %d，期望 403", rr.Code)
+	}
+
+	manager := &auth.Principal{UserID: 3, Role: rbac.RoleAdmin, Permissions: []string{rbac.PermSettingsManage}}
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPost,
+		"/api/notification-templates:restore-default", body, manager, nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("批量恢复 = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"restored":2`) {
+		t.Fatalf("批量恢复响应缺少 restored 计数：%s", rr.Body.String())
+	}
+	filter := service.lastRestoreFilter
+	if len(filter.Categories) != 1 || filter.Categories[0] != "billing.balance_low" ||
+		filter.Channel != notify.ChannelEmail || filter.Locale != notify.LocaleEN ||
+		!filter.ModifiedOnly || service.lastRestoreAllBy != 3 {
+		t.Fatalf("批量恢复筛选未透传：%+v actor=%d", filter, service.lastRestoreAllBy)
+	}
+
+	// 未注册 category 必须在进入 service 前 400。
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodPost,
+		"/api/notification-templates:restore-default", `{"categories":["nope"]}`, manager, nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("未注册 category = %d，期望 400", rr.Code)
+	}
+
+	exec.mu.Lock()
+	defer exec.mu.Unlock()
+	if len(exec.args) != 1 {
+		t.Fatalf("批量恢复审计写入次数 = %d，期望 1（不逐行写）", len(exec.args))
+	}
+	if detail := fmt.Sprint(exec.args[0][9]); !strings.Contains(detail, `"scope":"all"`) ||
+		!strings.Contains(detail, `"restored":2`) {
+		t.Fatalf("批量审计 detail = %v", exec.args[0][9])
+	}
+}
+
+func TestNotificationDeliveriesDetailAndTimeRange(t *testing.T) {
+	nextRetry := time.Date(2026, 10, 20, 12, 5, 0, 0, time.UTC)
+	service := &fakeNotificationService{
+		deliveries: []notify.DeliveryView{{
+			ID: 1, Category: "billing.balance_low", Channel: notify.ChannelEmail,
+			Status: "pending", Attempt: 2, NextRetryAt: &nextRetry,
+			DedupeKey:         "billing.balance_low:u1:2026-10-20",
+			ProviderMessageID: "<abc@example.com>", CreatedAt: nextRetry,
+		}},
+		deliveriesTotal: 1,
+		deliveryView: notify.DeliveryView{
+			ID: 7, Category: "billing.balance_low", Status: "sent",
+			DedupeKey: "delivery:7", Attempt: 1, CreatedAt: nextRetry,
+		},
+	}
+	mux := notificationTestMux(t, service)
+	admin := &auth.Principal{UserID: 1, Role: rbac.RoleAdmin}
+
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodGet,
+		"/api/notification-deliveries?from=2026-10-20T00:00:00Z&to=2026-10-21T00:00:00Z", "", admin, nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("时间范围列表 = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	if service.lastDeliveryFilter.From == nil || service.lastDeliveryFilter.To == nil {
+		t.Fatalf("时间范围未透传：%+v", service.lastDeliveryFilter)
+	}
+	for _, field := range []string{`"attempt":2`, `"next_retry_at"`, `"dedupe_key"`, `"provider_message_id"`} {
+		if !strings.Contains(rr.Body.String(), field) {
+			t.Fatalf("列表 DTO 缺字段 %s：%s", field, rr.Body.String())
+		}
+	}
+
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodGet,
+		"/api/notification-deliveries?from=not-a-time", "", admin, nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("非法 from = %d，期望 400", rr.Code)
+	}
+
+	// 跨度校验由 service 负责；这里验证 handler 把哨兵错误映射为 400。
+	tooLarge := notificationTestMux(t, &fakeNotificationService{deliveriesErr: notify.ErrInvalidTimeRange})
+	rr = httptest.NewRecorder()
+	tooLarge.ServeHTTP(rr, settingsRequest(http.MethodGet,
+		"/api/notification-deliveries?from=2026-01-01T00:00:00Z&to=2026-10-01T00:00:00Z", "", admin, nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("超 90 天 = %d，期望 400（body=%s）", rr.Code, rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/notification-deliveries/7", "", admin, nil))
+	if rr.Code != http.StatusOK || service.lastDeliveryID != 7 {
+		t.Fatalf("投递详情 = %d id=%d，期望 200/7（body=%s）", rr.Code, service.lastDeliveryID, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"dedupe_key":"delivery:7"`) {
+		t.Fatalf("详情 DTO 缺 dedupe_key：%s", rr.Body.String())
+	}
+
+	notFound := notificationTestMux(t, &fakeNotificationService{deliveryErr: notify.ErrDeliveryNotFound})
+	rr = httptest.NewRecorder()
+	notFound.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/notification-deliveries/99", "", admin, nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("不存在投递 = %d，期望 404", rr.Code)
+	}
+
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, settingsRequest(http.MethodGet, "/api/notification-deliveries/abc", "", admin, nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("非法 id = %d，期望 400", rr.Code)
 	}
 }
 

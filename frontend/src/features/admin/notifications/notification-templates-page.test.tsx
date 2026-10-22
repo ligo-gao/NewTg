@@ -69,6 +69,10 @@ const DELIVERIES: NotificationDelivery[] = [
     recipient: 'alice@example.com',
     locale: 'en',
     status: 'sent',
+    attempt: 1,
+    next_retry_at: null,
+    dedupe_key: 'billing.balance_low:u1:2026-10-19',
+    provider_message_id: '<one@example.com>',
     created_at: '2026-10-19T09:00:00Z',
   },
   {
@@ -78,6 +82,9 @@ const DELIVERIES: NotificationDelivery[] = [
     recipient: 'root@example.com',
     locale: 'en',
     status: 'failed',
+    attempt: 3,
+    next_retry_at: '2026-10-19T08:25:00Z',
+    dedupe_key: 'ops.channel_auto_disabled:u1:2026-10-19',
     error: 'connection refused',
     created_at: '2026-10-19T08:00:00Z',
   },
@@ -88,6 +95,9 @@ const DELIVERIES: NotificationDelivery[] = [
     recipient: 'https://hooks.example.com/x',
     locale: 'en',
     status: 'bounced',
+    attempt: 2,
+    next_retry_at: null,
+    dedupe_key: 'billing.balance_low:u2:2026-10-19',
     created_at: '2026-10-19T07:00:00Z',
   },
 ]
@@ -101,6 +111,9 @@ function install(rows: NotificationTemplate[] = ROWS, deliveries: NotificationDe
   const puts: PutLog[] = []
   const detailRequests: URLSearchParams[] = []
   const testRequests: Record<string, unknown>[] = []
+  const restoreRequests: { key: string; body: Record<string, unknown> }[] = []
+  const restoreAllRequests: Record<string, unknown>[] = []
+  const deliveryRequests: URLSearchParams[] = []
 
   server.use(
     http.get(`${ORIGIN}/api/me`, () => HttpResponse.json(ME_ADMIN)),
@@ -171,10 +184,47 @@ function install(rows: NotificationTemplate[] = ROWS, deliveries: NotificationDe
         testRequests.push(body)
         return HttpResponse.json({ id: 1, status: 'sent', error: null }, { status: 202 })
       }
+      if (rawKey.endsWith(':restore-default')) {
+        const key = rawKey.slice(0, -':restore-default'.length)
+        restoreRequests.push({ key, body })
+        const row = rows.find(
+          (entry) => entry.key === key && entry.channel === body.channel && entry.locale === body.locale,
+        )
+        if (row === undefined) {
+          return HttpResponse.json({ type: 'about:blank', title: 'not found' }, { status: 404 })
+        }
+        return HttpResponse.json({
+          ...row,
+          customized: false,
+          updated_at: '2026-10-19T13:00:00Z',
+        })
+      }
       return HttpResponse.json({ type: 'about:blank', title: 'not found' }, { status: 404 })
+    }),
+    http.post(`${ORIGIN}/api/notification-templates:restore-default`, async ({ request }) => {
+      const body = (await request.json()) as Record<string, unknown>
+      restoreAllRequests.push(body)
+      const categories = Array.isArray(body.categories) ? body.categories : []
+      const items = rows.filter(
+        (row) =>
+          (categories.length === 0 || categories.includes(row.key)) &&
+          (body.channel === undefined || row.channel === body.channel) &&
+          (body.locale === undefined || row.locale === body.locale),
+      )
+      return HttpResponse.json({
+        items: items.map((row) => ({ ...row, customized: false })),
+        restored: items.length,
+      })
+    }),
+    http.get(`${ORIGIN}/api/notification-deliveries/:id`, ({ params }) => {
+      const row = deliveries.find((entry) => String(entry.id) === String(params.id))
+      return row === undefined
+        ? HttpResponse.json({ type: 'about:blank', title: 'not found' }, { status: 404 })
+        : HttpResponse.json(row)
     }),
     http.get(`${ORIGIN}/api/notification-deliveries`, ({ request }) => {
       const query = new URL(request.url).searchParams
+      deliveryRequests.push(query)
       let items = deliveries
       const status = query.get('status')
       const channel = query.get('channel')
@@ -191,7 +241,7 @@ function install(rows: NotificationTemplate[] = ROWS, deliveries: NotificationDe
     }),
   )
 
-  return { puts, detailRequests, testRequests }
+  return { puts, detailRequests, testRequests, restoreRequests, restoreAllRequests, deliveryRequests }
 }
 
 function Harness({ initial }: { initial?: NotificationTemplatesSearch }) {
@@ -596,5 +646,106 @@ describe('NotificationTemplatesPage', () => {
     await user.click(screen.getByRole('button', { name: 'Next' }))
     expect(await screen.findByText('Page 2 of 2')).toBeTruthy()
     expect(screen.getAllByTestId('notification-template-row')).toHaveLength(5)
+  })
+
+  it('restores a single template after confirmation', async () => {
+    const user = userEvent.setup()
+    const { restoreRequests } = await renderPage()
+    await screen.findByText(/8 rows/)
+
+    await user.click(
+      within(rowOf('billing.balance_low', 'email', 'en')).getByRole('button', {
+        name: 'Restore default',
+      }),
+    )
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText(/Discard manual edits/)).toBeTruthy()
+    await user.click(within(dialog).getByRole('button', { name: 'Restore default' }))
+
+    await waitFor(() => expect(restoreRequests).toHaveLength(1))
+    expect(restoreRequests[0]).toMatchObject({
+      key: 'billing.balance_low',
+      body: { locale: 'en', channel: 'email' },
+    })
+  })
+
+  it('requires typing the affected row count before restoring all defaults', async () => {
+    const user = userEvent.setup()
+    const { restoreAllRequests } = await renderPage()
+    await screen.findByText(/8 rows/)
+
+    await user.click(screen.getByRole('button', { name: 'Restore all defaults' }))
+    const dialog = await screen.findByRole('alertdialog')
+    const confirm = within(dialog).getByRole('button', { name: 'Restore all' }) as HTMLButtonElement
+    expect(confirm.disabled).toBe(true)
+
+    await user.type(
+      within(dialog).getByLabelText('Type the number of affected rows to confirm'),
+      '7',
+    )
+    expect(confirm.disabled).toBe(true)
+    expect(within(dialog).getByText('Enter 8 to confirm.')).toBeTruthy()
+
+    await user.clear(within(dialog).getByLabelText('Type the number of affected rows to confirm'))
+    await user.type(
+      within(dialog).getByLabelText('Type the number of affected rows to confirm'),
+      '8',
+    )
+    await waitFor(() => expect(confirm.disabled).toBe(false))
+    await user.click(confirm)
+
+    await waitFor(() => expect(restoreAllRequests).toHaveLength(1))
+    expect(restoreAllRequests[0]).toMatchObject({
+      categories: [],
+      modified_only: false,
+    })
+  })
+
+  it('shows delivery troubleshooting fields in the detail drawer (no manual retry)', async () => {
+    const user = userEvent.setup()
+    await renderPage({ tab: 'deliveries' })
+    expect(await screen.findByText('a***e@example.com')).toBeTruthy()
+
+    const row = screen.getAllByTestId('notification-delivery-row')[0]!
+    await user.click(within(row).getByRole('button', { name: 'Details' }))
+    const drawer = await screen.findByTestId('notification-delivery-drawer')
+    expect(within(drawer).getByText('Dedupe key')).toBeTruthy()
+    expect(within(drawer).getByText('billing.balance_low:u1:2026-10-19')).toBeTruthy()
+    expect(within(drawer).getByText('Provider message ID')).toBeTruthy()
+    expect(within(drawer).getByText('<one@example.com>')).toBeTruthy()
+    expect(within(drawer).getByText('Next retry')).toBeTruthy()
+    // MVP 不提供手动重试（设计 §6.9），抽屉里不得出现重试入口。
+    expect(within(drawer).queryByRole('button', { name: /retry/i })).toBeNull()
+  })
+
+  it('sends a preset delivery time range as RFC3339 bounds', async () => {
+    const user = userEvent.setup()
+    const { deliveryRequests } = await renderPage({ tab: 'deliveries' })
+    expect(await screen.findByText('a***e@example.com')).toBeTruthy()
+
+    await user.selectOptions(screen.getByLabelText('Time range'), '24h')
+    await waitFor(() => {
+      const latest = deliveryRequests[deliveryRequests.length - 1]
+      expect(latest?.get('from')).not.toBeNull()
+      expect(latest?.get('to')).not.toBeNull()
+    })
+    const latest = deliveryRequests[deliveryRequests.length - 1]!
+    const from = Date.parse(latest.get('from') ?? '')
+    const to = Date.parse(latest.get('to') ?? '')
+    expect(to - from).toBe(24 * 60 * 60 * 1000)
+  })
+
+  it('blocks custom delivery ranges longer than 90 days', async () => {
+    const user = userEvent.setup()
+    await renderPage({ tab: 'deliveries' })
+    expect(await screen.findByText('a***e@example.com')).toBeTruthy()
+
+    await user.selectOptions(screen.getByLabelText('Time range'), 'custom')
+    fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-01-01' } })
+    fireEvent.change(screen.getByLabelText('To'), { target: { value: '2026-10-01' } })
+
+    expect(
+      await screen.findByText('Time range is too large. Narrow it to under 90 days.'),
+    ).toBeTruthy()
   })
 })
