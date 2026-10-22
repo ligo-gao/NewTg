@@ -9,13 +9,14 @@
 #   (e) 禁止默认分区：既查历史写法 DEFAULT PARTITION，也查真实语法
 #       PARTITION OF <parent> ... DEFAULT（裁决 V11：落入未建月份必须失败）
 #   (f) request_registry 的主键必须恰为 request_id（V9 幂等真源）；主库迁移流
-#       必须定义该表，未识别为日志库流的目录一律 fail-closed（见该节注释）
+#       必须定义该表，未识别为日志库/指标库辅助流的目录一律 fail-closed（见该节注释）
 #
 # 用法：
 #   bash backend/scripts/check_migrations.sh [migrations_dir]
-#   默认 ../migrations（相对本脚本）；主库与日志库两条迁移流各跑一次：
+#   默认 ../migrations（相对本脚本）；主库/日志库/指标库三条迁移流各跑一次：
 #     check_migrations.sh backend/migrations
 #     check_migrations.sh backend/migrations-logs
+#     check_migrations.sh backend/migrations-metrics
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -146,13 +147,14 @@ done
 # (f) request_registry 主键恰为 request_id
 #     主库迁移流必须定义该表。旧实现以「没有 users 标记」推断日志库并直接跳过，
 #     这是 fail-open：主库目录里 users/request_registry 的建表若被改写（例如加了
-#     IF NOT EXISTS 或整体被注释），(f) 会静默 PASS。现改为正向识别日志库流：
-#     目录名 migrations-logs，或（目录被复制/改名时）同时建出日志库锚表
-#     usage_logs 与 audit_logs；其余任何目录缺少 request_registry 都判违规。
-is_logs_stream() {
+#     IF NOT EXISTS 或整体被注释），(f) 会静默 PASS。现改为正向识别辅助流：
+#     目录名 migrations-logs / migrations-metrics，或（目录被复制/改名时）同时
+#     建出日志库锚表 usage_logs 与 audit_logs；其余任何目录缺少
+#     request_registry 都判违规。
+is_aux_stream() {
   local f
   case "$(basename "$DIR")" in
-    migrations-logs) return 0 ;;
+    migrations-logs|migrations-metrics) return 0 ;;
   esac
   for f in "${ups[@]}"; do
     if sql_body "$f" | grep -Eq "${create_table_re}usage_logs([[:space:]]|\\()" \
@@ -185,12 +187,12 @@ for f in "${ups[@]}"; do
   fi
 done
 if [ "$has_registry" -eq 0 ]; then
-  if is_logs_stream; then
-    pass "(f) 日志库迁移流（无 request_registry），跳过该断言"
+  if is_aux_stream; then
+    pass "(f) 辅助迁移流（日志库/指标库，无 request_registry），跳过该断言"
   elif [ "$has_table_ddl" -eq 1 ]; then
-    violation "(f) 目录含 CREATE TABLE 但未定义 request_registry（fail-closed：未识别为日志库流一律按主库校验）"
+    violation "(f) 目录含 CREATE TABLE 但未定义 request_registry（fail-closed：未识别为日志库/指标库辅助流一律按主库校验）"
   else
-    violation "(f) 目录未识别为日志库迁移流，且缺少 request_registry 建表（fail-closed）"
+    violation "(f) 目录未识别为日志库/指标库辅助流，且缺少 request_registry 建表（fail-closed）"
   fi
 fi
 
