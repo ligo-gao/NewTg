@@ -14,6 +14,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
+	"newtg/gateway/internal/config"
 	"newtg/gateway/internal/contract"
 )
 
@@ -2408,5 +2409,44 @@ func TestSessionCrossGroupSettlementUsesRefreshedSnapshot(t *testing.T) {
 		rows[0].Type != "consume_pre" || rows[0].Amount != -100 || rows[0].Status != "settled" ||
 		rows[1].Type != "consume" || rows[1].Amount != -150 || rows[1].Status != "confirmed" {
 		t.Fatalf("wallet rows = %+v, want -100 settled + -150 confirmed", rows)
+	}
+}
+
+// TestSessionDemoExemptSessionIdentityBoundary 钉住 /pg 会话身份豁免的边界：
+// tokenID==0 时还必须满足 rc.UsingGroup != "" 才免单——该非空分组是
+// applyPlaygroundSession 为 /pg 写下的既有标记。若把条件放宽成仅 s.rc != nil，
+// 任何未来无令牌的会话平面（UsingGroup 为空）都会被静默免单。
+//
+// 断言点选在 demoExempt 的返回值：它正是 PreConsume 里「先于一切资金动作
+// 短路」与「走正常 hold/扣款路径」之间的唯一开关。这里不触库，保持
+// go test ./internal/billing 在无 NEWTG_TEST_DB_DSN 时也能执行。
+func TestSessionDemoExemptSessionIdentityBoundary(t *testing.T) {
+	e := NewEngine(nil, nil, nil,
+		mapConfig{config.DemoEnabledKey: json.RawMessage("true")}, nil, nil, nil)
+
+	tests := []struct {
+		name  string
+		group string
+		want  bool
+	}{
+		// 反例：会话身份没有 /pg 的 UsingGroup 标记 → 必须照常计费。
+		{"empty group is not a playground session", "", false},
+		// 对照：applyPlaygroundSession 回源写入分组 → 演示模式免单。
+		{"playground group marker is exempt", "default", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := &contract.RelayContext{
+				RequestID:  testRequestID("demo-boundary"),
+				UserID:     42,
+				TokenID:    0, // 会话身份（/pg 的既有标记）
+				UsingGroup: tc.group,
+			}
+			s := e.NewSession(rc).(*Session)
+			if got := s.demoExempt(context.Background()); got != tc.want {
+				t.Fatalf("demoExempt(tokenID=0, UsingGroup=%q) = %v, want %v",
+					tc.group, got, tc.want)
+			}
+		})
 	}
 }
