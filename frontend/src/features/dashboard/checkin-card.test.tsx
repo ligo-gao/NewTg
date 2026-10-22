@@ -118,6 +118,15 @@ describe('CheckinCard (F-01-30)', () => {
     // 月历 7 列：已签到的 10-21 / 10-22 可被单独定位。
     expect(await screen.findByTestId('checkin-day-2026-10-21')).toBeTruthy()
     expect(screen.getByTestId('checkin-day-2026-10-22')).toBeTruthy()
+
+    // Monday-first headers. The formatter uses timeZone:'UTC' for its reference
+    // dates, so a negative-offset viewer (America/New_York) still starts on M.
+    expect(
+      screen.getAllByRole('columnheader').map((header) => header.textContent),
+    ).toEqual(['M', 'T', 'W', 'T', 'F', 'S', 'S'])
+    const dayCell = screen.getByTestId('checkin-day-2026-10-22')
+    expect(dayCell.getAttribute('role')).toBe('gridcell')
+    expect(dayCell.getAttribute('aria-label')).toBe('2026-10-22: 7 credits')
   })
 
   it('submits without any user id and refreshes the calendar after success', async () => {

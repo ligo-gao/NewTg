@@ -45,6 +45,9 @@ const (
 	// 请求体上限：签到请求只有一个可选 turnstile_token 字段，1 MiB 足够
 	// 覆盖任何客户端包装，同时防止无界读取。
 	checkinMaxBody = 1 << 20
+	// turnstile_token 长度上限与 OpenAPI（schemas/user.yaml CheckinRequest）
+	// 一致。超长令牌不可能被 Cloudflare 接受，提前 400 而不是送进 siteverify。
+	checkinMaxTurnstileToken = 2048
 )
 
 // RFC 7807 type URI（与全库约定一致）。
@@ -178,6 +181,10 @@ func (h *CheckinHandlers) handleCheckIn(w http.ResponseWriter, r *http.Request) 
 			writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request")
 			return
 		}
+	}
+	if len(req.TurnstileToken) > checkinMaxTurnstileToken {
+		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request")
+		return
 	}
 	// 第 5 个 Turnstile 接入点，固定位于限流之后（modules-01 §3.15）。
 	if !h.turnstile.check(auth.TurnstileEndpointCheckin, w, r, req.TurnstileToken) {

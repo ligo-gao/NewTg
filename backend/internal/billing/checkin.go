@@ -128,6 +128,10 @@ type CheckinService struct {
 	now        func() time.Time
 	drawInt64n func(n int64) (int64, error)
 	location   func() *time.Location
+	// afterLedger 是测试接缝：账本成功写入后、事务提交前注入一次失败。
+	// 用于证明「账本成功但外层事务回滚」不会残留流水（W15-C 复核 Finding D）。
+	// 生产恒 nil，不参与任何业务分支。
+	afterLedger func() error
 }
 
 // NewCheckinService 构造签到服务。DB 必填：签到与入账的原子性依赖主库事务。
@@ -202,22 +206,23 @@ func (s *CheckinService) CheckIn(ctx context.Context, userID int64) (CheckinResu
 
 	now := s.now()
 	today := now.In(cfg.Location).Format(checkinDateLayout)
-	// 关闭型守卫：站点时区被管理员改动后，同一 UTC 日内可能出现「更早的
-	// 本地日」。唯一约束只能拦住相同 checkin_date，拦不住「倒退一天」的
-	// 二次领取；本地零点起点（R-W15-15 的 EXISTS 守卫）覆盖这一边界。
-	dayStart := startOfDay(now, cfg.Location)
-
-	award, err := drawCheckinAward(cfg.MinQuota, cfg.MaxQuota, s.drawInt64n)
-	if err != nil {
-		return CheckinResult{}, err
-	}
 
 	var out CheckinResult
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 日期守卫（W15-C 复核 Finding A）：只比较 checkin_date，绝不比较
+		// created_at。created_at 由数据库 DEFAULT now() 生成，而「今天」来自
+		// 应用时钟；两者一旦有偏差（尤其跨零点前最后一笔），用 created_at
+		// 判定会让合法的次日签到被误判为重放。
+		//
+		// 语义：存在「今天或更晚」的签到行就拒绝。它同时覆盖
+		//   - 同日重放（checkin_date = today；唯一约束也兜底），
+		//   - 管理员把站点时区往西调后本地日倒退（已有行 > today）。
+		// 不覆盖合法的「本地日向前推进」：那种情况下 checkin_date < today，
+		// 新的一天理应可以签到。
 		var blocked bool
 		if err := tx.WithContext(ctx).Raw(
-			`SELECT EXISTS(SELECT 1 FROM checkins WHERE user_id = ? AND created_at >= ?)`,
-			userID, dayStart).Row().Scan(&blocked); err != nil {
+			`SELECT EXISTS(SELECT 1 FROM checkins WHERE user_id = ? AND checkin_date >= CAST(? AS date))`,
+			userID, today).Row().Scan(&blocked); err != nil {
 			return fmt.Errorf("billing: check same-day guard: %w", err)
 		}
 		if blocked {
@@ -227,16 +232,27 @@ func (s *CheckinService) CheckIn(ctx context.Context, userID int64) (CheckinResu
 		var checkinID int64
 		// 唯一约束是「一天一次」的唯一兜底：并发双击的后者在这里得到 0 行，
 		// 事务保持可用（DO NOTHING 不会让 PostgreSQL 中止整个事务）。
+		// 先写入占位 0，等确认自己是赢家后再抽随机额（Finding F）：
+		// 重放/并发输家不消耗 crypto/rand，也不会因随机源故障把重放变 500。
 		err := tx.WithContext(ctx).Raw(`
 			INSERT INTO checkins (user_id, checkin_date, quota_awarded)
-			VALUES (?, CAST(? AS date), ?)
+			VALUES (?, CAST(? AS date), 0)
 			ON CONFLICT (user_id, checkin_date) DO NOTHING
-			RETURNING id`, userID, today, award).Row().Scan(&checkinID)
+			RETURNING id`, userID, today).Row().Scan(&checkinID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return replayCheckinTx(ctx, tx, userID, cfg.Location, &out)
 		}
 		if err != nil {
 			return fmt.Errorf("billing: insert checkin: %w", err)
+		}
+
+		award, err := drawCheckinAward(cfg.MinQuota, cfg.MaxQuota, s.drawInt64n)
+		if err != nil {
+			return err
+		}
+		if err := tx.WithContext(ctx).Exec(
+			`UPDATE checkins SET quota_awarded = ? WHERE id = ?`, award, checkinID).Error; err != nil {
+			return fmt.Errorf("billing: persist checkin award: %w", err)
 		}
 
 		out = CheckinResult{Date: today, Awarded: award}
@@ -252,9 +268,22 @@ func (s *CheckinService) CheckIn(ctx context.Context, userID int64) (CheckinResu
 			out.BalanceAfter = balanceAfter
 		} else {
 			// min=0：不发额度、不写账本行，但仍返回余额快照供卡片显示。
+			// 用户已被删除时 sql.ErrNoRows 必须映射为 ErrUserNotFound（401），
+			// 而不是让 handler 落成 500（Finding E）。
 			if err := tx.WithContext(ctx).Raw(
 				`SELECT balance FROM users WHERE id = ?`, userID).Row().Scan(&out.BalanceAfter); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return fmt.Errorf("%w: user %d", ErrUserNotFound, userID)
+				}
 				return fmt.Errorf("billing: read balance for user %d: %w", userID, err)
+			}
+		}
+
+		// 测试接缝：账本成功写入后、提交前注入一次失败，证明外层事务回滚
+		// 不会留下已写入的流水（Finding D）。生产恒 nil。
+		if s.afterLedger != nil {
+			if err := s.afterLedger(); err != nil {
+				return err
 			}
 		}
 		return fillCheckinStatsTx(ctx, tx, userID, today, cfg.Location, &out)
@@ -340,6 +369,10 @@ func replayCheckinTx(ctx context.Context, tx *gorm.DB, userID int64,
 	var balance int64
 	if err := tx.WithContext(ctx).Raw(
 		`SELECT balance FROM users WHERE id = ?`, userID).Row().Scan(&balance); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// 会话指向已删除用户：按未认证处理（handler → 401），不返回 500。
+			return fmt.Errorf("%w: user %d", ErrUserNotFound, userID)
+		}
 		return fmt.Errorf("billing: read balance for user %d: %w", userID, err)
 	}
 	*out = CheckinResult{
@@ -440,12 +473,6 @@ func sumMonth(rows []checkinRow, month string) int64 {
 		}
 	}
 	return total
-}
-
-// startOfDay 返回站点时区下的本地零点（转成绝对时间供 timestamptz 比较）。
-func startOfDay(now time.Time, loc *time.Location) time.Time {
-	local := now.In(loc)
-	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
 }
 
 // ---------------------------------------------------------------------------

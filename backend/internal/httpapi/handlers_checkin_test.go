@@ -384,3 +384,25 @@ func TestCheckinRateLimitRunsBeforeTurnstile(t *testing.T) {
 		t.Fatalf("service calls=%d, want %d", svc.calls, checkinRateLimit)
 	}
 }
+
+func TestCheckinRejectsOversizedTurnstileToken(t *testing.T) {
+	svc := &fakeCheckinRunner{enabled: true, result: billing.CheckinResult{Date: "2026-10-22"}}
+	h := newCheckinHarness(t, svc, nil, 42)
+	body := `{"turnstile_token":"` + strings.Repeat("x", checkinMaxTurnstileToken+1) + `"}`
+	rr := checkinRequest(t, h.mux, http.MethodPost, "/api/checkin", body)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("超长令牌 = %d, want 400 (body=%q)", rr.Code, rr.Body.String())
+	}
+	if svc.calls != 0 {
+		t.Fatalf("超长令牌不应进入签到服务（calls=%d）", svc.calls)
+	}
+}
+
+func TestCheckinDeletedUserMapsTo401(t *testing.T) {
+	svc := &fakeCheckinRunner{enabled: true, err: billing.ErrUserNotFound}
+	h := newCheckinHarness(t, svc, nil, 42)
+	rr := checkinRequest(t, h.mux, http.MethodPost, "/api/checkin", `{}`)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("已删除用户 = %d, want 401 (body=%q)", rr.Code, rr.Body.String())
+	}
+}

@@ -301,3 +301,37 @@ func TestCheckinIntegrationCrossSiteTimezoneDay(t *testing.T) {
 		t.Fatalf("跨日 checkins=%d ledger=%d balance=%d, want 2/2/10", checkins, ledger, balance)
 	}
 }
+
+// TestCheckinRoutesWiredByBuildGatewayRouter 覆盖 Finding G 的路由装配面：
+// BuildGatewayRouter 在 CheckinService 非 nil 时必须把两个端点挂到受保护
+// 子树（而不是只挂 handler 单测里的临时 mux）。
+func TestCheckinRoutesWiredByBuildGatewayRouter(t *testing.T) {
+	gormDB, _, _ := openCheckinIntegration(t)
+	svc, err := billing.NewCheckinService(billing.CheckinServiceConfig{
+		DB:       gormDB,
+		Config:   checkinTestEnvConfig(true, 0, 0),
+		Logger:   testLogger(),
+		Location: func() *time.Location { return time.UTC },
+	})
+	if err != nil {
+		t.Fatalf("NewCheckinService: %v", err)
+	}
+	deps, _ := gatewayDepsForTest(t)
+	deps.CheckinService = svc
+	rt, err := BuildGatewayRouter(deps)
+	if err != nil {
+		t.Fatalf("BuildGatewayRouter: %v", err)
+	}
+
+	for _, tc := range []struct {
+		method, path, want string
+	}{
+		{http.MethodPost, "/api/checkin", "POST /api/checkin"},
+		{http.MethodGet, "/api/checkin/calendar", "GET /api/checkin/calendar"},
+	} {
+		_, pattern := rt.protected.Handler(httptest.NewRequest(tc.method, tc.path, nil))
+		if pattern != tc.want {
+			t.Fatalf("%s %s 装配到 %q, want %q", tc.method, tc.path, pattern, tc.want)
+		}
+	}
+}

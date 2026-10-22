@@ -438,3 +438,144 @@ func TestCheckinDisabledHasNoSideEffects(t *testing.T) {
 		t.Fatalf("关闭态产生副作用: checkins=%d ledger=%d balance=%d", checkins, ledger, balance)
 	}
 }
+
+// TestCheckinGuardUsesCheckinDateNotCreatedAt 覆盖 W15-C 复核 Finding A：
+// 守卫必须只比较 checkin_date，不能比较 created_at（DB 时钟）。
+//
+// 构造一条 checkin_date=2026-10-22、但 created_at=2030 的「未来写入」行
+// （模拟 app/DB 时钟偏差）。应用时钟已到 2026-10-23（Asia/Shanghai 次日
+// 00:01）时，合法的次日签到必须成功；旧 created_at 守卫会因 2030 >= 本地
+// 零点而误判为重放。
+func TestCheckinGuardUsesCheckinDateNotCreatedAt(t *testing.T) {
+	gormDB, sqlDB := openBillingTestDB(t)
+	userID := createBillingTestUser(t, sqlDB, 0)
+	if _, err := sqlDB.Exec(
+		`INSERT INTO checkins (user_id, checkin_date, quota_awarded, created_at)
+		 VALUES ($1, DATE '2026-10-22', 5, TIMESTAMPTZ '2030-01-01T00:00:00Z')`, userID); err != nil {
+		t.Fatalf("seed future created_at row: %v", err)
+	}
+
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Skip("Asia/Shanghai 不可用")
+	}
+	// 2026-10-22T16:01Z = 2026-10-23 00:01 Asia/Shanghai。
+	clock := newCheckinTestClock(time.Date(2026, 10, 22, 16, 1, 0, 0, time.UTC))
+	svc := newCheckinTestService(t, &CheckinServiceConfig{
+		DB: gormDB, Config: checkinTestConfig(true, 5, 5), Now: clock.Now,
+		Location: func() *time.Location { return loc },
+	})
+
+	res, err := svc.CheckIn(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("合法次日签到被 rejected: %v", err)
+	}
+	if res.AlreadyCheckedIn || res.Date != "2026-10-23" || res.Awarded != 5 {
+		t.Fatalf("result=%+v, want 2026-10-23/5 非重放", res)
+	}
+	var rows, ledger int64
+	if err := sqlDB.QueryRow(`SELECT count(*) FROM checkins WHERE user_id = $1`, userID).Scan(&rows); err != nil {
+		t.Fatalf("count checkins: %v", err)
+	}
+	if err := sqlDB.QueryRow(`SELECT count(*) FROM wallet_transactions WHERE user_id = $1 AND type = 'checkin_bonus'`, userID).Scan(&ledger); err != nil {
+		t.Fatalf("count ledger: %v", err)
+	}
+	if rows != 2 || ledger != 1 {
+		t.Fatalf("rows=%d ledger=%d, want 2/1（新签到成功且只入账一次）", rows, ledger)
+	}
+}
+
+// TestCheckinOuterFailureAfterLedgerRollsBackLedger 覆盖 Finding D：
+// 账本成功写入后，外层事务再失败时必须连同已写入的流水一起回滚。
+func TestCheckinOuterFailureAfterLedgerRollsBackLedger(t *testing.T) {
+	gormDB, sqlDB := openBillingTestDB(t)
+	userID := createBillingTestUser(t, sqlDB, 1000)
+	clock := newCheckinTestClock(time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC))
+	svc := newCheckinTestService(t, &CheckinServiceConfig{
+		DB: gormDB, Config: checkinTestConfig(true, 10, 10), Now: clock.Now,
+		Location: func() *time.Location { return time.UTC },
+	})
+	svc.afterLedger = func() error { return errors.New("injected failure after ledger") }
+
+	if _, err := svc.CheckIn(context.Background(), userID); err == nil {
+		t.Fatal("注入的外层失败必须向上返回")
+	}
+	var checkins, ledger int64
+	var balance int64
+	if err := sqlDB.QueryRow(`SELECT count(*) FROM checkins WHERE user_id = $1`, userID).Scan(&checkins); err != nil {
+		t.Fatalf("count checkins: %v", err)
+	}
+	if err := sqlDB.QueryRow(`SELECT count(*) FROM wallet_transactions WHERE user_id = $1`, userID).Scan(&ledger); err != nil {
+		t.Fatalf("count ledger: %v", err)
+	}
+	if err := sqlDB.QueryRow(`SELECT balance FROM users WHERE id = $1`, userID).Scan(&balance); err != nil {
+		t.Fatalf("read balance: %v", err)
+	}
+	if checkins != 0 || ledger != 0 || balance != 1000 {
+		t.Fatalf("外层失败后残留: checkins=%d ledger=%d balance=%d", checkins, ledger, balance)
+	}
+}
+
+// TestCheckinReplayDoesNotDrawRandom 覆盖 Finding F：重放请求在守卫/插入
+// 之后就不再抽取随机额；随机源故障不应把「已签到」变成 500。
+func TestCheckinReplayDoesNotDrawRandom(t *testing.T) {
+	gormDB, sqlDB := openBillingTestDB(t)
+	userID := createBillingTestUser(t, sqlDB, 0)
+	clock := newCheckinTestClock(time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC))
+	drawCalls := 0
+	draw := func(int64) (int64, error) {
+		drawCalls++
+		return 0, nil
+	}
+	svc := newCheckinTestService(t, &CheckinServiceConfig{
+		DB: gormDB, Config: checkinTestConfig(true, 5, 10), Now: clock.Now,
+		Location:   func() *time.Location { return time.UTC },
+		DrawInt64n: func(n int64) (int64, error) { return draw(n) },
+	})
+
+	first, err := svc.CheckIn(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if drawCalls != 1 {
+		t.Fatalf("first draw calls=%d, want 1", drawCalls)
+	}
+	draw = func(int64) (int64, error) { return 0, errors.New("random source down") }
+	second, err := svc.CheckIn(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("replay 不应依赖随机源: %v", err)
+	}
+	if !second.AlreadyCheckedIn || second.Awarded != first.Awarded {
+		t.Fatalf("replay=%+v, first=%+v", second, first)
+	}
+	if drawCalls != 1 {
+		t.Fatalf("replay 后 draw calls=%d, want 1（重放不得抽额）", drawCalls)
+	}
+}
+
+// TestCheckinMissingUserMinZeroMapsUserNotFound 覆盖 Finding E：
+// min=0 的余额快照查询遇到已删除用户时返回 ErrUserNotFound（handler → 401），
+// 不是 500；且事务回滚不留下签到行。
+func TestCheckinMissingUserMinZeroMapsUserNotFound(t *testing.T) {
+	gormDB, sqlDB := openBillingTestDB(t)
+	userID := createBillingTestUser(t, sqlDB, 0)
+	if _, err := sqlDB.Exec(`DELETE FROM users WHERE id = $1`, userID); err != nil {
+		t.Fatalf("delete user: %v", err)
+	}
+	clock := newCheckinTestClock(time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC))
+	svc := newCheckinTestService(t, &CheckinServiceConfig{
+		DB: gormDB, Config: checkinTestConfig(true, 0, 0), Now: clock.Now,
+		Location: func() *time.Location { return time.UTC },
+	})
+
+	if _, err := svc.CheckIn(context.Background(), userID); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("err=%v, want ErrUserNotFound", err)
+	}
+	var checkins int64
+	if err := sqlDB.QueryRow(`SELECT count(*) FROM checkins WHERE user_id = $1`, userID).Scan(&checkins); err != nil {
+		t.Fatalf("count checkins: %v", err)
+	}
+	if checkins != 0 {
+		t.Fatalf("已删除用户留下签到行 %d 条", checkins)
+	}
+}

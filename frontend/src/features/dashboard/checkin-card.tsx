@@ -88,11 +88,24 @@ export function CheckinCard() {
       const date = `${data.month}-${String(day).padStart(2, '0')}`
       cells.push({ date, day, awarded: awardedByDate.get(date) })
     }
-    return { cells, daysInMonth }
+    // Pad the tail so every ARIA grid row has seven cells; padding is
+    // presentational only (aria-hidden) and never carries a date.
+    while (cells.length % 7 !== 0) cells.push({})
+    const weeks: Array<typeof cells> = []
+    for (let index = 0; index < cells.length; index += 7) {
+      weeks.push(cells.slice(index, index + 7))
+    }
+    return { weeks, daysInMonth }
   }, [data])
 
   const weekdayLabels = useMemo(() => {
-    const formatter = new Intl.DateTimeFormat(locale, { weekday: 'narrow' })
+    // timeZone: 'UTC' is required: the reference dates below are built with
+    // Date.UTC and the grid is Monday-first. Without it a viewer in a negative
+    // offset (e.g. America/New_York) sees Sunday-first labels shifted by a day.
+    const formatter = new Intl.DateTimeFormat(locale, {
+      weekday: 'narrow',
+      timeZone: 'UTC',
+    })
     // 2024-01-01 is a Monday; stable reference for Monday-first labels.
     return Array.from({ length: 7 }, (_, index) =>
       formatter.format(new Date(Date.UTC(2024, 0, 1 + index))),
@@ -240,52 +253,65 @@ export function CheckinCard() {
 
           <div
             data-testid="checkin-calendar"
+            role="grid"
             aria-label={t('common.dashboard.checkin.calendar_aria', {
               month: data.month,
             })}
             className="mt-3"
           >
-            <div className="grid grid-cols-7 gap-1">
+            <div role="row" className="grid grid-cols-7 gap-1">
               {weekdayLabels.map((label, index) => (
                 <div
                   key={`${label}-${index}`}
+                  role="columnheader"
                   className="text-center text-[11px] text-ink-3"
                 >
                   {label}
                 </div>
               ))}
             </div>
-            <div className="mt-1 grid grid-cols-7 gap-1">
-              {grid.cells.map((cell, index) =>
-                cell.day === undefined ? (
-                  <div key={`blank-${index}`} aria-hidden="true" />
-                ) : (
-                  <div
-                    key={cell.date ?? `day-${index}`}
-                    data-testid={`checkin-day-${cell.date}`}
-                    aria-label={
-                      cell.awarded === undefined
-                        ? cell.date
-                        : t('common.dashboard.checkin.day_awarded', {
-                            date: cell.date ?? '',
-                            amount: formatCreditsValue(cell.awarded, locale),
-                          })
-                    }
-                    className={[
-                      'flex h-8 items-center justify-center rounded text-xs',
-                      cell.awarded === undefined
-                        ? 'text-ink-3'
-                        : 'bg-surface-hover font-semibold text-ink-1',
-                      cell.date === data.today
-                        ? 'border border-ink-3'
-                        : '',
-                    ].join(' ')}
-                  >
-                    {cell.day}
-                  </div>
-                ),
-              )}
-            </div>
+            {grid.weeks.map((week, weekIndex) => (
+              <div
+                role="row"
+                key={`week-${weekIndex}`}
+                className="mt-1 grid grid-cols-7 gap-1"
+              >
+                {week.map((cell, index) =>
+                  cell.day === undefined ? (
+                    <div
+                      key={`blank-${weekIndex}-${index}`}
+                      role="gridcell"
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <div
+                      key={cell.date ?? `day-${weekIndex}-${index}`}
+                      role="gridcell"
+                      data-testid={`checkin-day-${cell.date}`}
+                      aria-label={
+                        cell.awarded === undefined
+                          ? cell.date
+                          : t('common.dashboard.checkin.day_awarded', {
+                              date: cell.date ?? '',
+                              amount: formatCreditsValue(cell.awarded, locale),
+                            })
+                      }
+                      className={[
+                        'flex h-8 items-center justify-center rounded text-xs',
+                        cell.awarded === undefined
+                          ? 'text-ink-3'
+                          : 'bg-surface-hover font-semibold text-ink-1',
+                        cell.date === data.today
+                          ? 'border border-ink-3'
+                          : '',
+                      ].join(' ')}
+                    >
+                      {cell.day}
+                    </div>
+                  ),
+                )}
+              </div>
+            ))}
           </div>
 
           {todayAward !== undefined ? (
