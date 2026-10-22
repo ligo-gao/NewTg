@@ -319,10 +319,14 @@ func TestRelaySpecificGroupMessageUnchanged(t *testing.T) {
 	}
 }
 
-// TestMessagesAutoCrossGroupDirection 覆盖 R-68：auto=[openai 组, anthropic 组]、
-// retry=true → /v1/messages 不得 501，执行层换组到 Anthropic 组并返回 200。
+// TestMessagesAutoCrossGroupDirection 覆盖 R-68 的跨组语义：auto=[openai 组,
+// anthropic 组]、retry=true → /v1/messages 不得 501；首组（OpenAI）失败后
+// 执行层换到 Anthropic 组并返回 200。
+//
+// W18-B · R-W18-03 之后 OpenAI 组本身也支持 /v1/messages（响应经 IR → Anthropic
+// 编码），所以这里让首组上游返回 500 制造真实的换组，而不是依赖旧的协议过滤。
 func TestMessagesAutoCrossGroupDirection(t *testing.T) {
-	openai := newM2Upstream(t, http.StatusOK, `{}`)
+	openai := newM2Upstream(t, http.StatusInternalServerError, `{"error":"boom"}`)
 	anthropic := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(messagesUpstreamBody))
@@ -356,27 +360,33 @@ func TestMessagesAutoCrossGroupDirection(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d，期望 200（不得 501）；body=%s", w.Code, w.Body.String())
 	}
-	if openai.count() != 0 {
-		t.Fatalf("OpenAI 组上游调用 = %d，期望 0（方向过滤后该组无候选）", openai.count())
+	if openai.count() == 0 {
+		t.Fatal("首组 OpenAI 上游应被尝试过后才换组，实际调用 = 0")
 	}
 	if !strings.Contains(w.Body.String(), `"type":"message"`) {
 		t.Fatalf("响应不是 Anthropic 原生体：%s", w.Body.String())
 	}
 }
 
-// TestMessagesAutoSingleOpenAIGroupStill501 覆盖 R-68 的反向：
-// 有效序列只有 OpenAI 组时仍按 M1 语义 501，零计费零上游。
-func TestMessagesAutoSingleOpenAIGroupStill501(t *testing.T) {
-	openai := newM2Upstream(t, http.StatusOK, `{}`)
+// TestMessagesAutoSingleOpenAIGroupServed 覆盖 R-68 的反向：有效序列只有
+// OpenAI 组时，W18-B · R-W18-03 之后不再是 501，而是经响应编码器正常服务。
+func TestMessagesAutoSingleOpenAIGroupServed(t *testing.T) {
+	openai := newM2Upstream(t, http.StatusOK,
+		`{"id":"chatcmpl-g1","model":"gpt","choices":[{"index":0,`+
+			`"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],`+
+			`"usage":{"prompt_tokens":2,"completion_tokens":1}}`)
 	env, _ := newM2Env(t, m2AutoMeta([]string{"g1"}, true), map[string]*m2Upstream{"g1": openai})
 
 	body := `{"model":"` + m2TestModel + `","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"stream":false}`
 	w := env.do(t, http.MethodPost, "/v1/messages", body, messagesHeaders())
-	if w.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d，期望 501；body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d，期望 200（OpenAI 上游已支持）；body=%s", w.Code, w.Body.String())
 	}
-	if openai.count() != 0 || env.billing.preConsumeCount() != 0 {
-		t.Fatalf("上游=%d PreConsume=%d，期望 0/0", openai.count(), env.billing.preConsumeCount())
+	if openai.count() == 0 || env.billing.preConsumeCount() == 0 {
+		t.Fatalf("上游=%d PreConsume=%d，期望均 > 0", openai.count(), env.billing.preConsumeCount())
+	}
+	if !strings.Contains(w.Body.String(), `"text":"hi"`) {
+		t.Fatalf("响应不是 Anthropic 消息形状：%s", w.Body.String())
 	}
 }
 

@@ -248,28 +248,49 @@ func sanitizeMessageExtensions(message contract.Message) contract.Message {
 	return message
 }
 
-// openAIUsageFromNative 从原生上游响应体合成 OpenAI 形状的 usage 对象（F1）。
+// UsageFromNative 从原生上游响应体解析归一化 usage（W18-B · R-W18-03）。
 //
-// 为什么重新解析 Raw 而不是从 Response 取：契约 §2.3 的 Response 没有 Usage
-// 字段（用量由适配器 ParseResponse 的第二返回值单独给出，Forward 签名收不到），
-// 而原生 Raw 里恰好保留了协议原始用量。只在 Raw 确实带用量字段时返回 ok=true：
-// 上游没给 usage 时不伪造零值 usage（客户端会把零值当真）。
-func openAIUsageFromNative(protocol Protocol, raw []byte) (map[string]any, bool) {
+// 存在的理由与 openAIUsageFromNative 相同：契约 §2.3 的 Response 没有 Usage
+// 字段，而 /v1/messages 的 IR → Anthropic 编码器需要把 input_tokens/
+// output_tokens 回写给客户端，relay.Route 的返回值又拿不到适配器的第二返回
+// 值。因此按 crossproto 既有模式从 Raw 重新解析——与结算侧
+// usage.ExtractUsageMultimodal 读的是**同一份**上游字节，口径一致。
+//
+// ok=false 表示上游没有可采信的原生用量（缺席/空对象/非已识别键），调用方
+// 应回写零值 usage，绝不伪造一份「看起来精确」的用量。
+func UsageFromNative(protocol Protocol, raw []byte) (contract.Usage, bool) {
+	return nativeUsage(protocol, raw)
+}
+
+// nativeUsage 按协议族解析原生 usage 对象（三种协议共用）。
+func nativeUsage(protocol Protocol, raw []byte) (contract.Usage, bool) {
 	if len(bytes.TrimSpace(raw)) == 0 {
-		return nil, false
+		return contract.Usage{}, false
 	}
 	var usage contract.Usage
 	switch protocol {
+	case ProtocolOpenAI:
+		var payload struct {
+			Usage json.RawMessage `json:"usage"`
+		}
+		if json.Unmarshal(raw, &payload) != nil {
+			return contract.Usage{}, false
+		}
+		trimmed := bytes.TrimSpace(payload.Usage)
+		if len(trimmed) == 0 || string(trimmed) == "null" {
+			return contract.Usage{}, false
+		}
+		usage = ir.ParseOpenAIUsage(payload.Usage)
 	case ProtocolAnthropic:
 		var payload struct {
 			Usage json.RawMessage `json:"usage"`
 		}
 		if json.Unmarshal(raw, &payload) != nil {
-			return nil, false
+			return contract.Usage{}, false
 		}
 		trimmed := bytes.TrimSpace(payload.Usage)
 		if len(trimmed) == 0 || string(trimmed) == "null" {
-			return nil, false
+			return contract.Usage{}, false
 		}
 		usage = ir.ParseAnthropicUsage(payload.Usage)
 	case ProtocolGemini:
@@ -277,19 +298,33 @@ func openAIUsageFromNative(protocol Protocol, raw []byte) (map[string]any, bool)
 			UsageMetadata json.RawMessage `json:"usageMetadata"`
 		}
 		if json.Unmarshal(raw, &payload) != nil {
-			return nil, false
+			return contract.Usage{}, false
 		}
 		trimmed := bytes.TrimSpace(payload.UsageMetadata)
 		if len(trimmed) == 0 || string(trimmed) == "null" {
-			return nil, false
+			return contract.Usage{}, false
 		}
 		usage = ir.ParseGeminiUsage(payload.UsageMetadata)
 	default:
-		return nil, false
+		return contract.Usage{}, false
 	}
 	// M5：解析器对「非空但没有已识别用量键」的对象返回 estimated。这类
 	// 对象没有可采信的上游事实，绝不能合成一份全零 usage 让客户端当真。
 	if usage.Source != contract.UsageUpstreamExact {
+		return contract.Usage{}, false
+	}
+	return usage, true
+}
+
+// openAIUsageFromNative 从原生上游响应体合成 OpenAI 形状的 usage 对象（F1）。
+//
+// 为什么重新解析 Raw 而不是从 Response 取：契约 §2.3 的 Response 没有 Usage
+// 字段（用量由适配器 ParseResponse 的第二返回值单独给出，Forward 签名收不到），
+// 而原生 Raw 里恰好保留了协议原始用量。只在 Raw 确实带用量字段时返回 ok=true：
+// 上游没给 usage 时不伪造零值 usage（客户端会把零值当真）。
+func openAIUsageFromNative(protocol Protocol, raw []byte) (map[string]any, bool) {
+	usage, ok := nativeUsage(protocol, raw)
+	if !ok {
 		return nil, false
 	}
 

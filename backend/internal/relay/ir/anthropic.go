@@ -518,6 +518,11 @@ func BuildAnthropicRequestBody(req *contract.Request) ([]byte, error) {
 			obj = passthrough
 		}
 	}
+	// stream_options 是 OpenAI Chat 专有字段（include_usage）。/v1/messages 的
+	// 流式入口会为跨协议路径统一注入它（OpenAI 上游需要），但本函数也可能
+	// 服务同协议 Anthropic 上游——那里没有该请求项，原样转发会被严格上游
+	// 拒绝。Anthropic 流恒带 usage，不需要这个开关。
+	delete(obj, "stream_options")
 
 	obj["model"] = req.Model
 	// max_tokens 是 Anthropic 的必填字段（见 anthropicDefaultMaxTokens 注释）。
@@ -1073,4 +1078,469 @@ func normalizeAnthropicStopReason(reason string) string {
 	default:
 		return strings.ToLower(reason)
 	}
+}
+
+// ============================================================================
+// 响应方向编码：IR → Anthropic JSON / SSE（W18-B · 冻结裁决 R-W18-03）
+// ============================================================================
+//
+// 背景：请求方向早已闭合（ParseOpenAIRequest/ParseGeminiRequest →
+// BuildAnthropicRequestBody），但响应方向只有 ir.FromIR（IR → OpenAI）。
+// `/v1/messages` 因此把 OpenAI/Gemini 上游固定 501（见 relay_endpoints.go
+// 的方向矩阵）。R-W18-03 裁决补齐本节的编码器，让 Claude 客户端也能由
+// 异构上游承接；usage 不改冻结的 contract.Response，而是由端点层按
+// crossproto 既有模式从上游 Raw 重新解析（见 crossproto.UsageFromNative）。
+//
+// 信息损失清单（不得静默丢弃；无法回写的块一律显式报错）：
+//   - stop_sequence → IR 只保留归一化的 "stop"，具体命中的序列在解析期丢失，
+//     编码回写时 stop_sequence 只能为 null；
+//   - 非 Anthropic 上游的推理块（OpenAI reasoning_content / Gemini thought）
+//     没有 signature，回写为 thinking 块时不带 signature 字段；
+//   - tool_result 不属于 assistant 响应，出现时显式报错而不是伪造；
+//   - 音频等无法用 Anthropic 响应块表达的部件显式报错。
+
+// AnthropicStopReason 把 IR 归一化结束原因回写为 Anthropic stop_reason。
+//
+// 映射与 normalizeAnthropicStopReason 互逆（R-W18-03 的单测锁定）：
+//
+//	stop → end_turn；length → max_tokens；tool_calls → tool_use；
+//	content_filter → refusal。
+//
+// 空值/未知值保留空串/小写原文：非流式响应里由调用方写成 null，流式由
+// 渲染器兜底为 end_turn。这里不把未知值猜成 end_turn——那会把「上游给了
+// 我们没见过的结束原因」伪装成正常收尾。
+func AnthropicStopReason(finishReason string) string {
+	switch strings.ToLower(strings.TrimSpace(finishReason)) {
+	case "":
+		return ""
+	case "stop":
+		return "end_turn"
+	case "length":
+		return "max_tokens"
+	case "tool_calls", "tool_use":
+		return "tool_use"
+	case "content_filter", "refusal":
+		return "refusal"
+	default:
+		return strings.ToLower(strings.TrimSpace(finishReason))
+	}
+}
+
+// AnthropicUsageObject 把归一化 usage 映射为 Anthropic usage 对象。
+//
+// 方向差异（契约 §2.3 关系布尔）：
+//   - Anthropic 的 input_tokens **不含**缓存；OpenAI 的 prompt_tokens 已含缓存读/写。
+//     因此 PromptIncludesCache=true 时必须先扣掉 CacheRead/CacheWrite；
+//   - output_tokens 在三种协议里都含 thinking/reasoning token，直接取 Completion
+//     （ReasoningIncludedInCompletion 为 true 是 Claude/Gemini/OpenAI 的共同语义）。
+//
+// 缓存键只在非零时写出：零值省略可以避免向客户端暗示「发生过缓存命中」。
+func AnthropicUsageObject(usage contract.Usage) map[string]any {
+	input := nonNeg(usage.Prompt)
+	if usage.PromptIncludesCache {
+		input = nonNeg(input - nonNeg(usage.CacheRead) - nonNeg(usage.CacheWrite))
+	}
+	obj := map[string]any{
+		"input_tokens":  input,
+		"output_tokens": nonNeg(usage.Completion),
+	}
+	if usage.CacheRead > 0 {
+		obj["cache_read_input_tokens"] = usage.CacheRead
+	}
+	if usage.CacheWrite > 0 {
+		obj["cache_creation_input_tokens"] = usage.CacheWrite
+	}
+	return obj
+}
+
+// BuildAnthropicResponse 把归一化响应编码为 Anthropic Messages JSON（非流式）。
+//
+// 产出形状（R-W18-03 冻结）：
+//
+//	{id,type:"message",role:"assistant",model,content:[...],
+//	 stop_reason,stop_sequence,usage:{input_tokens,output_tokens}}
+//
+// 只编码第一条 choice：Anthropic Messages 没有候选数组语义（且 /v1/messages
+// 入口不接受 n>1，见 relay_endpoints.go 的既有拒绝）。usage 由调用方提供——
+// 契约 Response 没有 Usage 字段（R-W18-03 明确不扩展冻结结构）。
+func BuildAnthropicResponse(resp *contract.Response, usage contract.Usage) ([]byte, error) {
+	if resp == nil {
+		return nil, paramErrf("nil response")
+	}
+	if len(resp.Choices) == 0 {
+		return nil, paramErrf("响应没有可编码的 choice")
+	}
+	message := resp.Choices[0].Message
+	blocks := make([]any, 0, len(message.Content))
+	for i, part := range message.Content {
+		block, err := encodeAnthropicResponseBlock(part)
+		if err != nil {
+			return nil, fmt.Errorf("content[%d]: %w", i, err)
+		}
+		blocks = append(blocks, block)
+	}
+	id := resp.ID
+	if strings.TrimSpace(id) == "" {
+		// Anthropic 客户端按 id 做消息关联；上游没给 id 时给一个稳定的占位，
+		// 绝不省略该字段（缺字段会让 SDK 的类型校验先失败）。
+		id = "msg_newtg"
+	}
+	obj := map[string]any{
+		"id":            id,
+		"type":          "message",
+		"role":          "assistant",
+		"model":         resp.Model,
+		"content":       blocks,
+		"stop_reason":   nilOrString(AnthropicStopReason(resp.FinishReason)),
+		"stop_sequence": nil,
+		"usage":         AnthropicUsageObject(usage),
+	}
+	encoded, err := json.Marshal(obj)
+	if err != nil {
+		return nil, fmt.Errorf("ir: marshal Anthropic response: %w", err)
+	}
+	return encoded, nil
+}
+
+// nilOrString 把空串转成 nil：Anthropic 的 stop_reason 是「字符串或 null」。
+func nilOrString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+// encodeAnthropicResponseBlock 编码响应消息里的单个 IR 部件。
+//
+// 与请求方向 encodeAnthropicBlock 的差异仅一处：推理部件。请求方向只认
+// Meta["anthropic_thinking"] 标记（避免把 Gemini thought 伪装成需要
+// signature 的 Anthropic thinking 发给上游）；响应方向是**发给客户端**的，
+// 任何 IR 推理载体都应还原为 thinking/redacted_thinking，否则 Gemini 的
+// CoT 会混进可见正文（与 ir.go H1 同一判据）。
+func encodeAnthropicResponseBlock(part contract.ContentPart) (map[string]any, error) {
+	if part.Kind == contract.PartText && isReasoningPart(part) {
+		if data, ok := part.Meta["redacted_thinking"].(string); ok {
+			return map[string]any{"type": "redacted_thinking", "data": data}, nil
+		}
+		block := map[string]any{"type": "thinking", "thinking": part.Text}
+		// 非 Anthropic 上游没有 signature；有才写，不伪造。
+		if signature := metaString(part.Meta, "signature"); signature != "" {
+			block["signature"] = signature
+		}
+		return block, nil
+	}
+	if part.Kind == contract.PartToolResult {
+		// assistant 响应不含 tool_result；静默丢弃会让内容悄悄缺失。
+		return nil, paramErrf("响应消息不应包含 tool_result 块")
+	}
+	return encodeAnthropicBlock(part)
+}
+
+// ----------------------------------------------------------------------------
+// 流式：IR StreamEvent → Anthropic SSE 事件
+// ----------------------------------------------------------------------------
+
+// AnthropicSSEFrame 是一个 Anthropic SSE 事件帧（event + data 两行）。
+//
+// 与 OpenAI 的纯 data 帧不同，Anthropic 客户端按 `event:` 名称分派；
+// data 必须是单个 JSON 对象。
+type AnthropicSSEFrame struct {
+	Event string
+	Data  []byte
+}
+
+// anthropicStreamTool 是流式工具调用在渲染器里的累积缓冲。
+//
+// OpenAI 的 tool_calls 可能并行交错（同一帧里多个 index）；Anthropic 的
+// content_block_start/delta/stop 要求同一时刻只有一个块在流。为不把交错
+// 片段写成损坏的 input_json_delta，这里按 index 累积，在流结束时顺序输出
+// 完整的 tool_use 块（信息无损，只是工具参数不是增量下发）。
+type anthropicStreamTool struct {
+	index int
+	id    string
+	name  string
+	args  strings.Builder
+}
+
+// AnthropicStreamRenderer 把适配器产出的 IR StreamEvent 序列渲染为
+// Anthropic SSE 事件序列（R-W18-03）。
+//
+// 事件顺序（Anthropic 规范，测试锁定）：
+//
+//	message_start
+//	content_block_start → content_block_delta* → content_block_stop   （按块重复）
+//	message_delta(stop_reason/usage) → message_stop
+//
+// usage 只可能在流末尾拿到（OpenAI 需 include_usage、Gemini usageMetadata
+// 也常在后段），所以 message_start 的 usage 为 0，最终用量放进 message_delta。
+// 这是异构上游的固有信息时序差异，登记为已知限制。
+type AnthropicStreamRenderer struct {
+	id    string
+	model string
+
+	nextIndex  int
+	openBlock  bool
+	openKind   string // text | thinking
+	openIndex  int
+	stopReason string
+
+	tools       []*anthropicStreamTool
+	toolByIndex map[int]*anthropicStreamTool
+	started     bool
+}
+
+// NewAnthropicStreamRenderer 构造渲染器。id 建议由请求 ID 派生（msg_ 前缀）。
+func NewAnthropicStreamRenderer(id, model string) *AnthropicStreamRenderer {
+	if strings.TrimSpace(id) == "" {
+		id = "msg_newtg"
+	}
+	return &AnthropicStreamRenderer{
+		id:          id,
+		model:       model,
+		toolByIndex: map[int]*anthropicStreamTool{},
+	}
+}
+
+// Start 返回 message_start 帧。
+func (r *AnthropicStreamRenderer) Start() []AnthropicSSEFrame {
+	if r.started {
+		return nil
+	}
+	r.started = true
+	data, _ := json.Marshal(map[string]any{
+		"type": "message_start",
+		"message": map[string]any{
+			"id":            r.id,
+			"type":          "message",
+			"role":          "assistant",
+			"model":         r.model,
+			"content":       []any{},
+			"stop_reason":   nil,
+			"stop_sequence": nil,
+			"usage":         map[string]any{"input_tokens": 0, "output_tokens": 0},
+		},
+	})
+	return []AnthropicSSEFrame{{Event: "message_start", Data: data}}
+}
+
+// Push 吃一个 IR 流事件，返回需要写出的 Anthropic 帧。
+//
+// usage 事件不在这里渲染（端点层负责累计与结算），只在 Close 时统一回写。
+func (r *AnthropicStreamRenderer) Push(ev contract.StreamEvent) []AnthropicSSEFrame {
+	switch ev.Kind {
+	case contract.EventDelta:
+		var frames []AnthropicSSEFrame
+		if ev.Reasoning != "" {
+			frames = append(frames, r.ensureBlock("thinking")...)
+			frames = append(frames, r.delta("thinking_delta", "thinking", ev.Reasoning))
+		}
+		if ev.Delta != "" {
+			frames = append(frames, r.ensureBlock("text")...)
+			frames = append(frames, r.delta("text_delta", "text", ev.Delta))
+		}
+		if ev.ToolDelta != nil {
+			r.bufferTool(*ev.ToolDelta)
+		}
+		return frames
+	case contract.EventFinish:
+		if reason := anthropicStreamFinishReason(ev.Raw); reason != "" {
+			r.stopReason = reason
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
+// Close 在流正常结束后输出收尾事件：关闭当前块、回写缓冲的工具块、
+// message_delta（stop_reason + 最终 usage）与 message_stop。
+//
+// 异常结束（客户端断开/上游错误/超时）绝不能调用 Close：伪造 message_stop
+// 会让客户端把失败流当成功（relay-03 §5.2/§10.3）。
+func (r *AnthropicStreamRenderer) Close(usage contract.Usage) []AnthropicSSEFrame {
+	var frames []AnthropicSSEFrame
+	if r.openBlock {
+		frames = append(frames, r.stopBlock())
+	}
+	for _, tool := range r.tools {
+		frames = append(frames, r.toolFrames(tool)...)
+	}
+	stopReason := AnthropicStopReason(r.stopReason)
+	if stopReason == "" {
+		// 上游没给结束原因时的兜底：有工具块按 tool_use，否则 end_turn。
+		if len(r.tools) > 0 {
+			stopReason = "tool_use"
+		} else {
+			stopReason = "end_turn"
+		}
+	}
+	// message_delta 同时带上 input/cache：异构上游的 usage 只在末尾出现，
+	// message_start 已经写成 0；不带的话客户端永远看不到输入 token。
+	delta, _ := json.Marshal(map[string]any{
+		"type":  "message_delta",
+		"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil},
+		"usage": AnthropicUsageObject(usage),
+	})
+	frames = append(frames, AnthropicSSEFrame{Event: "message_delta", Data: delta})
+	stop, _ := json.Marshal(map[string]any{"type": "message_stop"})
+	frames = append(frames, AnthropicSSEFrame{Event: "message_stop", Data: stop})
+	return frames
+}
+
+// ensureBlock 保证当前打开的块类型是 kind，必要时关闭旧块并开新块。
+func (r *AnthropicStreamRenderer) ensureBlock(kind string) []AnthropicSSEFrame {
+	if r.openBlock && r.openKind == kind {
+		return nil
+	}
+	var frames []AnthropicSSEFrame
+	if r.openBlock {
+		frames = append(frames, r.stopBlock())
+	}
+	contentBlock := map[string]any{}
+	switch kind {
+	case "thinking":
+		contentBlock = map[string]any{"type": "thinking", "thinking": ""}
+	default:
+		contentBlock = map[string]any{"type": "text", "text": ""}
+	}
+	r.openBlock = true
+	r.openKind = kind
+	r.openIndex = r.nextIndex
+	r.nextIndex++
+	start, _ := json.Marshal(map[string]any{
+		"type":          "content_block_start",
+		"index":         r.openIndex,
+		"content_block": contentBlock,
+	})
+	frames = append(frames, AnthropicSSEFrame{Event: "content_block_start", Data: start})
+	return frames
+}
+
+// delta 生成一个 content_block_delta 帧。
+func (r *AnthropicStreamRenderer) delta(deltaType, field, value string) AnthropicSSEFrame {
+	data, _ := json.Marshal(map[string]any{
+		"type":  "content_block_delta",
+		"index": r.openIndex,
+		"delta": map[string]any{"type": deltaType, field: value},
+	})
+	return AnthropicSSEFrame{Event: "content_block_delta", Data: data}
+}
+
+// stopBlock 关闭当前块。
+func (r *AnthropicStreamRenderer) stopBlock() AnthropicSSEFrame {
+	index := r.openIndex
+	r.openBlock = false
+	r.openKind = ""
+	data, _ := json.Marshal(map[string]any{"type": "content_block_stop", "index": index})
+	return AnthropicSSEFrame{Event: "content_block_stop", Data: data}
+}
+
+// bufferTool 按工具 index 累积 id/name/参数片段（首片才有 id/name）。
+func (r *AnthropicStreamRenderer) bufferTool(delta contract.ToolCallDelta) {
+	tool, ok := r.toolByIndex[delta.Index]
+	if !ok {
+		tool = &anthropicStreamTool{index: delta.Index}
+		r.toolByIndex[delta.Index] = tool
+		r.tools = append(r.tools, tool)
+	}
+	if delta.ID != "" {
+		tool.id = delta.ID
+	}
+	if delta.Name != "" {
+		tool.name = delta.Name
+	}
+	tool.args.WriteString(delta.ArgumentsFragment)
+}
+
+// toolFrames 把一个完整工具调用渲染为 start/delta/stop 三个帧。
+func (r *AnthropicStreamRenderer) toolFrames(tool *anthropicStreamTool) []AnthropicSSEFrame {
+	index := r.nextIndex
+	r.nextIndex++
+	// name 为空时保留空串：让问题在客户端显式暴露，而不是悄悄丢掉这次
+	// 工具调用（调用方仍能看到 id 与参数）。
+	start, _ := json.Marshal(map[string]any{
+		"type":  "content_block_start",
+		"index": index,
+		"content_block": map[string]any{
+			"type":  "tool_use",
+			"id":    tool.id,
+			"name":  tool.name,
+			"input": map[string]any{},
+		},
+	})
+	args := tool.args.String()
+	if strings.TrimSpace(args) == "" {
+		// 无参数工具：给一个空对象，避免客户端拼出非法 JSON。
+		args = "{}"
+	}
+	delta, _ := json.Marshal(map[string]any{
+		"type":  "content_block_delta",
+		"index": index,
+		"delta": map[string]any{"type": "input_json_delta", "partial_json": args},
+	})
+	stop, _ := json.Marshal(map[string]any{"type": "content_block_stop", "index": index})
+	return []AnthropicSSEFrame{
+		{Event: "content_block_start", Data: start},
+		{Event: "content_block_delta", Data: delta},
+		{Event: "content_block_stop", Data: stop},
+	}
+}
+
+// anthropicStreamFinishReason 从上游 Finish 帧的原始 SSE 体里提取结束原因。
+//
+// 为什么从 Raw 读：契约 StreamEvent 没有 FinishReason 字段（冻结结构），
+// 而 EventFinish 保留了上游原始帧。这里只嗅探 OpenAI 的
+// choices[].finish_reason 与 Gemini 的 candidates[].finishReason；同协议
+// Anthropic 上游走逐字节透传，不经过本渲染器。
+func anthropicStreamFinishReason(raw []byte) string {
+	payload := sseDataPayload(raw)
+	if len(payload) == 0 {
+		return ""
+	}
+	var probe struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Candidates []struct {
+			FinishReason string `json:"finishReason"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal(payload, &probe); err != nil {
+		return ""
+	}
+	for _, choice := range probe.Choices {
+		if choice.FinishReason != "" {
+			return strings.ToLower(choice.FinishReason)
+		}
+	}
+	for _, candidate := range probe.Candidates {
+		if candidate.FinishReason != "" {
+			return normalizeGeminiFinishReason(candidate.FinishReason)
+		}
+	}
+	return ""
+}
+
+// sseDataPayload 从原始 SSE 事件块里取 data 负载（多 data 行以 \n 合并）。
+// 原始体本身就是裸 JSON 时（单测直接喂 JSON），退回整段原文。
+func sseDataPayload(raw []byte) []byte {
+	text := strings.TrimSpace(string(raw))
+	if text == "" {
+		return nil
+	}
+	var data []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if strings.HasPrefix(line, "data:") {
+			data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	if len(data) == 0 {
+		// 裸 JSON（无 SSE 包装）：直接当 data 负载。
+		if strings.HasPrefix(text, "{") {
+			return []byte(text)
+		}
+		return nil
+	}
+	return []byte(strings.Join(data, "\n"))
 }

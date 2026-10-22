@@ -6,12 +6,13 @@ package httpapi
 // 上游用 httptest + 真实 adapters.Anthropic，覆盖「鉴权 → IR → 路由 → 执行 →
 // 原生回写」的完整装配面。
 //
-// R-59 的两条判定必须落在用例上：
-//   - 可用方向（Anthropic 入站 → Anthropic 协议族上游）：请求体的
-//     system/messages/max_tokens/stop_sequences 真的送到了上游，回写是
-//     Anthropic 形态（非流式 JSON / 原生 SSE），且计费只发生一次；
-//   - 不可用方向（Anthropic 入站 → OpenAI 上游）：501 problem+json +
-//     零计费 + 零上游请求（transport.count()==0）。
+// 方向矩阵（W18-B · R-W18-03 放开异构上游后）：
+//   - Anthropic 入站 → Anthropic 协议族上游：请求经 IR 重建、响应/SSE
+//     逐字节透传，计费只发生一次；
+//   - Anthropic 入站 → OpenAI / Gemini 上游：请求经 IR 编码，响应经
+//     ir.BuildAnthropicResponse / AnthropicStreamRenderer 回写为 Claude 形状，
+//     计费同样只发生一次（usage 与回写映射一致）；
+//   - 三类协议之外的渠道（任务插件）：501 problem+json + 零计费 + 零上游。
 
 import (
 	"context"
@@ -97,6 +98,43 @@ func messagesHeaders() map[string]string {
 	// x-api-key 是 Claude 客户端的规范载体（relay-01 §3.1）：鉴权中间件
 	// 按路径归一化后再交给 BuildRelayContext 重解析。
 	return map[string]string{"x-api-key": relayTestToken}
+}
+
+// parseSSEEvents 把 Anthropic SSE 响应体拆成事件名与 data JSON（按帧序）。
+// 只服务测试：Anthropic 帧以空行分隔，每个帧最多一个 event: 与 data: 行。
+func parseSSEEvents(t *testing.T, body string) ([]string, []map[string]any) {
+	t.Helper()
+	var (
+		events []string
+		datas  []map[string]any
+	)
+	for _, block := range strings.Split(strings.TrimSpace(body), "\n\n") {
+		if strings.TrimSpace(block) == "" {
+			continue
+		}
+		var (
+			event string
+			data  string
+		)
+		for _, line := range strings.Split(block, "\n") {
+			switch {
+			case strings.HasPrefix(line, "event:"):
+				event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			case strings.HasPrefix(line, "data:"):
+				data = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			}
+		}
+		if data == "" {
+			continue
+		}
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(data), &obj); err != nil {
+			t.Fatalf("SSE data 不是 JSON: %v; frame=%q", err, block)
+		}
+		events = append(events, event)
+		datas = append(datas, obj)
+	}
+	return events, datas
 }
 
 // TestMessagesAnthropicUpstreamRoundTrip 证明可用方向真的完成了转码：
@@ -247,69 +285,238 @@ func TestMessagesStreamNativeSSE(t *testing.T) {
 	}
 }
 
-// TestMessagesOpenAIUpstreamFailsClosed 证明不可用方向 fail-closed：
-// 501 problem+json，零计费，零上游请求（R-59 / R-13 同口径）。
-func TestMessagesOpenAIUpstreamFailsClosed(t *testing.T) {
+// TestMessagesOpenAIUpstreamJSONRoundTrip 证明新方向真的完成了响应转码
+// （W18-B · R-W18-03）：OpenAI chat.completion → Claude message，usage 按
+// 关系布尔换算（OpenAI prompt 含缓存，Anthropic input 不含），计费恰好一次。
+func TestMessagesOpenAIUpstreamJSONRoundTrip(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]any
 	env, counter := messagesTestEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("upstream must not be called for an unsupported direction: %s", r.URL.Path)
+		gotPath = r.URL.Path
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-9","object":"chat.completion","model":"gpt-upstream",`+
+			`"choices":[{"index":0,"message":{"role":"assistant","content":"hello from openai"},`+
+			`"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,`+
+			`"prompt_tokens_details":{"cached_tokens":4}}}`)
 	})
 
-	body := `{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"stream":false}`
-	w := env.do(t, http.MethodPost, "/v1/messages", body, messagesHeaders())
-
-	if w.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want 501; body=%s", w.Code, w.Body.String())
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"stream":false}`,
+		messagesHeaders())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
-	if got := w.Header().Get("Content-Type"); !strings.Contains(got, "application/problem+json") {
-		t.Fatalf("content-type = %q, want application/problem+json", got)
+	if got := w.Header().Get("Content-Type"); !strings.Contains(got, "application/json") {
+		t.Fatalf("content-type = %q, want application/json", got)
 	}
-	var problem map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &problem); err != nil {
-		t.Fatalf("501 body is not JSON: %v", err)
+	var respObj map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &respObj); err != nil {
+		t.Fatalf("response is not JSON: %v; body=%s", err, w.Body.String())
 	}
-	if problem["type"] != problemTypeEndpointNotSupported || problem["status"] != float64(501) {
-		t.Fatalf("problem = %v, want type=%s status=501", problem, problemTypeEndpointNotSupported)
+	if respObj["type"] != "message" || respObj["role"] != "assistant" || respObj["id"] != "chatcmpl-9" {
+		t.Fatalf("response = %s, want Anthropic message shape", w.Body.String())
 	}
-	if got := counter.count(); got != 0 {
-		t.Fatalf("upstream calls = %d, want 0", got)
+	if respObj["stop_reason"] != "end_turn" {
+		t.Fatalf("stop_reason = %v, want end_turn", respObj["stop_reason"])
 	}
-	if got := env.billing.preConsumeCalls(); got != 0 {
-		t.Fatalf("PreConsume calls = %d, want 0", got)
+	blocks := respObj["content"].([]any)
+	if len(blocks) != 1 || blocks[0].(map[string]any)["text"] != "hello from openai" {
+		t.Fatalf("content = %v, want one text block", blocks)
 	}
-	if got := env.billing.terminateCount(); got != 0 {
-		t.Fatalf("Terminate calls = %d, want 0", got)
+	usage := respObj["usage"].(map[string]any)
+	// OpenAI prompt_tokens(10) 含 cached(4) → Anthropic input_tokens = 6。
+	if usage["input_tokens"] != float64(6) || usage["output_tokens"] != float64(5) {
+		t.Fatalf("usage = %v, want input 6 / output 5", usage)
 	}
-	if got := env.billing.refundCount(); got != 0 {
-		t.Fatalf("Refund calls = %d, want 0（方向不支持不得开设计费会话）", got)
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("upstream path = %q, want /v1/chat/completions", gotPath)
+	}
+	// 请求方向仍经 IR 编码：Anthropic 的 messages/system/max_tokens 送到 OpenAI 形状。
+	if gotBody["max_tokens"] != float64(16) {
+		t.Fatalf("upstream max_tokens = %v, want 16", gotBody["max_tokens"])
+	}
+	// 计费：与 chat 同一条接缝，恰好一次；usage 与回写映射同源。
+	if env.billing.preConsumeCalls() != 1 || env.billing.terminateCount() != 1 || env.billing.refundCount() != 0 {
+		t.Fatalf("billing = pre %d/term %d/refund %d, want 1/1/0",
+			env.billing.preConsumeCalls(), env.billing.terminateCount(), env.billing.refundCount())
+	}
+	if fact := env.billing.lastFact(); fact.Usage.Prompt != 10 || fact.Usage.Completion != 5 {
+		t.Fatalf("usage fact = %+v, want prompt 10 / completion 5", fact.Usage)
+	}
+	if counter.count() != 1 {
+		t.Fatalf("upstream calls = %d, want 1", counter.count())
 	}
 }
 
-// TestMessagesGeminiUpstreamFailsClosed：Gemini 原生渠道同样不可转码（响应
-// 方向缺 IR → Anthropic 编码器），必须走同一条 501 分支。
-func TestMessagesGeminiUpstreamFailsClosed(t *testing.T) {
+// TestMessagesGeminiUpstreamJSONRoundTrip：Gemini generateContent → Claude message。
+func TestMessagesGeminiUpstreamJSONRoundTrip(t *testing.T) {
+	var gotPath string
 	env, counter := messagesTestEnv(t, contract.ChannelTypeGemini, func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("upstream must not be called: %s", r.URL.Path)
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"hello from gemini"}]},`+
+			`"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3,`+
+			`"totalTokenCount":10}}`)
+	})
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":8,"messages":[{"role":"user","content":"hi"}],"stream":false}`,
+		messagesHeaders())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var respObj map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &respObj); err != nil {
+		t.Fatalf("response is not JSON: %v", err)
+	}
+	if respObj["type"] != "message" || respObj["stop_reason"] != "end_turn" {
+		t.Fatalf("response = %s, want Anthropic message with end_turn", w.Body.String())
+	}
+	usage := respObj["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(7) || usage["output_tokens"] != float64(3) {
+		t.Fatalf("usage = %v, want input 7 / output 3", usage)
+	}
+	if !strings.Contains(gotPath, ":generateContent") {
+		t.Fatalf("upstream path = %q, want Gemini generateContent", gotPath)
+	}
+	if env.billing.terminateCount() != 1 || env.billing.refundCount() != 0 || counter.count() != 1 {
+		t.Fatalf("billing/upstream = term %d/refund %d/upstream %d, want 1/0/1",
+			env.billing.terminateCount(), env.billing.refundCount(), counter.count())
+	}
+	if fact := env.billing.lastFact(); fact.Usage.Prompt != 7 || fact.Usage.Completion != 3 {
+		t.Fatalf("usage fact = %+v, want prompt 7 / completion 3", fact.Usage)
+	}
+}
+
+// TestMessagesOpenAICrossProtocolStream 证明流式新方向的 Claude 事件序列：
+// message_start → content_block_start/delta/stop → message_delta → message_stop，
+// 且 usage 与结算同源（message_delta 的 usage == UsageFact）。
+func TestMessagesOpenAICrossProtocolStream(t *testing.T) {
+	var gotIncludeUsage any
+	env, counter := messagesTestEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &payload)
+		if options, ok := payload["stream_options"].(map[string]any); ok {
+			gotIncludeUsage = options["include_usage"]
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"id":"chatcmpl-s","model":"gpt-upstream","choices":[{"index":0,"delta":{"content":"Hel"}}]}
+
+data: {"id":"chatcmpl-s","model":"gpt-upstream","choices":[{"index":0,"delta":{"content":"lo"},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-s","model":"gpt-upstream","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}
+
+data: [DONE]
+
+`)
+	})
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"stream":true}`,
+		messagesHeaders())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Content-Type"); !strings.Contains(got, "text/event-stream") {
+		t.Fatalf("content-type = %q, want text/event-stream", got)
+	}
+	wantOrder := []string{
+		"message_start", "content_block_start", "content_block_delta", "content_block_delta",
+		"content_block_stop", "message_delta", "message_stop",
+	}
+	events, datas := parseSSEEvents(t, w.Body.String())
+	if strings.Join(events, ",") != strings.Join(wantOrder, ",") {
+		t.Fatalf("event sequence = %v, want %v; body=%s", events, wantOrder, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "[DONE]") || strings.Contains(w.Body.String(), "chat.completion.chunk") {
+		t.Fatalf("SSE body contains OpenAI framing: %s", w.Body.String())
+	}
+	var text string
+	for i, name := range events {
+		if name == "content_block_delta" {
+			delta := datas[i]["delta"].(map[string]any)
+			if delta["type"] == "text_delta" {
+				text += delta["text"].(string)
+			}
+		}
+	}
+	if text != "Hello" {
+		t.Fatalf("rendered text = %q, want Hello", text)
+	}
+	var stopReason any
+	var outUsage map[string]any
+	for i, name := range events {
+		if name == "message_delta" {
+			stopReason = datas[i]["delta"].(map[string]any)["stop_reason"]
+			outUsage = datas[i]["usage"].(map[string]any)
+		}
+	}
+	if stopReason != "end_turn" {
+		t.Fatalf("stop_reason = %v, want end_turn", stopReason)
+	}
+	if outUsage["input_tokens"] != float64(10) || outUsage["output_tokens"] != float64(5) {
+		t.Fatalf("message_delta usage = %v, want 10/5", outUsage)
+	}
+	if gotIncludeUsage != true {
+		t.Fatalf("upstream stream_options.include_usage = %v, want true", gotIncludeUsage)
+	}
+	if env.billing.preConsumeCalls() != 1 || env.billing.terminateCount() != 1 || env.billing.refundCount() != 0 {
+		t.Fatalf("billing = pre %d/term %d/refund %d, want 1/1/0",
+			env.billing.preConsumeCalls(), env.billing.terminateCount(), env.billing.refundCount())
+	}
+	fact := env.billing.lastFact()
+	if fact.Usage.Prompt != 10 || fact.Usage.Completion != 5 {
+		t.Fatalf("usage fact = %+v, want prompt 10 / completion 5", fact.Usage)
+	}
+	if !fact.Stream {
+		t.Fatal("usage fact must be marked Stream")
+	}
+	if counter.count() != 1 {
+		t.Fatalf("upstream calls = %d, want 1", counter.count())
+	}
+}
+
+// TestMessagesGeminiCrossProtocolStream：Gemini 流式帧同样渲染为 Claude 事件，
+// 且 usageMetadata → message_delta.usage。
+func TestMessagesGeminiCrossProtocolStream(t *testing.T) {
+	env, counter := messagesTestEnv(t, contract.ChannelTypeGemini, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"Hi"}]}}]}
+
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":" there"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":2,"totalTokenCount":6}}
+
+`)
 	})
 	w := env.do(t, http.MethodPost, "/v1/messages",
 		`{"model":"claude-test","max_tokens":8,"messages":[{"role":"user","content":"hi"}],"stream":true}`,
 		messagesHeaders())
-	if w.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want 501; body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
-	if got := w.Header().Get("Content-Type"); !strings.Contains(got, "application/problem+json") {
-		t.Fatalf("content-type = %q, want application/problem+json", got)
+	events, datas := parseSSEEvents(t, w.Body.String())
+	wantOrder := []string{
+		"message_start", "content_block_start", "content_block_delta", "content_block_delta",
+		"content_block_stop", "message_delta", "message_stop",
 	}
-	var problem map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &problem); err != nil {
-		t.Fatalf("501 body is not JSON: %v", err)
+	if strings.Join(events, ",") != strings.Join(wantOrder, ",") {
+		t.Fatalf("event sequence = %v, want %v; body=%s", events, wantOrder, w.Body.String())
 	}
-	if problem["type"] != problemTypeEndpointNotSupported {
-		t.Fatalf("problem type = %v, want %s", problem["type"], problemTypeEndpointNotSupported)
+	var outUsage map[string]any
+	for i, name := range events {
+		if name == "message_delta" {
+			outUsage = datas[i]["usage"].(map[string]any)
+		}
 	}
-	if counter.count() != 0 || env.billing.preConsumeCalls() != 0 ||
-		env.billing.terminateCount() != 0 || env.billing.refundCount() != 0 {
-		t.Fatalf("unsupported direction must be side-effect free: calls=%d pre=%d term=%d refund=%d",
-			counter.count(), env.billing.preConsumeCalls(), env.billing.terminateCount(), env.billing.refundCount())
+	if outUsage["input_tokens"] != float64(4) || outUsage["output_tokens"] != float64(2) {
+		t.Fatalf("message_delta usage = %v, want 4/2", outUsage)
+	}
+	if fact := env.billing.lastFact(); fact.Usage.Prompt != 4 || fact.Usage.Completion != 2 {
+		t.Fatalf("usage fact = %+v, want prompt 4 / completion 2", fact.Usage)
+	}
+	if env.billing.terminateCount() != 1 || env.billing.refundCount() != 0 || counter.count() != 1 {
+		t.Fatalf("billing/upstream = term %d/refund %d/upstream %d, want 1/0/1",
+			env.billing.terminateCount(), env.billing.refundCount(), counter.count())
 	}
 }
 
@@ -374,11 +581,15 @@ func TestMessagesTaskPluginUpstreamFailsClosed(t *testing.T) {
 // TestMessagesDirectionSupported 直接锁住方向判定函数（复核 M-1 的变异 A）：
 // 判定实现被改成「恒 true / 恒 false」或 Get 失败语义漂移，这里先红，
 // 不再只靠端点用例兜底。
+//
+// W18-B · R-W18-03：OpenAI/Gemini 也属支持（经响应编码器），任务插件等
+// 无三类适配器的类型仍不支持。
 func TestMessagesDirectionSupported(t *testing.T) {
 	anthropicCh := &store.Channel{ID: 1, Type: string(contract.ChannelTypeAnthropic)}
 	openaiCh := &store.Channel{ID: 2, Type: string(contract.ChannelTypeOpenAI)}
 	moonshotCh := &store.Channel{ID: 3, Type: string(contract.ChannelTypeMoonshot)}
 	geminiCh := &store.Channel{ID: 4, Type: string(contract.ChannelTypeGemini)}
+	taskCh := &store.Channel{ID: 5, Type: string(contract.ChannelTypeTaskPlugin)}
 	cases := []struct {
 		name       string
 		candidates []contract.ChannelCandidate
@@ -390,15 +601,17 @@ func TestMessagesDirectionSupported(t *testing.T) {
 		{name: "moonshot", candidates: []contract.ChannelCandidate{{ChannelID: 3}},
 			channels: map[int64]*store.Channel{3: moonshotCh}, want: true},
 		{name: "openai", candidates: []contract.ChannelCandidate{{ChannelID: 2}},
-			channels: map[int64]*store.Channel{2: openaiCh}, want: false},
+			channels: map[int64]*store.Channel{2: openaiCh}, want: true},
 		{name: "gemini", candidates: []contract.ChannelCandidate{{ChannelID: 4}},
-			channels: map[int64]*store.Channel{4: geminiCh}, want: false},
+			channels: map[int64]*store.Channel{4: geminiCh}, want: true},
+		{name: "task plugin", candidates: []contract.ChannelCandidate{{ChannelID: 5}},
+			channels: map[int64]*store.Channel{5: taskCh}, want: false},
 		{name: "empty", candidates: nil, channels: map[int64]*store.Channel{}, want: false},
 		// Get 失败的候选按不可用跳过：后面的 Anthropic 候选仍能判定为可用。
 		{name: "get error then anthropic",
 			candidates: []contract.ChannelCandidate{{ChannelID: 9}, {ChannelID: 1}},
 			channels:   map[int64]*store.Channel{1: anthropicCh}, want: true},
-		// 全部 Get 失败 → 没有可用 Anthropic 渠道。
+		// 全部 Get 失败 → 没有可用渠道。
 		{name: "all get errors", candidates: []contract.ChannelCandidate{{ChannelID: 9}},
 			channels: map[int64]*store.Channel{}, want: false},
 	}

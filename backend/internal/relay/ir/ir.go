@@ -583,6 +583,13 @@ func BuildOpenAIRequestBody(req *contract.Request) ([]byte, error) {
 	// 已建模字段一律以归一化层为准。
 	obj["model"] = req.Model
 	obj["stream"] = req.Stream
+	if req.Stream && !isOpenAIRawFormat(req.RawFormat) {
+		// 跨协议入口（W18-B · R-W18-03：Anthropic 入站 → OpenAI 上游）经 IR
+		// 重建请求体，没有原始 stream_options 可透传；不补 include_usage 就
+		// 拿不到流式 usage，Claude 客户端的 message_delta 与结算都会是零。
+		// 同协议 OpenAI 请求不走这里：继续保持客户端原语义（含显式 false）。
+		obj["stream_options"] = map[string]any{"include_usage": true}
+	}
 	messages, err := encodeMessages(req.Messages)
 	if err != nil {
 		return nil, err

@@ -527,3 +527,327 @@ func TestAnthropicBase64RoundTripStable(t *testing.T) {
 		t.Fatalf("图片负载必须按 base64 写入：%s", encoded)
 	}
 }
+
+// ============================================================================
+// W18-B · R-W18-03：IR → Anthropic 响应编码与 SSE 渲染
+// ============================================================================
+
+func decodeAnthropicJSON(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil {
+		t.Fatalf("响应不是 JSON 对象: %v; body=%s", err, body)
+	}
+	return obj
+}
+
+func contentBlocks(t *testing.T, obj map[string]any) []any {
+	t.Helper()
+	blocks, ok := obj["content"].([]any)
+	if !ok {
+		t.Fatalf("content 不是数组: %v", obj["content"])
+	}
+	return blocks
+}
+
+// TestBuildAnthropicResponseTextAndUsage：OpenAI 上游的 IR 响应回写为 Claude
+// 消息，且 usage 按关系布尔换算（OpenAI prompt 含缓存读，Anthropic input 不含）。
+func TestBuildAnthropicResponseTextAndUsage(t *testing.T) {
+	raw := `{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,` +
+		`"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],` +
+		`"usage":{"prompt_tokens":10,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":4}}}`
+	resp, usage, err := ParseOpenAIResponse([]byte(raw))
+	if err != nil {
+		t.Fatalf("ParseOpenAIResponse: %v", err)
+	}
+	body, err := BuildAnthropicResponse(resp, usage)
+	if err != nil {
+		t.Fatalf("BuildAnthropicResponse: %v", err)
+	}
+	obj := decodeAnthropicJSON(t, body)
+	if obj["type"] != "message" || obj["role"] != "assistant" {
+		t.Fatalf("type/role = %v/%v, want message/assistant", obj["type"], obj["role"])
+	}
+	if obj["id"] != "chatcmpl-1" || obj["model"] != "gpt-4o" {
+		t.Fatalf("id/model = %v/%v", obj["id"], obj["model"])
+	}
+	if obj["stop_reason"] != "end_turn" {
+		t.Fatalf("stop_reason = %v, want end_turn", obj["stop_reason"])
+	}
+	if obj["stop_sequence"] != nil {
+		t.Fatalf("stop_sequence = %v, want null", obj["stop_sequence"])
+	}
+	blocks := contentBlocks(t, obj)
+	if len(blocks) != 1 {
+		t.Fatalf("content blocks = %d, want 1", len(blocks))
+	}
+	block := blocks[0].(map[string]any)
+	if block["type"] != "text" || block["text"] != "hello" {
+		t.Fatalf("block = %v, want text hello", block)
+	}
+	usageObj := obj["usage"].(map[string]any)
+	// input_tokens = prompt(10) - cached(4)；output_tokens = completion(5)。
+	if usageObj["input_tokens"] != float64(6) || usageObj["output_tokens"] != float64(5) {
+		t.Fatalf("usage = %v, want input 6 / output 5", usageObj)
+	}
+	if usageObj["cache_read_input_tokens"] != float64(4) {
+		t.Fatalf("cache_read_input_tokens = %v, want 4", usageObj["cache_read_input_tokens"])
+	}
+}
+
+// TestAnthropicStopReasonMapping 锁定 IR 归一值 → Anthropic stop_reason 的
+// 互逆映射（R-W18-03；变异「把 stop_reason 映射改错」必须让它红）。
+func TestAnthropicStopReasonMapping(t *testing.T) {
+	cases := map[string]string{
+		"stop":           "end_turn",
+		"length":         "max_tokens",
+		"tool_calls":     "tool_use",
+		"tool_use":       "tool_use",
+		"content_filter": "refusal",
+		"":               "",
+		"pause_turn":     "pause_turn", // 未知值保留小写原文，不猜成 end_turn
+	}
+	for in, want := range cases {
+		if got := AnthropicStopReason(in); got != want {
+			t.Fatalf("AnthropicStopReason(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestBuildAnthropicResponseToolUseAndThinking：thinking / tool_use 按 IR 已有
+// 载体回写；stop_reason 由 tool_calls 映射为 tool_use。
+func TestBuildAnthropicResponseToolUseAndThinking(t *testing.T) {
+	resp := &contract.Response{
+		ID: "msg_x", Model: "upstream-model", FinishReason: "tool_calls",
+		Choices: []contract.Choice{{Index: 0, FinishReason: "tool_calls", Message: contract.Message{
+			Role: contract.RoleAssistant,
+			Content: []contract.ContentPart{
+				{Kind: contract.PartText, Text: "plan", Meta: map[string]any{
+					"thought": true, "anthropic_thinking": true, "signature": "sig-1",
+				}},
+				{Kind: contract.PartText, Text: "answer"},
+				{Kind: contract.PartToolCall, Text: `{"q":"x"}`, Meta: map[string]any{
+					"id": "toolu_1", "name": "lookup",
+				}},
+			},
+		}}},
+	}
+	body, err := BuildAnthropicResponse(resp, contract.Usage{Prompt: 1, Completion: 2})
+	if err != nil {
+		t.Fatalf("BuildAnthropicResponse: %v", err)
+	}
+	obj := decodeAnthropicJSON(t, body)
+	if obj["stop_reason"] != "tool_use" {
+		t.Fatalf("stop_reason = %v, want tool_use", obj["stop_reason"])
+	}
+	blocks := contentBlocks(t, obj)
+	if len(blocks) != 3 {
+		t.Fatalf("content blocks = %d, want 3", len(blocks))
+	}
+	thinking := blocks[0].(map[string]any)
+	if thinking["type"] != "thinking" || thinking["thinking"] != "plan" || thinking["signature"] != "sig-1" {
+		t.Fatalf("thinking block = %v", thinking)
+	}
+	if text := blocks[1].(map[string]any); text["type"] != "text" || text["text"] != "answer" {
+		t.Fatalf("text block = %v", text)
+	}
+	tool := blocks[2].(map[string]any)
+	if tool["type"] != "tool_use" || tool["id"] != "toolu_1" || tool["name"] != "lookup" {
+		t.Fatalf("tool_use block = %v", tool)
+	}
+	if input := tool["input"].(map[string]any); input["q"] != "x" {
+		t.Fatalf("tool_use.input = %v, want {q:x}", input)
+	}
+}
+
+// TestBuildAnthropicResponseUnmappableBlocksFailLoudly：无法用 Anthropic 响应
+// 块表达的部件必须显式报错（信息损失清单），不得静默丢弃。
+func TestBuildAnthropicResponseUnmappableBlocksFailLoudly(t *testing.T) {
+	cases := map[string]contract.ContentPart{
+		"tool_result": {Kind: contract.PartToolResult, Text: "x"},
+		"audio":       {Kind: contract.PartAudio, Payload: []byte("a")},
+	}
+	for name, part := range cases {
+		t.Run(name, func(t *testing.T) {
+			resp := &contract.Response{Choices: []contract.Choice{{Message: contract.Message{
+				Role: contract.RoleAssistant, Content: []contract.ContentPart{part},
+			}}}}
+			if _, err := BuildAnthropicResponse(resp, contract.Usage{}); err == nil {
+				t.Fatal("无法映射的块必须返回错误，而不是静默丢弃")
+			}
+		})
+	}
+}
+
+// TestBuildAnthropicResponseRedactedThinking：加密思考块按 data 原样回写。
+func TestBuildAnthropicResponseRedactedThinking(t *testing.T) {
+	resp := &contract.Response{Choices: []contract.Choice{{Message: contract.Message{
+		Role: contract.RoleAssistant,
+		Content: []contract.ContentPart{{
+			Kind: contract.PartText, Meta: map[string]any{"redacted_thinking": "cipher"},
+		}},
+	}}}}
+	body, err := BuildAnthropicResponse(resp, contract.Usage{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := contentBlocks(t, decodeAnthropicJSON(t, body))[0].(map[string]any)
+	if block["type"] != "redacted_thinking" || block["data"] != "cipher" {
+		t.Fatalf("block = %v, want redacted_thinking cipher", block)
+	}
+}
+
+// TestAnthropicResponseRoundTrip 证明编码结果能被本包再次解析回等价 IR。
+func TestAnthropicResponseRoundTrip(t *testing.T) {
+	original := `{"id":"msg_rt","type":"message","role":"assistant","model":"claude-x",` +
+		`"content":[{"type":"thinking","thinking":"t","signature":"s"},` +
+		`{"type":"text","text":"hi"},` +
+		`{"type":"tool_use","id":"toolu_9","name":"lookup","input":{"q":"y"}}],` +
+		`"stop_reason":"tool_use","usage":{"input_tokens":3,"output_tokens":7}}`
+	first, usage, err := ParseAnthropicResponse([]byte(original))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := BuildAnthropicResponse(first, usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, reParsed, err := ParseAnthropicResponse(body)
+	if err != nil {
+		t.Fatalf("二次解析失败: %v; body=%s", err, body)
+	}
+	if second.FinishReason != "tool_calls" {
+		t.Fatalf("finish reason = %q, want tool_calls", second.FinishReason)
+	}
+	if reParsed.Prompt != 3 || reParsed.Completion != 7 {
+		t.Fatalf("usage = %+v, want prompt 3 / completion 7", reParsed)
+	}
+	var kinds []string
+	for _, part := range second.Choices[0].Message.Content {
+		kinds = append(kinds, string(part.Kind))
+	}
+	want := []string{"text", "text", "tool_call"} // thinking 在 IR 里是 PartText+Meta
+	if strings.Join(kinds, ",") != strings.Join(want, ",") {
+		t.Fatalf("kinds = %v, want %v", kinds, want)
+	}
+	if !isReasoningPart(second.Choices[0].Message.Content[0]) {
+		t.Fatal("thinking 块往返后必须仍被识别为推理部件（不得混入正文）")
+	}
+}
+
+// TestAnthropicStreamRendererTextOrder：文本流的完整事件顺序与 usage。
+// 变异「删掉 message_stop」会让本用例红（R-W18-03 变异点①）。
+func TestAnthropicStreamRendererTextOrder(t *testing.T) {
+	r := NewAnthropicStreamRenderer("msg_1", "m")
+	var frames []AnthropicSSEFrame
+	frames = append(frames, r.Start()...)
+	frames = append(frames, r.Push(contract.StreamEvent{Kind: contract.EventDelta, Delta: "Hel"})...)
+	frames = append(frames, r.Push(contract.StreamEvent{Kind: contract.EventDelta, Delta: "lo"})...)
+	frames = append(frames, r.Push(contract.StreamEvent{
+		Kind: contract.EventFinish,
+		Raw:  []byte(`data: {"choices":[{"finish_reason":"stop"}]}`),
+	})...)
+	frames = append(frames, r.Close(contract.Usage{Prompt: 4, Completion: 2})...)
+
+	var names []string
+	for _, frame := range frames {
+		names = append(names, frame.Event)
+	}
+	want := []string{
+		"message_start",
+		"content_block_start", "content_block_delta", "content_block_delta", "content_block_stop",
+		"message_delta", "message_stop",
+	}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Fatalf("events = %v, want %v", names, want)
+	}
+	delta := decodeAnthropicJSON(t, frames[5].Data)
+	if delta["type"] != "message_delta" {
+		t.Fatalf("message_delta = %v", delta)
+	}
+	d := delta["delta"].(map[string]any)
+	if d["stop_reason"] != "end_turn" {
+		t.Fatalf("stop_reason = %v, want end_turn", d["stop_reason"])
+	}
+	usage := delta["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(4) || usage["output_tokens"] != float64(2) {
+		t.Fatalf("message_delta usage = %v, want 4/2", usage)
+	}
+	// message_start 的 usage 必须是 0（异构上游的用量在末尾才可知）。
+	start := decodeAnthropicJSON(t, frames[0].Data)
+	if start["type"] != "message_start" {
+		t.Fatalf("first frame = %v, want message_start", start)
+	}
+	inner := start["message"].(map[string]any)
+	startUsage := inner["usage"].(map[string]any)
+	if startUsage["input_tokens"] != float64(0) || startUsage["output_tokens"] != float64(0) {
+		t.Fatalf("message_start usage = %v, want zeros", startUsage)
+	}
+}
+
+// TestAnthropicStreamRendererThinkingAndTools：推理与工具调用的块切换、
+// input_json_delta 与 tool_use 的 stop_reason。
+func TestAnthropicStreamRendererThinkingAndTools(t *testing.T) {
+	r := NewAnthropicStreamRenderer("msg_t", "m")
+	var frames []AnthropicSSEFrame
+	frames = append(frames, r.Start()...)
+	frames = append(frames, r.Push(contract.StreamEvent{Kind: contract.EventDelta, Reasoning: "think"})...)
+	frames = append(frames, r.Push(contract.StreamEvent{Kind: contract.EventDelta, Delta: "answer"})...)
+	frames = append(frames, r.Push(contract.StreamEvent{Kind: contract.EventDelta, ToolDelta: &contract.ToolCallDelta{
+		Index: 0, ID: "call_1", Name: "lookup", ArgumentsFragment: `{"q":`,
+	}})...)
+	frames = append(frames, r.Push(contract.StreamEvent{Kind: contract.EventDelta, ToolDelta: &contract.ToolCallDelta{
+		Index: 0, ArgumentsFragment: `"x"}`,
+	}})...)
+	frames = append(frames, r.Close(contract.Usage{})...)
+
+	var (
+		sawThinkingDelta bool
+		sawToolStart     bool
+		sawToolArgs      bool
+		lastStopReason   any
+	)
+	for _, frame := range frames {
+		obj := decodeAnthropicJSON(t, frame.Data)
+		switch frame.Event {
+		case "content_block_delta":
+			delta := obj["delta"].(map[string]any)
+			if delta["type"] == "thinking_delta" && delta["thinking"] == "think" {
+				sawThinkingDelta = true
+			}
+			if delta["type"] == "input_json_delta" && delta["partial_json"] == `{"q":"x"}` {
+				sawToolArgs = true
+			}
+		case "content_block_start":
+			block := obj["content_block"].(map[string]any)
+			if block["type"] == "tool_use" && block["id"] == "call_1" && block["name"] == "lookup" {
+				sawToolStart = true
+			}
+		case "message_delta":
+			lastStopReason = obj["delta"].(map[string]any)["stop_reason"]
+		}
+	}
+	if !sawThinkingDelta || !sawToolStart || !sawToolArgs {
+		t.Fatalf("thinking=%v toolStart=%v toolArgs=%v, want all true",
+			sawThinkingDelta, sawToolStart, sawToolArgs)
+	}
+	if lastStopReason != "tool_use" {
+		t.Fatalf("stop_reason = %v, want tool_use（有工具块时的兜底）", lastStopReason)
+	}
+}
+
+// TestAnthropicStreamRendererGeminiFinishReason：Finish 帧的原始体按协议
+// 嗅探（Gemini MAX_TOKENS → max_tokens），不依赖 IR 事件新增字段。
+func TestAnthropicStreamRendererGeminiFinishReason(t *testing.T) {
+	r := NewAnthropicStreamRenderer("msg_g", "m")
+	_ = r.Start()
+	_ = r.Push(contract.StreamEvent{
+		Kind: contract.EventFinish,
+		Raw:  []byte(`data: {"candidates":[{"finishReason":"MAX_TOKENS"}]}`),
+	})
+	frames := r.Close(contract.Usage{})
+	delta := decodeAnthropicJSON(t, frames[0].Data)
+	if got := delta["delta"].(map[string]any)["stop_reason"]; got != "max_tokens" {
+		t.Fatalf("stop_reason = %v, want max_tokens", got)
+	}
+}
