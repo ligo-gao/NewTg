@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"sort"
 	"time"
@@ -22,6 +23,11 @@ import (
 
 // systemProbeTimeout 与 /readyz 的单依赖探测上限一致。
 const systemProbeTimeout = time.Second
+
+// systemStatusPollIntervalSeconds 是系统状态页的自动刷新周期（modules-08
+// §3.7 冻结 10s）。后端把它作为「轮询状态」卡的数据源下发，前端不再硬编码
+// 第二份；暂停/恢复仍是浏览器本地状态（HTTP 无状态，服务端无从得知）。
+const systemStatusPollIntervalSeconds = 10
 
 // SystemStatusConfig 是系统状态端点的装配输入。
 type SystemStatusConfig struct {
@@ -84,6 +90,32 @@ type systemStatusResponse struct {
 	Uptime    int64              `json:"uptime"`
 	Instances []systemInstance   `json:"instances"`
 	Deps      systemDependencies `json:"dependencies"`
+	MFA       systemMFA          `json:"mfa"`
+	Polling   systemPolling      `json:"polling"`
+}
+
+// systemMFA 是 F-08-21 的全局 + 管理面双口径覆盖率。
+//
+// Available=false 表示本副本当前读不到 users 表（DB 未装配或查询失败）。
+// 此时仍返回零值字段以保持契约形状，但界面必须显示「不可用」而不是
+// 「0% 覆盖」——后者会把「没查」伪装成「没人启用」。
+type systemMFA struct {
+	Available           bool    `json:"available"`
+	TotpEnabledUsers    int64   `json:"totp_enabled_users"`
+	TotalUsers          int64   `json:"total_users"`
+	MFACoveragePct      float64 `json:"mfa_coverage_pct"`
+	TotpEnabledAdmins   int64   `json:"totp_enabled_admins"`
+	TotalAdmins         int64   `json:"total_admins"`
+	AdminMFACoveragePct float64 `json:"admin_mfa_coverage_pct"`
+}
+
+// systemPolling 是「轮询状态」卡的只读数据：周期由设计冻结，服务端下发
+// 以免前端出现第二份常量；暂停状态属于浏览器本地偏好，不在这里。
+type systemPolling struct {
+	IntervalSeconds              int       `json:"interval_seconds"`
+	HeartbeatIntervalSeconds     int       `json:"heartbeat_interval_seconds"`
+	UpdateCheckBackgroundPolling bool      `json:"update_check_background_polling"`
+	ServerTime                   time.Time `json:"server_time"`
 }
 
 type systemInstance struct {
@@ -129,7 +161,55 @@ func (h *SystemStatusHandlers) handle(w http.ResponseWriter, r *http.Request) {
 			// 绝不把「没查」伪装成「健康」。
 			Worker: "unknown",
 		},
+		MFA: h.mfaOverview(r.Context()),
+		Polling: systemPolling{
+			IntervalSeconds:              systemStatusPollIntervalSeconds,
+			HeartbeatIntervalSeconds:     int(InstanceHeartbeatInterval / time.Second),
+			UpdateCheckBackgroundPolling: false,
+			ServerTime:                   now,
+		},
 	})
+}
+
+// mfaOverview 查询全局与管理面两个口径。只做聚合计数，绝不返回用户标识、
+// 种子或备用码。查询失败按 available=false 返回，不把状态端点变成 503：
+// 版本/就绪信息仍应可读。
+func (h *SystemStatusHandlers) mfaOverview(ctx context.Context) systemMFA {
+	if h.db == nil {
+		return systemMFA{}
+	}
+	ctx, cancel := context.WithTimeout(ctx, systemProbeTimeout)
+	defer cancel()
+
+	var overview systemMFA
+	err := h.db.QueryRowContext(ctx, `
+		SELECT
+			count(*) FILTER (WHERE status = 'enabled'),
+			count(*) FILTER (WHERE status = 'enabled' AND totp_enabled),
+			count(*) FILTER (WHERE status = 'enabled' AND role = 'admin'),
+			count(*) FILTER (WHERE status = 'enabled' AND role = 'admin' AND totp_enabled)
+		FROM users`).
+		Scan(&overview.TotalUsers, &overview.TotpEnabledUsers,
+			&overview.TotalAdmins, &overview.TotpEnabledAdmins)
+	if err != nil {
+		if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+			h.log.Warn("system status: mfa coverage query failed", "err", err)
+		}
+		return systemMFA{}
+	}
+	overview.Available = true
+	overview.MFACoveragePct = coveragePct(overview.TotpEnabledUsers, overview.TotalUsers)
+	overview.AdminMFACoveragePct = coveragePct(overview.TotpEnabledAdmins, overview.TotalAdmins)
+	return overview
+}
+
+// coveragePct 返回保留 1 位小数的覆盖率；分母为 0 时按设计返回 0.0
+// （界面另行显示「暂无管理员」）。
+func coveragePct(enabled, total int64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return math.Round(float64(enabled)/float64(total)*1000) / 10
 }
 
 // instances 与 GET /api/instances 读同一 Redis 心跳源（F-08-21）。

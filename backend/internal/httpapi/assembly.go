@@ -46,6 +46,7 @@ import (
 	"newtg/gateway/internal/settings"
 	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/tasks"
+	"newtg/gateway/internal/updatecheck"
 	"newtg/gateway/internal/version"
 	"newtg/gateway/internal/worker"
 	"newtg/gateway/plugins"
@@ -611,6 +612,24 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			Role:       "gateway",
 			StartedAt:  deps.StartedAt,
 			Logger:     deps.Logger,
+		}).Register(rt.protected)
+
+		// 更新检查（modules-08 §3.15 F-08-42）：服务端代取版本清单。
+		// Checker 读与全局配置相同的 ConfigReader；出站走 egress（sec.ssrf.*），
+		// 结果只进 Redis 缓存，不落 PG、不写审计。Redis 必填——缺缓存会让
+		// 每个管理员浏览器各自出站，违背 Q5。
+		updateChecker, err := updatecheck.New(updatecheck.Config{
+			Reader:         deps.Config,
+			Redis:          deps.Redis,
+			CurrentVersion: version.Version,
+			Logger:         deps.Logger,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("router: update checker: %w", err)
+		}
+		NewUpdateCheckHandlers(UpdateCheckHandlerConfig{
+			Checker: updateChecker,
+			Logger:  deps.Logger,
 		}).Register(rt.protected)
 
 		// 逐副本实例列表（modules-08 §3.7 F-08-21）：与系统状态页共用

@@ -644,6 +644,7 @@ var sectionValidators = map[string]sectionValidator{
 	"notify.webhook":    validateWebhookSection,
 	"rl.health":         validateRLHealthSection,
 	"sec":               validateSecSection,
+	"site.update_check": validateUpdateCheckSection,
 }
 
 func validateAuthSection(values map[string]any, _ map[string]bool) error {
@@ -777,6 +778,43 @@ func validateWebhookSection(values map[string]any, secretConfigured map[string]b
 func validateRLHealthSection(_ map[string]any, _ map[string]bool) error {
 	// 响应时间阈值 >0 已由键级校验覆盖；此处保留 section 钩子以便未来
 	// 「关键词表整行为空 → 忽略该行」一类约束集中落点。
+	return nil
+}
+
+// validateUpdateCheckSection 实现 modules-08 §3.15 F-08-42 的保存期约束：
+// 更新源必须是绝对 URL；默认只允许 https，只有在本 section 显式开启
+// allow_private_address 时才允许 http（自建内网源常见 http）。
+//
+// 注意：这里只做「保存前格式校验」；真正的 SSRF 地址判定在出站时由
+// egress.Guard 执行——保存期不可能安全地做 DNS 解析（地址会变，且保存
+// 不是出站动作）。
+func validateUpdateCheckSection(values map[string]any, _ map[string]bool) error {
+	raw := strings.TrimSpace(asString(values["site.update_check.source_url"]))
+	if raw == "" {
+		// 空源语义：不检查（Q3），不是错误。
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || !parsed.IsAbs() || parsed.Host == "" {
+		return invalid("site.update_check.source_url", "must be an absolute http(s) URL")
+	}
+	allowPrivate := values["site.update_check.allow_private_address"] == true
+	switch parsed.Scheme {
+	case "https":
+	case "http":
+		if !allowPrivate {
+			return invalid("site.update_check.source_url",
+				"must use https unless allow_private_address is enabled")
+		}
+	default:
+		return invalid("site.update_check.source_url", "must be an absolute http(s) URL")
+	}
+	if parsed.User != nil {
+		return invalid("site.update_check.source_url", "userinfo is not allowed")
+	}
+	if parsed.Fragment != "" {
+		return invalid("site.update_check.source_url", "fragment is not allowed")
+	}
 	return nil
 }
 

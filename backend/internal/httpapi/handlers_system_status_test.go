@@ -41,6 +41,17 @@ func TestSystemStatusEndpoint(t *testing.T) {
 			Status string `json:"status"`
 		} `json:"instances"`
 		Dependencies map[string]string `json:"dependencies"`
+		MFA          struct {
+			Available        bool `json:"available"`
+			TotalUsers       int  `json:"total_users"`
+			TotpEnabledUsers int  `json:"totp_enabled_users"`
+		} `json:"mfa"`
+		Polling struct {
+			IntervalSeconds              int       `json:"interval_seconds"`
+			HeartbeatIntervalSeconds     int       `json:"heartbeat_interval_seconds"`
+			UpdateCheckBackgroundPolling bool      `json:"update_check_background_polling"`
+			ServerTime                   time.Time `json:"server_time"`
+		} `json:"polling"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatalf("JSON 非法: %v", err)
@@ -63,6 +74,18 @@ func TestSystemStatusEndpoint(t *testing.T) {
 	}
 	if body.Dependencies["worker"] != "unknown" {
 		t.Fatalf("worker 依赖 = %q，期望 unknown", body.Dependencies["worker"])
+	}
+	// 无 DB 时 MFA 必须显式不可用，不能把「没查」呈现成 0% 覆盖。
+	if body.MFA.Available {
+		t.Fatal("无 DB 时 mfa.available 必须为 false")
+	}
+	if body.Polling.IntervalSeconds != systemStatusPollIntervalSeconds ||
+		body.Polling.HeartbeatIntervalSeconds != int(InstanceHeartbeatInterval/time.Second) ||
+		body.Polling.UpdateCheckBackgroundPolling {
+		t.Fatalf("polling = %+v", body.Polling)
+	}
+	if body.Polling.ServerTime.IsZero() {
+		t.Fatal("polling.server_time 不得为零值")
 	}
 
 	user := &auth.Principal{UserID: 2, Role: rbac.RoleUser}
