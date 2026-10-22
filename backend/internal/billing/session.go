@@ -11,6 +11,7 @@ import (
 
 	"newtg/gateway/internal/billing/expr"
 	"newtg/gateway/internal/billing/pricing"
+	platformconfig "newtg/gateway/internal/config"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/metrics"
 	"newtg/gateway/internal/store"
@@ -117,6 +118,12 @@ type Session struct {
 	// 预扣记录同事务出现。
 	subLeaseStop chan struct{}
 	subLeaseDone chan struct{}
+
+	// demoExemptSet/demoExemptValue 缓存 §3.17.2 的演示账号判定。判定结果在
+	// 一次请求内不变（部署开关 + 令牌标志），缓存避免 Reserve/Increment/
+	// Terminate 各查一次库。值为 true 时全会话零资金变动。
+	demoExemptSet   bool
+	demoExemptValue bool
 }
 
 // 编译期断言：Session 必须完整实现冻结的计费会话接口。
@@ -129,6 +136,50 @@ var _ contract.BillingHandoff = (*Session)(nil)
 // opCtx 构造单次账本/定价操作的有界上下文（理由见 billingOpTimeout）。
 func opCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), billingOpTimeout)
+}
+
+// demoExempt 判定本会话是否命中 §3.17.2 的「演示账号不计入账单」口径。
+//
+// 存在两条互斥的身份路径，二者都只在**部署有效演示模式**下成立：
+//   - 令牌身份（tokenID > 0）：令牌必须 unlimited_quota=true。两个条件缺一
+//     不可——只认设置会把普通用户的 unlimited 令牌也免单（扩大豁免面），只认
+//     令牌会在非演示站免单（改变既有语义）。
+//   - 会话身份（tokenID == 0，即 /pg Playground）：同样免单（控制端 W13 裁决）。
+//     /pg 复用 handleChatCompletions，但没有令牌，若只豁免令牌路径，演示
+//     访客经 Playground 会真实扣演示账号余额或得到 402，留下设计未声明的
+//     资损面。演示模式的写面已 deny-by-default、注册被拒，/pg 与 /v1/* 同属
+//     「试用中继」，成本兜底是 §3.17.2 的两个日计数器；本函数只免除计费，
+//     额度计数仍在 checkRelayRateLimit 里照常执行。
+//
+// 边界（不得放宽）：会话身份必须同时满足 rc.UsingGroup 非空这一**既有标记**。
+// BuildRelayContext 对会话路径把 UsingGroup 留空，唯一会为会话身份回源并写入
+// 分组的地方是 applyPlaygroundSession（/pg 的 chat 路径）。若只判断
+// tokenID == 0，未来任何无令牌的会话平面（如任务重建会话）都会被静默免单；
+// 因此豁免面严格限定为「演示模式 + /pg 会话身份」，不是「演示模式下所有请求」。
+//
+// 优先使用鉴权层投影（rc.TokenUnlimitedQuota，零额外查询）；任务/恢复路径
+// 重建的会话没有投影时回落一次 DB 查询（仅演示模式）。
+func (s *Session) demoExempt(ctx context.Context) bool {
+	if s.demoExemptSet {
+		return s.demoExemptValue
+	}
+	exempt := false
+	if s.engine != nil && platformconfig.DemoEnabled(s.engine.cfg) {
+		switch {
+		case s.tokenID > 0:
+			if s.rc != nil && s.rc.TokenUnlimitedQuota {
+				exempt = true
+			} else {
+				exempt = s.engine.demoExemptToken(ctx, s.tokenID)
+			}
+		case s.rc != nil && s.rc.UsingGroup != "":
+			// tokenID == 0 + UsingGroup 非空 = applyPlaygroundSession 写入的
+			// /pg 会话身份（见上方边界说明）。
+			exempt = true
+		}
+	}
+	s.demoExemptSet, s.demoExemptValue = true, exempt
+	return exempt
 }
 
 // PreConsume 首次预扣（billing-03 §3）。
@@ -232,6 +283,22 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) (err error) {
 	usedVars, err := s.usedVarsForLocked(snap)
 	if err != nil {
 		return err
+	}
+
+	// §3.17.2 的计费口径（控制端裁决 I1）必须在**所有**资金分支之前短路，
+	// 包括下面的免费模型 max_tokens 预扣：后者在 hold > 0 时会调用
+	// ApplyDeltaWithToken 真实冻结钱包（见 preConsumeFreeModelLocked）。若把
+	// 这段判定放在免费模型分支之后，零价模型 + max_tokens 的演示请求仍会
+	// 产生 hold/钱包流水，违背「演示账号不计入任何用户账单」。
+	//
+	// 这是演示账号专属口径，不是 unlimited_quota 的通用语义：非演示模式下
+	// unlimited 令牌仍会扣 users.balance（令牌余额门另由 tokenUsable 判定）。
+	if s.demoExempt(ctx) {
+		// Trusted 只用于让既有的 Reserve 早返回；真正的资金跳过在本函数
+		// 的提前返回 + Reserve/ChargeIncrement 的同类判定里。
+		s.trusted = true
+		succeeded = true
+		return nil
 	}
 
 	// PriceData.FreeModel 是模型级零价事实，无需再求值/估算：直接进入
@@ -486,6 +553,16 @@ func (s *Session) Reserve(delta int64) error {
 		// 仅上浮：零/负增量不改变预留，也不应清 trusted（没有真实预留发生）。
 		return nil
 	}
+
+	ctx, cancel := opCtx()
+	defer cancel()
+
+	// §3.17.2：演示账号不产生任何真实预留（连图片两段预扣也不例外）。
+	// 放在 trusted 之前：trusted 对图片请求会主动清位并真实扣款。
+	if s.demoExempt(ctx) {
+		return nil
+	}
+
 	if s.trusted {
 		if !s.imageRequest {
 			return nil
@@ -493,9 +570,6 @@ func (s *Session) Reserve(delta int64) error {
 		// 图片请求必须先冻结资金再出站：清 trusted 后走真实预留。
 		s.trusted = false
 	}
-
-	ctx, cancel := opCtx()
-	defer cancel()
 
 	// Important-1：已结案（含 worker 已兜底退款）的请求绝不能再产生新 hold。
 	// 新 hold 之后无法再写 release（wallet_release_refid_uq），会把 Refund
@@ -554,6 +628,12 @@ func (s *Session) ChargeIncrement(delta int64, fact contract.UsageFact) error {
 
 	ctx, cancel := opCtx()
 	defer cancel()
+
+	// §3.17.2：演示账号的实时增量也不得变成真实消费（否则流式请求会在
+	// response.done 时扣钱包）。金额仍由 Terminate 求值并写入 usage_logs。
+	if s.demoExempt(ctx) {
+		return nil
+	}
 
 	if s.fundingSource == contract.FundingSubscription {
 		// S4b：实时增量立即结算到订阅账户并同步令牌额度。绝不能走钱包
@@ -686,6 +766,14 @@ func (s *Session) Terminate(fact contract.UsageFact) (err error) {
 		cost = s.actualCostLocked(snap, fact)
 	}
 
+	// §3.17.2 的计费口径（控制端裁决 I1）：演示账号的中继请求照常写
+	// usage_logs（运维可见真实成本），但**不扣用户余额、不写钱包流水**。
+	// 预扣阶段已被短路，所以正常路径没有 hold；这里仍做一次防御性收尾，
+	// 避免部署开关在请求进行中被切换时留下悬挂 hold。
+	if s.demoExempt(ctx) {
+		return s.terminateDemoExemptLocked(ctx, fact, cost, st)
+	}
+
 	preDeducted := s.preConsumed
 	if preDeducted == 0 && st.Held > 0 {
 		// 内存值缺失（例如会话被重建）时以数据库 hold 为准。
@@ -807,6 +895,45 @@ func (s *Session) Terminate(fact contract.UsageFact) (err error) {
 
 	// R-73：资金先提交，再调整令牌额度（billing-03 §2.5/§5.7）。
 	s.adjustTokenToCostLocked(ctx, cost)
+	s.finishLocked(ctx, false)
+	return nil
+}
+
+// terminateDemoExemptLocked 完成演示账号的「只记账、不动钱」结算。
+//
+// 与正常 Terminate 的差异只有资金段：不调 settleHolds、不调
+// adjustTokenToCost、不产生 settled 营收指标。usage_logs 仍按真实成本写入
+// （§3.17.2「照常写日志，便于运维看成本」），outcome 的 pre_deducted/
+// refunded 恒为 0。
+func (s *Session) terminateDemoExemptLocked(
+	ctx context.Context, fact contract.UsageFact, cost int64, st holdState,
+) error {
+	// 防御：若历史/开关切换留下了 hold，必须释放，不能悬挂。正常路径
+	// PreConsume 已短路，st.Held == 0。
+	if st.Held > 0 {
+		if _, _, err := s.engine.ledger.releaseHolds(
+			ctx, s.userID, s.tokenID, s.requestID, "released"); err != nil &&
+			!errors.Is(err, errNoOpenHold) {
+			return fmt.Errorf("billing: release demo hold %s: %w", s.requestID, err)
+		}
+	}
+	if st.Closed {
+		// 已有执行者关闭了 hold：不覆盖退款事实，按幂等命中处理。
+		s.finishLocked(ctx, st.ClosedStatus == "released" || st.ClosedStatus == "expired")
+		return nil
+	}
+	outcome := SettlementOutcome{
+		Cost:        cost,
+		PreDeducted: 0,
+		Refunded:    0,
+		Status:      UsageLogStatusSuccess,
+	}
+	if s.engine.saturator != nil {
+		if err := s.engine.saturator.Saturate(ctx, &fact, s.rc, outcome); err != nil {
+			// 日志写失败不改变「没有资金动作」这一事实；直接上抛供上层记录。
+			return fmt.Errorf("billing: write usage log for demo exempt request: %w", err)
+		}
+	}
 	s.finishLocked(ctx, false)
 	return nil
 }

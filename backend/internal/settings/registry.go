@@ -310,7 +310,16 @@ func buildRegistry() []Setting {
 		def("site.home_blocks", "site", TypeObject, map[string]any{
 			"hero": true, "live_feed": true, "features": true, "stats": true, "onboarding": true,
 		}, public(), validate(boolObjectKeys("hero", "live_feed", "features", "stats", "onboarding"))),
-		def("site.demo.enabled", "site", TypeBool, false, public()),
+		// 演示站（只读模式）开关（modules-08 §3.17 / F-08-46，裁决 G7-R48）。
+		// 开启型风险：打开即全站只读，故按 on 方向登记危险项。
+		def("site.demo.enabled", "site", TypeBool, false, public(), dangerousOn()),
+		// 中继两层日额度（§3.17.2）：每 IP 每日 20、全站每日 2000。
+		// 两键任一为 0 ⇒ 中继整体关闭（fail-closed）；均为 dangerous：
+		// 把额度改成 0 等于关掉演示站唯一的真实上游入口。
+		def("site.demo.relay_quota.per_ip_daily", "site", TypeInt, int64(20),
+			dangerousAny(), minInt(0), maxInt(1000000)),
+		def("site.demo.relay_quota.global_daily", "site", TypeInt, int64(2000),
+			dangerousAny(), minInt(0), maxInt(1000000)),
 
 		// ==== nav（F-08-03）====
 		def("nav.home.enabled", "nav", TypeBool, true, public()),

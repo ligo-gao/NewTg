@@ -80,6 +80,12 @@ type Set struct {
 	redisUp              prometheus.Gauge
 	redisCommandDuration *prometheus.HistogramVec
 
+	// 演示站（modules-08 §3.17 Q6 / G7-R48）：访客的试探性写入不写审计，
+	// 只按路由族累加计数；中继超限按 scope（ip/global）累加。两个标签都是
+	// 有限枚举（路由族来自服务端白名单，scope 只有两个值）。
+	demoWriteRejected      *prometheus.CounterVec
+	demoRelayQuotaExceeded *prometheus.CounterVec
+
 	buildInfo      *prometheus.GaugeVec
 	dependencyUp   *prometheus.GaugeVec
 	migrationState *prometheus.GaugeVec
@@ -202,6 +208,15 @@ func newSet() *Set {
 			Help: "Redis command latency in seconds (cmd is whitelisted).", Buckets: redisDurationBuckets,
 		}, []string{"cmd"}),
 
+		demoWriteRejected: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "demo", Name: "write_rejected_total",
+			Help: "Demo-site write rejections by server-side route family.",
+		}, []string{"route_family"}),
+		demoRelayQuotaExceeded: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "demo", Name: "relay_quota_exceeded_total",
+			Help: "Demo-site relay quota rejections by scope (ip|global).",
+		}, []string{"scope"}),
+
 		buildInfo: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: Namespace, Name: "build_info",
 			Help: "Build information; value is always 1.",
@@ -235,6 +250,7 @@ func (s *Set) collectors() []prometheus.Collector {
 		s.workerTaskRuns, s.workerTaskDuration, s.workerTaskLastSuccess,
 		s.workerAbandonedRefund, s.workerAbandonedAge, s.workerStreamLag,
 		s.dbPool, s.redisUp, s.redisCommandDuration,
+		s.demoWriteRejected, s.demoRelayQuotaExceeded,
 		s.buildInfo, s.dependencyUp, s.migrationState,
 	}
 }
@@ -336,6 +352,12 @@ func ObserveQuotaClamp(op, kind string) { Default().ObserveQuotaClamp(op, kind) 
 
 // ObserveInsufficientQuota 记录一次 402 拒绝。
 func ObserveInsufficientQuota(model string) { Default().ObserveInsufficientQuota(model) }
+
+// ObserveDemoWriteRejected 记录一次演示站只读守卫拒绝。
+func ObserveDemoWriteRejected(routeFamily string) { Default().ObserveDemoWriteRejected(routeFamily) }
+
+// ObserveDemoRelayQuotaExceeded 记录一次演示站中继额度耗尽。
+func ObserveDemoRelayQuotaExceeded(scope string) { Default().ObserveDemoRelayQuotaExceeded(scope) }
 
 // ObserveWorkerTask 记录一次 worker 任务执行。
 func ObserveWorkerTask(taskType, status string, d time.Duration) {

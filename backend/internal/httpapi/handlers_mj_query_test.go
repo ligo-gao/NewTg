@@ -11,6 +11,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,7 @@ import (
 
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/mj"
+	"newtg/gateway/internal/ratelimit"
 	"newtg/gateway/internal/tasks"
 )
 
@@ -78,12 +80,22 @@ func (q *fakeMJQuerier) calls() int {
 func newMJQueryHandler(t *testing.T, store *fakeMJStore, channels *fakeMJChannels,
 	querier MJQuerier) (*http.ServeMux, string) {
 	t.Helper()
+	return newMJQueryHandlerWithConfig(t, store, channels, querier, mjConfigured(nil), nil)
+}
+
+// newMJQueryHandlerWithConfig 允许注入配置面与准入限流器，供演示额度
+// （checkDemoRelayQuota）的 403/503 映射用例使用。
+func newMJQueryHandlerWithConfig(t *testing.T, store *fakeMJStore, channels *fakeMJChannels,
+	querier MJQuerier, cfg ConfigReader, limiter RelayRateLimiter,
+) (*http.ServeMux, string) {
+	t.Helper()
 	sealer := NewSecretSealer("mj-query-test-key")
 	tokens, key42, _ := newMJTokens()
 	handler := NewMJHandler(MJHandlerConfig{
 		Store: store, Channels: channels, Sealer: sealer, Tokens: tokens,
 		Billing:     func(*contract.RelayContext) contract.BillingSession { return newTaskBillingRecorder() },
-		Config:      mjConfigured(nil),
+		Config:      cfg,
+		RateLimiter: limiter,
 		ImageSigner: mj.NewImageSigner("mj-query-test-key"),
 		Querier:     querier,
 		Now:         func() time.Time { return time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC) },
@@ -437,4 +449,64 @@ func TestMJImageSeedUpstreamErrorIsEnvelope(t *testing.T) {
 	if body["description"] != mj.DescriptionUpstreamError {
 		t.Fatalf("description = %v", body["description"])
 	}
+}
+
+// failingRelayLimiter 模拟 Redis 故障：Allow 直接返回错误。
+type failingRelayLimiter struct{ err error }
+
+func (l failingRelayLimiter) Allow(context.Context, ratelimit.Bucket, string, int) (ratelimit.Decision, error) {
+	return ratelimit.Decision{}, l.err
+}
+
+// TestMJImageSeedDemoQuotaMapping 固定 W13/M5 的控制端裁决：image-seed 是
+// 真实上游转发，必须复用演示站两层日额度；拒绝形状按状态码折叠——
+// 0 额度 = 中继关闭（403），配额后端故障 = fail-closed（503），不得变成 500。
+func TestMJImageSeedDemoQuotaMapping(t *testing.T) {
+	post := func(t *testing.T, mux *http.ServeMux, auth string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/mj/task/mj_1/image-seed", nil)
+		req.Header.Set("Authorization", auth)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+
+	t.Run("quota zero closes relay with 403", func(t *testing.T) {
+		cfg := mapConfig{
+			keyDemoEnabled:          configBool(true),
+			keyDemoRelayPerIPDaily:  configInt(0),
+			keyDemoRelayGlobalDaily: configInt(2000),
+		}
+		store := newFakeMJStore()
+		querier := &fakeMJQuerier{}
+		mux, auth := newMJQueryHandlerWithConfig(t, store, &fakeMJChannels{}, querier, cfg, nil)
+
+		rec := post(t, mux, auth)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403（0 额度 = 中继整体关闭）；body=%s", rec.Code, rec.Body.String())
+		}
+		if querier.calls() != 0 {
+			t.Fatalf("被拒请求触达上游：calls = %d", querier.calls())
+		}
+	})
+
+	t.Run("quota backend failure is 503", func(t *testing.T) {
+		cfg := mapConfig{
+			keyDemoEnabled:          configBool(true),
+			keyDemoRelayPerIPDaily:  configInt(20),
+			keyDemoRelayGlobalDaily: configInt(2000),
+		}
+		store := newFakeMJStore()
+		querier := &fakeMJQuerier{}
+		mux, auth := newMJQueryHandlerWithConfig(t, store, &fakeMJChannels{}, querier, cfg,
+			failingRelayLimiter{err: errors.New("redis down")})
+
+		rec := post(t, mux, auth)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503（fail-closed）；body=%s", rec.Code, rec.Body.String())
+		}
+		if querier.calls() != 0 {
+			t.Fatalf("被拒请求触达上游：calls = %d", querier.calls())
+		}
+	})
 }

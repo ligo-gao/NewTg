@@ -387,7 +387,14 @@ func (h *MJHandler) handleSubmit(w http.ResponseWriter, r *http.Request, endpoin
 
 	// 准入限流：独立路由必须显式接缝，位置在渠道选择/预扣之前——被拒绝的
 	// 提交不选渠道、不预扣、不触达上游。
-	if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal); rejection != nil {
+	//
+	// 演示站额度（§3.17.2）复用同一接缝，因此这里还要把它的 429/403/503
+	// 三态映射对：mjRateLimitError 只认识「限流」，直接按状态码折叠会把
+	// 「中继被关闭」变成 500。Retry-After 只在 429 写（与 /v1 同口径）。
+	if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal, clientIP(r)); rejection != nil {
+		if rejection.Status == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After", retrySeconds(rejection.RetryAfter))
+		}
 		writeMJError(w, mjRateLimitError(rejection.Status))
 		return
 	}
@@ -1045,12 +1052,22 @@ func mjContextError(status int) *mj.Error {
 	}
 }
 
-// mjRateLimitError 把准入限流拒绝折叠为 MJ 信封。
+// mjRateLimitError 把准入拒绝的 HTTP 状态映射为 MJ 信封。
+//
+// 429 用固定的 rate_limited 文案；403 是中继被关闭/演示站拒绝（能力门控，
+// 用 Forbidden 而不是 500——客户端据此不要重试）；503 是限流后端不可用
+// （ServiceUnavailable，客户端可稍后重试）。其它状态按内部错误兜底。
 func mjRateLimitError(status int) *mj.Error {
-	if status == http.StatusTooManyRequests {
+	switch status {
+	case http.StatusTooManyRequests:
 		return &mj.Error{Code: mj.CodeUnknownError, Description: mj.DescriptionRateLimited, Status: http.StatusTooManyRequests}
+	case http.StatusForbidden:
+		return mj.Forbidden(mj.DescriptionForbidden)
+	case http.StatusServiceUnavailable:
+		return mj.ServiceUnavailable(mj.DescriptionInternalError)
+	default:
+		return &mj.Error{Code: mj.CodeUnknownError, Description: mj.DescriptionInternalError, Status: http.StatusInternalServerError}
 	}
-	return &mj.Error{Code: mj.CodeUnknownError, Description: mj.DescriptionInternalError, Status: http.StatusInternalServerError}
 }
 
 // writeMJError 输出 R-MJ-17 错误信封（只有 code/description）。

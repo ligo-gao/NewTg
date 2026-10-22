@@ -148,6 +148,18 @@ func (h *MJHandler) handleImageSeed(w http.ResponseWriter, r *http.Request) {
 		writeMJError(w, mjErr)
 		return
 	}
+	// W13/M5（控制端裁决）：image-seed 会向原任务渠道发起一次真实上游转发，
+	// 是演示站全站保险丝的一个漏口（设计只点名 /v1*）。这里在读取任务与
+	// 上游调用之前复用同一套两层日额度；非演示模式下 checkDemoRelayQuota
+	// 立即返回 nil，行为不变。拒绝形状与提交路径一致（429/403/503）。
+	if rejection := checkDemoRelayQuota(r.Context(), h.rateLimiter, h.config,
+		RequestIDFromContext(r.Context()), clientIP(r)); rejection != nil {
+		if rejection.Status == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After", retrySeconds(rejection.RetryAfter))
+		}
+		writeMJError(w, mjRateLimitError(rejection.Status))
+		return
+	}
 	task, err := h.store.GetByUserUpstreamID(r.Context(), principal.UserID, id)
 	if err != nil {
 		if errors.Is(err, tasks.ErrTaskNotFound) {

@@ -265,6 +265,11 @@ func TestRegistryGoldenSets(t *testing.T) {
 		"sec.ssrf.allow_private_ip:on", "sec.ssrf.enabled:off",
 		// B2：mode 可以取 off（解除全部出站策略），按关闭型风险登记。
 		"sec.ssrf.mode:off",
+		// 演示站开关：开启即全站只读（§3.17 Q4）；两档日额度改为任意值都会
+		// 改变中继可用性，0 更是直接关闭中继（§3.17.2）。
+		"site.demo.enabled:on",
+		"site.demo.relay_quota.global_daily:any",
+		"site.demo.relay_quota.per_ip_daily:any",
 		"site.home_custom_html:on",
 	}
 	if strings.Join(dangerous, ",") != strings.Join(wantDangerous, ",") {

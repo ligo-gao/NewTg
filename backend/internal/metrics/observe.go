@@ -151,6 +151,23 @@ func (s *Set) ObserveInsufficientQuota(model string) {
 	s.billingInsufficient.WithLabelValues(s.guardModel.Value(model)).Inc()
 }
 
+// ObserveDemoWriteRejected 记录一次演示站只读守卫拒绝（modules-08 §3.17 Q6）。
+//
+// routeFamily 必须是服务端白名单枚举（见 httpapi.demoWriteRouteFamily）：
+// 被拒的试探性请求不写审计，指标是唯一可观测面，但标签绝不能来自原始
+// 路径——那会被任意 /api/<garbage> 打成高基数。
+func (s *Set) ObserveDemoWriteRejected(routeFamily string) {
+	defer swallowPanic()
+	s.demoWriteRejected.WithLabelValues(routeFamily).Inc()
+}
+
+// ObserveDemoRelayQuotaExceeded 记录一次演示站中继额度耗尽。
+// scope ∈ {ip, global}（modules-08 §3.17.2 的两层保险丝）。
+func (s *Set) ObserveDemoRelayQuotaExceeded(scope string) {
+	defer swallowPanic()
+	s.demoRelayQuotaExceeded.WithLabelValues(scope).Inc()
+}
+
 // ObserveWorkerTask 记录任务执行；成功时刷新 last_success。
 func (s *Set) ObserveWorkerTask(taskType, status string, d time.Duration) {
 	defer swallowPanic()

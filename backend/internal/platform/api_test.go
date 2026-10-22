@@ -14,6 +14,7 @@ import (
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/config"
 	"newtg/gateway/internal/rbac"
 )
 
@@ -187,4 +188,37 @@ func TestPricingOnChangeWiredToSourceInvalidate(t *testing.T) {
 	if got := pricingOnChange(nil); got != nil {
 		t.Fatal("pricingOnChange(nil) must be nil（未接源时只靠 TTL）")
 	}
+}
+
+// TestBillingEngineGetsDemoOverriddenConfig 钉住 I2 的装配口径：gateway 与
+// worker 的计费引擎拿到的必须是 WithDemoOverride 包装后的有效配置面。
+//
+// 为什么必须直接断言引擎：引擎直接用 center 时，NEWTG_DEMO_ENABLED 覆盖只对
+// 守卫/额度生效，计费仍按设置值判定；普通行为测试几乎不会同时覆盖
+// 「env 与设置相反」的场景，回归会静默通过。本用例让「改回直接使用 center」
+// 立即变红。
+func TestBillingEngineGetsDemoOverriddenConfig(t *testing.T) {
+	// 设置值一律与 override 相反：若引擎丢失覆盖，DemoEnabled 会翻转。
+	settingOff := billingAssemblyConfigReader{config.DemoEnabledKey: json.RawMessage("false")}
+
+	t.Run("env=true overrides setting=false for gateway and worker", func(t *testing.T) {
+		enabled := true
+		// 两个角色共用 newDemoAwareBillingEngine；role 只用于错误信息。
+		for _, role := range []string{"gateway", "worker"} {
+			engine := newDemoAwareBillingEngine(nil, nil, nil, settingOff, &enabled, nil, nil, nil)
+			if engine == nil || engine.EffectiveConfig() == nil {
+				t.Fatalf("%s: engine/EffectiveConfig = nil（装配未注入配置面）", role)
+			}
+			if !config.DemoEnabled(engine.EffectiveConfig()) {
+				t.Fatalf("%s: 计费引擎读到的演示模式 = false，期望 true（引擎绕过了 WithDemoOverride）", role)
+			}
+		}
+	})
+
+	t.Run("no env override follows the setting", func(t *testing.T) {
+		engine := newDemoAwareBillingEngine(nil, nil, nil, settingOff, nil, nil, nil, nil)
+		if config.DemoEnabled(engine.EffectiveConfig()) {
+			t.Fatal("未设置 NEWTG_DEMO_ENABLED 时引擎必须跟随设置值 false")
+		}
+	})
 }
