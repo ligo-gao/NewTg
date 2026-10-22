@@ -424,6 +424,10 @@ func TestAutoRenewEndToEndExtendsSubscription(t *testing.T) {
 	}
 	topup, err := NewTopupService(TopupServiceConfig{
 		DB: gormDB, Config: cfg, Logger: autoRenewTestLogger(), StripeBaseURL: stripe.URL,
+		// 结算走 TopupService 自己的时钟（s.now → RenewSubscription 的 now），
+		// 必须与 worker 注入的 now 一致。否则 GREATEST(end_at, now) 会取真实
+		// 系统时间，end_at 被顺延到「真实今天 + 周期」，断言随日期漂移（733h）。
+		Now: func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatalf("NewTopupService: %v", err)
@@ -843,6 +847,11 @@ func TestManualAndAutoRenewSameCycleOnlyOneCharge(t *testing.T) {
 	}
 	topup, err := NewTopupService(TopupServiceConfig{
 		DB: gormDB, Config: cfg, Logger: autoRenewTestLogger(), StripeBaseURL: stripe.URL,
+		// 同上：手动续费与后续 stale 回调用这里的结算时钟推进 end_at，
+		// 冻结为 fixture 的 now 才能让「+30 天」断言不依赖真实日期。
+		// 连带影响：webhook 验签的时间容差也按这个时钟算，因此下面的
+		// 手动结算签名必须用 now.Unix()（而不是 time.Now()）。
+		Now: func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatalf("NewTopupService: %v", err)
@@ -855,6 +864,13 @@ func TestManualAndAutoRenewSameCycleOnlyOneCharge(t *testing.T) {
 	}
 	if manual.ClientSecret == "" {
 		t.Fatal("manual order must carry the client secret")
+	}
+	// 在途续费窗口是 created_at >= 注入时钟 now-30min（hasPendingRenewalForCycle），
+	// 而订单落库的 created_at 来自数据库 now()（真实系统时间）。把这一行归位到
+	// fixture 时钟，否则「手动单在途」判定会随真实日期漂移（2030 探针即暴露）。
+	if _, err := db.Exec(`UPDATE orders SET created_at = $2 WHERE id = $1`,
+		manual.Order.ID, now); err != nil {
+		t.Fatalf("align manual order created_at with fixture clock: %v", err)
 	}
 
 	worker := newAutoRenewTestWorker(t, store.NewSubscriptionRepo(db), methodRepo,
@@ -876,7 +892,13 @@ func TestManualAndAutoRenewSameCycleOnlyOneCharge(t *testing.T) {
 	}
 
 	// 手动支付成功：end_at 只加一个周期。
-	if err := renewViaStripe(t, topup, db, manual.Order.ID, 5000); err != nil {
+	// 不复用 renewViaStripe：该 helper 固定用 time.Now() 生成签名时间戳，
+	// 而本用例把 TopupService 的时钟冻结在 now，二者相差超过 300s 容差会
+	// 被验签拒绝。用冻结时钟签名，结算推进语义与生产完全一致。
+	manualTxn := providerTxnID(t, db, manual.Order.ID)
+	manualPayload := stripeEventPayload(manualTxn, 5000, "cny")
+	if err := topup.HandleStripeWebhook(context.Background(), manualPayload,
+		stripeSignatureHeader("whsec_test_123", now.Unix(), manualPayload)); err != nil {
 		t.Fatalf("settle manual renewal: %v", err)
 	}
 	var afterManual time.Time
