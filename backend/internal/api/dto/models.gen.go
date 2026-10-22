@@ -419,16 +419,16 @@ func (e GroupPricingMode1) Valid() bool {
 
 // Defines values for InstanceSummaryRole.
 const (
-	Gateway InstanceSummaryRole = "gateway"
-	Worker  InstanceSummaryRole = "worker"
+	InstanceSummaryRoleGateway InstanceSummaryRole = "gateway"
+	InstanceSummaryRoleWorker  InstanceSummaryRole = "worker"
 )
 
 // Valid indicates whether the value is a known member of the InstanceSummaryRole enum.
 func (e InstanceSummaryRole) Valid() bool {
 	switch e {
-	case Gateway:
+	case InstanceSummaryRoleGateway:
 		return true
-	case Worker:
+	case InstanceSummaryRoleWorker:
 		return true
 	default:
 		return false
@@ -1605,6 +1605,24 @@ func (e PermissionKey) Valid() bool {
 	case UsersResetSecurity:
 		return true
 	case UsersUpdate:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PluginRuntimeInstanceRole.
+const (
+	PluginRuntimeInstanceRoleGateway PluginRuntimeInstanceRole = "gateway"
+	PluginRuntimeInstanceRoleWorker  PluginRuntimeInstanceRole = "worker"
+)
+
+// Valid indicates whether the value is a known member of the PluginRuntimeInstanceRole enum.
+func (e PluginRuntimeInstanceRole) Valid() bool {
+	switch e {
+	case PluginRuntimeInstanceRoleGateway:
+		return true
+	case PluginRuntimeInstanceRoleWorker:
 		return true
 	default:
 		return false
@@ -6936,6 +6954,41 @@ type PluginIssue struct {
 	Rule      string `json:"rule"`
 }
 
+// PluginRuntimeAggregate defines model for PluginRuntimeAggregate.
+type PluginRuntimeAggregate struct {
+	// AggregateUnavailable Redis 聚合不可用时为 true；此时 instances 只含本地副本。
+	// 响应不含源文本、上游 URL 或任何凭据。
+	AggregateUnavailable bool `json:"aggregate_unavailable"`
+
+	// Instances 全部未过期副本（newtg:plugin:runtime:<instance_id>，TTL 90s），
+	// 按 instance_id 升序，本地副本永远包含。
+	Instances []PluginRuntimeInstance `json:"instances"`
+}
+
+// PluginRuntimeInstance defines model for PluginRuntimeInstance.
+type PluginRuntimeInstance struct {
+	// Generation 节点本地单调代际；跨节点比较必须用 revision。
+	Generation int64 `json:"generation"`
+
+	// InstanceId 副本实例标识（INSTANCE_ID，缺省回退 hostname）。
+	InstanceId string    `json:"instance_id"`
+	LastSeen   time.Time `json:"last_seen"`
+
+	// Local 是否为本次请求所在副本；Redis 不可用时唯一一行必为 true。
+	Local       bool                      `json:"local"`
+	Node        string                    `json:"node"`
+	Plugins     []PluginRuntimePlugin     `json:"plugins"`
+	ReloadError *string                   `json:"reload_error,omitempty"`
+	ReloadedAt  time.Time                 `json:"reloaded_at"`
+	Revision    string                    `json:"revision"`
+	Role        PluginRuntimeInstanceRole `json:"role"`
+	StartedAt   time.Time                 `json:"started_at"`
+	Version     string                    `json:"version"`
+}
+
+// PluginRuntimeInstanceRole defines model for PluginRuntimeInstance.Role.
+type PluginRuntimeInstanceRole string
+
 // PluginRuntimePlugin defines model for PluginRuntimePlugin.
 type PluginRuntimePlugin struct {
 	Errors *[]PluginIssue            `json:"errors,omitempty"`
@@ -6951,17 +7004,6 @@ type PluginRuntimePlugin struct {
 
 // PluginRuntimePluginLayer defines model for PluginRuntimePlugin.Layer.
 type PluginRuntimePluginLayer string
-
-// PluginRuntimeStatus defines model for PluginRuntimeStatus.
-type PluginRuntimeStatus struct {
-	// Generation 节点本地单调代际；跨节点比较必须用 revision。
-	Generation  int64                 `json:"generation"`
-	Node        string                `json:"node"`
-	Plugins     []PluginRuntimePlugin `json:"plugins"`
-	ReloadError *string               `json:"reload_error,omitempty"`
-	ReloadedAt  time.Time             `json:"reloaded_at"`
-	Revision    string                `json:"revision"`
-}
 
 // PluginStatusRequest defines model for PluginStatusRequest.
 type PluginStatusRequest struct {

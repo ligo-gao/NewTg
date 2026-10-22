@@ -17,7 +17,10 @@ import (
 	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/tasks"
+	"newtg/gateway/internal/version"
 	"newtg/gateway/plugins"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // 任务轮询上限的设置键（W9-B4 / G-M6D-27，设计回写见 settings 注册表的
@@ -57,7 +60,8 @@ type settingReader interface {
 // 停止函数会取消上下文并等待循环退出：必须在关闭 DB 连接池之前调用，
 // 否则下一轮轮询会拿到「连接已关闭」错误，把正常停机噪声打进告警。
 func startTaskPoller(parent context.Context, cfg *config.Config, db *sql.DB,
-	center *configcenter.Center, engine *billing.Engine, log *slog.Logger) (func(), error) {
+	center *configcenter.Center, engine *billing.Engine, rdb *redis.Client,
+	log *slog.Logger) (func(), error) {
 
 	sources, err := plugins.TaskPluginSources()
 	if err != nil {
@@ -75,19 +79,35 @@ func startTaskPoller(parent context.Context, cfg *config.Config, db *sql.DB,
 	}
 	// 与 gateway 装配同口径：B-11 里被管理员停用的内置插件也不得在 worker
 	// 侧参与轮询，否则「管理面已停用」与「仍在解析任务」两处状态分裂。
-	if pluginsList, listErr := store.NewTaskPluginRepo(db).List(parent); listErr == nil {
-		disabled := configStringList(center, "plugin.disabled_factory_keys")
-		for _, p := range pluginsList {
-			if p.Builtin && !p.Enabled {
-				disabled = append(disabled, p.Key)
-			}
-		}
+	pluginRepo := store.NewTaskPluginRepo(db)
+	if disabled, refreshErr := disabledFactoryKeys(parent, center, pluginRepo); refreshErr == nil {
 		manager.SetDisabledFactoryKeys(disabled)
 	}
 	if err := manager.Reload(parent); err != nil {
 		// 与 gateway 装配同口径：一次瞬时的 DB 抖动不阻断 worker 启动，
 		// 快照为空时轮询只会累计失败/超时退款，且 30s 后自动重载。
 		log.Warn("worker: initial task plugin reload failed", "error", err)
+	}
+
+	// 注册表热刷新与逐副本运行时状态（G-M6D-04/05/21）：worker 与 gateway
+	// 共用同一个 newtg:plugin:changed 频道，收到广播后重读 DB 重建快照。
+	// 每次 Reload 前重算内置禁用集，避免管理面停用内置插件后 worker 仍用
+	// 启动时的旧集合。
+	pluginRuntime, err := plugin.NewRuntimeCoordinator(plugin.RuntimeCoordinatorConfig{
+		Manager:    manager,
+		Redis:      rdb,
+		InstanceID: httpapi.ResolveProcessInstanceID(),
+		Node:       cfg.NodeName,
+		Role:       "worker",
+		Version:    version.Version,
+		StartedAt:  time.Now(),
+		Logger:     log,
+		RefreshDisabledFactoryKeys: func(ctx context.Context) ([]string, error) {
+			return disabledFactoryKeys(ctx, center, pluginRepo)
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("worker: plugin runtime coordinator: %w", err)
 	}
 
 	sealer := httpapi.NewSecretSealer(cfg.CredentialEncryptionKey)
@@ -120,6 +140,10 @@ func startTaskPoller(parent context.Context, cfg *config.Config, db *sql.DB,
 		return nil, err
 	}
 
+	// 所有依赖构造完成后再启动协调器：Start 会拉起 goroutine，放在可能返回
+	// 错误的构造路径之前会泄漏循环（且随后 Redis 被关闭）。
+	pluginRuntime.Start(parent)
+
 	pollCtx, cancel := context.WithCancel(parent)
 	done := make(chan struct{})
 	mjDone := make(chan struct{})
@@ -139,7 +163,29 @@ func startTaskPoller(parent context.Context, cfg *config.Config, db *sql.DB,
 		cancel()
 		<-done
 		<-mjDone
+		// 删除本实例逐副本状态 key；必须在 Redis 连接池关闭之前执行。
+		pluginRuntime.Stop()
 	}, nil
+}
+
+// disabledFactoryKeys 合并「设置禁用集」与 B-11 中 enabled=false 的内置插件。
+//
+// B-11 的开关不在 SQLVersionLoader 的 active 查询里（factory 层没有版本行），
+// 所以每个副本每次 Reload 前都要重算；只算一次会让广播后的其它副本继续用
+// 旧集合，出现「管理面已停用、另一副本仍注册」。
+func disabledFactoryKeys(ctx context.Context, reader *configcenter.Center,
+	repo *store.TaskPluginRepo) ([]string, error) {
+	disabled := configStringList(reader, "plugin.disabled_factory_keys")
+	pluginsList, err := repo.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range pluginsList {
+		if p.Builtin && !p.Enabled {
+			disabled = append(disabled, p.Key)
+		}
+	}
+	return disabled, nil
 }
 
 // taskPollerDeps 是 buildTaskPollers 的装配输入。

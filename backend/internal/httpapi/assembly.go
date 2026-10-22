@@ -263,6 +263,9 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	// 管理面共用同一个 DB 版本加载器：写路径提交后调用 Reload，快照与 DB
 	// 立即一致；30s 轮询/pub-sub 属后续装配项（T3 遗留，已登记）。
 	var taskPluginHandlers *TaskPluginHandlers
+	// pluginRuntime 是插件注册表热刷新/逐副本状态协调器；非 nil 时由
+	// Router 暴露给 platform 启动，并在停机时 DEL 本实例 key。
+	var pluginRuntime *plugin.RuntimeCoordinator
 	// taskDataHandlers 是 M6d Task 6a 的任务数据面（/v1/tasks* 与
 	// /api/task*）。与插件运行时共用同一个 Manager 快照，避免管理面停用
 	// 插件后数据面仍从旧注册表接单。
@@ -351,6 +354,40 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		if access == nil {
 			access = store.NewTokenRepo(deps.DB)
 		}
+		// 插件运行时协调器（G-M6D-04/05/21）：30s 重载 + pub/sub 失效 +
+		// 逐副本 runtime 状态。Redis 是必填依赖的真实装配；纯内存单测不进入
+		// 本分支（deps.DB==nil），由 handler 降级为单副本投影。
+		if deps.Redis != nil {
+			pluginRuntime, err = plugin.NewRuntimeCoordinator(plugin.RuntimeCoordinatorConfig{
+				Manager:    manager,
+				Redis:      deps.Redis,
+				InstanceID: deps.InstanceID,
+				Node:       deps.NodeName,
+				Role:       "gateway",
+				Version:    version.Version,
+				StartedAt:  deps.StartedAt,
+				Logger:     deps.Logger,
+				// 每次 Reload 前重算内置禁用集：B-11 enabled=false 不在
+				// active 版本查询里，只在写路径重算会让其它副本收到广播后
+				// 仍用旧禁用集（状态分裂）。
+				RefreshDisabledFactoryKeys: func(ctx context.Context) ([]string, error) {
+					disabled := readConfigStringList(deps.Config, "plugin.disabled_factory_keys")
+					list, listErr := pluginStore.List(ctx)
+					if listErr != nil {
+						return nil, listErr
+					}
+					for _, p := range list {
+						if p.Builtin && !p.Enabled {
+							disabled = append(disabled, p.Key)
+						}
+					}
+					return disabled, nil
+				},
+			})
+			if err != nil {
+				return nil, fmt.Errorf("httpapi: plugin runtime coordinator: %w", err)
+			}
+		}
 		taskPluginHandlers, err = NewTaskPluginHandlers(TaskPluginHandlerConfig{
 			Store:   pluginStore,
 			Manager: manager,
@@ -363,6 +400,9 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			// 绑定渠道数实时读 channels（M6d Task 7a）；与渠道管理共用同一
 			// 仓库口径（status=1 + 单绑/多绑命中）。
 			Bindings: store.NewChannelRepo(deps.DB),
+			// 写成功后广播失效；读取面聚合全部未过期副本。
+			Changes: pluginRuntime,
+			Runtime: pluginRuntime,
 		})
 		if err != nil {
 			return nil, err
@@ -488,6 +528,9 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	}
 
 	rt.tasks = taskDataHandlers
+	// platform 在监听前启动协调器（启动即 Reload），停机时通过 getter 停止
+	// 并删除逐副本状态 key。
+	rt.pluginRuntime = pluginRuntime
 	// W8/MJ-a2：/mj/* 提交 handler 由 platform 挂到根 mux（令牌链），不挂在
 	// /api 管理面，也不经过 SessionAuth/CSRF。
 	rt.mj = mjHandler

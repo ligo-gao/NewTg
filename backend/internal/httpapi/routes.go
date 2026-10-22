@@ -18,6 +18,7 @@ import (
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/perfmetrics"
+	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 )
@@ -175,6 +176,18 @@ type Router struct {
 	// BuildGatewayRouter 必须在传入前完成构造与播种；该标志为 true 表示
 	// 装配顺序回归（A5 收口 MEDIUM-1）。
 	notifyFallback bool
+	// pluginRuntime 是插件注册表热刷新/逐副本状态协调器（G-M6D-04/05/21）。
+	// BuildGatewayRouter 在 DB/Redis 装配分支中构造；nil 表示纯内存装配。
+	pluginRuntime *plugin.RuntimeCoordinator
+}
+
+// PluginRuntime 返回插件运行时协调器；未装配时为 nil。
+// platform 在 HTTP 监听前调用 Start，停机时调用 Stop（DEL 本实例 key）。
+func (r *Router) PluginRuntime() *plugin.RuntimeCoordinator {
+	if r == nil {
+		return nil
+	}
+	return r.pluginRuntime
 }
 
 // TasksHandler 返回任务数据面 handler；未装配（无 DB 的单测）时为 nil。

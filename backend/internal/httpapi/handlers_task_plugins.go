@@ -119,6 +119,20 @@ const (
 	jsonEscapeFactor = 6
 )
 
+// PluginChangePublisher 是写成功后广播注册表失效的接缝（G-M6D-04）。
+// 生产实现是 *plugin.RuntimeCoordinator（PUBLISH newtg:plugin:changed）；
+// nil 时只做本副本 Reload（纯内存单测）。
+type PluginChangePublisher interface {
+	PublishPluginChanged(ctx context.Context) error
+}
+
+// PluginRuntimeStatusAggregator 是逐副本运行时状态的读取接缝（G-M6D-05/21）。
+// 生产实现是 *plugin.RuntimeCoordinator；nil 时降级为单副本投影，响应形状
+// 保持一致（instances + aggregate_unavailable）。
+type PluginRuntimeStatusAggregator interface {
+	Aggregate(ctx context.Context) plugin.RuntimeAggregate
+}
+
 // TaskPluginHandlerConfig 是插件管理端点装配输入。
 type TaskPluginHandlerConfig struct {
 	Store   TaskPluginStore
@@ -135,6 +149,10 @@ type TaskPluginHandlerConfig struct {
 	Now    func() time.Time
 	// Bindings 是绑定渠道计数（M6d Task 7a）。nil 时 bound_channels=0。
 	Bindings ChannelBindingCounter
+	// Changes 在写成功后 PUBLISH newtg:plugin:changed；nil 时不广播。
+	Changes PluginChangePublisher
+	// Runtime 聚合全部未过期副本的运行时状态；nil 时只返回本副本。
+	Runtime PluginRuntimeStatusAggregator
 }
 
 // TaskPluginHandlers 持有插件管理端点依赖，可并发使用。
@@ -150,6 +168,8 @@ type TaskPluginHandlers struct {
 	market   *market.Client
 	now      func() time.Time
 	bindings ChannelBindingCounter
+	changes  PluginChangePublisher
+	runtime  PluginRuntimeStatusAggregator
 
 	// marketMu 保护 5 分钟索引缓存；刷新失败不覆写旧缓存（见 handlers_plugin_marketplace.go）。
 	marketMu       sync.Mutex
@@ -212,6 +232,7 @@ func NewTaskPluginHandlers(cfg TaskPluginHandlerConfig) (*TaskPluginHandlers, er
 		store: cfg.Store, manager: manager, config: cfg.Config, authz: authz,
 		access: cfg.Access, audit: cfg.Audit, log: log,
 		idem: idem, market: client, now: now, bindings: cfg.Bindings,
+		changes: cfg.Changes, runtime: cfg.Runtime,
 	}, nil
 }
 
@@ -1069,12 +1090,27 @@ func (h *TaskPluginHandlers) handleDryRun(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, result)
 }
 
-// handleRuntimeStatus 返回单进程 Manager 快照（relay-06 §2.5）。
+// handleRuntimeStatus 返回全部未过期副本的运行时状态（relay-06 §2.5 /
+// G-M6D-05/21）。
 //
-// generation 是节点本地号；跨节点比较必须用 revision。逐副本聚合需要实例
-// 心跳表（F-08-21），当前返回单节点对象并明确 node 字段；已登记。
+// 形状固定为 `{instances:[...], aggregate_unavailable}`：
+//   - instances 按 instance_id 升序，本地副本永远包含；
+//   - Redis 不可用时只返回本地副本并置 aggregate_unavailable=true，
+//     仍返回 200（聚合是观测面，不应因 Redis 抖动让运维看不到本副本）；
+//   - 每条记录只含运行时元数据，不含源文本/URL/凭据。
+//
+// 未装配协调器（纯内存单测）时降级为单副本投影，保持同一响应形状。
 func (h *TaskPluginHandlers) handleRuntimeStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, h.manager.Status())
+	if h.runtime != nil {
+		writeJSON(w, http.StatusOK, h.runtime.Aggregate(r.Context()))
+		return
+	}
+	now := h.now
+	if now == nil {
+		now = time.Now
+	}
+	writeJSON(w, http.StatusOK, plugin.RuntimeAggregateForManager(
+		h.manager, "", "gateway", "", now))
 }
 
 // ---------------------------------------------------------------------------
@@ -1177,11 +1213,12 @@ func (h *TaskPluginHandlers) writeStoreError(w http.ResponseWriter, operation st
 	}
 }
 
-// reloadAsync 在写成功后重建本副本快照。
+// reloadAsync 在写成功后重建本副本快照并广播失效。
 //
 // 失败不反向影响写结果：DB 已是权威真源，旧快照仍可服务（fail-closed 的
 // 「保留上一份可用快照」语义），错误会出现在 runtime/status 的 reload_error。
-// 30s 轮询/pub-sub 接线属后续装配项（T3 遗留），已登记。
+// PUBLISH 失败同样只 Warn：其它副本的 30s ticker 仍会收敛（G-M6D-04 的
+// Redis 抖动降级口径）。
 func (h *TaskPluginHandlers) reloadAsync(parent context.Context) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), plugin.DefaultTimeout)
 	defer cancel()
@@ -1199,6 +1236,13 @@ func (h *TaskPluginHandlers) reloadAsync(parent context.Context) {
 	h.manager.SetDisabledFactoryKeys(disabled)
 	if err := h.manager.Reload(ctx); err != nil {
 		h.log.Warn("plugin: reload after write failed", "err", err)
+	}
+	// 广播放在本地 Reload 之后：其它副本收到后重新读 DB，拿到的是已提交
+	// 的权威内容；本副本不会因等待其它副本而延后生效。
+	if h.changes != nil {
+		if err := h.changes.PublishPluginChanged(ctx); err != nil {
+			h.log.Warn("plugin: publish change after write failed", "err", err)
+		}
 	}
 }
 

@@ -796,7 +796,11 @@
       "generation": "generation {n}",
       "reloaded": "Пересобрано {time}",
       "no_errors": "Ошибок плагинов нет.",
-      "generation_hint": "generation локальна для узла. Сравнивайте между узлами по ревизии в БД."
+      "generation_hint": "generation локальна для узла. Сравнивайте между узлами по ревизии в БД.",
+      "local_replica": "локальная реплика",
+      "last_seen": "Последняя активность {time}",
+      "aggregate_unavailable": "Агрегация Redis недоступна — показана только эта реплика.",
+      "empty_replicas": "Ни одна реплика не сообщила состояние выполнения."
     },
     "detail": {
       "tabs_label": "Разделы сведений о плагине",

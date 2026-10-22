@@ -2314,18 +2314,20 @@ paths:
       tags: [admin]
       operationId: getTaskPluginRuntimeStatus
       x-required-permission: settings:manage
-      summary: 本副本插件运行时状态
+      summary: 逐副本插件运行时状态（聚合）
       description: |
-        generation 是节点本地号，跨节点比较必须用 revision（relay-06 §2.5）。
-        逐副本聚合（失联判定）需要实例心跳表，当前返回单节点对象。
+        聚合所有未过期副本（newtg:plugin:runtime:<instance_id>，TTL 90s），
+        按 instance_id 升序，包含本地副本。generation 是节点本地号，跨节点
+        比较必须用 revision（relay-06 §2.5）。Redis 不可用时只返回本地副本
+        并置 aggregate_unavailable=true。响应不含源文本、URL 或凭据。
       security:
         - sessionCookie: []
       responses:
         '200':
-          description: 运行时快照
+          description: 逐副本运行时状态
           content:
             application/json:
-              schema: {$ref: '../schemas/admin.yaml#/schemas/PluginRuntimeStatus'}
+              schema: {$ref: '../schemas/admin.yaml#/schemas/PluginRuntimeAggregate'}
         '401': {$ref: '../components/responses.yaml#/responses/Error401'}
         '403': {$ref: '../components/responses.yaml#/responses/Error403'}
         '500': {$ref: '../components/responses.yaml#/responses/Error500'}

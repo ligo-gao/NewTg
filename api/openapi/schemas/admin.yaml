@@ -2133,6 +2133,52 @@ schemas:
         type: array
         items: {$ref: '#/schemas/PluginRuntimePlugin'}
 
+  PluginRuntimeInstance:
+    type: object
+    additionalProperties: false
+    required:
+      [instance_id, node, role, version, local, started_at, last_seen,
+       generation, revision, reloaded_at, plugins]
+    properties:
+      instance_id:
+        type: string
+        description: 副本实例标识（INSTANCE_ID，缺省回退 hostname）。
+      node: {type: string}
+      role: {type: string, enum: [gateway, worker]}
+      version: {type: string}
+      local:
+        type: boolean
+        description: 是否为本次请求所在副本；Redis 不可用时唯一一行必为 true。
+      started_at: {type: string, format: date-time}
+      last_seen: {type: string, format: date-time}
+      generation:
+        type: integer
+        format: int64
+        description: 节点本地单调代际；跨节点比较必须用 revision。
+      revision: {type: string}
+      reloaded_at: {type: string, format: date-time}
+      reload_error: {type: string}
+      plugins:
+        type: array
+        items: {$ref: '#/schemas/PluginRuntimePlugin'}
+
+  PluginRuntimeAggregate:
+    type: object
+    additionalProperties: false
+    required: [instances, aggregate_unavailable]
+    properties:
+      instances:
+        type: array
+        description: |
+          全部未过期副本（newtg:plugin:runtime:<instance_id>，TTL 90s），
+          按 instance_id 升序，本地副本永远包含。
+        items: {$ref: '#/schemas/PluginRuntimeInstance'}
+      aggregate_unavailable:
+        type: boolean
+        description: |
+          Redis 聚合不可用时为 true；此时 instances 只含本地副本。
+          响应不含源文本、上游 URL 或任何凭据。
+
   MarketplaceSource:
     type: object
     additionalProperties: false

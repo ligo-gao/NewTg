@@ -796,7 +796,11 @@
       "generation": "generation {n}",
       "reloaded": "最近重建 {time}",
       "no_errors": "無外掛錯誤。",
-      "generation_hint": "generation 為節點本地號，跨節點比較請用 DB revision。"
+      "generation_hint": "generation 為節點本地號，跨節點比較請用 DB revision。",
+      "local_replica": "本副本",
+      "last_seen": "最近心跳 {time}",
+      "aggregate_unavailable": "Redis 聚合不可用，僅顯示本副本。",
+      "empty_replicas": "暫無副本上報執行時狀態。"
     },
     "detail": {
       "tabs_label": "外掛詳情分區",

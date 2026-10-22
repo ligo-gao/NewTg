@@ -7484,19 +7484,21 @@ paths:
         - admin
       operationId: getTaskPluginRuntimeStatus
       x-required-permission: settings:manage
-      summary: 本副本插件运行时状态
+      summary: 逐副本插件运行时状态（聚合）
       description: |
-        generation 是节点本地号，跨节点比较必须用 revision（relay-06 §2.5）。
-        逐副本聚合（失联判定）需要实例心跳表，当前返回单节点对象。
+        聚合所有未过期副本（newtg:plugin:runtime:<instance_id>，TTL 90s），
+        按 instance_id 升序，包含本地副本。generation 是节点本地号，跨节点
+        比较必须用 revision（relay-06 §2.5）。Redis 不可用时只返回本地副本
+        并置 aggregate_unavailable=true。响应不含源文本、URL 或凭据。
       security:
         - sessionCookie: []
       responses:
         '200':
-          description: 运行时快照
+          description: 逐副本运行时状态
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PluginRuntimeStatus'
+                $ref: '#/components/schemas/PluginRuntimeAggregate'
         '401':
           $ref: '#/components/responses/Error401'
         '403':
@@ -18926,18 +18928,43 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PluginIssue'
-    PluginRuntimeStatus:
+    PluginRuntimeInstance:
       type: object
       additionalProperties: false
       required:
+        - instance_id
         - node
+        - role
+        - version
+        - local
+        - started_at
+        - last_seen
         - generation
         - revision
         - reloaded_at
         - plugins
       properties:
+        instance_id:
+          type: string
+          description: 副本实例标识（INSTANCE_ID，缺省回退 hostname）。
         node:
           type: string
+        role:
+          type: string
+          enum:
+            - gateway
+            - worker
+        version:
+          type: string
+        local:
+          type: boolean
+          description: 是否为本次请求所在副本；Redis 不可用时唯一一行必为 true。
+        started_at:
+          type: string
+          format: date-time
+        last_seen:
+          type: string
+          format: date-time
         generation:
           type: integer
           format: int64
@@ -18953,6 +18980,25 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PluginRuntimePlugin'
+    PluginRuntimeAggregate:
+      type: object
+      additionalProperties: false
+      required:
+        - instances
+        - aggregate_unavailable
+      properties:
+        instances:
+          type: array
+          description: |
+            全部未过期副本（newtg:plugin:runtime:<instance_id>，TTL 90s），
+            按 instance_id 升序，本地副本永远包含。
+          items:
+            $ref: '#/components/schemas/PluginRuntimeInstance'
+        aggregate_unavailable:
+          type: boolean
+          description: |
+            Redis 聚合不可用时为 true；此时 instances 只含本地副本。
+            响应不含源文本、上游 URL 或任何凭据。
     MarketplaceVersion:
       type: object
       additionalProperties: false

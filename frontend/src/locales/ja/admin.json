@@ -796,7 +796,11 @@
       "generation": "generation {n}",
       "reloaded": "最終再構築 {time}",
       "no_errors": "プラグインのエラーはありません。",
-      "generation_hint": "generation はノードローカルの番号です。ノード間の比較には DB revision を使用してください。"
+      "generation_hint": "generation はノードローカルの番号です。ノード間の比較には DB revision を使用してください。",
+      "local_replica": "ローカルレプリカ",
+      "last_seen": "最終確認 {time}",
+      "aggregate_unavailable": "Redis 集約が利用できないため、このレプリカのみ表示しています。",
+      "empty_replicas": "ランタイム状態を報告したレプリカはありません。"
     },
     "detail": {
       "tabs_label": "プラグイン詳細のセクション",

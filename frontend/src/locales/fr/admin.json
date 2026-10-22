@@ -796,7 +796,11 @@
       "generation": "generation {n}",
       "reloaded": "Reconstruit {time}",
       "no_errors": "Aucune erreur de plugin.",
-      "generation_hint": "generation est locale au nœud. Comparez entre nœuds via la révision en base."
+      "generation_hint": "generation est locale au nœud. Comparez entre nœuds via la révision en base.",
+      "local_replica": "réplique locale",
+      "last_seen": "Dernière activité {time}",
+      "aggregate_unavailable": "Agrégation Redis indisponible — seule cette réplique est affichée.",
+      "empty_replicas": "Aucune réplique n'a signalé son état d'exécution."
     },
     "detail": {
       "tabs_label": "Sections de détail du plugin",

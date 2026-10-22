@@ -3430,9 +3430,11 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 本副本插件运行时状态
-         * @description generation 是节点本地号，跨节点比较必须用 revision（relay-06 §2.5）。
-         *     逐副本聚合（失联判定）需要实例心跳表，当前返回单节点对象。
+         * 逐副本插件运行时状态（聚合）
+         * @description 聚合所有未过期副本（newtg:plugin:runtime:<instance_id>，TTL 90s），
+         *     按 instance_id 升序，包含本地副本。generation 是节点本地号，跨节点
+         *     比较必须用 revision（relay-06 §2.5）。Redis 不可用时只返回本地副本
+         *     并置 aggregate_unavailable=true。响应不含源文本、URL 或凭据。
          */
         get: operations["getTaskPluginRuntimeStatus"];
         put?: never;
@@ -8933,8 +8935,19 @@ export interface components {
             layer?: "factory" | "override";
             errors?: components["schemas"]["PluginIssue"][];
         };
-        PluginRuntimeStatus: {
+        PluginRuntimeInstance: {
+            /** @description 副本实例标识（INSTANCE_ID，缺省回退 hostname）。 */
+            instance_id: string;
             node: string;
+            /** @enum {string} */
+            role: "gateway" | "worker";
+            version: string;
+            /** @description 是否为本次请求所在副本；Redis 不可用时唯一一行必为 true。 */
+            local: boolean;
+            /** Format: date-time */
+            started_at: string;
+            /** Format: date-time */
+            last_seen: string;
             /**
              * Format: int64
              * @description 节点本地单调代际；跨节点比较必须用 revision。
@@ -8945,6 +8958,18 @@ export interface components {
             reloaded_at: string;
             reload_error?: string;
             plugins: components["schemas"]["PluginRuntimePlugin"][];
+        };
+        PluginRuntimeAggregate: {
+            /**
+             * @description 全部未过期副本（newtg:plugin:runtime:<instance_id>，TTL 90s），
+             *     按 instance_id 升序，本地副本永远包含。
+             */
+            instances: components["schemas"]["PluginRuntimeInstance"][];
+            /**
+             * @description Redis 聚合不可用时为 true；此时 instances 只含本地副本。
+             *     响应不含源文本、上游 URL 或任何凭据。
+             */
+            aggregate_unavailable: boolean;
         };
         MarketplaceVersion: {
             version: string;
@@ -16639,13 +16664,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description 运行时快照 */
+            /** @description 逐副本运行时状态 */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PluginRuntimeStatus"];
+                    "application/json": components["schemas"]["PluginRuntimeAggregate"];
                 };
             };
             401: components["responses"]["Error401"];

@@ -258,13 +258,16 @@ func TestTaskPluginIntegrationBuiltinRows(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("runtime status = %d", rr.Code)
 	}
-	var status plugin.RuntimeStatus
-	if err := json.Unmarshal(rr.Body.Bytes(), &status); err != nil {
+	var aggregate plugin.RuntimeAggregate
+	if err := json.Unmarshal(rr.Body.Bytes(), &aggregate); err != nil {
 		t.Fatalf("decode runtime: %v", err)
 	}
-	for _, p := range status.Plugins {
+	if len(aggregate.Instances) != 1 {
+		t.Fatalf("未装配 Redis 协调器时应只返回本地副本：%+v", aggregate)
+	}
+	for _, p := range aggregate.Instances[0].Plugins {
 		if p.Key == "sample" && p.Status != plugin.StatusDisabled {
-			t.Fatalf("停用后内置 key 状态 = %s，期望 disabled：%+v", p.Status, status.Plugins)
+			t.Fatalf("停用后内置 key 状态 = %s，期望 disabled：%+v", p.Status, aggregate.Instances[0].Plugins)
 		}
 	}
 }

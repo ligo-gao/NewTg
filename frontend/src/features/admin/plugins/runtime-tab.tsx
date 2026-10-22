@@ -6,17 +6,21 @@ import { Button } from '@/shared/ui/button'
 import { StatusBadge } from '@/shared/ui/status-badge'
 
 import { getTaskPluginRuntimeStatus } from './api'
+import type { PluginRuntimeInstance } from './api'
 import { ErrorState, PluginIcon, RuntimeStatusBadge } from './components'
 import { errorMessage } from './utils'
 
 /**
- * 运行时状态 Tab（F-08-36）。
+ * 运行时状态 Tab（F-08-36 / G-M6D-05/21）。
  *
  * **不自动轮询**：仅「刷新」按钮手动拉取（避免多管理员同时高频拉取）。
- * 逐副本聚合需要实例心跳表；当前端点只返回本副本单节点对象，因此这里按
- * 「一个副本 = 一张卡」渲染，并常驻显示「generation 为节点本地号，跨节点
- * 比较请用 DB revision」。失联三色阈值（30s / 5min，与 F-08-21 同口径）
- * 依赖心跳，当前无真源可算——已登记，不用 `reloaded_at` 冒充「最后在线」。
+ * 响应是逐副本聚合：每个未过期实例一张卡（后端按 instance_id 升序），本地
+ * 副本永远包含。Redis 不可用时后端降级为「仅本副本」并置
+ * aggregate_unavailable=true，这里显示常驻提示而不是错误态——本副本的
+ * 诊断信息仍然有效。
+ *
+ * generation 是节点本地号，跨节点比较须用 DB revision（relay-06 §2.5）；
+ * 该口径在页面常驻显示，避免管理员把不同副本的 generation 当同一序列。
  */
 export function RuntimeTab() {
   const { t, locale } = useI18n()
@@ -28,10 +32,8 @@ export function RuntimeTab() {
     staleTime: Infinity,
     refetchOnWindowFocus: false,
   })
-  const status = statusQuery.data
-  const errorPlugins = (status?.plugins ?? []).filter(
-    (plugin) => (plugin.errors?.length ?? 0) > 0,
-  )
+  const aggregate = statusQuery.data
+  const instances = aggregate?.instances ?? []
 
   return (
     <div className="space-y-3">
@@ -75,92 +77,135 @@ export function RuntimeTab() {
         />
       ) : null}
 
-      {status !== undefined ? (
-        <section
-          data-testid="runtime-node-card"
-          className="rounded-xl border border-border-default bg-surface-card p-5"
+      {aggregate?.aggregate_unavailable === true ? (
+        <p
+          data-testid="runtime-aggregate-unavailable"
+          className="rounded-lg border border-warning-line bg-warning-bg px-3 py-2 text-xs text-warning"
         >
-          <header className="flex flex-wrap items-center gap-3">
-            <h2 className="font-mono text-sm font-semibold text-ink-1">
-              {status.node}
-            </h2>
-            <StatusBadge
-              variant={status.reload_error ? 'danger' : 'success'}
-            >
-              {status.reload_error
-                ? t('admin.task_plugins.runtime.rebuild_failed')
-                : t('admin.task_plugins.runtime.rebuild_ok')}
-            </StatusBadge>
-            <span className="text-xs text-ink-2">
-              {t('admin.task_plugins.runtime.generation', {
-                n: status.generation,
-              })}
-            </span>
-            <span className="text-xs text-ink-2">
-              {t('admin.task_plugins.runtime.reloaded', {
-                time: formatRelativeTime(status.reloaded_at, locale),
-              })}
-            </span>
-          </header>
+          {t('admin.task_plugins.runtime.aggregate_unavailable')}
+        </p>
+      ) : null}
 
-          <p className="mt-1 font-mono text-xs text-ink-3">
-            revision {status.revision}
-          </p>
+      {aggregate !== undefined && instances.length === 0 ? (
+        <p className="rounded-xl border border-border-hairline bg-surface-subtle px-4 py-6 text-center text-sm text-ink-3">
+          {t('admin.task_plugins.runtime.empty_replicas')}
+        </p>
+      ) : null}
 
-          {status.reload_error !== undefined && status.reload_error !== '' ? (
-            <p className="mt-2 whitespace-pre-wrap rounded bg-danger-bg px-2 py-1 font-mono text-xs text-danger">
-              {status.reload_error}
-            </p>
-          ) : null}
+      {instances.map((instance) => (
+        <RuntimeInstanceCard key={instance.instance_id} instance={instance} />
+      ))}
 
-          <div className="mt-3 border-t border-border-hairline pt-3">
-            {errorPlugins.length === 0 ? (
-              <p className="text-xs text-ink-3">
-                {t('admin.task_plugins.runtime.no_errors')}
-              </p>
-            ) : (
-              <ul className="space-y-2">
-                {errorPlugins.map((plugin) => (
-                  <li
-                    key={plugin.key}
-                    data-testid="runtime-plugin-error"
-                    className="rounded-lg border border-danger-line bg-danger-bg px-2 py-1.5"
-                  >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <PluginIcon size="sm" pluginKey={plugin.key} />
-                      <span className="font-mono text-xs font-medium text-ink-1">
-                        {plugin.key}
-                      </span>
-                      <RuntimeStatusBadge status={plugin.status} />
-                      {plugin.version !== undefined ? (
-                        <span className="font-mono text-xs text-ink-3">
-                          v{plugin.version}
-                        </span>
-                      ) : null}
-                    </div>
-                    <ul className="mt-1 space-y-0.5">
-                      {(plugin.errors ?? []).map((issue) => (
-                        <li
-                          key={`${issue.fieldPath}-${issue.rule}-${issue.message}`}
-                          className="font-mono text-xs text-danger"
-                        >
-                          {issue.fieldPath === '' ? issue.key : `${issue.fieldPath}: `}
-                          {issue.message}
-                        </li>
-                      ))}
-                    </ul>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-
-          {/* 常驻口径提示：跨节点比较 generation 没有意义。 */}
-          <p className="mt-3 text-xs text-ink-3">
-            {t('admin.task_plugins.runtime.generation_hint')}
-          </p>
-        </section>
+      {instances.length > 0 ? (
+        <p className="text-xs text-ink-3">
+          {t('admin.task_plugins.runtime.generation_hint')}
+        </p>
       ) : null}
     </div>
+  )
+}
+
+function RuntimeInstanceCard({ instance }: { instance: PluginRuntimeInstance }) {
+  const { t, locale } = useI18n()
+  const errorPlugins = instance.plugins.filter(
+    (plugin) => (plugin.errors?.length ?? 0) > 0,
+  )
+
+  return (
+    <section
+      data-testid="runtime-node-card"
+      data-instance-id={instance.instance_id}
+      className="rounded-xl border border-border-default bg-surface-card p-5"
+    >
+      <header className="flex flex-wrap items-center gap-3">
+        <h2 className="font-mono text-sm font-semibold text-ink-1">
+          {instance.instance_id}
+        </h2>
+        {instance.node !== '' && instance.node !== instance.instance_id ? (
+          <span className="font-mono text-xs text-ink-3">{instance.node}</span>
+        ) : null}
+        {instance.local ? (
+          <span
+            data-testid="runtime-local-badge"
+            className="rounded-full border border-border-default px-2 py-0.5 text-xs text-ink-2"
+          >
+            {t('admin.task_plugins.runtime.local_replica')}
+          </span>
+        ) : null}
+        <span className="font-mono text-xs text-ink-3">
+          {instance.role} · v{instance.version}
+        </span>
+        <StatusBadge variant={instance.reload_error ? 'danger' : 'success'}>
+          {instance.reload_error
+            ? t('admin.task_plugins.runtime.rebuild_failed')
+            : t('admin.task_plugins.runtime.rebuild_ok')}
+        </StatusBadge>
+        <span className="text-xs text-ink-2">
+          {t('admin.task_plugins.runtime.generation', { n: instance.generation })}
+        </span>
+        <span className="text-xs text-ink-2">
+          {t('admin.task_plugins.runtime.reloaded', {
+            time: formatRelativeTime(instance.reloaded_at, locale),
+          })}
+        </span>
+        <span className="text-xs text-ink-3">
+          {t('admin.task_plugins.runtime.last_seen', {
+            time: formatRelativeTime(instance.last_seen, locale),
+          })}
+        </span>
+      </header>
+
+      <p className="mt-1 font-mono text-xs text-ink-3">
+        revision {instance.revision}
+      </p>
+
+      {instance.reload_error !== undefined && instance.reload_error !== '' ? (
+        <p className="mt-2 whitespace-pre-wrap rounded bg-danger-bg px-2 py-1 font-mono text-xs text-danger">
+          {instance.reload_error}
+        </p>
+      ) : null}
+
+      <div className="mt-3 border-t border-border-hairline pt-3">
+        {errorPlugins.length === 0 ? (
+          <p className="text-xs text-ink-3">
+            {t('admin.task_plugins.runtime.no_errors')}
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {errorPlugins.map((plugin) => (
+              <li
+                key={plugin.key}
+                data-testid="runtime-plugin-error"
+                className="rounded-lg border border-danger-line bg-danger-bg px-2 py-1.5"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <PluginIcon size="sm" pluginKey={plugin.key} />
+                  <span className="font-mono text-xs font-medium text-ink-1">
+                    {plugin.key}
+                  </span>
+                  <RuntimeStatusBadge status={plugin.status} />
+                  {plugin.version !== undefined ? (
+                    <span className="font-mono text-xs text-ink-3">
+                      v{plugin.version}
+                    </span>
+                  ) : null}
+                </div>
+                <ul className="mt-1 space-y-0.5">
+                  {(plugin.errors ?? []).map((issue) => (
+                    <li
+                      key={`${issue.fieldPath}-${issue.rule}-${issue.message}`}
+                      className="font-mono text-xs text-danger"
+                    >
+                      {issue.fieldPath === '' ? issue.key : `${issue.fieldPath}: `}
+                      {issue.message}
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
   )
 }
