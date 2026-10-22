@@ -145,6 +145,38 @@ func (s *TopupService) RefundSubscription(ctx context.Context, in RefundInput) (
 	// 的最终落库不再重复 P-13——渠道已经退款成功后拒绝落库会造成「渠道已退、
 	// 本地未退」的账实不符。
 	if err := s.checkSubscriptionRefundEligible(ctx, s.db, order, s.now().UTC()); err != nil {
+		// 并发退款窗口（R-31）：两路请求可以都通过入口校验（此时订单都是
+		// succeeded），赢家在它自己的事务里同时把订单置 refunded、订阅置
+		// cancelled。输家如果在该事务提交之后才读到订阅行（手里的 order 仍是
+		// 进入时读到的 succeeded 快照），资格检查就会看到 status=cancelled 并
+		// 返回 ErrSubscriptionInUse（422）。但订单已经是 refunded：这笔钱只退过
+		// 一次，本次调用没有任何资金动作，按 RefundResult 的约定应返回幂等成功
+		// （Refunded=false + 既有退款额），而不是把一个已经成功的退款报成错误。
+		//
+		// 为什么必须重读订单才能区分：ErrSubscriptionInUse 同时覆盖
+		//   (a) 订阅真的已被消耗/过期（订单仍是 succeeded/refund_failed）——必须
+		//       保持 422，否则会放任一次对已履约订阅的重复退款；
+		//   (b) 订阅是被赢家的退款取消的（订单 refunded）——应幂等成功。
+		// 资格检查本身只看到「订阅不 active」，无法区分两者；订单状态是唯一
+		// 判别依据，而且它与订阅取消在赢家的同一事务里提交（见
+		// finalizeSubscriptionRefundTx），读到的 refunded 一定对应「权益已收回、
+		// 钱已退」的终态。
+		//
+		// 幂等保证：即便本路与赢家继续交错，订单行锁 + 条件 UPDATE
+		// （markOrderRefundedTx）保证本地只落账一次；渠道侧还有固定
+		// Idempotency-Key（refund-order-<id>）保证不会出现第二笔真实退款。
+		// 因此这里的幂等返回不是「吞掉错误」，而是收敛到赢家已经写下的结果。
+		if errors.Is(err, ErrSubscriptionInUse) {
+			fresh, getErr := s.GetOrder(ctx, order.ID)
+			if getErr != nil {
+				// 重读失败不影响拒绝语义：宁可返回 422 让人工复核，也不能
+				// 在看不到订单终态时假定「已经退过」。
+				s.log.Warn("re-read order after in-use verdict failed",
+					"order_id", order.ID, "error", getErr)
+			} else if OrderStatus(fresh.Status) == OrderRefunded {
+				return &RefundResult{Order: fresh, Refunded: false, Amount: fresh.RefundedAmount}, nil
+			}
+		}
 		return nil, err
 	}
 
@@ -729,6 +761,12 @@ func (s *TopupService) finalizeProviderRefund(ctx context.Context,
 
 // lockedRefundEligibility 是钱包事务内版本的资格判定：R-35 判定与实例行锁
 // 一起完成，避免「刚通过检查、立刻被并发消费」的窗口。
+//
+// 判定口径与事务外的并发修复（RefundSubscription 的 ErrSubscriptionInUse
+// 分支）一致，但事务内不需要再重读订单：订单行已由本事务锁住，并发赢家把
+// 订单置 refunded 的路径会在调用方的早退分支返回幂等成功；能走到这里并返回
+// ErrSubscriptionInUse 的，只可能是退款之外的取消/消耗（订单仍是可退状态），
+// 必须继续拒绝，不能被误判成「已被退款取消」。
 func (s *TopupService) lockedRefundEligibility(ctx context.Context,
 	tx *gorm.DB, order *store.Order, now time.Time) (*store.Subscription, error) {
 
