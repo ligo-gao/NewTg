@@ -115,6 +115,31 @@ schemas:
       credentials_set:
         type: boolean
         description: 仅详情/POST/PATCH 响应返回（GC-6 详情例外）。
+      metrics:
+        $ref: '#/schemas/ChannelListMetrics'
+
+  # 列表内嵌的 24h 概要（W16-1 / F-06-11）。批量查询一次返回；日志库不可用时
+  # 整个字段省略（前端显示 —），与「0 次请求」（request_count=0、
+  # 比率 null）语义不同。
+  ChannelListMetrics:
+    type: object
+    additionalProperties: false
+    required: [request_count]
+    properties:
+      request_count:
+        type: integer
+        format: int64
+        description: 近 24h 请求数。
+      success_rate:
+        type: number
+        minimum: 0
+        maximum: 1
+        nullable: true
+        description: success / (success + error + refused)；无样本为 null（显示 —）。
+      avg_latency_ms:
+        type: number
+        nullable: true
+        description: 近 24h 平均总耗时（毫秒）；无样本为 null。
 
   ChannelCredentialsMasked:
     type: object
@@ -175,6 +200,161 @@ schemas:
         type: string
       api_version:
         type: string
+
+  # 渠道指标（W16-1 / modules-06 F-06-11）。数据源是日志库 usage_logs；
+  # 返回 24（window=24h）或 168（window=7d）个整点桶。空桶计数为 0、
+  # 比率/均值为 null（验收要求「新渠道显示 — 而非 0」）。
+  ChannelMetrics:
+    type: object
+    additionalProperties: false
+    required: [channel_id, window, bucket_seconds, points, summary]
+    properties:
+      channel_id:
+        type: integer
+        format: int64
+      window:
+        type: string
+        enum: [24h, 7d]
+      bucket_seconds:
+        type: integer
+        description: 桶宽，固定 3600（整点小时桶）。
+      points:
+        type: array
+        items:
+          $ref: '#/schemas/ChannelMetricsPoint'
+      summary:
+        $ref: '#/schemas/ChannelMetricsSummary'
+      last_test_at:
+        type: string
+        format: date-time
+        nullable: true
+        description: 来自主库渠道行（不缓存在指标缓存里）。
+      last_test_result:
+        type: boolean
+        nullable: true
+
+  ChannelMetricsPoint:
+    type: object
+    additionalProperties: false
+    required:
+      - bucket_start
+      - request_count
+      - success_count
+      - failure_count
+    properties:
+      bucket_start:
+        type: string
+        format: date-time
+        description: 整点桶起点（UTC）。
+      request_count:
+        type: integer
+        format: int64
+        description: 桶内全部状态请求数（含 refunded）。
+      success_count:
+        type: integer
+        format: int64
+      failure_count:
+        type: integer
+        format: int64
+        description: status ∈ {error, refused}；refunded 不算失败。
+      success_rate:
+        type: number
+        minimum: 0
+        maximum: 1
+        nullable: true
+        description: success / (success + error + refused)；无样本为 null。
+      avg_latency_ms:
+        type: number
+        nullable: true
+        description: 非空 latency_ms 的平均值；无样本为 null。
+      avg_first_token_ms:
+        type: number
+        nullable: true
+        description: 非空 first_token_ms 的平均值（非流式请求为 null 样本）；无样本为 null。
+      avg_cost:
+        type: number
+        nullable: true
+        description: 桶内平均结算积分（cost 求和 / 请求数）；无请求为 null。
+
+  ChannelMetricsSummary:
+    type: object
+    additionalProperties: false
+    required:
+      - request_count
+      - success_count
+      - failure_count
+      - cost_total
+      - used_credits
+      - used_credits_24h
+      - request_count_24h
+    properties:
+      request_count:
+        type: integer
+        format: int64
+      success_count:
+        type: integer
+        format: int64
+      failure_count:
+        type: integer
+        format: int64
+      success_rate:
+        type: number
+        minimum: 0
+        maximum: 1
+        nullable: true
+      avg_latency_ms:
+        type: number
+        nullable: true
+      avg_first_token_ms:
+        type: number
+        nullable: true
+      avg_cost:
+        type: number
+        nullable: true
+      cost_total:
+        type: integer
+        format: int64
+        description: 窗口内结算积分合计。
+      used_credits:
+        type: integer
+        format: int64
+        description: 渠道**累计**结算积分（全量历史）。
+      used_credits_24h:
+        type: integer
+        format: int64
+        description: 近 24h 结算积分（与所选 window 无关）。
+      request_count_24h:
+        type: integer
+        format: int64
+        description: 近 24h 请求数（与所选 window 无关）。
+
+  # 渠道连通性测试（F-06-06；W16-1 起带 10 次/分钟/管理员限流）。
+  ChannelTestRequest:
+    type: object
+    additionalProperties: false
+    properties:
+      model:
+        type: string
+        description: 必须属于该渠道 supported_models；缺省用 test_model 或首模型。
+      stream:
+        type: boolean
+        description: 设计字段；当前实现固定最小非流式请求，值被接受但不改变行为。
+    description: 请求体必填（`{}` 也可）；model 缺省时用 test_model 或首个模型。
+
+  ChannelTestResult:
+    type: object
+    additionalProperties: false
+    required: [success, latency_ms, model]
+    properties:
+      success:
+        type: boolean
+      latency_ms:
+        type: integer
+      model:
+        type: string
+      error_class:
+        type: string
+        description: 失败时是 F-06-06 五值枚举；成功时省略。
 
   AdminUser:
     type: object

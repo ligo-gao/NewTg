@@ -198,6 +198,7 @@ func TestBuildGatewayRouterMountsChannelRoutes(t *testing.T) {
 		{http.MethodPatch, "/api/channels/1", "PATCH /api/channels/{id}"},
 		{http.MethodDelete, "/api/channels/1", "DELETE /api/channels/{id}"},
 		{http.MethodPost, "/api/channels/1/test", "POST /api/channels/{id}/test"},
+		{http.MethodGet, "/api/channels/1/metrics", "GET /api/channels/{id}/metrics"},
 	}
 	for _, tc := range cases {
 		_, pattern := rt.protected.Handler(httptest.NewRequest(tc.method, tc.path, nil))

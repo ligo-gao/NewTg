@@ -8703,6 +8703,104 @@ paths:
           $ref: '#/components/responses/Error429'
         '503':
           $ref: '#/components/responses/Error503'
+  /api/channels/{id}/metrics:
+    get:
+      tags:
+        - admin
+      operationId: getChannelMetrics
+      x-required-permission: channels:read
+      summary: 渠道健康与用量指标（24h/7d 整点桶）
+      description: |
+        返回 24（window=24h，默认）或 168（window=7d）个整点桶及窗口汇总。
+        成功率口径 = success / (success + error + refused)（modules-05 §10.2）；
+        refunded 计入 request_count 但不入成功率分母。空桶计数为 0、比率与
+        均值为 null（UI 显示 —，不是 0）。日志库不可用 → 503（渠道列表仍可用）；
+        渠道不存在 → 404；window 非法 → 422。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 渠道 id（正整数）；非法/不存在同形 404。
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - name: window
+          in: query
+          required: false
+          description: 时间窗口；缺省 24h。
+          schema:
+            type: string
+            enum:
+              - 24h
+              - 7d
+            default: 24h
+      responses:
+        '200':
+          description: 指标序列与汇总
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelMetrics'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/channels/{id}/test:
+    post:
+      tags:
+        - admin
+      operationId: testChannel
+      x-required-permission: channels:manage
+      summary: 对渠道发起一次连通性测试
+      description: |
+        请求体可选（model 必须属于该渠道 supported_models；缺省用 test_model
+        或首个模型）。连通性失败是业务结果：仍为 200，body.success=false 并带
+        error_class。失败不返回上游 URL/密钥等内部细节（GC-6）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChannelTestRequest'
+      responses:
+        '200':
+          description: 测试结果（success=false 也是 200）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelTestResult'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '503':
+          $ref: '#/components/responses/Error503'
   /v1/chat/completions:
     post:
       tags:
@@ -11047,6 +11145,8 @@ components:
         credentials_set:
           type: boolean
           description: 仅详情/POST/PATCH 响应返回（GC-6 详情例外）。
+        metrics:
+          $ref: '#/components/schemas/ChannelListMetrics'
     RelayError:
       type: object
       description: |
@@ -19011,6 +19111,26 @@ components:
           type: string
         api_version:
           type: string
+    ChannelListMetrics:
+      type: object
+      additionalProperties: false
+      required:
+        - request_count
+      properties:
+        request_count:
+          type: integer
+          format: int64
+          description: 近 24h 请求数。
+        success_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+          nullable: true
+          description: success / (success + error + refused)；无样本为 null（显示 —）。
+        avg_latency_ms:
+          type: number
+          nullable: true
+          description: 近 24h 平均总耗时（毫秒）；无样本为 null。
     ChannelList:
       allOf:
         - $ref: '#/components/schemas/Page'
@@ -19054,6 +19174,162 @@ components:
           type: string
         api_version:
           type: string
+    ChannelMetricsPoint:
+      type: object
+      additionalProperties: false
+      required:
+        - bucket_start
+        - request_count
+        - success_count
+        - failure_count
+      properties:
+        bucket_start:
+          type: string
+          format: date-time
+          description: 整点桶起点（UTC）。
+        request_count:
+          type: integer
+          format: int64
+          description: 桶内全部状态请求数（含 refunded）。
+        success_count:
+          type: integer
+          format: int64
+        failure_count:
+          type: integer
+          format: int64
+          description: status ∈ {error, refused}；refunded 不算失败。
+        success_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+          nullable: true
+          description: success / (success + error + refused)；无样本为 null。
+        avg_latency_ms:
+          type: number
+          nullable: true
+          description: 非空 latency_ms 的平均值；无样本为 null。
+        avg_first_token_ms:
+          type: number
+          nullable: true
+          description: 非空 first_token_ms 的平均值（非流式请求为 null 样本）；无样本为 null。
+        avg_cost:
+          type: number
+          nullable: true
+          description: 桶内平均结算积分（cost 求和 / 请求数）；无请求为 null。
+    ChannelMetricsSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - request_count
+        - success_count
+        - failure_count
+        - cost_total
+        - used_credits
+        - used_credits_24h
+        - request_count_24h
+      properties:
+        request_count:
+          type: integer
+          format: int64
+        success_count:
+          type: integer
+          format: int64
+        failure_count:
+          type: integer
+          format: int64
+        success_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+          nullable: true
+        avg_latency_ms:
+          type: number
+          nullable: true
+        avg_first_token_ms:
+          type: number
+          nullable: true
+        avg_cost:
+          type: number
+          nullable: true
+        cost_total:
+          type: integer
+          format: int64
+          description: 窗口内结算积分合计。
+        used_credits:
+          type: integer
+          format: int64
+          description: 渠道**累计**结算积分（全量历史）。
+        used_credits_24h:
+          type: integer
+          format: int64
+          description: 近 24h 结算积分（与所选 window 无关）。
+        request_count_24h:
+          type: integer
+          format: int64
+          description: 近 24h 请求数（与所选 window 无关）。
+    ChannelMetrics:
+      type: object
+      additionalProperties: false
+      required:
+        - channel_id
+        - window
+        - bucket_seconds
+        - points
+        - summary
+      properties:
+        channel_id:
+          type: integer
+          format: int64
+        window:
+          type: string
+          enum:
+            - 24h
+            - 7d
+        bucket_seconds:
+          type: integer
+          description: 桶宽，固定 3600（整点小时桶）。
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChannelMetricsPoint'
+        summary:
+          $ref: '#/components/schemas/ChannelMetricsSummary'
+        last_test_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 来自主库渠道行（不缓存在指标缓存里）。
+        last_test_result:
+          type: boolean
+          nullable: true
+    ChannelTestRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        model:
+          type: string
+          description: 必须属于该渠道 supported_models；缺省用 test_model 或首模型。
+        stream:
+          type: boolean
+          description: 设计字段；当前实现固定最小非流式请求，值被接受但不改变行为。
+      description: 请求体必填（`{}` 也可）；model 缺省时用 test_model 或首个模型。
+    ChannelTestResult:
+      type: object
+      additionalProperties: false
+      required:
+        - success
+        - latency_ms
+        - model
+      properties:
+        success:
+          type: boolean
+        latency_ms:
+          type: integer
+        model:
+          type: string
+        error_class:
+          type: string
+          description: 失败时是 F-06-06 五值枚举；成功时省略。
     LogsByKeyItem:
       type: object
       additionalProperties: false

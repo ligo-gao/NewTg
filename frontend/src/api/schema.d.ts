@@ -3976,6 +3976,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/channels/{id}/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 渠道健康与用量指标（24h/7d 整点桶）
+         * @description 返回 24（window=24h，默认）或 168（window=7d）个整点桶及窗口汇总。
+         *     成功率口径 = success / (success + error + refused)（modules-05 §10.2）；
+         *     refunded 计入 request_count 但不入成功率分母。空桶计数为 0、比率与
+         *     均值为 null（UI 显示 —，不是 0）。日志库不可用 → 503（渠道列表仍可用）；
+         *     渠道不存在 → 404；window 非法 → 422。
+         */
+        get: operations["getChannelMetrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/channels/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 对渠道发起一次连通性测试
+         * @description 请求体可选（model 必须属于该渠道 supported_models；缺省用 test_model
+         *     或首个模型）。连通性失败是业务结果：仍为 200，body.success=false 并带
+         *     error_class。失败不返回上游 URL/密钥等内部细节（GC-6）。
+         */
+        post: operations["testChannel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/chat/completions": {
         parameters: {
             query?: never;
@@ -5173,6 +5219,7 @@ export interface components {
             credentials_masked?: components["schemas"]["ChannelCredentialsMasked"];
             /** @description 仅详情/POST/PATCH 响应返回（GC-6 详情例外）。 */
             credentials_set?: boolean;
+            metrics?: components["schemas"]["ChannelListMetrics"];
         };
         /**
          * @description 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
@@ -8810,6 +8857,17 @@ export interface components {
             deployment?: string;
             api_version?: string;
         };
+        ChannelListMetrics: {
+            /**
+             * Format: int64
+             * @description 近 24h 请求数。
+             */
+            request_count: number;
+            /** @description success / (success + error + refused)；无样本为 null（显示 —）。 */
+            success_rate?: number | null;
+            /** @description 近 24h 平均总耗时（毫秒）；无样本为 null。 */
+            avg_latency_ms?: number | null;
+        };
         /** @description GET /api/channels 的 offset 分页信封。 */
         ChannelList: components["schemas"]["Page"] & {
             items?: components["schemas"]["Channel"][];
@@ -8830,6 +8888,95 @@ export interface components {
             api_key: string;
             deployment?: string;
             api_version?: string;
+        };
+        ChannelMetricsPoint: {
+            /**
+             * Format: date-time
+             * @description 整点桶起点（UTC）。
+             */
+            bucket_start: string;
+            /**
+             * Format: int64
+             * @description 桶内全部状态请求数（含 refunded）。
+             */
+            request_count: number;
+            /** Format: int64 */
+            success_count: number;
+            /**
+             * Format: int64
+             * @description status ∈ {error, refused}；refunded 不算失败。
+             */
+            failure_count: number;
+            /** @description success / (success + error + refused)；无样本为 null。 */
+            success_rate?: number | null;
+            /** @description 非空 latency_ms 的平均值；无样本为 null。 */
+            avg_latency_ms?: number | null;
+            /** @description 非空 first_token_ms 的平均值（非流式请求为 null 样本）；无样本为 null。 */
+            avg_first_token_ms?: number | null;
+            /** @description 桶内平均结算积分（cost 求和 / 请求数）；无请求为 null。 */
+            avg_cost?: number | null;
+        };
+        ChannelMetricsSummary: {
+            /** Format: int64 */
+            request_count: number;
+            /** Format: int64 */
+            success_count: number;
+            /** Format: int64 */
+            failure_count: number;
+            success_rate?: number | null;
+            avg_latency_ms?: number | null;
+            avg_first_token_ms?: number | null;
+            avg_cost?: number | null;
+            /**
+             * Format: int64
+             * @description 窗口内结算积分合计。
+             */
+            cost_total: number;
+            /**
+             * Format: int64
+             * @description 渠道**累计**结算积分（全量历史）。
+             */
+            used_credits: number;
+            /**
+             * Format: int64
+             * @description 近 24h 结算积分（与所选 window 无关）。
+             */
+            used_credits_24h: number;
+            /**
+             * Format: int64
+             * @description 近 24h 请求数（与所选 window 无关）。
+             */
+            request_count_24h: number;
+        };
+        ChannelMetrics: {
+            /** Format: int64 */
+            channel_id: number;
+            /** @enum {string} */
+            window: "24h" | "7d";
+            /** @description 桶宽，固定 3600（整点小时桶）。 */
+            bucket_seconds: number;
+            points: components["schemas"]["ChannelMetricsPoint"][];
+            summary: components["schemas"]["ChannelMetricsSummary"];
+            /**
+             * Format: date-time
+             * @description 来自主库渠道行（不缓存在指标缓存里）。
+             */
+            last_test_at?: string | null;
+            last_test_result?: boolean | null;
+        };
+        /** @description 请求体必填（`{}` 也可）；model 缺省时用 test_model 或首个模型。 */
+        ChannelTestRequest: {
+            /** @description 必须属于该渠道 supported_models；缺省用 test_model 或首模型。 */
+            model?: string;
+            /** @description 设计字段；当前实现固定最小非流式请求，值被接受但不改变行为。 */
+            stream?: boolean;
+        };
+        ChannelTestResult: {
+            success: boolean;
+            latency_ms: number;
+            model: string;
+            /** @description 失败时是 F-06-06 五值枚举；成功时省略。 */
+            error_class?: string;
         };
         /**
          * @description GET /api/logs/by-key 的行投影：字段与 UsageLogItem 相同（全部显式列出），
@@ -16588,6 +16735,75 @@ export interface operations {
                 };
             };
             400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            422: components["responses"]["Error422"];
+            429: components["responses"]["Error429"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    getChannelMetrics: {
+        parameters: {
+            query?: {
+                /** @description 时间窗口；缺省 24h。 */
+                window?: "24h" | "7d";
+            };
+            header?: never;
+            path: {
+                /** @description 渠道 id（正整数）；非法/不存在同形 404。 */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 指标序列与汇总 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelMetrics"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            422: components["responses"]["Error422"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    testChannel: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChannelTestRequest"];
+            };
+        };
+        responses: {
+            /** @description 测试结果（success=false 也是 200） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelTestResult"];
+                };
+            };
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
             404: components["responses"]["Error404"];

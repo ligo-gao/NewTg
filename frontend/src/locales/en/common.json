@@ -298,7 +298,9 @@
       "expand": "Expand details for {name}",
       "collapse": "Collapse details for {name}",
       "moreModels": "+{count}",
-      "neverTested": "Never tested"
+      "neverTested": "Never tested",
+      "successRate24h": "Success (24h)",
+      "avgLatency24h": "Latency (24h)"
     },
     "empty": {
       "none": "No channels yet",
@@ -504,6 +506,25 @@
       "defaultOff": "The switch defaults to off. While it is off, a request that carries x-newtg-protocol fails with 403 instead of being relayed.",
       "managedBy": "The switch lives in site settings, which are not yet available in this release, so this console cannot read or change it.",
       "editableDeferred": "An editable switch and protocol mapping will follow when site settings are available; no control is shown here until then."
+    },
+    "metrics": {
+      "title": "Usage metrics",
+      "trend": "Success rate trend",
+      "refresh": "Refresh",
+      "retry": "Retry",
+      "empty": "No usage data yet.",
+      "error": "Failed to load channel metrics.",
+      "offline": "You are offline. Metrics will load when the connection returns.",
+      "requests": "Requests",
+      "successRate": "Success rate",
+      "avgLatency": "Avg latency",
+      "avgFirstToken": "Avg first token",
+      "avgCost": "Avg cost",
+      "usedCredits": "Credits (24h)",
+      "range": {
+        "24h": "24h",
+        "7d": "7d"
+      }
     }
   },
   "tokens": {

@@ -298,7 +298,9 @@
       "expand": "Mở rộng chi tiết của {name}",
       "collapse": "Thu gọn chi tiết của {name}",
       "moreModels": "+{count}",
-      "neverTested": "Chưa kiểm tra"
+      "neverTested": "Chưa kiểm tra",
+      "successRate24h": "Thành công (24h)",
+      "avgLatency24h": "Độ trễ (24h)"
     },
     "empty": {
       "none": "Chưa có kênh",
@@ -504,6 +506,25 @@
       "defaultOff": "Công tắc mặc định tắt. Khi tắt, yêu cầu mang x-newtg-protocol sẽ thất bại với 403 thay vì được chuyển tiếp.",
       "managedBy": "Công tắc nằm trong cài đặt trang, chưa khả dụng trong bản phát hành này, nên bảng điều khiển này không thể đọc hoặc thay đổi nó.",
       "editableDeferred": "Công tắc có thể chỉnh sửa và ánh xạ giao thức sẽ có khi cài đặt trang khả dụng; cho đến lúc đó không hiển thị điều khiển nào ở đây."
+    },
+    "metrics": {
+      "title": "Chỉ số sử dụng",
+      "trend": "Xu hướng tỷ lệ thành công",
+      "refresh": "Làm mới",
+      "retry": "Thử lại",
+      "empty": "Chưa có dữ liệu sử dụng.",
+      "error": "Không tải được chỉ số của kênh.",
+      "offline": "Bạn đang ngoại tuyến. Chỉ số sẽ tải khi có kết nối.",
+      "requests": "Số yêu cầu",
+      "successRate": "Tỷ lệ thành công",
+      "avgLatency": "Độ trễ trung bình",
+      "avgFirstToken": "Token đầu tiên trung bình",
+      "avgCost": "Chi phí trung bình",
+      "usedCredits": "Tín dụng (24h)",
+      "range": {
+        "24h": "24 giờ",
+        "7d": "7 ngày"
+      }
     }
   },
   "tokens": {

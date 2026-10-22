@@ -429,6 +429,9 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 			Redis:  rdb,
 			Reauth: channelRevealGate,
 			Audit:  auditor,
+			// W16-1：渠道指标直查日志库 usage_logs（+60s Redis 缓存）。
+			// 主库渠道行与日志库分离，指标仓储必须拿 logsDB，不能拿 db。
+			Metrics: store.NewChannelMetricsRepo(logsDB),
 		},
 	)
 
