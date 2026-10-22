@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/contract"
@@ -136,10 +137,18 @@ type MJHandlerConfig struct {
 	// 没有它图片代理无法验签，注册一个永远 404 的端点比不注册更危险。
 	ImageSigner *mj.ImageSigner
 	// ImageGuard 是图片出站守卫的测试接缝（httptest 只能监听 127.0.0.1，
-	// 需要 AllowLoopback/自定义解析器）。nil 时每次请求按 sec.ssrf.* 构造，
-	// 且构造结果永远至少 basic + DomainAll（见 mjImagePolicy）。
+	// 需要 AllowLoopback/自定义解析器）。nil 时按 sec.ssrf.* 构造，且构造
+	// 结果永远至少 basic + DomainAll（见 mjImagePolicy）。
+	//
+	// 守卫与 http.Client 在装配期构造一次并复用：按图新建 Transport 会让
+	// 每张图片重新建连（连接池失效），把 CDN 延迟放大到每个产物请求。
+	// 代价是 sec.ssrf.* 变更需要重启生效——与设置中心「安全策略变更走
+	// 重启」的运维口径一致。
 	ImageGuard *egress.Guard
-	Logger     *slog.Logger
+	// Audit 是图片签名/归属失败的 best-effort 安全审计（security-02
+	// §2.4：category=security 的 mj_image_sig_rejected）。nil 时跳过。
+	Audit  *audit.Logger
+	Logger *slog.Logger
 	// Now / Uint64N 是测试接缝：时间与加权随机源。
 	Now     func() time.Time
 	Uint64N func(uint64) uint64
@@ -157,7 +166,12 @@ type MJHandler struct {
 	client      MJSubmitter
 	querier     MJQuerier
 	imageSigner *mj.ImageSigner
+	// imageGuard 只做无 DNS 的形状校验（scheme/port/userinfo/域名）；
+	// imageClient 是装配期构造的出站客户端（禁重定向），连接时由
+	// Guard.DialContext 做地址校验与反 rebinding。
 	imageGuard  *egress.Guard
+	imageClient *http.Client
+	audit       *audit.Logger
 	log         *slog.Logger
 	now         func() time.Time
 	uint64N     func(uint64) uint64
@@ -205,6 +219,14 @@ func NewMJHandler(cfg MJHandlerConfig) *MJHandler {
 		// 保持 nil，SelectChannel 内部使用 rand.Uint64N；这里只在测试注入。
 		uint64N = nil
 	}
+	// 图片出站守卫与客户端在装配期构造一次。ImageGuard 是测试接缝；
+	// 生产按 sec.ssrf.* 构造，且 mjImagePolicy 永远至少 basic + DomainAll。
+	imageGuard := cfg.ImageGuard
+	if imageGuard == nil {
+		imageGuard = egress.NewGuard(mjImagePolicy(cfg.Config))
+	}
+	imageClient := imageGuard.NewClient(egress.ClientOptions{Timeout: mjImageFetchTimeout})
+
 	return &MJHandler{
 		store:       cfg.Store,
 		channels:    cfg.Channels,
@@ -216,7 +238,9 @@ func NewMJHandler(cfg MJHandlerConfig) *MJHandler {
 		client:      client,
 		querier:     querier,
 		imageSigner: cfg.ImageSigner,
-		imageGuard:  cfg.ImageGuard,
+		imageGuard:  imageGuard,
+		imageClient: imageClient,
+		audit:       cfg.Audit,
 		log:         log,
 		now:         now,
 		uint64N:     uint64N,
@@ -249,9 +273,11 @@ func (h *MJHandler) Register(mux *http.ServeMux, authMiddleware func(http.Handle
 	mux.Handle("GET /mj/task/{id}/fetch", auth(http.HandlerFunc(h.handleTaskFetch)))
 	mux.Handle("POST /mj/task/list-by-condition", auth(http.HandlerFunc(h.handleTaskList)))
 	mux.Handle("POST /mj/task/{id}/image-seed", auth(http.HandlerFunc(h.handleImageSeed)))
-	// 图片代理（W8/MJ-c）：响应是二进制流，不能用会整段缓冲的 mjEnvelopeAuth，
-	// 改用只在鉴权失败时改写信封的 mjStreamAuth（成功路径保持流式）。
-	mux.Handle("GET /mj/image/{id}", mjStreamAuth(authMiddleware)(http.HandlerFunc(h.handleMJImage)))
+	// 图片代理（W8/MJ-c）：**不挂 RelayAuth**。设计把该端点排除在令牌鉴权
+	// 之外（relay-05 §1.3/§8、security-02 §2.4：不采纳强制鉴权）——签名 URL
+	// 就是能力凭证，浏览器 `<img src>` 不会携带 Bearer。签名与归属校验在
+	// handler 内完成，失败一律 404。
+	mux.Handle("GET /mj/image/{id}", http.HandlerFunc(h.handleMJImage))
 
 	unknown := auth(http.HandlerFunc(h.handleUnknown))
 	mux.Handle("/mj/", unknown)

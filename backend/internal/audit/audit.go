@@ -88,6 +88,12 @@ const (
 	// writer 统一注入为本常量值（裁决 R-43）。
 	ActionAuthzDenied = "authz.denied"
 
+	// ActionMJImageSigRejected 是图片代理的签名/归属拒绝事件
+	// （security-02 §2.4：category=security）。detail 固定为
+	// {"event":"mj_image_sig_rejected"}，绝不记录 MjId/URL/sig 明文——
+	// 审计表不能成为跨用户枚举 MjId 的旁路。
+	ActionMJImageSigRejected = "mj_image_sig_rejected"
+
 	// ActionSettingsUpdate 是 PUT /api/settings 的写审计（modules-08 §1.3 /
 	// §3.8 F-08-22：所有设置写都必须留下 before/after）。归 operation 类，
 	// 与用户/渠道/分组的配置变更同组。
@@ -256,6 +262,8 @@ var actionCategories = map[string]string{
 	ActionLogExport: categoryOperation,
 
 	ActionAuthzDenied: categorySecurity,
+
+	ActionMJImageSigRejected: categorySecurity,
 
 	ActionSettingsUpdate:        categoryOperation,
 	ActionSettingsTestWebhook:   categoryOperation,

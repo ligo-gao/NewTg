@@ -102,8 +102,8 @@ func TestMJImageProxyOnRealDB(t *testing.T) {
 	handler.Register(mux, RelayAuth(tokens, fakeTaskAccess{}, nil))
 
 	get := func(path string) *httptest.ResponseRecorder {
+		// 图片端点是仅签名访问：不带 Authorization（浏览器 <img src> 形态）。
 		req := httptest.NewRequest(http.MethodGet, path, nil)
-		req.Header.Set("Authorization", "Bearer nkt-mj-c")
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 		return rec

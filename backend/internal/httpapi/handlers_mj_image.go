@@ -24,6 +24,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"mime"
@@ -33,6 +34,7 @@ import (
 	"strings"
 	"time"
 
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/egress"
 	"newtg/gateway/internal/mj"
 	"newtg/gateway/internal/tasks"
@@ -73,22 +75,26 @@ func mjImagePolicy(cfg ConfigReader) egress.Policy {
 }
 
 // handleMJImage 处理 GET /mj/image/{id}。
+//
+// 【授权只有签名】本端点不挂 RelayAuth（设计明确不采纳强制鉴权）：签名 URL
+// 就是能力凭证，浏览器 `<img src>` 不会携带令牌。签名与归属校验全部在这里
+// 完成；任何失败都是 404。
 func (h *MJHandler) handleMJImage(w http.ResponseWriter, r *http.Request) {
 	id, mjErr := mj.ParseMjID(r.PathValue("id"))
 	if mjErr != nil {
-		h.writeMJImageNotFound(w)
+		h.writeMJImageNotFound(w, r)
 		return
 	}
 	expiry, sig, ok := mj.ParseImageTicket(r.URL.Query())
 	if !ok {
-		h.writeMJImageNotFound(w)
+		h.writeMJImageNotFound(w, r)
 		return
 	}
 
 	candidates, err := h.store.ListOwnersByUpstreamID(r.Context(), id, mj.MaxOwnerCandidates)
 	if err != nil {
 		h.log.Error("mj: read image owner candidates failed", "error", err)
-		writeMJError(w, &mj.Error{Code: mj.CodeUnknownError, Description: mj.DescriptionInternalError, Status: http.StatusInternalServerError})
+		h.writeMJImageError(w, &mj.Error{Code: mj.CodeUnknownError, Description: mj.DescriptionInternalError, Status: http.StatusInternalServerError})
 		return
 	}
 	// 逐个候选复算 HMAC：只有知道 owner 才能验签，而同一 MjId 可能对应多个
@@ -105,7 +111,7 @@ func (h *MJHandler) handleMJImage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if task == nil {
-		h.writeMJImageNotFound(w)
+		h.writeMJImageNotFound(w, r)
 		return
 	}
 
@@ -124,41 +130,38 @@ func (h *MJHandler) handleMJImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	guard := h.imageGuard
-	if guard == nil {
-		guard = egress.NewGuard(mjImagePolicy(h.config))
-	}
-	// 预解析一次用于尽早分类（ErrUnresolved→502、ErrBlocked→403）；
-	// 真正的连接由 Guard.DialContext 再次解析并只拨已校验的 IP（反 rebinding）。
-	if _, err := guard.ValidateURL(r.Context(), parsed.String()); err != nil {
+	// 无 DNS 的形状校验：scheme/port/userinfo/域名策略。放在拨号之前是
+	// 为了给「存储 URL 本身不合法/策略不允许」一个确定的 403，而不是把它
+	// 混进连接失败；真正的地址校验在 DialContext（只解析一次，反 rebinding）。
+	if _, err := h.imageGuard.ValidateURLShape(rawURL); err != nil {
 		h.writeMJImagePolicyError(w, err)
 		return
 	}
 
-	// 禁跟随重定向：Guard.NewClient 默认 CheckRedirect 返回 ErrUseLastResponse。
-	// 3xx 因此会作为普通响应返回，下面按非 2xx 折叠为 502——绝不跟随到
-	// 未经校验的下一跳。
-	client := guard.NewClient(egress.ClientOptions{Timeout: mjImageFetchTimeout})
-	method := http.MethodGet
-	if r.Method == http.MethodHead {
-		// HEAD 只需上游头部：不为「问大小」把整份图片下载一遍（与产物
-		// content 的 HEAD 语义一致）。
-		method = http.MethodHead
-	}
-	req, err := http.NewRequestWithContext(r.Context(), method, parsed.String(), nil)
+	// 出站客户端在装配期构造（禁跟随重定向、禁代理、复用连接池）。
+	// 地址规则由 Transport.DialContext 在每次连接时执行：解析一次、校验
+	// 全部候选 IP、只拨已校验的 IP（反 rebinding）。
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, parsed.String(), nil)
 	if err != nil {
 		h.writeMJImageBadGateway(w)
 		return
 	}
-	resp, err := client.Do(req)
+	if r.Method == http.MethodHead {
+		// HEAD 只需上游头部：不为「问大小」把整份图片下载一遍（与产物
+		// content 的 HEAD 语义一致）。
+		req.Method = http.MethodHead
+	}
+	resp, err := h.imageClient.Do(req)
 	if err != nil {
 		h.writeMJImagePolicyError(w, err)
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		// 不透传上游 4xx/5xx：客户端无法据状态码区分「任务存在但上游失败」
-		// 与「归属不符」，透传会重新打开 oracle。
+		// 3xx 也在内：客户端不跟随重定向，重定向响应按上游失败折叠为 502，
+		// 绝不跟随到未经校验的下一跳。同时不透传上游 4xx/5xx：客户端无法
+		// 据状态码区分「任务存在但上游失败」与「归属不符」，透传会重新
+		// 打开归属 oracle。
 		h.writeMJImageBadGateway(w)
 		return
 	}
@@ -195,16 +198,34 @@ func (h *MJHandler) handleMJImage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// mjImageSigRejectedDetail 是安全审计的固定 detail：只表达「签名/归属失败」
+// 这一事实，不携带 URL、MjId、sig 或任何请求片段（避免审计表成为枚举工具）。
+const mjImageSigRejectedDetail = `{"event":"mj_image_sig_rejected"}`
+
 // writeMJImageNotFound 是 id/签名/归属类失败的唯一出口（R-MJ-11）。
-func (h *MJHandler) writeMJImageNotFound(w http.ResponseWriter) {
-	w.Header().Set("Cache-Control", "no-store")
-	writeMJError(w, mjTaskNotFound())
+//
+// 除 404 外还写一条 best-effort 安全审计（security-02 §2.4：category=security
+// 的 mj_image_sig_rejected）。审计失败不影响响应——日志库独立于业务库，
+// 不能因为审计不可用把 404 变成 500。
+func (h *MJHandler) writeMJImageNotFound(w http.ResponseWriter, r *http.Request) {
+	if h.audit != nil && r != nil {
+		_ = writeAuditEvent(r.Context(), h.audit, audit.Event{
+			Action:     audit.ActionMJImageSigRejected,
+			Result:     "failed",
+			IP:         clientIP(r),
+			UserAgent:  r.UserAgent(),
+			Method:     r.Method,
+			Route:      "/mj/image/{id}", // 固定模板：绝不写入路径里的 MjId
+			StatusCode: http.StatusNotFound,
+			Detail:     json.RawMessage(mjImageSigRejectedDetail),
+		})
+	}
+	h.writeMJImageError(w, mjTaskNotFound())
 }
 
 // writeMJImageBadGateway 是存储 URL 非法/上游失败/非图片类型的出口。
 func (h *MJHandler) writeMJImageBadGateway(w http.ResponseWriter) {
-	w.Header().Set("Cache-Control", "no-store")
-	writeMJError(w, &mj.Error{
+	h.writeMJImageError(w, &mj.Error{
 		Code: mj.CodeUnknownError, Description: mj.DescriptionUpstreamError,
 		Status: http.StatusBadGateway,
 	})
@@ -212,17 +233,29 @@ func (h *MJHandler) writeMJImageBadGateway(w http.ResponseWriter) {
 
 // writeMJImagePolicyError 把出站错误映射为 403/502（R-MJ-10）。
 //
+// 只有 ErrBlocked 是策略拒绝（403）。重定向不被跟随：3xx 会作为普通响应
+// 返回，并在上层按「上游非 2xx」折叠为 502；ErrRedirect 只可能出现在
+// FollowRedirects=true 的调用方，本端点不会产生，故不设该分支。
+//
 // 按错误类别而不是文本映射：*url.Error 的 Error() 会拼上完整目标 URL
 // （可能含 query 凭据），绝不能写进响应或日志。
 func (h *MJHandler) writeMJImagePolicyError(w http.ResponseWriter, err error) {
-	if errors.Is(err, egress.ErrBlocked) || errors.Is(err, egress.ErrRedirect) {
-		w.Header().Set("Cache-Control", "no-store")
-		writeMJError(w, mj.Forbidden(mj.DescriptionForbidden))
+	if errors.Is(err, egress.ErrBlocked) {
+		h.writeMJImageError(w, mj.Forbidden(mj.DescriptionForbidden))
 		return
 	}
 	// ErrUnresolved 与其余传输失败（连接拒绝/超时/TLS）都不可归因于客户端，
 	// 统一 502；不把底层错误文本外传。
 	h.writeMJImageBadGateway(w)
+}
+
+// writeMJImageError 是图片代理所有错误响应的唯一写出口：统一 no-store。
+//
+// 错误体不含目标 URL/凭据/MjId；no-store 防止中间缓存把一次归属失败或
+// 上游故障缓存成后续请求的假结果。
+func (h *MJHandler) writeMJImageError(w http.ResponseWriter, err error) {
+	w.Header().Set("Cache-Control", "no-store")
+	writeMJError(w, err)
 }
 
 // imageContentType 归一上游 Content-Type，只接受栅格图片类型。
@@ -277,96 +310,4 @@ func (r *mjImageLimitReader) Read(p []byte) (int, error) {
 	n, err := r.body.Read(p)
 	r.remaining -= int64(n)
 	return n, err
-}
-
-// mjStreamAuth 是图片代理专用的 RelayAuth 信封适配器。
-//
-// 不能复用 mjEnvelopeAuth：后者会把整段响应缓冲到 strings.Builder，图片流
-// 会被整块读入内存。这里只在**鉴权尚未通过**时吞掉内层写出的 OpenAI 错误体
-// （鉴权错误体很小），一旦内层调用 next（鉴权通过）就切换为直写，图片保持
-// 流式。这样 /mj/* 的错误形状仍然统一为 {code,description}（R-MJ-17）。
-func mjStreamAuth(inner func(http.Handler) http.Handler) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// passed 是请求级状态：不能放进构造函数闭包，否则同一路由的首个
-			// 成功请求会永久置位（与 mjEnvelopeAuth 的 C1 修复同因）。
-			stream := &mjStreamAuthWriter{real: w, header: make(http.Header)}
-			passed := false
-			wrapped := inner(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				passed = true
-				stream.beginPass()
-				next.ServeHTTP(stream, r)
-			}))
-			wrapped.ServeHTTP(stream, r)
-			if passed {
-				return
-			}
-			status := stream.status
-			if status == 0 {
-				status = http.StatusInternalServerError
-			}
-			writeMJError(w, mjAuthError(status))
-		})
-	}
-}
-
-// mjStreamAuthWriter 在鉴权通过前缓冲响应元数据（不缓冲图片）。
-type mjStreamAuthWriter struct {
-	real        http.ResponseWriter
-	header      http.Header
-	status      int
-	passthrough bool
-}
-
-func (w *mjStreamAuthWriter) Header() http.Header {
-	if w.passthrough {
-		return w.real.Header()
-	}
-	return w.header
-}
-
-func (w *mjStreamAuthWriter) WriteHeader(status int) {
-	if w.passthrough {
-		w.real.WriteHeader(status)
-		return
-	}
-	if w.status == 0 {
-		w.status = status
-	}
-}
-
-// Write 在鉴权失败时丢弃内层错误体，返回成功写入长度避免内层报错。
-func (w *mjStreamAuthWriter) Write(p []byte) (int, error) {
-	if w.passthrough {
-		return w.real.Write(p)
-	}
-	if w.status == 0 {
-		w.status = http.StatusOK
-	}
-	return len(p), nil
-}
-
-// beginPass 合并内层已设置的响应头并切换为直写。
-func (w *mjStreamAuthWriter) beginPass() {
-	if w.passthrough {
-		return
-	}
-	for key, values := range w.header {
-		for _, value := range values {
-			w.real.Header().Add(key, value)
-		}
-	}
-	w.passthrough = true
-	// 内层若在调用 next 之前已写状态码，必须原样发出；正常 RelayAuth
-	// 成功路径不写任何响应，这里只是防御性分支。
-	if w.status != 0 {
-		w.real.WriteHeader(w.status)
-	}
-}
-
-// Flush 透传底层 Flusher（图片流可能被反向代理按块转发）。
-func (w *mjStreamAuthWriter) Flush() {
-	if flusher, ok := w.real.(http.Flusher); ok {
-		flusher.Flush()
-	}
 }

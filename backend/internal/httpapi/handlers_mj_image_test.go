@@ -13,6 +13,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,9 +24,11 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/egress"
 	"newtg/gateway/internal/mj"
@@ -47,6 +50,12 @@ type mjImageEnv struct {
 func newMJImageEnv(t *testing.T, store *fakeMJStore, signer *mj.ImageSigner,
 	guard *egress.Guard, config fakeMJConfig) *mjImageEnv {
 	t.Helper()
+	return newMJImageEnvWithAudit(t, store, signer, guard, config, nil)
+}
+
+func newMJImageEnvWithAudit(t *testing.T, store *fakeMJStore, signer *mj.ImageSigner,
+	guard *egress.Guard, config fakeMJConfig, auditLogger *audit.Logger) *mjImageEnv {
+	t.Helper()
 	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
 	tokens, key42, _ := newMJTokens()
 	handler := NewMJHandler(MJHandlerConfig{
@@ -58,6 +67,7 @@ func newMJImageEnv(t *testing.T, store *fakeMJStore, signer *mj.ImageSigner,
 		Config:      config,
 		ImageSigner: signer,
 		ImageGuard:  guard,
+		Audit:       auditLogger,
 		Now:         func() time.Time { return now },
 	})
 	mux := http.NewServeMux()
@@ -94,6 +104,15 @@ func (e *mjImageEnv) path(id, sig string, exp int64) string {
 }
 
 func (e *mjImageEnv) get(target string) *httptest.ResponseRecorder {
+	e.t.Helper()
+	// 图片端点是仅签名访问：不携带 Authorization（浏览器 <img src> 的真实形态）。
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	rec := httptest.NewRecorder()
+	e.mux.ServeHTTP(rec, req)
+	return rec
+}
+
+func (e *mjImageEnv) getWithBearer(target string) *httptest.ResponseRecorder {
 	e.t.Helper()
 	req := httptest.NewRequest(http.MethodGet, target, nil)
 	req.Header.Set("Authorization", e.auth)
@@ -208,6 +227,9 @@ func TestMJImageNotFoundCases(t *testing.T) {
 			if rec.Code != http.StatusNotFound {
 				t.Fatalf("status = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
 			}
+			if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("404 Cache-Control = %q, want no-store", got)
+			}
 			body := decodeMJImageError(t, rec)
 			if int(body["code"].(float64)) != mj.CodeRequestError ||
 				body["description"] != mj.DescriptionTaskNotFound {
@@ -266,6 +288,9 @@ func TestMJImageSSRFAlwaysApplies(t *testing.T) {
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("status = %d, want 403 (body=%s)", rec.Code, rec.Body.String())
 			}
+			if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("403 Cache-Control = %q, want no-store", got)
+			}
 			body := decodeMJImageError(t, rec)
 			if int(body["code"].(float64)) != mj.CodeRequestError {
 				t.Fatalf("403 envelope code = %v", body["code"])
@@ -301,21 +326,125 @@ func TestMJImageSSRFAlwaysApplies(t *testing.T) {
 }
 
 func TestMJImageModeOffDoesNotDisableAddressRules(t *testing.T) {
-	upstream := newImageUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "image/png")
-		_, _ = w.Write(mjImagePNG)
-	})
 	store := newFakeMJStore()
 	signer := mj.NewImageSigner("mj-image-off-key")
-	// 不注入 ImageGuard：让 handler 从 sec.ssrf.* 构造策略。
+	// 不注入 ImageGuard：让 handler 在装配期从 sec.ssrf.* 构造策略。
+	// 不用 httptest 的随机端口（形状校验会先按端口拒绝，掩盖地址规则）；
+	// 用默认 80 端口的 loopback 地址，让拒绝只能来自地址规则。
 	config := mjConfigured(map[string]json.RawMessage{"sec.ssrf.mode": json.RawMessage(`"off"`)})
 	env := newMJImageEnv(t, store, signer, nil, config)
-	env.addTask(42, "mj_off", upstream.URL+"/img.png")
+	env.addTask(42, "mj_off", "http://127.0.0.1/img.png")
 	sig, exp := env.ticket("mj_off", 42)
 	rec := env.get(env.path("mj_off", sig, exp))
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("sec.ssrf.mode=off must not exempt /mj/image: status = %d, want 403 (body=%s)",
 			rec.Code, rec.Body.String())
+	}
+}
+
+func TestMJImageSSRFEnabledFalseDoesNotExempt(t *testing.T) {
+	store := newFakeMJStore()
+	signer := mj.NewImageSigner("mj-image-off-key")
+	config := mjConfigured(map[string]json.RawMessage{"sec.ssrf.enabled": json.RawMessage(`false`)})
+	env := newMJImageEnv(t, store, signer, nil, config)
+	// 默认 80 端口的 loopback：拒绝只能来自地址规则（端口不是原因）。
+	env.addTask(42, "mj_enabled_off", "http://127.0.0.1/img.png")
+	sig, exp := env.ticket("mj_enabled_off", 42)
+	rec := env.get(env.path("mj_enabled_off", sig, exp))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("sec.ssrf.enabled=false must not exempt /mj/image: status = %d, want 403", rec.Code)
+	}
+}
+
+func TestMJImageAllowPrivateIPSettingDoesNotWiden(t *testing.T) {
+	store := newFakeMJStore()
+	signer := mj.NewImageSigner("mj-image-private-key")
+	config := mjConfigured(map[string]json.RawMessage{
+		"sec.ssrf.allow_private_ip": json.RawMessage(`true`),
+	})
+	env := newMJImageEnv(t, store, signer, nil, config)
+	env.addTask(42, "mj_private_setting", "http://10.0.0.5/img.png")
+	sig, exp := env.ticket("mj_private_setting", 42)
+	rec := env.get(env.path("mj_private_setting", sig, exp))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("allow_private_ip must not widen /mj/image: status = %d, want 403", rec.Code)
+	}
+}
+
+func TestMJImageRejectsSVG(t *testing.T) {
+	upstream := newImageUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/svg+xml")
+		_, _ = w.Write([]byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`))
+	})
+	store := newFakeMJStore()
+	signer := mj.NewImageSigner("mj-image-svg-key")
+	env := newMJImageEnv(t, store, signer, permissiveImageGuard(), mjConfigured(nil))
+	env.addTask(42, "mj_svg", upstream.URL+"/img.svg")
+	sig, exp := env.ticket("mj_svg", 42)
+	rec := env.get(env.path("mj_svg", sig, exp))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("scriptable SVG must be rejected: status = %d, want 502", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "<svg") || strings.Contains(rec.Body.String(), "alert(1)") {
+		t.Fatalf("SVG body must not be forwarded: %s", rec.Body.String())
+	}
+}
+
+// TestMJImageChunkedBodyTruncatedAtLimit 覆盖无 Content-Length 的块式响应：
+// 超过 32MiB 上限时停止复制（头已发 200，只能截断），不把余下字节转发给
+// 客户端，也不把上游的「无限流」读进内存。
+func TestMJImageChunkedBodyTruncatedAtLimit(t *testing.T) {
+	const chunkSize = 64 << 10
+	upstream := newImageUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.WriteHeader(http.StatusOK)
+		payload := bytes.Repeat([]byte{0xAB}, chunkSize)
+		for written := int64(0); written < maxMJImageBytes+chunkSize; written += chunkSize {
+			_, _ = w.Write(payload)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush() // 强制 chunked，不产生 Content-Length
+			}
+		}
+	})
+	store := newFakeMJStore()
+	signer := mj.NewImageSigner("mj-image-chunked-key")
+	env := newMJImageEnv(t, store, signer, permissiveImageGuard(), mjConfigured(nil))
+	env.addTask(42, "mj_chunked", upstream.URL+"/huge.png")
+	sig, exp := env.ticket("mj_chunked", 42)
+	rec := env.get(env.path("mj_chunked", sig, exp))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (headers already sent before the cap)", rec.Code)
+	}
+	if rec.Body.Len() != maxMJImageBytes {
+		t.Fatalf("streamed bytes = %d, want exactly the %d-byte cap", rec.Body.Len(), maxMJImageBytes)
+	}
+}
+
+func TestMJImageHeadForwardsHeadToUpstream(t *testing.T) {
+	methods := make(chan string, 1)
+	upstream := newImageUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		methods <- r.Method
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Content-Length", strconv.Itoa(len(mjImagePNG)))
+		w.WriteHeader(http.StatusOK)
+	})
+	store := newFakeMJStore()
+	signer := mj.NewImageSigner("mj-image-head-key")
+	env := newMJImageEnv(t, store, signer, permissiveImageGuard(), mjConfigured(nil))
+	env.addTask(42, "mj_head", upstream.URL+"/img.png")
+	sig, exp := env.ticket("mj_head", 42)
+
+	req := httptest.NewRequest(http.MethodHead, env.path("mj_head", sig, exp), nil)
+	rec := httptest.NewRecorder()
+	env.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("HEAD status = %d", rec.Code)
+	}
+	if got := <-methods; got != http.MethodHead {
+		t.Fatalf("upstream method = %q, want HEAD", got)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("HEAD body = %q, want empty", rec.Body.Bytes())
 	}
 }
 
@@ -338,7 +467,7 @@ func TestMJImagePolicyClampsConfig(t *testing.T) {
 	}
 }
 
-func TestMJImageRebindingSecondResolutionIsBlocked(t *testing.T) {
+func TestMJImageDialTimeResolutionIsBlocked(t *testing.T) {
 	store := newFakeMJStore()
 	signer := mj.NewImageSigner("mj-image-rebind-key")
 	var resolves int
@@ -346,11 +475,7 @@ func TestMJImageRebindingSecondResolutionIsBlocked(t *testing.T) {
 		Mode: egress.ModeBasic, DomainMode: egress.DomainAll, AllowAnyPort: true,
 	}).WithResolver(func(_ context.Context, _ string) ([]net.IP, error) {
 		resolves++
-		if resolves == 1 {
-			// ValidateURL 看到公网地址 → 通过。
-			return []net.IP{net.ParseIP("93.184.216.34")}, nil
-		}
-		// 拨号阶段重解析返回私网 → DialContext 必须拒绝（反 rebinding）。
+		// 形状校验不解析 DNS；这是本次请求唯一一次解析，返回私网必须被拒绝。
 		return []net.IP{net.ParseIP("10.0.0.7")}, nil
 	})
 	env := newMJImageEnv(t, store, signer, guard, mjConfigured(nil))
@@ -358,10 +483,11 @@ func TestMJImageRebindingSecondResolutionIsBlocked(t *testing.T) {
 	sig, exp := env.ticket("mj_rebind", 42)
 	rec := env.get(env.path("mj_rebind", sig, exp))
 	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403 (rebinding blocked at dial time)", rec.Code)
+		t.Fatalf("status = %d, want 403 (dial-time resolution must be checked)", rec.Code)
 	}
-	if resolves < 2 {
-		t.Fatalf("resolver calls = %d, want at least 2 (pre-check + dial)", resolves)
+	// 只解析一次：没有「先校验公网、再拨私网」的 rebinding 窗口。
+	if resolves != 1 {
+		t.Fatalf("resolver calls = %d, want exactly 1 (single resolution at dial time)", resolves)
 	}
 }
 
@@ -436,6 +562,9 @@ func TestMJImageUpstreamFailures(t *testing.T) {
 			rec := env.get(env.path(id, sig, exp))
 			if rec.Code != tc.want {
 				t.Fatalf("status = %d, want %d (body=%s)", rec.Code, tc.want, rec.Body.String())
+			}
+			if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("502 Cache-Control = %q, want no-store", got)
 			}
 			body := decodeMJImageError(t, rec)
 			if int(body["code"].(float64)) != mj.CodeUnknownError {
@@ -563,31 +692,118 @@ func TestMJImageStoreErrorIsInternal(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("500 Cache-Control = %q, want no-store", got)
+	}
 	body := decodeMJImageError(t, rec)
 	if body["description"] != mj.DescriptionInternalError {
 		t.Fatalf("description = %v", body["description"])
 	}
 }
 
-func TestMJImageAuthFailureUsesMJEnvelope(t *testing.T) {
+func TestMJImageSignatureOnlyAccess(t *testing.T) {
+	upstream := newImageUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(mjImagePNG)
+	})
 	store := newFakeMJStore()
 	signer := mj.NewImageSigner("mj-image-auth-key")
 	env := newMJImageEnv(t, store, signer, permissiveImageGuard(), mjConfigured(nil))
+	env.addTask(42, "mj_auth", upstream.URL+"/img.png")
 	sig, exp := env.ticket("mj_auth", 42)
+	valid := env.path("mj_auth", sig, exp)
 
-	req := httptest.NewRequest(http.MethodGet, env.path("mj_auth", sig, exp), nil)
-	rec := httptest.NewRecorder()
-	env.mux.ServeHTTP(rec, req)
+	t.Run("no bearer + valid signature", func(t *testing.T) {
+		rec := env.get(valid)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (browser <img src> carries no token)", rec.Code)
+		}
+		if !bytes.Equal(rec.Body.Bytes(), mjImagePNG) {
+			t.Fatalf("body = %q", rec.Body.Bytes())
+		}
+	})
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
+	t.Run("no bearer + invalid signature is 404", func(t *testing.T) {
+		rec := env.get(env.path("mj_auth", flipSignature(sig), exp))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", rec.Code)
+		}
+	})
+
+	t.Run("bearer header is still tolerated", func(t *testing.T) {
+		rec := env.getWithBearer(valid)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (an extra bearer must not break the capability URL)", rec.Code)
+		}
+	})
+}
+
+// capturingAuditExec 记录审计 INSERT 的参数（列顺序见 audit.insertSQL）。
+type capturingAuditExec struct {
+	mu    sync.Mutex
+	calls [][]any
+}
+
+func (e *capturingAuditExec) ExecContext(_ context.Context, _ string, args ...any) (sql.Result, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.calls = append(e.calls, append([]any(nil), args...))
+	return nil, nil
+}
+
+func (e *capturingAuditExec) snapshot() [][]any {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([][]any, len(e.calls))
+	for i, call := range e.calls {
+		out[i] = append([]any(nil), call...)
 	}
-	body := decodeMJImageError(t, rec)
-	if _, ok := body["error"]; ok {
-		t.Fatalf("auth failure must use the MJ envelope, not the relay error body: %v", body)
+	return out
+}
+
+// TestMJImageSigRejectionIsAudited 冻结 security-02 §2.4：签名/归属失败写
+// category=security 的 mj_image_sig_rejected，detail 只含固定事件名，
+// 不记录 MjId/URL/sig 明文。
+func TestMJImageSigRejectionIsAudited(t *testing.T) {
+	exec := &capturingAuditExec{}
+	logger := audit.New(exec)
+	store := newFakeMJStore()
+	signer := mj.NewImageSigner("mj-image-audit-key")
+	env := newMJImageEnvWithAudit(t, store, signer, permissiveImageGuard(), mjConfigured(nil), logger)
+	env.addTask(42, "mj_audit_secret_id", "https://cdn.example/img.png")
+	sig, exp := env.ticket("mj_audit_secret_id", 42)
+
+	rec := env.get(env.path("mj_audit_secret_id", flipSignature(sig), exp))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
 	}
-	if body["description"] != mj.DescriptionInvalidToken {
-		t.Fatalf("description = %v", body["description"])
+
+	calls := exec.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("audit calls = %d, want 1", len(calls))
+	}
+	args := calls[0]
+	if len(args) != 12 {
+		t.Fatalf("audit args = %d, want 12 columns", len(args))
+	}
+	if got := args[2]; got != "security" {
+		t.Fatalf("audit category = %v, want security", got)
+	}
+	if got := args[6]; got != "/mj/image/{id}" {
+		t.Fatalf("audit route = %v, want the fixed template", got)
+	}
+	if got := args[8]; got != "failed" {
+		t.Fatalf("audit result = %v, want failed", got)
+	}
+	detail := fmt.Sprint(args[9])
+	if !strings.Contains(detail, "mj_image_sig_rejected") {
+		t.Fatalf("audit detail = %s, want the fixed event name", detail)
+	}
+	for _, arg := range args {
+		text := fmt.Sprint(arg)
+		if strings.Contains(text, "mj_audit_secret_id") || strings.Contains(text, "cdn.example") {
+			t.Fatalf("audit must not record the MjId or target URL: %q", text)
+		}
 	}
 }
 

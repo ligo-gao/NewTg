@@ -4871,7 +4871,7 @@ export interface paths {
          * @description 按 MjId 取候选任务行并对候选 owner 逐个复算 HMAC，任一匹配即通过；
          *     随后用统一出站执行器校验目标地址（私网/环回/link-local/元数据/
          *     CGNAT/保留段、反 rebinding、禁跟随重定向）并流式回写图片字节。
-         *     `sig`/`exp` 之外不接受任何参数。
+         *     `sig`/`exp` 之外不接受任何参数；不要求 Bearer。
          */
         get: operations["mjImageProxy"];
         put?: never;
@@ -18585,13 +18585,6 @@ export interface operations {
         responses: {
             /** @description 图片字节流（Content-Type 透传，限 image/*；缺失按 image/jpeg） */
             200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 令牌无效（`{code:5,description:invalid_token}`） */
-            401: {
                 headers: {
                     [name: string]: unknown;
                 };

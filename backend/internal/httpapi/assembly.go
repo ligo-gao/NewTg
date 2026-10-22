@@ -392,6 +392,8 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			// newtg/mj-image/v1（R-MJ-09）：轮换主密钥即撤销全部已签发
 			// 图片 URL，且与产物票据互不重放。不新增必填 env。
 			ImageSigner: mj.NewImageSigner(deps.CredentialEncryptionKey),
+			// 图片签名/归属失败的 best-effort 安全审计（security-02 §2.4）。
+			Audit: deps.Audit,
 		})
 	}
 
