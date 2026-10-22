@@ -462,28 +462,6 @@ func TestRelayRateLimitMultimodalReturns429(t *testing.T) {
 	}
 }
 
-// TestRelayRateLimitRealtimeIsNotCounted 固化「realtime 不计」：该端点的
-// 连接级失败语义由 realtime 自己承担，准入限流接缝不参与（不建任何键）。
-// 这里用捕获 dispatcher 让端点本身确定成功，断言只针对限流副作用。
-func TestRelayRateLimitRealtimeIsNotCounted(t *testing.T) {
-	env := newRateLimitTestEnv(t, rateLimitEnvOptions{
-		config:     rateLimitConfig(1, 1, 1, ""),
-		multimodal: true,
-	})
-	w := env.do(t, http.MethodGet, "/v1/realtime", "",
-		map[string]string{"Authorization": "Bearer " + relayTestToken})
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d，期望 200（捕获 dispatcher）；body=%s", w.Code, w.Body.String())
-	}
-	for _, key := range []string{
-		ratelimit.UserKey(relayTestUserID),
-		ratelimit.TokenKey(relayTestTokenID),
-		ratelimit.UserGlobalKey(relayTestUserID),
-	} {
-		assertNoRedisKey(t, env.mr, key)
-	}
-}
-
 // ---------- 流式只计一次 ----------
 
 func TestRelayRateLimitStreamCountsOnce(t *testing.T) {

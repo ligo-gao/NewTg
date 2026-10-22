@@ -182,17 +182,20 @@ func RegisterMultimodalRoutes(mux *http.ServeMux, auth func(http.Handler) http.H
 	register(http.MethodPost, "/v1/audio/speech", contract.EndpointAudioSpeech)
 	register(http.MethodPost, "/v1/audio/transcriptions", contract.EndpointAudioTranscribe)
 	register(http.MethodPost, "/v1/audio/translations", contract.EndpointAudioTranslate)
+	// 审核端点（relay-04 §5）：按 token 计费，复用文本适配器的 OpenAI 兼容
+	// 形状。R-W18-14：本波实现；completions / alpha_search 明确不做（见报告）。
+	register(http.MethodPost, "/v1/moderations", contract.EndpointModerations)
 	// Gemini 专用嵌入路径（R-11）：语义路径由模型名 + 动作后缀承载。
 	// 通配只在 :embedContent / :batchEmbedContents 时归入嵌入族；其它
 	// 动作在 serve 中回标准 404（不注册 501 桩）。
 	register(http.MethodPost, "/v1/engines/{model}/embeddings", contract.EndpointEmbeddings)
 	register(http.MethodPost, "/v1/models/{path...}", contract.EndpointEmbeddings)
 	register(http.MethodPost, "/v1beta/models/{path...}", contract.EndpointEmbeddings)
-	// 实时骨架：WebSocket 握手是 GET（relay-07 G-06 冻结 `GET /v1/realtime`）。
-	// M4 计划草图写的 POST 已被该裁决取代；这里只注册 GET，避免留下一个
-	// 永远不会收到升级请求的 POST 半死路径。升级与双向桥接由 T4/T5 负责，
-	// T1 只保证鉴权与上下文注入与其它端点一致。
-	register(http.MethodGet, "/v1/realtime", contract.EndpointRealtime)
+	// R-W18-12：GET /v1/realtime 的 501 骨架已删除，路由不再注册——请求落到
+	// /v1/ 兜底返回标准 404。为什么是 404 而不是保留 501：501 暗示「将来会
+	// 实现」，而本波明确不做双向桥接（relay-07 §3 需要粘滞/排空/三段计费，
+	// 远超收口量级）；不注册 = 不经鉴权/限流/分发，攻击面最小，语义诚实。
+	// Responses WebSocket（GET /v1/responses）同样保持 404（从未注册）。
 }
 
 // serve 是所有多模态端点的公共流程：读体 → 入口校验 → 组装 RelayContext →
@@ -264,16 +267,10 @@ func (h *MultimodalHandler) serve(w http.ResponseWriter, r *http.Request, endpoi
 	}
 
 	// W7/M5-b 准入限流（R-M5-04）：与 chat 同位置——分组解析之后、白名单/
-	// 停用检查/预扣/上游之前。
-	//
-	// 排除 realtime：`GET /v1/realtime` 的 WebSocket 升级在当前版本固定 501
-	// （M5 简报的冻结口径「realtime 501 不计」）。把它计入会先消耗配额再得到
-	// 一个必然失败的响应；升级真正落地时由该端点自己决定连接级语义。
-	if endpoint != contract.EndpointRealtime {
-		if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal, clientIP(r)); rejection != nil {
-			writeRelayRateLimitError(w, rc.RequestID, rejection)
-			return
-		}
+	// 停用检查/预扣/上游之前。审核同属提交面，必须计入（R-W18-10）。
+	if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal, clientIP(r)); rejection != nil {
+		writeRelayRateLimitError(w, rc.RequestID, rejection)
+		return
 	}
 
 	// 鉴权/授权一致性（T1 复审 F2）：多模态端点必须复用 chat 路径的两道
@@ -386,9 +383,8 @@ func validateMultimodalEntry(endpoint contract.Endpoint, path string, contentTyp
 		return validateSpeechJSON(body)
 	case contract.EndpointAudioTranscribe, contract.EndpointAudioTranslate:
 		return validateAudioMultipart(contentType, body)
-	case contract.EndpointRealtime:
-		// WebSocket 升级请求没有可解析的 JSON body；模型/协议由 Task 4/T5 处理。
-		return "", nil
+	case contract.EndpointModerations:
+		return validateModerationJSON(body)
 	case contract.EndpointEmbeddings:
 		if model, ok := geminiEmbeddingModel(path); ok {
 			if strings.HasPrefix(path, "/v1/engines/") {
@@ -538,6 +534,69 @@ func validateGeminiEmbeddingJSON(model string, body []byte) (string, error) {
 //
 // 非字符串数组元素被忽略（照搬基线）；但必须至少有一个字符串输入，否则
 // 归一化层无法产出可计费用量。
+// validateModerationJSON 实施 relay-04 §5.2/§9：`input` 必填且非空、
+// input 字节上界、max_tokens 族上界；缺省 model 取审核默认模型。
+//
+// 为什么 input 只校验形态与字节上界、不解析 multimodal 对象内部：审核
+// 输入的 image_url/base64 属于上游语义，入口层无法可靠解释；但整个 input
+// 的序列化字节是确定上界，足以防止构造超大 body 进入预扣路径。
+func validateModerationJSON(body []byte) (string, error) {
+	var payload struct {
+		Model               *string            `json:"model"`
+		Input               json.RawMessage    `json:"input"`
+		MaxTokens           optionalJSONNumber `json:"max_tokens"`
+		MaxCompletionTokens optionalJSONNumber `json:"max_completion_tokens"`
+		MinTokens           optionalJSONNumber `json:"min_tokens"`
+		MaxOutputTokens     optionalJSONNumber `json:"max_output_tokens"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", invalidMultimodalEntry("invalid JSON request body")
+	}
+	input := bytes.TrimSpace(payload.Input)
+	if len(input) == 0 || string(input) == "null" {
+		return "", invalidMultimodalEntry("input is required")
+	}
+	if len(input) > multimodal.MaxModerationInputBytes {
+		return "", invalidMultimodalEntry("input exceeds the 1 MiB limit")
+	}
+	switch input[0] {
+	case '"':
+		var text string
+		if err := json.Unmarshal(input, &text); err != nil || text == "" {
+			return "", invalidMultimodalEntry("input is required")
+		}
+	case '[':
+		var items []json.RawMessage
+		if err := json.Unmarshal(input, &items); err != nil || len(items) == 0 {
+			return "", invalidMultimodalEntry("input is required")
+		}
+		for _, item := range items {
+			if len(bytes.TrimSpace(item)) == 0 {
+				return "", invalidMultimodalEntry("input must not contain empty items")
+			}
+		}
+	default:
+		return "", invalidMultimodalEntry("input must be a string or an array")
+	}
+	// max_tokens 族若出现，受 §9 冻结的 MaxTokensLimit 约束；负数同样拒绝
+	// （可构造配额反向得利）。
+	for _, field := range []optionalJSONNumber{
+		payload.MaxTokens, payload.MaxCompletionTokens, payload.MinTokens, payload.MaxOutputTokens,
+	} {
+		if !field.Set {
+			continue
+		}
+		value, ok := jsonNumberInt(field)
+		if !ok || value < 0 || value > multimodal.MaxTokensLimit {
+			return "", invalidMultimodalEntry("max_tokens family must be a non-negative integer within the limit")
+		}
+	}
+	if payload.Model != nil && strings.TrimSpace(*payload.Model) != "" {
+		return *payload.Model, nil
+	}
+	return multimodal.DefaultModerationModel, nil
+}
+
 func validateEmbeddingsJSON(body []byte) (string, error) {
 	var payload struct {
 		Model      *string            `json:"model"`

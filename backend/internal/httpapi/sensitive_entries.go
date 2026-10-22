@@ -244,9 +244,6 @@ func taskBodySensitiveSurface(cfg sensitive.Config, body map[string]any) (sensit
 // 二进制里随机出现的字节序列不能构成「用户提示词命中」。
 func multimodalSensitiveTexts(endpoint contract.Endpoint, path, contentType string, body []byte) []string {
 	switch endpoint {
-	case contract.EndpointRealtime:
-		// WebSocket 升级请求没有可扫描的文本体。
-		return nil
 	case contract.EndpointImageEdit:
 		if isMultipartForm(contentType) {
 			return multipartSensitiveTexts(contentType, body, "prompt")

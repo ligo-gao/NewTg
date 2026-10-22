@@ -4166,6 +4166,292 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/embeddings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 文本嵌入（OpenAI 兼容）
+         * @description 按 token 计费。Gemini 渠道的嵌入走专用语义路径
+         *     （`/v1/engines/{model}/embeddings` 与 `:embedContent`），不走本端点。
+         */
+        post: operations["createEmbeddings"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/engines/{model}/embeddings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Gemini 嵌入（OpenAI 风格 request 的引擎路径）
+         * @description 兼容 Gemini 客户端：OpenAI 风格 `input` 被翻译为 `:embedContent` /
+         *     `:batchEmbedContents`，鉴权头为 `x-goog-api-key`（或 `?key=`）。
+         */
+        post: operations["createEngineEmbeddings"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/rerank": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 文档重排
+         * @description 按 token（query + 文档）计费；渠道不支持时 400 `endpoint_not_supported`。
+         */
+        post: operations["createRerank"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/moderations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 内容审核（OpenAI 兼容）
+         * @description 按 token 计费（relay-04 §5）。`input` 必填且受 1 MiB 上界；缺省
+         *     `model` 为审核默认模型。上游不支持该端点时返回 400
+         *     `endpoint_not_supported`（能力声明缺省，R-W18-11）。
+         */
+        post: operations["createModeration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/audio/speech": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 文本转语音
+         * @description 按音频 token/时长计费；响应为二进制音频（Content-Type 透传）。
+         */
+        post: operations["createSpeech"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/audio/transcriptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 音频转写
+         * @description multipart 上传；按时长推导计费量（relay-04 §3.5）。
+         */
+        post: operations["createTranscription"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/audio/translations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 音频翻译
+         * @description multipart 上传；按时长推导计费量（relay-04 §3.5）。
+         */
+        post: operations["createTranslation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/images/generations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 图像生成
+         * @description JSON 请求；`n`/`size`/`quality` 在归一化层校验上界（relay-04 §9）。
+         *     按图像张数 × 模型倍率计费；`stream=true` 时上游 SSE 或 JSON 都会转为 SSE。
+         */
+        post: operations["createImage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/images/edits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 图像编辑
+         * @description 接受 multipart 或 JSON；图像编辑的唯一入口（legacy `/v1/edits`
+         *     明确不提供，返回 404）。
+         */
+        post: operations["createImageEdit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 模型列表（按请求头分流三种形状）
+         * @description `x-api-key` + `anthropic-version` → Anthropic 形状；`x-goog-api-key`
+         *     或 `?key=` → Gemini 形状；否则 OpenAI 形状。非计费、不计限流桶。
+         */
+        get: operations["listModels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/models/{model}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 模型检索（Anthropic 头 → Anthropic 形状，否则 OpenAI） */
+        get: operations["getModel"];
+        put?: never;
+        /**
+         * Gemini 语义模型子路径（嵌入动作）
+         * @description 承载 `POST /v1/models/{model}:embedContent` /
+         *     `:batchEmbedContents` 变体；其它动作（如 `:countTokens`）返回 404。
+         *     路径段中的模型名可包含动作后缀，本文以 `{model}` 统一表示。
+         */
+        post: operations["createModelPathEmbeddings"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1beta/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Gemini 模型列表 */
+        get: operations["listBetaModels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1beta/models/{model}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Gemini 模型检索 */
+        get: operations["getBetaModel"];
+        put?: never;
+        /**
+         * Gemini 语义模型子路径（嵌入动作）
+         * @description 承载 `POST /v1beta/models/{model}:embedContent` /
+         *     `:batchEmbedContents`；其它动作返回 404。
+         */
+        post: operations["createBetaModelPathEmbeddings"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1beta/openai/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Gemini 兼容路径下的 OpenAI 形状模型列表 */
+        get: operations["listBetaOpenAIModels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/logs/by-key": {
         parameters: {
             query?: never;
@@ -9201,6 +9487,50 @@ export interface components {
                 "application/problem+json": components["schemas"]["Problem"];
             };
         };
+        /** @description 请求不符合契约（参数/请求体校验失败，OpenAI 错误信封） */
+        RelayError400: {
+            headers: {
+                /** @description 请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)` */
+                "X-Request-ID"?: string;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["RelayError"];
+            };
+        };
+        /** @description 未认证或令牌失效（OpenAI 错误信封；code 为空串） */
+        RelayError401: {
+            headers: {
+                /** @description 请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)` */
+                "X-Request-ID"?: string;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["RelayError"];
+            };
+        };
+        /** @description 额度/余额不足（OpenAI 错误信封） */
+        RelayError402: {
+            headers: {
+                /** @description 请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)` */
+                "X-Request-ID"?: string;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["RelayError"];
+            };
+        };
+        /** @description 服务端内部错误（OpenAI 错误信封） */
+        RelayError500: {
+            headers: {
+                /** @description 请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)` */
+                "X-Request-ID"?: string;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["RelayError"];
+            };
+        };
         /** @description 中继无法表达该端点形态（fail-closed：不产生计费、不调用上游） */
         Error501: {
             headers: {
@@ -9208,6 +9538,17 @@ export interface components {
             };
             content: {
                 "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description 资源/模型不存在（OpenAI 错误信封） */
+        RelayError404: {
+            headers: {
+                /** @description 请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)` */
+                "X-Request-ID"?: string;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["RelayError"];
             };
         };
     };
@@ -16612,16 +16953,16 @@ export interface operations {
                 };
                 content?: never;
             };
-            400: components["responses"]["Error400"];
-            401: components["responses"]["Error401"];
-            402: components["responses"]["Error402"];
+            400: components["responses"]["RelayError400"];
+            401: components["responses"]["RelayError401"];
+            402: components["responses"]["RelayError402"];
             429: components["responses"]["RelayError429"];
             /**
              * @description 服务端内部错误。限流器故障时按 fail-closed 返回
              *     `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
              *     是否超限就不放行，客户端不应把它当作可重试的限流。
              */
-            500: components["responses"]["Error500"];
+            500: components["responses"]["RelayError500"];
             503: components["responses"]["Error503"];
         };
     };
@@ -16705,9 +17046,9 @@ export interface operations {
                 };
                 content?: never;
             };
-            400: components["responses"]["Error400"];
-            401: components["responses"]["Error401"];
-            402: components["responses"]["Error402"];
+            400: components["responses"]["RelayError400"];
+            401: components["responses"]["RelayError401"];
+            402: components["responses"]["RelayError402"];
             /** @description 无匹配的插件任务渠道（插件未注册 / 无可用渠道） */
             404: {
                 headers: {
@@ -16735,7 +17076,7 @@ export interface operations {
              *     `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
              *     是否超限就不放行，客户端不应把它当作可重试的限流。
              */
-            500: components["responses"]["Error500"];
+            500: components["responses"]["RelayError500"];
             501: components["responses"]["Error501"];
             /** @description 上游提交失败（任务插件路径） */
             502: {
@@ -16769,7 +17110,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            401: components["responses"]["Error401"];
+            401: components["responses"]["RelayError401"];
             /** @description 该 Responses 对象不可检索（原因不区分，见上方说明） */
             404: {
                 headers: {
@@ -16777,7 +17118,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            500: components["responses"]["Error500"];
+            500: components["responses"]["RelayError500"];
         };
     };
     compactResponse: {
@@ -16789,7 +17130,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            401: components["responses"]["Error401"];
+            401: components["responses"]["RelayError401"];
             501: components["responses"]["Error501"];
         };
     };
@@ -16815,7 +17156,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            400: components["responses"]["Error400"];
+            400: components["responses"]["RelayError400"];
             /** @description 缺少/失效的会话 Cookie（OpenAI 错误信封） */
             401: {
                 headers: {
@@ -16823,7 +17164,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            402: components["responses"]["Error402"];
+            402: components["responses"]["RelayError402"];
             /**
              * @description - 携带 Authorization（API 令牌不可用于 Playground）：OpenAI 错误信封
              *       （code=session_required）；
@@ -16850,7 +17191,7 @@ export interface operations {
              *     `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
              *     是否超限就不放行，客户端不应把它当作可重试的限流。
              */
-            500: components["responses"]["Error500"];
+            500: components["responses"]["RelayError500"];
             503: components["responses"]["Error503"];
         };
     };
@@ -16877,6 +17218,378 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    createEmbeddings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description embeddings 对象（schema 见 OpenAI 公开规范） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["RelayError400"];
+            401: components["responses"]["RelayError401"];
+            402: components["responses"]["RelayError402"];
+            429: components["responses"]["RelayError429"];
+            500: components["responses"]["RelayError500"];
+        };
+    };
+    createEngineEmbeddings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:/-，含公开模型名的厂商前缀 /）；不存在 404。 */
+                model: components["parameters"]["PathPricingModel"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Gemini embedding 响应（原样回写） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["RelayError400"];
+            401: components["responses"]["RelayError401"];
+            402: components["responses"]["RelayError402"];
+            429: components["responses"]["RelayError429"];
+            500: components["responses"]["RelayError500"];
+        };
+    };
+    createRerank: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description rerank 对象（results[] + usage） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["RelayError400"];
+            401: components["responses"]["RelayError401"];
+            402: components["responses"]["RelayError402"];
+            429: components["responses"]["RelayError429"];
+            500: components["responses"]["RelayError500"];
+        };
+    };
+    createModeration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description moderation 对象（上游 JSON 原样透传） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["RelayError400"];
+            401: components["responses"]["RelayError401"];
+            402: components["responses"]["RelayError402"];
+            429: components["responses"]["RelayError429"];
+            500: components["responses"]["RelayError500"];
+        };
+    };
+    createSpeech: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 音频字节流（schema 见 OpenAI 公开规范） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["RelayError400"];
+            401: components["responses"]["RelayError401"];
+            402: components["responses"]["RelayError402"];
+            429: components["responses"]["RelayError429"];
+            500: components["responses"]["RelayError500"];
+        };
+    };
+    createTranscription: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 转写结果（上游 JSON 原样透传） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["RelayError400"];
+            401: components["responses"]["RelayError401"];
+            402: components["responses"]["RelayError402"];
+            429: components["responses"]["RelayError429"];
+            500: components["responses"]["RelayError500"];
+        };
+    };
+    createTranslation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 翻译结果（上游 JSON 原样透传） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["RelayError400"];
+            401: components["responses"]["RelayError401"];
+            402: components["responses"]["RelayError402"];
+            429: components["responses"]["RelayError429"];
+            500: components["responses"]["RelayError500"];
+        };
+    };
+    createImage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 图像响应（JSON 或 SSE） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["RelayError400"];
+            401: components["responses"]["RelayError401"];
+            402: components["responses"]["RelayError402"];
+            429: components["responses"]["RelayError429"];
+            500: components["responses"]["RelayError500"];
+        };
+    };
+    createImageEdit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 图像响应（JSON 或 SSE） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["RelayError400"];
+            401: components["responses"]["RelayError401"];
+            402: components["responses"]["RelayError402"];
+            429: components["responses"]["RelayError429"];
+            500: components["responses"]["RelayError500"];
+        };
+    };
+    listModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 模型列表（形状取决于请求头） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["RelayError401"];
+            500: components["responses"]["RelayError500"];
+        };
+    };
+    getModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:/-，含公开模型名的厂商前缀 /）；不存在 404。 */
+                model: components["parameters"]["PathPricingModel"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 模型对象 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["RelayError401"];
+            404: components["responses"]["RelayError404"];
+            500: components["responses"]["RelayError500"];
+        };
+    };
+    createModelPathEmbeddings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:/-，含公开模型名的厂商前缀 /）；不存在 404。 */
+                model: components["parameters"]["PathPricingModel"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Gemini embedding 响应 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["RelayError400"];
+            401: components["responses"]["RelayError401"];
+            402: components["responses"]["RelayError402"];
+            404: components["responses"]["RelayError404"];
+            429: components["responses"]["RelayError429"];
+            500: components["responses"]["RelayError500"];
+        };
+    };
+    listBetaModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Gemini `models[]` 形状 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["RelayError401"];
+            500: components["responses"]["RelayError500"];
+        };
+    };
+    getBetaModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:/-，含公开模型名的厂商前缀 /）；不存在 404。 */
+                model: components["parameters"]["PathPricingModel"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Gemini 模型对象 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["RelayError401"];
+            404: components["responses"]["RelayError404"];
+            500: components["responses"]["RelayError500"];
+        };
+    };
+    createBetaModelPathEmbeddings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:/-，含公开模型名的厂商前缀 /）；不存在 404。 */
+                model: components["parameters"]["PathPricingModel"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Gemini embedding 响应 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["RelayError400"];
+            401: components["responses"]["RelayError401"];
+            402: components["responses"]["RelayError402"];
+            404: components["responses"]["RelayError404"];
+            429: components["responses"]["RelayError429"];
+            500: components["responses"]["RelayError500"];
+        };
+    };
+    listBetaOpenAIModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OpenAI `data[]` 形状（固定，不随 `?key=` 改变） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["RelayError401"];
+            500: components["responses"]["RelayError500"];
         };
     };
     listUsageLogsByKey: {
@@ -17215,10 +17928,10 @@ export interface operations {
                 };
                 content?: never;
             };
-            400: components["responses"]["Error400"];
-            401: components["responses"]["Error401"];
-            404: components["responses"]["Error404"];
-            500: components["responses"]["Error500"];
+            400: components["responses"]["RelayError400"];
+            401: components["responses"]["RelayError401"];
+            404: components["responses"]["RelayError404"];
+            500: components["responses"]["RelayError500"];
         };
     };
     submitTask: {
@@ -17240,10 +17953,10 @@ export interface operations {
                 };
                 content?: never;
             };
-            400: components["responses"]["Error400"];
-            401: components["responses"]["Error401"];
-            402: components["responses"]["Error402"];
-            404: components["responses"]["Error404"];
+            400: components["responses"]["RelayError400"];
+            401: components["responses"]["RelayError401"];
+            402: components["responses"]["RelayError402"];
+            404: components["responses"]["RelayError404"];
             /** @description 插件不可用（disabled / compile_failed） */
             409: {
                 headers: {
@@ -17264,7 +17977,7 @@ export interface operations {
              *     `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
              *     是否超限就不放行，客户端不应把它当作可重试的限流。
              */
-            500: components["responses"]["Error500"];
+            500: components["responses"]["RelayError500"];
             /** @description 上游提交失败（含白名单拒绝、重定向、超时、非 2xx、解析失败） */
             502: {
                 headers: {
@@ -17296,10 +18009,10 @@ export interface operations {
                 };
                 content?: never;
             };
-            400: components["responses"]["Error400"];
-            401: components["responses"]["Error401"];
-            404: components["responses"]["Error404"];
-            500: components["responses"]["Error500"];
+            400: components["responses"]["RelayError400"];
+            401: components["responses"]["RelayError401"];
+            404: components["responses"]["RelayError404"];
+            500: components["responses"]["RelayError500"];
         };
     };
     getTaskArtifactContent: {
@@ -17328,7 +18041,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            400: components["responses"]["Error400"];
+            400: components["responses"]["RelayError400"];
             /** @description access 票据无效或已过期 */
             403: {
                 headers: {
@@ -17336,7 +18049,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            404: components["responses"]["Error404"];
+            404: components["responses"]["RelayError404"];
             /** @description 上游拒绝或取产物失败 */
             502: {
                 headers: {
@@ -17379,7 +18092,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            400: components["responses"]["Error400"];
+            400: components["responses"]["RelayError400"];
             /** @description access 票据无效或已过期 */
             403: {
                 headers: {
@@ -17387,7 +18100,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            404: components["responses"]["Error404"];
+            404: components["responses"]["RelayError404"];
             /** @description 上游拒绝或取产物失败 */
             502: {
                 headers: {
@@ -17420,9 +18133,9 @@ export interface operations {
                 };
                 content?: never;
             };
-            400: components["responses"]["Error400"];
-            401: components["responses"]["Error401"];
-            402: components["responses"]["Error402"];
+            400: components["responses"]["RelayError400"];
+            401: components["responses"]["RelayError401"];
+            402: components["responses"]["RelayError402"];
             /** @description 令牌模型白名单不允许该模型 */
             403: {
                 headers: {
@@ -17450,7 +18163,7 @@ export interface operations {
              *     `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
              *     是否超限就不放行，客户端不应把它当作可重试的限流。
              */
-            500: components["responses"]["Error500"];
+            500: components["responses"]["RelayError500"];
             /** @description 上游提交失败（提交管线已退款） */
             502: {
                 headers: {
@@ -17479,7 +18192,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            401: components["responses"]["Error401"];
+            401: components["responses"]["RelayError401"];
             /** @description 视频不存在、不属于本人或 id 形状非法（不区分原因） */
             404: {
                 headers: {
@@ -17487,7 +18200,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            500: components["responses"]["Error500"];
+            500: components["responses"]["RelayError500"];
         };
     };
     getVideoContent: {
@@ -17509,8 +18222,8 @@ export interface operations {
                 };
                 content?: never;
             };
-            400: components["responses"]["Error400"];
-            401: components["responses"]["Error401"];
+            400: components["responses"]["RelayError400"];
+            401: components["responses"]["RelayError401"];
             /** @description 视频不存在、不属于本人或没有可检索产物 */
             404: {
                 headers: {
@@ -17550,8 +18263,8 @@ export interface operations {
                 };
                 content?: never;
             };
-            400: components["responses"]["Error400"];
-            401: components["responses"]["Error401"];
+            400: components["responses"]["RelayError400"];
+            401: components["responses"]["RelayError401"];
             /** @description 令牌模型白名单不允许某行的模型 */
             403: {
                 headers: {
@@ -17573,7 +18286,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            500: components["responses"]["Error500"];
+            500: components["responses"]["RelayError500"];
             501: components["responses"]["Error501"];
         };
     };
@@ -17596,7 +18309,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            401: components["responses"]["Error401"];
+            401: components["responses"]["RelayError401"];
             /** @description 批次不存在或不属于本人（不区分原因） */
             404: {
                 headers: {
@@ -17604,7 +18317,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            500: components["responses"]["Error500"];
+            500: components["responses"]["RelayError500"];
         };
     };
     cancelBatch: {
@@ -17619,7 +18332,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            401: components["responses"]["Error401"];
+            401: components["responses"]["RelayError401"];
             /** @description 批次不存在或不属于本人 */
             404: {
                 headers: {

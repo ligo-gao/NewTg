@@ -14,7 +14,6 @@ import (
 	"errors"
 	"io"
 	"mime/multipart"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -524,85 +523,6 @@ func TestLargeBinaryResponseIsCopiedInChunks(t *testing.T) {
 	}
 }
 
-// ---------- realtime skeleton ----------
-
-func TestRealtimeDialUpstream(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	paths := make(chan string, 2)
-	go func() {
-		for i := 0; i < 2; i++ {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			buffer := make([]byte, 8192)
-			n, _ := conn.Read(buffer)
-			request := string(buffer[:n])
-			lines := strings.Split(request, "\r\n")
-			paths <- strings.TrimSpace(strings.Fields(lines[0])[1])
-			key := ""
-			for _, line := range lines {
-				if strings.HasPrefix(strings.ToLower(line), "sec-websocket-key:") {
-					key = strings.TrimSpace(line[len("sec-websocket-key:"):])
-				}
-			}
-			_, _ = conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + websocketAccept(key) + "\r\n\r\n"))
-			_ = conn.Close()
-		}
-	}()
-
-	for _, baseSuffix := range []string{"", "/v1"} {
-		adapter := &endpointAdapter{channelType: contract.ChannelTypeOpenAI, defaultBase: "http://" + listener.Addr().String() + baseSuffix, plan: &RequestPlan{endpoint: contract.EndpointRealtime}}
-		conn, err := adapter.DialUpstream(&contract.RelayContext{Credential: "k"})
-		if err != nil {
-			t.Fatalf("DialUpstream(base%s): %v", baseSuffix, err)
-		}
-		_ = conn.Close()
-		if got := <-paths; got != "/v1/realtime" {
-			t.Fatalf("base%s handshake path = %q, want /v1/realtime (F6 version dedupe)", baseSuffix, got)
-		}
-	}
-}
-
-// TestRealtimeDialUpstreamRejectsBadAccept：101 但 Accept 错误必须失败。
-func TestRealtimeDialUpstreamRejectsBadAccept(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	go func() {
-		conn, err := listener.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-		buffer := make([]byte, 4096)
-		_, _ = conn.Read(buffer)
-		_, _ = conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: wrong\r\n\r\n"))
-	}()
-	adapter := &endpointAdapter{channelType: contract.ChannelTypeOpenAI, defaultBase: "http://" + listener.Addr().String(), plan: &RequestPlan{endpoint: contract.EndpointRealtime}}
-	if _, err := adapter.DialUpstream(&contract.RelayContext{Credential: "k"}); err == nil {
-		t.Fatal("DialUpstream accepted a bad Sec-WebSocket-Accept")
-	}
-}
-
-func TestRealtimeRejectsNonUpgrade(t *testing.T) {
-	env := newTestEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
-		t.Error("upstream should not be called")
-	})
-	request := httptest.NewRequest(http.MethodGet, "/v1/realtime", nil)
-	recorder := httptest.NewRecorder()
-	env.dispatcher.Handle(recorder, request, &contract.RelayContext{RequestID: "r", OriginModel: "m", Request: &contract.Request{Model: "m"}}, contract.EndpointRealtime)
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", recorder.Code)
-	}
-}
-
 // multipartFixture 构造仅含一个文件与若干文本字段的 multipart 请求体。
 func multipartFixture(t *testing.T, field, filename string, content []byte, fields map[string]string) (string, []byte) {
 	t.Helper()
@@ -626,9 +546,6 @@ func multipartFixture(t *testing.T, field, filename string, content []byte, fiel
 	return writer.FormDataContentType(), buf.Bytes()
 }
 
-// TestTranscriptionDurationSaturatesWithAudit 覆盖 relay-04 §9 的 MaxAudioSeconds：
-// 上游测得 7200s 必须饱和到 3600s，并按饱和值重算音频 token，同时留下
-// QuotaClamp 审计标记（契约 §12 不变量 9）。
 func TestTranscriptionDurationSaturatesWithAudit(t *testing.T) {
 	env := newTestEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"text":"hello","duration":7200}`))
@@ -1251,6 +1168,11 @@ func TestEndpointChannelMatrix(t *testing.T) {
 		{"embeddings-openai-yes", contract.ChannelTypeOpenAI, contract.EndpointEmbeddings, jsonBody(`{"model":"m","input":"x"}`), true},
 		{"embeddings-ali-yes", contract.ChannelTypeAli, contract.EndpointEmbeddings, jsonBody(`{"model":"m","input":"x"}`), true},
 		{"embeddings-siliconflow-yes", contract.ChannelTypeSiliconFlow, contract.EndpointEmbeddings, jsonBody(`{"model":"m","input":"x"}`), true},
+		// R-W18-11：能力真源是 Caps().Endpoints。Gemini 只在专用语义路径上
+		// 声明嵌入；普通 /v1/embeddings 的 OpenAI 形状仍必须拒绝。
+		{"embeddings-gemini-generic-no", contract.ChannelTypeGemini, contract.EndpointEmbeddings, jsonBody(`{"model":"m","input":"x"}`), false},
+		// NewAPI 没有适配器实现（declaredAdapter 不声明任何端点）。
+		{"embeddings-newapi-no", contract.ChannelTypeNewAPI, contract.EndpointEmbeddings, jsonBody(`{"model":"m","input":"x"}`), false},
 		{"rerank-deepseek-no", contract.ChannelTypeDeepSeek, contract.EndpointRerank, jsonBody(`{"model":"m","query":"q","documents":["d"]}`), false},
 		{"rerank-openai-yes", contract.ChannelTypeOpenAI, contract.EndpointRerank, jsonBody(`{"model":"m","query":"q","documents":["d"]}`), true},
 		{"rerank-xinference-yes", contract.ChannelTypeXinference, contract.EndpointRerank, jsonBody(`{"model":"m","query":"q","documents":["d"]}`), true},
@@ -1258,6 +1180,10 @@ func TestEndpointChannelMatrix(t *testing.T) {
 		{"image-xai-yes", contract.ChannelTypeXai, contract.EndpointImageGenerate, jsonBody(`{"model":"m","prompt":"p"}`), true},
 		{"speech-volcengine-yes", contract.ChannelTypeVolcEngine, contract.EndpointAudioSpeech, jsonBody(`{"model":"m","input":"x"}`), true},
 		{"speech-deepseek-no", contract.ChannelTypeDeepSeek, contract.EndpointAudioSpeech, jsonBody(`{"model":"m","input":"x"}`), false},
+		// R-W18-14：审核只声明给 OpenAI 渠道（没有跨厂商等价形态）。
+		{"moderations-openai-yes", contract.ChannelTypeOpenAI, contract.EndpointModerations, jsonBody(`{"model":"m","input":"x"}`), true},
+		{"moderations-deepseek-no", contract.ChannelTypeDeepSeek, contract.EndpointModerations, jsonBody(`{"model":"m","input":"x"}`), false},
+		{"moderations-siliconflow-no", contract.ChannelTypeSiliconFlow, contract.EndpointModerations, jsonBody(`{"model":"m","input":"x"}`), false},
 		{"transcribe-volcengine-no", contract.ChannelTypeVolcEngine, contract.EndpointAudioTranscribe, func() ([]byte, string) {
 			ct, body := multipartFixture(t, "file", "a.mp3", append([]byte("ID3\x04\x00\x00\x00\x00\x00\x00"), bytes.Repeat([]byte("a"), 32)...), map[string]string{"model": "m"})
 			return body, ct
@@ -1288,6 +1214,59 @@ func TestEndpointChannelMatrix(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestModerationSettlesOnceWithLocalEstimate（R-W18-14 / relay-04 §5）：
+// 审核请求经同一条 ExecuteAttempts/结算接缝；上游未给 usage 时按 input
+// 字节本地估算一次，响应原样回写。
+func TestModerationSettlesOnceWithLocalEstimate(t *testing.T) {
+	upstreamBody := `{"id":"modr-1","model":"upstream-model","results":[{"flagged":false}]}`
+	env := newTestEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/moderations" {
+			t.Errorf("path = %q, want /v1/moderations", r.URL.Path)
+		}
+		var payload map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		if payload["model"] != "upstream-model" {
+			t.Errorf("upstream model = %v, want upstream-model（缺省模型必须写回 body）", payload["model"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, upstreamBody)
+	})
+	recorder := httptest.NewRecorder()
+	env.handle(t, contract.EndpointModerations, []byte(`{"input":"hello world"}`), "application/json", recorder)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"id":"modr-1"`) {
+		t.Fatalf("status=%d body=%s, want 200 passthrough", recorder.Code, recorder.Body.String())
+	}
+	pre, refunds, facts, _ := env.billing.snapshot()
+	if pre != 1 || refunds != 0 || len(facts) != 1 {
+		t.Fatalf("pre=%d refunds=%d facts=%d, want 1/0/1（计费一次）", pre, refunds, len(facts))
+	}
+	if facts[0].Usage.Source != contract.UsageEstimated || facts[0].Usage.Prompt <= 0 {
+		t.Fatalf("usage = %+v, want estimated prompt tokens", facts[0].Usage)
+	}
+}
+
+// TestModerationUnsupportedChannelRejected（R-W18-11/R-W18-14）：Caps 不含
+// moderations 的渠道必须在 BuildRequest 前被 ErrEndpointUnsupported 拒绝，
+// 零上游、零结算事实、退款一次。
+func TestModerationUnsupportedChannelRejected(t *testing.T) {
+	calls := 0
+	env := newTestEnv(t, contract.ChannelTypeDeepSeek, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+	})
+	recorder := httptest.NewRecorder()
+	env.handle(t, contract.EndpointModerations, []byte(`{"input":"hello"}`), "application/json", recorder)
+	if calls != 0 {
+		t.Fatalf("upstream calls = %d, want 0", calls)
+	}
+	_, refunds, facts, _ := env.billing.snapshot()
+	if refunds != 1 || len(facts) != 0 {
+		t.Fatalf("refunds=%d facts=%d, want refund once / no fact", refunds, len(facts))
+	}
+	if recorder.Code == http.StatusOK {
+		t.Fatalf("unsupported channel must not return 200; body=%s", recorder.Body.String())
 	}
 }
 
@@ -1423,59 +1402,6 @@ func TestStreamInactivityWatchdog(t *testing.T) {
 	_, refunds, facts, _ := billing.snapshot()
 	if refunds != 1 || len(facts) != 0 {
 		t.Fatalf("refunds=%d facts=%d, want refund once", refunds, len(facts))
-	}
-}
-
-// TestRealtimeHandleReachesP0_501（N1）：可解析的升级请求必须穿过支持矩阵、
-// 完成上游握手，然后返回明确的 501（桥接未实现），而不是在握手前 400。
-func TestRealtimeHandleReachesP0_501(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	go func() {
-		conn, err := listener.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-		buffer := make([]byte, 8192)
-		n, _ := conn.Read(buffer)
-		key := ""
-		for _, line := range strings.Split(string(buffer[:n]), "\r\n") {
-			if strings.HasPrefix(strings.ToLower(line), "sec-websocket-key:") {
-				key = strings.TrimSpace(line[len("sec-websocket-key:"):])
-			}
-		}
-		_, _ = conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + websocketAccept(key) + "\r\n\r\n"))
-	}()
-	billing := &fakeBilling{}
-	dispatcher := NewDispatcher(Options{
-		Candidates: func(context.Context, *contract.RelayContext) ([]contract.ChannelCandidate, error) {
-			return []contract.ChannelCandidate{{ChannelID: 1}}, nil
-		},
-		ResolveChannel: func(context.Context, *contract.RelayContext, int) (relay.ChannelAssignment, error) {
-			return relay.ChannelAssignment{ChannelID: 1, ChannelType: contract.ChannelTypeOpenAI, APIBase: "http://" + listener.Addr().String(), Credential: "k"}, nil
-		},
-		Dispatch: adapters.Dispatch,
-		Billing:  func(*contract.RelayContext) contract.BillingSession { return billing },
-		Client:   http.DefaultClient,
-		WriteError: func(w http.ResponseWriter, requestID string, err error) {
-			writeOpenAIError(w, http.StatusBadGateway, requestID, "upstream_error", "failed")
-		},
-	})
-	request := httptest.NewRequest(http.MethodGet, "/v1/realtime", nil)
-	request.Header.Set("Connection", "Upgrade")
-	request.Header.Set("Upgrade", "websocket")
-	rc := &contract.RelayContext{RequestID: "rt", OriginModel: "rt-model", Request: &contract.Request{Model: "rt-model"}}
-	recorder := httptest.NewRecorder()
-	dispatcher.Handle(recorder, request, rc, contract.EndpointRealtime)
-	if recorder.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want 501 after successful handshake; body=%s", recorder.Code, recorder.Body.String())
-	}
-	if !strings.Contains(recorder.Body.String(), "not_implemented") {
-		t.Fatalf("body = %s, want not_implemented", recorder.Body.String())
 	}
 }
 

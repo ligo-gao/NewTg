@@ -189,7 +189,7 @@ func TestMultimodal_RoutesAuthAndDispatch(t *testing.T) {
 		{"audio-speech", multimodalRequest{path: "/v1/audio/speech", body: []byte(`{"model":"tts","input":"hi","speed":1.0}`), contentType: "application/json"}, contract.EndpointAudioSpeech},
 		{"audio-transcriptions", multimodalRequest{path: "/v1/audio/transcriptions", body: audioBody, contentType: audioContentType}, contract.EndpointAudioTranscribe},
 		{"audio-translations", multimodalRequest{path: "/v1/audio/translations", body: audioBody, contentType: audioContentType}, contract.EndpointAudioTranslate},
-		{"realtime", multimodalRequest{method: http.MethodGet, path: "/v1/realtime"}, contract.EndpointRealtime},
+		{"moderations", multimodalRequest{path: "/v1/moderations", body: []byte(`{"input":"hello"}`), contentType: "application/json"}, contract.EndpointModerations},
 	}
 
 	for _, tc := range requests {
@@ -220,26 +220,108 @@ func TestMultimodal_RoutesAuthAndDispatch(t *testing.T) {
 	}
 }
 
-// TestMultimodal_RemovedRoutesAre404 固化裁决 H：变体与 legacy /v1/edits 不注册。
+// TestMultimodal_RemovedRoutesAre404 固化 R-W18-01 / 裁决 H：明确不提供的
+// 端点族不注册路由 → 任何方法都 404，且**不经 RelayAuth**（无令牌也是 404，
+// 不能是 401），不进入 dispatcher（零预扣、零上游）。
 func TestMultimodal_RemovedRoutesAre404(t *testing.T) {
-	handler := newMultimodalTestHandler(t, &captureMultimodalDispatcher{})
-	for _, path := range []string{"/v1/images/variations", "/v1/edits"} {
-		for _, authenticated := range []bool{false, true} {
-			resp := doMultimodal(t, handler, multimodalRequest{path: path, body: validImageJSON(), contentType: "application/json"}, authenticated)
-			if resp.Code != http.StatusNotFound {
-				t.Fatalf("%s (auth=%v): status = %d, want 404", path, authenticated, resp.Code)
+	dispatcher := &captureMultimodalDispatcher{}
+	handler := newMultimodalTestHandler(t, dispatcher)
+	paths := []string{
+		"/v1/files", "/v1/files/file-1", "/v1/files/file-1/content",
+		"/v1/fine-tunes", "/v1/fine-tunes/job-1", "/v1/fine-tunes/job-1/events",
+		"/v1/images/variations", "/v1/edits",
+	}
+	methods := []string{http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodPut, http.MethodPatch}
+	for _, path := range paths {
+		for _, method := range methods {
+			for _, authenticated := range []bool{false, true} {
+				resp := doMultimodal(t, handler, multimodalRequest{method: method, path: path, body: validImageJSON(), contentType: "application/json"}, authenticated)
+				if resp.Code != http.StatusNotFound {
+					t.Fatalf("%s %s (auth=%v): status = %d, want 404; body=%s",
+						method, path, authenticated, resp.Code, resp.Body.String())
+				}
 			}
 		}
 	}
+	if dispatcher.calls != 0 {
+		t.Fatalf("dispatcher calls = %d, want 0（不提供的端点不得进入分发/计费）", dispatcher.calls)
+	}
 }
 
-// TestMultimodal_RealtimeIsGETOnly 锁定 relay-07 G-06 的 GET-only 裁决：
-// WebSocket 握手是 GET，POST 必须由 ServeMux 以 405 拒绝。
-func TestMultimodal_RealtimeIsGETOnly(t *testing.T) {
-	handler := newMultimodalTestHandler(t, &captureMultimodalDispatcher{})
-	resp := doMultimodal(t, handler, multimodalRequest{path: "/v1/realtime"}, true)
-	if resp.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("POST /v1/realtime status = %d, want 405; body=%s", resp.Code, resp.Body.String())
+// TestMultimodal_RealtimeIsGone 固化 R-W18-12：GET /v1/realtime 的 501 半死桩
+// 已删除，任何方法都落 404（不注册路由），且不触上游/不进入 dispatcher。
+func TestMultimodal_RealtimeIsGone(t *testing.T) {
+	dispatcher := &captureMultimodalDispatcher{}
+	handler := newMultimodalTestHandler(t, dispatcher)
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		for _, authenticated := range []bool{false, true} {
+			resp := doMultimodal(t, handler, multimodalRequest{method: method, path: "/v1/realtime"}, authenticated)
+			if resp.Code != http.StatusNotFound {
+				t.Fatalf("%s /v1/realtime (auth=%v): status = %d, want 404; body=%s",
+					method, authenticated, resp.Code, resp.Body.String())
+			}
+			if strings.Contains(resp.Body.String(), "not_implemented") {
+				t.Fatalf("%s /v1/realtime: body = %s, want no 501 stub", method, resp.Body.String())
+			}
+		}
+	}
+	if dispatcher.calls != 0 {
+		t.Fatalf("dispatcher calls = %d, want 0", dispatcher.calls)
+	}
+}
+
+// TestMultimodal_ModerationEntryValidation 覆盖 relay-04 §5.2/§9 的入口校验：
+// input 必填/非空、形态、字节上界、max_tokens 族上界；缺省 model 取审核默认模型。
+func TestMultimodal_ModerationEntryValidation(t *testing.T) {
+	t.Run("default-model", func(t *testing.T) {
+		dispatcher := &captureMultimodalDispatcher{}
+		handler := newMultimodalTestHandler(t, dispatcher)
+		resp := doMultimodal(t, handler, multimodalRequest{
+			path: "/v1/moderations", body: []byte(`{"input":"hello"}`), contentType: "application/json",
+		}, true)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", resp.Code, resp.Body.String())
+		}
+		if dispatcher.rc == nil || dispatcher.rc.OriginModel != multimodal.DefaultModerationModel {
+			t.Fatalf("OriginModel = %+v, want %q", dispatcher.rc, multimodal.DefaultModerationModel)
+		}
+	})
+
+	t.Run("explicit-model-and-array-input", func(t *testing.T) {
+		dispatcher := &captureMultimodalDispatcher{}
+		handler := newMultimodalTestHandler(t, dispatcher)
+		resp := doMultimodal(t, handler, multimodalRequest{
+			path: "/v1/moderations", body: []byte(`{"model":"omni-x","input":["a","b"]}`), contentType: "application/json",
+		}, true)
+		if resp.Code != http.StatusOK || dispatcher.rc == nil || dispatcher.rc.OriginModel != "omni-x" {
+			t.Fatalf("status=%d rc=%+v, want 200 / omni-x", resp.Code, dispatcher.rc)
+		}
+	})
+
+	badBodies := map[string]string{
+		"missing-input":   `{}`,
+		"null-input":      `{"input":null}`,
+		"empty-string":    `{"input":""}`,
+		"empty-array":     `{"input":[]}`,
+		"wrong-type":      `{"input":42}`,
+		"negative-tokens": `{"input":"x","max_tokens":-1}`,
+		"tokens-overflow": `{"input":"x","max_completion_tokens":2000000000}`,
+		"oversize-input":  `{"input":"` + strings.Repeat("a", multimodal.MaxModerationInputBytes+1) + `"}`,
+	}
+	for name, body := range badBodies {
+		t.Run(name, func(t *testing.T) {
+			dispatcher := &captureMultimodalDispatcher{}
+			handler := newMultimodalTestHandler(t, dispatcher)
+			resp := doMultimodal(t, handler, multimodalRequest{
+				path: "/v1/moderations", body: []byte(body), contentType: "application/json",
+			}, true)
+			if resp.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", resp.Code, resp.Body.String())
+			}
+			if dispatcher.calls != 0 {
+				t.Fatalf("dispatcher calls = %d, want 0（入口拒绝不得进入分发/计费）", dispatcher.calls)
+			}
+		})
 	}
 }
 

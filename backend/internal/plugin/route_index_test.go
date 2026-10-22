@@ -295,6 +295,17 @@ func TestRegistryRejectsBuiltinReservedFamilyRoutes(t *testing.T) {
 		{"POST", "/v1/models/gpt-4o"},
 		{"POST", "/v1/models/x/y"},
 		{"GET", "/v1/models/gpt-4o"},
+		// R-W18-01：明确不提供的端点族也不得被插件抢占——否则 AC-8 的
+		// 「任何方法 404 且不经鉴权」会被插件路由的 200/401 破坏。
+		{"GET", "/v1/files"},
+		{"POST", "/v1/files"},
+		{"GET", "/v1/files/file-1"},
+		{"GET", "/v1/files/file-1/content"},
+		{"DELETE", "/v1/files/file-1"},
+		{"POST", "/v1/fine-tunes"},
+		{"GET", "/v1/fine-tunes/job-1/events"},
+		{"POST", "/v1/images/variations"},
+		{"POST", "/v1/edits"},
 	}
 	// `/v1beta/models` 族已在 R-09 被加载期拒绝（原生路由必须以 /v1/ 开头），
 	// 构造不出能走到族判定的插件源；builtinReservedRouteFamilies 里的该条目
@@ -341,7 +352,8 @@ func TestRegistryRejectsBuiltinRouteConflict(t *testing.T) {
 		{"GET", "/v1/tasks/{key}/artifacts"},
 		{"POST", "/v1/images/generations"},
 		{"POST", "/v1/engines/:model/embeddings"},
-		{"GET", "/v1/realtime"},
+		{"POST", "/v1/moderations"},
+		// R-W18-12：GET /v1/realtime 不再注册，因此也不再是内建保留形状。
 		// T2 / R-10：Responses 族中**没有**插件优先分发面的形状。
 		// （`POST /v1/responses` 与 `GET /v1/responses/{id}` 例外：处理器先查
 		// RouteIndex，见 TestRegistryAllowsPluginDispatchedResponsesRoute 与

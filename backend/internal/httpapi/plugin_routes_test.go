@@ -454,16 +454,54 @@ func TestPluginNativeRouteUnknownKindIsRejected(t *testing.T) {
 }
 
 // TestPluginFallbackPreservesMethodNotAllowed：`/v1/` 匹配所有方法，兜底必须
-// 自己补回 ServeMux 的 405 语义（否则 POST /v1/realtime 会退化成 404）。
+// 自己补回 ServeMux 的 405 语义（否则 POST /v1beta/openai/models 会退化成 404）。
+//
+// R-W18-12 删除了 GET /v1/realtime 半死桩，因此这里改用仍存在的 GET-only
+// 内建路由（Gemini 兼容模型列表）验证同一语义。
 func TestPluginFallbackPreservesMethodNotAllowed(t *testing.T) {
 	mux := newNativeRelayMux(t, &recordingNativeDispatcher{manager: newNativeRouteManager(t)})
 
-	// GET /v1/realtime 是多模态族注册的 GET-only 路由；POST 同路径必须 405。
-	rec := doNative(t, mux, http.MethodPost, "/v1/realtime", "", true)
+	// GET /v1beta/openai/models 是 GET-only 内建路由；POST 同路径必须 405。
+	rec := doNative(t, mux, http.MethodPost, "/v1beta/openai/models", "", true)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405; body=%s", rec.Code, rec.Body.String())
 	}
 	if allow := rec.Header().Get("Allow"); !strings.Contains(allow, http.MethodGet) {
 		t.Fatalf("Allow = %q, want GET", allow)
+	}
+}
+
+// TestPluginCannotClaimRemovedEndpointFamilies 覆盖 R-W18-01 的 HTTP 面：
+// 插件在 routes[] 里声明 /v1/files/x 必须在注册期整插件失败，请求落到
+// /v1/ 兜底的 404，且**不经 RelayAuth**（无令牌也 404，不是 401）、不进入
+// 任何分发面。否则 AC-8 的「任何方法 404 且不经鉴权链」会被插件路由破坏。
+func TestPluginCannotClaimRemovedEndpointFamilies(t *testing.T) {
+	// 在既有测试插件源的路由数组开头插入一条保留族路由；其余元数据与钩子
+	// 保持有效，因此失败只能归因于保留族冲突（而不是插件本身编译不过）。
+	source := strings.Replace(nativeRoutePluginSource, "routes: [",
+		"routes: [\n    { method: \"POST\", path: \"/v1/files/x\", kind: \"submit\", decode: \"buildSubmitRequest\", render: \"parseSubmitResponse\" },", 1)
+	manager, err := plugin.NewManager(map[string]string{"video": source}, nil, plugin.Options{MasterEnabled: true})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := manager.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	entry := manager.Snapshot().Lookup("video")
+	if entry.Status != plugin.StatusCompileFailed {
+		t.Fatalf("声明保留族路由的插件必须 compile_failed: %+v", entry)
+	}
+	dispatcher := &recordingNativeDispatcher{manager: manager}
+	mux := newNativeRelayMux(t, dispatcher)
+	for _, authenticated := range []bool{false, true} {
+		rec := doNative(t, mux, http.MethodPost, "/v1/files/x", `{}`, authenticated)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("POST /v1/files/x (auth=%v): status = %d, want 404; body=%s",
+				authenticated, rec.Code, rec.Body.String())
+		}
+		assertOpenAIErrorEnvelope(t, rec, "invalid_request_error")
+	}
+	if dispatcher.callCount() != 0 {
+		t.Fatalf("native dispatch calls = %d, want 0", dispatcher.callCount())
 	}
 }

@@ -26,15 +26,15 @@ paths:
         '200':
           description: ChatCompletion 对象或 SSE 流（schema 见上游公开规范）
         '400':
-          $ref: '../components/responses.yaml#/responses/Error400'
+          $ref: '../components/responses.yaml#/responses/RelayError400'
         '401':
-          $ref: '../components/responses.yaml#/responses/Error401'
+          $ref: '../components/responses.yaml#/responses/RelayError401'
         '402':
-          $ref: '../components/responses.yaml#/responses/Error402'
+          $ref: '../components/responses.yaml#/responses/RelayError402'
         '429':
           $ref: '../components/responses.yaml#/responses/RelayError429'
         '500':
-          $ref: '../components/responses.yaml#/responses/Error500'
+          $ref: '../components/responses.yaml#/responses/RelayError500'
           description: |
             服务端内部错误。限流器故障时按 fail-closed 返回
             `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
@@ -127,11 +127,11 @@ paths:
         '202':
           description: 任务插件已接受；任务已持久化（`{public_task_id, state, upstream_task_id?}`）
         '400':
-          $ref: '../components/responses.yaml#/responses/Error400'
+          $ref: '../components/responses.yaml#/responses/RelayError400'
         '401':
-          $ref: '../components/responses.yaml#/responses/Error401'
+          $ref: '../components/responses.yaml#/responses/RelayError401'
         '402':
-          $ref: '../components/responses.yaml#/responses/Error402'
+          $ref: '../components/responses.yaml#/responses/RelayError402'
         '404':
           description: 无匹配的插件任务渠道（插件未注册 / 无可用渠道）
         '409':
@@ -141,7 +141,7 @@ paths:
         '429':
           $ref: '../components/responses.yaml#/responses/RelayError429'
         '500':
-          $ref: '../components/responses.yaml#/responses/Error500'
+          $ref: '../components/responses.yaml#/responses/RelayError500'
           description: |
             服务端内部错误。限流器故障时按 fail-closed 返回
             `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
@@ -187,11 +187,11 @@ paths:
             `status` 取任务状态：queued / in_progress / completed / failed /
             incomplete（任务状态 unknown）。
         '401':
-          $ref: '../components/responses.yaml#/responses/Error401'
+          $ref: '../components/responses.yaml#/responses/RelayError401'
         '404':
           description: 该 Responses 对象不可检索（原因不区分，见上方说明）
         '500':
-          $ref: '../components/responses.yaml#/responses/Error500'
+          $ref: '../components/responses.yaml#/responses/RelayError500'
 
   # Responses 压缩端点（T3 / P-03）：独立计费口径、不产生任务行。中继当前
   # 无法表达压缩语义，因此 fail-closed 501（不返回 chat 形态）。
@@ -214,7 +214,7 @@ paths:
         - bearerToken: []
       responses:
         '401':
-          $ref: '../components/responses.yaml#/responses/Error401'
+          $ref: '../components/responses.yaml#/responses/RelayError401'
         '501':
           $ref: '../components/responses.yaml#/responses/Error501'
 
@@ -249,11 +249,11 @@ paths:
         '200':
           description: ChatCompletion 对象或 SSE 流（schema 见上游公开规范）
         '400':
-          $ref: '../components/responses.yaml#/responses/Error400'
+          $ref: '../components/responses.yaml#/responses/RelayError400'
         '401':
           description: 缺少/失效的会话 Cookie（OpenAI 错误信封）
         '402':
-          $ref: '../components/responses.yaml#/responses/Error402'
+          $ref: '../components/responses.yaml#/responses/RelayError402'
         '403':
           description: |
             - 携带 Authorization（API 令牌不可用于 Playground）：OpenAI 错误信封
@@ -266,7 +266,7 @@ paths:
         '429':
           $ref: '../components/responses.yaml#/responses/RelayError429'
         '500':
-          $ref: '../components/responses.yaml#/responses/Error500'
+          $ref: '../components/responses.yaml#/responses/RelayError500'
           description: |
             服务端内部错误。限流器故障时按 fail-closed 返回
             `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
@@ -312,13 +312,13 @@ paths:
         '202':
           description: 已接受；任务已持久化（终态或待轮询）
         '400':
-          $ref: '../components/responses.yaml#/responses/Error400'
+          $ref: '../components/responses.yaml#/responses/RelayError400'
         '401':
-          $ref: '../components/responses.yaml#/responses/Error401'
+          $ref: '../components/responses.yaml#/responses/RelayError401'
         '402':
-          $ref: '../components/responses.yaml#/responses/Error402'
+          $ref: '../components/responses.yaml#/responses/RelayError402'
         '404':
-          $ref: '../components/responses.yaml#/responses/Error404'
+          $ref: '../components/responses.yaml#/responses/RelayError404'
         '409':
           description: 插件不可用（disabled / compile_failed）
         '413':
@@ -326,7 +326,7 @@ paths:
         '429':
           $ref: '../components/responses.yaml#/responses/RelayError429'
         '500':
-          $ref: '../components/responses.yaml#/responses/Error500'
+          $ref: '../components/responses.yaml#/responses/RelayError500'
           description: |
             服务端内部错误。限流器故障时按 fail-closed 返回
             `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
@@ -349,13 +349,13 @@ paths:
         '200':
           description: '{task_id,state,raw_state,progress_percent,usage?,artifacts?,fail_reason?}'
         '400':
-          $ref: '../components/responses.yaml#/responses/Error400'
+          $ref: '../components/responses.yaml#/responses/RelayError400'
         '401':
-          $ref: '../components/responses.yaml#/responses/Error401'
+          $ref: '../components/responses.yaml#/responses/RelayError401'
         '404':
-          $ref: '../components/responses.yaml#/responses/Error404'
+          $ref: '../components/responses.yaml#/responses/RelayError404'
         '500':
-          $ref: '../components/responses.yaml#/responses/Error500'
+          $ref: '../components/responses.yaml#/responses/RelayError500'
 
   /v1/tasks/{key}/artifacts:
     get:
@@ -374,13 +374,13 @@ paths:
         '200':
           description: '{items:[{key,type,mime_type?,content_url}]}'
         '400':
-          $ref: '../components/responses.yaml#/responses/Error400'
+          $ref: '../components/responses.yaml#/responses/RelayError400'
         '401':
-          $ref: '../components/responses.yaml#/responses/Error401'
+          $ref: '../components/responses.yaml#/responses/RelayError401'
         '404':
-          $ref: '../components/responses.yaml#/responses/Error404'
+          $ref: '../components/responses.yaml#/responses/RelayError404'
         '500':
-          $ref: '../components/responses.yaml#/responses/Error500'
+          $ref: '../components/responses.yaml#/responses/RelayError500'
 
   # 产物内容（M6d T6b / relay-06 §10.5）：能力式鉴权，不挂 Bearer。
   /v1/tasks/{key}/artifacts/{artifact_key}/content:
@@ -403,11 +403,11 @@ paths:
         '200':
           description: 产物二进制流（Content-Type 取上游或产物声明；响应体真源不在本文件内联）
         '400':
-          $ref: '../components/responses.yaml#/responses/Error400'
+          $ref: '../components/responses.yaml#/responses/RelayError400'
         '403':
           description: access 票据无效或已过期
         '404':
-          $ref: '../components/responses.yaml#/responses/Error404'
+          $ref: '../components/responses.yaml#/responses/RelayError404'
         '502':
           description: 上游拒绝或取产物失败
         '503':
@@ -429,11 +429,11 @@ paths:
         '200':
           description: 头部可用（响应体为空）
         '400':
-          $ref: '../components/responses.yaml#/responses/Error400'
+          $ref: '../components/responses.yaml#/responses/RelayError400'
         '403':
           description: access 票据无效或已过期
         '404':
-          $ref: '../components/responses.yaml#/responses/Error404'
+          $ref: '../components/responses.yaml#/responses/RelayError404'
         '502':
           description: 上游拒绝或取产物失败
         '503':
@@ -465,11 +465,11 @@ paths:
         '200':
           description: OpenAI video 对象（`{id, object:"video", created_at, status, model, progress, seconds?, size?, error?}`）
         '400':
-          $ref: '../components/responses.yaml#/responses/Error400'
+          $ref: '../components/responses.yaml#/responses/RelayError400'
         '401':
-          $ref: '../components/responses.yaml#/responses/Error401'
+          $ref: '../components/responses.yaml#/responses/RelayError401'
         '402':
-          $ref: '../components/responses.yaml#/responses/Error402'
+          $ref: '../components/responses.yaml#/responses/RelayError402'
         '403':
           description: 令牌模型白名单不允许该模型
         '404':
@@ -479,7 +479,7 @@ paths:
         '429':
           $ref: '../components/responses.yaml#/responses/RelayError429'
         '500':
-          $ref: '../components/responses.yaml#/responses/Error500'
+          $ref: '../components/responses.yaml#/responses/RelayError500'
           description: |
             服务端内部错误。限流器故障时按 fail-closed 返回
             `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
@@ -511,11 +511,11 @@ paths:
         '200':
           description: OpenAI video 对象（failed 时带 error 子对象）
         '401':
-          $ref: '../components/responses.yaml#/responses/Error401'
+          $ref: '../components/responses.yaml#/responses/RelayError401'
         '404':
           description: 视频不存在、不属于本人或 id 形状非法（不区分原因）
         '500':
-          $ref: '../components/responses.yaml#/responses/Error500'
+          $ref: '../components/responses.yaml#/responses/RelayError500'
 
   /v1/videos/{video_id}/content:
     get:
@@ -536,9 +536,9 @@ paths:
         '200':
           description: 视频二进制流（Content-Type 取上游或产物声明）
         '400':
-          $ref: '../components/responses.yaml#/responses/Error400'
+          $ref: '../components/responses.yaml#/responses/RelayError400'
         '401':
-          $ref: '../components/responses.yaml#/responses/Error401'
+          $ref: '../components/responses.yaml#/responses/RelayError401'
         '404':
           description: 视频不存在、不属于本人或没有可检索产物
         '502':
@@ -575,9 +575,9 @@ paths:
         '200':
           description: OpenAI batch 对象 + 宿主扩展 `items[]`
         '400':
-          $ref: '../components/responses.yaml#/responses/Error400'
+          $ref: '../components/responses.yaml#/responses/RelayError400'
         '401':
-          $ref: '../components/responses.yaml#/responses/Error401'
+          $ref: '../components/responses.yaml#/responses/RelayError401'
         '403':
           description: 令牌模型白名单不允许某行的模型
         '404':
@@ -585,7 +585,7 @@ paths:
         '413':
           description: 请求体超过批次上限 8 MiB
         '500':
-          $ref: '../components/responses.yaml#/responses/Error500'
+          $ref: '../components/responses.yaml#/responses/RelayError500'
         '501':
           $ref: '../components/responses.yaml#/responses/Error501'
 
@@ -611,11 +611,11 @@ paths:
         '200':
           description: OpenAI batch 对象 + 宿主扩展 `items[]`
         '401':
-          $ref: '../components/responses.yaml#/responses/Error401'
+          $ref: '../components/responses.yaml#/responses/RelayError401'
         '404':
           description: 批次不存在或不属于本人（不区分原因）
         '500':
-          $ref: '../components/responses.yaml#/responses/Error500'
+          $ref: '../components/responses.yaml#/responses/RelayError500'
 
   /v1/batches/{batch_id}/cancel:
     post:
@@ -633,7 +633,7 @@ paths:
         - $ref: '../components/params.yaml#/parameters/BatchID'
       responses:
         '401':
-          $ref: '../components/responses.yaml#/responses/Error401'
+          $ref: '../components/responses.yaml#/responses/RelayError401'
         '404':
           description: 批次不存在或不属于本人
         '501':
@@ -1116,3 +1116,370 @@ paths:
           description: 内部错误（`{code:5,description:internal_error}`）
         '502':
           description: 存储 URL 不可用或上游失败（`{code:5,description:upstream_error}`）
+
+  # ---------------------------------------------------------------------------
+  # 多模态端点族（relay-04 §0.1；R-W18-13 登记全部已注册端点）。
+  #
+  # 请求/响应体遵循 OpenAI 公开规范（真源在 contract/adapter，本文不重定义
+  # schema）。能力判定由渠道适配器的 Caps().Endpoints 决定（R-W18-11）：目标
+  # 渠道未声明该端点时返回 400 `endpoint_not_supported`（零上游、零计费），
+  # 与 400 参数校验错误共用同一个 code 空间。
+  # ---------------------------------------------------------------------------
+  /v1/embeddings:
+    post:
+      tags: [relay]
+      operationId: createEmbeddings
+      x-openai-compatible: true
+      summary: 文本嵌入（OpenAI 兼容）
+      description: |
+        按 token 计费。Gemini 渠道的嵌入走专用语义路径
+        （`/v1/engines/{model}/embeddings` 与 `:embedContent`），不走本端点。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: embeddings 对象（schema 见 OpenAI 公开规范）
+        '400':
+          $ref: '../components/responses.yaml#/responses/RelayError400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/RelayError401'
+        '402':
+          $ref: '../components/responses.yaml#/responses/RelayError402'
+        '429':
+          $ref: '../components/responses.yaml#/responses/RelayError429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/RelayError500'
+
+  /v1/engines/{model}/embeddings:
+    post:
+      tags: [relay]
+      operationId: createEngineEmbeddings
+      summary: Gemini 嵌入（OpenAI 风格 request 的引擎路径）
+      description: |
+        兼容 Gemini 客户端：OpenAI 风格 `input` 被翻译为 `:embedContent` /
+        `:batchEmbedContents`，鉴权头为 `x-goog-api-key`（或 `?key=`）。
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathPricingModel'
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: Gemini embedding 响应（原样回写）
+        '400':
+          $ref: '../components/responses.yaml#/responses/RelayError400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/RelayError401'
+        '402':
+          $ref: '../components/responses.yaml#/responses/RelayError402'
+        '429':
+          $ref: '../components/responses.yaml#/responses/RelayError429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/RelayError500'
+
+  /v1/rerank:
+    post:
+      tags: [relay]
+      operationId: createRerank
+      summary: 文档重排
+      description: 按 token（query + 文档）计费；渠道不支持时 400 `endpoint_not_supported`。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: rerank 对象（results[] + usage）
+        '400':
+          $ref: '../components/responses.yaml#/responses/RelayError400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/RelayError401'
+        '402':
+          $ref: '../components/responses.yaml#/responses/RelayError402'
+        '429':
+          $ref: '../components/responses.yaml#/responses/RelayError429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/RelayError500'
+
+  /v1/moderations:
+    post:
+      tags: [relay]
+      operationId: createModeration
+      summary: 内容审核（OpenAI 兼容）
+      description: |
+        按 token 计费（relay-04 §5）。`input` 必填且受 1 MiB 上界；缺省
+        `model` 为审核默认模型。上游不支持该端点时返回 400
+        `endpoint_not_supported`（能力声明缺省，R-W18-11）。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: moderation 对象（上游 JSON 原样透传）
+        '400':
+          $ref: '../components/responses.yaml#/responses/RelayError400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/RelayError401'
+        '402':
+          $ref: '../components/responses.yaml#/responses/RelayError402'
+        '429':
+          $ref: '../components/responses.yaml#/responses/RelayError429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/RelayError500'
+
+  /v1/audio/speech:
+    post:
+      tags: [relay]
+      operationId: createSpeech
+      summary: 文本转语音
+      description: 按音频 token/时长计费；响应为二进制音频（Content-Type 透传）。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: 音频字节流（schema 见 OpenAI 公开规范）
+        '400':
+          $ref: '../components/responses.yaml#/responses/RelayError400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/RelayError401'
+        '402':
+          $ref: '../components/responses.yaml#/responses/RelayError402'
+        '429':
+          $ref: '../components/responses.yaml#/responses/RelayError429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/RelayError500'
+
+  /v1/audio/transcriptions:
+    post:
+      tags: [relay]
+      operationId: createTranscription
+      summary: 音频转写
+      description: multipart 上传；按时长推导计费量（relay-04 §3.5）。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: 转写结果（上游 JSON 原样透传）
+        '400':
+          $ref: '../components/responses.yaml#/responses/RelayError400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/RelayError401'
+        '402':
+          $ref: '../components/responses.yaml#/responses/RelayError402'
+        '429':
+          $ref: '../components/responses.yaml#/responses/RelayError429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/RelayError500'
+
+  /v1/audio/translations:
+    post:
+      tags: [relay]
+      operationId: createTranslation
+      summary: 音频翻译
+      description: multipart 上传；按时长推导计费量（relay-04 §3.5）。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: 翻译结果（上游 JSON 原样透传）
+        '400':
+          $ref: '../components/responses.yaml#/responses/RelayError400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/RelayError401'
+        '402':
+          $ref: '../components/responses.yaml#/responses/RelayError402'
+        '429':
+          $ref: '../components/responses.yaml#/responses/RelayError429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/RelayError500'
+
+  /v1/images/generations:
+    post:
+      tags: [relay]
+      operationId: createImage
+      summary: 图像生成
+      description: |
+        JSON 请求；`n`/`size`/`quality` 在归一化层校验上界（relay-04 §9）。
+        按图像张数 × 模型倍率计费；`stream=true` 时上游 SSE 或 JSON 都会转为 SSE。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: 图像响应（JSON 或 SSE）
+        '400':
+          $ref: '../components/responses.yaml#/responses/RelayError400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/RelayError401'
+        '402':
+          $ref: '../components/responses.yaml#/responses/RelayError402'
+        '429':
+          $ref: '../components/responses.yaml#/responses/RelayError429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/RelayError500'
+
+  /v1/images/edits:
+    post:
+      tags: [relay]
+      operationId: createImageEdit
+      summary: 图像编辑
+      description: |
+        接受 multipart 或 JSON；图像编辑的唯一入口（legacy `/v1/edits`
+        明确不提供，返回 404）。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: 图像响应（JSON 或 SSE）
+        '400':
+          $ref: '../components/responses.yaml#/responses/RelayError400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/RelayError401'
+        '402':
+          $ref: '../components/responses.yaml#/responses/RelayError402'
+        '429':
+          $ref: '../components/responses.yaml#/responses/RelayError429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/RelayError500'
+
+  # ---------------------------------------------------------------------------
+  # 模型列表/检索（relay-04 §10.1，非计费；R-W18-13）。
+  #
+  # 同一份启用模型清单按请求头返回三种 SDK 形状：OpenAI `data[]`、
+  # Anthropic `data[{type,id,display_name,created_at}]`、Gemini `models[]`。
+  # 鉴权载体：`Authorization: Bearer` 恒生效；`x-api-key`（/v1/models 族）、
+  # `x-goog-api-key`、查询参数 `?key=`（仅模型路径）作为兼容载体。
+  # ---------------------------------------------------------------------------
+  /v1/models:
+    get:
+      tags: [relay]
+      operationId: listModels
+      summary: 模型列表（按请求头分流三种形状）
+      description: |
+        `x-api-key` + `anthropic-version` → Anthropic 形状；`x-goog-api-key`
+        或 `?key=` → Gemini 形状；否则 OpenAI 形状。非计费、不计限流桶。
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: 模型列表（形状取决于请求头）
+        '401':
+          $ref: '../components/responses.yaml#/responses/RelayError401'
+        '500':
+          $ref: '../components/responses.yaml#/responses/RelayError500'
+
+  /v1/models/{model}:
+    get:
+      tags: [relay]
+      operationId: getModel
+      summary: 模型检索（Anthropic 头 → Anthropic 形状，否则 OpenAI）
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathPricingModel'
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: 模型对象
+        '401':
+          $ref: '../components/responses.yaml#/responses/RelayError401'
+        '404':
+          $ref: '../components/responses.yaml#/responses/RelayError404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/RelayError500'
+    post:
+      tags: [relay]
+      operationId: createModelPathEmbeddings
+      summary: Gemini 语义模型子路径（嵌入动作）
+      description: |
+        承载 `POST /v1/models/{model}:embedContent` /
+        `:batchEmbedContents` 变体；其它动作（如 `:countTokens`）返回 404。
+        路径段中的模型名可包含动作后缀，本文以 `{model}` 统一表示。
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathPricingModel'
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: Gemini embedding 响应
+        '400':
+          $ref: '../components/responses.yaml#/responses/RelayError400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/RelayError401'
+        '402':
+          $ref: '../components/responses.yaml#/responses/RelayError402'
+        '404':
+          $ref: '../components/responses.yaml#/responses/RelayError404'
+        '429':
+          $ref: '../components/responses.yaml#/responses/RelayError429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/RelayError500'
+
+  /v1beta/models:
+    get:
+      tags: [relay]
+      operationId: listBetaModels
+      summary: Gemini 模型列表
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: Gemini `models[]` 形状
+        '401':
+          $ref: '../components/responses.yaml#/responses/RelayError401'
+        '500':
+          $ref: '../components/responses.yaml#/responses/RelayError500'
+
+  /v1beta/models/{model}:
+    get:
+      tags: [relay]
+      operationId: getBetaModel
+      summary: Gemini 模型检索
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathPricingModel'
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: Gemini 模型对象
+        '401':
+          $ref: '../components/responses.yaml#/responses/RelayError401'
+        '404':
+          $ref: '../components/responses.yaml#/responses/RelayError404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/RelayError500'
+    post:
+      tags: [relay]
+      operationId: createBetaModelPathEmbeddings
+      summary: Gemini 语义模型子路径（嵌入动作）
+      description: |
+        承载 `POST /v1beta/models/{model}:embedContent` /
+        `:batchEmbedContents`；其它动作返回 404。
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathPricingModel'
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: Gemini embedding 响应
+        '400':
+          $ref: '../components/responses.yaml#/responses/RelayError400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/RelayError401'
+        '402':
+          $ref: '../components/responses.yaml#/responses/RelayError402'
+        '404':
+          $ref: '../components/responses.yaml#/responses/RelayError404'
+        '429':
+          $ref: '../components/responses.yaml#/responses/RelayError429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/RelayError500'
+
+  /v1beta/openai/models:
+    get:
+      tags: [relay]
+      operationId: listBetaOpenAIModels
+      summary: Gemini 兼容路径下的 OpenAI 形状模型列表
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: OpenAI `data[]` 形状（固定，不随 `?key=` 改变）
+        '401':
+          $ref: '../components/responses.yaml#/responses/RelayError401'
+        '500':
+          $ref: '../components/responses.yaml#/responses/RelayError500'

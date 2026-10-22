@@ -57,11 +57,11 @@ type Options struct {
 	MaxAutoGroups   int
 	GroupConfigured func(ctx context.Context, group string) (bool, error)
 	// OnAttemptFailure 与 relay.RouteDeps.OnAttemptFailure 同语义（W7/M4-a）：
-	// 多模态非 realtime 端点同样经 ExecuteAttempts 执行，失败渠道必须进入
-	// 同一套自动禁用判定，不能只覆盖 chat 端点。nil 时不上报。
+	// 多模态端点同样经 ExecuteAttempts 执行，失败渠道必须进入同一套自动
+	// 禁用判定，不能只覆盖 chat 端点。nil 时不上报。
 	OnAttemptFailure relay.AttemptFailureFunc
-	// Supports 覆盖「渠道是否支持本端点族」的判定；nil 时使用 relay-04
-	// 的端点×渠道类型矩阵（F2）。测试可注入以覆盖矩阵。
+	// Supports 覆盖「渠道是否支持本端点族」的判定；nil 时按适配器
+	// Caps().Endpoints 判定（R-W18-11 单一真源）。测试可注入以覆盖判定。
 	Supports func(contract.ChannelType) bool
 	// StreamInactivityTimeout 覆盖流式/二进制块间不活动看门狗的默认 300s。
 	// 仅测试注入短值；生产使用冻结默认值（relay-03 §10.1）。
@@ -104,11 +104,6 @@ func (d *Dispatcher) Handle(w http.ResponseWriter, r *http.Request, rc *contract
 	// 归一化层仍是请求组的权威写入方：把端点归一化后的 Stream 与原始体写回。
 	relayWithRequest(rc, plan, r.URL.Path)
 	relay.WithQuotaEstimate(rc, &plan.estimate)
-
-	if endpoint == contract.EndpointRealtime {
-		d.serveRealtime(w, r, rc, plan)
-		return
-	}
 
 	billing := d.opts.Billing(rc)
 	settlement := &settlement{billing: billing}
@@ -244,78 +239,31 @@ func (d *Dispatcher) supports(channelType contract.ChannelType, base contract.Ad
 	if d.opts.Supports != nil {
 		return d.opts.Supports(channelType)
 	}
+	if base == nil {
+		return false
+	}
+	// R-W18-11：能力单一真源 = 适配器 Caps().Endpoints。没有任何第二份
+	// 端点×渠道白名单——声明缺省即不支持（契约 §4 · ErrEndpointUnsupported）。
+	// 因此「把渠道名加进某个 map」不再能让不支持的上游通过：适配器若没有
+	// 对应实现就不会声明该端点。
+	if _, declared := base.Caps().Endpoints[plan.endpoint]; !declared {
+		return false
+	}
 	// Gemini 语义嵌入路径（:embedContent / :batchEmbedContents）只由 Gemini
 	// 原生渠道承载；OpenAI 兼容渠道无法解释该路径。
 	if plan.geminiPath {
 		return channelType == contract.ChannelTypeGemini
 	}
-	// F2：按 relay-04 §1.4/§2.4/§3.4/§4.6 的端点×渠道类型表判定。
-	// 仅「表内声明支持」且「本包有 OpenAI 兼容实现」的渠道通过。
-	allowed := endpointChannelSupport[plan.endpoint]
-	if _, ok := allowed[channelType]; !ok {
-		return false
-	}
-	// M4 的多模态端点以 OpenAI 兼容形态实现；其它协议族没有本族实现，
-	// 必须显式拒绝而不是发出空体。Azure 的部署名/api-version 路径规则
-	// 尚未对齐，显式排除（F11）。
-	if channelType == contract.ChannelTypeAzure {
-		return false
-	}
+	// 本包的多模态编码实现是 OpenAI 兼容形状（M4 Task 4）。其它协议族即使
+	// 在 Caps 里声明了同端点（例如 Gemini 的专用嵌入），也不能套用 OpenAI
+	// 请求体；必须显式拒绝而不是发出空体/错体。
 	_, ok := base.(*adapters.OpenAI)
 	return ok
 }
 
-// endpointChannelSupport 是 relay-04 端点×渠道类型支持矩阵的**显式白名单**。
-//
-// 只列「表内为是」且本包能正确编码的类型；relay-04 中标注为「否」的类型
-// （deepseek/mistral/openrouter…）即使共用 OpenAI 适配器也不得放行——
-// 能力声明缺省即不支持（契约 §4 · ErrEndpointUnsupported）。
-var endpointChannelSupport = map[contract.Endpoint]map[contract.ChannelType]struct{}{
-	contract.EndpointEmbeddings: {
-		contract.ChannelTypeOpenAI:      {},
-		contract.ChannelTypeAli:         {},
-		contract.ChannelTypeSiliconFlow: {},
-		contract.ChannelTypeVolcEngine:  {},
-		contract.ChannelTypeZhipuV4:     {},
-		contract.ChannelTypeNewAPI:      {},
-	},
-	contract.EndpointRerank: {
-		contract.ChannelTypeOpenAI:      {},
-		contract.ChannelTypeAli:         {},
-		contract.ChannelTypeSiliconFlow: {},
-		// N2：relay-04 §2.3 明确 Xinference 的重排响应形态；
-		// 其 OpenAI 兼容适配器可以承载本实现。
-		contract.ChannelTypeXinference: {},
-	},
-	contract.EndpointAudioSpeech: {
-		contract.ChannelTypeOpenAI:      {},
-		contract.ChannelTypeSiliconFlow: {},
-		contract.ChannelTypeVolcEngine:  {},
-	},
-	contract.EndpointAudioTranscribe: {
-		contract.ChannelTypeOpenAI:      {},
-		contract.ChannelTypeSiliconFlow: {},
-	},
-	contract.EndpointAudioTranslate: {
-		contract.ChannelTypeOpenAI:      {},
-		contract.ChannelTypeSiliconFlow: {},
-	},
-	contract.EndpointImageGenerate: {
-		contract.ChannelTypeOpenAI: {},
-		contract.ChannelTypeAli:    {},
-		contract.ChannelTypeXai:    {},
-	},
-	contract.EndpointImageEdit: {
-		contract.ChannelTypeOpenAI: {},
-		contract.ChannelTypeAli:    {},
-		contract.ChannelTypeXai:    {},
-	},
-	// N1：realtime P0 骨架仍由 OpenAI 兼容渠道的 DialUpstream 承载；
-	// 矩阵缺项会让 Handle 在握手前就 400，F6 的路径不可达。
-	contract.EndpointRealtime: {
-		contract.ChannelTypeOpenAI: {},
-	},
-}
+// endpointChannelSupport 已删除（R-W18-11）：端点×渠道的支持判定不再由本包
+// 维护第二份白名单，统一由适配器 Caps().Endpoints 声明、dispatcher 只做包含
+// 判定。这样前端能力矩阵与渠道表单可以从 Caps 生成，不会出现两套真源。
 
 // GeminiEmbeddingModel 从 Gemini 语义嵌入路径提取模型名（N6：httpapi 入口
 // 与 dispatcher 共用这一份实现，避免两处形态漂移）。
@@ -445,8 +393,9 @@ func buildPlan(endpoint contract.Endpoint, r *http.Request, rc *contract.RelayCo
 		format := formatFromFilename(file.filename, file.contentType)
 		plan.estimate.AudioSeconds = audioSecondsForEstimate(rc, file.data, format)
 		plan.estimate.Model = rc.OriginModel
-	case contract.EndpointRealtime:
-		plan.path = realtimePath
+	case contract.EndpointModerations:
+		plan.contentType = "application/json"
+		plan.estimate.Model = rc.OriginModel
 	default:
 		return nil, &entryError{status: http.StatusBadRequest, code: "invalid_request", message: "unsupported multimodal endpoint"}
 	}
@@ -609,6 +558,10 @@ func (d *Dispatcher) serveJSON(w http.ResponseWriter, rc *contract.RelayContext,
 			}
 		case contract.EndpointRerank:
 			fact.Usage = estimatedTextUsage(estimateRerankText(plan.rawBody))
+		case contract.EndpointModerations:
+			// relay-04 §8.5：审核按文本 token，信任顺序同 §8.4——上游 usage
+			// 优先、缺失时本地估算。不估算会让没有 usage 的上游变成零计费。
+			fact.Usage = estimatedTextUsage(estimateModerationText(plan.rawBody))
 		}
 	}
 	if rc.OriginModel != "" {
@@ -1111,68 +1064,6 @@ func (d *Dispatcher) serveAudioSpeech(w http.ResponseWriter, r *http.Request, rc
 	fact.Stream = plan.stream
 	fact.Attempts = rc.AttemptIndex + 1
 	settlement.terminate(*fact)
-}
-
-// serveRealtime 是实时端点的 P0 骨架：只完成鉴权后的渠道解析与上游握手；
-// 双向桥接后置（relay-07 §3）。成功建连后明确 501，绝不假装已转发。
-func (d *Dispatcher) serveRealtime(w http.ResponseWriter, r *http.Request, rc *contract.RelayContext, plan *RequestPlan) {
-	connection := strings.ToLower(r.Header.Get("Connection"))
-	upgrade := strings.ToLower(r.Header.Get("Upgrade"))
-	if !strings.Contains(connection, "upgrade") || upgrade != "websocket" {
-		d.writeEntryError(w, rc.RequestID, &entryError{status: http.StatusBadRequest, code: "invalid_request", message: "websocket upgrade required"})
-		return
-	}
-	candidates, err := d.opts.Candidates(r.Context(), rc)
-	if err != nil || len(candidates) == 0 {
-		d.opts.WriteError(w, rc.RequestID, fmt.Errorf("%w", relay.ErrNoAvailableChannel))
-		return
-	}
-	chosen := candidates[0]
-	// F6：realtime 也要遵守管理员 pin；pin 不在候选集内按 404 语义快失败。
-	if pinID, hasPin := relay.ParseChannelPin(r); hasPin {
-		found := false
-		for _, candidate := range candidates {
-			if candidate.ChannelID == pinID {
-				chosen = candidate
-				found = true
-				break
-			}
-		}
-		if !found {
-			d.opts.WriteError(w, rc.RequestID, fmt.Errorf("%w: channel %d", relay.ErrChannelNotFound, pinID))
-			return
-		}
-	}
-	assignment, err := d.opts.ResolveChannel(r.Context(), rc, chosen.ChannelID)
-	if err != nil {
-		d.opts.WriteError(w, rc.RequestID, fmt.Errorf("%w: %v", relay.ErrNoAvailableChannel, err))
-		return
-	}
-	assignment.ChannelID = chosen.ChannelID
-	relay.WithChannel(rc, assignment)
-
-	adapter, err := d.adapterFor(assignment.ChannelType, plan)
-	if err != nil {
-		d.opts.WriteError(w, rc.RequestID, err)
-		return
-	}
-	realtime, ok := adapter.(contract.RealtimeAdapter)
-	if !ok {
-		d.writeEntryError(w, rc.RequestID, &entryError{status: http.StatusBadRequest, code: "endpoint_not_supported", message: "the channel does not support this endpoint"})
-		return
-	}
-	conn, err := realtime.DialUpstream(rc)
-	if err != nil {
-		d.opts.WriteError(w, rc.RequestID, err)
-		return
-	}
-	_ = conn.Close()
-	// P0 骨架：握手成功后仍不桥接（进阶后置）。明确 501 而不是挂起连接。
-	d.writeEntryError(w, rc.RequestID, &entryError{
-		status:  http.StatusNotImplemented,
-		code:    "not_implemented",
-		message: "realtime bridging is not implemented in this milestone",
-	})
 }
 
 // ============================================================================

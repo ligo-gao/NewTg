@@ -396,6 +396,12 @@ func (h *RelayHandler) Register(mux *http.ServeMux) {
 	authMiddleware := h.AuthMiddleware()
 	mux.Handle("POST /v1/chat/completions", authMiddleware(http.HandlerFunc(h.handleChatCompletions)))
 	mux.Handle("GET /v1/models", authMiddleware(http.HandlerFunc(h.handleModels)))
+	// R-W18-13：模型列表/检索按协议头分流（relay-04 §10.1）。四条 GET 路由
+	// 与既有 `POST /v1/models/{path...}`（Gemini 嵌入通配）按方法共存。
+	mux.Handle("GET /v1/models/{model}", authMiddleware(http.HandlerFunc(h.handleModel)))
+	mux.Handle("GET /v1beta/models", authMiddleware(http.HandlerFunc(h.handleBetaModels)))
+	mux.Handle("GET /v1beta/models/{model}", authMiddleware(http.HandlerFunc(h.handleBetaModel)))
+	mux.Handle("GET /v1beta/openai/models", authMiddleware(http.HandlerFunc(h.handleOpenAIModels)))
 	// T2 / P-01：OpenAI Responses 创建端点——插件原生路由优先，未命中返回
 	// 501（R-13；Responses 透传/转码另立 T2b，通用中继不承接）。
 	// 精确模式注册（不是 /v1/ 子树），与 T1 的兜底不重叠：ServeMux 让精确模式
@@ -2501,35 +2507,235 @@ func relayStreamOutcome(contentSent int) contract.ResponseOutcome {
 	return contract.OutcomeFailed
 }
 
-// ---------- GET /v1/models ----------
+// ---------- GET /v1/models 族 ----------
+//
+// 模型列表/检索按请求头分流（relay-04 §10.1）：同一份启用模型清单要能以
+// OpenAI / Anthropic / Gemini 三种 SDK 期望的形状返回，否则「一个 key 接
+// 三家 SDK」在这些辅助端点上就断了。非计费端点（R-W18-10），不消耗限流桶。
+//
+// 错误信封固定为 OpenAI 形：R-W18-04 只给 `/v1/messages` 留 Claude 形
+// （W18-A 面），模型列表不因请求头改变错误形状，避免同一路径出现两套
+// 客户端解析分支。
+
+// modelListShape 是模型列表的三种对外形状。
+type modelListShape int
+
+const (
+	modelShapeOpenAI modelListShape = iota
+	modelShapeAnthropic
+	modelShapeGemini
+)
+
+// modelListShapeFor 按请求头/查询参数选择列表形状（relay-04 §10.1）：
+//   - `x-api-key` + `anthropic-version` → Anthropic；
+//   - `x-goog-api-key` 或 `?key=` → Gemini（`?key=` 是 Gemini 兼容载体）；
+//   - 否则 OpenAI。
+func modelListShapeFor(r *http.Request) modelListShape {
+	if strings.TrimSpace(r.Header.Get("x-api-key")) != "" &&
+		strings.TrimSpace(r.Header.Get("anthropic-version")) != "" {
+		return modelShapeAnthropic
+	}
+	if strings.TrimSpace(r.Header.Get("x-goog-api-key")) != "" {
+		return modelShapeGemini
+	}
+	if r.URL != nil && strings.TrimSpace(r.URL.Query().Get("key")) != "" {
+		return modelShapeGemini
+	}
+	return modelShapeOpenAI
+}
+
+// modelShapeForRetrieval 是 `GET /v1/models/{model}` 的分流：Anthropic 头 →
+// Anthropic，否则 OpenAI（relay-04 §10.1 只给这两支，不含 Gemini）。
+func modelShapeForRetrieval(r *http.Request) modelListShape {
+	if strings.TrimSpace(r.Header.Get("x-api-key")) != "" &&
+		strings.TrimSpace(r.Header.Get("anthropic-version")) != "" {
+		return modelShapeAnthropic
+	}
+	return modelShapeOpenAI
+}
+
+type openAIModelObject struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	OwnedBy string `json:"owned_by"`
+}
+
+type anthropicModelObject struct {
+	Type        string `json:"type"`
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	CreatedAt   string `json:"created_at"`
+}
+
+type geminiModelObject struct {
+	Name                       string   `json:"name"`
+	DisplayName                string   `json:"displayName"`
+	SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
+}
+
+// modelFallbackCreatedAt 是 Anthropic 模型对象的 created_at 占位值。
+//
+// 网关只聚合渠道配置里的模型名，没有「模型创建时间」这一事实。Anthropic
+// 的 Models API 形状要求该字段存在；用固定 epoch 而不是 time.Now()，保证
+// 同一份配置在任意副本/任意时刻返回相同字节（便于缓存与漂移测试）。
+const modelFallbackCreatedAt = "1970-01-01T00:00:00Z"
 
 func (h *RelayHandler) handleModels(w http.ResponseWriter, r *http.Request) {
+	switch modelListShapeFor(r) {
+	case modelShapeAnthropic:
+		h.writeAnthropicModels(w, r)
+	case modelShapeGemini:
+		h.writeGeminiModels(w, r)
+	default:
+		h.writeOpenAIModels(w, r)
+	}
+}
+
+// handleOpenAIModels 固定 OpenAI 形状（`/v1beta/openai/models`，relay-04 §10.1）。
+func (h *RelayHandler) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
+	h.writeOpenAIModels(w, r)
+}
+
+// handleModel 是 `GET /v1/models/{model}`：Anthropic 头 → Anthropic 形状，
+// 否则 OpenAI 形状。
+func (h *RelayHandler) handleModel(w http.ResponseWriter, r *http.Request) {
+	model := r.PathValue("model")
+	models, requestID, ok := h.loadEnabledModels(w, r)
+	if !ok {
+		return
+	}
+	if !containsModel(models, model) {
+		writeRelayError(w, http.StatusNotFound, requestID, "model_not_found",
+			"the requested model is not available")
+		return
+	}
+	if modelShapeForRetrieval(r) == modelShapeAnthropic {
+		writeJSONResponse(w, requestID, anthropicModelObject{
+			Type:        "model",
+			ID:          model,
+			DisplayName: model,
+			CreatedAt:   modelFallbackCreatedAt,
+		})
+		return
+	}
+	writeJSONResponse(w, requestID, openAIModelObject{ID: model, Object: "model", OwnedBy: "newtg"})
+}
+
+// handleBetaModels 是 `GET /v1beta/models`：Gemini 形状（relay-04 §10.1）。
+func (h *RelayHandler) handleBetaModels(w http.ResponseWriter, r *http.Request) {
+	h.writeGeminiModels(w, r)
+}
+
+// handleBetaModel 是 `GET /v1beta/models/{model}`：Gemini 形状。
+func (h *RelayHandler) handleBetaModel(w http.ResponseWriter, r *http.Request) {
+	model := r.PathValue("model")
+	models, requestID, ok := h.loadEnabledModels(w, r)
+	if !ok {
+		return
+	}
+	if !containsModel(models, model) {
+		writeRelayError(w, http.StatusNotFound, requestID, "model_not_found",
+			"the requested model is not available")
+		return
+	}
+	writeJSONResponse(w, requestID, geminiModelFor(model))
+}
+
+func (h *RelayHandler) writeOpenAIModels(w http.ResponseWriter, r *http.Request) {
+	models, requestID, ok := h.loadEnabledModels(w, r)
+	if !ok {
+		return
+	}
+	payload := struct {
+		Object string              `json:"object"`
+		Data   []openAIModelObject `json:"data"`
+	}{Object: "list", Data: make([]openAIModelObject, 0, len(models))}
+	for _, m := range models {
+		payload.Data = append(payload.Data, openAIModelObject{ID: m, Object: "model", OwnedBy: "newtg"})
+	}
+	writeJSONResponse(w, requestID, payload)
+}
+
+func (h *RelayHandler) writeAnthropicModels(w http.ResponseWriter, r *http.Request) {
+	models, requestID, ok := h.loadEnabledModels(w, r)
+	if !ok {
+		return
+	}
+	payload := struct {
+		Data    []anthropicModelObject `json:"data"`
+		HasMore bool                   `json:"has_more"`
+		FirstID *string                `json:"first_id"`
+		LastID  *string                `json:"last_id"`
+	}{Data: make([]anthropicModelObject, 0, len(models))}
+	for _, m := range models {
+		payload.Data = append(payload.Data, anthropicModelObject{
+			Type:        "model",
+			ID:          m,
+			DisplayName: m,
+			CreatedAt:   modelFallbackCreatedAt,
+		})
+	}
+	if len(models) > 0 {
+		first, last := models[0], models[len(models)-1]
+		payload.FirstID, payload.LastID = &first, &last
+	}
+	writeJSONResponse(w, requestID, payload)
+}
+
+func (h *RelayHandler) writeGeminiModels(w http.ResponseWriter, r *http.Request) {
+	models, requestID, ok := h.loadEnabledModels(w, r)
+	if !ok {
+		return
+	}
+	payload := struct {
+		Models []geminiModelObject `json:"models"`
+	}{Models: make([]geminiModelObject, 0, len(models))}
+	for _, m := range models {
+		payload.Models = append(payload.Models, geminiModelFor(m))
+	}
+	writeJSONResponse(w, requestID, payload)
+}
+
+// geminiModelFor 把网关模型名投影为 Gemini Models API 对象。
+//
+// Gemini 的 `name` 必须是 `models/<id>` 形式；`supportedGenerationMethods`
+// 只声明网关确实会转发的动作，避免让 SDK 误以为可以调用未实现的动作。
+func geminiModelFor(model string) geminiModelObject {
+	return geminiModelObject{
+		Name:                       "models/" + model,
+		DisplayName:                model,
+		SupportedGenerationMethods: []string{"generateContent", "streamGenerateContent", "embedContent"},
+	}
+}
+
+func (h *RelayHandler) loadEnabledModels(w http.ResponseWriter, r *http.Request) ([]string, string, bool) {
 	requestID := newRelayRequestID()
 	models, err := h.channels.EnabledModels(r.Context())
 	if err != nil {
 		// GC-6：存储错误可能含 SQL/DSN，只回固定文案。
 		writeRelayError(w, http.StatusInternalServerError, requestID, "database_error",
 			"failed to load model list")
-		return
+		return nil, requestID, false
 	}
-	type modelObject struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		OwnedBy string `json:"owned_by"`
-	}
-	payload := struct {
-		Object string        `json:"object"`
-		Data   []modelObject `json:"data"`
-	}{Object: "list", Data: make([]modelObject, 0, len(models))}
-	for _, m := range models {
-		payload.Data = append(payload.Data, modelObject{ID: m, Object: "model", OwnedBy: "newtg"})
-	}
+	return models, requestID, true
+}
+
+func writeJSONResponse(w http.ResponseWriter, requestID string, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	if requestID != "" {
 		w.Header().Set("X-Request-ID", requestID)
 	}
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func containsModel(models []string, model string) bool {
+	for _, candidate := range models {
+		if candidate == model {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------- 错误映射 ----------

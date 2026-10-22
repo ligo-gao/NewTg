@@ -9289,9 +9289,29 @@ type Error502 = Problem
 // Error503 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Error503 = Problem
 
+// RelayError400 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type RelayError400 = RelayError
+
+// RelayError401 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type RelayError401 = RelayError
+
+// RelayError402 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type RelayError402 = RelayError
+
+// RelayError404 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type RelayError404 = RelayError
+
 // RelayError429 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
 // ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
 type RelayError429 = RelayError
+
+// RelayError500 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type RelayError500 = RelayError
 
 // MJTaskList defines model for MJTaskList.
 type MJTaskList = MJTaskListRequest
