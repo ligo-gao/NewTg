@@ -8,6 +8,8 @@ import { Button } from '@/shared/ui/button'
 import { FormAlert } from '@/shared/ui/form'
 import { StatusBadge, type StatusBadgeVariant } from '@/shared/ui/status-badge'
 
+import { SystemTasksCard } from './system-tasks-card'
+
 /**
  * FE-08 system status (`GET /api/system/status`, m6c-task-1 contract):
  * `{version, uptime, instances[], dependencies{db, redis, worker}}`.
@@ -310,6 +312,10 @@ export function SystemStatusPage() {
             )}
             </Card>
           ) : null}
+
+          {/* F-08-21 系统任务卡（W17-2）：只读列表 + 白名单手动触发。
+              卡片自行处理 403（无 settings:manage 时整卡隐藏）。 */}
+          <SystemTasksCard />
         </>
       ) : null}
     </div>

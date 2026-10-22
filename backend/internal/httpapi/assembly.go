@@ -46,6 +46,7 @@ import (
 	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/tasks"
 	"newtg/gateway/internal/version"
+	"newtg/gateway/internal/worker"
 	"newtg/gateway/plugins"
 )
 
@@ -601,6 +602,37 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			StartedAt:  deps.StartedAt,
 			Authz:      deps.Authz,
 			Logger:     deps.Logger,
+		}).Register(rt.protected)
+
+		// 系统任务管理面（W17-2 / billing-06 §13.5）：注册表是静态代码表，
+		// 调度行与运行历史在主库。gateway 只读 + 受限触发；执行由 worker
+		// 进程的调度器完成，触发只写 pending 行并通过 Redis 唤醒。
+		taskRegistry, err := worker.DefaultRegistry()
+		if err != nil {
+			return nil, fmt.Errorf("router: worker task registry: %w", err)
+		}
+		taskStore, err := worker.NewSQLStore(deps.DB)
+		if err != nil {
+			return nil, fmt.Errorf("router: worker task store: %w", err)
+		}
+		taskService, err := worker.NewService(worker.ServiceConfig{
+			Registry: taskRegistry,
+			Store:    taskStore,
+			Lease:    worker.NewRedisLease(deps.Redis),
+			Logger:   deps.Logger,
+			Wakeup: func(ctx context.Context, taskType string) error {
+				return worker.PublishWakeup(ctx, deps.Redis, taskType)
+			},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("router: worker task service: %w", err)
+		}
+		NewSystemTaskHandlers(SystemTaskHandlerConfig{
+			Service: taskService,
+			Authz:   deps.Authz,
+			Audit:   deps.Audit,
+			Idem:    NewRedisIdempotencyStore(deps.Redis),
+			Logger:  deps.Logger,
 		}).Register(rt.protected)
 
 		// 通知模板（M6c Task 4 / modules-08 §3.9）：模板表是独立表，不在

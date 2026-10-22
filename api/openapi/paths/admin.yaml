@@ -4585,3 +4585,127 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error429'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
+
+  # ---------------------------------------------------------------------------
+  # 系统任务（W17-2 / billing-06 §13.5；modules-08 F-08-21 系统任务卡）。
+  # 数据源：静态任务注册表 + worker_tasks / worker_task_runs（主库）。
+  # 只读 + 受限触发；**没有 cancel 端点**（契约冻结，§13.5）。
+  # ---------------------------------------------------------------------------
+  /api/system/tasks:
+    get:
+      tags: [admin]
+      operationId: listSystemTasks
+      x-required-permission: settings:manage
+      summary: 系统任务列表（注册表全集）
+      description: |
+        返回静态任务注册表中的全部任务，并合并 worker_tasks 的调度行；
+        无调度行的任务给出注册表默认值（`last_status=null`、`last_run_at=null`）。
+        `running` 以未过期租约为准；`holder_id` 只在运行中返回且已截断。
+        `last_duration_ms` 是最新一次已结束运行的耗时。响应 `Cache-Control: no-store`。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/pagination.yaml#/parameters/Page'
+        - $ref: '../components/pagination.yaml#/parameters/PageSize'
+      responses:
+        '200':
+          description: 任务列表
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/SystemTaskPage'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/system/tasks/{name}:
+    get:
+      tags: [admin]
+      operationId: getSystemTask
+      x-required-permission: settings:manage
+      summary: 系统任务详情 + 最近运行历史
+      description: |
+        `name` 必须精确命中静态注册表；未知名称返回 404 `task_not_found`，
+        不做模糊匹配。运行历史按 `COALESCE(started_at, created_at)` 倒序分页
+        （默认每页 20，上限 100）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: {type: string}
+        - $ref: '../components/pagination.yaml#/parameters/Page'
+        - $ref: '../components/pagination.yaml#/parameters/PageSize'
+      responses:
+        '200':
+          description: 任务详情
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/SystemTaskDetail'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/system/tasks/{name}:trigger:
+    post:
+      tags: [admin]
+      operationId: triggerSystemTask
+      x-required-permission: settings:manage
+      summary: 手动触发白名单任务（只入队）
+      description: |
+        仅允许静态注册表标记 `manual_trigger_allowed=true` 的 5 个维护任务：
+        `log_cleanup`、`log_partition_precreate`、`redemption_expiry`、
+        `rankings_snapshot`、`worker_history_cleanup`。
+
+        服务端只写一条 `pending` 运行行并唤醒调度器，由调度 pass 按正常租约
+        认领执行——**不旁路执行**。非白名单 403 `task_not_manual`；未知任务
+        404 `task_not_found`；已在运行/已入队 409 `task_already_running`；
+        任务停用 409 `task_disabled`；运行时开关关闭（当前仅
+        `log_cleanup` 的 `log.partition_drop_enabled`）409
+        `log_partition_drop_disabled`，零 DROP、零入队，审计 outcome=blocked。`Idempotency-Key` 必带，24h 内同键重放
+        返回首次 202，不产生第二条运行。每次触发（含失败）写
+        `system.task.trigger` 审计。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: {type: string}
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, maxLength: 128}
+      responses:
+        '202':
+          description: 已入队
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/SystemTaskTriggerAccepted'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'

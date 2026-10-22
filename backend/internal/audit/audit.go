@@ -172,6 +172,11 @@ const (
 	ActionSystemGCRun          = "system.gc.run"
 	ActionSystemLogCleanupRun  = "system.log_cleanup.run"
 
+	// W17-2 系统任务手动触发（billing-06 §13.5.1）：每次触发（202/403/404/409
+	// 与入队失败）都写一条 operation 审计。detail 只允许 event/task_type/
+	// trigger/run_id/outcome，不含节点原始标识或任务内部错误文本。
+	ActionSystemTaskTrigger = "system.task.trigger"
+
 	// D5b 订阅套餐管理面与用户扣费偏好（billing-08 §15.1/§15.2）。全部归
 	// operation：套餐是管理配置，偏好是用户设置。detail 只允许 id/plan_key/
 	// 受影响计数；用户偏好的 before/after 只允许四值枚举，绝不记录整行或
@@ -323,6 +328,7 @@ var actionCategories = map[string]string{
 	ActionSystemDiskCacheClear: categoryOperation,
 	ActionSystemGCRun:          categoryOperation,
 	ActionSystemLogCleanupRun:  categoryOperation,
+	ActionSystemTaskTrigger:    categoryOperation,
 
 	ActionSubscriptionPlanCreate:     categoryOperation,
 	ActionSubscriptionPlanUpdate:     categoryOperation,

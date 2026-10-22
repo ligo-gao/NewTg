@@ -253,6 +253,12 @@ var EnumChecks = map[string][]string{
 	"deployment_cost_facts.fact_type":          {"preconsume", "accrual", "settlement", "reconciliation_adjustment", "released"},
 	"deployment_cost_facts.usage_source":       {"provider_exact", "provider_partial", "internal_accounting", "estimated", "reserved_default"},
 	"deployment_cost_facts.state":              {"held", "accrued", "confirmed", "released", "adjusted"},
+
+	// W17-2 worker 任务框架（billing-06 §2.4）：三处枚举 CHECK 与迁移逐字对应。
+	// last_status 只记录终态（running 不是调度目录的状态，执行态在 run 行）。
+	"worker_tasks.last_status": {"succeeded", "failed", "skipped"},
+	"worker_task_runs.status":  {"pending", "running", "succeeded", "failed"},
+	"worker_task_runs.trigger": {"schedule", "manual", "wakeup"},
 }
 
 // EnumChecksLogs 是日志库（migrations-logs 流）枚举列的「DB CHECK ↔ 期望值」对照表，
@@ -260,7 +266,7 @@ var EnumChecks = map[string][]string{
 //
 // 日志库与主库是物理分离的两个库（G7-R36），CHECK 必须在日志库连接上对账；
 // 主库的 EnumChecks 只覆盖主库 wantColumns 表集（M0 16 + M1 6 + M6c 2 + M6d 4
-// + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 = 38 表），
+// + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 + S1 1 + S4 1 + MJ-d 1 + W17-2 3 = 46 表），
 // 二者互不包含。日志库唯一的枚举型 CHECK
 // 均登记于此（反向对账：日志库每个枚举 CHECK 必须在此有且仅有一个键）。
 var EnumChecksLogs = map[string][]string{
