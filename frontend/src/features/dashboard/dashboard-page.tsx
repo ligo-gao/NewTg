@@ -5,6 +5,7 @@ import { TextField } from '@/shared/ui/form'
 import { useI18n } from '@/shared/lib/i18n-context'
 
 import type { UsageRange } from './api'
+import { CheckinCard } from './checkin-card'
 import { ConsumptionTrend } from './consumption-trend'
 import {
   formatCreditsValue,
@@ -177,6 +178,10 @@ export function DashboardPage() {
           retryLabel={t('common.action.retry')}
         />
       </div>
+
+      {/* Daily check-in card (modules-01 §3.19). It renders itself only when
+          the public status flag is on, so disabled sites see nothing. */}
+      <CheckinCard />
 
       {/* Overview cards (F-05-03). */}
       <div

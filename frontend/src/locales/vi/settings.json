@@ -95,7 +95,8 @@
     "notify_smtp": "SMTP",
     "rl_health": "Sức khỏe kênh",
     "notify_webhook": "Thông báo Webhook",
-    "pay_epay": "Epay"
+    "pay_epay": "Epay",
+    "checkin": "Điểm danh hằng ngày"
   },
   "section_description": {
     "site": "Hiển thị trên mọi trang và dùng làm cơ sở cho liên kết gọi lại",
@@ -111,7 +112,8 @@
     "notify_smtp": "Cần thiết cho xác minh email và thông báo qua email",
     "rl_health": "Một phản hồi có thể loại kênh khỏi vòng xoay ngay lần khớp đầu tiên",
     "notify_webhook": "Đẩy sự kiện số dư, thanh toán, thông báo và đăng ký tới một điểm cuối HTTPS",
-    "pay_epay": "Cổng thanh toán Epay chung (ký MD5, tương thích ZPay)"
+    "pay_epay": "Cổng thanh toán Epay chung (ký MD5, tương thích ZPay)",
+    "checkin": "Thưởng cho thành viên khi điểm danh mỗi ngày; mặc định tắt"
   },
   "field": {
     "site": {
@@ -269,6 +271,11 @@
       "auto_enable_enabled": "Tự động phục hồi",
       "test_interval_minutes": "Khoảng kiểm tra sức khỏe (phút)",
       "test_concurrency": "Số kiểm tra đồng thời"
+    },
+    "checkin": {
+      "enabled": "Bật điểm danh hằng ngày",
+      "min_quota": "Tín dụng tối thiểu mỗi lượt điểm danh",
+      "max_quota": "Tín dụng tối đa mỗi lượt điểm danh"
     }
   },
   "hint": {
@@ -367,6 +374,10 @@
       "auto_enable_enabled": "Chỉ kiểm tra sức khỏe định kỳ mới khôi phục được kênh bị tắt tự động; kênh bị tắt thủ công sẽ không được khôi phục.",
       "test_interval_minutes": "1–1440 phút.",
       "test_concurrency": "1–50 kiểm tra đồng thời."
+    },
+    "checkin": {
+      "min_quota": "0 = ngừng thưởng: chỉ ghi nhận điểm danh, không cộng tín dụng và không ghi sổ. Giá trị tối đa bị bỏ qua.",
+      "max_quota": "Phải lớn hơn hoặc bằng mức tối thiểu."
     }
   },
   "option": {

@@ -231,6 +231,26 @@
         "no_data": "无数据"
       },
       "admin_required": "需要管理员权限"
+    },
+    "checkin": {
+      "title": "每日签到",
+      "description": "每天签到一次，随机获得积分奖励。",
+      "button": "签到",
+      "checked_button": "今日已签",
+      "submitting": "签到中…",
+      "success": "签到成功，获得 {amount} 积分",
+      "already": "今日已签到",
+      "streak": "已连续签到 {days} 天",
+      "streak_label": "连续签到",
+      "month_total_label": "本月累计",
+      "total_earned_label": "累计获得",
+      "empty": "本月还没有签到记录",
+      "error": "无法加载签到日历。",
+      "offline": "网络似乎已断开，请检查连接后重试。",
+      "action_error": "签到失败，请重试。",
+      "calendar_aria": "{month} 签到日历",
+      "day_awarded": "{date}：{amount} 积分",
+      "today_award": "今日奖励：{amount} 积分"
     }
   },
   "toast.success": "成功",

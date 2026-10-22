@@ -95,7 +95,8 @@
     "notify_smtp": "SMTP",
     "rl_health": "通道健康",
     "notify_webhook": "Webhook 通知",
-    "pay_epay": "易支付"
+    "pay_epay": "易支付",
+    "checkin": "每日簽到"
   },
   "section_description": {
     "site": "顯示在每個頁面上，並作為回呼連結的基礎位址",
@@ -111,7 +112,8 @@
     "notify_smtp": "電子郵件驗證與郵件通知所必需",
     "rl_health": "首次命中即可將通道移出輪替",
     "notify_webhook": "將餘額、付款、公告與註冊事件推送到 HTTPS 端點",
-    "pay_epay": "通用易支付收銀台（MD5 簽名，相容 ZPay 類閘道）"
+    "pay_epay": "通用易支付收銀台（MD5 簽名，相容 ZPay 類閘道）",
+    "checkin": "每天簽到一次可獲得積分獎勵；預設關閉"
   },
   "field": {
     "site": {
@@ -269,6 +271,11 @@
       "auto_enable_enabled": "自動復原",
       "test_interval_minutes": "健康檢查間隔（分鐘）",
       "test_concurrency": "健康檢查並行數"
+    },
+    "checkin": {
+      "enabled": "啟用每日簽到",
+      "min_quota": "單次簽到最小積分",
+      "max_quota": "單次簽到最大積分"
     }
   },
   "hint": {
@@ -367,6 +374,10 @@
       "auto_enable_enabled": "只有定時健康檢查能復原自動停用的通道；手動停用的通道不會復原。",
       "test_interval_minutes": "1–1440 分鐘。",
       "test_concurrency": "1–50 個並行檢查。"
+    },
+    "checkin": {
+      "min_quota": "0 = 停發獎勵：只記錄簽到，不發額度、不寫帳本列；最大值不生效。",
+      "max_quota": "不得小於最小積分。"
     }
   },
   "option": {

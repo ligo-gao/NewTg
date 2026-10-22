@@ -231,6 +231,26 @@
         "no_data": "無資料"
       },
       "admin_required": "需要管理員權限"
+    },
+    "checkin": {
+      "title": "每日簽到",
+      "description": "每天簽到一次，隨機獲得積分獎勵。",
+      "button": "簽到",
+      "checked_button": "今日已簽",
+      "submitting": "簽到中…",
+      "success": "簽到成功，獲得 {amount} 積分",
+      "already": "今日已簽到",
+      "streak": "已連續簽到 {days} 天",
+      "streak_label": "連續簽到",
+      "month_total_label": "本月累計",
+      "total_earned_label": "累計獲得",
+      "empty": "本月還沒有簽到記錄",
+      "error": "無法載入簽到日曆。",
+      "offline": "網路似乎已中斷，請檢查連線後重試。",
+      "action_error": "簽到失敗，請重試。",
+      "calendar_aria": "{month} 簽到日曆",
+      "day_awarded": "{date}：{amount} 積分",
+      "today_award": "今日獎勵：{amount} 積分"
     }
   },
   "toast.success": "成功",

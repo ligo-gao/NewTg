@@ -231,6 +231,26 @@
         "no_data": "Không có dữ liệu"
       },
       "admin_required": "Cần quyền quản trị viên"
+    },
+    "checkin": {
+      "title": "Điểm danh hằng ngày",
+      "description": "Điểm danh mỗi ngày một lần để nhận tín dụng ngẫu nhiên.",
+      "button": "Điểm danh",
+      "checked_button": "Hôm nay đã điểm danh",
+      "submitting": "Đang điểm danh…",
+      "success": "Đã điểm danh. Bạn nhận được {amount} tín dụng",
+      "already": "Bạn đã điểm danh hôm nay",
+      "streak": "Chuỗi {days} ngày",
+      "streak_label": "Chuỗi hiện tại",
+      "month_total_label": "Tháng này",
+      "total_earned_label": "Tổng đã nhận",
+      "empty": "Tháng này chưa có lượt điểm danh nào",
+      "error": "Không tải được lịch điểm danh.",
+      "offline": "Có vẻ bạn đang ngoại tuyến. Kiểm tra kết nối và thử lại.",
+      "action_error": "Điểm danh thất bại. Vui lòng thử lại.",
+      "calendar_aria": "Lịch điểm danh tháng {month}",
+      "day_awarded": "{date}: {amount} tín dụng",
+      "today_award": "Phần thưởng hôm nay: {amount} tín dụng"
     }
   },
   "toast.success": "Thành công",

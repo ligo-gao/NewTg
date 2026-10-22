@@ -95,7 +95,8 @@
     "notify_smtp": "SMTP",
     "rl_health": "渠道健康",
     "notify_webhook": "Webhook 通知",
-    "pay_epay": "易支付"
+    "pay_epay": "易支付",
+    "checkin": "每日签到"
   },
   "section_description": {
     "site": "显示在每个页面上，并作为回调链接的基础地址",
@@ -111,7 +112,8 @@
     "notify_smtp": "邮箱验证与邮件通知所必需",
     "rl_health": "首次命中即可将渠道移出轮转",
     "notify_webhook": "将余额、支付、公告与注册事件推送到 HTTPS 端点",
-    "pay_epay": "通用易支付收银台（MD5 签名，兼容 ZPay 类网关）"
+    "pay_epay": "通用易支付收银台（MD5 签名，兼容 ZPay 类网关）",
+    "checkin": "每天签到一次可获得积分奖励；默认关闭"
   },
   "field": {
     "site": {
@@ -269,6 +271,11 @@
       "auto_enable_enabled": "自动恢复",
       "test_interval_minutes": "健康检查间隔（分钟）",
       "test_concurrency": "健康检查并发数"
+    },
+    "checkin": {
+      "enabled": "启用每日签到",
+      "min_quota": "单次签到最小积分",
+      "max_quota": "单次签到最大积分"
     }
   },
   "hint": {
@@ -367,6 +374,10 @@
       "auto_enable_enabled": "只有定时健康检查能恢复自动禁用的渠道；手动禁用的渠道不会恢复。",
       "test_interval_minutes": "1–1440 分钟。",
       "test_concurrency": "1–50 个并发检查。"
+    },
+    "checkin": {
+      "min_quota": "0 = 停发奖励：只记录签到，不发额度、不写账本行；最大值不生效。",
+      "max_quota": "不得小于最小积分。"
     }
   },
   "option": {

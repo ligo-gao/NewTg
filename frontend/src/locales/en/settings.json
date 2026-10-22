@@ -95,7 +95,8 @@
     "notify_smtp": "SMTP",
     "rl_health": "Channel health",
     "notify_webhook": "Webhook notifications",
-    "pay_epay": "Epay"
+    "pay_epay": "Epay",
+    "checkin": "Daily check-in"
   },
   "section_description": {
     "site": "Shown on every page and used as the base for callback links",
@@ -111,7 +112,8 @@
     "notify_smtp": "Required for email verification and email notifications",
     "rl_health": "A response can take a channel out of rotation on the first match",
     "notify_webhook": "Push balance, payment, announcement, and sign-up events to an HTTPS endpoint",
-    "pay_epay": "Generic Epay checkout (MD5-signed, ZPay-style gateways)"
+    "pay_epay": "Generic Epay checkout (MD5-signed, ZPay-style gateways)",
+    "checkin": "Reward members for signing in once per day; disabled by default"
   },
   "field": {
     "site": {
@@ -269,6 +271,11 @@
       "auto_enable_enabled": "Automatic recovery",
       "test_interval_minutes": "Health-check interval (minutes)",
       "test_concurrency": "Health-check concurrency"
+    },
+    "checkin": {
+      "enabled": "Enable daily check-in",
+      "min_quota": "Minimum credits per check-in",
+      "max_quota": "Maximum credits per check-in"
     }
   },
   "hint": {
@@ -367,6 +374,10 @@
       "auto_enable_enabled": "Only the periodic health check can restore automatically disabled channels; manually disabled channels are never restored.",
       "test_interval_minutes": "1–1440 minutes.",
       "test_concurrency": "1–50 concurrent checks."
+    },
+    "checkin": {
+      "min_quota": "0 stops rewards: check-ins are recorded without credits or ledger rows. The maximum is ignored.",
+      "max_quota": "Must be greater than or equal to the minimum."
     }
   },
   "option": {

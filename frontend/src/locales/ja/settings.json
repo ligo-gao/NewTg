@@ -95,7 +95,8 @@
     "notify_smtp": "SMTP",
     "rl_health": "チャネルの健全性",
     "notify_webhook": "Webhook 通知",
-    "pay_epay": "Epay"
+    "pay_epay": "Epay",
+    "checkin": "毎日チェックイン"
   },
   "section_description": {
     "site": "すべてのページに表示され、コールバックリンクの基準になります",
@@ -111,7 +112,8 @@
     "notify_smtp": "メール確認とメール通知に必要です",
     "rl_health": "最初の一致でレスポンスがチャネルをローテーションから外すことがあります",
     "notify_webhook": "残高・支払い・お知らせ・新規登録のイベントを HTTPS エンドポイントへ送信します",
-    "pay_epay": "汎用 Epay 決済（MD5 署名、ZPay 系ゲートウェイ互換）"
+    "pay_epay": "汎用 Epay 決済（MD5 署名、ZPay 系ゲートウェイ互換）",
+    "checkin": "1日1回のチェックインでクレジットを付与します。既定では無効です。"
   },
   "field": {
     "site": {
@@ -269,6 +271,11 @@
       "auto_enable_enabled": "自動復旧",
       "test_interval_minutes": "ヘルスチェック間隔（分）",
       "test_concurrency": "ヘルスチェックの同時実行数"
+    },
+    "checkin": {
+      "enabled": "毎日チェックインを有効にする",
+      "min_quota": "1回のチェックインの最小クレジット",
+      "max_quota": "1回のチェックインの最大クレジット"
     }
   },
   "hint": {
@@ -367,6 +374,10 @@
       "auto_enable_enabled": "自動無効化されたチャネルを復旧できるのは定期ヘルスチェックのみです。手動で無効化したチャネルは復旧されません。",
       "test_interval_minutes": "1〜1440 分。",
       "test_concurrency": "1〜50 の同時チェック。"
+    },
+    "checkin": {
+      "min_quota": "0 は報酬停止：チェックインのみ記録し、クレジット付与と台帳行は行いません。最大値は無視されます。",
+      "max_quota": "最小値以上である必要があります。"
     }
   },
   "option": {
