@@ -1,8 +1,11 @@
 package httpapi
 
 import (
+	"errors"
 	"testing"
 	"time"
+
+	"newtg/gateway/internal/perfmetrics"
 )
 
 // F-05-08 分位、成功率、事故派生与徽章的纯函数用例（不依赖数据库）。
@@ -174,6 +177,24 @@ func TestModelPerfBadge(t *testing.T) {
 	for _, tc := range cases {
 		if got := modelPerfBadge(tc.summary, tc.ongoing); got != tc.want {
 			t.Fatalf("%s badge = %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestModelPerfUnavailableReason(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"dsn missing", &perfmetrics.UnavailableError{Reason: perfmetrics.ReasonDSNMissing}, perfmetrics.ReasonDSNMissing},
+		{"storage unavailable", &perfmetrics.UnavailableError{Reason: perfmetrics.ReasonStorageUnavailable}, perfmetrics.ReasonStorageUnavailable},
+		{"empty reason", &perfmetrics.UnavailableError{}, perfmetrics.ReasonStorageUnavailable},
+		{"generic query error", errors.New("boom: postgres://user:secret@host/db"), perfmetrics.ReasonQueryFailed},
+	}
+	for _, tc := range cases {
+		if got := modelPerfUnavailableReason(tc.err); got != tc.want {
+			t.Fatalf("%s reason = %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }

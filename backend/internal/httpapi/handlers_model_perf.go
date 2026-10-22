@@ -13,28 +13,30 @@ package httpapi
 // comparison（24h 成功率并列值），绝不是看板数据源。
 
 import (
-	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"newtg/gateway/internal/perfmetrics"
 )
 
 const (
 	// 直方图桶边界固定（platform-05 §3.5.2）：50/100/200/500/1000/2000/
 	// 5000/10000/30000 ms + +Inf。查询层不得换桶，否则同一数据在不同版本
-	// 之间不可比。
-	modelPerfHistogramBuckets = 9
+	// 之间不可比。领域常量与采集端共用 perfmetrics，避免两处复制后漂移。
+	modelPerfHistogramBuckets = perfmetrics.HistogramBuckets
 	// modelPerfInfinityMS 是 +Inf 桶的下界标记值。UI 显示 `>30s`，接口用
 	// 30000 + over_30s 标志表达「下界」而不是伪造有限分位值。
 	modelPerfInfinityMS = 30000.0
 	// 成功率分母样本阈值：单分钟样本 <5 的分钟既不计可用也不计观测
 	// （platform-05 §3.5.3 的 Uptime 推导规则）。
-	modelPerfMinMinuteSamples = 5
+	modelPerfMinMinuteSamples = perfmetrics.MinMinuteSamples
 	// 单分钟可用阈值（默认 90%，可标定）。
-	modelPerfUptimeThreshold = 0.9
+	modelPerfUptimeThreshold = perfmetrics.UptimeThreshold
 	// 低样本提示阈值（UI §8.2）。
 	modelPerfLowSampleSize = 20
 	// 事故合并窗口与最短时长（platform-05 §3.5.3）。
@@ -42,11 +44,10 @@ const (
 	modelPerfIncidentMinDuration = 5 * time.Minute
 )
 
-var modelPerfBucketBoundsMS = [modelPerfHistogramBuckets]float64{
-	50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000,
-}
+var modelPerfBucketBoundsMS = perfmetrics.BucketBoundsMS
 
-// ModelPerfSource 是 platform-05 §3.5 聚合指标库的查询接缝。
+// ModelPerfSource 是 platform-05 §3.5 聚合指标库的查询接缝（领域定义在
+// perfmetrics，采集端与查询端共用同一套类型）。
 //
 // 实现必须返回「该窗口内」的桶快照（Gauge 语义，查询层只做求和，不对
 // 单调计数器求 rate），并给出最近一次桶更新时间用于停摆判定。model 为空
@@ -64,37 +65,11 @@ var modelPerfBucketBoundsMS = [modelPerfHistogramBuckets]float64{
 // M7 接线要求（platform-05 §3.5.5）：实现方必须由部署配置
 // PERF_METRICS_ENABLED 决定是否装配本 source（false → 闸门），并用
 // PERF_METRICS_FLUSH_INTERVAL 作为陈旧度判定基准（3×周期无更新 → 闸门）。
-type ModelPerfSource interface {
-	ModelPerfBuckets(ctx context.Context, start, end time.Time, granularity, model string) ([]ModelPerfBucket, time.Time, error)
-}
+type ModelPerfSource = perfmetrics.Source
 
 // ModelPerfBucket 是一个 (model, bucket_start) 的绝对快照。ChannelID /
 // Upstream 只用于 admin 的渠道/上游分解；普通查询可留空。
-type ModelPerfBucket struct {
-	Model     string
-	Start     time.Time
-	ChannelID *int64
-	Upstream  *string
-
-	// 完成时三态（success/error/refused）。refunded 不在采样口径内。
-	Success int64
-	Error   int64
-	Refused int64
-
-	// 延迟直方图：每桶非累计计数（不是 Prometheus 的累计桶）。
-	LatencyCount   int64
-	LatencySumMS   float64
-	LatencyBuckets [modelPerfHistogramBuckets]int64
-
-	// TTFT 直方图：仅流式样本进入此系列。
-	TTFTCount   int64
-	TTFTBuckets [modelPerfHistogramBuckets]int64
-
-	CompletionTokens  int64
-	GenerationSeconds float64
-	ObservedSeconds   float64
-	UpSeconds         float64
-}
+type ModelPerfBucket = perfmetrics.Bucket
 
 // modelPerfWindow 描述查询窗口；粒度固定由 range 派生（UI §8.3）。
 type modelPerfWindow struct {
@@ -171,6 +146,10 @@ type modelPerfPipeline struct {
 	// Stale 表示管道最近 3×刷写周期内没有更新（停摆 → 闸门）。与 enabled
 	// 同时为 false 时前端只显示「不可用」，不显示任何历史数字。
 	Stale bool `json:"stale"`
+	// Reason 是稳定、脱敏的不可用原因码（collection_disabled /
+	// metrics_dsn_missing / metrics_storage_unavailable /
+	// metrics_query_failed / pipeline_stalled / no_data）。正常返回时省略。
+	Reason string `json:"reason,omitempty"`
 }
 
 type modelPerfComparison struct {
@@ -506,26 +485,29 @@ func (h *UsageLogHandlers) handleModelPerf(w http.ResponseWriter, r *http.Reques
 	}
 	window := modelPerfWindow{Range: rangeName, Start: start, End: end, Granularity: granularity}
 
-	writeGate := func(stale bool, updatedAt *time.Time) {
+	writeGate := func(reason string, stale bool, updatedAt *time.Time) {
 		writeJSON(w, http.StatusOK, modelPerfResponse{
 			Window:    window,
 			Buckets:   []modelPerfBucketPoint{},
 			Summary:   modelPerfSummary{},
 			Incidents: []modelPerfIncident{},
 			Models:    []modelPerfModelRow{},
-			Pipeline:  modelPerfPipeline{Enabled: false, UpdatedAt: updatedAt, Stale: stale},
+			Pipeline: modelPerfPipeline{
+				Enabled: false, UpdatedAt: updatedAt, Stale: stale, Reason: reason,
+			},
 		})
 	}
 
 	if h.perf == nil {
-		// 采集管道未装配：显式闸门，绝不回落 usage_logs。
-		writeGate(true, nil)
+		// 采集管道未装配（PERF_METRICS_ENABLED=false）：显式闸门，绝不回落
+		// usage_logs；reason 让前端区分「配置关闭」与「存储不可用」。
+		writeGate(perfmetrics.ReasonDisabled, true, nil)
 		return
 	}
 	buckets, updatedAt, err := h.perf.ModelPerfBuckets(r.Context(), start, end, granularity, model)
 	if err != nil {
 		h.log.Warn("model perf: metrics query failed", "error", err)
-		writeGate(true, nil)
+		writeGate(modelPerfUnavailableReason(err), true, nil)
 		return
 	}
 	var updatedPtr *time.Time
@@ -534,8 +516,13 @@ func (h *UsageLogHandlers) handleModelPerf(w http.ResponseWriter, r *http.Reques
 		updatedPtr = &utc
 	}
 	// 停摆判定：最近 3×刷写周期内无任何桶更新（platform-05 §3.5.5 条件 3）。
-	if updatedAt.IsZero() || h.now().Sub(updatedAt.UTC()) > 3*h.perfFlush {
-		writeGate(true, updatedPtr)
+	// 从未产生过数据与「有数据但停摆」用不同 reason 区分。
+	if updatedAt.IsZero() {
+		writeGate(perfmetrics.ReasonNoData, true, updatedPtr)
+		return
+	}
+	if h.now().Sub(updatedAt.UTC()) > 3*h.perfFlush {
+		writeGate(perfmetrics.ReasonPipelineStalled, true, updatedPtr)
 		return
 	}
 
@@ -640,6 +627,20 @@ func (h *UsageLogHandlers) handleModelPerf(w http.ResponseWriter, r *http.Reques
 	}
 	response.Comparison = h.modelPerfComparison(r, start, end, rangeName, granularity, model, overall)
 	writeJSON(w, http.StatusOK, response)
+}
+
+// modelPerfUnavailableReason 把指标库错误收敛为稳定、脱敏的 reason 码。
+// UnavailableError 携带明确原因（DSN 缺失/存储不可用）；其余查询错误统一
+// 记为 metrics_query_failed，绝不把底层错误原文放进响应。
+func modelPerfUnavailableReason(err error) string {
+	var unavailable *perfmetrics.UnavailableError
+	if errors.As(err, &unavailable) {
+		if unavailable.Reason != "" {
+			return unavailable.Reason
+		}
+		return perfmetrics.ReasonStorageUnavailable
+	}
+	return perfmetrics.ReasonQueryFailed
 }
 
 // modelPerfIncidentOngoing 报告最后一段事故是否「仍在进行」：最后一段的

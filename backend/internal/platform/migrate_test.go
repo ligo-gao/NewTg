@@ -17,6 +17,7 @@ import (
 	"newtg/gateway/internal/config"
 	"newtg/gateway/migrations"
 	migrationslogs "newtg/gateway/migrations-logs"
+	migrationsmetrics "newtg/gateway/migrations-metrics"
 )
 
 // TestExpectedSchemaVersion 用 fixture FS 验证「最高 14 位时间戳版本」口径：
@@ -113,6 +114,7 @@ func TestExpectedSchemaVersionEmbedded(t *testing.T) {
 	}{
 		{name: "main", fs: migrations.FS},
 		{name: "logs", fs: migrationslogs.FS},
+		{name: "metrics", fs: migrationsmetrics.FS},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

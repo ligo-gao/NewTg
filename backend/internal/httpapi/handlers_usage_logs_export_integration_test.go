@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/perfmetrics"
 	"newtg/gateway/internal/rbac"
 )
 
@@ -500,6 +501,7 @@ type modelPerfTestResponse struct {
 		Enabled   bool       `json:"enabled"`
 		UpdatedAt *time.Time `json:"updated_at"`
 		Stale     bool       `json:"stale"`
+		Reason    string     `json:"reason"`
 	} `json:"pipeline"`
 	Comparison *struct {
 		PipelineSuccessRate  *float64 `json:"pipeline_success_rate"`
@@ -526,6 +528,9 @@ func TestIntegrationModelPerfGate(t *testing.T) {
 		if body.Pipeline.Enabled || !body.Pipeline.Stale {
 			t.Fatalf("%s pipeline = %+v, want disabled+stale gate", path, body.Pipeline)
 		}
+		if body.Pipeline.Reason != perfmetrics.ReasonDisabled {
+			t.Fatalf("%s pipeline reason = %q, want %q", path, body.Pipeline.Reason, perfmetrics.ReasonDisabled)
+		}
 		if body.Summary.TTFTp95 != nil || body.Summary.LatencyP95 != nil ||
 			body.Summary.SuccessRate != nil || body.Summary.Uptime != nil ||
 			body.Summary.Incidents != nil || body.Summary.TPS != nil || body.Summary.SampleSize != nil {
@@ -537,6 +542,30 @@ func TestIntegrationModelPerfGate(t *testing.T) {
 		if body.Comparison != nil {
 			t.Fatalf("%s gate comparison = %+v, want null", path, body.Comparison)
 		}
+	}
+}
+
+func TestIntegrationModelPerfUnavailableGate(t *testing.T) {
+	// PERF_METRICS_ENABLED=true 但 PERF_METRICS_DSN 缺失：读面必须 fail-closed
+	// 并给出脱敏原因，不能用 usage_logs 或历史数字填充。
+	env := newUsageTestEnvWith(t, usageTestOptions{
+		Perf: perfmetrics.NewUnavailableSource(perfmetrics.ReasonDSNMissing),
+	})
+	userID, _ := ensureUsageTestUser(t, env, "pmx")
+
+	rec := env.do(t, http.MethodGet, "/api/model-perf?range=24h", userPrincipal(userID))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decodeUsageJSON[modelPerfTestResponse](t, rec)
+	if body.Pipeline.Enabled || !body.Pipeline.Stale {
+		t.Fatalf("pipeline = %+v, want disabled+stale gate", body.Pipeline)
+	}
+	if body.Pipeline.Reason != perfmetrics.ReasonDSNMissing {
+		t.Fatalf("pipeline reason = %q, want %q", body.Pipeline.Reason, perfmetrics.ReasonDSNMissing)
+	}
+	if body.Summary.SampleSize != nil || len(body.Buckets) != 0 || len(body.Models) != 0 {
+		t.Fatalf("unavailable gate must not fabricate metrics: %+v", body)
 	}
 }
 

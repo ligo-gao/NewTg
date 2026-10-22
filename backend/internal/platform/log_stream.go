@@ -47,9 +47,13 @@ func usageLogBatchEnabled(center *configcenter.Center, log *slog.Logger) bool {
 // 生产者在 gateway 与 worker 都按同一开关装配：worker 的兜底退款也要与
 // 成功事件同流（R-W10-02），否则退款收敛会绕开消费者。
 func newUsageLogDBLogger(logsDB *sql.DB, feed billing.FeedPublisher,
-	center *configcenter.Center, rdb *redis.Client, log *slog.Logger) *billing.DBLogger {
+	center *configcenter.Center, rdb *redis.Client, log *slog.Logger,
+	perf billing.PerfMetricsRecorder) *billing.DBLogger {
 
 	writer := billing.NewDBLogger(logsDB).WithFeed(feed, log)
+	if perf != nil {
+		writer = writer.WithPerfMetrics(perf)
+	}
 	if usageLogBatchEnabled(center, log) {
 		writer = writer.WithBatchQueue(billing.NewRedisUsageLogQueue(rdb), log)
 	}

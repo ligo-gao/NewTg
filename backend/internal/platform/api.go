@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -30,6 +31,7 @@ import (
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/httpapi"
 	"newtg/gateway/internal/notify"
+	"newtg/gateway/internal/perfmetrics"
 	"newtg/gateway/internal/ratelimit"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
@@ -78,6 +80,10 @@ type gatewayAssembly struct {
 	// 排空队列。runGateway 必须在关闭主库/日志库**之前**调用，否则停机窗口
 	// 的排空写会撞上已关闭的连接池（I-2）。
 	AttemptFailureReporterStop func()
+	// PerfMetricsStop 取消模型性能采集器的周期任务并执行一次强制 flush
+	// （G-M6C-13）。与 reporter 同理，必须在关闭日志库之前调用；nil 表示
+	// PERF_METRICS_ENABLED=false（禁用时零开销，不构造采集器）。
+	PerfMetricsStop func()
 	// EmailSender 是事务性邮件适配器（W13-EMAIL）：同一实例同时实现验证码、
 	// 密码重置与通知测试三个 handler 接缝。装配测试据此断言生产路径确实
 	// 注入，而不是让端点退化到 503。
@@ -146,6 +152,89 @@ func newRelayRateLimiter(rdb *redis.Client) (httpapi.RelayRateLimiter, error) {
 		return nil, errors.New("gateway: relay rate limiter construction returned nil")
 	}
 	return limiter, nil
+}
+
+// perfMetricsAssembly 是一次独立指标库装配的产物。
+//
+// source 语义：
+//   - 配置禁用（PERF_METRICS_ENABLED=false）：nil，handler 走「采集未启用」
+//     闸门；
+//   - 启用但 DSN 缺失/连不上：*perfmetrics.UnavailableSource，handler 返回
+//     pipeline.enabled=false + 脱敏原因码；绝不回退日志库/主库；
+//   - 正常：*perfmetrics.Collector。
+type perfMetricsAssembly struct {
+	collector *perfmetrics.Collector
+	source    perfmetrics.Source
+	stop      func()
+}
+
+// newPerfMetricsAssembly 消费 PERF_METRICS_ENABLED / PERF_METRICS_DSN /
+// PERF_METRICS_FLUSH_INTERVAL / PERF_METRICS_RETENTION_DAYS。
+//
+// 【独立指标库】只打开 PERF_METRICS_DSN，**绝不**回退 DATABASE_URL 或
+// DB_LOGS_DSN（platform-05 §3.5.3 / platform-01 §30）。DSN 缺失或首次
+// 连接失败不阻止网关启动：读面 fail-closed，给出不可用原因，采集器不构造、
+// 不写任何数据库。PostgreSQL 指标库是 M7 指标库产品确定前的过渡实现。
+func newPerfMetricsAssembly(ctx context.Context, cfg *config.Config,
+	log *slog.Logger) (*perfMetricsAssembly, error) {
+
+	if cfg == nil || !cfg.PerfMetricsEnabled {
+		return &perfMetricsAssembly{}, nil
+	}
+	if strings.TrimSpace(cfg.PerfMetricsDSN) == "" {
+		log.Warn("perf metrics enabled but PERF_METRICS_DSN is not set; /api/model-perf will be gated")
+		return &perfMetricsAssembly{
+			source: perfmetrics.NewUnavailableSource(perfmetrics.ReasonDSNMissing),
+		}, nil
+	}
+
+	db, err := sql.Open("pgx", cfg.PerfMetricsDSN)
+	if err != nil {
+		// sql.Open 的解析错误可能带 DSN 片段；只记录脱敏提示，不回显 DSN。
+		log.Warn("perf metrics: open metrics database failed; /api/model-perf will be gated")
+		return &perfMetricsAssembly{
+			source: perfmetrics.NewUnavailableSource(perfmetrics.ReasonStorageUnavailable),
+		}, nil
+	}
+	// 指标库是旁路观测面，连接数不需要与业务库同规模。
+	db.SetMaxOpenConns(5)
+	db.SetMaxIdleConns(5)
+
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	err = db.PingContext(pingCtx)
+	cancel()
+	if err != nil {
+		_ = db.Close()
+		// 不记录底层连接错误：pgx 的错误可能包含 host/user，且部署方通常
+		// 能通过 /api/model-perf 的 reason 与网络排查定位。绝不回显 DSN。
+		log.Warn("perf metrics: metrics database unreachable; /api/model-perf will be gated")
+		return &perfMetricsAssembly{
+			source: perfmetrics.NewUnavailableSource(perfmetrics.ReasonStorageUnavailable),
+		}, nil
+	}
+
+	collector, err := perfmetrics.NewCollector(perfmetrics.Config{
+		Store:         store.NewModelPerfRepo(db),
+		FlushInterval: cfg.PerfMetricsFlushInterval,
+		Node:          cfg.NodeName,
+		HourRetention: time.Duration(cfg.PerfMetricsRetentionDays) * 24 * time.Hour,
+		Logger:        log,
+	})
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("gateway: perf metrics collector: %w", err)
+	}
+	return &perfMetricsAssembly{
+		collector: collector,
+		source:    collector,
+		stop: func() {
+			// 先停采集器（强制 flush），再关指标库连接。
+			collector.Stop()
+			if closeErr := db.Close(); closeErr != nil {
+				log.Warn("perf metrics: close metrics database failed", "error", closeErr)
+			}
+		},
+	}, nil
 }
 
 // newGatewayAPI 构造 /api/* 的完整路由。db/logsDB/rdb 必须已通过
@@ -224,8 +313,27 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	// 回退」；默认关闭，行为与既有同步路径完全一致。live_feed 投递无论在
 	// 哪种模式下都保持「只有真正插入新行才投递」。
 	feedPublisher := billing.NewRedisFeedPublisher(rdb)
+	// G-M6C-13：独立指标库装配（禁用时 source=nil）。在 DBLogger 构造前
+	// 创建，使每个请求的最终结算行能同步采样；周期刷写 goroutine 在装配
+	// 末尾启动，避免装配失败时留下后台任务。
+	perfAssembly, err := newPerfMetricsAssembly(ctx, cfg, log)
+	if err != nil {
+		return nil, err
+	}
+	// 装配中途失败时必须关闭已打开的指标库连接；成功移交后由 assembly
+	// 的 PerfMetricsStop 负责（stop 幂等）。
+	perfOwned := true
+	defer func() {
+		if perfOwned && perfAssembly != nil && perfAssembly.stop != nil {
+			perfAssembly.stop()
+		}
+	}()
+	var perfRecorder billing.PerfMetricsRecorder
+	if perfAssembly.collector != nil {
+		perfRecorder = perfAssembly.collector
+	}
 	engine := newDemoAwareBillingEngine(gormDB, logsDB, rdb, center, cfg.DemoEnabled, source,
-		billing.NewRegistry(rdb), newUsageLogDBLogger(logsDB, feedPublisher, center, rdb, log))
+		billing.NewRegistry(rdb), newUsageLogDBLogger(logsDB, feedPublisher, center, rdb, log, perfRecorder))
 	// 其余读取面（守卫、中继额度、管理面 RouterConfig）派生自引擎的有效
 	// 配置面，确保三处与计费看到同一个 NEWTG_DEMO_ENABLED 有效值。
 	demoConfig := engine.EffectiveConfig()
@@ -504,6 +612,10 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		// 任务提交与中继共用同一个计费引擎会话工厂（M6d Task 6a）：
 		// 预扣/退款/结算语义只能有一套实现。
 		Billing: engine.NewSession,
+		// F-05-08：采集管道未启用时 source 为 nil，/api/model-perf 走闸门。
+		// 周期即使禁用也传入，避免 handler 回落到与部署配置不一致的默认值。
+		PerfMetricsSource:        perfAssembly.source,
+		PerfMetricsFlushInterval: cfg.PerfMetricsFlushInterval,
 		// W7/M5-b：准入限流器复用同一个 Redis 客户端（跨副本共享计数），
 		// 装配一次、由中继面与任务提交面共同持有（R-M5-04/07）。
 		RateLimiter: rateLimiter,
@@ -524,6 +636,16 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	reporterCtx, reporterCancel := context.WithCancel(ctx)
 	attemptReporter.Start(reporterCtx)
 
+	// G-M6C-13：采集器的周期刷写随 gateway ctx 退出；Stop 会取消循环、做
+	// 一次强制 flush（含当前分钟），再关闭指标库连接。runGateway 在关闭
+	// 日志库之前调用 PerfMetricsStop。装配成功后所有权移交给 assembly。
+	perfStop := func() {}
+	if perfAssembly.collector != nil {
+		perfAssembly.collector.Start(ctx)
+		perfStop = perfAssembly.stop
+		perfOwned = false
+	}
+
 	return &gatewayAssembly{
 		Handler:                router,
 		Billing:                engine.NewSession,
@@ -536,6 +658,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		RateLimiter:            rateLimiter,
 		AttemptFailureReporter: attemptReporter,
 		EmailSender:            transactionalEmail,
+		PerfMetricsStop:        perfStop,
 		AttemptFailureReporterStop: func() {
 			reporterCancel()
 			attemptReporter.Wait()

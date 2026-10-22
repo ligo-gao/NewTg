@@ -19,7 +19,17 @@ import (
 
 	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/perfmetrics"
 )
+
+// PerfMetricsRecorder 是模型性能采集的写入接缝（G-M6C-13）。
+//
+// 定义在 billing 侧而不是直接依赖 *perfmetrics.Collector，是为了让单测可以
+// 注入计数 fake；生产由 platform 注入采集器，PERF_METRICS_ENABLED=false 时
+// 保持 nil（热路径只多一次 nil 判断，零额外分配）。
+type PerfMetricsRecorder interface {
+	Observe(perfmetrics.Observation)
+}
 
 // DBLogger 是 usage_logs 的落库实现（Task 3 的 billing.Saturator）。
 //
@@ -36,6 +46,9 @@ type DBLogger struct {
 	// queue 是 W10-N2 的批处理生产者接缝。nil = 保持同步逐条写入
 	// （`log.batch_enabled` 默认 false）；非 nil = 先 XADD，失败时同步回退。
 	queue UsageLogQueue
+	// perf 是模型性能采集接缝（platform-05 §3.5）。nil = 未启用/未装配，
+	// Saturate 只多一次 nil 判断，不产生任何采样开销。
+	perf PerfMetricsRecorder
 	// now 是事件 created_at 的时钟接缝；零值使用 time.Now。
 	now func() time.Time
 }
@@ -68,6 +81,16 @@ func (l *DBLogger) WithBatchQueue(queue UsageLogQueue, logger *slog.Logger) *DBL
 	if logger != nil {
 		l.log = logger
 	}
+	return l
+}
+
+// WithPerfMetrics 挂接模型性能采集器（G-M6C-13）并返回自身。
+//
+// 【为什么挂在 DBLogger 而不是中继 handler】Saturate 是每个请求最终结果的
+// 唯一落库点，且已经完成状态/模型/延迟/TTFT/token 的归一化。在这里采样
+// 与 usage_logs 的口径天然一致，也不会因重试链/流式路径各自采样造成双计。
+func (l *DBLogger) WithPerfMetrics(recorder PerfMetricsRecorder) *DBLogger {
+	l.perf = recorder
 	return l
 }
 
@@ -343,22 +366,72 @@ func (l *DBLogger) Saturate(ctx context.Context, fact *contract.UsageFact,
 	// 结算路径仍然是「先日志、后结算」，无 hold 的补扣路径仍然是「先资金、
 	// 后日志」——批处理没有改变结算金额或顺序。
 	if l.queue != nil && l.enqueueUsageLog(ctx, row, fact != nil, rc) == nil {
+		// 批处理路径在 Saturate 返回前已受理；消费者只落库、不再回调
+		// Saturate，因此这里采样恰好一次。worker 的退款占位 fact=nil 不采样。
+		if fact != nil {
+			l.observePerf(row)
+		}
 		return nil
 	}
 	inserted, err := l.writeUsageLog(ctx, row)
 	if err != nil {
 		return fmt.Errorf("billing: saturate usage log for request %s: %w", row.requestID, err)
 	}
-	// 只有**真正插入新行**的调用才进入 live_feed：幂等命中（重试/重放）与
-	// worker 的退款收敛都不代表一条新的公开调用，重复投递会让公开页把同一
-	// 请求显示多次。fact == nil 是 worker 的退款占位，也没有可展示的用量。
-	//
-	// 投递失败只记日志：事件是展示面副作用，计费与 usage_logs 已经提交成功；
-	// 让一次 Redis 故障反向影响结算会打开「少收费/重复退款」的风险。
-	if inserted && fact != nil && l.feed != nil {
-		l.publishFeed(row, rc, outcome)
+	// 只有**真正插入新行**的调用才采样/进入 live_feed：幂等命中（重试/重放）
+	// 与 worker 的退款收敛都不代表一条新调用。fact == nil 是 worker 的退款
+	// 占位，没有可采样的用量事实。
+	if inserted && fact != nil {
+		l.observePerf(row)
+		if l.feed != nil {
+			l.publishFeed(row, rc, outcome)
+		}
 	}
 	return nil
+}
+
+// observePerf 把已归一化的 usage_logs 行投影为一次性能采样。
+//
+// 口径（platform-05 §3.5.1）：
+//   - 只采完成时三态 success/error/refused；refunded 是结算后的异步事实，
+//     进入采样会迫使管道回填，因此直接跳过；
+//   - generation 秒数由 latency/TTFT 派生，不额外采集字段；
+//   - 非流式请求不携带 TTFT（FirstTokenMS 保持 nil）。
+func (l *DBLogger) observePerf(row usageLogRow) {
+	if l == nil || l.perf == nil {
+		return
+	}
+	var status perfmetrics.Status
+	switch row.status {
+	case UsageLogStatusSuccess:
+		status = perfmetrics.StatusSuccess
+	case UsageLogStatusError:
+		status = perfmetrics.StatusError
+	case UsageLogStatusRefused:
+		status = perfmetrics.StatusRefused
+	default:
+		// refunded/未知状态不进入采样。
+		return
+	}
+	now := time.Now
+	if l.now != nil {
+		now = l.now
+	}
+	observation := perfmetrics.Observation{
+		Model:            row.model,
+		Status:           status,
+		Stream:           row.stream,
+		CompletionTokens: int64(row.completionTokens),
+		ObservedAt:       now().UTC(),
+	}
+	if row.latencyMS.Valid {
+		latency := int(row.latencyMS.Int64)
+		observation.LatencyMS = &latency
+	}
+	if row.firstTokenMS.Valid {
+		firstToken := int(row.firstTokenMS.Int64)
+		observation.FirstTokenMS = &firstToken
+	}
+	l.perf.Observe(observation)
 }
 
 // enqueueUsageLog 把一行日志事实投递到 Stream。返回错误时调用方必须同步回退。

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"newtg/gateway/internal/config"
 	"newtg/gateway/migrations"
 	migrationslogs "newtg/gateway/migrations-logs"
+	migrationsmetrics "newtg/gateway/migrations-metrics"
 )
 
 const (
@@ -92,6 +94,17 @@ func runMigrate(ctx context.Context, cfg *config.Config, exec migrationExecutor)
 	// 日志库在后：其逻辑外键引用主库对象（platform-03 §3.4）。
 	if err := exec.Up(ctx, cfg.DBLogsDSN, migrationslogs.FS); err != nil {
 		return fmt.Errorf("migrate: logs database: %w", err)
+	}
+
+	// 指标库是独立 PostgreSQL（PERF_METRICS_DSN）。未配置时跳过并记录日志：
+	// 这是可选监控能力，不能让未配置指标库的部署无法执行主库/日志库迁移。
+	// 注意：绝不回退到 DATABASE_URL / DB_LOGS_DSN（性能指标不落业务库）。
+	if cfg.PerfMetricsDSN == "" {
+		slog.Default().Info("migrate: PERF_METRICS_DSN not set; skipping metrics database migrations")
+		return nil
+	}
+	if err := exec.Up(ctx, cfg.PerfMetricsDSN, migrationsmetrics.FS); err != nil {
+		return fmt.Errorf("migrate: metrics database: %w", err)
 	}
 	return nil
 }

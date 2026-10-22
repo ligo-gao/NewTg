@@ -58,7 +58,15 @@ type Config struct {
 	PerfMetricsEnabled       bool          // PERF_METRICS_ENABLED
 	PerfMetricsFlushInterval time.Duration // PERF_METRICS_FLUSH_INTERVAL
 	PerfMetricsRetentionDays int           // PERF_METRICS_RETENTION_DAYS
-	TLSDMinVersion           string        // TLS_MIN_VERSION（仅 edge 消费）
+	// PerfMetricsDSN 是**独立指标库**的连接串（PERF_METRICS_DSN）。
+	//
+	// 与 DATABASE_URL / DB_LOGS_DSN 严格分离：性能指标不落主库、也不落日志库
+	// （platform-05 §3.5.3 的「不落业务库」）。该变量为可选：未设置时
+	// PERF_METRICS_ENABLED=true 仍可按 fail-closed 方式启动，但
+	// /api/model-perf 会返回 pipeline.enabled=false + 不可用原因，绝不回退到
+	// 日志库或主库。
+	PerfMetricsDSN string // PERF_METRICS_DSN
+	TLSDMinVersion string // TLS_MIN_VERSION（仅 edge 消费）
 
 	// DemoEnabled 是演示模式的**部署侧覆盖**（NEWTG_DEMO_ENABLED）。
 	//
@@ -141,6 +149,10 @@ func Load() (*Config, error) {
 		PublicBaseURL:   lookup("PUBLIC_BASE_URL"),
 		OpenAPIValidate: lookup("OPENAPI_VALIDATE"),
 		TLSDMinVersion:  lookup("TLS_MIN_VERSION"),
+		// 指标库 DSN 是可选部署配置；缺失时由 platform 以 fail-closed 方式
+		// 装配（读面闸门），不在 config.Load 阶段失败——否则一个可选监控
+		// 能力的缺失会让整个网关无法启动。
+		PerfMetricsDSN: os.Getenv("PERF_METRICS_DSN"),
 		// 非法值按「未设置」处理：部署侧拼写错误只告警，不得让整站无法启动
 		// （控制端裁决 I2；fail-closed 在这里反而会把演示站永久锁死）。
 		DemoEnabled: parseDemoEnabled(lookup("NEWTG_DEMO_ENABLED")),

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -16,6 +17,7 @@ import (
 	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/notify"
+	"newtg/gateway/internal/perfmetrics"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 )
@@ -130,6 +132,13 @@ type RouterConfig struct {
 	// PublicUserGroupLookup 是软鉴权读取 users.group 的接缝；nil 且 DB 非 nil
 	// 时使用 SQL 实现。缺失只影响「登录用户的 group_price」，不影响公开访问。
 	PublicUserGroupLookup PublicUserGroupLookup
+	// PerfMetricsSource 是 F-05-08 模型性能看板的查询接缝
+	// （platform-05 §3.5）。nil 表示 PERF_METRICS_ENABLED=false 或采集管道
+	// 未装配，端点返回「采集未启用/不可用」闸门，绝不用 usage_logs 伪造。
+	PerfMetricsSource perfmetrics.Source
+	// PerfMetricsFlushInterval 是采集刷写周期，供看板的 3× 停摆判定使用。
+	// 零值时 handler 取设计默认 5 分钟。
+	PerfMetricsFlushInterval time.Duration
 	// RankingsRepo 是公开排行榜（GET /api/rankings）的快照只读接缝。
 	// nil 且 DB 非 nil 时由 store.NewRankingsRepo(DB) 构造；两者都为空时
 	// 不挂载端点（纯内存装配没有 rankings_* 表）。
@@ -474,6 +483,10 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 			Logger:         cfg.Logger,
 			ReadOnlyTokens: readOnly,
 			Redis:          cfg.Redis,
+			// PERF_METRICS_ENABLED=false 时 assembly 不注入 source（nil），
+			// 端点走显式闸门；周期始终传入，供 3× 停摆判定使用。
+			Perf:              cfg.PerfMetricsSource,
+			PerfFlushInterval: cfg.PerfMetricsFlushInterval,
 		})
 		if err != nil {
 			return nil, err
