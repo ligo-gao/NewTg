@@ -5,18 +5,17 @@ import { requireData } from '@/api/result'
 import { useI18n } from '@/shared/lib/i18n-context'
 
 import { isUiSupportedProvider } from '../topup/types'
+import { EMPTY_PROVIDERS, TOPUP_CONFIG_KEY } from './constants'
 import type { SubscriptionChannelProvider } from './types'
-
-export const TOPUP_CONFIG_KEY = ['topup', 'config'] as const
-
-/** Stable empty list so a fresh `[]` per render does not retrigger effects. */
-const NO_PROVIDERS: readonly SubscriptionChannelProvider[] = []
 
 /**
  * 已启用且本构建能端到端渲染的渠道。多个调用方共用同一查询键，React Query
  * 只发一次请求；`isPending` 用于避免在配置到达前把「暂无渠道」误报给用户。
+ *
+ * `enabled` 让「我的订阅」在没有打开任何写弹窗时保持静默：续费/变更弹窗
+ * 与列表常驻挂载，若默认查询就会让钱包页一挂载即请求 `/api/topup/config`。
  */
-export function useEnabledChannelProviders(): {
+export function useEnabledChannelProviders(enabled = true): {
   providers: readonly SubscriptionChannelProvider[]
   isPending: boolean
   /**
@@ -29,9 +28,10 @@ export function useEnabledChannelProviders(): {
   const query = useQuery({
     queryKey: TOPUP_CONFIG_KEY,
     queryFn: async () => requireData(await apiClient.GET('/api/topup/config')),
+    enabled,
   })
   return {
-    providers: (query.data?.enabled_providers ?? NO_PROVIDERS).filter(
+    providers: (query.data?.enabled_providers ?? EMPTY_PROVIDERS).filter(
       isUiSupportedProvider,
     ),
     isPending: query.isPending,

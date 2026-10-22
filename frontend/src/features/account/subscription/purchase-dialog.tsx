@@ -15,18 +15,13 @@ import { formatYuan } from '../topup/money'
 import type { CreateOrderResponse } from '../topup/types'
 import { isUiSupportedProvider } from '../topup/types'
 import type { OrderView } from '../topup/types'
+import {
+  EMPTY_PROVIDERS,
+  TOPUP_CONFIG_KEY,
+  WALLET_SUMMARY_KEY,
+  newIdempotencyKey,
+} from './constants'
 import type { AvailableSubscriptionPlan, SubscriptionProvider } from './types'
-
-const TOPUP_CONFIG_KEY = ['topup', 'config'] as const
-/**
- * Shares the balance cache with the top-up page and playground. Wallet purchase
- * (P2b) is a purchase-only funding source: the server accepts it on
- * `POST /api/subscription/purchase`, while renew/change stay channel-only.
- */
-const WALLET_SUMMARY_KEY = ['wallet', 'summary'] as const
-
-/** Stable empty list: a fresh `[]` per render would retrigger the seeding effect. */
-const NO_PROVIDERS: readonly SubscriptionProvider[] = []
 
 function providerLabelKey(provider: SubscriptionProvider): string {
   if (provider === 'wallet') return 'account.subscription.purchase.wallet'
@@ -57,10 +52,6 @@ interface CheckoutState {
 interface InlineError {
   key: string
   values?: Record<string, string | number>
-}
-
-function newKey(): string {
-  return globalThis.crypto.randomUUID()
 }
 
 /**
@@ -122,7 +113,7 @@ export function SubscriptionPurchaseDialog({
   // would re-run that effect on every keystroke-like update.
   const providers: readonly SubscriptionProvider[] = useMemo(() => {
     const channels = (
-      configQuery.data?.enabled_providers ?? NO_PROVIDERS
+      configQuery.data?.enabled_providers ?? EMPTY_PROVIDERS
     ).filter(isUiSupportedProvider)
     // Wallet is a purchase-only funding source (P2b); append it after the
     // channels so the default selection stays a real payment provider. Hide it
@@ -137,7 +128,7 @@ export function SubscriptionPurchaseDialog({
   // plan. Closing (planId → null) clears as well, so reopening the *same* plan
   // starts a new intent instead of resuming the previous attempt's state/key.
   useEffect(() => {
-    keyRef.current = planId === null ? null : newKey()
+    keyRef.current = planId === null ? null : newIdempotencyKey()
     setProvider(null)
     setSubmitting(false)
     setError(null)
@@ -205,7 +196,7 @@ export function SubscriptionPurchaseDialog({
       : provider
     if (effectiveProvider === null) return
 
-    const key = keyRef.current ?? (keyRef.current = newKey())
+    const key = keyRef.current ?? (keyRef.current = newIdempotencyKey())
     setSubmitting(true)
     setError(null)
     try {
@@ -423,12 +414,12 @@ export function SubscriptionPurchaseDialog({
             // Paid replay that is already terminal: the idempotency key still
             // points at that order, so a fresh intent requires a new key.
             setCheckout(null)
-            keyRef.current = newKey()
+            keyRef.current = newIdempotencyKey()
           }}
           onRefresh={() => {
             // Alipay QR expired: same rule — a new order needs a new intent.
             setCheckout(null)
-            keyRef.current = newKey()
+            keyRef.current = newIdempotencyKey()
           }}
         />
       ) : null}

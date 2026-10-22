@@ -15,11 +15,11 @@ import {
   deletePaymentMethod,
   listPaymentMethods,
 } from './subscription-api'
+import { TOPUP_CONFIG_KEY } from './constants'
 import { MY_SUBSCRIPTIONS_KEY } from './my-subscriptions'
 import type { PaymentMethod } from './types'
 
 export const PAYMENT_METHODS_KEY = ['payment-methods'] as const
-const TOPUP_CONFIG_KEY = ['topup', 'config'] as const
 
 export interface PaymentMethodsSectionProps {
   offline: boolean

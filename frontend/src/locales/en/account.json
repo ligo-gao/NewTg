@@ -409,7 +409,6 @@
       "change_plan": "Change plan",
       "events": "History",
       "refund": "Request refund",
-      "refund_ineligible_status": "Only active subscriptions can be refunded.",
       "refund_ineligible_used": "Refunds are only available before any quota is used.",
       "refund_ineligible_expired": "This subscription has ended and can no longer be refunded."
     },
@@ -466,7 +465,6 @@
       "saved": "Card saved."
     },
     "common": {
-      "insufficient": "Insufficient wallet balance.",
       "not_found": "This subscription could not be found.",
       "offline": "You are offline. Reconnect and try again.",
       "rate_limited": "Too many attempts. Try again in {seconds}s.",
@@ -484,7 +482,8 @@
       "success_body": "Your subscription now runs for another {days} days.",
       "error_conflict": "A renewal for this period is already in progress.",
       "error_invalid": "This subscription cannot be renewed right now.",
-      "error_failed": "Could not renew the subscription. Please try again."
+      "error_failed": "Could not renew the subscription. Please try again.",
+      "error_payment_required": "This renewal must be completed at checkout. Please finish the payment."
     },
     "change": {
       "title": "Change plan",
@@ -499,7 +498,7 @@
       "confirm_body": "Change {plan} to {target}?",
       "changing": "Applying...",
       "empty": "No other plans share this billing cycle.",
-      "zero_hint": "No extra charge: the change takes effect immediately and the unused value extends your period.",
+      "zero_hint": "This plan is free: no charge applies and the change takes effect immediately; any remaining time is kept.",
       "paid_hint": "The amount due is prorated from the unused value of your current plan and takes effect immediately after payment; a difference below the provider minimum is waived. The exact amount is shown at checkout.",
       "success_upgraded": "Plan upgraded",
       "success_downgraded": "Plan downgraded",
@@ -507,7 +506,7 @@
       "result_end": "New expiry",
       "result_credits": "Quota change",
       "error_conflict": "A plan change is already pending for this subscription.",
-      "error_cycle_mismatch": "The target plan must use the same billing cycle.",
+      "error_cycle_mismatch": "The target plan must use the same currency and billing cycle.",
       "error_invalid": "This plan cannot be selected right now.",
       "error_failed": "Could not change the plan. Please try again."
     },
@@ -519,7 +518,6 @@
       "reason_count": "{count}/{max} characters",
       "submit": "Submit request",
       "submitting": "Submitting...",
-      "ineligible": "Only active subscriptions with no quota used can be refunded.",
       "success_title": "Refund requested",
       "success_body": "Requested on {time}. Support will review it.",
       "success_reason": "Reason: {reason}",

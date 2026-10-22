@@ -409,7 +409,6 @@
       "change_plan": "Changer de formule",
       "events": "Historique",
       "refund": "Demander un remboursement",
-      "refund_ineligible_status": "Seuls les abonnements actifs peuvent être remboursés.",
       "refund_ineligible_used": "Le remboursement n'est possible qu'avant toute utilisation du quota.",
       "refund_ineligible_expired": "Cet abonnement est terminé et ne peut plus être remboursé."
     },
@@ -466,7 +465,6 @@
       "saved": "Carte enregistrée."
     },
     "common": {
-      "insufficient": "Solde du portefeuille insuffisant.",
       "not_found": "Cet abonnement est introuvable.",
       "offline": "Vous êtes hors ligne. Reconnectez-vous puis réessayez.",
       "rate_limited": "Trop de tentatives. Réessayez dans {seconds} s.",
@@ -484,7 +482,8 @@
       "success_body": "Votre abonnement est prolongé de {days} jours.",
       "error_conflict": "Un renouvellement est déjà en cours pour cette période.",
       "error_invalid": "Cet abonnement ne peut pas être renouvelé pour le moment.",
-      "error_failed": "Impossible de renouveler l'abonnement. Réessayez."
+      "error_failed": "Impossible de renouveler l'abonnement. Réessayez.",
+      "error_payment_required": "Ce renouvellement doit être réglé au paiement. Veuillez finaliser le paiement."
     },
     "change": {
       "title": "Changer de formule",
@@ -499,7 +498,7 @@
       "confirm_body": "Remplacer {plan} par {target} ?",
       "changing": "Application...",
       "empty": "Aucune autre formule ne partage ce cycle de facturation.",
-      "zero_hint": "Sans frais : le changement prend effet immédiatement et la valeur restante prolonge la période.",
+      "zero_hint": "Cette formule est gratuite : aucun frais, le changement prend effet immédiatement et le temps restant est conservé.",
       "paid_hint": "Le montant dû est calculé au prorata de la valeur inutilisée de votre formule actuelle et prend effet immédiatement après le paiement ; un écart inférieur au minimum du prestataire est offert. Le montant exact s'affiche au paiement.",
       "success_upgraded": "Formule mise à niveau",
       "success_downgraded": "Formule rétrogradée",
@@ -507,7 +506,7 @@
       "result_end": "Nouvelle échéance",
       "result_credits": "Variation du quota",
       "error_conflict": "Un changement de formule est déjà en attente pour cet abonnement.",
-      "error_cycle_mismatch": "La formule cible doit utiliser le même cycle de facturation.",
+      "error_cycle_mismatch": "La formule cible doit utiliser la même devise et le même cycle de facturation.",
       "error_invalid": "Cette formule ne peut pas être sélectionnée pour le moment.",
       "error_failed": "Impossible de changer de formule. Réessayez."
     },
@@ -519,7 +518,6 @@
       "reason_count": "{count}/{max} caractères",
       "submit": "Envoyer la demande",
       "submitting": "Envoi...",
-      "ineligible": "Seuls les abonnements actifs sans quota utilisé peuvent être remboursés.",
       "success_title": "Remboursement demandé",
       "success_body": "Demandé le {time}. Le support va l'examiner.",
       "success_reason": "Motif : {reason}",

@@ -11,6 +11,7 @@ import { useToastStore } from '@/shared/ui/toast'
 import { CheckoutDialog } from '../topup/checkout-dialog'
 import { formatYuan } from '../topup/money'
 import type { OrderView } from '../topup/types'
+import { newIdempotencyKey } from './constants'
 import { changeError, type SubscriptionInlineError } from './errors'
 import { formatSubscriptionTime } from './format'
 import { findMatchingPlan } from './plan-match'
@@ -35,10 +36,6 @@ export interface ChangePlanDialogProps {
   offline: boolean
   onOpenChange: (open: boolean) => void
   onChanged: () => void
-}
-
-function newKey(): string {
-  return globalThis.crypto.randomUUID()
 }
 
 /** 负额度差按模块规范用 U+2212，且 formatCredits 拒绝负数输入。 */
@@ -71,7 +68,9 @@ export function ChangePlanDialog({
 }: ChangePlanDialogProps) {
   const { t, locale } = useI18n()
   const push = useToastStore((state) => state.push)
-  const { providers, publishableKey } = useEnabledChannelProviders()
+  const { providers, publishableKey } = useEnabledChannelProviders(
+    subscription !== null,
+  )
   const keyRef = useRef<string | null>(null)
   const [targetPlanId, setTargetPlanId] = useState<number | null>(null)
   const [step, setStep] = useState<'select' | 'confirm'>('select')
@@ -95,15 +94,15 @@ export function ChangePlanDialog({
               : plan.id !== currentPlan.id),
         )
   const target = candidates.find((plan) => plan.id === targetPlanId)
-  // 目标价不高于当前价 ⇒ 剩余价值必然覆盖差价，应补为 0（降级/同价）。
-  const zeroDelta =
-    target !== undefined &&
-    currentPlan !== undefined &&
-    target.price_amount <= currentPlan.price_amount
+  // 只有**免费套餐**（新价 0）能证明应补为 0：应补 = max(0, 新价 − 剩余价值)，
+  // 而剩余价值 = 已付价 × 剩余秒 / 周期总秒，会随时间衰减。目标价低于当前价
+  // 并不代表 0 元——周期末从 ¥100 降到 ¥80 时剩余价值可能只剩 ¥50，应补 ¥30。
+  // 因此非免费目标一律展示渠道与「金额以收银台为准」，绝不提前隐藏 provider。
+  const zeroDelta = target !== undefined && target.price_amount === 0
   const requiresProvider = !zeroDelta
 
   useEffect(() => {
-    keyRef.current = subscriptionId === null ? null : newKey()
+    keyRef.current = subscriptionId === null ? null : newIdempotencyKey()
     setTargetPlanId(null)
     setStep('select')
     setProvider(null)
@@ -139,7 +138,7 @@ export function ChangePlanDialog({
       : (provider ?? providers[0])
     if (effectiveProvider === undefined) return
 
-    const key = keyRef.current ?? (keyRef.current = newKey())
+    const key = keyRef.current ?? (keyRef.current = newIdempotencyKey())
     setSubmitting(true)
     setError(null)
     try {
@@ -393,11 +392,11 @@ export function ChangePlanDialog({
           }}
           onRetry={() => {
             setCheckout(null)
-            keyRef.current = newKey()
+            keyRef.current = newIdempotencyKey()
           }}
           onRefresh={() => {
             setCheckout(null)
-            keyRef.current = newKey()
+            keyRef.current = newIdempotencyKey()
           }}
         />
       ) : null}

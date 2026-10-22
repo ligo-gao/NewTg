@@ -17,8 +17,6 @@ import type {
 /** 服务端单次窗口上限（handlers_subscriptions.go: subscriptionEventLimit）。 */
 const EVENT_PAGE_LIMIT = 500
 
-export const EVENTS_KEY = ['subscription', 'events'] as const
-
 /**
  * kind → 词典键。生成类型只列出契约里的八种；`renewal_failed` 是 S4 自动
  * 续费失败事件（store 的 CHECK 白名单包含它），所以映射保持开放：未知值
@@ -199,7 +197,9 @@ export function SubscriptionEventsDialog({
   const subscriptionId = subscription?.id ?? null
 
   const query = useInfiniteQuery({
-    queryKey: [...EVENTS_KEY, subscriptionId],
+    // 键包含实例 id：不同订阅的事件流互不覆盖；弹窗关闭后重新打开仍按
+    // staleTime: 0 重新拉取（见下）。
+    queryKey: ['subscription', 'events', subscriptionId],
     queryFn: ({ pageParam }) =>
       listSubscriptionEvents(subscriptionId ?? 0, pageParam),
     initialPageParam: 0,

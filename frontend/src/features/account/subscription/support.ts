@@ -23,15 +23,18 @@ export function isRefundEligible(
   )
 }
 
-/** Why the refund action is unavailable, or `null` when it is available. */
+/**
+ * Why the refund action is unavailable, or `null` when it is available.
+ *
+ * Callers only render the action for `status === 'active'` instances, so this
+ * helper describes the two reachable refusals (used / ended) and deliberately
+ * has no "not active" branch — a cancelled row never offers the button.
+ */
 export function refundIneligibilityKey(
   subscription: UserSubscription,
   now: number = Date.now(),
 ): string | null {
   if (isRefundEligible(subscription, now)) return null
-  if (subscription.status !== 'active') {
-    return 'account.subscription.mine.refund_ineligible_status'
-  }
   if (subscription.amount_used > 0) {
     return 'account.subscription.mine.refund_ineligible_used'
   }

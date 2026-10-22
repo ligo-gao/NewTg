@@ -71,6 +71,38 @@ const PRO = {
   grant_credits: 2000,
   sort_order: 2,
 }
+/** Same cycle but free: the only provably zero-delta change target. */
+const FREE_TARGET = {
+  ...BASIC,
+  id: 4,
+  plan_key: 'free',
+  title: 'Free',
+  description: null,
+  price_amount: 0,
+  grant_credits: 0,
+  sort_order: 4,
+}
+/** Same cycle and same price: still not provably zero once time has elapsed. */
+const SAME_PRICE = {
+  ...BASIC,
+  id: 6,
+  plan_key: 'basic-plus',
+  title: 'Basic Plus',
+  description: null,
+  sort_order: 6,
+}
+/** Different cycle: must never appear as a change target (P-10). */
+const YEARLY = {
+  ...BASIC,
+  id: 7,
+  plan_key: 'yearly',
+  title: 'Yearly',
+  description: null,
+  period_days: 365,
+  price_amount: 50000,
+  grant_credits: 12000,
+  sort_order: 7,
+}
 
 const ACTIVE_SUB = {
   id: 5,
@@ -254,9 +286,12 @@ describe('renewal', () => {
   })
 
   it.each([
+    [402, 'This renewal must be completed at checkout. Please finish the payment.'],
     [409, 'A renewal for this period is already in progress.'],
+    [422, 'This subscription cannot be renewed right now.'],
     [429, 'Too many attempts. Try again in 30s.'],
     [500, 'Could not renew the subscription. Please try again.'],
+    [503, 'The payment service is temporarily unavailable. Please try again later.'],
   ] as const)('renders a %i renewal failure inline', async (status, copy) => {
     useBaseHandlers()
     server.use(
@@ -274,6 +309,22 @@ describe('renewal', () => {
     expect((await screen.findByRole('alert')).textContent).toBe(copy)
     // The dialog stays open so the same intent can be retried.
     expect(screen.getByRole('dialog')).toBeTruthy()
+  })
+
+  it('renders an offline renewal failure inline', async () => {
+    useBaseHandlers()
+    server.use(
+      http.post(`${ORIGIN}/api/subscriptions/5/renew`, () =>
+        HttpResponse.error(),
+      ),
+    )
+    await renderSection()
+    const user = await openRenew()
+    await user.click(screen.getByRole('button', { name: 'Renew' }))
+
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'You are offline. Reconnect and try again.',
+    )
   })
 
   it('replays the first renewal order when retrying the same intent', async () => {
@@ -344,9 +395,9 @@ describe('plan change', () => {
     expect(calls).toBe(0)
   })
 
-  it('applies a zero-delta downgrade immediately and shows the result', async () => {
+  it('applies a free-target change immediately and shows the result', async () => {
     let body: unknown
-    useBaseHandlers()
+    useBaseHandlers({ plans: [BASIC, FREE_TARGET] })
     server.use(
       http.post(`${ORIGIN}/api/subscriptions/5/change`, async ({ request }) => {
         body = await request.json()
@@ -354,10 +405,10 @@ describe('plan change', () => {
           {
             order: order({ id: 42, provider: 'stripe', amount: 0, status: 'succeeded' }),
             from_plan_id: 1,
-            to_plan_id: 3,
+            to_plan_id: 4,
             event_kind: 'downgraded',
             price_delta: 0,
-            credits_delta: -500,
+            credits_delta: -1000,
             new_end_at: '2099-11-20T00:00:00Z',
           },
           { status: 201 },
@@ -365,19 +416,103 @@ describe('plan change', () => {
       }),
     )
     await renderSection()
-    const user = await openChangeTo(/Lite/)
+    const user = await openChangeTo(/Free/)
 
-    // The zero-delta path states "no extra charge" and offers no provider UI.
+    // Only a free target is provably zero: state it and offer no provider UI.
     expect(
-      screen.getByText(/No extra charge: the change takes effect immediately/),
+      screen.getByText(/This plan is free: no charge applies/),
     ).toBeTruthy()
     expect(screen.queryByRole('radio', { name: 'Stripe' })).toBeNull()
 
     await user.click(screen.getByRole('button', { name: 'Confirm change' }))
     expect(await screen.findByText('Plan downgraded')).toBeTruthy()
-    expect(screen.getByText('Free')).toBeTruthy()
-    expect(screen.getByText('−500')).toBeTruthy()
-    expect(body).toEqual({ plan_id: 3, provider: 'stripe' })
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText('Free')).toBeTruthy()
+    expect(within(dialog).getByText('−1,000')).toBeTruthy()
+    // The result renders the server's new expiry, not a locally guessed date.
+    expect(within(dialog).getByText('New expiry')).toBeTruthy()
+    expect(within(dialog).getByText(/2099/)).toBeTruthy()
+    expect(body).toEqual({ plan_id: 4, provider: 'stripe' })
+  })
+
+  it.each([
+    ['a cheaper paid plan', LITE, /Lite/],
+    ['a same-price plan after time has elapsed', SAME_PRICE, /Basic Plus/],
+  ] as const)(
+    'does not promise a zero charge for %s',
+    async (_label, plan, targetName) => {
+      useBaseHandlers({ plans: [BASIC, plan] })
+      await renderSection()
+      const user = userEvent.setup()
+      await user.click(
+        await screen.findByRole('button', { name: 'Change plan: Basic' }),
+      )
+      await user.click(await screen.findByRole('radio', { name: targetName }))
+      await user.click(screen.getByRole('button', { name: 'Continue' }))
+
+      expect(await screen.findByText('Confirm plan change')).toBeTruthy()
+      // Remaining value decays, so a lower/equal price can still owe a delta:
+      // the provider must stay visible and no zero-charge promise is made.
+      expect(screen.getByRole('radio', { name: 'Stripe' })).toBeTruthy()
+      expect(screen.queryByText(/This plan is free/)).toBeNull()
+      expect(
+        screen.getByText(/prorated from the unused value/),
+      ).toBeTruthy()
+    },
+  )
+
+  it('replays the first change result when retrying the same intent', async () => {
+    const keys: string[] = []
+    let attempts = 0
+    useBaseHandlers({ plans: [BASIC, FREE_TARGET] })
+    server.use(
+      http.post(`${ORIGIN}/api/subscriptions/5/change`, ({ request }) => {
+        attempts += 1
+        keys.push(request.headers.get('idempotency-key') ?? '')
+        if (attempts === 1) {
+          return HttpResponse.json({ title: 'boom' }, { status: 500 })
+        }
+        return HttpResponse.json(
+          {
+            order: order({
+              id: 42,
+              provider: 'stripe',
+              amount: 0,
+              status: 'succeeded',
+            }),
+            from_plan_id: 1,
+            to_plan_id: 4,
+            event_kind: 'downgraded',
+            price_delta: 0,
+            credits_delta: -1000,
+            new_end_at: '2099-11-20T00:00:00Z',
+          },
+          { status: 200 },
+        )
+      }),
+    )
+    await renderSection()
+    const user = await openChangeTo(/Free/)
+    await user.click(screen.getByRole('button', { name: 'Confirm change' }))
+    await screen.findByRole('alert')
+
+    await user.click(screen.getByRole('button', { name: 'Confirm change' }))
+    expect(await screen.findByText('Plan downgraded')).toBeTruthy()
+    expect(keys).toHaveLength(2)
+    expect(keys[1]).toBe(keys[0])
+  })
+
+  it('filters out targets with a different billing cycle', async () => {
+    useBaseHandlers({ plans: [BASIC, LITE, YEARLY] })
+    await renderSection()
+    const user = userEvent.setup()
+    await user.click(
+      await screen.findByRole('button', { name: 'Change plan: Basic' }),
+    )
+
+    expect(await screen.findByRole('radio', { name: /Lite/ })).toBeTruthy()
+    // P-10: only same-period plans are offered; the server would 422 otherwise.
+    expect(screen.queryByRole('radio', { name: /Yearly/ })).toBeNull()
   })
 
   it('opens the payment checkout for an upgrade with a positive delta', async () => {
@@ -428,7 +563,7 @@ describe('plan change', () => {
     await user.click(screen.getByRole('button', { name: 'Confirm change' }))
 
     expect((await screen.findByRole('alert')).textContent).toBe(
-      'The target plan must use the same billing cycle.',
+      'The target plan must use the same currency and billing cycle.',
     )
   })
 
@@ -538,12 +673,22 @@ describe('refund request', () => {
       'Renewal and plan-change orders must be refunded manually. Please contact support.',
     ],
     ['conflict', 409, 'This order is not refundable in its current state.'],
+    ['not_found', 404, 'This subscription could not be found.'],
+    ['rate_limited', 429, 'Too many attempts. Try again in 30s.'],
+    [
+      'boom',
+      503,
+      'The payment service is temporarily unavailable. Please try again later.',
+    ],
     ['boom', 500, 'Could not submit the refund request. Please try again.'],
   ] as const)('maps %s (%i) to an inline reason', async (title, status, copy) => {
     useBaseHandlers()
     server.use(
       http.post(`${ORIGIN}/api/subscriptions/5/refund-request`, () =>
-        HttpResponse.json({ title }, { status }),
+        HttpResponse.json(
+          { title },
+          { status, headers: status === 429 ? { 'Retry-After': '30' } : {} },
+        ),
       ),
     )
     await renderSection()
@@ -555,6 +700,26 @@ describe('refund request', () => {
     await user.click(screen.getByRole('button', { name: 'Submit request' }))
 
     expect((await screen.findByRole('alert')).textContent).toBe(copy)
+  })
+
+  it('renders an offline refund failure inline', async () => {
+    useBaseHandlers()
+    server.use(
+      http.post(`${ORIGIN}/api/subscriptions/5/refund-request`, () =>
+        HttpResponse.error(),
+      ),
+    )
+    await renderSection()
+    const user = userEvent.setup()
+    await user.click(
+      await screen.findByRole('button', { name: 'Request refund: Basic' }),
+    )
+    await user.type(screen.getByRole('textbox', { name: 'Reason' }), 'please')
+    await user.click(screen.getByRole('button', { name: 'Submit request' }))
+
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'You are offline. Reconnect and try again.',
+    )
   })
 })
 
@@ -728,6 +893,81 @@ describe('wallet funding for purchases', () => {
     await screen.findByRole('radio', { name: 'Stripe' })
 
     expect(screen.queryByRole('radio', { name: /Wallet balance/ })).toBeNull()
+  })
+})
+
+describe('lazy provider config', () => {
+  it('does not read the payment config until a write dialog opens', async () => {
+    let calls = 0
+    useBaseHandlers()
+    server.use(
+      http.get(`${ORIGIN}/api/topup/config`, () => {
+        calls += 1
+        return HttpResponse.json(TOPUP_CONFIG)
+      }),
+    )
+    await renderSection()
+    await screen.findByRole('button', { name: 'Renew: Basic' })
+    await waitFor(() => expect(calls).toBe(0))
+
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Renew: Basic' }))
+    // The renew/change dialogs are always mounted; the query must stay gated
+    // until one of them actually opens.
+    await waitFor(() => expect(calls).toBe(1))
+  })
+})
+
+describe('dialog accessibility', () => {
+  it('labels the change, refund and history dialogs', async () => {
+    useBaseHandlers({ plans: [BASIC, FREE_TARGET] })
+    server.use(
+      http.get(`${ORIGIN}/api/subscriptions/5/events`, () =>
+        HttpResponse.json({
+          events: [
+            {
+              seq: 1,
+              kind: 'created',
+              detail: { amount_total: 1000 },
+              created_at: '2026-10-01T00:00:00Z',
+            },
+          ],
+        }),
+      ),
+    )
+    await renderSection()
+    const user = userEvent.setup()
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Change plan: Basic' }),
+    )
+    let dialog = await screen.findByRole('dialog')
+    expect(dialog.getAttribute('aria-labelledby')).toBeTruthy()
+    expect(within(dialog).getByText('Change plan')).toBeTruthy()
+    expect(within(dialog).getAllByRole('radio').length).toBeGreaterThan(0)
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+
+    await user.click(screen.getByRole('button', { name: 'Request refund: Basic' }))
+    dialog = await screen.findByRole('dialog')
+    expect(dialog.getAttribute('aria-labelledby')).toBeTruthy()
+    const reason = within(dialog).getByRole('textbox', { name: 'Reason' })
+    expect(reason.getAttribute('aria-describedby')).toBe('refund-reason-count')
+    expect(
+      within(dialog).getByRole('button', { name: 'Submit request' }),
+    ).toBeTruthy()
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+
+    await user.click(screen.getByRole('button', { name: 'History: Basic' }))
+    dialog = await screen.findByRole('dialog')
+    expect(dialog.getAttribute('aria-labelledby')).toBeTruthy()
+    expect(
+      within(dialog).getByRole('list', { name: 'Subscription events' }),
+    ).toBeTruthy()
+    expect(
+      within(dialog).getByRole('button', { name: 'Close' }),
+    ).toBeTruthy()
   })
 })
 

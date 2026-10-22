@@ -46,7 +46,11 @@ export function renewalError(caught: unknown): SubscriptionInlineError {
   const generic = networkOrServer(caught)
   if (generic !== null) return generic
   if (caught instanceof ApiError) {
-    if (caught.kind === 'quota') return { key: 'account.subscription.common.insufficient' }
+    // 续费不走钱包（契约 provider ∈ stripe/alipay/epay）。402 在这里只表示
+    // 「必须在收银台完成支付」，不能误写成钱包余额不足。
+    if (caught.kind === 'quota') {
+      return { key: 'account.subscription.renew.error_payment_required' }
+    }
     if (caught.kind === 'not_found') return { key: 'account.subscription.common.not_found' }
     if (caught.kind === 'conflict') return { key: 'account.subscription.renew.error_conflict' }
     if (caught.kind === 'validation') return { key: 'account.subscription.renew.error_invalid' }

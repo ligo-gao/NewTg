@@ -409,7 +409,6 @@
       "change_plan": "變更方案",
       "events": "事件紀錄",
       "refund": "申請退款",
-      "refund_ineligible_status": "只有生效中的訂閱可以退款。",
       "refund_ineligible_used": "已使用額度的訂閱不能退款。",
       "refund_ineligible_expired": "訂閱已到期，無法再申請退款。"
     },
@@ -466,7 +465,6 @@
       "saved": "卡片已儲存。"
     },
     "common": {
-      "insufficient": "錢包餘額不足。",
       "not_found": "找不到此訂閱。",
       "offline": "網路已中斷，請重新連線後再試。",
       "rate_limited": "嘗試過於頻繁，請在 {seconds} 秒後重試。",
@@ -484,7 +482,8 @@
       "success_body": "訂閱已延長 {days} 天。",
       "error_conflict": "此週期已有續訂正在進行。",
       "error_invalid": "目前無法續訂此訂閱。",
-      "error_failed": "續訂失敗，請重試。"
+      "error_failed": "續訂失敗，請重試。",
+      "error_payment_required": "此續訂需在收銀台完成付款，請繼續完成付款。"
     },
     "change": {
       "title": "變更方案",
@@ -499,7 +498,7 @@
       "confirm_body": "將 {plan} 變更為 {target}？",
       "changing": "正在變更...",
       "empty": "沒有其他同週期方案可選。",
-      "zero_hint": "無需補差價：變更立即生效，剩餘價值將折算為延長時長。",
+      "zero_hint": "此方案免費：無需付費，變更立即生效，剩餘時長保留。",
       "paid_hint": "應付差價依目前方案未使用價值折算，付款成功後立即生效；低於付款管道最低金額的差價將免收。實際金額以收銀台為準。",
       "success_upgraded": "方案已升級",
       "success_downgraded": "方案已降級",
@@ -507,7 +506,7 @@
       "result_end": "新到期時間",
       "result_credits": "額度變化",
       "error_conflict": "此訂閱已有待處理的變更。",
-      "error_cycle_mismatch": "目標方案必須使用相同的計費週期。",
+      "error_cycle_mismatch": "目標方案必須使用相同的幣種與計費週期。",
       "error_invalid": "目前無法選擇此方案。",
       "error_failed": "方案變更失敗，請重試。"
     },
@@ -519,7 +518,6 @@
       "reason_count": "{count}/{max} 個字元",
       "submit": "提交申請",
       "submitting": "提交中...",
-      "ineligible": "只有未使用額度且仍在生效期內的訂閱可以退款。",
       "success_title": "退款申請已提交",
       "success_body": "申請時間：{time}。客服將進行審核。",
       "success_reason": "原因：{reason}",

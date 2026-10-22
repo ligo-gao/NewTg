@@ -409,7 +409,6 @@
       "change_plan": "变更套餐",
       "events": "事件记录",
       "refund": "申请退款",
-      "refund_ineligible_status": "只有生效中的订阅可以退款。",
       "refund_ineligible_used": "已使用额度的订阅不能退款。",
       "refund_ineligible_expired": "订阅已到期，无法再申请退款。"
     },
@@ -466,7 +465,6 @@
       "saved": "卡片已保存。"
     },
     "common": {
-      "insufficient": "钱包余额不足。",
       "not_found": "找不到该订阅。",
       "offline": "网络已断开，请重新连接后再试。",
       "rate_limited": "尝试过于频繁，请在 {seconds} 秒后重试。",
@@ -484,7 +482,8 @@
       "success_body": "订阅已延长 {days} 天。",
       "error_conflict": "该周期已有续费正在进行。",
       "error_invalid": "当前无法续费该订阅。",
-      "error_failed": "续费失败，请重试。"
+      "error_failed": "续费失败，请重试。",
+      "error_payment_required": "该续费需在收银台完成支付，请继续完成付款。"
     },
     "change": {
       "title": "变更套餐",
@@ -499,7 +498,7 @@
       "confirm_body": "将 {plan} 变更为 {target}？",
       "changing": "正在变更...",
       "empty": "没有其他同周期套餐可选。",
-      "zero_hint": "无需补差价：变更立即生效，剩余价值将折算为延长时长。",
+      "zero_hint": "该套餐免费：无需付费，变更立即生效，剩余时长保留。",
       "paid_hint": "应付差价按当前套餐未使用价值折算，支付成功后立即生效；低于支付渠道最低金额的差价将免收。实际金额以收银台为准。",
       "success_upgraded": "套餐已升级",
       "success_downgraded": "套餐已降级",
@@ -507,7 +506,7 @@
       "result_end": "新到期时间",
       "result_credits": "额度变化",
       "error_conflict": "该订阅已有待处理的变更。",
-      "error_cycle_mismatch": "目标套餐必须使用相同的计费周期。",
+      "error_cycle_mismatch": "目标套餐必须使用相同的币种和计费周期。",
       "error_invalid": "当前无法选择该套餐。",
       "error_failed": "套餐变更失败，请重试。"
     },
@@ -519,7 +518,6 @@
       "reason_count": "{count}/{max} 个字符",
       "submit": "提交申请",
       "submitting": "提交中...",
-      "ineligible": "只有未使用额度且仍在生效期内的订阅可以退款。",
       "success_title": "退款申请已提交",
       "success_body": "申请时间：{time}。客服将进行审核。",
       "success_reason": "原因：{reason}",

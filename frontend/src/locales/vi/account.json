@@ -409,7 +409,6 @@
       "change_plan": "Đổi gói",
       "events": "Lịch sử",
       "refund": "Yêu cầu hoàn tiền",
-      "refund_ineligible_status": "Chỉ gói đăng ký đang hoạt động mới có thể hoàn tiền.",
       "refund_ineligible_used": "Chỉ có thể hoàn tiền trước khi sử dụng hạn mức.",
       "refund_ineligible_expired": "Gói đăng ký đã kết thúc và không thể hoàn tiền."
     },
@@ -466,7 +465,6 @@
       "saved": "Đã lưu thẻ."
     },
     "common": {
-      "insufficient": "Số dư ví không đủ.",
       "not_found": "Không tìm thấy gói đăng ký này.",
       "offline": "Bạn đang ngoại tuyến. Hãy kết nối lại và thử lại.",
       "rate_limited": "Quá nhiều lần thử. Hãy thử lại sau {seconds} giây.",
@@ -484,7 +482,8 @@
       "success_body": "Gói đăng ký đã được gia hạn thêm {days} ngày.",
       "error_conflict": "Đã có một lần gia hạn cho kỳ này đang được xử lý.",
       "error_invalid": "Hiện không thể gia hạn gói đăng ký này.",
-      "error_failed": "Không thể gia hạn. Vui lòng thử lại."
+      "error_failed": "Không thể gia hạn. Vui lòng thử lại.",
+      "error_payment_required": "Lần gia hạn này phải được thanh toán tại quầy thanh toán. Vui lòng hoàn tất thanh toán."
     },
     "change": {
       "title": "Đổi gói",
@@ -499,7 +498,7 @@
       "confirm_body": "Đổi {plan} sang {target}?",
       "changing": "Đang áp dụng...",
       "empty": "Không có gói nào khác cùng chu kỳ thanh toán.",
-      "zero_hint": "Không phụ phí: thay đổi có hiệu lực ngay và giá trị còn lại được chuyển thành thời gian gia hạn.",
+      "zero_hint": "Gói này miễn phí: không mất phí, thay đổi có hiệu lực ngay và thời gian còn lại được giữ nguyên.",
       "paid_hint": "Số tiền chênh lệch được tính theo giá trị chưa dùng của gói hiện tại và có hiệu lực ngay sau khi thanh toán; phần chênh lệch dưới mức tối thiểu của nhà cung cấp sẽ được miễn. Số tiền chính xác hiển thị khi thanh toán.",
       "success_upgraded": "Đã nâng cấp gói",
       "success_downgraded": "Đã hạ cấp gói",
@@ -507,7 +506,7 @@
       "result_end": "Hạn mới",
       "result_credits": "Thay đổi hạn mức",
       "error_conflict": "Đã có một yêu cầu đổi gói đang chờ cho gói đăng ký này.",
-      "error_cycle_mismatch": "Gói đích phải có cùng chu kỳ thanh toán.",
+      "error_cycle_mismatch": "Gói đích phải dùng cùng loại tiền tệ và chu kỳ thanh toán.",
       "error_invalid": "Hiện không thể chọn gói này.",
       "error_failed": "Không thể đổi gói. Vui lòng thử lại."
     },
@@ -519,7 +518,6 @@
       "reason_count": "{count}/{max} ký tự",
       "submit": "Gửi yêu cầu",
       "submitting": "Đang gửi...",
-      "ineligible": "Chỉ gói đang hoạt động chưa dùng hạn mức mới có thể hoàn tiền.",
       "success_title": "Đã yêu cầu hoàn tiền",
       "success_body": "Yêu cầu lúc {time}. Bộ phận hỗ trợ sẽ xem xét.",
       "success_reason": "Lý do: {reason}",

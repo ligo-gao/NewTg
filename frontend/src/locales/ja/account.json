@@ -409,7 +409,6 @@
       "change_plan": "プラン変更",
       "events": "履歴",
       "refund": "返金を申請",
-      "refund_ineligible_status": "有効なサブスクリプションのみ返金できます。",
       "refund_ineligible_used": "返金はクォータを使用する前のみ可能です。",
       "refund_ineligible_expired": "このサブスクリプションは終了しており、返金できません。"
     },
@@ -466,7 +465,6 @@
       "saved": "カードを保存しました。"
     },
     "common": {
-      "insufficient": "ウォレット残高が不足しています。",
       "not_found": "このサブスクリプションが見つかりません。",
       "offline": "オフラインです。接続を復元して再試行してください。",
       "rate_limited": "試行回数が多すぎます。{seconds} 秒後に再試行してください。",
@@ -484,7 +482,8 @@
       "success_body": "サブスクリプションをさらに {days} 日間延長しました。",
       "error_conflict": "この期間の更新はすでに進行中です。",
       "error_invalid": "現在このサブスクリプションは更新できません。",
-      "error_failed": "更新できませんでした。再試行してください。"
+      "error_failed": "更新できませんでした。再試行してください。",
+      "error_payment_required": "この更新は決済画面で支払う必要があります。支払いを完了してください。"
     },
     "change": {
       "title": "プラン変更",
@@ -499,7 +498,7 @@
       "confirm_body": "{plan} を {target} に変更しますか？",
       "changing": "適用中...",
       "empty": "同じ請求周期の他のプランはありません。",
-      "zero_hint": "追加料金なし：変更はすぐに有効になり、残存価値は期間の延長に充当されます。",
+      "zero_hint": "このプランは無料です。追加料金はなく、変更はすぐに有効になり、残り期間は保持されます。",
       "paid_hint": "差額は現在のプランの未使用価値から按分され、支払い直後に有効になります。決済プロバイダーの最低金額未満の差額は免除されます。正確な金額は決済時に表示されます。",
       "success_upgraded": "プランをアップグレードしました",
       "success_downgraded": "プランをダウングレードしました",
@@ -507,7 +506,7 @@
       "result_end": "新しい期限",
       "result_credits": "クォータの変化",
       "error_conflict": "このサブスクリプションには保留中のプラン変更があります。",
-      "error_cycle_mismatch": "変更先プランは同じ請求周期である必要があります。",
+      "error_cycle_mismatch": "変更先プランは同じ通貨・請求周期である必要があります。",
       "error_invalid": "現在このプランは選択できません。",
       "error_failed": "プランを変更できませんでした。再試行してください。"
     },
@@ -519,7 +518,6 @@
       "reason_count": "{count}/{max} 文字",
       "submit": "申請を送信",
       "submitting": "送信中...",
-      "ineligible": "クォータ未使用かつ有効なサブスクリプションのみ返金できます。",
       "success_title": "返金を申請しました",
       "success_body": "{time} に申請しました。サポートが確認します。",
       "success_reason": "理由：{reason}",

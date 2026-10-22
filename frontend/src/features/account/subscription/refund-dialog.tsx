@@ -148,11 +148,6 @@ export function RefundDialog({
               max: REFUND_REASON_MAX,
             })}
           </span>
-          {!eligible ? (
-            <p role="status" className="text-sm text-warning">
-              {t('account.subscription.refund.ineligible')}
-            </p>
-          ) : null}
         </div>
       )}
 

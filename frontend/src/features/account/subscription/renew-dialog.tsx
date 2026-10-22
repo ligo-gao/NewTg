@@ -10,6 +10,7 @@ import { useToastStore } from '@/shared/ui/toast'
 import { CheckoutDialog } from '../topup/checkout-dialog'
 import { formatYuan } from '../topup/money'
 import type { OrderView } from '../topup/types'
+import { newIdempotencyKey } from './constants'
 import { renewalError, type SubscriptionInlineError } from './errors'
 import { findMatchingPlan } from './plan-match'
 import { ChannelProviderPicker, useEnabledChannelProviders } from './provider-picker'
@@ -36,10 +37,6 @@ export interface RenewDialogProps {
   onRenewed: () => void
 }
 
-function newKey(): string {
-  return globalThis.crypto.randomUUID()
-}
-
 /**
  * 手动续费弹窗（P2a；`POST /api/subscriptions/{id}/renew`）。
  *
@@ -61,7 +58,9 @@ export function RenewDialog({
 }: RenewDialogProps) {
   const { t } = useI18n()
   const push = useToastStore((state) => state.push)
-  const { providers, publishableKey } = useEnabledChannelProviders()
+  const { providers, publishableKey } = useEnabledChannelProviders(
+    subscription !== null,
+  )
   const keyRef = useRef<string | null>(null)
   const [provider, setProvider] = useState<SubscriptionChannelProvider | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -76,7 +75,7 @@ export function RenewDialog({
   // 新意图：换实例（或关闭）时换键并清空全部瞬时状态。依赖 id 而不是对象，
   // 因为列表刷新会为同一条记录产生新对象。
   useEffect(() => {
-    keyRef.current = subscriptionId === null ? null : newKey()
+    keyRef.current = subscriptionId === null ? null : newIdempotencyKey()
     setSubmitting(false)
     setError(null)
     setActivated(false)
@@ -107,7 +106,7 @@ export function RenewDialog({
       : (provider ?? providers[0])
     if (effectiveProvider === undefined) return
 
-    const key = keyRef.current ?? (keyRef.current = newKey())
+    const key = keyRef.current ?? (keyRef.current = newIdempotencyKey())
     setSubmitting(true)
     setError(null)
     try {
@@ -266,11 +265,11 @@ export function RenewDialog({
           onRetry={() => {
             // 终态重放仍指向同一订单：换新意图必须换键。
             setCheckout(null)
-            keyRef.current = newKey()
+            keyRef.current = newIdempotencyKey()
           }}
           onRefresh={() => {
             setCheckout(null)
-            keyRef.current = newKey()
+            keyRef.current = newIdempotencyKey()
           }}
         />
       ) : null}
