@@ -80,6 +80,32 @@ func Submit(ctx context.Context, client *http.Client, in SubmitInput) (*SubmitRe
 	}
 
 	pluginCtx := buildPluginContext(in, upstreamModel)
+	// 宿主协议执行钩子（R-W18-07）：插件声明了 decodeRequest 时，先把入站
+	// 协议请求（Responses 的 input/instructions/tools 等）解成插件可用的
+	// 提交载荷，再交给 buildSubmitRequest。
+	//
+	// 为什么在 tasks 层而不是 HTTP 层执行：decodeRequest 与
+	// buildSubmitRequest/parseSubmitResponse 同属「插件只做变换」的执行段，
+	// 放在这里能让原生路由、/v1/tasks 与宿主协议三个入口共享同一份调用顺序，
+	// 不会出现某个入口忘了执行钩子而把原始协议体直接发给上游。
+	//
+	// 兼容性：没有该钩子的插件（历史 routes[] 插件）完全沿用原 body —— 这是
+	// 「插件不必为了升级宿主而新增钩子」的回退路径。
+	if in.Plugin.HasHook("decodeRequest") {
+		decoded, err := in.Plugin.Call(ctx, "decodeRequest", pluginCtx)
+		if err != nil {
+			return nil, fmt.Errorf("%w: decodeRequest", ErrPluginHook)
+		}
+		decodedBody, ok := decoded.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%w: decodeRequest must return an object", ErrSubmitResponse)
+		}
+		pluginCtx = buildPluginContext(SubmitInput{
+			Plugin: in.Plugin, Channel: in.Channel, Model: in.Model,
+			Body: decodedBody, BaseURL: in.BaseURL, APIKey: in.APIKey,
+			AllowPrivate: in.AllowPrivate,
+		}, upstreamModel)
+	}
 	rawDesc, err := in.Plugin.Call(ctx, "buildSubmitRequest", pluginCtx)
 	if err != nil {
 		return nil, fmt.Errorf("%w: buildSubmitRequest", ErrPluginHook)
@@ -115,10 +141,13 @@ func Submit(ctx context.Context, client *http.Client, in SubmitInput) (*SubmitRe
 // 因此把请求体字段作为可选上下文并入（宿主键最后写入，body 不能覆盖
 // model/apiKey 等身份字段——否则一个请求就能替换计费身份或凭据）。
 func buildPluginContext(in SubmitInput, upstreamModel string) map[string]any {
-	ctx := make(map[string]any, len(in.Body)+8)
+	ctx := make(map[string]any, len(in.Body)+9)
 	for k, v := range in.Body {
 		ctx[k] = v
 	}
+	// body 是**原始入站对象**的稳定入口：decodeRequest 与 buildSubmitRequest
+	// 都通过 ctx.body 读取未拆分的请求（顶层字段仍并列展开以兼容既有插件）。
+	ctx["body"] = in.Body
 	ctx["model"] = in.Model
 	ctx["upstreamModel"] = upstreamModel
 	ctx["baseUrl"] = in.BaseURL

@@ -50,7 +50,18 @@ type Route struct {
 	TaskIDParam  string
 	RetainResult *bool
 	Models       []string
+	// Protocol 非空表示这条路由由宿主协议派生（不是 manifest routes[] 的
+	// 原文）。R-W18-07：protocols.openai_responses 直接接管宿主端点，
+	// routes[] 只用于插件自有 URL。
+	Protocol string
 }
+
+// RouteKindResponses 是宿主协议派生路由的内部 kind。
+//
+// 它不是 manifest 的合法 kind（decodeRoutes 仍只认 submit/query/dynamic）：
+// 插件不能手写这个值来绕过协议声明，只有 registerRoutes 按
+// protocols.openai_responses.supports 派生时才会设置。
+const RouteKindResponses = "responses"
 
 // UsageField 是 usageSchema / usageProfiles[].schema 的一个字段声明。
 //
@@ -82,6 +93,38 @@ type AuthSpec struct {
 	Raw  any
 }
 
+// openai_responses 协议支持的操作（relay-06 §3.8 的宿主协议绑定表）。
+//
+// 这两个字面量是 protocols.openai_responses.supports 的合法取值全集；
+// 只声明其中一个的插件只接管对应操作（R-W18-07：supports 必须真正收窄能力，
+// 只声明 retrieve 的插件不得抢 create）。
+const (
+	ResponsesOpCreate   = "create"
+	ResponsesOpRetrieve = "retrieve"
+)
+
+// ResponsesProtocol 是 meta.protocols.openai_responses 的规范化形态。
+//
+// 设计把 protocols 定义为「接管宿主协议、不注册 URL」：宿主按 supports 派生
+// 端点绑定，插件无需再在 routes[] 里重复声明（relay-06 §3.1/§3.8）。
+type ResponsesProtocol struct {
+	// Supports 是插件声明的操作集合（create / retrieve）。
+	Supports []string
+}
+
+// SupportsOperation 判定插件是否声明了某个 Responses 操作。
+func (p *ResponsesProtocol) SupportsOperation(op string) bool {
+	if p == nil {
+		return false
+	}
+	for _, support := range p.Supports {
+		if support == op {
+			return true
+		}
+	}
+	return false
+}
+
 // Manifest 是插件导出对象的**元数据**部分（函数钩子单独记录）。
 type Manifest struct {
 	APIVersion int
@@ -91,13 +134,17 @@ type Manifest struct {
 	Author     Author
 	// Icon 是可选的图标引用（≤128 字符，与 DB 列口径一致）；
 	// 内置插件的侧车图标仍以目录内 icon.svg/icon.png 为主（relay-06 §2.1）。
-	Icon                 string
-	Description          map[string]string
-	Models               []string
-	FetchMode            string
-	ChannelTypes         []int
-	Routes               []Route
-	Protocols            map[string]any
+	Icon         string
+	Description  map[string]string
+	Models       []string
+	FetchMode    string
+	ChannelTypes []int
+	Routes       []Route
+	Protocols    map[string]any
+	// Responses 是 protocols.openai_responses 的强类型投影。nil 表示插件
+	// 没有声明该协议。原 map 仍保留，供 openai_video/openai_image 等其它
+	// 宿主协议与诊断使用。
+	Responses            *ResponsesProtocol
 	UsageSchema          map[string]UsageField
 	UsageProfiles        []UsageProfile
 	UsageExamples        []any
@@ -384,6 +431,7 @@ func decodeManifest(key string, raw map[string]any) (*Manifest, Issues) {
 	m.ChannelTypes = d.decodeChannelTypes(raw["channelTypes"])
 	m.Routes = d.decodeRoutes(raw["routes"])
 	m.Protocols = d.decodeProtocols(raw["protocols"])
+	m.Responses = d.decodeResponsesProtocol(m.Protocols)
 
 	if v, ok := raw["usageSchema"]; ok {
 		m.UsageSchema = d.decodeUsageFields(v, "meta.usageSchema")
@@ -646,23 +694,85 @@ func (d *decoder) decodeProtocols(v any) map[string]any {
 	known := map[string]struct{}{
 		"openai_responses": {}, "openai_video": {}, "openai_image": {},
 	}
-	for name, value := range obj {
+	for name := range obj {
 		if _, ok := known[name]; !ok {
 			d.add("meta.protocols."+name, "", "protocol_unknown", "未知宿主协议 %q", name)
 			continue
 		}
-		if name == "openai_responses" {
-			// openai_responses 必须是对象且带 supports（relay-06 §3.1）；
-			// 裸字符串会让「接管哪些操作」变成隐式推断，fail-closed。
-			spec, ok := asObject(value)
-			if !ok {
-				d.add("meta.protocols."+name, "", "protocol_shape", "openai_responses 必须是带 supports 的对象")
-			} else if spec["supports"] == nil {
-				d.add("meta.protocols."+name+".supports", "", "protocol_shape", "openai_responses 必须声明 supports")
-			}
-		}
+		// 各协议的形状差异很大（openai_responses 必须是带 supports 的对象），
+		// 强类型解析统一放在 decodeResponsesProtocol，本函数只做协议名白名单。
 	}
 	return obj
+}
+
+// decodeResponsesProtocol 完整解析 protocols.openai_responses.supports。
+//
+// 为什么必须在这里收窄而不是运行时才看键是否存在（R-W18-07）：
+// protocols 即路由绑定的声明面，宿主会据此派生 POST /v1/responses 与
+// GET /v1/responses/{id}。如果 supports 只被「存在性」校验，声明 retrieve
+// 的插件也会拿到 create 绑定，等于越权接管一个它没有实现语义的端点。
+// 因此非法/未知操作在加载期 fail-closed，而不是运行期猜。
+func (d *decoder) decodeResponsesProtocol(protocols map[string]any) *ResponsesProtocol {
+	if protocols == nil {
+		return nil
+	}
+	raw, ok := protocols["openai_responses"]
+	if !ok {
+		return nil
+	}
+	// 裸字符串（openai_video/openai_image 的形态）不允许：supports 必须显式，
+	// 否则「接管哪些操作」只能靠隐式推断。
+	spec, ok := asObject(raw)
+	if !ok {
+		d.add("meta.protocols.openai_responses", "", "protocol_shape",
+			"openai_responses 必须是带 supports 的对象")
+		return nil
+	}
+	rawSupports, exists := spec["supports"]
+	if !exists || rawSupports == nil {
+		d.add("meta.protocols.openai_responses.supports", "", "protocol_shape",
+			"openai_responses 必须声明 supports")
+		return nil
+	}
+	items, ok := asArray(rawSupports)
+	if !ok {
+		d.typeError("meta.protocols.openai_responses.supports", "数组", rawSupports)
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for idx, item := range items {
+		path := "meta.protocols.openai_responses.supports[" + itoa(idx) + "]"
+		value, ok := asString(item)
+		if !ok {
+			d.add(path, "", "protocol_supports", "supports 的元素必须是字符串")
+			continue
+		}
+		value = strings.TrimSpace(value)
+		switch value {
+		case ResponsesOpCreate, ResponsesOpRetrieve:
+		default:
+			// 未知操作不做「忽略后继续」：那会让 manifest 表面声明成功、
+			// 实际比作者预期少接管一个端点。显式拒绝，作者必须改声明。
+			d.add(path, "", "protocol_supports",
+				"未知的 Responses 操作 %q（仅允许 create | retrieve）", value)
+			continue
+		}
+		if _, dup := seen[value]; dup {
+			d.add(path, "", "protocol_supports", "操作 %q 重复声明", value)
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		// 空 supports 等于「声明协议但不接管任何端点」——没有可执行的语义，
+		// 与设计「协议声明即绑定」冲突，加载期拒绝。
+		d.add("meta.protocols.openai_responses.supports", "", "protocol_supports",
+			"supports 至少声明一个操作（create | retrieve）")
+		return nil
+	}
+	return &ResponsesProtocol{Supports: out}
 }
 
 func (d *decoder) decodeUsageFields(v any, path string) map[string]UsageField {

@@ -26,6 +26,7 @@ type fixture struct {
 	UsageProfiles       string
 	UsageExamples       string
 	Routes              string
+	Protocols           string
 	Auth                string
 	ChannelTypes        string
 	Capabilities        string
@@ -110,6 +111,9 @@ func (f fixture) withDefaults() fixture {
 	if f.Routes == "" {
 		f.Routes = "[]"
 	}
+	if f.Protocols == "" {
+		f.Protocols = "{}"
+	}
 	if f.Auth == "" {
 		f.Auth = `{ type: "api_key" }`
 	}
@@ -160,8 +164,8 @@ func (f fixture) Source() string {
 	fmt.Fprintf(&b, "  fetchMode: %q,\n", f.FetchMode)
 	fmt.Fprintf(&b, "  auth: %s,\n", f.Auth)
 	fmt.Fprintf(&b, "  channelTypes: %s,\n", f.ChannelTypes)
-	fmt.Fprintf(&b, "  routes: %s,\n", f.Routes)
-	b.WriteString("  protocols: {},\n")
+	b.WriteString("  routes: " + f.Routes + ",\n")
+	fmt.Fprintf(&b, "  protocols: %s,\n", f.Protocols)
 	fmt.Fprintf(&b, "  usageSchema: %s,\n", f.UsageSchema)
 	fmt.Fprintf(&b, "  usageProfiles: %s,\n", f.UsageProfiles)
 	fmt.Fprintf(&b, "  usageExamples: %s,\n", f.UsageExamples)

@@ -1,14 +1,15 @@
 package httpapi
 
-// 本文件是 T3 的 HTTP 面验收：
+// 本文件是 T3 + W18-C 的 HTTP 面验收：
 //   - P-02：`GET /v1/responses/{id}` 只服务插件任务产物（`resp_<x>` → `task_<x>`）；
 //     非插件来源 / 归属不符 / 产物缺失一律 404（归属不符**不是** 403，
 //     避免把 resp_ 空间变成存在性 oracle）；
-//   - P-03：`POST /v1/responses/compact` fail-closed 501 problem+json，
-//     零计费、零上游调用，绝不返回 chat 形态；
-//   - R-10：两个新形状必须进 `builtinRouteShapes`；`GET /v1/responses/{}`
-//     还需进 `pluginDispatchedBuiltinShapes`（插件路由可达），而 compact 不进
-//     （插件声明必须整插件 route_conflict 失败）。
+//   - R-W18-07：检索面要求插件声明 openai_responses 且 supports 含 retrieve；
+//     只声明 create 的插件不接管检索；
+//   - R-W18-12：`POST /v1/responses/compact` 与 `GET /v1/responses`（WS）本波
+//     不提供：不注册路由 → 404（501 半死桩已删除），不得被插件抢占；
+//   - R-10：`GET /v1/responses/{}` 需进 `pluginDispatchedBuiltinShapes`
+//     （插件路由可达），本波不提供的形状进 unprovidedRouteShapes。
 
 import (
 	"context"
@@ -344,6 +345,19 @@ func TestResponsesGetRejectsNonPluginSource(t *testing.T) {
 	}
 }
 
+// TestResponsesGetRequiresRetrieveSupport 是 R-W18-07 的能力收窄：插件只声明
+// create 时没有接管检索面，即便任务有产物也必须 404（不得由内建回放代管）。
+func TestResponsesGetRequiresRetrieveSupport(t *testing.T) {
+	createOnly := strings.Replace(responsesRetrievePluginSource,
+		`supports: ["create", "retrieve"]`, `supports: ["create"]`, 1)
+	store := &fakeTaskStore{}
+	insertResponsesLookupTask(t, store, nil)
+	handler := newResponsesLookupHandler(t, store, newResponsesLookupManager(t, createOnly))
+
+	rec := getResponseObject(t, newResponsesLookupMux(t, handler, 42), responsesLookupResponseID)
+	requireRelayErrorCode(t, rec, http.StatusNotFound, "not_found")
+}
+
 // TestResponsesGetReturnsPluginArtifacts 是 brief Step 3：可检索产物按 Responses
 // 形态回放（resp_ id 原样、状态、模型、产物的签名能力 URL）。
 func TestResponsesGetReturnsPluginArtifacts(t *testing.T) {
@@ -424,9 +438,10 @@ func TestResponsesGetDispatchesPluginRouteFirst(t *testing.T) {
 	requireRelayErrorCode(t, rec, http.StatusNotFound, "task_not_found")
 }
 
-// TestResponsesCompactFailsClosed 是 brief Step 4 / P-03：compact 不得返回
-// chat 形态，也不得产生任何计费或上游调用。
-func TestResponsesCompactFailsClosed(t *testing.T) {
+// TestResponsesUnprovidedEndpointsReturn404 是 R-W18-12 的验收：compact 与
+// Responses WebSocket 本波不提供，**不注册路由** → 404，不得返回 501 半死桩，
+// 也不得产生任何计费或上游调用。
+func TestResponsesUnprovidedEndpointsReturn404(t *testing.T) {
 	transport := &countingTransport{base: http.DefaultTransport}
 	relayBilling := newRecordingBilling()
 	handler := NewRelayHandler(RelayHandlerOptions{
@@ -441,56 +456,58 @@ func TestResponsesCompactFailsClosed(t *testing.T) {
 	})
 	mux := handler.Handler()
 
-	for _, body := range []string{
-		`{"model":"gpt-test","input":[{"type":"message","role":"user","content":"hi"}]}`,
-		`not-json`,
-	} {
-		req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(body))
+	cases := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodPost, "/v1/responses/compact", `{"model":"gpt-test","input":[{"type":"message","role":"user","content":"hi"}]}`},
+		{http.MethodPost, "/v1/responses/compact", `not-json`},
+		{http.MethodGet, "/v1/responses", ""},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+relayTestToken)
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 
-		if rec.Code != http.StatusNotImplemented {
-			t.Fatalf("status = %d, want 501; body=%s", rec.Code, rec.Body.String())
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s %s = %d, want 404; body=%s", tc.method, tc.path, rec.Code, rec.Body.String())
 		}
-		if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
-			t.Fatalf("Content-Type = %q, want application/problem+json", ct)
+		if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+			t.Fatalf("%s %s Content-Type = %q, want application/json", tc.method, tc.path, ct)
 		}
-		var problem struct {
-			Type   string `json:"type"`
-			Status int    `json:"status"`
+		var envelope struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
 		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &problem); err != nil {
-			t.Fatalf("decode problem: %v; body=%s", err, rec.Body.String())
+		if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+			t.Fatalf("decode error envelope: %v; body=%s", err, rec.Body.String())
 		}
-		if problem.Type != problemTypeEndpointNotSupported || problem.Status != http.StatusNotImplemented {
-			t.Fatalf("problem = %+v, want type=%s status=501", problem, problemTypeEndpointNotSupported)
+		if envelope.Error.Code != "invalid_request_error" {
+			t.Fatalf("%s %s code = %q, want invalid_request_error; body=%s",
+				tc.method, tc.path, envelope.Error.Code, rec.Body.String())
 		}
 		if rec.Header().Get("X-Request-ID") == "" {
-			t.Fatal("X-Request-ID must be set")
+			t.Fatalf("%s %s must set X-Request-ID", tc.method, tc.path)
 		}
 	}
 
-	// 零副作用：fail-closed 分支不读请求体、不建会话、不调上游。
+	// 零副作用：不读请求体（`not-json` 也是 404）、不建会话、不调上游。
 	if n := relayBilling.preConsumeCount(); n != 0 {
 		t.Fatalf("pre-consume = %d, want 0", n)
 	}
 	if n := transport.count(); n != 0 {
 		t.Fatalf("upstream requests = %d, want 0; calls=%v", n, transport.paths())
 	}
-
-	// 鉴权先于 501：未认证请求仍是 401（与其余 /v1 端点同一条链）。
-	unauth := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{}`))
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, unauth)
-	requireRelayErrorCode(t, rec, http.StatusUnauthorized, "")
 }
 
 // TestResponsesRouteShapesFollowR10 维护 R-10 契约（形状表本身在 plugin 包，
 // 这里断言 HTTP 面可见的行为）：内建处理器先查 RouteIndex 的
-// `GET /v1/responses/{id}` 对插件开放；不查索引的 `POST /v1/responses/compact`
-// 仍按内建保留拒绝。
+// `GET /v1/responses/{id}` 对插件开放；本波不提供的 `GET /v1/responses`
+// 与 `POST /v1/responses/compact`（R-W18-12）不得被插件抢占。
 func TestResponsesRouteShapesFollowR10(t *testing.T) {
 	// 插件声明 GET /v1/responses/{id}：注册成功且可匹配。
 	queryRoute := `[ { method: "GET", path: "/v1/responses/:response_id", kind: "query", render: "parseTaskResult" } ]`
@@ -502,14 +519,18 @@ func TestResponsesRouteShapesFollowR10(t *testing.T) {
 		t.Fatalf("plugin GET responses route must be matchable: %+v ok=%v", match, ok)
 	}
 
-	// 插件声明 compact：内建优先且处理器不查 RouteIndex → 整插件失败。
-	compactRoute := `[ { method: "POST", path: "/v1/responses/compact", kind: "submit", decode: "buildSubmitRequest", render: "parseSubmitResponse" } ]`
-	m2 := newTaskManager(t, map[string]string{"video": responsesQueryRoutePluginSource(compactRoute)})
-	if entry := m2.Snapshot().Lookup("video"); entry.Status != plugin.StatusCompileFailed {
-		t.Fatalf("POST /v1/responses/compact 必须让插件 compile_failed: %+v", entry)
-	}
-	if _, ok := m2.Snapshot().Routes().Match("POST", "/v1/responses/compact"); ok {
-		t.Fatal("rejected compact route must not enter the route index")
+	// R-W18-12：本波不提供的形状必须整插件失败（没有 handler，插件也抢不到）。
+	for _, reserved := range []string{
+		`[ { method: "POST", path: "/v1/responses/compact", kind: "submit", decode: "buildSubmitRequest", render: "parseSubmitResponse" } ]`,
+		`[ { method: "GET", path: "/v1/responses", kind: "query", render: "parseTaskResult" } ]`,
+	} {
+		m2 := newTaskManager(t, map[string]string{"video": responsesQueryRoutePluginSource(reserved)})
+		if entry := m2.Snapshot().Lookup("video"); entry.Status != plugin.StatusCompileFailed {
+			t.Fatalf("本波不提供的 Responses 形状必须让插件 compile_failed: %+v", entry)
+		}
+		if _, ok := m2.Snapshot().Routes().Match("POST", "/v1/responses/compact"); ok {
+			t.Fatal("rejected compact route must not enter the route index")
+		}
 	}
 }
 

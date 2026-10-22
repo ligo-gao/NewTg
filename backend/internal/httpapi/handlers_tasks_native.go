@@ -45,6 +45,14 @@ func (h *TasksHandler) DispatchNativeRoute(w http.ResponseWriter, r *http.Reques
 	// 会被 URL 段值覆盖，提交就会落到另一个插件（复核 Minor-1）。
 	r.SetPathValue("key", key)
 
+	// Responses 创建出口优先于 kind：协议派生路由（Kind=responses）与
+	// routes[] 显式声明的 POST /v1/responses 都必须返回 Responses 形状，
+	// 不能因为声明方式不同而落到 202 task 提交出口（R-W18-07）。
+	if isResponsesCreateRoute(match.Route.Method, match.Route.Path, match.Route.Kind) {
+		h.handleResponsesCreate(w, r, match)
+		return
+	}
+
 	switch match.Route.Kind {
 	case "query":
 		h.dispatchNativeQuery(w, r, match)

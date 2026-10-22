@@ -577,6 +577,13 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 宿主协议出口（R-W18-07 / W18-C）：同一份提交/计费/落库事实，按请求
+	// 声明的协议渲染。Responses create 必须返回 Responses 对象或 SSE，而不是
+	// task 202 形状；mode 只影响响应出口，不改变上面任何计费/持久化语义。
+	if mode := responsesSubmitModeFrom(r); mode != nil {
+		h.writeResponsesSubmit(w, r, requestID, task, compiled, mode)
+		return
+	}
 	writeJSON(w, http.StatusAccepted, taskSubmitResponse{
 		PublicTaskID:   task.PublicTaskID,
 		State:          task.State,
@@ -880,9 +887,6 @@ const (
 	responsesIDPrefix = "resp_"
 	// responsesObjectType 是 Responses 对象的 object 字段冻结值。
 	responsesObjectType = "response"
-	// responsesProtocolName 是插件声明「接管 Responses 协议」时使用的键
-	// （manifest meta.protocols.openai_responses，relay-06 §3.1）。
-	responsesProtocolName = "openai_responses"
 )
 
 // resolvetaskFromResponseID 把 Responses 的 response_id 映射为 tasks.public_task_id。
@@ -976,10 +980,11 @@ func (h *TasksHandler) handleResponsesGet(w http.ResponseWriter, r *http.Request
 		writeResponsesNotFound(w, requestID)
 		return
 	}
-	// 只有声明 openai_responses 协议的插件任务才由本端点服务；插件已卸载或
-	// 从未声明协议 = 该 Responses 对象不存在（404，而不是 503/400）。
+	// 只有声明 openai_responses 且 supports 含 **retrieve** 的插件任务才由
+	// 本端点服务（R-W18-07 的能力收窄）：只声明 create 的插件没有接管检索面，
+	// 其任务按不存在处理（404，而不是 503/400）。
 	compiled, ok := h.plugins.Snapshot().Plugin(task.PluginKey)
-	if !ok || !pluginClaimsResponsesProtocol(compiled.Manifest()) {
+	if !ok || !pluginSupportsResponsesRetrieve(compiled.Manifest()) {
 		writeResponsesNotFound(w, requestID)
 		return
 	}
@@ -1062,14 +1067,17 @@ func responsesStatusForState(state tasks.State) string {
 	}
 }
 
-// pluginClaimsResponsesProtocol 判定插件 manifest 是否声明了
-// `meta.protocols.openai_responses`（relay-06 §3.1）。
-func pluginClaimsResponsesProtocol(m *plugin.Manifest) bool {
-	if m == nil {
+// pluginSupportsResponsesRetrieve 判定插件是否声明了
+// `meta.protocols.openai_responses.supports` 中的 **retrieve** 操作。
+//
+// 为什么必须看 supports 而不是只看协议键存在（R-W18-07）：supports 是插件
+// 对「接管哪些操作」的显式收窄；只声明 create 的插件没有实现检索语义，
+// 若仍由内建回放服务，等于替它接管了一个它拒绝的操作。
+func pluginSupportsResponsesRetrieve(m *plugin.Manifest) bool {
+	if m == nil || m.Responses == nil {
 		return false
 	}
-	_, ok := m.Protocols[responsesProtocolName]
-	return ok
+	return m.Responses.SupportsOperation(plugin.ResponsesOpRetrieve)
 }
 
 // writeResponsesNotFound 是 Responses 端点唯一的「不存在」出口：固定文案、
