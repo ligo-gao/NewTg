@@ -60,7 +60,6 @@ func TestRelayRateLimitContractUsesRelayEnvelope(t *testing.T) {
 	// 由 handleSubmit 同一接缝限流；/pg 会话路径同样计入 B10/B12。
 	for _, path := range []string{
 		"/v1/chat/completions",
-		"/v1/messages",
 		"/pg/chat/completions",
 		"/v1/tasks/{key}",
 		"/v1/videos",
@@ -80,6 +79,24 @@ func TestRelayRateLimitContractUsesRelayEnvelope(t *testing.T) {
 		if strings.Contains(postOp, "#/responses/Error429'") {
 			t.Fatalf("%s POST 429 must not fall back to the /api problem+json Error429", path)
 		}
+	}
+
+	// /v1/messages 是 Anthropic 原生协议面（W18-A / R-W18-04）：429 必须与其它
+	// 错误一样走 Claude 形信封，而不是 OpenAI 的 RelayError429。两条断言分开写，
+	// 避免「把 messages 混进 RelayError429 列表」掩盖协议面分裂。
+	messages, ok := pathBlock(relaySpec, "/v1/messages")
+	if !ok {
+		t.Fatal("spec is missing path /v1/messages")
+	}
+	messagesPost, ok := operation(messages, "post")
+	if !ok {
+		t.Fatal("/v1/messages no longer declares a POST operation")
+	}
+	if !strings.Contains(messagesPost, "$ref: '../components/responses.yaml#/responses/ClaudeError429'") {
+		t.Fatal("/v1/messages POST 429 must reference the Claude envelope component ClaudeError429")
+	}
+	if strings.Contains(messagesPost, "#/responses/RelayError429'") {
+		t.Fatal("/v1/messages POST 429 must not use the OpenAI RelayError429 envelope")
 	}
 
 	// /v1/batches 顶层**不声明** 429：每个子行各自计数，子行 429 被记为

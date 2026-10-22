@@ -425,9 +425,9 @@ func TestMessagesGroupRatioMissingUsesSameMapping(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("status = %d，期望 403；body=%s", w.Code, w.Body.String())
 	}
-	if got := decodeRelayError(t, w.Body.Bytes()).Error.Code; got != "group_ratio_missing" {
-		t.Fatalf("code = %q，期望 group_ratio_missing", got)
-	}
+	// R-W18-04：/v1/messages 的 403 是 Claude 形（permission_error），
+	// 不再携带 OpenAI 的 code 字段。
+	assertClaudeError(t, w, http.StatusForbidden, "permission_error")
 	if env.billing.preConsumeCount() != 1 || env.billing.refundCount() != 1 {
 		t.Fatalf("PreConsume=%d Refund=%d，期望 1/1（预扣全额退回）",
 			env.billing.preConsumeCount(), env.billing.refundCount())

@@ -434,7 +434,7 @@ func TestRelayRateLimitMessagesReturns429(t *testing.T) {
 			t.Fatalf("第 %d 次 status = %d，期望 200；body=%s", i+1, w.Code, w.Body.String())
 		}
 	}
-	assertRateLimited429(t, env.messages(t, relayTestToken))
+	assertRateLimitedClaude429(t, env.messages(t, relayTestToken))
 	if got := env.billing.preConsumeCount(); got != 2 {
 		t.Fatalf("PreConsume = %d，期望 2", got)
 	}
@@ -854,7 +854,7 @@ func TestRelayRateLimitMessagesRedisFailureIsFailClosed(t *testing.T) {
 		},
 	})
 	env.mr.Close()
-	assertRateLimitCheckFailed500(t, env.messages(t, relayTestToken))
+	assertRateLimitCheckFailedClaude500(t, env.messages(t, relayTestToken))
 	if got := env.upstream.count(); got != 0 {
 		t.Fatalf("上游调用 = %d，期望 0", got)
 	}

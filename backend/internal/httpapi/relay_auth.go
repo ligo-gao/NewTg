@@ -30,8 +30,11 @@ import (
 // relayErrorType 是 relay-01 §3.6 冻结的 OpenAI 兼容错误信封 type 字面量。
 const relayErrorType = "new_api_error"
 
-// relayErrorEnvelope 是 /v1 路径唯一的错误形状（不得使用 RFC7807）。
+// relayErrorEnvelope 是 OpenAI 形端点的错误形状（不得使用 RFC7807）。
 // code 字段保留但允许空串：令牌/数据库类错误按 §3.6 不传 code。
+//
+// R-W18-04：Anthropic Messages 族（/v1/messages、/v1/messages/count_tokens）
+// 不使用本形状，改用 claudeErrorEnvelope；两种信封在同一端点内不得混用。
 type relayErrorEnvelope struct {
 	Error relayErrorBody `json:"error"`
 }
@@ -78,6 +81,137 @@ func writeRelayError(w http.ResponseWriter, status int, requestID, code, message
 		Type:    relayErrorType,
 		Code:    code,
 	}})
+}
+
+// relayErrorWriter 是「按入站协议写出错误」的统一签名。
+//
+// 抽出函数类型是为了让同一段校验代码（RelayAuth、限流拒绝、敏感词拦截）
+// 不按协议复制：调用方只在**入口**决定一次写出器，之后每个错误出口都用它。
+type relayErrorWriter func(w http.ResponseWriter, status int, requestID, code, message string)
+
+// writeRelayErrorForRequest 按请求路径选择错误信封（R-W18-04）。
+//
+// 为什么按路径而不是按端点 handler 选：鉴权中间件在 handler 之前执行，
+// 它手里只有 *http.Request；若让中间件固定写 OpenAI 形，/v1/messages 的
+// 401/403/500 就会与 handler 内的 Claude 形混用——这正是裁决禁止的
+// 「同一端点内形状混用」。
+//
+// 覆盖范围只限 Anthropic Messages 路径（含 /v1/messages/count_tokens）；
+// 其它 /v1 端点（chat 等）保持 OpenAI 形，不得回归。
+func writeRelayErrorForRequest(r *http.Request) relayErrorWriter {
+	if r != nil && r.URL != nil && isAnthropicMessagesPath(r.URL.Path) {
+		return writeClaudeError
+	}
+	return writeRelayError
+}
+
+// isAnthropicMessagesPath 报告路径是否属于 Claude 原生端点族。
+//
+// 前缀匹配覆盖 count_tokens（/v1/messages/count_tokens）；精确匹配覆盖
+// 无尾斜杠的 messages 本体。其它以 /v1/messages 开头的形态（如未来子端点）
+// 同属 Anthropic 协议面，必须使用 Claude 信封。
+func isAnthropicMessagesPath(path string) bool {
+	return path == "/v1/messages" || strings.HasPrefix(path, "/v1/messages/")
+}
+
+// Claude 错误信封的类型字面量（Anthropic Messages API 公开规范）。
+//
+// 顶层固定 `{"type":"error","error":{...}}`：Claude SDK 按这个形状解析，
+// 收到 OpenAI 的 `{"error":{...,"code":...}}` 会当成未知结构。
+const (
+	claudeErrorTopLevel = "error"
+
+	claudeErrInvalidRequest  = "invalid_request_error"
+	claudeErrAuthentication  = "authentication_error"
+	claudeErrPermission      = "permission_error"
+	claudeErrNotFound        = "not_found_error"
+	claudeErrRequestTooLarge = "request_too_large"
+	claudeErrRateLimit       = "rate_limit_error"
+	claudeErrAPI             = "api_error"
+)
+
+// claudeErrorEnvelope 是 /v1/messages 族的唯一错误形状（R-W18-04）。
+//
+// 刻意**没有** code 字段：Claude 客户端只认 type/message，混入 OpenAI 的
+// code 会让两种信封在同一响应里并存。机器可读语义由 HTTP 状态码 +
+// error.type 共同表达（relay-01 §3.6 的「入站协议本地信封」）。
+type claudeErrorEnvelope struct {
+	Type  string          `json:"type"`
+	Error claudeErrorBody `json:"error"`
+}
+
+type claudeErrorBody struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+// claudeErrorTypeForStatus 把 HTTP 状态码映射为 Claude 的 error.type。
+//
+// 映射依据 R-W18-04：
+//   - 400/422 → invalid_request_error；
+//   - 401 → authentication_error；403 → permission_error；
+//   - 404 → not_found_error；413 → request_too_large；
+//   - 429 → rate_limit_error；
+//   - 402（余额/额度不足）Anthropic 没有对应类型，冻结为
+//     invalid_request_error + 固定 message（"insufficient quota"），
+//     状态码保持 402 不降级——客户端仍能按状态码区分「该充值」；
+//   - 其余 5xx → api_error（503 同样用 api_error：Claude 的
+//     overloaded_error 只用于上游过载，网关没有该语义）。
+//
+// 未知 4xx 落到 invalid_request_error：宁可让客户端按参数错误处理，
+// 也不要给一个它不认识的 type。
+func claudeErrorTypeForStatus(status int) string {
+	switch status {
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		return claudeErrInvalidRequest
+	case http.StatusUnauthorized:
+		return claudeErrAuthentication
+	case http.StatusPaymentRequired:
+		return claudeErrInvalidRequest
+	case http.StatusForbidden:
+		return claudeErrPermission
+	case http.StatusNotFound:
+		return claudeErrNotFound
+	case http.StatusRequestEntityTooLarge:
+		return claudeErrRequestTooLarge
+	case http.StatusTooManyRequests:
+		return claudeErrRateLimit
+	}
+	if status >= 500 {
+		return claudeErrAPI
+	}
+	if status >= 400 {
+		return claudeErrInvalidRequest
+	}
+	return claudeErrAPI
+}
+
+// writeClaudeError 输出 Claude 形错误信封（R-W18-04 / relay-01 §3.6）。
+//
+// 与 writeRelayError 保持一致的三条语义（裁决要求不得改变）：
+//   - 状态码原样写出（429 的 Retry-After 由调用方在此之前设置）；
+//   - requestId 追加到 message 末尾，同时写 X-Request-ID 头；
+//   - Content-Type 恒为 application/json。
+//
+// code 参数保留是为了与 relayErrorWriter 签名统一，但**不写入响应**：
+// Claude 信封没有 code 槽位；调用方的 code 仍用于日志/诊断（本函数不记日志）。
+func writeClaudeError(w http.ResponseWriter, status int, requestID, _ string, message string) {
+	if requestID == "" {
+		requestID = newRelayRequestID()
+	}
+	if requestID != "" {
+		w.Header().Set("X-Request-ID", requestID)
+		message = message + " (requestId: " + requestID + ")"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(claudeErrorEnvelope{
+		Type: claudeErrorTopLevel,
+		Error: claudeErrorBody{
+			Type:    claudeErrorTypeForStatus(status),
+			Message: message,
+		},
+	})
 }
 
 // PlaygroundSessionAuth 是 /pg/* 的会话鉴权中间件（relay-01 §1.5）。
@@ -165,14 +299,17 @@ func PlaygroundSessionAuth(sessions *auth.SessionManager) func(http.Handler) htt
 func RelayAuth(tokenStore auth.TokenLookup, access UserAccessStore, trustedProxies []netip.Prefix) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// R-W18-04：鉴权失败发生在 handler 之前，写出器必须在这里就按
+			// 入站协议选定——否则 /v1/messages 的 401/403/500 会退回 OpenAI 形。
+			writeErr := writeRelayErrorForRequest(r)
 			raw, ok := relayCredentialFromRequest(r)
 			if !ok {
-				writeRelayError(w, http.StatusUnauthorized, "", "", "invalid token")
+				writeErr(w, http.StatusUnauthorized, "", "", "invalid token")
 				return
 			}
 			key := normalizeRelayTokenKey(raw)
 			if key == "" || tokenStore == nil {
-				writeRelayError(w, http.StatusUnauthorized, "", "", "invalid token")
+				writeErr(w, http.StatusUnauthorized, "", "", "invalid token")
 				return
 			}
 			// 兼容载体归一化：relay.BuildRelayContext 只重新解析 Authorization /
@@ -183,34 +320,34 @@ func RelayAuth(tokenStore auth.TokenLookup, access UserAccessStore, trustedProxi
 
 			meta, err := tokenStore.Resolve(r.Context(), auth.HashTokenKey(key))
 			if err != nil || !tokenUsable(meta, time.Now()) {
-				writeRelayError(w, http.StatusUnauthorized, "", "", "invalid token")
+				writeErr(w, http.StatusUnauthorized, "", "", "invalid token")
 				return
 			}
 			if access == nil {
 				// 无法回源用户状态时 fail-closed：不能把零值 Role 当普通用户放行。
-				writeRelayError(w, http.StatusInternalServerError, "", "database_error", "user access unavailable")
+				writeErr(w, http.StatusInternalServerError, "", "database_error", "user access unavailable")
 				return
 			}
 			role, _, status, err := access.UserAccess(r.Context(), meta.UserID)
 			if err != nil {
 				// 已删除用户 → 401（身份失效），与坏令牌同语义；其余存储故障 500。
 				if errors.Is(err, store.ErrUserNotFound) {
-					writeRelayError(w, http.StatusUnauthorized, "", "", "invalid token")
+					writeErr(w, http.StatusUnauthorized, "", "", "invalid token")
 					return
 				}
 				// 与 relay-01 §2 阶段 1 的 500 database_error 对齐；不暴露存储错误文本。
-				writeRelayError(w, http.StatusInternalServerError, "", "database_error", "user access unavailable")
+				writeErr(w, http.StatusInternalServerError, "", "database_error", "user access unavailable")
 				return
 			}
 			if status != "enabled" {
 				// §3.4：用户被封禁 → 403 auth_user_banned。
-				writeRelayError(w, http.StatusForbidden, "", "auth_user_banned", "user is not enabled")
+				writeErr(w, http.StatusForbidden, "", "auth_user_banned", "user is not enabled")
 				return
 			}
 			// §3.4 IP 白名单：allow_ips 非空时客户端 IP 必须在列表中。
 			// 解析失败/不在列表一律 403 access_denied（不区分原因）。
 			if !tokenIPAllowed(r, meta.AllowIPs, trustedProxies) {
-				writeRelayError(w, http.StatusForbidden, "", "access_denied", "client IP is not allowed for this token")
+				writeErr(w, http.StatusForbidden, "", "access_denied", "client IP is not allowed for this token")
 				return
 			}
 

@@ -20,6 +20,7 @@ import (
 
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/relay/adapters"
 )
 
 // 定位错误一律用哨兵值而不是裸字符串：HTTP 状态码映射归 Task 8，
@@ -114,6 +115,11 @@ func BuildRelayContext(ctx context.Context, principal *auth.Principal, req *http
 	// 前置过滤器（如 request_path）需要它们；归一化层随后仍是权威写入方（§7.2）。
 	rc.RequestPath = path
 	rc.RawFormat = detectRawFormat(path)
+	// R-W18-05：客户端 `anthropic-beta` 在 HTTP 边界解析并按白名单过滤一次，
+	// 之后只以显式契约字段（RelayContext/Request.AnthropicBeta）流转。
+	// 多个同名头与单头逗号分隔是等价语义，先拼成逗号串再统一过滤。
+	// 该值不得写入日志/审计（与凭据同级纪律）。
+	rc.AnthropicBeta = adapters.FilterAnthropicBeta(strings.Join(req.Header.Values("anthropic-beta"), ","))
 
 	// 凭据只解析一次：Bearer 路径用它查令牌分组，会话路径只用它判定 pin。
 	// ParseChannelPin 是路径无关的导出函数，路由层会独立消费 pin；因此
@@ -438,6 +444,9 @@ func WithRequest(rc *contract.RelayContext, req *contract.Request, rawFormat con
 	if req != nil {
 		rc.OriginModel = req.Model
 		rc.Streaming = req.Stream
+		// 契约字段从 RelayContext 单向复制：beta 的权威写入方是
+		// BuildRelayContext 的 HTTP 边界；归一化层不重新解析请求头。
+		req.AnthropicBeta = rc.AnthropicBeta
 	}
 }
 

@@ -45,6 +45,18 @@ type Request struct {
 	// —— 原始层 ——
 	RawFormat RelayFormat  // 入站协议
 	Raw       ProtocolBody // 原始请求体（透传与未映射字段的唯一来源）
+
+	// AnthropicBeta 是客户端 `anthropic-beta` 头经白名单过滤后的值
+	// （R-W18-05；逗号分隔的 beta 标识，如 "interleaved-thinking-2025-05-14"）。
+	//
+	// 语义与零值：
+	//   - 空串 = 客户端未提供，或提供的值全部不在白名单内；适配器**不得**发送
+	//     该头（空头与「没有 beta」在上游语义上不同，不能互写）。
+	//   - 写入方唯一：relay.BuildRelayContext 在 HTTP 边界解析并按白名单过滤；
+	//     归一化层经 WithRequest 从 RelayContext 复制，不重新解析头。
+	//   - 读取方唯一：adapters.Anthropic 的 BuildRequest / BuildCountTokensRequest。
+	//   - 该值**不得**进入日志/审计（与凭据同级纪律，R-W18-05）。
+	AnthropicBeta string
 }
 
 type Message struct {

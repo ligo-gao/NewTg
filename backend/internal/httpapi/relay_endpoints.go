@@ -409,6 +409,11 @@ func (h *RelayHandler) Register(mux *http.ServeMux) {
 	// 与同一个计费接缝（h.billing）；鉴权载体 x-api-key 的归一化已在
 	// relay_auth.go / relay.credentialFromRequest 中按路径固化。
 	mux.Handle("POST /v1/messages", authMiddleware(http.HandlerFunc(h.handleMessages)))
+	// R-W18-06：零计费 count_tokens。ServeMux 的精确模式按路径区分，
+	// `/v1/messages` 不会吞掉 `/v1/messages/count_tokens`；注册顺序仅为可读性，
+	// 不是路由精确性依赖。鉴权沿用同一条 RelayAuth（x-api-key / Bearer）。
+	mux.Handle("POST /v1/messages/count_tokens",
+		authMiddleware(http.HandlerFunc(h.handleMessagesCountTokens)))
 
 	// M4 T1 的多模态路由骨架：dispatcher 由 Task 4 注入；同时把 TokenLookup
 	// 交给多模态 handler 以复用 BuildRelayContext 的分组回源路径。
@@ -456,13 +461,16 @@ func (h *RelayHandler) nativeRouteFallback(authMiddleware func(http.Handler) htt
 				return
 			}
 		}
+		// R-W18-04：405/404 也属于端点响应，必须按路径选择信封——
+		// GET /v1/messages、POST /v1/messages/unknown 属于 Claude 面。
+		writeErr := writeRelayErrorForRequest(r)
 		if allowed := methodMismatchAllowed(mux, r); len(allowed) > 0 {
 			w.Header().Set("Allow", strings.Join(allowed, ", "))
-			writeRelayError(w, http.StatusMethodNotAllowed, requestID, "method_not_allowed",
+			writeErr(w, http.StatusMethodNotAllowed, requestID, "method_not_allowed",
 				"method not allowed for this endpoint")
 			return
 		}
-		writeRelayError(w, http.StatusNotFound, requestID, "invalid_request_error", "unknown endpoint")
+		writeErr(w, http.StatusNotFound, requestID, "invalid_request_error", "unknown endpoint")
 	})
 }
 
@@ -637,7 +645,7 @@ func applyPlaygroundSession(
 // 与 relay.Route 之前调用；block 路径因此零 PreConsume、零上游请求。
 // action=log 时只记 warn 日志并放行（设计「记录日志放行」）。
 func (h *RelayHandler) rejectSensitiveContent(req *contract.Request, w http.ResponseWriter,
-	requestID string, userID int) bool {
+	requestID string, userID int, writeErr relayErrorWriter) bool {
 	cfg := h.sensitiveConfig()
 	if !cfg.Active() {
 		return false
@@ -651,7 +659,8 @@ func (h *RelayHandler) rejectSensitiveContent(req *contract.Request, w http.Resp
 		return false
 	}
 	// 固定文案与 W14 的新入口共用同一个常量/写出函数，避免两处文案漂移。
-	writeSensitiveBlocked(w, requestID)
+	// R-W18-04：/v1/messages 传入 Claude 写出器，chat 保持 OpenAI 形。
+	writeSensitiveBlockedWith(w, requestID, writeErr)
 	return true
 }
 
@@ -738,7 +747,7 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 	// F-08-18：在 IR 归一化之后、PreConsume/上游之前过滤（见函数注释）。
 	// 放在 BuildRelayContext 之后是为了日志能带上 user_id；此时尚未创建
 	// 计费会话，block 路径仍然零计费。
-	if h.rejectSensitiveContent(parsed, w, requestID, rc.UserID) {
+	if h.rejectSensitiveContent(parsed, w, requestID, rc.UserID, writeRelayError) {
 		return
 	}
 
@@ -938,15 +947,19 @@ const problemTypeEndpointNotSupported = "https://newtg.dev/problems/endpoint-not
 // 零上游请求。
 func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	requestID := newRelayRequestID()
+	// R-W18-04：本端点（含 count_tokens）所有错误出口统一用 Claude 形信封。
+	// problem+json 只保留给「端点形态不支持」的 501（writeMessagesMappedError
+	// 内部的既有例外），不得用于普通 4xx/5xx。
+	writeErr := writeClaudeError
 
 	body, err := readRelayBody(r)
 	if err != nil {
 		if errors.Is(err, errRelayBodyTooLarge) {
-			writeRelayError(w, http.StatusRequestEntityTooLarge, requestID, "request_too_large",
+			writeErr(w, http.StatusRequestEntityTooLarge, requestID, "request_too_large",
 				"request body exceeds the 32 MiB limit")
 			return
 		}
-		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request", "failed to read request body")
+		writeErr(w, http.StatusBadRequest, requestID, "invalid_request", "failed to read request body")
 		return
 	}
 	// 复原 body：BuildRelayContext 的 peekStreaming 需要读请求体（stream 标志）。
@@ -955,7 +968,7 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	parsed, err := ir.ParseAnthropicRequest(body)
 	if err != nil {
 		// GC-6：解析器文本可能回显用户输入片段，对客户端只给固定文案。
-		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request", "invalid Anthropic request body")
+		writeErr(w, http.StatusBadRequest, requestID, "invalid_request", "invalid Anthropic request body")
 		return
 	}
 	// Anthropic Messages 把 max_tokens 列为**必填**。IR 解析器对缺省保持 nil，
@@ -967,7 +980,7 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// 因此在这里、PreConsume 与任何上游调用之前显式拒绝缺失、0 与负数。
 	// 负数本会被 ir.validateScalars 拦住（同样是 400），这里统一口径。
 	if parsed.MaxTokens == nil || *parsed.MaxTokens <= 0 {
-		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request",
+		writeErr(w, http.StatusBadRequest, requestID, "invalid_request",
 			"max_tokens is required and must be a positive integer")
 		return
 	}
@@ -975,13 +988,13 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	principal, ok := auth.PrincipalFrom(r.Context())
 	if !ok {
 		// 只有中间件未挂载才会到这里；fail-closed，绝不把零值身份当匿名用户。
-		writeRelayError(w, http.StatusUnauthorized, requestID, "", "invalid token")
+		writeErr(w, http.StatusUnauthorized, requestID, "", "invalid token")
 		return
 	}
 	rc, err := relay.BuildRelayContext(r.Context(), principal, r, h.tokens)
 	if err != nil {
 		status, code, message := mapRelayContextError(err)
-		writeRelayError(w, status, requestID, code, message)
+		writeErr(w, status, requestID, code, message)
 		return
 	}
 	// 归一化层是 Request/OriginModel/Streaming 的唯一写入方（relay-01 §7.2）。
@@ -990,7 +1003,7 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// F-08-18：与 chat 同一时点（IR 之后、PreConsume/上游之前）。/v1/messages
 	// 的 system 已由解析器放进 Messages[0]（RoleSystem），因此同一个
 	// CheckRequest 同时覆盖 prompt 与 system 两个作用面。
-	if h.rejectSensitiveContent(parsed, w, requestID, rc.UserID) {
+	if h.rejectSensitiveContent(parsed, w, requestID, rc.UserID, writeErr) {
 		return
 	}
 
@@ -998,7 +1011,7 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// 之前。原生入口没有 /pg 分支，因此不存在 TokenID==nil 的会话路径
 	// （B11 恒参与）。
 	if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal, clientIP(r)); rejection != nil {
-		writeRelayRateLimitError(w, rc.RequestID, rejection)
+		writeRelayRateLimitErrorWith(w, rc.RequestID, rejection, writeErr)
 		return
 	}
 
@@ -1007,7 +1020,7 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// 对话族），因此没有 TokenID==nil 的分组回源分支。
 	pinID, hasPin := relay.ParseChannelPin(r)
 	if !hasPin && !tokenModelAllowed(principal.ModelLimits, parsed.Model) {
-		writeRelayError(w, http.StatusForbidden, requestID, "distributor_token_model_forbidden",
+		writeErr(w, http.StatusForbidden, requestID, "distributor_token_model_forbidden",
 			"this token is not allowed to access the requested model")
 		return
 	}
@@ -1016,12 +1029,12 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if h.modelStatus != nil {
 		status, found, statusErr := h.modelStatus.ModelPricingStatus(r.Context(), parsed.Model)
 		if statusErr != nil {
-			writeRelayError(w, http.StatusInternalServerError, requestID, "database_error",
+			writeErr(w, http.StatusInternalServerError, requestID, "database_error",
 				"failed to check model availability")
 			return
 		}
 		if found && status == modelPricingStatusDisabled {
-			writeRelayError(w, http.StatusNotFound, requestID, "model_not_found",
+			writeErr(w, http.StatusNotFound, requestID, "model_not_found",
 				"the requested model is not available")
 			return
 		}
@@ -1066,6 +1079,290 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.serveNativeJSON(w, r, rc, deps)
+}
+
+// ---------- POST /v1/messages/count_tokens（R-W18-06） ----------
+
+// problemTypeCountTokensUnsupported 是 count_tokens 方向不支持的 501 problem
+// type（R-W18-04 允许的「端点形态不支持」例外）。
+const problemTypeCountTokensUnsupported = "https://newtg.dev/problems/count-tokens-unsupported"
+
+// errCountTokensUnsupported 表示解析到的上游不是 Anthropic 协议族（或该协议族
+// 适配器没有实现精确计数）。它不是渠道故障，不重试、不自动禁用。
+var errCountTokensUnsupported = errors.New("httpapi: count_tokens requires an Anthropic-protocol channel")
+
+// countTokensAdapter 是 Anthropic 协议族的零计费计数扩展。
+//
+// 刻意不扩充冻结的 contract.Adapter：count_tokens 只有 Anthropic 一个协议族
+// 能精确回答，给所有适配器加方法会让「不支持」与「实现为空」混在一起。
+// 窄接口断言让不支持的适配器自然落到 501。
+type countTokensAdapter interface {
+	BuildCountTokensRequest(rc *contract.RelayContext, body []byte) (*http.Request, error)
+	ParseCountTokensResponse(resp *http.Response) (int64, error)
+}
+
+// handleMessagesCountTokens 把 Claude 客户端的 count_tokens 透传给 Anthropic
+// 协议族上游，响应严格为 `{"input_tokens": N}`。
+//
+// **零计费**（R-W18-06 冻结裁决）：本函数
+//   - 不创建 BillingSession：没有 PreConsume/Terminate/Refund，钱包与
+//     wallet_transactions 不可能变化；
+//   - 不写 usage_logs：计数不产生模型输出，没有可结算的用量事实；
+//   - 不调用 checkRelayRateLimit：不消耗 B10/B11/B12 任何桶。Claude Code 这类
+//     客户端会在每次编辑循环里调用 count_tokens，把它计入模型准入桶会让正常
+//     使用被 429 挡住，而它本身不消耗上游生成配额。
+//
+// **不做本地估算**（裁决）：仓库没有 tokenizer（usage 包明确不实现兜底估算），
+// 本地近似值冒充精确值会让客户端的上下文预算判断失真。因此只对 Anthropic
+// 协议族上游透传精确计数；解析到其它上游时返回 501 problem+json
+// （`count_tokens_unsupported`，端点形态不支持的既有例外），不引入 tokenizer。
+func (h *RelayHandler) handleMessagesCountTokens(w http.ResponseWriter, r *http.Request) {
+	requestID := newRelayRequestID()
+	writeErr := writeClaudeError
+
+	body, err := readRelayBody(r)
+	if err != nil {
+		if errors.Is(err, errRelayBodyTooLarge) {
+			writeErr(w, http.StatusRequestEntityTooLarge, requestID, "request_too_large",
+				"request body exceeds the 32 MiB limit")
+			return
+		}
+		writeErr(w, http.StatusBadRequest, requestID, "invalid_request", "failed to read request body")
+		return
+	}
+	// count_tokens 与 messages 共用同一份 Anthropic IR 解析：敏感词过滤和
+	// 模型选路都基于客户端真实内容。解析失败按 messages 的既有 400 处理
+	// （fail-closed）——绝不能因为「只是计数」就把无法解析的 body 直接送上游。
+	// 其余未建模字段仍保留在 parsed.Raw 里，由 BuildCountTokensRequest 原样透传。
+	parsed, err := ir.ParseAnthropicRequest(body)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, requestID, "invalid_request", "invalid Anthropic request body")
+		return
+	}
+	if strings.TrimSpace(parsed.Model) == "" {
+		writeErr(w, http.StatusBadRequest, requestID, "invalid_request", "model is required")
+		return
+	}
+
+	principal, ok := auth.PrincipalFrom(r.Context())
+	if !ok {
+		writeErr(w, http.StatusUnauthorized, requestID, "", "invalid token")
+		return
+	}
+	rc, err := relay.BuildRelayContext(r.Context(), principal, r, h.tokens)
+	if err != nil {
+		status, code, message := mapRelayContextError(err)
+		writeErr(w, status, requestID, code, message)
+		return
+	}
+	relay.WithRequest(rc, parsed, ir.FormatAnthropicMessages, r.URL.Path)
+
+	// F-08-18：与 /v1/messages 同一时点与同一口径（IR 之后、任何上游调用
+	// 之前）。count_tokens 原始 body 会被原样送到上游，若不在这里过滤，敏感词
+	// 配置就存在一条绕过路径：messages 400 而 count_tokens 仍把命中文本发给
+	// 上游。命中 → Claude 形 400 + 零上游 + 零计费。
+	if h.rejectSensitiveContent(parsed, w, requestID, rc.UserID, writeErr) {
+		return
+	}
+
+	// 演示站额度（P3-2 裁决）：count_tokens 虽零计费，但仍是一次真实上游调用。
+	// 演示模式下计入 site.demo.relay_quota.* 两层日额度（超限沿用 429/403），
+	// 但**不**调用 checkRelayRateLimit——因此不消耗 B10/B11/B12 任何桶。
+	// 演示额度使用的是独立的 demo:relay:* 键，与中继准入桶物理隔离。
+	if rejection := checkDemoRelayQuota(r.Context(), h.rateLimiter, h.config, rc.RequestID, clientIP(r)); rejection != nil {
+		writeRelayRateLimitErrorWith(w, rc.RequestID, rejection, writeErr)
+		return
+	}
+
+	// 与 messages 同口径的入口准入：pin 权限、令牌模型白名单、停用模型。
+	// 这些检查都不产生计费或上游调用，失败路径仍零副作用。
+	pinID, hasPin := relay.ParseChannelPin(r)
+	if !hasPin && !tokenModelAllowed(principal.ModelLimits, parsed.Model) {
+		writeErr(w, http.StatusForbidden, requestID, "distributor_token_model_forbidden",
+			"this token is not allowed to access the requested model")
+		return
+	}
+	if h.modelStatus != nil {
+		status, found, statusErr := h.modelStatus.ModelPricingStatus(r.Context(), parsed.Model)
+		if statusErr != nil {
+			writeErr(w, http.StatusInternalServerError, requestID, "database_error",
+				"failed to check model availability")
+			return
+		}
+		if found && status == modelPricingStatusDisabled {
+			writeErr(w, http.StatusNotFound, requestID, "model_not_found",
+				"the requested model is not available")
+			return
+		}
+	}
+
+	assignment, err := h.selectCountTokensChannel(r.Context(), rc, pinID, hasPin)
+	switch {
+	case errors.Is(err, errCountTokensUnsupported):
+		if requestID != "" {
+			w.Header().Set("X-Request-ID", requestID)
+		}
+		writeProblemDetail(w, http.StatusNotImplemented, problemTypeCountTokensUnsupported,
+			"count_tokens requires an Anthropic-protocol channel",
+			"count_tokens_unsupported: only Anthropic/Moonshot channels can return exact token counts; "+
+				"this request performs no billing and no upstream call")
+		return
+	case errors.Is(err, relay.ErrChannelNotFound):
+		writeErr(w, http.StatusNotFound, requestID, "channel_not_found",
+			"the pinned channel is not available")
+		return
+	case errors.Is(err, relay.ErrNoAvailableChannel):
+		writeErr(w, http.StatusServiceUnavailable, requestID, "model_not_found",
+			"no available channel for the requested model")
+		return
+	case err != nil:
+		// 存储/凭据解封失败：固定 500 文案，不回显底层错误（GC-6）。
+		writeErr(w, http.StatusInternalServerError, requestID, "database_error",
+			"failed to resolve the upstream channel")
+		return
+	}
+	relay.WithChannel(rc, assignment)
+
+	adapter, err := h.dispatch(assignment.ChannelType)
+	if err != nil {
+		h.writeCountTokensUnsupported(w, requestID)
+		return
+	}
+	counter, ok := adapter.(countTokensAdapter)
+	if !ok {
+		h.writeCountTokensUnsupported(w, requestID)
+		return
+	}
+	upstreamReq, err := counter.BuildCountTokensRequest(rc, body)
+	if err != nil {
+		writeCountTokensRequestError(w, requestID, err)
+		return
+	}
+	client := h.client
+	if client == nil {
+		client = newRelayHTTPClient()
+	}
+	resp, err := client.Do(upstreamReq)
+	if err != nil {
+		// 传输层失败：不把底层文本（可能含 URL）交给客户端。
+		writeErr(w, http.StatusBadGateway, requestID, "upstream_error", "upstream request failed")
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		class := adapter.ClassifyError(resp.StatusCode, nil)
+		status, _, message := relayUpstreamStatus(&relay.UpstreamStatusError{
+			StatusCode: resp.StatusCode,
+			Class:      class,
+		})
+		writeErr(w, status, requestID, "upstream_error", message)
+		return
+	}
+	tokens, err := counter.ParseCountTokensResponse(resp)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, requestID, "upstream_error",
+			"upstream returned an invalid count_tokens response")
+		return
+	}
+	if rc.RequestID != "" {
+		w.Header().Set("X-Request-ID", rc.RequestID)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(struct {
+		InputTokens int64 `json:"input_tokens"`
+	}{InputTokens: tokens})
+}
+
+// writeCountTokensUnsupported 写「端点方向不支持」的 501 problem+json。
+func (h *RelayHandler) writeCountTokensUnsupported(w http.ResponseWriter, requestID string) {
+	if requestID != "" {
+		w.Header().Set("X-Request-ID", requestID)
+	}
+	writeProblemDetail(w, http.StatusNotImplemented, problemTypeCountTokensUnsupported,
+		"count_tokens requires an Anthropic-protocol channel",
+		"count_tokens_unsupported: only Anthropic/Moonshot channels can return exact token counts; "+
+			"this request performs no billing and no upstream call")
+}
+
+// writeCountTokensRequestError 映射适配器构造请求失败。
+//
+// 参数类错误（请求体非法/模型为空）是客户端 400；其余（渠道配置）按 502
+// 上游请求失败处理——与 chat 的 mapRelayError 口径一致，且不回显底层文本。
+func writeCountTokensRequestError(w http.ResponseWriter, requestID string, err error) {
+	if class, ok := adapters.ClassOf(err); ok && class == contract.ErrParamInvalid {
+		writeClaudeError(w, http.StatusBadRequest, requestID, "invalid_request", "invalid count_tokens request")
+		return
+	}
+	writeClaudeError(w, http.StatusBadGateway, requestID, "upstream_error", "upstream request failed")
+}
+
+// selectCountTokensChannel 按有效分组序列选出一个 Anthropic 协议族渠道。
+//
+// 语义与 /v1/messages 的方向预检一致（R-68）：
+//   - 按 GroupSequence 逐组看候选；任一有效组内有 Anthropic 协议族渠道即选中；
+//   - 有候选但全不是 Anthropic 族 → errCountTokensUnsupported（501）；
+//   - 完全无候选 → relay.ErrNoAvailableChannel（503）；
+//   - pin 指向的渠道不在候选集 → relay.ErrChannelNotFound（404）；
+//     pin 命中但非 Anthropic 族 → errCountTokensUnsupported。
+//
+// 这里不重试：count_tokens 零计费、幂等，单次失败让客户端自行重试即可；
+// 引入重试会顺便带入自动禁用上报（针对生成请求设计），与零计费端点不符。
+func (h *RelayHandler) selectCountTokensChannel(ctx context.Context,
+	rc *contract.RelayContext, pinID int, hasPin bool) (relay.ChannelAssignment, error) {
+	sawCandidates := false
+	for _, group := range relay.GroupSequence(rc, h.maxAutoGroups) {
+		candidates, err := h.channels.Candidates(ctx, rc.OriginModel, group)
+		if err != nil {
+			return relay.ChannelAssignment{}, err
+		}
+		if len(candidates) == 0 {
+			continue
+		}
+		sawCandidates = true
+		if hasPin {
+			inGroup := false
+			for _, candidate := range candidates {
+				if candidate.ChannelID == pinID {
+					inGroup = true
+					break
+				}
+			}
+			if !inGroup {
+				continue
+			}
+			ch, err := h.channels.Get(ctx, int64(pinID))
+			if err != nil {
+				return relay.ChannelAssignment{}, err
+			}
+			if !crossproto.ChannelTypeSupportsProtocol(contract.ChannelType(ch.Type), crossproto.ProtocolAnthropic) {
+				return relay.ChannelAssignment{}, errCountTokensUnsupported
+			}
+			// 计费虽不发生，仍按该组写入 UsingGroup：渠道解析的模型映射
+			// 与后续诊断都以「实际服务该请求的分组」为准。
+			rc.UsingGroup = group
+			return h.resolveChannel(ctx, rc, pinID)
+		}
+		for _, candidate := range candidates {
+			ch, err := h.channels.Get(ctx, int64(candidate.ChannelID))
+			if err != nil {
+				// 与方向预检同口径：Get 失败的候选按不可用跳过。
+				continue
+			}
+			if !crossproto.ChannelTypeSupportsProtocol(contract.ChannelType(ch.Type), crossproto.ProtocolAnthropic) {
+				continue
+			}
+			rc.UsingGroup = group
+			return h.resolveChannel(ctx, rc, candidate.ChannelID)
+		}
+	}
+	if hasPin {
+		return relay.ChannelAssignment{}, relay.ErrChannelNotFound
+	}
+	if !sawCandidates {
+		return relay.ChannelAssignment{}, relay.ErrNoAvailableChannel
+	}
+	return relay.ChannelAssignment{}, errCountTokensUnsupported
 }
 
 // messagesDirectionCovered 按 R-68 的**有效分组序列**做方向预检。
@@ -1115,9 +1412,10 @@ func (h *RelayHandler) messagesDirectionSupported(ctx context.Context, candidate
 // problem+json，与 /v1/responses 的 fail-closed 共用同一个 problem type。
 // 资金副作用为 0：常规路径甚至不创建计费会话；pin 触发的 TOCTOU 兜底路径
 // 只创建一个会话，PreConsume/Terminate 从不发生，非流式兜底会对未预扣会话
-// 调用一次 no-op Refund（真实引擎无 hold 时直接返回 nil，不写流水）。其余
-// 错误沿用 /v1 的统一 OpenAI 信封（RelayAuth 的 401/403 也是该形状，保持
-// 同一条鉴权链的响应一致性）。
+// 调用一次 no-op Refund（真实引擎无 hold 时直接返回 nil，不写流水）。
+//
+// 其余错误按 R-W18-04 一律用 Claude 形（状态码/Retry-After/requestId 语义
+// 与 mapRelayError + writeRelayMappedError 完全一致，只替换信封形状）。
 func (h *RelayHandler) writeMessagesMappedError(w http.ResponseWriter, requestID string, err error) {
 	if errors.Is(err, crossproto.ErrUpstreamProtocolUnsupported) {
 		if requestID != "" {
@@ -1129,7 +1427,19 @@ func (h *RelayHandler) writeMessagesMappedError(w http.ResponseWriter, requestID
 				"this request performs no billing and no upstream call")
 		return
 	}
-	writeRelayMappedError(w, requestID, err)
+	writeClaudeMappedError(w, requestID, err)
+}
+
+// writeClaudeMappedError 用 Claude 信封写映射后的路由/执行错误。
+//
+// 409 + ErrSettlementInProgress 的 Retry-After 与 OpenAI 出口保持一致：
+// 裁决要求错误信封改造不得改变这一可重试信号。
+func writeClaudeMappedError(w http.ResponseWriter, requestID string, err error) {
+	status, code, message := mapRelayError(err)
+	if status == http.StatusConflict && errors.Is(err, billing.ErrSettlementInProgress) {
+		w.Header().Set("Retry-After", "1")
+	}
+	writeClaudeError(w, status, requestID, code, message)
 }
 
 // serveNativeJSON 是非流式 /v1/messages 的执行与回写。
@@ -1155,13 +1465,13 @@ func (h *RelayHandler) serveNativeJSON(w http.ResponseWriter, r *http.Request, r
 	// 防御性方向校验：过滤保证只会命中 Anthropic 协议族，但重试/计划复用
 	// 不得让异构协议体悄悄透传（R-59）。未知协议也在这里拒绝。
 	if protocol, known := crossproto.ProtocolOfChannelType(rc.ChannelType); !known || protocol != crossproto.ProtocolAnthropic {
-		writeRelayError(w, http.StatusBadGateway, rc.RequestID, "upstream_error",
+		writeClaudeError(w, http.StatusBadGateway, rc.RequestID, "upstream_error",
 			"upstream protocol does not match this endpoint")
 		return
 	}
 	if resp == nil || len(resp.Raw) == 0 {
 		// 原生响应体缺失：宁可 502 也不回一份形状未知的 JSON。
-		writeRelayError(w, http.StatusBadGateway, rc.RequestID, "upstream_error",
+		writeClaudeError(w, http.StatusBadGateway, rc.RequestID, "upstream_error",
 			"upstream returned an empty response")
 		return
 	}
@@ -1196,7 +1506,7 @@ func (h *RelayHandler) serveNativeStream(w http.ResponseWriter, r *http.Request,
 		if deps.Billing != nil {
 			_ = deps.Billing.Refund()
 		}
-		writeRelayError(w, http.StatusBadGateway, rc.RequestID, "stream_unsupported",
+		writeClaudeError(w, http.StatusBadGateway, rc.RequestID, "stream_unsupported",
 			"upstream adapter does not support streaming")
 		return
 	}
@@ -1205,7 +1515,7 @@ func (h *RelayHandler) serveNativeStream(w http.ResponseWriter, r *http.Request,
 		if deps.Billing != nil {
 			_ = deps.Billing.Refund()
 		}
-		writeRelayError(w, http.StatusBadGateway, rc.RequestID, "upstream_error",
+		writeClaudeError(w, http.StatusBadGateway, rc.RequestID, "upstream_error",
 			"upstream protocol does not match this endpoint")
 		return
 	}

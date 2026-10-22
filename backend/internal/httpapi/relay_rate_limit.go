@@ -181,7 +181,7 @@ func checkRelayRateLimit(
 	return nil
 }
 
-// writeRelayRateLimitError 写中继信封的 429/500。
+// writeRelayRateLimitError 写中继信封的 429/500（OpenAI 形，chat/多模态/任务入口）。
 //
 // requestID 必须传 rc.RequestID（而不是 handler 局部的另一个 ID）：429 的日志
 // 用同一个值记录，计费幂等键也来自它。两个 ID 并存会让客户端报障时只能对上
@@ -192,11 +192,20 @@ func checkRelayRateLimit(
 // 响应形状沿用 writeRelayError（OpenAI 信封 + X-Request-ID，relay-01 §3.6），
 // 不使用 /api 的 problem+json。
 func writeRelayRateLimitError(w http.ResponseWriter, requestID string, rejection *relayRateLimitRejection) {
+	writeRelayRateLimitErrorWith(w, requestID, rejection, writeRelayError)
+}
+
+// writeRelayRateLimitErrorWith 让调用方按入站协议选择错误信封（R-W18-04）。
+//
+// /v1/messages 必须用 Claude 形，但 Retry-After、状态码与 requestID 语义
+// 与 chat 完全一致：这里只替换**正文字母表**，不改任何头部/状态行为。
+func writeRelayRateLimitErrorWith(w http.ResponseWriter, requestID string,
+	rejection *relayRateLimitRejection, writeErr relayErrorWriter) {
 	if rejection == nil {
 		return
 	}
 	if rejection.Status == http.StatusTooManyRequests {
 		w.Header().Set("Retry-After", retrySeconds(rejection.RetryAfter))
 	}
-	writeRelayError(w, rejection.Status, requestID, rejection.Code, rejection.Message)
+	writeErr(w, rejection.Status, requestID, rejection.Code, rejection.Message)
 }

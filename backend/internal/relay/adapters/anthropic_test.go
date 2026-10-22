@@ -395,3 +395,112 @@ func hasRole(roles []contract.ChannelRole, want contract.ChannelRole) bool {
 	}
 	return false
 }
+
+// TestAnthropicBuildRequestForwardsAllowlistedBeta 锁定 R-W18-05 的出站头：
+// 只转发白名单内的 anthropic-beta 值；空值不发送；Authorization 永不出现。
+func TestAnthropicBuildRequestForwardsAllowlistedBeta(t *testing.T) {
+	adapter := NewAnthropicAdapter(contract.ChannelTypeAnthropic)
+	req := &contract.Request{
+		Model: "claude-sonnet-4-5",
+		Messages: []contract.Message{{
+			Role:    contract.RoleUser,
+			Content: []contract.ContentPart{{Kind: contract.PartText, Text: "hi"}},
+		}},
+		AnthropicBeta: "interleaved-thinking-2025-05-14, not-a-real-beta",
+	}
+	httpReq, err := adapter.BuildRequest(anthropicContext("sk-ant-secret"), req)
+	if err != nil {
+		t.Fatalf("BuildRequest: %v", err)
+	}
+	if got := httpReq.Header.Get("anthropic-beta"); got != "interleaved-thinking-2025-05-14" {
+		t.Fatalf("anthropic-beta = %q, want allowlisted value only", got)
+	}
+	if got := httpReq.Header.Get("Authorization"); got != "" {
+		t.Fatalf("Authorization 不得转发：%q", got)
+	}
+
+	// 全被白名单丢弃 / 空值：不得发送该头（空头与「无 beta」语义不同）。
+	req.AnthropicBeta = "definitely-not-a-beta"
+	httpReq, err = adapter.BuildRequest(anthropicContext("sk-ant-secret"), req)
+	if err != nil {
+		t.Fatalf("BuildRequest: %v", err)
+	}
+	if _, ok := httpReq.Header["Anthropic-Beta"]; ok {
+		t.Fatalf("非白名单值必须丢弃，实际头=%v", httpReq.Header["Anthropic-Beta"])
+	}
+}
+
+// TestAnthropicBuildCountTokensRequest 锁定 count_tokens 的路径、模型映射与
+// 未建模字段透传（精确计数必须基于客户端真实内容）。
+func TestAnthropicBuildCountTokensRequest(t *testing.T) {
+	adapter := NewAnthropicAdapter(contract.ChannelTypeAnthropic).(*Anthropic)
+	rc := anthropicContext("sk-ant-secret")
+	rc.ChannelID = 14
+	rc.UpstreamModel = "claude-upstream"
+	body := []byte(`{"model":"claude-client","system":"keep","messages":[{"role":"user","content":"hi"}]}`)
+
+	httpReq, err := adapter.BuildCountTokensRequest(rc, body)
+	if err != nil {
+		t.Fatalf("BuildCountTokensRequest: %v", err)
+	}
+	if httpReq.URL.String() != "https://api.anthropic.com/v1/messages/count_tokens" {
+		t.Fatalf("URL = %q", httpReq.URL.String())
+	}
+	if got := httpReq.Header.Get("x-api-key"); got != "sk-ant-secret" {
+		t.Fatalf("x-api-key = %q", got)
+	}
+	if got := httpReq.Header.Get("anthropic-version"); got != anthropicVersion {
+		t.Fatalf("anthropic-version = %q", got)
+	}
+	raw, _ := io.ReadAll(httpReq.Body)
+	var built map[string]any
+	if err := json.Unmarshal(raw, &built); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if built["model"] != "claude-upstream" {
+		t.Fatalf("model = %v, want upstream mapping target", built["model"])
+	}
+	if built["system"] != "keep" {
+		t.Fatalf("未建模字段被丢失：%v", built["system"])
+	}
+}
+
+// TestAnthropicBuildCountTokensMoonshotPrefix 证明 Moonshot 的 /anthropic
+// 前缀在 count_tokens 上同样生效，不会退化成官方基址。
+func TestAnthropicBuildCountTokensMoonshotPrefix(t *testing.T) {
+	adapter := NewAnthropicAdapter(contract.ChannelTypeMoonshot).(*Anthropic)
+	rc := &contract.RelayContext{
+		ChannelID:   25,
+		ChannelType: contract.ChannelTypeMoonshot,
+		Credential:  "sk-moonshot",
+	}
+	httpReq, err := adapter.BuildCountTokensRequest(rc, []byte(`{"model":"claude-test","messages":[]}`))
+	if err != nil {
+		t.Fatalf("BuildCountTokensRequest: %v", err)
+	}
+	if httpReq.URL.String() != "https://api.moonshot.cn/anthropic/v1/messages/count_tokens" {
+		t.Fatalf("URL = %q", httpReq.URL.String())
+	}
+}
+
+func TestAnthropicParseCountTokensResponse(t *testing.T) {
+	adapter := NewAnthropicAdapter(contract.ChannelTypeAnthropic).(*Anthropic)
+	ok := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"input_tokens":42}`))}
+	tokens, err := adapter.ParseCountTokensResponse(ok)
+	if err != nil || tokens != 42 {
+		t.Fatalf("ParseCountTokensResponse = (%d, %v), want (42, nil)", tokens, err)
+	}
+
+	bad := []string{`{}`, `{"input_tokens":-1}`, `not json`}
+	for _, body := range bad {
+		resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}
+		if _, err := adapter.ParseCountTokensResponse(resp); err == nil {
+			t.Fatalf("body %q 应被拒绝", body)
+		}
+	}
+	errResp := &http.Response{StatusCode: http.StatusTooManyRequests,
+		Body: io.NopCloser(strings.NewReader(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`))}
+	if _, err := adapter.ParseCountTokensResponse(errResp); err == nil {
+		t.Fatal("非 2xx 必须返回错误")
+	}
+}

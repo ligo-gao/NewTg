@@ -74,32 +74,79 @@ paths:
       responses:
         '200':
           description: Anthropic message 对象或原生 SSE 事件流（schema 见上游公开规范）
+        # R-W18-04：本端点族的普通错误一律 Claude 形（application/json），
+        # 不得引用 problem+json 的 Error400/401/402/500。唯一例外是 501
+        # 「端点形态不支持」（Error501，problem+json）。
         '400':
-          $ref: '../components/responses.yaml#/responses/Error400'
+          $ref: '../components/responses.yaml#/responses/ClaudeError400'
         '401':
-          $ref: '../components/responses.yaml#/responses/Error401'
+          $ref: '../components/responses.yaml#/responses/ClaudeError401'
         '402':
-          $ref: '../components/responses.yaml#/responses/Error402'
+          $ref: '../components/responses.yaml#/responses/ClaudeError402'
         '403':
-          description: 令牌模型白名单不允许该模型，或用户已被封禁
+          $ref: '../components/responses.yaml#/responses/ClaudeError403'
         '404':
-          description: 模型已停用（`model_pricing.status=2`）
+          $ref: '../components/responses.yaml#/responses/ClaudeError404'
         '413':
-          description: 请求体超过 32 MiB 上限
+          $ref: '../components/responses.yaml#/responses/ClaudeError413'
         '429':
-          $ref: '../components/responses.yaml#/responses/RelayError429'
+          $ref: '../components/responses.yaml#/responses/ClaudeError429'
         '500':
-          $ref: '../components/responses.yaml#/responses/Error500'
-          description: |
-            服务端内部错误。限流器故障时按 fail-closed 返回
-            `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
-            是否超限就不放行，客户端不应把它当作可重试的限流。
+          $ref: '../components/responses.yaml#/responses/ClaudeError500'
         '501':
           $ref: '../components/responses.yaml#/responses/Error501'
         '502':
-          description: 上游协议与端点不匹配、上游流不可用或适配器不支持流式
+          $ref: '../components/responses.yaml#/responses/ClaudeError502'
         '503':
-          description: 该模型没有可用渠道
+          $ref: '../components/responses.yaml#/responses/ClaudeError503'
+
+  # Anthropic token 计数端点（R-W18-06）。零计费：不 PreConsume、不写
+  # usage_logs、不消耗 B10/B11/B12 限流桶。只对 Anthropic 协议族上游透传
+  # 精确计数；其它上游返回 501 problem+json（count_tokens_unsupported，
+  # 「端点形态不支持」的既有例外），不引入本地 tokenizer。
+  /v1/messages/count_tokens:
+    post:
+      tags: [relay]
+      operationId: countMessageTokens
+      x-relay-format: claude
+      summary: Anthropic Messages token 计数（零计费）
+      description: |
+        请求体沿用 Anthropic Messages 形状（`model` / `messages` / `system` /
+        `tools` 等），响应严格为 `{"input_tokens": N}`。
+
+        鉴权与 `/v1/messages` 相同（`Authorization` 或 `x-api-key`）。
+        本端点**零计费**：不预扣、不结算、不写 usage_logs，也不计入准入限流桶
+        （B10/B11/B12）。与 `/v1/messages` 同口径先做敏感词过滤；演示站开启时
+        仍计入 `site.demo.relay_quota.*` 两层日额度（超限 429/403），因为它是
+        一次真实上游调用。
+        只有 Anthropic 协议族渠道能返回精确计数；其它上游返回 501
+        `application/problem+json`（`count_tokens_unsupported`），不做本地估算。
+      security:
+        - bearerToken: []
+      externalDocs:
+        description: Anthropic token counting API reference
+        url: https://docs.anthropic.com/en/api/messages-count-tokens
+      responses:
+        '200':
+          description: '`{"input_tokens": N}`（精确计数，来自上游）'
+        '400':
+          $ref: '../components/responses.yaml#/responses/ClaudeError400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/ClaudeError401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/ClaudeError403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/ClaudeError404'
+        '413':
+          $ref: '../components/responses.yaml#/responses/ClaudeError413'
+        '500':
+          $ref: '../components/responses.yaml#/responses/ClaudeError500'
+        '501':
+          $ref: '../components/responses.yaml#/responses/Error501'
+        '502':
+          $ref: '../components/responses.yaml#/responses/ClaudeError502'
+        '503':
+          $ref: '../components/responses.yaml#/responses/ClaudeError503'
 
   # Responses 创建端点（T2 / P-01 / R-13）：只有插件任务渠道能执行；未命中
   # 插件原生路由时 fail-closed（501 problem+json），不回落通用中继。

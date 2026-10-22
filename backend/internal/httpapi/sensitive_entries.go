@@ -118,9 +118,16 @@ func rejectSensitiveTexts(w http.ResponseWriter, requestID string, userID int64,
 	return true
 }
 
-// writeSensitiveBlocked 输出 F-08-18 的固定 400 响应。
+// writeSensitiveBlocked 输出 F-08-18 的固定 400 响应（OpenAI 形出口）。
 func writeSensitiveBlocked(w http.ResponseWriter, requestID string) {
-	writeRelayError(w, http.StatusBadRequest, requestID, "content_blocked", sensitiveBlockedMessage)
+	writeSensitiveBlockedWith(w, requestID, writeRelayError)
+}
+
+// writeSensitiveBlockedWith 让调用方按入站协议选择错误信封（R-W18-04）。
+//
+// 文案仍是同一常量：Claude 形只改变外层形状，不改「不透露命中词」的语义。
+func writeSensitiveBlockedWith(w http.ResponseWriter, requestID string, writeErr relayErrorWriter) {
+	writeErr(w, http.StatusBadRequest, requestID, "content_blocked", sensitiveBlockedMessage)
 }
 
 // logSensitiveHitEvent 写 security.sensitive_word_hit（warn，F-08-18）。

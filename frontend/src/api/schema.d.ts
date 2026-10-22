@@ -4151,6 +4151,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/messages/count_tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Anthropic Messages token 计数（零计费）
+         * @description 请求体沿用 Anthropic Messages 形状（`model` / `messages` / `system` /
+         *     `tools` 等），响应严格为 `{"input_tokens": N}`。
+         *
+         *     鉴权与 `/v1/messages` 相同（`Authorization` 或 `x-api-key`）。
+         *     本端点**零计费**：不预扣、不结算、不写 usage_logs，也不计入准入限流桶
+         *     （B10/B11/B12）。与 `/v1/messages` 同口径先做敏感词过滤；演示站开启时
+         *     仍计入 `site.demo.relay_quota.*` 两层日额度（超限 429/403），因为它是
+         *     一次真实上游调用。
+         *     只有 Anthropic 协议族渠道能返回精确计数；其它上游返回 501
+         *     `application/problem+json`（`count_tokens_unsupported`），不做本地估算。
+         */
+        post: operations["countMessageTokens"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/responses": {
         parameters: {
             query?: never;
@@ -5315,6 +5344,29 @@ export interface components {
                  *     `rate_limit_check_failed`；令牌/会话类错误为空串（不提供存在性信息）。
                  */
                 code: string;
+            };
+        };
+        /**
+         * @description Anthropic Claude 形错误信封。`message` 末尾会追加
+         *     ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+         */
+        ClaudeError: {
+            /**
+             * @description 顶层判别字段，固定为 `error`
+             * @enum {string}
+             */
+            type: "error";
+            error: {
+                /**
+                 * @description 错误类型映射（R-W18-04）：400/422/402 → `invalid_request_error`；
+                 *     401 → `authentication_error`；403 → `permission_error`；
+                 *     404 → `not_found_error`；413 → `request_too_large`；
+                 *     429 → `rate_limit_error`；5xx → `api_error`。
+                 * @enum {string}
+                 */
+                type: "invalid_request_error" | "authentication_error" | "permission_error" | "not_found_error" | "request_too_large" | "rate_limit_error" | "api_error";
+                /** @description 固定文案（不包含上游 URL/凭据/SQL 等内部信息） */
+                message: string;
             };
         };
         /**
@@ -9482,6 +9534,121 @@ export interface components {
             };
             content: {
                 "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description 请求不符合 Anthropic Messages 契约（Claude 形错误信封） */
+        ClaudeError400: {
+            headers: {
+                /** @description 请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)` */
+                "X-Request-ID"?: string;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ClaudeError"];
+            };
+        };
+        /** @description 未认证或令牌失效（Claude 形 `authentication_error`） */
+        ClaudeError401: {
+            headers: {
+                /** @description 请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)` */
+                "X-Request-ID"?: string;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ClaudeError"];
+            };
+        };
+        /** @description 额度/余额不足（Claude 形 `invalid_request_error`，状态码保持 402） */
+        ClaudeError402: {
+            headers: {
+                /** @description 请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)` */
+                "X-Request-ID"?: string;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ClaudeError"];
+            };
+        };
+        /** @description 已认证但无权使用该模型/渠道（Claude 形 `permission_error`） */
+        ClaudeError403: {
+            headers: {
+                /** @description 请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)` */
+                "X-Request-ID"?: string;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ClaudeError"];
+            };
+        };
+        /** @description 模型/渠道不存在或已停用（Claude 形 `not_found_error`） */
+        ClaudeError404: {
+            headers: {
+                /** @description 请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)` */
+                "X-Request-ID"?: string;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ClaudeError"];
+            };
+        };
+        /** @description 请求体超过上限（Claude 形 `request_too_large`） */
+        ClaudeError413: {
+            headers: {
+                /** @description 请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)` */
+                "X-Request-ID"?: string;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ClaudeError"];
+            };
+        };
+        /**
+         * @description 触发中继准入限流（Claude 形 `rate_limit_error`）。`Retry-After` 为建议
+         *     重试的整数秒数；message 文案中的秒数与之一致。
+         */
+        ClaudeError429: {
+            headers: {
+                /** @description 建议重试等待秒数（向上取整） */
+                "Retry-After"?: number;
+                /** @description 请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)` */
+                "X-Request-ID"?: string;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ClaudeError"];
+            };
+        };
+        /** @description 服务端内部错误（Claude 形 `api_error`） */
+        ClaudeError500: {
+            headers: {
+                /** @description 请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)` */
+                "X-Request-ID"?: string;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ClaudeError"];
+            };
+        };
+        /** @description 上游请求失败或响应不可用（Claude 形 `api_error`） */
+        ClaudeError502: {
+            headers: {
+                /** @description 请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)` */
+                "X-Request-ID"?: string;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ClaudeError"];
+            };
+        };
+        /** @description 服务不可用（Claude 形 `api_error`） */
+        ClaudeError503: {
+            headers: {
+                /** @description 请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)` */
+                "X-Request-ID"?: string;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ClaudeError"];
             };
         };
         /** @description 资源已过期（兑换码虚拟过期态） */
@@ -17093,52 +17260,44 @@ export interface operations {
                 };
                 content?: never;
             };
-            400: components["responses"]["Error400"];
-            401: components["responses"]["Error401"];
-            402: components["responses"]["Error402"];
-            /** @description 令牌模型白名单不允许该模型，或用户已被封禁 */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 模型已停用（`model_pricing.status=2`） */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 请求体超过 32 MiB 上限 */
-            413: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            429: components["responses"]["RelayError429"];
-            /**
-             * @description 服务端内部错误。限流器故障时按 fail-closed 返回
-             *     `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
-             *     是否超限就不放行，客户端不应把它当作可重试的限流。
-             */
-            500: components["responses"]["Error500"];
+            400: components["responses"]["ClaudeError400"];
+            401: components["responses"]["ClaudeError401"];
+            402: components["responses"]["ClaudeError402"];
+            403: components["responses"]["ClaudeError403"];
+            404: components["responses"]["ClaudeError404"];
+            413: components["responses"]["ClaudeError413"];
+            429: components["responses"]["ClaudeError429"];
+            500: components["responses"]["ClaudeError500"];
             501: components["responses"]["Error501"];
-            /** @description 上游协议与端点不匹配、上游流不可用或适配器不支持流式 */
-            502: {
+            502: components["responses"]["ClaudeError502"];
+            503: components["responses"]["ClaudeError503"];
+        };
+    };
+    countMessageTokens: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description `{"input_tokens": N}`（精确计数，来自上游） */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description 该模型没有可用渠道 */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+            400: components["responses"]["ClaudeError400"];
+            401: components["responses"]["ClaudeError401"];
+            403: components["responses"]["ClaudeError403"];
+            404: components["responses"]["ClaudeError404"];
+            413: components["responses"]["ClaudeError413"];
+            500: components["responses"]["ClaudeError500"];
+            501: components["responses"]["Error501"];
+            502: components["responses"]["ClaudeError502"];
+            503: components["responses"]["ClaudeError503"];
         };
     };
     createResponse: {

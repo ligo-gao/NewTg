@@ -109,3 +109,122 @@ responses:
       application/problem+json:
         schema:
           $ref: './problem.yaml#/schemas/Problem'
+
+  # ---------------------------------------------------------------------------
+  # Claude 形错误目录（R-W18-04，真源 writeClaudeError）。
+  #
+  # /v1/messages 族（含 count_tokens）是 Anthropic 原生协议面：Claude 客户端按
+  # `{"type":"error","error":{"type","message"}}` 解析错误。普通 400/401/402/
+  # 403/404/413/429/5xx 一律使用这些组件，**不得**复用上面的 problem+json
+  # Error400/401/... —— 后者只属于管理面与「端点形态不支持」的 501
+  # （Error501 仍是 problem+json 的唯一中继例外）。
+  #
+  # 每个响应都带 X-Request-ID；message 末尾也追加 `(requestId: <id>)`。
+  # ---------------------------------------------------------------------------
+  ClaudeError400:
+    description: 请求不符合 Anthropic Messages 契约（Claude 形错误信封）
+    headers:
+      X-Request-ID:
+        description: "请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`"
+        schema: {type: string}
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/ClaudeError'
+  ClaudeError401:
+    description: 未认证或令牌失效（Claude 形 `authentication_error`）
+    headers:
+      X-Request-ID:
+        description: "请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`"
+        schema: {type: string}
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/ClaudeError'
+  ClaudeError402:
+    description: 额度/余额不足（Claude 形 `invalid_request_error`，状态码保持 402）
+    headers:
+      X-Request-ID:
+        description: "请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`"
+        schema: {type: string}
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/ClaudeError'
+  ClaudeError403:
+    description: 已认证但无权使用该模型/渠道（Claude 形 `permission_error`）
+    headers:
+      X-Request-ID:
+        description: "请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`"
+        schema: {type: string}
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/ClaudeError'
+  ClaudeError404:
+    description: 模型/渠道不存在或已停用（Claude 形 `not_found_error`）
+    headers:
+      X-Request-ID:
+        description: "请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`"
+        schema: {type: string}
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/ClaudeError'
+  ClaudeError413:
+    description: 请求体超过上限（Claude 形 `request_too_large`）
+    headers:
+      X-Request-ID:
+        description: "请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`"
+        schema: {type: string}
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/ClaudeError'
+  ClaudeError429:
+    description: |
+      触发中继准入限流（Claude 形 `rate_limit_error`）。`Retry-After` 为建议
+      重试的整数秒数；message 文案中的秒数与之一致。
+    headers:
+      Retry-After:
+        description: 建议重试等待秒数（向上取整）
+        schema:
+          type: integer
+          minimum: 0
+      X-Request-ID:
+        description: "请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`"
+        schema: {type: string}
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/ClaudeError'
+  ClaudeError500:
+    description: 服务端内部错误（Claude 形 `api_error`）
+    headers:
+      X-Request-ID:
+        description: "请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`"
+        schema: {type: string}
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/ClaudeError'
+  ClaudeError502:
+    description: 上游请求失败或响应不可用（Claude 形 `api_error`）
+    headers:
+      X-Request-ID:
+        description: "请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`"
+        schema: {type: string}
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/ClaudeError'
+  ClaudeError503:
+    description: 服务不可用（Claude 形 `api_error`）
+    headers:
+      X-Request-ID:
+        description: "请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`"
+        schema: {type: string}
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/ClaudeError'
