@@ -4015,12 +4015,12 @@ export interface paths {
          *     `x-api-key` 在本路径作为 Claude 客户端的兼容载体生效（relay-01 §3.1）。
          *     计费与 chat 走同一条 `BillingSession` 接缝（同一份预扣/结算语义）。
          *
-         *     方向矩阵（R-59）：只有 Anthropic 协议族渠道（`anthropic`、兼容
-         *     Anthropic 协议的 `moonshot`）能承接；命中其它协议族渠道时返回 `501`
-         *     `application/problem+json`
+         *     方向矩阵（R-W18-03）：`anthropic` / 兼容 Anthropic 协议的 `moonshot`
+         *     上游按同协议逐字节透传；`openai` / `gemini` 上游的响应经 IR → Anthropic
+         *     编码器回写为 Claude 形状（含 SSE 事件序列）。只有这三类之外的渠道
+         *     返回 `501` `application/problem+json`
          *     （`type=https://newtg.dev/problems/endpoint-not-supported`），
-         *     因为中继缺少 IR → Anthropic 的响应编码器，放行会向 Claude 客户端
-         *     返回语义错误的形状。该分支零计费、零上游调用。
+         *     因为这些渠道没有可实现的中继响应形状。该分支零计费、零上游调用。
          */
         post: operations["createMessage"];
         delete?: never;

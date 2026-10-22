@@ -1641,6 +1641,14 @@ func (h *RelayHandler) bridgeAnthropicCrossProtocolStream(
 		})
 	}
 
+	// 事件循环以 EOF 结束时不会再有 yield 回调，因此上面的 ctx 检查覆盖不到
+	// 「客户端断开 → 上游 body 被级联取消 → 直接 EOF」这条路径。这里补一次
+	// 判定，否则会把半截流误当正常收尾，写出伪造的 message_delta/message_stop
+	// 并结算（复核 F5）。
+	if r.Context().Err() != nil {
+		clientGone = true
+	}
+
 	// 头部兜底（R-05 优先级 3）：事件流没给出任何非零用量时读上游
 	// `x-model-response-usage` 头；仍没有则由估计值兜底（Source=estimated）。
 	if !sawUsage || !usageHasFact(accumulated) {

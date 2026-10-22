@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"iter"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/relay/adapters"
+	"newtg/gateway/internal/relay/ir"
 	"newtg/gateway/internal/store"
 )
 
@@ -386,6 +388,47 @@ func TestMessagesGeminiUpstreamJSONRoundTrip(t *testing.T) {
 	}
 	if fact := env.billing.lastFact(); fact.Usage.Prompt != 7 || fact.Usage.Completion != 3 {
 		t.Fatalf("usage fact = %+v, want prompt 7 / completion 3", fact.Usage)
+	}
+}
+
+// TestMessagesGeminiUpstreamToolCallID（复核 F1）：Gemini functionCall 没有 id，
+// 端到端回写的 tool_use 块必须带非空 id；否则客户端回传的 tool_result 会被
+// 本网关的 Anthropic 解析器拒绝（多轮工具调用链断开）。
+func TestMessagesGeminiUpstreamToolCallID(t *testing.T) {
+	env, _ := messagesTestEnv(t, contract.ChannelTypeGemini, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[`+
+			`{"functionCall":{"name":"lookup","args":{"q":"x"}}}]},"finishReason":"STOP"}],`+
+			`"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1,"totalTokenCount":3}}`)
+	})
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":8,"messages":[{"role":"user","content":"hi"}],"stream":false}`,
+		messagesHeaders())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var respObj map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &respObj); err != nil {
+		t.Fatalf("response is not JSON: %v", err)
+	}
+	blocks, _ := respObj["content"].([]any)
+	var toolID string
+	for _, raw := range blocks {
+		block, _ := raw.(map[string]any)
+		if block["type"] == "tool_use" {
+			toolID, _ = block["id"].(string)
+		}
+	}
+	if toolID == "" {
+		t.Fatalf("response = %s, want non-empty tool_use.id", w.Body.String())
+	}
+	// 回传：用响应给出的 id 构造 tool_result，网关入口必须能解析（非 400）。
+	followup := `{"model":"claude-test","max_tokens":8,"messages":[` +
+		`{"role":"user","content":"hi"},` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"` + toolID + `","name":"lookup","input":{}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + toolID + `","content":"ok"}]}]}`
+	if _, err := ir.ParseAnthropicRequest([]byte(followup)); err != nil {
+		t.Fatalf("回传 tool_result 被拒绝（id=%q）: %v", toolID, err)
 	}
 }
 
@@ -766,6 +809,33 @@ func messagesStreamEnv(t *testing.T, channelType contract.ChannelType, upstreamH
 	return env, observing
 }
 
+// messagesCrossProtoStreamEnv 与 messagesStreamEnv 同构，但包装的是
+// OpenAI/Gemini 适配器——用于跨协议流式渲染（W18-B）的观察点。
+func messagesCrossProtoStreamEnv(t *testing.T, channelType contract.ChannelType, upstreamHandler http.HandlerFunc) (*relayTestEnv, *observingStreamAdapter) {
+	t.Helper()
+	env, _ := messagesTestEnv(t, channelType, upstreamHandler)
+	var (
+		inner contract.StreamAdapter
+		ok    bool
+	)
+	switch channelType {
+	case contract.ChannelTypeOpenAI:
+		// *OpenAI 直接满足 StreamAdapter（无需断言）。
+		inner = adapters.NewOpenAI()
+		ok = true
+	case contract.ChannelTypeGemini:
+		inner, ok = adapters.NewGeminiAdapter(channelType).(contract.StreamAdapter)
+	default:
+		t.Fatalf("messagesCrossProtoStreamEnv: unsupported channel type %q", channelType)
+	}
+	if !ok {
+		t.Fatalf("%q adapter must implement StreamAdapter", channelType)
+	}
+	observing := &observingStreamAdapter{inner: inner}
+	env.handler.dispatch = func(contract.ChannelType) (contract.Adapter, error) { return observing, nil }
+	return env, observing
+}
+
 // TestMessagesStreamFrameCount 锁住 SendCount 的口径：SSE 帧数，而不是
 // io.Read 的块数。LF 与 CRLF 两种行尾都必须各计 3 帧。
 func TestMessagesStreamFrameCount(t *testing.T) {
@@ -868,6 +938,166 @@ func TestMessagesStreamClientAbortRefunds(t *testing.T) {
 	}
 	if strings.Contains(body, "message_stop") {
 		t.Fatalf("gateway forged a message_stop on abort: %q", body)
+	}
+}
+
+// TestMessagesCrossProtocolStreamClientAbortRefunds（复核 F5）：跨协议渲染路径
+// 的客户端断开同样必须恰好一次 Refund、零 Terminate，且不写伪造的收尾帧。
+// 与同协议透传的差异：没有 tee 写端可以立刻发现断开，因此这里覆盖
+// 「取消 → 上游 body 级联取消 → 事件循环 EOF」这条不会再有 yield 回调的路径。
+func TestMessagesCrossProtocolStreamClientAbortRefunds(t *testing.T) {
+	env, observing := messagesCrossProtoStreamEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		// 先给一段内容，确保网关已经写出 message_start 与 text delta。
+		_, _ = io.WriteString(w, `data: {"id":"chatcmpl-abort","model":"gpt","choices":[{"index":0,"delta":{"content":"partial"}}]}`+"\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// 保持流打开，直到网关因客户端断开而关闭上游请求。
+		<-r.Context().Done()
+	})
+	gateway := httptest.NewServer(env.handler.Handler())
+	defer gateway.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, gateway.URL+"/v1/messages",
+		strings.NewReader(`{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"stream":true}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("x-api-key", relayTestToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	buf := make([]byte, 4096)
+	n, readErr := resp.Body.Read(buf)
+	if readErr != nil && n == 0 {
+		t.Fatalf("read first frame: %v", readErr)
+	}
+	first := string(buf[:n])
+	cancel()
+	rest, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	body := first + string(rest)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for env.billing.refundCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("billing session was not refunded after client disconnect")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := env.billing.refundCount(); got != 1 {
+		t.Fatalf("Refund calls = %d, want exactly 1", got)
+	}
+	if got := env.billing.terminateCount(); got != 0 {
+		t.Fatalf("Terminate calls = %d, want 0（失败出口必须退款）", got)
+	}
+	if observing.rc == nil || observing.rc.StreamStatus == nil {
+		t.Fatal("StreamStatus was not recorded")
+	}
+	if got := observing.rc.StreamStatus.EndReason; got != contract.EndClientAbort {
+		t.Fatalf("EndReason = %d, want EndClientAbort", got)
+	}
+	if strings.Contains(body, "message_stop") || strings.Contains(body, "message_delta") {
+		t.Fatalf("gateway forged a closing event on abort: %q", body)
+	}
+}
+
+// cleanEOFCrossProtoAdapter 模拟「客户端断开 → 上游干净 EOF、此后不再产出
+// 任何事件」的适配器：专门覆盖渲染桥**在事件循环结束后**才观察到 ctx 取消的
+// 路径（复核 F5）。真实的 OpenAI/Gemini 适配器通常会在读失败时交一个
+// EventError，从而走循环内的 ctx 检查；本适配器刻意不交，确保收尾判定不只
+// 依赖「下一次 yield」。
+type cleanEOFCrossProtoAdapter struct {
+	*adapters.OpenAI
+}
+
+func (a *cleanEOFCrossProtoAdapter) StreamEvents(_ *contract.RelayContext, rw io.ReadWriter) iter.Seq[contract.StreamEvent] {
+	return func(yield func(contract.StreamEvent) bool) {
+		buf := make([]byte, 256)
+		for {
+			if _, err := rw.Read(buf); err != nil {
+				// 干净 EOF/读错都不产出事件：模拟上游正常关闭且没有收尾语义。
+				return
+			}
+		}
+	}
+}
+
+// TestMessagesCrossProtocolStreamCleanEOFAfterAbortRefunds：客户端断开后上游
+// 干净 EOF（无收尾事件）时，必须判定为 client_abort 并 Refund，绝不因为
+// 「循环正常结束」就写 message_delta/message_stop 或结算。
+func TestMessagesCrossProtocolStreamCleanEOFAfterAbortRefunds(t *testing.T) {
+	env, observing := func() (*relayTestEnv, *observingStreamAdapter) {
+		env, _ := messagesTestEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+			// 一个真实字节块（由假适配器读取后丢弃），随后保持连接直到客户端断开。
+			_, _ = io.WriteString(w, `data: {"id":"chatcmpl-eof","model":"gpt","choices":[{"index":0,"delta":{"content":"partial"}}]}`+"\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+			<-r.Context().Done()
+		})
+		observing := &observingStreamAdapter{inner: &cleanEOFCrossProtoAdapter{OpenAI: adapters.NewOpenAI()}}
+		env.handler.dispatch = func(contract.ChannelType) (contract.Adapter, error) { return observing, nil }
+		return env, observing
+	}()
+	gateway := httptest.NewServer(env.handler.Handler())
+	defer gateway.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, gateway.URL+"/v1/messages",
+		strings.NewReader(`{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"stream":true}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("x-api-key", relayTestToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	buf := make([]byte, 512)
+	n, readErr := resp.Body.Read(buf)
+	if readErr != nil && n == 0 {
+		t.Fatalf("read first frame: %v", readErr)
+	}
+	first := string(buf[:n])
+	cancel()
+	rest, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	body := first + string(rest)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for env.billing.refundCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("billing session was not refunded after clean-EOF disconnect")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := env.billing.refundCount(); got != 1 {
+		t.Fatalf("Refund calls = %d, want exactly 1", got)
+	}
+	if got := env.billing.terminateCount(); got != 0 {
+		t.Fatalf("Terminate calls = %d, want 0（干净 EOF + 客户端断开仍属失败出口）", got)
+	}
+	if observing.rc == nil || observing.rc.StreamStatus == nil {
+		t.Fatal("StreamStatus was not recorded")
+	}
+	if got := observing.rc.StreamStatus.EndReason; got != contract.EndClientAbort {
+		t.Fatalf("EndReason = %d, want EndClientAbort", got)
+	}
+	if strings.Contains(body, "message_stop") || strings.Contains(body, "message_delta") {
+		t.Fatalf("gateway forged a closing event on abort: %q", body)
 	}
 }
 

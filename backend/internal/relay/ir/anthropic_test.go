@@ -851,3 +851,91 @@ func TestAnthropicStreamRendererGeminiFinishReason(t *testing.T) {
 		t.Fatalf("stop_reason = %v, want max_tokens", got)
 	}
 }
+
+// TestBuildAnthropicResponseSynthesizesToolUseID 锁定复核 F1：
+// Gemini functionCall 没有 id，响应方向必须合成稳定非空 id，且客户端回传
+// tool_result 时本网关自己的解析器能接受（否则多轮工具调用链断开）。
+func TestBuildAnthropicResponseSynthesizesToolUseID(t *testing.T) {
+	raw := `{"candidates":[{"content":{"role":"model","parts":[` +
+		`{"functionCall":{"name":"lookup","args":{"q":"x"}}}]},"finishReason":"STOP"}],` +
+		`"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}`
+	resp, usage, err := ParseGeminiResponse([]byte(raw))
+	if err != nil {
+		t.Fatalf("ParseGeminiResponse: %v", err)
+	}
+	body, err := BuildAnthropicResponse(resp, usage)
+	if err != nil {
+		t.Fatalf("BuildAnthropicResponse: %v", err)
+	}
+	blocks := contentBlocks(t, decodeAnthropicJSON(t, body))
+	if len(blocks) != 1 {
+		t.Fatalf("blocks = %d, want 1", len(blocks))
+	}
+	tool := blocks[0].(map[string]any)
+	if tool["type"] != "tool_use" {
+		t.Fatalf("block = %v, want tool_use", tool)
+	}
+	id, _ := tool["id"].(string)
+	if id == "" {
+		t.Fatal("tool_use id 为空：Gemini functionCall 无 id 时必须合成非空 id")
+	}
+
+	// 回传：用响应给出的 id 构造 tool_result，本网关解析器必须接受。
+	followup := `{"model":"claude-test","max_tokens":16,"messages":[` +
+		`{"role":"user","content":"hi"},` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"` + id + `","name":"lookup","input":{}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + id + `","content":"ok"}]}]}`
+	if _, err := ParseAnthropicRequest([]byte(followup)); err != nil {
+		t.Fatalf("回传 tool_result 被拒绝（id=%q）: %v", id, err)
+	}
+}
+
+// TestBuildAnthropicResponseKeepsExistingToolUseID：已有 id 必须原样保留。
+func TestBuildAnthropicResponseKeepsExistingToolUseID(t *testing.T) {
+	resp := &contract.Response{ID: "msg_keep", Choices: []contract.Choice{{Message: contract.Message{
+		Role: contract.RoleAssistant,
+		Content: []contract.ContentPart{{
+			Kind: contract.PartToolCall, Text: `{}`,
+			Meta: map[string]any{"id": "toolu_given", "name": "lookup"},
+		}},
+	}}}}
+	body, err := BuildAnthropicResponse(resp, contract.Usage{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := contentBlocks(t, decodeAnthropicJSON(t, body))[0].(map[string]any)
+	if tool["id"] != "toolu_given" {
+		t.Fatalf("id = %v, want toolu_given（不得改写已有 id）", tool["id"])
+	}
+}
+
+// TestAnthropicStreamRendererSynthesizesToolUseID：流式工具增量没有 id 时，
+// tool_use 块同样必须带非空 id，并能被回传解析。
+func TestAnthropicStreamRendererSynthesizesToolUseID(t *testing.T) {
+	r := NewAnthropicStreamRenderer("msg_req1", "m")
+	_ = r.Start()
+	_ = r.Push(contract.StreamEvent{Kind: contract.EventDelta, ToolDelta: &contract.ToolCallDelta{
+		Index: 0, Name: "lookup", ArgumentsFragment: `{"q":"x"}`,
+	}})
+	frames := r.Close(contract.Usage{})
+
+	var id string
+	for _, frame := range frames {
+		if frame.Event != "content_block_start" {
+			continue
+		}
+		obj := decodeAnthropicJSON(t, frame.Data)
+		block, _ := obj["content_block"].(map[string]any)
+		if block["type"] == "tool_use" {
+			id, _ = block["id"].(string)
+		}
+	}
+	if id == "" {
+		t.Fatal("流式 tool_use id 为空：缺失时必须合成非空 id")
+	}
+	followup := `{"model":"m","max_tokens":8,"messages":[{"role":"user","content":[` +
+		`{"type":"tool_result","tool_use_id":"` + id + `","content":"ok"}]}]}`
+	if _, err := ParseAnthropicRequest([]byte(followup)); err != nil {
+		t.Fatalf("流式合成 id 回传 tool_result 被拒绝（id=%q）: %v", id, err)
+	}
+}

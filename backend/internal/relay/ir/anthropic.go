@@ -1170,20 +1170,20 @@ func BuildAnthropicResponse(resp *contract.Response, usage contract.Usage) ([]by
 	if len(resp.Choices) == 0 {
 		return nil, paramErrf("响应没有可编码的 choice")
 	}
-	message := resp.Choices[0].Message
-	blocks := make([]any, 0, len(message.Content))
-	for i, part := range message.Content {
-		block, err := encodeAnthropicResponseBlock(part)
-		if err != nil {
-			return nil, fmt.Errorf("content[%d]: %w", i, err)
-		}
-		blocks = append(blocks, block)
-	}
 	id := resp.ID
 	if strings.TrimSpace(id) == "" {
 		// Anthropic 客户端按 id 做消息关联；上游没给 id 时给一个稳定的占位，
 		// 绝不省略该字段（缺字段会让 SDK 的类型校验先失败）。
 		id = "msg_newtg"
+	}
+	message := resp.Choices[0].Message
+	blocks := make([]any, 0, len(message.Content))
+	for i, part := range message.Content {
+		block, err := encodeAnthropicResponseBlock(part, id, i)
+		if err != nil {
+			return nil, fmt.Errorf("content[%d]: %w", i, err)
+		}
+		blocks = append(blocks, block)
 	}
 	obj := map[string]any{
 		"id":            id,
@@ -1217,7 +1217,10 @@ func nilOrString(value string) any {
 // signature 的 Anthropic thinking 发给上游）；响应方向是**发给客户端**的，
 // 任何 IR 推理载体都应还原为 thinking/redacted_thinking，否则 Gemini 的
 // CoT 会混进可见正文（与 ir.go H1 同一判据）。
-func encodeAnthropicResponseBlock(part contract.ContentPart) (map[string]any, error) {
+//
+// scope/index 只用于 tool_use id 缺失时的合成（见 anthropicToolUseID）：
+// Gemini 的 functionCall 与旧式 OpenAI function_call 都不带 id。
+func encodeAnthropicResponseBlock(part contract.ContentPart, scope string, index int) (map[string]any, error) {
 	if part.Kind == contract.PartText && isReasoningPart(part) {
 		if data, ok := part.Meta["redacted_thinking"].(string); ok {
 			return map[string]any{"type": "redacted_thinking", "data": data}, nil
@@ -1233,7 +1236,47 @@ func encodeAnthropicResponseBlock(part contract.ContentPart) (map[string]any, er
 		// assistant 响应不含 tool_result；静默丢弃会让内容悄悄缺失。
 		return nil, paramErrf("响应消息不应包含 tool_result 块")
 	}
+	if part.Kind == contract.PartToolCall {
+		return encodeAnthropicResponseToolUse(part, scope, index)
+	}
 	return encodeAnthropicBlock(part)
+}
+
+// encodeAnthropicResponseToolUse 编码 assistant 的 tool_use 块。
+//
+// 为什么必须保证 id 非空（复核 F1）：Gemini 的 functionCall 与旧式 OpenAI
+// function_call 没有 id；若原样写 `id:""`，Claude 客户端下一轮回传的
+// tool_result.tool_use_id 也是空串，本网关自己的 Anthropic 解析器会拒绝
+// （parseAnthropicToolResultBlock 要求非空），多轮工具调用链直接断开。
+// 已有 id 一律原样保留；仅在缺失时按「响应 scope + 块序号」合成稳定值，
+// 同一次响应内可重复、跨响应不冲突。
+func encodeAnthropicResponseToolUse(part contract.ContentPart, scope string, index int) (map[string]any, error) {
+	name := metaString(part.Meta, "name")
+	if name == "" {
+		return nil, paramErrf("tool_call 缺少 name，无法编码为 tool_use")
+	}
+	input, err := encodeAnthropicToolInput(part.Text)
+	if err != nil {
+		return nil, err
+	}
+	id := strings.TrimSpace(metaString(part.Meta, "id"))
+	if id == "" {
+		id = anthropicToolUseID(scope, index)
+	}
+	return map[string]any{"type": "tool_use", "id": id, "name": name, "input": input}, nil
+}
+
+// anthropicToolUseID 为缺失 id 的工具调用合成稳定非空 id。
+//
+// 形状 `toolu_<scope>_<index>`：scope 对非流式是消息 id、对流式是
+// `msg_<requestID>`；同一响应内不同工具块按序号区分。只做占位，不参与
+// 计费或对账。
+func anthropicToolUseID(scope string, index int) string {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return fmt.Sprintf("toolu_%d", index)
+	}
+	return fmt.Sprintf("toolu_%s_%d", scope, index)
 }
 
 // ----------------------------------------------------------------------------
@@ -1456,6 +1499,12 @@ func (r *AnthropicStreamRenderer) bufferTool(delta contract.ToolCallDelta) {
 func (r *AnthropicStreamRenderer) toolFrames(tool *anthropicStreamTool) []AnthropicSSEFrame {
 	index := r.nextIndex
 	r.nextIndex++
+	// id 缺失时合成（复核 F1）：Gemini functionCall / 旧式 OpenAI function_call
+	// 不带 id；空 id 会让下游 tool_result 回传无法被本网关解析。
+	id := strings.TrimSpace(tool.id)
+	if id == "" {
+		id = anthropicToolUseID(r.id, tool.index)
+	}
 	// name 为空时保留空串：让问题在客户端显式暴露，而不是悄悄丢掉这次
 	// 工具调用（调用方仍能看到 id 与参数）。
 	start, _ := json.Marshal(map[string]any{
@@ -1463,7 +1512,7 @@ func (r *AnthropicStreamRenderer) toolFrames(tool *anthropicStreamTool) []Anthro
 		"index": index,
 		"content_block": map[string]any{
 			"type":  "tool_use",
-			"id":    tool.id,
+			"id":    id,
 			"name":  tool.name,
 			"input": map[string]any{},
 		},
