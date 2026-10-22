@@ -66,6 +66,10 @@ type sentEmailCode struct {
 	Code    string
 }
 
+// Configured 显式声明可用（M-5）：emailDeliveryConfigured 对未实现该方法的
+// 发送器按 fail-closed 处理，测试假实现必须主动表态。
+func (f *fakeEmailSender) Configured(context.Context) bool { return true }
+
 func (f *fakeEmailSender) SendEmailCode(_ context.Context, email, purpose, code string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -42,7 +42,8 @@ type RouterConfig struct {
 	SessionSecret []byte
 	// PublicBaseURL 是 Origin/Referer 白名单（逗号分隔，可为多个）；空时按请求 Host 同源。
 	PublicBaseURL string
-	// EmailSender 为 nil 时验证码只生成不下发（未配置 SMTP 的 M1 状态）。
+	// EmailSender 实现 Configured 且返回 false（或为 nil）时，邮箱验证码等
+	// 事务性邮件端点 fail-closed 503（email_unavailable），不再静默 204。
 	EmailSender EmailCodeSender
 	// Authz 是 RBAC 中间件；提供时 NewRouter 会接线权限装载器。
 	Authz *rbac.AuthzMiddleware

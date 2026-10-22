@@ -269,6 +269,10 @@ type accountTestNotifSender struct {
 	err   error
 }
 
+// Configured 显式声明可用（M-5）：email 渠道复用 emailDeliveryConfigured，
+// 未实现该方法的发送器会被判为未配置。
+func (s *accountTestNotifSender) Configured(context.Context) bool { return true }
+
 func (s *accountTestNotifSender) SendTestNotification(_ context.Context, channel, target string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -43,6 +43,10 @@ type sentResetLink struct {
 	ResetURL string
 }
 
+// Configured 显式声明可用（M-5）：未实现该方法的发送器会被
+// emailDeliveryConfigured 判为未配置（fail-closed）。
+func (s *resetTestSender) Configured(context.Context) bool { return true }
+
 func (s *resetTestSender) SendEmailCode(_ context.Context, _, _, _ string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

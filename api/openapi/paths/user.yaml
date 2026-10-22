@@ -430,8 +430,11 @@ paths:
       operationId: testNotification
       summary: 发送一条测试通知
       description: |
-        渠道实现由模块 08 注入；M1 未配置通道时返回 503，偏好读写不受影响。
-        成功 200 {channel,sent:true}。
+        渠道由模块 08 注入。成功 200 {channel,sent:true}。不可用时在消耗
+        3 次/分钟配额之前返回 503：
+        - email 渠道 SMTP 未配置 → `email_unavailable`；
+        - 本部署未装配的渠道（webhook/bark/gotify）→ `notification_channel_unavailable`。
+        投递失败返回 502 `notification_test_failed`。偏好读写不受影响。
       security:
         - sessionCookie: []
         - bearerToken: []

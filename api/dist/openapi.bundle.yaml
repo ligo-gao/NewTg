@@ -734,7 +734,9 @@ paths:
         TTL 10 分钟、一次性。同邮箱 1 次/60 秒、同 IP 10 次/小时；超限 429
         + Retry-After。成功恒 204，响应不回显验证码。purpose=verify|bind
         要求有效会话（本端点不经过 SessionAuth，实现内显式校验），缺失 401。
-        SMTP 发送失败返回 502（验证码同时作废，避免留下收不到的有效码）。
+        SMTP 未配置时返回 503 `email_unavailable`（fail-closed：不生成验证码，
+        不会出现「204 但用户永远收不到」）。SMTP 发送失败返回 502
+        `email_send_failed`（验证码同时作废，避免留下收不到的有效码）。
       security: []
       requestBody:
         required: true
@@ -744,7 +746,7 @@ paths:
               $ref: '#/components/schemas/EmailCodeRequest'
       responses:
         '204':
-          description: 已受理（验证码已生成；配置 SMTP 时已投递）
+          description: 验证码已生成并投递（SMTP 未配置时返回 503 而非本响应）
         '400':
           $ref: '#/components/responses/Error400'
         '401':
@@ -893,8 +895,10 @@ paths:
       operationId: requestPasswordReset
       summary: 请求口令重置邮件（统一成功态）
       description: |
-        邮箱存在与否响应完全一致（恒 204，防枚举）；存在时投递 256-bit
-        token（30 分钟）。同邮箱 60 秒冷却、同 IP 5 次/分钟，超限 429。
+        SMTP 已配置时：邮箱存在与否响应完全一致（均 204，防枚举）；存在时投递
+        256-bit token（30 分钟）。同邮箱 60 秒冷却、同 IP 5 次/分钟，超限 429。
+        SMTP 未配置时：无论邮箱是否存在都返回 503 `email_unavailable`
+        （fail-closed，同样不泄露账号存在性，不会出现「204 但邮件永远收不到」）。
       security: []
       requestBody:
         required: true
@@ -904,7 +908,7 @@ paths:
               $ref: '#/components/schemas/PasswordResetRequest'
       responses:
         '204':
-          description: 已受理（不透露邮箱是否注册）
+          description: 已受理（不透露邮箱是否注册；SMTP 未配置时返回 503 而非本响应）
         '400':
           $ref: '#/components/responses/Error400'
         '429':
@@ -1446,8 +1450,11 @@ paths:
       operationId: testNotification
       summary: 发送一条测试通知
       description: |
-        渠道实现由模块 08 注入；M1 未配置通道时返回 503，偏好读写不受影响。
-        成功 200 {channel,sent:true}。
+        渠道由模块 08 注入。成功 200 {channel,sent:true}。不可用时在消耗
+        3 次/分钟配额之前返回 503：
+        - email 渠道 SMTP 未配置 → `email_unavailable`；
+        - 本部署未装配的渠道（webhook/bark/gotify）→ `notification_channel_unavailable`。
+        投递失败返回 502 `notification_test_failed`。偏好读写不受影响。
       security:
         - sessionCookie: []
         - bearerToken: []

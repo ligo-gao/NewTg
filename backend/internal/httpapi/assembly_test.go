@@ -283,10 +283,10 @@ func (authRepoWithoutLoader) CreateUser(context.Context, CreateUserInput) (Creat
 // TestGatewayBaseURLFallback 覆盖 platform-03 §3.1 #20 的生效基址回退：
 // PUBLIC_BASE_URL → site.server_address → 「相关功能禁用」（不是启动失败）。
 func TestGatewayBaseURLFallback(t *testing.T) {
-	t.Run("无 env 且 DB 无值：启动成功但重置投递禁用", func(t *testing.T) {
+	t.Run("无 env 且 DB 无值：启动成功但重置投递 fail-closed", func(t *testing.T) {
 		deps, _ := gatewayDepsForTest(t)
 		deps.PublicBaseURL = ""
-		deps.EmailSender = nil // M1 无 SMTP：投递通道本身不存在
+		deps.EmailSender = nil // 未配置 SMTP：投递通道本身不存在
 		rt, err := BuildGatewayRouter(deps)
 		if err != nil {
 			t.Fatalf("无基址且无发信器时 gateway 必须能启动: %v", err)
@@ -294,8 +294,12 @@ func TestGatewayBaseURLFallback(t *testing.T) {
 
 		rr := doRawRequest(rt, http.MethodPost, "/api/auth/password-reset/request",
 			`{"email":"nobody@example.com"}`, nil)
-		if rr.Code != http.StatusNoContent {
-			t.Fatalf("reset request = %d, want 204（统一成功态，不投递）body=%q", rr.Code, rr.Body.String())
+		// W13-EMAIL 冻结：未配置邮件时不得再用 204 假装已发送。
+		if rr.Code != http.StatusServiceUnavailable {
+			t.Fatalf("reset request = %d, want 503 email_unavailable（body=%q）", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "email_unavailable") {
+			t.Fatalf("reset problem type = %q, want email_unavailable", rr.Body.String())
 		}
 		// 改密端点仍挂载：无会话应为 401，而不是 404。
 		rr = doRawRequest(rt, http.MethodPost, "/api/password", `{}`, nil)
