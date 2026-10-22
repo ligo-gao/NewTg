@@ -39,6 +39,7 @@ import (
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/relay"
 	"newtg/gateway/internal/relay/billingseam"
+	"newtg/gateway/internal/sensitive"
 	"newtg/gateway/internal/tasks"
 )
 
@@ -135,6 +136,8 @@ type TasksHandler struct {
 	// rateLimiter/config 是 W7/M5-b 的提交面准入限流缝（R-M5-07）。
 	rateLimiter RelayRateLimiter
 	config      ConfigReader
+	// sensitive 是 sec.sensitive.* 的解析缓存（F-08-18 / W14）；零值可用。
+	sensitive *sensitive.Cache
 }
 
 // NewTasksHandler 构造 handler。Store/Channels/Plugins/Sealer/Signer 是硬依赖：
@@ -175,6 +178,7 @@ func NewTasksHandler(cfg TasksHandlerConfig) *TasksHandler {
 		modelExpr:      cfg.ModelExpr,
 		rateLimiter:    cfg.RateLimiter,
 		config:         cfg.Config,
+		sensitive:      &sensitive.Cache{},
 	}
 }
 
@@ -298,6 +302,13 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		rc.RequestID = requestID
 	}
 	relay.WithRequest(rc, &contract.Request{Model: model}, "openai", r.URL.Path)
+
+	// F-08-18（W14）：任务/视频提交体里的用户文本在渠道选择、PreConsume 与
+	// 出站之前过滤。视频入口（/v1/videos）先解析 model 再委托到本函数，因此
+	// 两个端点只有这一处实现，不会出现「一个端点过滤、另一个漏掉」。
+	if h.rejectSensitiveTaskBody(w, requestID, int64(rc.UserID), body) {
+		return
+	}
 
 	// W7/M5-b 准入限流（R-M5-07 / R-M5-04）：任务**提交**是本 handler 的唯一
 	// 限流点（videos / batches / 原生路由都汇合到这里）。位置在渠道选择与

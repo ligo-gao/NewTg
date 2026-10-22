@@ -194,6 +194,12 @@ func (h *TasksHandler) handleBatchesSubmit(w http.ResponseWriter, r *http.Reques
 		writeRelayError(w, status, requestID, code, message)
 		return
 	}
+	// F-08-18（W14）：逐行扫描用户文本，位置固定在父批次落库与任何逐行提交
+	// 之前。block 命中 → 整批 400，保证父行/任务行/PreConsume 全为零（批量
+	// 语义设计未定义，选择见 sensitive_entries.go 的注释与 W14 报告）。
+	if h.rejectSensitiveBatchRows(w, requestID, principal.UserID, req.Requests) {
+		return
+	}
 
 	// R-16 第 1 步：先落父行（单条 INSERT，任何计费/上游调用之前）。
 	// 失败即 500 且零副作用——客户端可以安全重试而不会重复扣费。

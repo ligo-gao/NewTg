@@ -37,6 +37,7 @@ import (
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/relay"
 	"newtg/gateway/internal/relay/multimodal"
+	"newtg/gateway/internal/sensitive"
 )
 
 // ============================================================================
@@ -135,6 +136,8 @@ type MultimodalHandler struct {
 	groups      PlaygroundUserGroups
 	rateLimiter RelayRateLimiter
 	config      ConfigReader
+	// sensitive 是 sec.sensitive.* 的解析缓存（F-08-18 / W14）；零值可用。
+	sensitive *sensitive.Cache
 }
 
 // NewMultimodalHandler 构造多模态端点 handler。
@@ -148,6 +151,7 @@ func NewMultimodalHandler(opts MultimodalHandlerOptions) *MultimodalHandler {
 		groups:      opts.Groups,
 		rateLimiter: opts.RateLimiter,
 		config:      opts.Config,
+		sensitive:   &sensitive.Cache{},
 	}
 }
 
@@ -217,7 +221,8 @@ func (h *MultimodalHandler) serve(w http.ResponseWriter, r *http.Request, endpoi
 		}
 	}
 
-	model, err := validateMultimodalEntry(endpoint, r.URL.Path, r.Header.Get("Content-Type"), body)
+	contentType := r.Header.Get("Content-Type")
+	model, err := validateMultimodalEntry(endpoint, r.URL.Path, contentType, body)
 	if err != nil {
 		writeMultimodalEntryError(w, requestID, err)
 		return
@@ -242,6 +247,14 @@ func (h *MultimodalHandler) serve(w http.ResponseWriter, r *http.Request, endpoi
 		Model: model,
 		Raw:   contract.ProtocolBody(body),
 	}, multimodalRawFormat, r.URL.Path)
+
+	// F-08-18（W14）：多模态入口没有对话 IR/system 指令，用户文本按 prompt
+	// 面扫描（任务书第 4 条）。位置固定在入口校验与 RelayContext 之后、
+	// 分组/限流/白名单/派发（含 PreConsume）之前：block 路径零预扣、零上游、
+	// 零写库；BuildRelayContext 只读令牌/分组，不产生计费副作用。
+	if h.rejectSensitiveMultimodal(w, requestID, int64(rc.UserID), endpoint, r.URL.Path, contentType, body) {
+		return
+	}
 
 	// /pg/* 会话路径：补分组 + 计费前模型准入（与 chat 路径同一 helper，
 	// 保证两条入口对「模型不可用」得到相同 403 与相同的零计费副作用）。

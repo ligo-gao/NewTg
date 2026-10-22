@@ -650,17 +650,13 @@ func (h *RelayHandler) rejectSensitiveContent(req *contract.Request, w http.Resp
 	if cfg.Action != sensitive.ActionBlock {
 		return false
 	}
-	writeRelayError(w, http.StatusBadRequest, requestID, "content_blocked",
-		"request content is blocked by the content policy")
+	// 固定文案与 W14 的新入口共用同一个常量/写出函数，避免两处文案漂移。
+	writeSensitiveBlocked(w, requestID)
 	return true
 }
 
 func (h *RelayHandler) sensitiveConfig() sensitive.Config {
-	cache := h.sensitive
-	if cache == nil {
-		cache = &sensitive.Cache{}
-	}
-	return cache.Load(h.config)
+	return sensitiveConfigFor(h.sensitive, h.config)
 }
 
 // logSensitiveHit 写 security.sensitive_word_hit（warn，F-08-18）。
@@ -670,16 +666,7 @@ func (h *RelayHandler) sensitiveConfig() sensitive.Config {
 // 运行日志按请求关联。
 func (h *RelayHandler) logSensitiveHit(requestID string, userID int,
 	surface sensitive.Surface, action sensitive.Action) {
-	logger := h.log
-	if logger == nil {
-		logger = slog.Default()
-	}
-	logger.Warn("security.sensitive_word_hit",
-		"event", "security.sensitive_word_hit",
-		"action", string(action),
-		"surface", string(surface),
-		"request_id", requestID,
-		"user_id", userID)
+	logSensitiveHitEvent(h.log, action, surface, requestID, int64(userID))
 }
 
 func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
