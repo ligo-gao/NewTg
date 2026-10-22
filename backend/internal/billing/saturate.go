@@ -33,6 +33,11 @@ type DBLogger struct {
 	feed FeedPublisher
 	// log 只用于投递失败的告警；nil 时回退 slog.Default。
 	log *slog.Logger
+	// queue 是 W10-N2 的批处理生产者接缝。nil = 保持同步逐条写入
+	// （`log.batch_enabled` 默认 false）；非 nil = 先 XADD，失败时同步回退。
+	queue UsageLogQueue
+	// now 是事件 created_at 的时钟接缝；零值使用 time.Now。
+	now func() time.Time
 }
 
 // NewDBLogger 构造日志落库器。logsDB 为 nil 时 Saturate 返回错误而不是 panic。
@@ -48,6 +53,30 @@ func (l *DBLogger) WithFeed(feed FeedPublisher, logger *slog.Logger) *DBLogger {
 	l.feed = feed
 	l.log = logger
 	return l
+}
+
+// WithBatchQueue 挂接 W10-N2 的 Redis Stream 生产者并返回自身（链式装配）。
+//
+// 【冻结边界 R-W10-02】挂接后 `Saturate` 先尝试 XADD：成功即视为日志已受理
+// （不再同步写库）；**失败必须回退到同步写入**，绝不因为 Redis 抖动丢日志。
+// 回退后的同步路径与未挂接时逐字节一致。
+//
+// 默认关闭（`log.batch_enabled=false`）：批处理是可选加速面，先保持既有
+// 同步语义上线，再按部署开关切换、可随时回退。
+func (l *DBLogger) WithBatchQueue(queue UsageLogQueue, logger *slog.Logger) *DBLogger {
+	l.queue = queue
+	if logger != nil {
+		l.log = logger
+	}
+	return l
+}
+
+// logger 返回告警用的 logger（零值回退 slog.Default）。
+func (l *DBLogger) logger() *slog.Logger {
+	if l != nil && l.log != nil {
+		return l.log
+	}
+	return slog.Default()
 }
 
 // 公开首页 live_feed 的 Redis 键（modules-09 F-09-02 / A6-#4）。
@@ -307,6 +336,15 @@ func (l *DBLogger) Saturate(ctx context.Context, fact *contract.UsageFact,
 	if err != nil {
 		return err
 	}
+	// W10-N2：批处理模式先入 Stream。XADD 成功 = 已受理，直接返回，消费侧
+	// 负责落库与 live_feed；失败则**同步回退**下面的既有写入路径。
+	//
+	// 两种模式对调用方的语义相同：返回 nil 表示「日志已受理」。有 hold 的
+	// 结算路径仍然是「先日志、后结算」，无 hold 的补扣路径仍然是「先资金、
+	// 后日志」——批处理没有改变结算金额或顺序。
+	if l.queue != nil && l.enqueueUsageLog(ctx, row, fact != nil, rc) == nil {
+		return nil
+	}
 	inserted, err := l.writeUsageLog(ctx, row)
 	if err != nil {
 		return fmt.Errorf("billing: saturate usage log for request %s: %w", row.requestID, err)
@@ -319,6 +357,35 @@ func (l *DBLogger) Saturate(ctx context.Context, fact *contract.UsageFact,
 	// 让一次 Redis 故障反向影响结算会打开「少收费/重复退款」的风险。
 	if inserted && fact != nil && l.feed != nil {
 		l.publishFeed(row, rc, outcome)
+	}
+	return nil
+}
+
+// enqueueUsageLog 把一行日志事实投递到 Stream。返回错误时调用方必须同步回退。
+//
+// 独立短超时：结算路径不应被 Redis 的 3s 默认读超时拖住。超时即按失败处理
+// （回退方向安全：日志仍然落库）。若超时但其实 XADD 已生效，消费侧与同步
+// 写者会通过同一把 request_id 顾问锁 + 行存在性检查收敛，不会写出两行。
+func (l *DBLogger) enqueueUsageLog(ctx context.Context, row usageLogRow,
+	feedEligible bool, rc *contract.RelayContext) error {
+
+	now := l.now
+	if now == nil {
+		now = time.Now
+	}
+	upstream := "unknown"
+	if rc != nil {
+		upstream = feedUpstreamFamily(rc.ChannelType)
+	}
+	event := eventFromUsageLogRow(row, now(), feedEligible, upstream)
+
+	enqueueCtx, cancel := context.WithTimeout(ctx, usageLogEnqueueTimeout)
+	defer cancel()
+	if err := l.queue.Enqueue(enqueueCtx, event); err != nil {
+		// 只记录并回退：XADD 失败不是请求失败，也不是结算失败。
+		l.logger().Warn("billing: usage log stream enqueue failed; falling back to synchronous write",
+			"request_id", row.requestID, "status", row.status, "error", err)
+		return err
 	}
 	return nil
 }
