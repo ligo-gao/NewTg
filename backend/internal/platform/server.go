@@ -531,11 +531,12 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	// Saturator 是 usage_logs 的落库实现（Task 6 的 DBLogger）。worker 的
 	// 兜底退款只依赖钱包流水，日志是辅助状态面（R-14）；但装配真实的
 	// Saturator 让引擎在将来被 worker 复用时行为与 gateway 一致。
+	//
+	// W10-N2：退款事件必须与成功事件同流（R-W10-02），因此 worker 的写入器
+	// 也按同一开关装配 Stream 生产者；消费循环在下方与本角色一起启动。
+	feedPublisher := billing.NewRedisFeedPublisher(rr.client)
 	engine := billing.NewEngine(gormDB, sqlLogs, rr.client, center, source, registry,
-		billing.NewDBLogger(sqlLogs).
-			// worker 的退款收敛不产生新调用（fact=nil），DBLogger 只在真正
-			// 插入新行时投递 live_feed；接线与 gateway 保持一致。
-			WithFeed(billing.NewRedisFeedPublisher(rr.client), log))
+		newUsageLogDBLogger(sqlLogs, feedPublisher, center, rr.client, log))
 	// S4a：与 gateway 同一装配口径。worker 复用引擎做兜底恢复，
 	// 未装配会让订阅偏好退化为纯钱包行为。
 	engine.SetSubscriptionFunding(billing.NewStoreSubscriptionFunding(
@@ -913,6 +914,12 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	stopRetention := startRetentionWorkers(ctx, sqlDB, rr.client, center,
 		cfg.NodeName, httpapi.ResolveProcessInstanceID(), log)
 
+	// W10-N2：usage_logs 批处理消费者。默认关闭（log.batch_enabled=false）：
+	// 关闭时不启动任何 goroutine，日志写入仍走生产侧的同步路径。打开后
+	// 与 worker 同生命周期启动，停机时 cancel+Wait 先于连接池关闭。
+	stopUsageLogStream := startUsageLogStreamWorker(ctx, center, rr.client, sqlLogs,
+		feedPublisher, cfg.NodeName, httpapi.ResolveProcessInstanceID(), log)
+
 	// W10-METRICS：worker 没有主 HTTP 端口，指标与 /healthz、/readyz 暴露在
 	// METRICS_ADDR（platform-05 §3.4）；MetricsAddr=="0"/空时监听不启动。
 	// InitWorker 预建任务/残留基线，保证空跑任务也有 task_runs family
@@ -946,6 +953,7 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	})
 	// 先停后台循环（过期扫描 + 任务轮询 + 排行榜 + 订阅维护）再关连接池：
 	// 否则下一次 DB 调用会拿到「连接已关闭」错误，把正常停机噪声打进告警。
+	stopUsageLogStream()
 	stopRetention()
 	cancelExpiry()
 	expiryWG.Wait()

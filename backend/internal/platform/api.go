@@ -190,11 +190,13 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 
 	// T9：真实计费引擎。R-41/R-88 的生产保证要求 Redis 非 nil（结算双扣
 	// 窗口靠 requestID 锁收窄）；Saturator 写独立日志库（usage_logs）。
+	//
+	// W10-N2：`log.batch_enabled` 打开时日志写入器改为「先 XADD、失败同步
+	// 回退」；默认关闭，行为与既有同步路径完全一致。live_feed 投递无论在
+	// 哪种模式下都保持「只有真正插入新行才投递」。
+	feedPublisher := billing.NewRedisFeedPublisher(rdb)
 	engine := billing.NewEngine(gormDB, logsDB, rdb, center, source,
-		billing.NewRegistry(rdb), billing.NewDBLogger(logsDB).
-			// live_feed 投递（D6b）：事件在 usage_logs 提交成功后投递到 Redis；
-			// 失败只告警，不影响计费。Redis 与计费引擎共用同一连接。
-			WithFeed(billing.NewRedisFeedPublisher(rdb), log))
+		billing.NewRegistry(rdb), newUsageLogDBLogger(logsDB, feedPublisher, center, rdb, log))
 	// S4a：订阅是请求路径的资金来源之一，必须装配到引擎；未装配时引擎
 	// 会保持纯钱包行为（订阅偏好被忽略）。
 	engine.SetSubscriptionFunding(billing.NewStoreSubscriptionFunding(

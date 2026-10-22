@@ -95,6 +95,9 @@ var sectionOrder = []string{
 	// rebase 修复：mj section 已在下方 W8/MJ-a2 组声明，这里不得重复，
 	// 否则 All() 会把整族设置追加两次（注册表唯一性测试直接失败）。
 	"redemption",
+	// W10-N2：日志批处理开关（log.batch_enabled）。只服务 worker/日志写入
+	// 路径，不进入公开下发全集；默认关闭以保持既有同步语义。
+	"log",
 	// M6d：任务插件平台与模型部署控制面。两者都是独立页，但设置 Tab /
 	// 插件主开关仍走同一注册表（modules-08 §3.10 / §3.20）。
 	"plugin", "task", "deploy",
@@ -563,6 +566,20 @@ func buildRegistry() []Setting {
 		// 上限 10 年，防止把「天」误写成极大值后在换算 Duration 时溢出。
 		def("redemption.retention_days", "redemption", TypeInt, int64(90),
 			minInt(0), maxInt(3650)),
+
+		// ==== log（W10-N2：usage_logs 批处理）====
+		//
+		// 【默认 false = 保持同步逐条写入】批处理（Redis Stream + 批量
+		// INSERT）是可选加速面：先以既有同步路径上线，部署验证后再打开。
+		// 打开后 `XADD` 成功即视为日志已受理，`XADD` 失败同步回退（R-W10-02），
+		// 两种模式对结算金额/顺序的语义一致，可随时回退。
+		//
+		// 【默认值待业主确认】冻结口径要求默认关闭；这个值本身是否长期
+		// 保持 false（而非在稳定性验证后改为 true）待业主裁决。
+		//
+		// 读取时机：gateway/worker 启动时解析一次快照（与 task 轮询上限
+		// 同口径）；改动随进程重建生效，避免两个副本看到不同的写入路径。
+		def("log.batch_enabled", "log", TypeBool, false),
 
 		// ==== mj（W10-N9 / R-W10-10：MJ 族任务保留清理）====
 		//
