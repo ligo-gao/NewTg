@@ -77,7 +77,9 @@ describe('LanguageCard (F-01-19)', () => {
       ).toBe('fr')
     })
     expect(globalThis.localStorage.getItem('newtg.language')).toBe('fr')
-    expect(getByText('Langue')).toBeTruthy()
+    await waitFor(() => {
+      expect(getByText('Langue')).toBeTruthy()
+    })
   })
 
   it('falls back to the previous language when the server rejects the save', async () => {
