@@ -527,6 +527,11 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		return fmt.Errorf("worker: subscribe config center: %w", err)
 	}
 
+	// W10-N4/N9/N10/N11：保留设置快照在启动期解析一次。W17-2 的任务框架
+	// 也要用同一份 lookahead（log_partition_precreate 手动触发），因此提前
+	// 到这里解析，保证调度器与保留循环看到同一个窗口。
+	retentionSettings := resolveLogRetentionSettings(center, log)
+
 	registry := billing.NewRegistry(rr.client)
 	// Saturator 是 usage_logs 的落库实现（Task 6 的 DBLogger）。worker 的
 	// 兜底退款只依赖钱包流水，日志是辅助状态面（R-14）；但装配真实的
@@ -910,12 +915,27 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		return fmt.Errorf("worker: start instance heartbeat: %w", err)
 	}
 
+	// W17-2 worker 任务框架：静态注册表 + 租约调度 + 运行记录。既有循环的
+	// 调度语义不变（Scheduled=false, Run=nil），这里只增加目录可见性与
+	// 白名单任务的手动触发。装配失败只记录：管理面不可用时计费/轮询仍需运行。
+	stopWorkerTasks, err := startWorkerTaskFramework(ctx, workerTaskDeps{
+		Cfg:      cfg,
+		DB:       sqlDB,
+		LogsDB:   sqlLogs,
+		Redis:    rr.client,
+		Center:   center,
+		Settings: retentionSettings,
+		Logger:   log,
+	})
+	if err != nil {
+		log.Error("worker: task framework disabled", "error", err)
+		stopWorkerTasks = nil
+	}
+
 	// W10-N4/N9/N10/N11：兑换码回收、任务保留、过期日志分区删除与审计
-	// 保留（N10/N11 使用独立 DB_RETENTION_DSN）。设置键在启动时解析一次快照；
-	// N10 的 lookahead 同时供下面的分区预建循环使用，必须来自同一份快照。
-	// 停机序统一在下方 stopRetention（cancel + Wait + 关闭 retention 连接池），
-	// 保证进行中的 DELETE/DROP 先于连接池关闭退出。
-	retentionSettings := resolveLogRetentionSettings(center, log)
+	// 保留（N10/N11 使用独立 DB_RETENTION_DSN）。设置键在启动时解析一次快照
+	// （retentionSettings 已在配置中心装载后解析）；停机序统一在下方
+	// stopRetention（cancel + Wait + 关闭 retention 连接池）。
 	stopRetention := startRetentionWorkers(ctx, cfg, sqlDB, sqlLogs, rr.client, center,
 		retentionSettings, cfg.NodeName, httpapi.ResolveProcessInstanceID(), log)
 
@@ -960,6 +980,9 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	})
 	// 先停后台循环（过期扫描 + 任务轮询 + 排行榜 + 订阅维护）再关连接池：
 	// 否则下一次 DB 调用会拿到「连接已关闭」错误，把正常停机噪声打进告警。
+	if stopWorkerTasks != nil {
+		stopWorkerTasks()
+	}
 	stopUsageLogStream()
 	stopRetention()
 	cancelExpiry()

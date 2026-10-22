@@ -5391,6 +5391,127 @@ paths:
           $ref: '#/components/responses/Error403'
         '503':
           $ref: '#/components/responses/Error503'
+  /api/system/tasks:
+    get:
+      tags:
+        - admin
+      operationId: listSystemTasks
+      x-required-permission: settings:manage
+      summary: 系统任务列表（注册表全集）
+      description: |
+        返回静态任务注册表中的全部任务，并合并 worker_tasks 的调度行；
+        无调度行的任务给出注册表默认值（`last_status=null`、`last_run_at=null`）。
+        `running` 以未过期租约为准；`holder_id` 只在运行中返回且已截断。
+        `last_duration_ms` 是最新一次已结束运行的耗时。响应 `Cache-Control: no-store`。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 任务列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemTaskPage'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/system/tasks/{name}:
+    get:
+      tags:
+        - admin
+      operationId: getSystemTask
+      x-required-permission: settings:manage
+      summary: 系统任务详情 + 最近运行历史
+      description: |
+        `name` 必须精确命中静态注册表；未知名称返回 404 `task_not_found`，
+        不做模糊匹配。运行历史按 `COALESCE(started_at, created_at)` 倒序分页
+        （默认每页 20，上限 100）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 任务详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemTaskDetail'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/system/tasks/{name}:trigger:
+    post:
+      tags:
+        - admin
+      operationId: triggerSystemTask
+      x-required-permission: settings:manage
+      summary: 手动触发白名单任务（只入队）
+      description: |
+        仅允许静态注册表标记 `manual_trigger_allowed=true` 的 5 个维护任务：
+        `log_cleanup`、`log_partition_precreate`、`redemption_expiry`、
+        `rankings_snapshot`、`worker_history_cleanup`。
+
+        服务端只写一条 `pending` 运行行并唤醒调度器，由调度 pass 按正常租约
+        认领执行——**不旁路执行**。非白名单 403 `task_not_manual`；未知任务
+        404 `task_not_found`；已在运行/已入队 409 `task_already_running`；
+        任务停用 409 `task_disabled`。`Idempotency-Key` 必带，24h 内同键重放
+        返回首次 202，不产生第二条运行。每次触发（含失败）写
+        `system.task.trigger` 审计。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            maxLength: 128
+      responses:
+        '202':
+          description: 已入队
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemTaskTriggerAccepted'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
   /api/announcements:
     get:
       tags:
@@ -16300,6 +16421,179 @@ components:
         current_instance_id:
           type: string
           description: 处理本次请求的实例标识；即使它没有心跳也会出现在 items 中。
+    SystemTaskSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - task_type
+        - description
+        - enabled
+        - interval_seconds
+        - running
+        - manual_trigger_allowed
+        - concurrency
+      properties:
+        task_type:
+          type: string
+          description: 静态注册表中的精确任务名。
+        description:
+          type: string
+        enabled:
+          type: boolean
+        interval_seconds:
+          type: integer
+          minimum: 0
+          description: 周期秒数；0 表示非周期（仅手动触发）。
+        last_run_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_status:
+          type: string
+          enum:
+            - succeeded
+            - failed
+            - skipped
+          nullable: true
+        next_due_at:
+          type: string
+          format: date-time
+          nullable: true
+        running:
+          type: boolean
+          description: 当前是否存在未过期租约。
+        holder_id:
+          type: string
+          description: 运行中时的持有者标识（已截断）；非运行中不返回。
+        last_duration_ms:
+          type: integer
+          nullable: true
+          description: 最近一次已结束运行的耗时（毫秒）。
+        manual_trigger_allowed:
+          type: boolean
+        concurrency:
+          type: string
+          enum:
+            - single
+    SystemTaskPage:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - total
+        - page
+        - page_size
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SystemTaskSummary'
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+    SystemTaskRun:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - task_type
+        - status
+        - trigger
+      properties:
+        id:
+          type: integer
+          format: int64
+        task_type:
+          type: string
+        status:
+          type: string
+          enum:
+            - pending
+            - running
+            - succeeded
+            - failed
+        node_id:
+          type: string
+          description: 执行节点；pending 行还没有执行者，可能为空。
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+        error:
+          type: string
+          description: 固定失败分类（timeout / task lease expired / execution_error / cancelled），不含原始错误文本。
+        result:
+          type: object
+          additionalProperties: true
+          nullable: true
+        trigger:
+          type: string
+          enum:
+            - schedule
+            - manual
+            - wakeup
+    SystemTaskRunPage:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - total
+        - page
+        - page_size
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SystemTaskRun'
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+    SystemTaskDetail:
+      type: object
+      additionalProperties: false
+      required:
+        - summary
+        - runs
+      properties:
+        summary:
+          $ref: '#/components/schemas/SystemTaskSummary'
+        runs:
+          $ref: '#/components/schemas/SystemTaskRunPage'
+    SystemTaskTriggerAccepted:
+      type: object
+      additionalProperties: false
+      required:
+        - run_id
+        - task_type
+        - trigger
+      properties:
+        run_id:
+          type: integer
+          format: int64
+        task_type:
+          type: string
+        trigger:
+          type: string
+          enum:
+            - manual
     AnnouncementCategory:
       type: string
       enum:

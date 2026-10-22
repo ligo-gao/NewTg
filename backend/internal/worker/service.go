@@ -1,0 +1,278 @@
+package worker
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+)
+
+// 管理面错误：handler 据此映射 404/403/409，绝不模糊匹配任务名。
+var (
+	ErrTaskNotFound         = errors.New("worker: task not found")
+	ErrTaskManualNotAllowed = errors.New("worker: task does not allow manual trigger")
+	ErrTaskAlreadyRunning   = errors.New("worker: task is already running")
+	ErrTaskDisabled         = errors.New("worker: task is disabled")
+)
+
+// WakeupChannel 是「管理员触发后立即唤醒调度 pass」的 Redis 频道。
+//
+// 网关进程与 worker 进程分离，进程内 channel 无法跨副本；用 pub/sub 让
+// 触发在 ≤1 个 pass 的极小延迟内被看到。订阅失败/消息丢失由 15s 周期
+// pass 兜底——唤醒只是延迟优化，不是正确性依赖。
+const WakeupChannel = "newtg:worker:wakeup"
+
+// PublishWakeup 发布一次唤醒（best-effort）。
+func PublishWakeup(ctx context.Context, client *redis.Client, taskType string) error {
+	if client == nil {
+		return nil
+	}
+	return client.Publish(ctx, WakeupChannel, taskType).Err()
+}
+
+// ServiceConfig 是管理面服务的装配输入。
+type ServiceConfig struct {
+	Registry *Registry
+	Store    Store
+	Lease    Lease
+	Logger   *slog.Logger
+	Now      func() time.Time
+	// Wakeup 可选：手动触发成功后发布唤醒信号（nil 时只靠周期 pass）。
+	Wakeup func(ctx context.Context, taskType string) error
+}
+
+// Service 实现列表/详情/触发（billing-06 §13.5.1）。
+type Service struct {
+	registry *Registry
+	store    Store
+	lease    Lease
+	log      *slog.Logger
+	now      func() time.Time
+	wakeup   func(ctx context.Context, taskType string) error
+}
+
+// NewService 构造服务。
+func NewService(cfg ServiceConfig) (*Service, error) {
+	if cfg.Registry == nil {
+		return nil, errors.New("worker: registry is required")
+	}
+	if cfg.Store == nil {
+		return nil, errors.New("worker: store is required")
+	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
+	lease := cfg.Lease
+	if lease == nil {
+		lease = nopLease{}
+	}
+	return &Service{
+		registry: cfg.Registry,
+		store:    cfg.Store,
+		lease:    lease,
+		log:      logger,
+		now:      now,
+		wakeup:   cfg.Wakeup,
+	}, nil
+}
+
+// List 返回注册表全集的摘要分页（含无调度行者的默认值）。
+func (s *Service) List(ctx context.Context, page, pageSize int) (TaskPage, error) {
+	page, pageSize = normalizePage(page, pageSize)
+	tasks := s.registry.Tasks()
+	states, err := s.store.ListTaskStates(ctx)
+	if err != nil {
+		return TaskPage{}, err
+	}
+	stateByName := make(map[string]TaskState, len(states))
+	for _, state := range states {
+		stateByName[state.TaskType] = state
+	}
+
+	items := make([]TaskSummary, 0, len(tasks))
+	for _, task := range tasks {
+		state, ok := stateByName[task.Name]
+		summary, summaryErr := s.summary(ctx, task, state, ok)
+		if summaryErr != nil {
+			return TaskPage{}, summaryErr
+		}
+		items = append(items, summary)
+	}
+	total := len(items)
+	start := (page - 1) * pageSize
+	if start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	return TaskPage{Items: items[start:end], Total: total, Page: page, PageSize: pageSize}, nil
+}
+
+// Detail 返回摘要 + 最近 N 次运行。
+func (s *Service) Detail(ctx context.Context, name string, page, pageSize int) (TaskDetail, error) {
+	task, ok := s.registry.Get(name)
+	if !ok {
+		return TaskDetail{}, ErrTaskNotFound
+	}
+	page, pageSize = normalizePage(page, pageSize)
+	state, hasState, err := s.store.GetTaskState(ctx, name)
+	if err != nil {
+		return TaskDetail{}, err
+	}
+	summary, err := s.summary(ctx, task, state, hasState)
+	if err != nil {
+		return TaskDetail{}, err
+	}
+	runs, total, err := s.store.ListRuns(ctx, name, pageSize, (page-1)*pageSize)
+	if err != nil {
+		return TaskDetail{}, err
+	}
+	if runs == nil {
+		runs = []Run{}
+	}
+	return TaskDetail{
+		Summary: summary,
+		Runs:    RunPage{Items: runs, Total: total, Page: page, PageSize: pageSize},
+	}, nil
+}
+
+// TriggerResult 是 202 响应体。
+type TriggerResult struct {
+	RunID    int64  `json:"run_id"`
+	TaskType string `json:"task_type"`
+	Trigger  string `json:"trigger"`
+}
+
+// Trigger 只入队（写 pending 行 + 唤醒），绝不旁路执行。
+//
+// 顺序固定：名称 → 白名单 → 停用 → 运行中 → 入队。任何一步失败都不写行，
+// 保证 403/404/409 的副作用为零（§13.5.1 与 TC-F-08-21-07）。
+func (s *Service) Trigger(ctx context.Context, name string) (TriggerResult, error) {
+	task, ok := s.registry.Get(name)
+	if !ok {
+		return TriggerResult{}, ErrTaskNotFound
+	}
+	if !task.ManualTriggerAllowed {
+		return TriggerResult{}, ErrTaskManualNotAllowed
+	}
+	state, hasState, err := s.store.GetTaskState(ctx, name)
+	if err != nil {
+		return TriggerResult{}, err
+	}
+	if hasState && !state.Enabled {
+		return TriggerResult{}, ErrTaskDisabled
+	}
+	running, err := s.isRunning(ctx, name, state, hasState)
+	if err != nil {
+		return TriggerResult{}, err
+	}
+	if running {
+		return TriggerResult{}, ErrTaskAlreadyRunning
+	}
+	// 已有一条 pending 行也视为「已入队」：允许重复触发会让同一任务在队列里
+	// 堆积多条手动运行，调度 pass 逐条执行后表现为「点一次跑了多次」。
+	pending, err := s.store.EarliestPendingRun(ctx, name)
+	if err != nil {
+		return TriggerResult{}, err
+	}
+	if pending != nil {
+		return TriggerResult{}, ErrTaskAlreadyRunning
+	}
+	runID, err := s.store.CreateRun(ctx, CreateRunInput{
+		TaskType: name,
+		Status:   RunPending,
+		Trigger:  TriggerManual,
+	})
+	if err != nil {
+		return TriggerResult{}, err
+	}
+	if s.wakeup != nil {
+		if wakeErr := s.wakeup(ctx, name); wakeErr != nil {
+			// 唤醒失败不改写入结果：pending 行仍在，下一个 15s pass 会认领。
+			s.log.Warn("worker: wakeup publish failed", "task_type", name, "error", wakeErr)
+		}
+	}
+	return TriggerResult{RunID: runID, TaskType: name, Trigger: TriggerManual}, nil
+}
+
+func (s *Service) summary(ctx context.Context, task Task, state TaskState, hasState bool) (TaskSummary, error) {
+	interval := int(task.Interval / time.Second)
+	summary := TaskSummary{
+		TaskType:             task.Name,
+		Description:          task.Description,
+		Enabled:              true,
+		IntervalSeconds:      interval,
+		ManualTriggerAllowed: task.ManualTriggerAllowed,
+		Concurrency:          string(task.Concurrency),
+	}
+	if hasState {
+		summary.Enabled = state.Enabled
+		summary.IntervalSeconds = state.IntervalSeconds
+		summary.LastRunAt = state.LastRunAt
+		summary.LastStatus = state.LastStatus
+		summary.NextDueAt = state.NextDueAt
+		summary.LastDurationMS = state.LastDurationMS
+		if state.HolderID != "" {
+			summary.HolderID = truncateHolder(state.HolderID)
+		}
+	}
+	running, err := s.isRunning(ctx, task.Name, state, hasState)
+	if err != nil {
+		return TaskSummary{}, err
+	}
+	summary.Running = running
+	// 只展示「当前确实持有租约」的持有者；过期的 holder 会让管理员误以为
+	// 任务仍在运行（与 running=false 自相矛盾）。
+	if !running {
+		summary.HolderID = ""
+	}
+	return summary, nil
+}
+
+// isRunning 以 Redis 租约为第一判据，DB 租约到期时间作 Redis 不可用时的
+// 回退。Redis 故障不能把「正在运行」误判成「空闲」，否则 409 会失效。
+func (s *Service) isRunning(ctx context.Context, name string, state TaskState, hasState bool) (bool, error) {
+	active, err := s.lease.Active(ctx, name)
+	if err == nil && active {
+		return true, nil
+	}
+	if err != nil {
+		s.log.Warn("worker: lease probe failed; falling back to DB lease", "task_type", name, "error", err)
+	}
+	if hasState && state.LeaseExpiresAt != nil && s.now().Before(*state.LeaseExpiresAt) {
+		return true, nil
+	}
+	return false, nil
+}
+
+func normalizePage(page, pageSize int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	return page, pageSize
+}
+
+// truncateHolder 截断节点标识：完整实例 ID 可能含主机名/进程信息，列表只
+// 需要足够区分（设计 §13.5.1「holder_id 仅 admin 可见、截断展示」）。
+func truncateHolder(holder string) string {
+	const max = 64
+	if len(holder) <= max {
+		return holder
+	}
+	return holder[:max]
+}

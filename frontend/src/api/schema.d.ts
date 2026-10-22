@@ -2484,6 +2484,80 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/system/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 系统任务列表（注册表全集）
+         * @description 返回静态任务注册表中的全部任务，并合并 worker_tasks 的调度行；
+         *     无调度行的任务给出注册表默认值（`last_status=null`、`last_run_at=null`）。
+         *     `running` 以未过期租约为准；`holder_id` 只在运行中返回且已截断。
+         *     `last_duration_ms` 是最新一次已结束运行的耗时。响应 `Cache-Control: no-store`。
+         */
+        get: operations["listSystemTasks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/tasks/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 系统任务详情 + 最近运行历史
+         * @description `name` 必须精确命中静态注册表；未知名称返回 404 `task_not_found`，
+         *     不做模糊匹配。运行历史按 `COALESCE(started_at, created_at)` 倒序分页
+         *     （默认每页 20，上限 100）。
+         */
+        get: operations["getSystemTask"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/tasks/{name}:trigger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 手动触发白名单任务（只入队）
+         * @description 仅允许静态注册表标记 `manual_trigger_allowed=true` 的 5 个维护任务：
+         *     `log_cleanup`、`log_partition_precreate`、`redemption_expiry`、
+         *     `rankings_snapshot`、`worker_history_cleanup`。
+         *
+         *     服务端只写一条 `pending` 运行行并唤醒调度器，由调度 pass 按正常租约
+         *     认领执行——**不旁路执行**。非白名单 403 `task_not_manual`；未知任务
+         *     404 `task_not_found`；已在运行/已入队 409 `task_already_running`；
+         *     任务停用 409 `task_disabled`。`Idempotency-Key` 必带，24h 内同键重放
+         *     返回首次 202，不产生第二条运行。每次触发（含失败）写
+         *     `system.task.trigger` 审计。
+         */
+        post: operations["triggerSystemTask"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/announcements": {
         parameters: {
             query?: never;
@@ -7592,6 +7666,72 @@ export interface components {
             items: components["schemas"]["InstanceSummary"][];
             /** @description 处理本次请求的实例标识；即使它没有心跳也会出现在 items 中。 */
             current_instance_id: string;
+        };
+        SystemTaskSummary: {
+            /** @description 静态注册表中的精确任务名。 */
+            task_type: string;
+            description: string;
+            enabled: boolean;
+            /** @description 周期秒数；0 表示非周期（仅手动触发）。 */
+            interval_seconds: number;
+            /** Format: date-time */
+            last_run_at?: string | null;
+            /** @enum {string|null} */
+            last_status?: "succeeded" | "failed" | "skipped" | null;
+            /** Format: date-time */
+            next_due_at?: string | null;
+            /** @description 当前是否存在未过期租约。 */
+            running: boolean;
+            /** @description 运行中时的持有者标识（已截断）；非运行中不返回。 */
+            holder_id?: string;
+            /** @description 最近一次已结束运行的耗时（毫秒）。 */
+            last_duration_ms?: number | null;
+            manual_trigger_allowed: boolean;
+            /** @enum {string} */
+            concurrency: "single";
+        };
+        SystemTaskPage: {
+            items: components["schemas"]["SystemTaskSummary"][];
+            total: number;
+            page: number;
+            page_size: number;
+        };
+        SystemTaskRun: {
+            /** Format: int64 */
+            id: number;
+            task_type: string;
+            /** @enum {string} */
+            status: "pending" | "running" | "succeeded" | "failed";
+            /** @description 执行节点；pending 行还没有执行者，可能为空。 */
+            node_id?: string;
+            /** Format: date-time */
+            started_at?: string | null;
+            /** Format: date-time */
+            finished_at?: string | null;
+            /** @description 固定失败分类（timeout / task lease expired / execution_error / cancelled），不含原始错误文本。 */
+            error?: string;
+            result?: {
+                [key: string]: unknown;
+            } | null;
+            /** @enum {string} */
+            trigger: "schedule" | "manual" | "wakeup";
+        };
+        SystemTaskRunPage: {
+            items: components["schemas"]["SystemTaskRun"][];
+            total: number;
+            page: number;
+            page_size: number;
+        };
+        SystemTaskDetail: {
+            summary: components["schemas"]["SystemTaskSummary"];
+            runs: components["schemas"]["SystemTaskRunPage"];
+        };
+        SystemTaskTriggerAccepted: {
+            /** Format: int64 */
+            run_id: number;
+            task_type: string;
+            /** @enum {string} */
+            trigger: "manual";
         };
         /** @enum {string} */
         AnnouncementCategory: "notice" | "maintenance" | "release";
@@ -13871,6 +14011,97 @@ export interface operations {
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
             503: components["responses"]["Error503"];
+        };
+    };
+    listSystemTasks: {
+        parameters: {
+            query?: {
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 任务列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemTaskPage"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getSystemTask: {
+        parameters: {
+            query?: {
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+            };
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 任务详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemTaskDetail"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    triggerSystemTask: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已入队 */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemTaskTriggerAccepted"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
         };
     };
     listAnnouncements: {

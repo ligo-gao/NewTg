@@ -254,6 +254,14 @@ paths:
   /api/instances:
     $ref: './paths/admin.yaml#/paths/~1api~1instances'
 
+  # 系统任务（W17-2；billing-06 §13.5、modules-08 F-08-21）。
+  /api/system/tasks:
+    $ref: './paths/admin.yaml#/paths/~1api~1system~1tasks'
+  /api/system/tasks/{name}:
+    $ref: './paths/admin.yaml#/paths/~1api~1system~1tasks~1{name}'
+  /api/system/tasks/{name}:trigger:
+    $ref: './paths/admin.yaml#/paths/~1api~1system~1tasks~1{name}:trigger'
+
   # 站点公告（D7a；modules-08 F-08-04）。管理面 settings:manage；
   # 用户侧 active/read 仅登录用户本人（R-D7-05/R-D7-11）。
   /api/announcements:

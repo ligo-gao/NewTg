@@ -2163,6 +2163,102 @@ func (e SubscriptionRenewRequestProvider) Valid() bool {
 	}
 }
 
+// Defines values for SystemTaskRunStatus.
+const (
+	SystemTaskRunStatusFailed    SystemTaskRunStatus = "failed"
+	SystemTaskRunStatusPending   SystemTaskRunStatus = "pending"
+	SystemTaskRunStatusRunning   SystemTaskRunStatus = "running"
+	SystemTaskRunStatusSucceeded SystemTaskRunStatus = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the SystemTaskRunStatus enum.
+func (e SystemTaskRunStatus) Valid() bool {
+	switch e {
+	case SystemTaskRunStatusFailed:
+		return true
+	case SystemTaskRunStatusPending:
+		return true
+	case SystemTaskRunStatusRunning:
+		return true
+	case SystemTaskRunStatusSucceeded:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SystemTaskRunTrigger.
+const (
+	SystemTaskRunTriggerManual   SystemTaskRunTrigger = "manual"
+	SystemTaskRunTriggerSchedule SystemTaskRunTrigger = "schedule"
+	SystemTaskRunTriggerWakeup   SystemTaskRunTrigger = "wakeup"
+)
+
+// Valid indicates whether the value is a known member of the SystemTaskRunTrigger enum.
+func (e SystemTaskRunTrigger) Valid() bool {
+	switch e {
+	case SystemTaskRunTriggerManual:
+		return true
+	case SystemTaskRunTriggerSchedule:
+		return true
+	case SystemTaskRunTriggerWakeup:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SystemTaskSummaryConcurrency.
+const (
+	Single SystemTaskSummaryConcurrency = "single"
+)
+
+// Valid indicates whether the value is a known member of the SystemTaskSummaryConcurrency enum.
+func (e SystemTaskSummaryConcurrency) Valid() bool {
+	switch e {
+	case Single:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SystemTaskSummaryLastStatus.
+const (
+	SystemTaskSummaryLastStatusFailed    SystemTaskSummaryLastStatus = "failed"
+	SystemTaskSummaryLastStatusSkipped   SystemTaskSummaryLastStatus = "skipped"
+	SystemTaskSummaryLastStatusSucceeded SystemTaskSummaryLastStatus = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the SystemTaskSummaryLastStatus enum.
+func (e SystemTaskSummaryLastStatus) Valid() bool {
+	switch e {
+	case SystemTaskSummaryLastStatusFailed:
+		return true
+	case SystemTaskSummaryLastStatusSkipped:
+		return true
+	case SystemTaskSummaryLastStatusSucceeded:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SystemTaskTriggerAcceptedTrigger.
+const (
+	SystemTaskTriggerAcceptedTriggerManual SystemTaskTriggerAcceptedTrigger = "manual"
+)
+
+// Valid indicates whether the value is a known member of the SystemTaskTriggerAcceptedTrigger enum.
+func (e SystemTaskTriggerAcceptedTrigger) Valid() bool {
+	switch e {
+	case SystemTaskTriggerAcceptedTriggerManual:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for TaskListItemFamily.
 const (
 	TaskListItemFamilyMj     TaskListItemFamily = "mj"
@@ -8129,6 +8225,92 @@ type SubscriptionRenewRequest struct {
 // `epay` 返回 `pay_url` + `form_fields`（与充值同构）。
 type SubscriptionRenewRequestProvider string
 
+// SystemTaskDetail defines model for SystemTaskDetail.
+type SystemTaskDetail struct {
+	Runs    SystemTaskRunPage `json:"runs"`
+	Summary SystemTaskSummary `json:"summary"`
+}
+
+// SystemTaskPage defines model for SystemTaskPage.
+type SystemTaskPage struct {
+	Items    []SystemTaskSummary `json:"items"`
+	Page     int                 `json:"page"`
+	PageSize int                 `json:"page_size"`
+	Total    int                 `json:"total"`
+}
+
+// SystemTaskRun defines model for SystemTaskRun.
+type SystemTaskRun struct {
+	// Error 固定失败分类（timeout / task lease expired / execution_error / cancelled），不含原始错误文本。
+	Error      *string    `json:"error,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	Id         int64      `json:"id"`
+
+	// NodeId 执行节点；pending 行还没有执行者，可能为空。
+	NodeId    *string                 `json:"node_id,omitempty"`
+	Result    *map[string]interface{} `json:"result,omitempty"`
+	StartedAt *time.Time              `json:"started_at,omitempty"`
+	Status    SystemTaskRunStatus     `json:"status"`
+	TaskType  string                  `json:"task_type"`
+	Trigger   SystemTaskRunTrigger    `json:"trigger"`
+}
+
+// SystemTaskRunStatus defines model for SystemTaskRun.Status.
+type SystemTaskRunStatus string
+
+// SystemTaskRunTrigger defines model for SystemTaskRun.Trigger.
+type SystemTaskRunTrigger string
+
+// SystemTaskRunPage defines model for SystemTaskRunPage.
+type SystemTaskRunPage struct {
+	Items    []SystemTaskRun `json:"items"`
+	Page     int             `json:"page"`
+	PageSize int             `json:"page_size"`
+	Total    int             `json:"total"`
+}
+
+// SystemTaskSummary defines model for SystemTaskSummary.
+type SystemTaskSummary struct {
+	Concurrency SystemTaskSummaryConcurrency `json:"concurrency"`
+	Description string                       `json:"description"`
+	Enabled     bool                         `json:"enabled"`
+
+	// HolderId 运行中时的持有者标识（已截断）；非运行中不返回。
+	HolderId *string `json:"holder_id,omitempty"`
+
+	// IntervalSeconds 周期秒数；0 表示非周期（仅手动触发）。
+	IntervalSeconds int `json:"interval_seconds"`
+
+	// LastDurationMs 最近一次已结束运行的耗时（毫秒）。
+	LastDurationMs       *int                         `json:"last_duration_ms,omitempty"`
+	LastRunAt            *time.Time                   `json:"last_run_at,omitempty"`
+	LastStatus           *SystemTaskSummaryLastStatus `json:"last_status,omitempty"`
+	ManualTriggerAllowed bool                         `json:"manual_trigger_allowed"`
+	NextDueAt            *time.Time                   `json:"next_due_at,omitempty"`
+
+	// Running 当前是否存在未过期租约。
+	Running bool `json:"running"`
+
+	// TaskType 静态注册表中的精确任务名。
+	TaskType string `json:"task_type"`
+}
+
+// SystemTaskSummaryConcurrency defines model for SystemTaskSummary.Concurrency.
+type SystemTaskSummaryConcurrency string
+
+// SystemTaskSummaryLastStatus defines model for SystemTaskSummary.LastStatus.
+type SystemTaskSummaryLastStatus string
+
+// SystemTaskTriggerAccepted defines model for SystemTaskTriggerAccepted.
+type SystemTaskTriggerAccepted struct {
+	RunId    int64                            `json:"run_id"`
+	TaskType string                           `json:"task_type"`
+	Trigger  SystemTaskTriggerAcceptedTrigger `json:"trigger"`
+}
+
+// SystemTaskTriggerAcceptedTrigger defines model for SystemTaskTriggerAccepted.Trigger.
+type SystemTaskTriggerAcceptedTrigger string
+
 // TaskListItem defines model for TaskListItem.
 type TaskListItem struct {
 	Action            string                  `json:"action"`
@@ -10251,6 +10433,29 @@ type RenewSubscriptionParams struct {
 	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
 	XCSRFToken     *CSRFToken `json:"X-CSRF-Token,omitempty"`
 	IdempotencyKey string     `json:"Idempotency-Key"`
+}
+
+// ListSystemTasksParams defines parameters for ListSystemTasks.
+type ListSystemTasksParams struct {
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
+}
+
+// GetSystemTaskParams defines parameters for GetSystemTask.
+type GetSystemTaskParams struct {
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
+}
+
+// TriggerSystemTaskParams defines parameters for TriggerSystemTask.
+type TriggerSystemTaskParams struct {
+	IdempotencyKey string `json:"Idempotency-Key"`
 }
 
 // ListTasksParams defines parameters for ListTasks.

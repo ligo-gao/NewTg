@@ -3283,3 +3283,158 @@ schemas:
         type: object
         additionalProperties: true
         description: 本次实际写入的键与归一化后的值。
+
+  # ---------------------------------------------------------------------------
+  # W17-2 系统任务（billing-06 §13.4.1 / §13.5.1）。字段与 worker.TaskSummary /
+  # worker.Run 逐一对账；扩展字段（description/concurrency/last_duration_ms）
+  # 是管理面展示所需，不改变调度契约。
+  # ---------------------------------------------------------------------------
+  SystemTaskSummary:
+    type: object
+    additionalProperties: false
+    required:
+      - task_type
+      - description
+      - enabled
+      - interval_seconds
+      - running
+      - manual_trigger_allowed
+      - concurrency
+    properties:
+      task_type:
+        type: string
+        description: 静态注册表中的精确任务名。
+      description:
+        type: string
+      enabled:
+        type: boolean
+      interval_seconds:
+        type: integer
+        minimum: 0
+        description: 周期秒数；0 表示非周期（仅手动触发）。
+      last_run_at:
+        type: string
+        format: date-time
+        nullable: true
+      last_status:
+        type: string
+        enum: [succeeded, failed, skipped]
+        nullable: true
+      next_due_at:
+        type: string
+        format: date-time
+        nullable: true
+      running:
+        type: boolean
+        description: 当前是否存在未过期租约。
+      holder_id:
+        type: string
+        description: 运行中时的持有者标识（已截断）；非运行中不返回。
+      last_duration_ms:
+        type: integer
+        nullable: true
+        description: 最近一次已结束运行的耗时（毫秒）。
+      manual_trigger_allowed:
+        type: boolean
+      concurrency:
+        type: string
+        enum: [single]
+
+  SystemTaskRun:
+    type: object
+    additionalProperties: false
+    required: [id, task_type, status, trigger]
+    properties:
+      id:
+        type: integer
+        format: int64
+      task_type:
+        type: string
+      status:
+        type: string
+        enum: [pending, running, succeeded, failed]
+      node_id:
+        type: string
+        description: 执行节点；pending 行还没有执行者，可能为空。
+      started_at:
+        type: string
+        format: date-time
+        nullable: true
+      finished_at:
+        type: string
+        format: date-time
+        nullable: true
+      error:
+        type: string
+        description: 固定失败分类（timeout / task lease expired / execution_error / cancelled），不含原始错误文本。
+      result:
+        type: object
+        additionalProperties: true
+        nullable: true
+      trigger:
+        type: string
+        enum: [schedule, manual, wakeup]
+
+  SystemTaskPage:
+    type: object
+    additionalProperties: false
+    required: [items, total, page, page_size]
+    properties:
+      items:
+        type: array
+        items:
+          $ref: '#/schemas/SystemTaskSummary'
+      total:
+        type: integer
+        minimum: 0
+      page:
+        type: integer
+        minimum: 1
+      page_size:
+        type: integer
+        minimum: 1
+        maximum: 100
+
+  SystemTaskRunPage:
+    type: object
+    additionalProperties: false
+    required: [items, total, page, page_size]
+    properties:
+      items:
+        type: array
+        items:
+          $ref: '#/schemas/SystemTaskRun'
+      total:
+        type: integer
+        minimum: 0
+      page:
+        type: integer
+        minimum: 1
+      page_size:
+        type: integer
+        minimum: 1
+        maximum: 100
+
+  SystemTaskDetail:
+    type: object
+    additionalProperties: false
+    required: [summary, runs]
+    properties:
+      summary:
+        $ref: '#/schemas/SystemTaskSummary'
+      runs:
+        $ref: '#/schemas/SystemTaskRunPage'
+
+  SystemTaskTriggerAccepted:
+    type: object
+    additionalProperties: false
+    required: [run_id, task_type, trigger]
+    properties:
+      run_id:
+        type: integer
+        format: int64
+      task_type:
+        type: string
+      trigger:
+        type: string
+        enum: [manual]

@@ -124,6 +124,11 @@ var wantColumns = map[string]int{
 	// 已读记录 3 列；已读表无 FK，公告删除时由 repo 同事务清理。
 	"announcements":      13,
 	"announcement_reads": 3,
+	// W17-2 worker 任务框架三表（billing-06 §2.4）：调度目录 9 列、租约 7 列、
+	// 运行历史 11 列。设计字段逐列落地，另加设计要求的 created_at/updated_at。
+	"worker_tasks":      9,
+	"worker_task_locks": 7,
+	"worker_task_runs":  11,
 }
 
 // 四个部分唯一索引（platform-04 §3.3.3；名称钉死）。
@@ -172,6 +177,11 @@ var wantNoFKTables = []string{
 	// S4：支付令牌只逻辑引用 users.id；删除令牌由应用层在同一事务内
 	// fail-closed 关闭关联订阅（R-42），不设 FK。
 	"payment_methods",
+	// W17-2：任务类型是代码内的静态名字，三表之间只用逻辑引用（历史行
+	// 必须在任务行被清理后仍可追溯），不设 FK。
+	"worker_tasks",
+	"worker_task_locks",
+	"worker_task_runs",
 }
 
 // 以 GENERATED ALWAYS AS IDENTITY 作单列代理主键的表（platform-04 §3.1）：
@@ -207,6 +217,8 @@ var wantIdentityPKTables = []string{
 	// D5a：套餐与订阅实例均为单列 id identity 代理主键。
 	"subscription_plans",
 	"subscriptions",
+	// W17-2：运行历史是 append-only 事实行，用单列 identity 代理主键。
+	"worker_task_runs",
 }
 
 // identityPKExceptions：9 张「自然键/非 identity 例外」表的 PK（均非 identity）：
@@ -243,6 +255,9 @@ var identityPKExceptions = map[string][]string{
 	// S1：事件流的主键就是「订阅 × 同订阅内连续序号」这对自然键；seq 的
 	// 无洞语义由订阅行锁保证，代理 id 不提供任何额外保证。
 	"subscription_events": {"subscription_id", "seq"},
+	// W17-2：任务类型名是调度与租约的唯一键（billing-06 §2.4），不引入代理 id。
+	"worker_tasks":      {"task_type"},
+	"worker_task_locks": {"task_type"},
 }
 
 // identityPKCustomColumn：identity 代理主键但列名不是 "id" 的表。
@@ -320,7 +335,7 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// TestMainSchemaTableCount：（a）主库用户表恰 43 张（M0 16 + M1 认证族 6 + M6c 2 + M6d 4 + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 + T4 2 + S1 1 + S4 1 + MJ-d 1，除 schema_migrations）。
+// TestMainSchemaTableCount：（a）主库用户表恰 46 张（M0 16 + M1 认证族 6 + M6c 2 + M6d 4 + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 + T4 2 + S1 1 + S4 1 + MJ-d 1 + W17-2 3，除 schema_migrations）。
 func TestMainSchemaTableCount(t *testing.T) {
 	db := openTestDB(t)
 	rows, err := db.Query(`SELECT table_name FROM information_schema.tables

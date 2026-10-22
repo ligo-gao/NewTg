@@ -263,3 +263,23 @@ func newLockToken() (string, error) {
 	}
 	return hex.EncodeToString(buf), nil
 }
+
+// RefreshOnce 对所有周期各执行一轮「抢锁 → 聚合 → 写快照 → 失效缓存」。
+//
+// 这是 W17-2 系统任务框架 `rankings_snapshot` 的手动触发入口：既有
+// RunLoop 仍按各自 ticker 调度（不改变其语义），本函数只把同一轮刷新复用
+// 给管理员触发。错误按既有口径只记录不返回——快照是 append-only，重复
+// 执行只多一条 run，失败由下一轮 ticker 重试。
+func RefreshOnce(ctx context.Context, deps Deps) error {
+	deps, err := deps.normalized()
+	if err != nil {
+		return err
+	}
+	for _, period := range allPeriods {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		refreshPeriod(ctx, deps, period)
+	}
+	return nil
+}

@@ -2,7 +2,7 @@ import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
 import { screen, waitFor } from '@testing-library/react'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
 
@@ -13,6 +13,15 @@ const ORIGIN = 'http://localhost:3000'
 const server = setupServer()
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
+beforeEach(() => {
+  // W17-2：系统状态页新增「系统任务」卡，会请求 /api/system/tasks。
+  // 默认给空列表；需要任务数据的用例自行覆盖。
+  server.use(
+    http.get(`${ORIGIN}/api/system/tasks`, () =>
+      HttpResponse.json({ items: [], total: 0, page: 1, page_size: 20 }),
+    ),
+  )
+})
 afterEach(() => server.resetHandlers())
 afterAll(() => server.close())
 
