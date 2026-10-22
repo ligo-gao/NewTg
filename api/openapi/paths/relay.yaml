@@ -44,8 +44,10 @@ paths:
 
   # Anthropic Messages 原生入口（W7/M1）。产品定位是「一个 key 接
   # OpenAI/Claude/Gemini」：Claude 原生客户端（含 Claude Code）直接调本端点。
-  # 只服务 Anthropic 协议族渠道（anthropic / moonshot）；其它上游方向
-  # fail-closed 501（R-59），零计费、零上游调用。
+  # 服务 anthropic / openai / gemini 三类已实现协议的上游：Anthropic 协议族
+  # （anthropic / moonshot）同协议透传，OpenAI/Gemini 上游经 IR → Anthropic
+  # 响应编码器回写（W18-B · R-W18-03）；三类之外的渠道 501 problem+json，
+  # 零计费、零上游调用。
   /v1/messages:
     post:
       tags: [relay]
@@ -60,12 +62,12 @@ paths:
         `x-api-key` 在本路径作为 Claude 客户端的兼容载体生效（relay-01 §3.1）。
         计费与 chat 走同一条 `BillingSession` 接缝（同一份预扣/结算语义）。
 
-        方向矩阵（R-59）：只有 Anthropic 协议族渠道（`anthropic`、兼容
-        Anthropic 协议的 `moonshot`）能承接；命中其它协议族渠道时返回 `501`
-        `application/problem+json`
+        方向矩阵（R-W18-03）：`anthropic` / 兼容 Anthropic 协议的 `moonshot`
+        上游按同协议逐字节透传；`openai` / `gemini` 上游的响应经 IR → Anthropic
+        编码器回写为 Claude 形状（含 SSE 事件序列）。只有这三类之外的渠道
+        返回 `501` `application/problem+json`
         （`type=https://newtg.dev/problems/endpoint-not-supported`），
-        因为中继缺少 IR → Anthropic 的响应编码器，放行会向 Claude 客户端
-        返回语义错误的形状。该分支零计费、零上游调用。
+        因为这些渠道没有可实现的中继响应形状。该分支零计费、零上游调用。
       security:
         - bearerToken: []
       externalDocs:

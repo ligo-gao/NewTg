@@ -45,8 +45,9 @@ import (
 //	GET  /v1/models             启用渠道 supported_models 去重并集
 //	POST /v1/responses          插件原生路由优先，未命中返回 501（T2 / P-01 / R-13）
 //	POST /v1/responses/compact  fail-closed 501（T3 / P-03：中继无法表达压缩语义）
-//	POST /v1/messages           Anthropic 原生入口（W7/M1）：仅路由到 Anthropic
-//	                            协议族渠道，其余方向 fail-closed 501（R-59）
+//	POST /v1/messages           Anthropic 原生入口（W7/M1）：Anthropic 上游逐字节
+//	                            透传；OpenAI/Gemini 上游经 IR → Anthropic 编码
+//	                            （W18-B · R-W18-03）；三类之外的上游 501
 //
 // 边界（relay-01 §2 阶段序）：鉴权在中间件（relay_auth.go）已完成；本文件负责
 // 请求体上限与 IR 归一化（阶段 4）、RelayContext 组装（阶段 5）、路由/执行
@@ -924,27 +925,30 @@ const problemTypeEndpointNotSupported = "https://newtg.dev/problems/endpoint-not
 // 已按路径在 relay_auth.go 归一化），计费复用**同一条** contract.BillingSession
 // 接缝（h.billing），不另建计费路径。
 //
-// 方向矩阵（R-59，判定落在 relay_messages_test.go）：
+// 方向矩阵（R-59；W18-B · R-W18-03 放开异构上游）：
 //   - 入站 Anthropic → 上游 Anthropic 协议族渠道（type 14 anthropic、
-//     type 25 moonshot，后者是 Anthropic 兼容协议）：**可转码**。
+//     type 25 moonshot，后者是 Anthropic 兼容协议）：**同协议透传**。
 //     请求经 IR 重新编码（system/messages/max_tokens/tools/stop_sequences 都在
 //     IR 建模范围内，Raw 作为未建模字段的透传基底）；响应与 SSE 是上游原生
-//     帧，对同协议的 Claude 客户端逐字节正确。
-//   - 入站 Anthropic → OpenAI / Gemini 原生渠道：**fail-closed 501**。
+//     帧，逐字节转发。
+//   - 入站 Anthropic → OpenAI / Gemini 原生渠道：**跨协议转码**。请求经 IR
+//     编码为上游协议；响应用 ir.BuildAnthropicResponse / AnthropicStreamRenderer
+//     回写为 Claude 形状（W18-B 补齐的响应编码器）。
+//   - 其余渠道类型（无 openai/anthropic/gemini 适配器，如任务插件）：501。
 //
-// 为什么 OpenAI/Gemini 上游不能「尽力转码」（R-59 与 R-13 同一口径）：请求
-// 方向可以经 IR 表达，但**响应方向没有 IR → Anthropic 的编码器**——
-// ir.FromIR 只产出 OpenAI Chat 形状，bridgeStream 也只渲染
-// chat.completion.chunk。放行会让 Claude 客户端收到一份 OpenAI 形状的 200
-// （或 OpenAI SSE），语义与它声明的协议无关，却按真实 usage 计费。这正是
-// 「看起来正常但内容错误」，比明确报错更糟。等 ir 包补齐 Anthropic 响应
-// 编码器后再放开（登记在 M1 报告）。
+// 为什么之前 fail-closed、现在可以放行：旧的 501 唯一原因是响应方向缺
+// IR → Anthropic 编码器，放行会让 Claude 客户端收到 OpenAI 形状的 200。
+// R-W18-03 冻结实现编码器后，方向门禁只剩「三类已实现协议之外」的上游，
+// 这是真正无法表达的方向，仍返回 501。
+//
+// usage 归属：契约 contract.Response 没有 Usage 字段（R-W18-03：不扩展冻结
+// 结构）。非流式从上游 Raw 按 crossproto.UsageFromNative 解析，与结算侧
+// usage.ExtractUsageMultimodal 读同一份字节；流式直接用适配器的 EventUsage
+// 累计（与计费同一个 accumulator），保证 usage_logs 与客户端回写一致。
 //
 // 判定时点：方向由「请求模型 → 候选渠道」决定，必须先读到 model。请求体读入
-// 之后、PreConsume 与任何上游调用之前完成判定：常规路径在构造 routeDeps 之前
-// 就返回 501（连计费会话都不创建）；pin 指向异构渠道的 TOCTOU 兜底路径会先
-// 构造一个无副作用的会话，但仍在 PreConsume 之前被拒绝。两条路径都零计费、
-// 零上游请求。
+// 之后、PreConsume 与任何上游调用之前完成判定：不支持的协议方向在构造
+// routeDeps 之前返回 501（连计费会话都不创建）。
 func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	requestID := newRelayRequestID()
 	// R-W18-04：本端点（含 count_tokens）所有错误出口统一用 Claude 形信封。
@@ -1051,29 +1055,26 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		MaxTokens: parsed.MaxTokens,
 	})
 
-	// 方向约束：只允许 Anthropic 协议族渠道（见上方方向矩阵）。
+	// 方向约束：只允许 openai / anthropic / gemini 三类已实现协议的上游
+	// （见上方方向矩阵；W18-B · R-W18-03 放开 OpenAI/Gemini）。
 	//
 	// 这里在构造 routeDeps（其 Billing 字段会新建计费会话）之前先判定方向：
-	// 常规 501 分支因此既不创建计费会话、也不 PreConsume、更不触达上游。
+	// 501 分支因此既不创建计费会话、也不 PreConsume、更不触达上游。
 	// 候选为空时不在这里下结论——那属于「没有可用渠道」（503），交给执行层
 	// 按既有口径映射。
 	//
-	// TOCTOU 兜底：预检通过后，routeDeps 的候选过滤仍可能拒绝（典型是 pin
-	// 指向 OpenAI 渠道、同时存在其它 Anthropic 候选）。那条路径会先由
-	// routeDeps 构造一个计费会话，随后在 PreConsume 之前被过滤拒绝——资金
-	// 副作用为 0：PreConsume/Terminate 从不发生；非流式兜底路径会对这个
-	// 未预扣的会话调用一次 no-op Refund（真实引擎在没有 hold 时直接返回
-	// nil，不写流水），流式路径则不调用。审计计数器的 Refund 可能为 1，
-	// 但它不产生任何资金变动。
 	// R-68：方向预检必须按**有效分组序列**判定——首组 + 开关开启时的后续组
-	// （受 R-63 上限约束）。首组无 Anthropic、后续组有且开关开启时不得 501，
-	// 交给执行层换组；只有所有有候选的组都不支持 Anthropic 才 501。
+	// （受 R-63 上限约束）。首组无可用协议、后续组有且开关开启时不得 501，
+	// 交给执行层换组；只有所有有候选的组都不含已实现协议才 501。
 	if checked, supported := h.messagesDirectionCovered(r.Context(), rc); checked && !supported {
 		h.writeMessagesMappedError(w, requestID, crossproto.ErrUpstreamProtocolUnsupported)
 		return
 	}
 
-	deps := h.routeDeps(rc, pinID, hasPin, crossproto.ProtocolAnthropic)
+	// targetProtocol 传空：/v1/messages 现在接受三类协议中的任意一类，不能再按
+	// Anthropic 过滤候选（那会把 OpenAI/Gemini 渠道错误地排除）。具体走
+	// 透传还是转码由执行后的 rc.ChannelType 决定（serveNativeJSON/Stream）。
+	deps := h.routeDeps(rc, pinID, hasPin, "")
 	if parsed.Stream {
 		h.serveNativeStream(w, r, rc, deps)
 		return
@@ -1386,19 +1387,26 @@ func (h *RelayHandler) messagesDirectionCovered(ctx context.Context, rc *contrac
 	return checked, false
 }
 
-// messagesDirectionSupported 判定候选集里是否存在 Anthropic 协议族渠道。
+// messagesDirectionSupported 判定候选集里是否存在**已实现协议族**的渠道。
+//
+// W18-B · R-W18-03：/v1/messages 不再限定 Anthropic 上游——OpenAI/Gemini
+// 经 IR 响应编码器回写，因此三类协议都算「方向支持」。仍然拒绝的是没有
+// openai/anthropic/gemini 适配器的渠道类型（如任务插件），它们无法被中继
+// 表达为任何对话响应。
 //
 // 渠道类型 → 协议族的映射只来自 adapters.DispatchTable（crossproto 的
-// channelType 映射），不在这里另抄类型清单：新增 Anthropic 兼容渠道时方向
-// 判定必须自动跟随分派表。Get 失败的候选按「不可用」跳过（与执行层换渠道
-// 同口径）；真正的错误留给执行层映射。
+// channelType 映射），不在这里另抄类型清单：新增原生渠道时方向判定必须
+// 自动跟随分派表。Get 失败的候选按「不可用」跳过（与执行层换渠道同口径）；
+// 真正的错误留给执行层映射。
 func (h *RelayHandler) messagesDirectionSupported(ctx context.Context, candidates []contract.ChannelCandidate) bool {
 	for _, candidate := range candidates {
 		ch, err := h.channels.Get(ctx, int64(candidate.ChannelID))
 		if err != nil {
 			continue
 		}
-		if crossproto.ChannelTypeSupportsProtocol(contract.ChannelType(ch.Type), crossproto.ProtocolAnthropic) {
+		if crossproto.ChannelTypeSupportsProtocol(contract.ChannelType(ch.Type), crossproto.ProtocolAnthropic) ||
+			crossproto.ChannelTypeSupportsProtocol(contract.ChannelType(ch.Type), crossproto.ProtocolOpenAI) ||
+			crossproto.ChannelTypeSupportsProtocol(contract.ChannelType(ch.Type), crossproto.ProtocolGemini) {
 			return true
 		}
 	}
@@ -1407,8 +1415,8 @@ func (h *RelayHandler) messagesDirectionSupported(ctx context.Context, candidate
 
 // writeMessagesMappedError 是 /v1/messages 的错误出口。
 //
-// 唯一的差异化映射是「没有 Anthropic 协议族渠道」：这是**端点的方向不支持**
-// （决定是否放行的是协议族能力，不是这一次请求的参数），按 R-59 返回 501
+// 唯一的差异化映射是「没有已实现协议族的渠道」：这是**端点的方向不支持**
+// （决定是否放行的是协议族能力，不是这一次请求的参数），返回 501
 // problem+json，与 /v1/responses 的 fail-closed 共用同一个 problem type。
 // 资金副作用为 0：常规路径甚至不创建计费会话；pin 触发的 TOCTOU 兜底路径
 // 只创建一个会话，PreConsume/Terminate 从不发生，非流式兜底会对未预扣会话
@@ -1416,15 +1424,17 @@ func (h *RelayHandler) messagesDirectionSupported(ctx context.Context, candidate
 //
 // 其余错误按 R-W18-04 一律用 Claude 形（状态码/Retry-After/requestId 语义
 // 与 mapRelayError + writeRelayMappedError 完全一致，只替换信封形状）。
+// W18-B · R-W18-03 之后，Anthropic/OpenAI/Gemini 上游都算支持，只有三类
+// 之外的渠道类型（如任务插件）才会走到上面的 501。
 func (h *RelayHandler) writeMessagesMappedError(w http.ResponseWriter, requestID string, err error) {
 	if errors.Is(err, crossproto.ErrUpstreamProtocolUnsupported) {
 		if requestID != "" {
 			w.Header().Set("X-Request-ID", requestID)
 		}
 		writeProblemDetail(w, http.StatusNotImplemented, problemTypeEndpointNotSupported,
-			"Messages endpoint requires an Anthropic-protocol channel",
-			"the generic relay can only answer /v1/messages through Anthropic/Moonshot channels; "+
-				"this request performs no billing and no upstream call")
+			"Messages endpoint requires an openai/anthropic/gemini channel",
+			"the generic relay can only answer /v1/messages through channels with an implemented "+
+				"openai, anthropic or gemini adapter; this request performs no billing and no upstream call")
 		return
 	}
 	writeClaudeMappedError(w, requestID, err)
@@ -1444,10 +1454,10 @@ func writeClaudeMappedError(w http.ResponseWriter, requestID string, err error) 
 
 // serveNativeJSON 是非流式 /v1/messages 的执行与回写。
 //
-// 与 serveJSON 的差异只有一处：**不做响应方向跨协议转换**。方向约束已把
-// 上游限定为 Anthropic 协议族，因此 resp.Raw 就是 Anthropic 客户端期望的
-// 原生 JSON——逐字节透传（与 M2 的 OpenAI→OpenAI 透传同口径），而不是把
-// 上游原生体交给 ir.FromIR（那会产出 chat.completion，客户端语义错误）。
+// 与 serveJSON 的差异：同协议（Anthropic 上游）时**不做响应转换**，resp.Raw
+// 就是 Anthropic 客户端期望的原生 JSON——逐字节透传（与 M2 的 OpenAI→OpenAI
+// 透传同口径）。异构上游（OpenAI/Gemini）时按 W18-B · R-W18-03 走
+// ir.BuildAnthropicResponse，把 IR 响应编码成 Claude 形状。
 // 计费仍由 relay.Route 在自己的 defer 里完成；这里包一层 deferredSettlement
 // 只是复用 chat 的「编码/写失败 → 不收费」语义。
 func (h *RelayHandler) serveNativeJSON(w http.ResponseWriter, r *http.Request, rc *contract.RelayContext, deps relay.RouteDeps) {
@@ -1462,9 +1472,10 @@ func (h *RelayHandler) serveNativeJSON(w http.ResponseWriter, r *http.Request, r
 		h.writeMessagesMappedError(w, rc.RequestID, err)
 		return
 	}
-	// 防御性方向校验：过滤保证只会命中 Anthropic 协议族，但重试/计划复用
-	// 不得让异构协议体悄悄透传（R-59）。未知协议也在这里拒绝。
-	if protocol, known := crossproto.ProtocolOfChannelType(rc.ChannelType); !known || protocol != crossproto.ProtocolAnthropic {
+	protocol, known := crossproto.ProtocolOfChannelType(rc.ChannelType)
+	if !known {
+		// 分派表之外的协议没有响应编码器；绝不把未知形状的 200 透传给客户端。
+		// 信封跟随 /v1/messages 的 Claude 形（R-W18-04）。
 		writeClaudeError(w, http.StatusBadGateway, rc.RequestID, "upstream_error",
 			"upstream protocol does not match this endpoint")
 		return
@@ -1475,6 +1486,20 @@ func (h *RelayHandler) serveNativeJSON(w http.ResponseWriter, r *http.Request, r
 			"upstream returned an empty response")
 		return
 	}
+	body := resp.Raw
+	if protocol != crossproto.ProtocolAnthropic {
+		// 异构上游：从 Raw 重新解析 usage（与结算侧同一份字节、同一口径），
+		// 再编码为 Anthropic 消息。编码失败属于输出不可用，走 abort 退款。
+		usage, _ := crossproto.UsageFromNative(protocol, resp.Raw)
+		encoded, encodeErr := ir.BuildAnthropicResponse(resp, usage)
+		if encodeErr != nil {
+			// 编码失败是输出不可用；信封仍是 Claude 形（R-W18-04）。
+			writeClaudeError(w, http.StatusBadGateway, rc.RequestID, "upstream_error",
+				"failed to encode Anthropic response")
+			return
+		}
+		body = encoded
+	}
 	if settlement != nil {
 		_ = settlement.commit()
 	}
@@ -1483,15 +1508,25 @@ func (h *RelayHandler) serveNativeJSON(w http.ResponseWriter, r *http.Request, r
 		w.Header().Set("X-Request-ID", rc.RequestID)
 	}
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(resp.Raw)
+	_, _ = w.Write(body)
 }
 
 // serveNativeStream 是流式 /v1/messages 的执行与桥接。
 //
 // 与 serveStream 的差异：客户端协议是 Anthropic，因此**不**走 OpenAI 的
-// chat.completion.chunk 渲染，也不注入 stream_options.include_usage，
-// 更不写 `data: [DONE]`（Anthropic SSE 以 `message_stop` 收尾）。
+// chat.completion.chunk 渲染，也不写 `data: [DONE]`（Anthropic SSE 以
+// `message_stop` 收尾）。
+//
+// W18-B · R-W18-03：Anthropic 上游继续逐字节透传（pipeNativeAnthropicStream）；
+// OpenAI/Gemini 上游经 AnthropicStreamRenderer 渲染为 Anthropic 事件序列
+// （bridgeAnthropicCrossProtocolStream）。两条路径的计费接缝完全相同：
+// 一个 accumulator 既写 UsageFact 又决定回写的 usage，保证只结算一次且
+// usage_logs 的 token 数与客户端看到的 message_delta 一致。
 func (h *RelayHandler) serveNativeStream(w http.ResponseWriter, r *http.Request, rc *contract.RelayContext, deps relay.RouteDeps) {
+	// 流式 usage：跨协议方向由 ir.BuildOpenAIRequestBody 在重建 OpenAI 请求时
+	// 自动补 stream_options.include_usage（Anthropic 入站的 Raw 不是 OpenAI
+	// 形状，无法透传该字段）；同协议 Anthropic/Gemini 的流本身恒带用量。
+	// 因此这里不注入，也不需要预先知道上游协议。
 	start := time.Now()
 	result, err := relay.ExecuteAttempts(r.Context(), rc, deps)
 	if err != nil {
@@ -1510,8 +1545,10 @@ func (h *RelayHandler) serveNativeStream(w http.ResponseWriter, r *http.Request,
 			"upstream adapter does not support streaming")
 		return
 	}
-	// 与 serveNativeJSON 同一道方向兜底（R-59）。
-	if protocol, known := crossproto.ProtocolOfChannelType(rc.ChannelType); !known || protocol != crossproto.ProtocolAnthropic {
+
+	protocol, known := crossproto.ProtocolOfChannelType(rc.ChannelType)
+	if !known {
+		// 分派表之外的协议无法选择透传或转码：退款，不写任何响应帧。
 		if deps.Billing != nil {
 			_ = deps.Billing.Refund()
 		}
@@ -1528,7 +1565,11 @@ func (h *RelayHandler) serveNativeStream(w http.ResponseWriter, r *http.Request,
 	w.WriteHeader(http.StatusOK)
 	sse.flush()
 
-	h.pipeNativeAnthropicStream(r, rc, result.Response.Body, result.Response.Header, streamAdapter, deps.Billing, sse, start)
+	if protocol == crossproto.ProtocolAnthropic {
+		h.pipeNativeAnthropicStream(r, rc, result.Response.Body, result.Response.Header, streamAdapter, deps.Billing, sse, start)
+		return
+	}
+	h.bridgeAnthropicCrossProtocolStream(r, rc, result.Response.Body, result.Response.Header, streamAdapter, deps.Billing, sse, start)
 }
 
 // pipeNativeAnthropicStream 把 Anthropic 上游的 SSE 字节逐字节转给客户端，
@@ -1755,6 +1796,248 @@ func (h *RelayHandler) pipeNativeAnthropicStream(
 		fact.Usage = estimatedUsageFor(rc.ChannelType)
 	}
 	terminate(fact)
+}
+
+// bridgeAnthropicCrossProtocolStream 把 OpenAI/Gemini 上游的 IR 事件流渲染为
+// Anthropic SSE（W18-B · R-W18-03）。
+//
+// 与 pipeNativeAnthropicStream 的分工：那里是**同协议逐字节透传**（上游字节
+// 就是客户端的合法响应）；这里必须重编码——上游是 OpenAI 的
+// chat.completion.chunk 或 Gemini 的 candidates 帧，Claude 客户端无法解析。
+//
+// 计费与输出的一致性：accumulated 是**唯一**的用量来源，既用于
+// Terminate(UsageFact)，也传给渲染器的 message_delta，因此 usage_logs 的
+// token 数与客户端看到的 usage 不会各说各话（R-W18-03 的验收点）。
+//
+// 异常语义与 bridgeStream/pipeNativeAnthropicStream 完全一致：
+//   - 客户端断开/上游读错误/超时 → Refund，绝不伪造 message_delta/message_stop；
+//   - EventRaw（Gemini inlineData 等无法用 Anthropic 块表达的内容）→ 按连接级
+//     失败处理（不静默丢弃内容）。
+func (h *RelayHandler) bridgeAnthropicCrossProtocolStream(
+	r *http.Request,
+	rc *contract.RelayContext,
+	upstream io.ReadCloser,
+	upstreamHeader http.Header,
+	adapter contract.StreamAdapter,
+	billing contract.BillingSession,
+	sse *relaySSEWriter,
+	start time.Time,
+) {
+	var (
+		accumulated  contract.Usage
+		sawUsage     bool
+		received     int
+		sent         int
+		softErrors   int
+		firstTokenMS *int
+		finished     bool
+		upstreamFail bool
+		clientGone   bool
+		timedOut     atomic.Bool
+	)
+
+	var closeOnce sync.Once
+	closeUpstream := func() { closeOnce.Do(func() { _ = upstream.Close() }) }
+
+	terminated := false
+	finalize := func(terminate func() error) {
+		if terminated || billing == nil {
+			return
+		}
+		terminated = true
+		_ = terminate()
+	}
+	terminate := func(fact contract.UsageFact) {
+		finalize(func() error { return billing.Terminate(fact) })
+	}
+	refund := func() {
+		finalize(func() error { return billing.Refund() })
+	}
+	// GC-7 兜底：任何未走显式终结的出口（含 panic）都必须释放预留。
+	defer refund()
+
+	inactivity := h.streamInactivity
+	if inactivity <= 0 {
+		inactivity = streamInactivityTimeout
+	}
+	watchdog := time.AfterFunc(inactivity, func() {
+		timedOut.Store(true)
+		closeUpstream()
+	})
+	defer watchdog.Stop()
+	touch := func() {
+		if !timedOut.Load() {
+			watchdog.Reset(inactivity)
+		}
+	}
+
+	defer func() {
+		if rec := recover(); rec != nil {
+			watchdog.Stop()
+			relay.WithStream(rc, &contract.StreamStatus{
+				Phase:     contract.PhaseTerminated,
+				EndReason: contract.EndPanic,
+				Outcome:   relayStreamOutcome(sent),
+				RecvCount: received,
+				SendCount: sent,
+			}, sent, received, firstTokenMS)
+			refund()
+		}
+	}()
+
+	// message_start 必须最先写出：Claude 客户端在没有它之前不认任何事件。
+	renderer := ir.NewAnthropicStreamRenderer(anthropicMessageID(rc), rc.OriginModel)
+	for _, frame := range renderer.Start() {
+		if !sse.anthropicEvent(frame.Event, frame.Data) {
+			clientGone = true
+			break
+		}
+		sent++
+	}
+
+	rw := struct {
+		io.Reader
+		io.Writer
+	}{Reader: upstream, Writer: io.Discard}
+
+	if !clientGone {
+		adapter.StreamEvents(rc, rw)(func(ev contract.StreamEvent) bool {
+			if r.Context().Err() != nil {
+				clientGone = true
+				return false
+			}
+			if clientGone {
+				return false
+			}
+			if timedOut.Load() {
+				upstreamFail = true
+				return false
+			}
+			touch()
+			received++
+
+			switch ev.Kind {
+			case contract.EventUsage:
+				if ev.Usage != nil {
+					mergeUsage(&accumulated, *ev.Usage)
+					sawUsage = true
+				}
+			case contract.EventFinish:
+				finished = true
+			case contract.EventRaw:
+				// 原生帧承载无法用 Anthropic 块表达的内容（如 Gemini inlineData）：
+				// 丢弃即内容丢失，必须按连接级失败终止（crossproto 的 F2 同一口径）。
+				upstreamFail = true
+				return false
+			case contract.EventError:
+				// 软错误（坏 JSON 块/上游 error 事件）没有可渲染内容；计入上限后继续。
+				// 硬错误（Raw 为空：读取失败/超限）终止。
+				if len(ev.Raw) > 0 && softErrors < maxSoftStreamErrors {
+					softErrors++
+					return true
+				}
+				upstreamFail = true
+				return false
+			}
+
+			for _, frame := range renderer.Push(ev) {
+				if !sse.anthropicEvent(frame.Event, frame.Data) {
+					clientGone = true
+					return false
+				}
+				sent++
+				if firstTokenMS == nil {
+					ms := int(time.Since(start).Milliseconds())
+					firstTokenMS = &ms
+				}
+			}
+			return true
+		})
+	}
+
+	// 事件循环以 EOF 结束时不会再有 yield 回调，因此上面的 ctx 检查覆盖不到
+	// 「客户端断开 → 上游 body 被级联取消 → 直接 EOF」这条路径。这里补一次
+	// 判定，否则会把半截流误当正常收尾，写出伪造的 message_delta/message_stop
+	// 并结算（复核 F5）。
+	if r.Context().Err() != nil {
+		clientGone = true
+	}
+
+	// 头部兜底（R-05 优先级 3）：事件流没给出任何非零用量时读上游
+	// `x-model-response-usage` 头；仍没有则由估计值兜底（Source=estimated）。
+	if !sawUsage || !usageHasFact(accumulated) {
+		extracted := usage.ExtractUsageMultimodal(&contract.Response{}, upstreamHeader, nil, rc.ChannelType)
+		if extracted.Usage.Source == contract.UsageUpstreamExact {
+			accumulated = extracted.Usage
+			sawUsage = true
+		}
+	}
+
+	abnormal := clientGone || upstreamFail || timedOut.Load()
+	endReason := contract.EndUpstreamDone
+	outcome := contract.OutcomeSuccess
+	switch {
+	case clientGone:
+		endReason = contract.EndClientAbort
+		outcome = relayStreamOutcome(sent)
+	case timedOut.Load():
+		endReason = contract.EndStreamTimeout
+		outcome = relayStreamOutcome(sent)
+	case upstreamFail:
+		endReason = contract.EndUpstreamError
+		outcome = relayStreamOutcome(sent)
+	case !finished:
+		endReason = contract.EndUpstreamEOF
+		outcome = relayStreamOutcome(sent)
+	}
+	relay.WithStream(rc, &contract.StreamStatus{
+		Phase:     contract.PhaseTerminated,
+		EndReason: endReason,
+		Outcome:   outcome,
+		RecvCount: received,
+		SendCount: sent,
+	}, sent, received, firstTokenMS)
+
+	if abnormal {
+		refund()
+		return
+	}
+
+	// 结算与回写必须用同一份 finalUsage：先确定事实用量（含 header/估计兜底），
+	// 再交给渲染器写 message_delta，保证 usage_logs 与客户端看到的一致。
+	finalUsage := accumulated
+	if !usageHasFact(finalUsage) {
+		finalUsage = estimatedUsageFor(rc.ChannelType)
+	}
+
+	// 只在正常收尾时写 content_block_stop/message_delta/message_stop；
+	// 异常流不伪造收尾（relay-03 §5.2/§10.3）。
+	for _, frame := range renderer.Close(finalUsage) {
+		if !sse.anthropicEvent(frame.Event, frame.Data) {
+			// 收尾帧写不出去 = 客户端已断开：整笔退款，不结算半截流。
+			refund()
+			return
+		}
+		sent++
+	}
+
+	fact := contract.UsageFact{
+		Model:        rc.OriginModel,
+		Usage:        finalUsage,
+		LatencyMS:    int(time.Since(start).Milliseconds()),
+		FirstTokenMS: firstTokenMS,
+		Stream:       true,
+		Attempts:     rc.AttemptIndex + 1,
+	}
+	terminate(fact)
+}
+
+// anthropicMessageID 由请求 ID 派生 Anthropic 消息 ID（缺省给稳定占位）。
+func anthropicMessageID(rc *contract.RelayContext) string {
+	if rc != nil && rc.RequestID != "" {
+		return "msg_" + rc.RequestID
+	}
+	return "msg_newtg"
 }
 
 // writerFunc 把函数适配为 io.Writer（io.TeeReader 的写端）。
@@ -2794,6 +3077,20 @@ func (s *relaySSEWriter) raw(raw []byte) bool {
 // done 写唯一的统一终止标记（relay-03 §3.2）。
 func (s *relaySSEWriter) done() bool {
 	return s.writeFrame([]byte("data: [DONE]\n\n"))
+}
+
+// anthropicEvent 写一个 Anthropic SSE 事件帧：`event: <name>\ndata: <json>\n\n`。
+//
+// 与 OpenAI 的纯 data 帧不同，Anthropic 客户端按 event 名分派；data 必须是
+// 单行 JSON（encoding/json 的输出不含裸换行），因此无需再拆 data 行。
+func (s *relaySSEWriter) anthropicEvent(name string, data []byte) bool {
+	frame := make([]byte, 0, len(name)+len(data)+16)
+	frame = append(frame, "event: "...)
+	frame = append(frame, name...)
+	frame = append(frame, '\n', 'd', 'a', 't', 'a', ':', ' ')
+	frame = append(frame, data...)
+	frame = append(frame, '\n', '\n')
+	return s.writeFrame(frame)
 }
 
 // ping 写 SSE 注释帧 `: PING\n\n`（relay-03 §3.3，10s 间隔）。
