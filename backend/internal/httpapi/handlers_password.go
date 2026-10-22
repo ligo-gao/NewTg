@@ -242,9 +242,10 @@ func newPasswordHandlers(base *authHandlers, repo PasswordRepo, publicBaseURL st
 //   - 有 EmailSender 时 publicBaseURL 必须至少包含一个合法的 http(s) origin
 //     （可逗号分隔多个，与 RouterConfig.PublicBaseURL 同格式；重置链接取第一
 //     个合法项），否则启动失败：一个确定投递不出去的重置链接是装配错误。
-//   - nil EmailSender 是 M1「未配置 SMTP」的显式状态：此时没有可投递的通道，
+//   - nil EmailSender 是「未配置 SMTP」的显式状态：此时没有可投递的通道，
 //     publicBaseURL 缺失/非法只表示「重置投递功能禁用」（platform-03 §3.1 #20），
-//     不作为启动错误；端点保持统一 204，仅告警一次。
+//     不作为启动错误；运行期请求统一 fail-closed 503（email_unavailable），
+//     不再用 204 假装已发送（W13-EMAIL 冻结口径）。
 func (rt *Router) RegisterPasswordRoutes(publicBaseURL string, auditLog *audit.Logger) error {
 	if rt == nil || rt.handlers == nil {
 		return errors.New("httpapi: router is not initialized")
@@ -265,11 +266,12 @@ func (rt *Router) RegisterPasswordRoutes(publicBaseURL string, auditLog *audit.L
 			return err
 		}
 		// 无发信器时重置投递本就不可用：base URL 缺失不应阻止 gateway 上线。
-		// resetLink 在 base 为空时返回 ok=false，端点仍保持统一 204。
+		// resetLink 在 base 为空时返回 ok=false；运行期请求在入口按
+		// email_unavailable 直接 503（不再走到这里）。
 		rt.handlers.log.Warn("no email sender and no valid PUBLIC_BASE_URL; password reset delivery is disabled")
 		base = ""
 	} else if !hasSender {
-		rt.handlers.log.Warn("no email sender configured; password reset links will not be delivered (M1 explicit state)")
+		rt.handlers.log.Warn("no email sender configured; password reset requests will fail closed with 503")
 	}
 	h := newPasswordHandlers(rt.handlers, repo, base, auditLog)
 
@@ -325,8 +327,10 @@ type passwordResetRequestBody struct {
 	TurnstileToken string `json:"turnstile_token"`
 }
 
-// handleResetRequest 生成一次性重置链接并发信。无论邮箱是否注册，成功态
-// 完全一致（204 空体）；限流与格式错误是仅有的差异化响应。
+// handleResetRequest 生成一次性重置链接并发信。发信通道可用时，无论邮箱
+// 是否注册，成功态完全一致（204 空体）；通道未配置时对所有邮箱统一 503
+// （email_unavailable），同样不泄露账号存在性。限流与格式错误是仅有的
+// 其它差异化响应。
 func (h *passwordHandlers) handleResetRequest(w http.ResponseWriter, r *http.Request) {
 	var req passwordResetRequestBody
 	if err := readAuthJSON(r, &req); err != nil {
@@ -340,6 +344,16 @@ func (h *passwordHandlers) handleResetRequest(w http.ResponseWriter, r *http.Req
 	}
 	ctx := r.Context()
 	ip := clientIP(r)
+
+	// W13-EMAIL：发信通道不可用时在查询用户之前统一 503。放在这里而不是
+	// 用户查找之后，是为了让「已注册/未注册」得到逐字相同的响应——503 只
+	// 暴露站点配置状态，不构成账号枚举信道。旧口径在 nil 发信器下仍回
+	// 204，会让用户以为重置邮件已发出。
+	if !emailDeliveryConfigured(ctx, h.sender) {
+		h.log.Error("password reset requested but email delivery is not configured")
+		writeEmailUnavailable(w)
+		return
+	}
 
 	// 同邮箱 60s 冷却。先占用冷却键（无论邮箱是否存在），使两条路径的
 	// 限流行为一致，不引入新的枚举信道。
@@ -443,7 +457,7 @@ func (h *passwordHandlers) resetSendWorker() {
 	for job := range h.sendQueue {
 		sender, ok := h.sender.(PasswordResetSender)
 		if !ok {
-			// 装配期已校验；nil sender 是 M1 显式状态，不产生日志噪音。
+			// 装配期已校验；nil sender 在入口即 503，不会走到 worker。
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), passwordResetSendTimeout)

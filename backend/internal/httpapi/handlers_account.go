@@ -876,8 +876,12 @@ func (h *AccountHandlers) handleTestNotification(w http.ResponseWriter, r *http.
 	}
 
 	// 发送器未配置时直接 503，不消耗用户的测试配额。
-	if h.sender == nil {
-		h.writeUnavailable(w, "Send test notification", errors.New("notification test sender is not configured"))
+	// W13-EMAIL：nil 仍是未配置；email 渠道还要按配置中心快照判断 SMTP 是否
+	// 可投递（生产注入的适配器可能非 nil 但 host/from_email 为空）。
+	if h.sender == nil || (channel == "email" && !emailDeliveryConfigured(r.Context(), h.sender)) {
+		h.log.Error("notification test requested but email delivery is not configured",
+			"channel", channel, "user_id", p.UserID)
+		writeEmailUnavailable(w)
 		return
 	}
 
@@ -900,8 +904,17 @@ func (h *AccountHandlers) handleTestNotification(w http.ResponseWriter, r *http.
 	if err := h.sender.SendTestNotification(r.Context(), channel, target); err != nil {
 		// 渠道错误（如 Webhook 404）返回给本人用于行内提示；不回显内部堆栈。
 		h.log.Warn("send test notification failed", "channel", channel, "user_id", p.UserID, "error", err)
-		writeProblem(w, http.StatusBadGateway, problemTypeNotificationTestFailed,
-			"Test notification delivery failed")
+		switch {
+		case errors.Is(err, ErrEmailUnavailable):
+			// SMTP 在检查与发送之间被清空：固定 fail-closed 出口。
+			writeEmailUnavailable(w)
+		case errors.Is(err, ErrNotificationChannelUnavailable):
+			// 本部署只装配 SMTP（email）；其它渠道没有测试出口。
+			h.writeUnavailable(w, "Notification channel is not available", err)
+		default:
+			writeProblem(w, http.StatusBadGateway, problemTypeNotificationTestFailed,
+				"Test notification delivery failed")
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, notificationTestResponse{Channel: channel, Sent: true})

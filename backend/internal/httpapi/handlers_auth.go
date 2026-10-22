@@ -154,7 +154,8 @@ type ConfigReader interface {
 }
 
 // EmailCodeSender 负责把明文验证码交给 SMTP/通知渠道。实现失败时端点
-// 返回 5xx 并作废已生成的码；nil 表示未配置邮件（码仍会生成，但不下发）。
+// 返回 5xx 并作废已生成的码；nil 或 Configured=false 表示邮件未配置，
+// 端点在生成码之前 fail-closed 503（email_unavailable，W13-EMAIL）。
 type EmailCodeSender interface {
 	SendEmailCode(ctx context.Context, email, purpose, code string) error
 }
@@ -893,20 +894,32 @@ func (h *authHandlers) handleEmailCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// W13-EMAIL：发信通道不可用（未配置 SMTP / nil 发信器）必须在生成
+	// 验证码之前 fail-closed。旧口径「nil 时只生成不下发、端点 204」会把
+	// 一个用户永远收不到的码算作成功。
+	if !emailDeliveryConfigured(ctx, h.sender) {
+		h.log.Error("email delivery is not configured", "purpose", req.Purpose)
+		writeEmailUnavailable(w)
+		return
+	}
+
 	code, err := h.codes.issue(ctx, email, req.Purpose)
 	if err != nil {
 		h.log.Error("issue email code failed", "error", err)
 		h.writeServiceUnavailable(w, "Email verification is temporarily unavailable")
 		return
 	}
-	if h.sender != nil {
-		if err := h.sender.SendEmailCode(ctx, email, req.Purpose, code); err != nil {
-			// 明文码只交给发送器；失败即作废，避免留下一个用户永远收不到的有效码。
-			_ = h.codes.discard(ctx, email, req.Purpose)
-			h.log.Error("send email code failed", "purpose", req.Purpose, "error", err)
-			writeProblem(w, http.StatusBadGateway, authProblemEmailSendFailed, "Failed to send verification email")
+	if err := h.sender.SendEmailCode(ctx, email, req.Purpose, code); err != nil {
+		// 明文码只交给发送器；失败即作废，避免留下一个用户永远收不到的有效码。
+		_ = h.codes.discard(ctx, email, req.Purpose)
+		h.log.Error("send email code failed", "purpose", req.Purpose, "error", err)
+		if errors.Is(err, ErrEmailUnavailable) {
+			// 检查与发送之间配置被清空：仍按未配置处理（503），不假装可重试。
+			writeEmailUnavailable(w)
 			return
 		}
+		writeProblem(w, http.StatusBadGateway, authProblemEmailSendFailed, "Failed to send verification email")
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -1010,6 +1023,14 @@ func (h *authHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	emailVerified := false
 	if h.boolConfig("auth.email_verification_required", false) {
+		// W13-EMAIL：邮箱验证开启但发信通道不可用时，注册必须明确失败。
+		// 继续走验证码校验只会得到「码无效」的误导性 400——用户根本无法
+		// 收到码。503 + email_unavailable 指向真实的配置问题。
+		if !emailDeliveryConfigured(r.Context(), h.sender) {
+			h.auditRegister(r, 0, "failed", "email_unavailable")
+			writeEmailUnavailable(w)
+			return
+		}
 		if !sixDigitPattern.MatchString(req.EmailCode) {
 			h.auditRegister(r, 0, "failed", "invalid_email_code")
 			writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid or expired verification code")

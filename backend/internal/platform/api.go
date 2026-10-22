@@ -78,6 +78,10 @@ type gatewayAssembly struct {
 	// 排空队列。runGateway 必须在关闭主库/日志库**之前**调用，否则停机窗口
 	// 的排空写会撞上已关闭的连接池（I-2）。
 	AttemptFailureReporterStop func()
+	// EmailSender 是事务性邮件适配器（W13-EMAIL）：同一实例同时实现验证码、
+	// 密码重置与通知测试三个 handler 接缝。装配测试据此断言生产路径确实
+	// 注入，而不是让端点退化到 503。
+	EmailSender httpapi.EmailCodeSender
 }
 
 // pricingCacheInvalidator 是定价源进程内缓存失效的最小缝。
@@ -411,6 +415,13 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		return nil, err
 	}
 
+	// W13-EMAIL：事务性邮件发送器只构造一次，验证码 / 密码重置 / 通知测试
+	// 三个接缝共用同一个出口与同一份 notify.smtp.* 配置快照（与通知 worker、
+	// SMTP 测试发送同源）。SMTP 未配置时 handler 统一 fail-closed 503
+	// （email_unavailable），绝不返回 204 假装已发送。
+	transactionalEmail := httpapi.NewTransactionalEmailSender(
+		notify.NewSMTPSender(center, cipher))
+
 	router, err := httpapi.BuildGatewayRouter(httpapi.GatewayDeps{
 		DB:                      db,
 		LogDB:                   logsDB,
@@ -448,6 +459,9 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		// W7/M5-b：准入限流器复用同一个 Redis 客户端（跨副本共享计数），
 		// 装配一次、由中继面与任务提交面共同持有（R-M5-04/07）。
 		RateLimiter: rateLimiter,
+		// W13-EMAIL：事务性邮件（验证码/密码重置/通知测试）共用一个适配器。
+		EmailSender:        transactionalEmail,
+		NotificationSender: transactionalEmail,
 	})
 	if err != nil {
 		return nil, err
@@ -473,6 +487,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		MJ:                     router.MJHandler(),
 		RateLimiter:            rateLimiter,
 		AttemptFailureReporter: attemptReporter,
+		EmailSender:            transactionalEmail,
 		AttemptFailureReporterStop: func() {
 			reporterCancel()
 			attemptReporter.Wait()
