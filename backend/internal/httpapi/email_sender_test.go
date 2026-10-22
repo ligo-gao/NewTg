@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -297,6 +298,17 @@ func waitForLog(t *testing.T, logs *syncBuffer, marker string) {
 	t.Fatalf("3s 内日志未出现 %q：%q", marker, logs.String())
 }
 
+// logLineContaining 返回第一条包含 marker 的日志行（slog TextHandler 一行一条）。
+// 用于把断言限定到某一次事件，避免共享 buffer 里其它事件的同类字段误满足。
+func logLineContaining(logs, marker string) string {
+	for _, line := range strings.Split(logs, "\n") {
+		if strings.Contains(line, marker) {
+			return line
+		}
+	}
+	return ""
+}
+
 // newEmailEndpointEnv 按生产形态装配 Router：EmailSender 是事务性邮件适配器，
 // Config 是配置中心快照的测试替身，日志写入可断言的 buffer。
 func newEmailEndpointEnv(t *testing.T, mailer SMTPMailer, config mapConfig) *emailEndpointEnv {
@@ -542,16 +554,134 @@ func TestEmailDeliveryConfiguredFailsClosedWithoutProbe(t *testing.T) {
 	}
 }
 
-// TestEmailCodeFailClosedIssuesNoCode（M-1）：fail-closed 必须发生在
-// codes.issue 之前，否则 Redis 里会留下一个用户永远收不到的验证码。
-func TestEmailCodeFailClosedIssuesNoCode(t *testing.T) {
+// TestTransactionalEmailSenderNormalizesDeliveryErrors（Important-1）：适配器
+// 边界必须把底层 SMTP 错误归一化为唯一哨兵 ErrEmailDeliveryFailed。用例直接
+// 断言 `send` 的返回值，而不是 handler 日志——把 `send` 改回 `%w` 透传时，
+// errors.Is 与「文本不含地址/550/@」会同时变红，安全不变量因此被钉住。
+func TestTransactionalEmailSenderNormalizesDeliveryErrors(t *testing.T) {
+	const victim = "victim@example.com"
+	server := newFakeSMTPServer(t)
+	server.rejectRCPT = "550 5.1.1 <" + victim + ">: Recipient address rejected"
+	sender := NewTransactionalEmailSender(configuredMailer(t, server))
+	ctx := context.Background()
+
+	configured := []struct {
+		name string
+		send func() error
+	}{
+		{"SendEmailCode", func() error {
+			return sender.SendEmailCode(ctx, victim, "register", "123456")
+		}},
+		{"SendPasswordReset", func() error {
+			return sender.SendPasswordReset(ctx, victim, "https://app.example.com/reset-password?token=t")
+		}},
+		{"SendTestNotification", func() error {
+			return sender.SendTestNotification(ctx, "email", victim)
+		}},
+	}
+	for _, tc := range configured {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.send()
+			if err == nil {
+				t.Fatal("RCPT 被 550 拒绝，必须返回错误")
+			}
+			if !errors.Is(err, ErrEmailDeliveryFailed) {
+				t.Fatalf("err = %v，期望 errors.Is(ErrEmailDeliveryFailed)", err)
+			}
+			// 固定分类必须原样返回：任何包装（哪怕只是加常量前缀）都可能
+			// 在后续演进中重新夹带上游回显，这里把边界钉死。
+			if err.Error() != ErrEmailDeliveryFailed.Error() {
+				t.Fatalf("错误文本未被归一化：%q", err.Error())
+			}
+			for _, banned := range []string{victim, "@", "550", "Recipient address rejected"} {
+				if strings.Contains(err.Error(), banned) {
+					t.Fatalf("错误文本泄露 %q：%q", banned, err.Error())
+				}
+			}
+		})
+	}
+
+	// 未配置路径必须仍是 ErrEmailUnavailable，且绝不能同时被归到
+	// delivery_failed：503（配置缺失，重试无用）与 502（可重试）是客户端/告警
+	// 依赖的两个不同分类，不能混。
+	unconfigured := NewTransactionalEmailSender(unconfiguredMailer())
+	notConfigured := []struct {
+		name string
+		send func() error
+	}{
+		{"SendEmailCode", func() error {
+			return unconfigured.SendEmailCode(ctx, victim, "register", "123456")
+		}},
+		{"SendPasswordReset", func() error {
+			return unconfigured.SendPasswordReset(ctx, victim, "https://x/reset?token=t")
+		}},
+		{"SendTestNotification", func() error {
+			return unconfigured.SendTestNotification(ctx, "email", victim)
+		}},
+	}
+	for _, tc := range notConfigured {
+		t.Run(tc.name+"_unconfigured", func(t *testing.T) {
+			err := tc.send()
+			if !errors.Is(err, ErrEmailUnavailable) {
+				t.Fatalf("err = %v，期望 ErrEmailUnavailable", err)
+			}
+			if errors.Is(err, ErrEmailDeliveryFailed) {
+				t.Fatal("未配置路径不得被归为 ErrEmailDeliveryFailed")
+			}
+			if strings.Contains(err.Error(), "@") {
+				t.Fatalf("未配置错误文本泄露地址：%q", err.Error())
+			}
+		})
+	}
+}
+
+// TestEmailErrorClass（Minor-2）：三种固定分类都必须被断言；任意未知错误只能
+// 落到 delivery_failed，绝不能落入 not_configured / channel_unavailable。
+func TestEmailErrorClass(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"not_configured", ErrEmailUnavailable, "not_configured"},
+		{"not_configured_wrapped", fmt.Errorf("probe: %w", ErrEmailUnavailable), "not_configured"},
+		{"channel_unavailable", ErrNotificationChannelUnavailable, "channel_unavailable"},
+		{"channel_unavailable_wrapped", fmt.Errorf("probe: %w", ErrNotificationChannelUnavailable), "channel_unavailable"},
+		{"delivery_failed", ErrEmailDeliveryFailed, "delivery_failed"},
+		{"arbitrary_error", errors.New("550 5.1.1 <victim@example.com>"), "delivery_failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := emailErrorClass(tc.err); got != tc.want {
+				t.Fatalf("emailErrorClass(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestEmailCodeFailClosedBeforeIssue（M-1）：fail-closed 必须发生在
+// codes.issue **之前**。旧用例只断言 Redis 键不存在，而失败分支的
+// `codes.discard` 会把生成后留下的键同步删掉，所以把可用性检查移到 issue
+// 之后时旧用例仍然绿——它只证明了「不留残余码」。这里用可注入接缝计数
+// issue 调用次数，直接钉住顺序。
+func TestEmailCodeFailClosedBeforeIssue(t *testing.T) {
 	env := newEmailEndpointEnv(t, unconfiguredMailer(), nil)
 	const email = "user@example.com"
+
+	var issues atomic.Int64
+	env.router.handlers.issueEmailCode = func(ctx context.Context, email, purpose string) (string, error) {
+		issues.Add(1)
+		return env.router.handlers.codes.issue(ctx, email, purpose)
+	}
 
 	rec := env.post("/api/auth/email-code",
 		map[string]any{"email": email, "purpose": "register"})
 	assertProblemType(t, rec, "email_unavailable")
 
+	if n := issues.Load(); n != 0 {
+		t.Fatalf("未配置时必须在 issue 之前返回，实际 issue 调用 %d 次", n)
+	}
+	// 辅助断言：即使实现将来改成「生成后失败也保留」，也不得留下无人收得到的码。
 	if n, err := env.rdb.Exists(context.Background(), "email_code:register:"+email).Result(); err != nil || n != 0 {
 		t.Fatalf("未配置时不得生成验证码：exists=%d err=%v", n, err)
 	}
@@ -645,6 +775,12 @@ func TestEmailDeliveryErrorsDoNotLeakRecipient(t *testing.T) {
 		t.Fatalf("password-reset = %d, want 204（body=%q）", rec.Code, rec.Body.String())
 	}
 	waitForLog(t, env.logs, "password reset email delivery failed")
+	// Minor-4：异步 worker 行必须带固定 error_class（与另外两个端点同口径）。
+	// 按行匹配，避免同一 buffer 里 email-code 的同类日志误满足断言。
+	resetLine := logLineContaining(env.logs.String(), "password reset email delivery failed")
+	if !strings.Contains(resetLine, "error_class=delivery_failed") {
+		t.Fatalf("password-reset worker 日志缺少固定分类：%q", resetLine)
+	}
 	assertNoRecipientLeak(t, "password-reset log", env.logs.String())
 
 	// --- notification-test ---

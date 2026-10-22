@@ -465,7 +465,10 @@ func (h *passwordHandlers) resetSendWorker() {
 		cancel()
 		if err != nil {
 			n := h.sendFailures.Add(1)
-			h.log.Error("password reset email delivery failed", "failures_total", n)
+			// 与 email-code / notification-test 同口径：只写固定分类，不写
+			// err 原文（SMTP 回显可能含收件地址）或地址/链接。
+			h.log.Error("password reset email delivery failed", "failures_total", n,
+				"error_class", emailErrorClass(err))
 		}
 	}
 }

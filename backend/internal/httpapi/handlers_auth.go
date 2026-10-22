@@ -591,6 +591,11 @@ type authHandlers struct {
 	signupGrantAlert func(ctx context.Context, userID int64, ip string)
 	// reserveSignupGrant 是 Redis 槽位预留的可替换接缝（测试注入故障）。
 	reserveSignupGrant func(ctx context.Context, ip string) (bool, error)
+	// issueEmailCode 是验证码生成的测试接缝（默认 h.codes.issue）。复核
+	// Minor-1：fail-closed 必须发生在生成**之前**，而只断言 Redis 无残留
+	// 无法区分「没生成」与「生成后 discard 删掉」——失败分支的 discard 会
+	// 掩盖顺序错误。测试用它计数，直接观测 issue 调用次数。
+	issueEmailCode func(ctx context.Context, email, purpose string) (string, error)
 	// initialized 查询安装向导是否已完成。GET /api/status 用它暴露
 	// system_initialized（前端初始化闸门）；nil 表示未接线的单元装配
 	// （生产装配由 BuildGatewayRouter 传入 SetupStore.IsInitialized）。
@@ -624,6 +629,7 @@ func newAuthHandlers(repo AuthRepo, sessions *auth.SessionManager, rdb *redis.Cl
 		hashPassword:   auth.HashPassword,
 	}
 	h.reserveSignupGrant = h.reserveSignupGrantSlot
+	h.issueEmailCode = h.codes.issue
 	return h
 }
 
@@ -906,7 +912,13 @@ func (h *authHandlers) handleEmailCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	code, err := h.codes.issue(ctx, email, req.Purpose)
+	issue := h.issueEmailCode
+	if issue == nil {
+		// 未经 newAuthHandlers 的测试装配（如仅用 authHandlers{config:...}
+		// 的 emailDomainAllowed 单元用例）没有接缝；退回真实存储。
+		issue = h.codes.issue
+	}
+	code, err := issue(ctx, email, req.Purpose)
 	if err != nil {
 		h.log.Error("issue email code failed", "error", err)
 		h.writeServiceUnavailable(w, "Email verification is temporarily unavailable")
