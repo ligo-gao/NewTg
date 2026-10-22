@@ -40,7 +40,7 @@ paths:
             `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
             是否超限就不放行，客户端不应把它当作可重试的限流。
         '503':
-          $ref: '../components/responses.yaml#/responses/Error503'
+          $ref: '../components/responses.yaml#/responses/RelayError503'
 
   # Anthropic Messages 原生入口（W7/M1）。产品定位是「一个 key 接
   # OpenAI/Claude/Gemini」：Claude 原生客户端（含 Claude Code）直接调本端点。
@@ -272,7 +272,7 @@ paths:
             `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
             是否超限就不放行，客户端不应把它当作可重试的限流。
         '503':
-          $ref: '../components/responses.yaml#/responses/Error503'
+          $ref: '../components/responses.yaml#/responses/RelayError503'
 
   /pg/models:
     get:
@@ -1368,6 +1368,9 @@ paths:
       tags: [relay]
       operationId: getModel
       summary: 模型检索（Anthropic 头 → Anthropic 形状，否则 OpenAI）
+      description: |
+        模型名允许包含 `/`（厂商前缀，如 `Qwen/Qwen2.5-72B`）：实现按整串
+        与启用模型清单精确比对，未命中返回 404 `model_not_found`。
       parameters:
         - $ref: '../components/params.yaml#/parameters/PathPricingModel'
       security:
@@ -1429,6 +1432,7 @@ paths:
       tags: [relay]
       operationId: getBetaModel
       summary: Gemini 模型检索
+      description: 模型名允许包含 `/`；整串精确匹配，未命中 404 `model_not_found`。
       parameters:
         - $ref: '../components/params.yaml#/parameters/PathPricingModel'
       security:

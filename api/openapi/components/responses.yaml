@@ -160,6 +160,17 @@ responses:
       application/json:
         schema:
           $ref: '../schemas/relay.yaml#/schemas/RelayError'
+  RelayError503:
+    description: 服务暂不可用（部署未就绪/依赖不可用；OpenAI 错误信封）
+    headers:
+      X-Request-ID:
+        description: "请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`"
+        schema:
+          type: string
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/RelayError'
   Error500:
     description: 服务端内部错误
     content:

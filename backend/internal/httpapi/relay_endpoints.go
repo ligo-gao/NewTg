@@ -332,7 +332,7 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 			// 与 chat 同一套 R-63/R-64 语义：多模态端点同样可能携带 auto 令牌。
 			MaxAutoGroups:   h.maxAutoGroups,
 			GroupConfigured: h.groupConfigured,
-			// M4-a：多模态非 realtime 端点也经 ExecuteAttempts，失败渠道必须
+			// M4-a：多模态端点也经 ExecuteAttempts，失败渠道必须
 			// 进入同一条自动禁用上报路径（调研 §5.1 的实际可达路径）。
 			OnAttemptFailure: h.reportAttemptFailure,
 		})
@@ -396,11 +396,13 @@ func (h *RelayHandler) Register(mux *http.ServeMux) {
 	authMiddleware := h.AuthMiddleware()
 	mux.Handle("POST /v1/chat/completions", authMiddleware(http.HandlerFunc(h.handleChatCompletions)))
 	mux.Handle("GET /v1/models", authMiddleware(http.HandlerFunc(h.handleModels)))
-	// R-W18-13：模型列表/检索按协议头分流（relay-04 §10.1）。四条 GET 路由
-	// 与既有 `POST /v1/models/{path...}`（Gemini 嵌入通配）按方法共存。
-	mux.Handle("GET /v1/models/{model}", authMiddleware(http.HandlerFunc(h.handleModel)))
+	// R-W18-13：模型列表/检索按协议头分流（relay-04 §10.1）。
+	// 检索路径用 `{model...}` 通配：模型名允许包含 `/`（如
+	// `Qwen/Qwen2.5-72B`、`meta-llama/Llama-3-70B`），单段 `{model}` 会让
+	// 这类合法模型名落到 405。`/v1beta/models` 同理。
+	mux.Handle("GET /v1/models/{model...}", authMiddleware(http.HandlerFunc(h.handleModel)))
 	mux.Handle("GET /v1beta/models", authMiddleware(http.HandlerFunc(h.handleBetaModels)))
-	mux.Handle("GET /v1beta/models/{model}", authMiddleware(http.HandlerFunc(h.handleBetaModel)))
+	mux.Handle("GET /v1beta/models/{model...}", authMiddleware(http.HandlerFunc(h.handleBetaModel)))
 	mux.Handle("GET /v1beta/openai/models", authMiddleware(http.HandlerFunc(h.handleOpenAIModels)))
 	// T2 / P-01：OpenAI Responses 创建端点——插件原生路由优先，未命中返回
 	// 501（R-13；Responses 透传/转码另立 T2b，通用中继不承接）。
@@ -435,10 +437,38 @@ func (h *RelayHandler) Register(mux *http.ServeMux) {
 	// 接收「没有其它路由认领」的 /v1 请求。它不是通用中继回退：命中插件路由
 	// 走任务数据面，未命中一律 404 OpenAI 信封（P-05），绝不进入 chat 管线。
 	mux.Handle(nativeRouteFallbackPattern, h.nativeRouteFallback(authMiddleware, mux))
+
+	// R-W18-13：`/v1beta/*` 的未匹配方法/未知路径同样回 OpenAI 信封。
+	//
+	// 不注册这条兜底时，`PUT /v1beta/models/x` 会落到 Go ServeMux 的默认
+	// 405（text/plain "Method Not Allowed"），与同一路径其它错误
+	// （application/json + {error:{...}}）形状分裂。兜底只做路由求解，
+	// 不鉴权、不分发，因此不会扩大可达面。
+	mux.Handle(betaRouteFallbackPattern, h.betaRouteFallback(mux))
 }
 
 // nativeRouteFallbackPattern 是原生路由兜底的 ServeMux 模式。
 const nativeRouteFallbackPattern = "/v1/"
+
+// betaRouteFallbackPattern 是 Gemini 兼容路径的兜底模式（R-W18-13）。
+const betaRouteFallbackPattern = "/v1beta/"
+
+// betaRouteFallback 把 /v1beta/* 的 404/405 统一成 /v1 的 OpenAI 错误信封。
+//
+// 405 语义与 nativeRouteFallback 相同：子树模式匹配所有方法，ServeMux 自己
+// 不会再产生 405，必须用路由表探测补回（探测不执行 handler）。
+func (h *RelayHandler) betaRouteFallback(mux *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := newRelayRequestID()
+		if allowed := methodMismatchAllowed(mux, r); len(allowed) > 0 {
+			w.Header().Set("Allow", strings.Join(allowed, ", "))
+			writeRelayError(w, http.StatusMethodNotAllowed, requestID, "method_not_allowed",
+				"method not allowed for this endpoint")
+			return
+		}
+		writeRelayError(w, http.StatusNotFound, requestID, "invalid_request_error", "unknown endpoint")
+	})
+}
 
 // nativeRouteFallback 构建 /v1/ 兜底 handler。
 //
@@ -447,8 +477,9 @@ const nativeRouteFallbackPattern = "/v1/"
 // 就是 404，能力探测面不应因为加了兜底而变成 401/404 二值 oracle。
 //
 // 405 语义必须由这里补回：Go 的 ServeMux 只有在「路径匹配某个模式但方法不
-// 匹配」时才返回 405，而 `/v1/` 匹配所有方法，若不显式探测，POST /v1/realtime
-// 会从 405 退化成 404。探测只查路由表（mux.Handler），不执行任何 handler。
+// 匹配」时才返回 405，而 `/v1/` 匹配所有方法，若不显式探测，GET /v1/models
+// 这类 GET-only 路径的其它方法会从 405 退化成 404。探测只查路由表
+// （mux.Handler），不执行任何 handler。
 func (h *RelayHandler) nativeRouteFallback(authMiddleware func(http.Handler) http.Handler, mux *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestID := newRelayRequestID()
@@ -498,7 +529,7 @@ func methodMismatchAllowed(mux *http.ServeMux, r *http.Request) []string {
 		*probe = *r
 		probe.Method = method
 		_, pattern := mux.Handler(probe)
-		if pattern == "" || pattern == nativeRouteFallbackPattern {
+		if pattern == "" || pattern == nativeRouteFallbackPattern || pattern == betaRouteFallbackPattern {
 			continue
 		}
 		allowed = append(allowed, method)
@@ -524,7 +555,7 @@ func (h *RelayHandler) Handler() http.Handler {
 //
 // 挂载面按 relay-01 §1.5 收敛为**对话族**：只注册 `POST /pg/chat/completions`
 // 与 `GET /pg/models`，其余 `/pg/*`（含 /v1 的多模态族 images/edits/
-// embeddings/rerank/audio/engines/v1beta/realtime）一律 404 OpenAI 信封。
+// embeddings/rerank/audio/engines/v1beta）一律 404 OpenAI 信封。
 // 不把多模态族一并暴露的理由：设计只承诺对话族，且 OpenAPI 只登记这两条；
 // 多挂的路径既无契约也无 UI 消费方，等于把未评审的计费面开给浏览器会话。
 //
@@ -2544,7 +2575,7 @@ func modelListShapeFor(r *http.Request) modelListShape {
 	return modelShapeOpenAI
 }
 
-// modelShapeForRetrieval 是 `GET /v1/models/{model}` 的分流：Anthropic 头 →
+// modelShapeForRetrieval 是 `GET /v1/models/{model...}` 的分流：Anthropic 头 →
 // Anthropic，否则 OpenAI（relay-04 §10.1 只给这两支，不含 Gemini）。
 func modelShapeForRetrieval(r *http.Request) modelListShape {
 	if strings.TrimSpace(r.Header.Get("x-api-key")) != "" &&
@@ -2596,7 +2627,7 @@ func (h *RelayHandler) handleOpenAIModels(w http.ResponseWriter, r *http.Request
 	h.writeOpenAIModels(w, r)
 }
 
-// handleModel 是 `GET /v1/models/{model}`：Anthropic 头 → Anthropic 形状，
+// handleModel 是 `GET /v1/models/{model...}`：Anthropic 头 → Anthropic 形状，
 // 否则 OpenAI 形状。
 func (h *RelayHandler) handleModel(w http.ResponseWriter, r *http.Request) {
 	model := r.PathValue("model")
@@ -2626,7 +2657,7 @@ func (h *RelayHandler) handleBetaModels(w http.ResponseWriter, r *http.Request) 
 	h.writeGeminiModels(w, r)
 }
 
-// handleBetaModel 是 `GET /v1beta/models/{model}`：Gemini 形状。
+// handleBetaModel 是 `GET /v1beta/models/{model...}`：Gemini 形状。
 func (h *RelayHandler) handleBetaModel(w http.ResponseWriter, r *http.Request) {
 	model := r.PathValue("model")
 	models, requestID, ok := h.loadEnabledModels(w, r)
@@ -2698,13 +2729,16 @@ func (h *RelayHandler) writeGeminiModels(w http.ResponseWriter, r *http.Request)
 
 // geminiModelFor 把网关模型名投影为 Gemini Models API 对象。
 //
-// Gemini 的 `name` 必须是 `models/<id>` 形式；`supportedGenerationMethods`
-// 只声明网关确实会转发的动作，避免让 SDK 误以为可以调用未实现的动作。
+// Gemini 的 `name` 必须是 `models/<id>` 形式。`supportedGenerationMethods`
+// 只声明网关**确实会转发**的动作：`POST /v1beta/models/{model}:embedContent`
+// 与 `:batchEmbedContents`（后者不是 SDK 的 generation method，不列入）。
+// 声明 `generateContent`/`streamGenerateContent` 会让 SDK 去调用一条本网关
+// 未注册的路径——那是能力谎报（R-W18-11 的反面）。
 func geminiModelFor(model string) geminiModelObject {
 	return geminiModelObject{
 		Name:                       "models/" + model,
 		DisplayName:                model,
-		SupportedGenerationMethods: []string{"generateContent", "streamGenerateContent", "embedContent"},
+		SupportedGenerationMethods: []string{"embedContent"},
 	}
 }
 

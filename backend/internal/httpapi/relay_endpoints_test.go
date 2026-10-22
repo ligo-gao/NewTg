@@ -1044,6 +1044,22 @@ func TestRelayModelsShapeSplitByHeaders(t *testing.T) {
 		}
 	})
 
+	t.Run("anthropic-headers-win-over-gemini", func(t *testing.T) {
+		// P3：同时携带 Claude 与 Gemini 兼容头时，Anthropic 优先（relay-04
+		// §10.1 的判定顺序：x-api-key+anthropic-version 先于 x-goog-api-key）。
+		w := env.do(t, http.MethodGet, "/v1/models", "", map[string]string{
+			"x-api-key":         relayTestToken,
+			"anthropic-version": "2023-06-01",
+			"x-goog-api-key":    relayTestToken,
+		})
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"display_name":"alpha"`) {
+			t.Fatalf("status = %d; body=%s, want Anthropic shape", w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), `"models":[`) {
+			t.Fatalf("body = %s, must not be Gemini shape when Anthropic headers are present", w.Body.String())
+		}
+	})
+
 	t.Run("gemini-header", func(t *testing.T) {
 		w := env.do(t, http.MethodGet, "/v1/models", "", map[string]string{"x-goog-api-key": relayTestToken})
 		var payload struct {
@@ -1058,7 +1074,8 @@ func TestRelayModelsShapeSplitByHeaders(t *testing.T) {
 		}
 		if w.Code != http.StatusOK || len(payload.Models) != 2 ||
 			payload.Models[0].Name != "models/alpha" || payload.Models[0].DisplayName != "alpha" ||
-			len(payload.Models[0].SupportedGenerationMethods) == 0 {
+			len(payload.Models[0].SupportedGenerationMethods) != 1 ||
+			payload.Models[0].SupportedGenerationMethods[0] != "embedContent" {
 			t.Fatalf("gemini shape = %d %+v", w.Code, payload)
 		}
 	})
@@ -1086,13 +1103,28 @@ func TestRelayModelRetrieval(t *testing.T) {
 		t.Error("model retrieval must not hit upstream")
 	}))
 	defer upstream.Close()
-	channels := &fakeRelayChannelStore{models: []string{"alpha"}}
+	channels := &fakeRelayChannelStore{models: []string{"alpha", "Qwen/Qwen2.5-72B"}}
 	env := newRelayTestEnv(t, upstream, channels)
 
 	t.Run("openai-found", func(t *testing.T) {
 		w := env.doAuthed(t, http.MethodGet, "/v1/models/alpha", "")
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"id":"alpha"`) ||
 			!strings.Contains(w.Body.String(), `"object":"model"`) {
+			t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	// P2-2：模型名允许包含 `/`（厂商前缀）；单段路由会把这类请求变成 405。
+	t.Run("openai-found-slash-model", func(t *testing.T) {
+		w := env.doAuthed(t, http.MethodGet, "/v1/models/Qwen/Qwen2.5-72B", "")
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"id":"Qwen/Qwen2.5-72B"`) {
+			t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("openai-missing-slash-model", func(t *testing.T) {
+		w := env.doAuthed(t, http.MethodGet, "/v1/models/Qwen/does-not-exist", "")
+		if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), `"code":"model_not_found"`) {
 			t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())
 		}
 	})
@@ -1122,6 +1154,13 @@ func TestRelayModelRetrieval(t *testing.T) {
 		}
 	})
 
+	t.Run("v1beta-found-slash-model", func(t *testing.T) {
+		w := env.doAuthed(t, http.MethodGet, "/v1beta/models/Qwen/Qwen2.5-72B", "")
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"name":"models/Qwen/Qwen2.5-72B"`) {
+			t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())
+		}
+	})
+
 	t.Run("v1beta-missing", func(t *testing.T) {
 		w := env.doAuthed(t, http.MethodGet, "/v1beta/models/does-not-exist", "")
 		if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), `"code":"model_not_found"`) {
@@ -1136,6 +1175,38 @@ func TestRelayModelRetrieval(t *testing.T) {
 				t.Fatalf("%s status = %d, want 401; body=%s", path, w.Code, w.Body.String())
 			}
 		}
+	})
+}
+
+// TestBetaFallbackUsesRelayEnvelope 覆盖 P2-2/P3：`/v1beta/*` 的未匹配方法
+// 与未知路径都必须回 OpenAI JSON 信封，而不是 Go ServeMux 的 text/plain 405。
+func TestBetaFallbackUsesRelayEnvelope(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("fallback must not hit upstream")
+	}))
+	defer upstream.Close()
+	env := newRelayTestEnv(t, upstream, &fakeRelayChannelStore{models: []string{"alpha"}})
+
+	t.Run("method-not-allowed", func(t *testing.T) {
+		w := env.doAuthed(t, http.MethodPut, "/v1beta/models/alpha", "")
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status = %d, want 405; body=%s", w.Code, w.Body.String())
+		}
+		if allow := w.Header().Get("Allow"); !strings.Contains(allow, http.MethodGet) {
+			t.Fatalf("Allow = %q, want GET", allow)
+		}
+		body := assertOpenAIErrorEnvelope(t, w, "method_not_allowed")
+		if body.Message == "" || !strings.Contains(body.Message, "requestId:") {
+			t.Fatalf("message = %q, want requestId suffix", body.Message)
+		}
+	})
+
+	t.Run("unknown-path", func(t *testing.T) {
+		w := env.doAuthed(t, http.MethodGet, "/v1beta/unknown", "")
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404; body=%s", w.Code, w.Body.String())
+		}
+		assertOpenAIErrorEnvelope(t, w, "invalid_request_error")
 	})
 }
 

@@ -270,6 +270,33 @@ func TestMultimodal_RealtimeIsGone(t *testing.T) {
 	}
 }
 
+// TestMultimodal_GeminiWildcardUnknownActionIsJSON404 覆盖 P3：Gemini 通配
+// 路径上的非嵌入动作必须是 OpenAI JSON 信封的 404，而不是 text/plain。
+func TestMultimodal_GeminiWildcardUnknownActionIsJSON404(t *testing.T) {
+	dispatcher := &captureMultimodalDispatcher{}
+	handler := newMultimodalTestHandler(t, dispatcher)
+	for _, path := range []string{
+		"/v1/models/gemini-pro:generateContent",
+		"/v1beta/models/gemini-pro:countTokens",
+	} {
+		resp := doMultimodal(t, handler, multimodalRequest{
+			path: path, body: []byte(`{"contents":[]}`), contentType: "application/json",
+		}, true)
+		if resp.Code != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want 404; body=%s", path, resp.Code, resp.Body.String())
+		}
+		if ct := resp.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			t.Fatalf("%s Content-Type = %q, want application/json", path, ct)
+		}
+		if !strings.Contains(resp.Body.String(), `"code":"invalid_request_error"`) {
+			t.Fatalf("%s body = %s, want OpenAI envelope", path, resp.Body.String())
+		}
+	}
+	if dispatcher.calls != 0 {
+		t.Fatalf("dispatcher calls = %d, want 0", dispatcher.calls)
+	}
+}
+
 // TestMultimodal_ModerationEntryValidation 覆盖 relay-04 §5.2/§9 的入口校验：
 // input 必填/非空、形态、字节上界、max_tokens 族上界；缺省 model 取审核默认模型。
 func TestMultimodal_ModerationEntryValidation(t *testing.T) {

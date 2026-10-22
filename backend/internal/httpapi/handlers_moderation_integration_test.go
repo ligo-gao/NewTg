@@ -144,7 +144,7 @@ func TestIntegrationModerationUnsupportedChannel(t *testing.T) {
 	}
 	rows := m2UsageRows(t, logsDB, userID)
 	if len(rows) != 0 {
-		t.Fatalf("usage_logs = %#v，期望 0 行（能力拒绝发生在预扣前）", rows)
+		t.Fatalf("usage_logs = %#v，期望 0 行（能力拒绝走 PreConsume→Refund，净计费为零、不落 success 行）", rows)
 	}
 	if balance := m2Balance(t, mainDB, userID); balance != 10_000 {
 		t.Fatalf("balance = %d, want 10000（全额退回）", balance)

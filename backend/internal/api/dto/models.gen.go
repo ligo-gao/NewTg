@@ -9313,6 +9313,10 @@ type RelayError429 = RelayError
 // ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
 type RelayError500 = RelayError
 
+// RelayError503 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type RelayError503 = RelayError
+
 // MJTaskList defines model for MJTaskList.
 type MJTaskList = MJTaskListRequest
 

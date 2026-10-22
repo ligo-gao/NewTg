@@ -199,7 +199,7 @@ func RegisterMultimodalRoutes(mux *http.ServeMux, auth func(http.Handler) http.H
 }
 
 // serve 是所有多模态端点的公共流程：读体 → 入口校验 → 组装 RelayContext →
-// 准入限流（W7/M5-b，realtime 除外）→ 交给 Dispatcher。
+// 准入限流（W7/M5-b）→ 交给 Dispatcher。
 //
 // 本层只承担 relay-04 §2 阶段 4–5 的职责与 R-M5-04 冻结的限流位置；定价与
 // 预扣仍属于 billing 接缝（contract §6），不在这里发生。
@@ -216,10 +216,11 @@ func (h *MultimodalHandler) serve(w http.ResponseWriter, r *http.Request, endpoi
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
 	// Gemini 通配路径只接受嵌入动作后缀；其它动作回到标准 404（不把
-	// generateContent/countTokens 误当成本族）。
+	// generateContent/countTokens 误当成本族）。R-W18-13 复核：404 也必须
+	// 用 /v1 的 OpenAI JSON 信封，不能是 text/plain。
 	if endpoint == contract.EndpointEmbeddings && isGeminiWildcardPath(r.URL.Path) {
 		if _, ok := geminiEmbeddingModel(r.URL.Path); !ok {
-			http.NotFound(w, r)
+			writeRelayError(w, http.StatusNotFound, requestID, "invalid_request_error", "unknown endpoint")
 			return
 		}
 	}
@@ -528,12 +529,6 @@ func validateGeminiEmbeddingJSON(model string, body []byte) (string, error) {
 	return model, nil
 }
 
-// validateEmbeddingsJSON 实施 relay-04 §1.2/§9 的入口上界：
-// input 必填、批量与单条字节上界、dimensions 上界均为**用户声明的乘数**，
-// 越界在归一化层 400 拒绝（billing.md 的上界前置原则）。
-//
-// 非字符串数组元素被忽略（照搬基线）；但必须至少有一个字符串输入，否则
-// 归一化层无法产出可计费用量。
 // validateModerationJSON 实施 relay-04 §5.2/§9：`input` 必填且非空、
 // input 字节上界、max_tokens 族上界；缺省 model 取审核默认模型。
 //
@@ -597,6 +592,12 @@ func validateModerationJSON(body []byte) (string, error) {
 	return multimodal.DefaultModerationModel, nil
 }
 
+// validateEmbeddingsJSON 实施 relay-04 §1.2/§9 的入口上界：
+// input 必填、批量与单条字节上界、dimensions 上界均为**用户声明的乘数**，
+// 越界在归一化层 400 拒绝（billing.md 的上界前置原则）。
+//
+// 非字符串数组元素被忽略（照搬基线）；但必须至少有一个字符串输入，否则
+// 归一化层无法产出可计费用量。
 func validateEmbeddingsJSON(body []byte) (string, error) {
 	var payload struct {
 		Model      *string            `json:"model"`

@@ -4380,7 +4380,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** 模型检索（Anthropic 头 → Anthropic 形状，否则 OpenAI） */
+        /**
+         * 模型检索（Anthropic 头 → Anthropic 形状，否则 OpenAI）
+         * @description 模型名允许包含 `/`（厂商前缀，如 `Qwen/Qwen2.5-72B`）：实现按整串
+         *     与启用模型清单精确比对，未命中返回 404 `model_not_found`。
+         */
         get: operations["getModel"];
         put?: never;
         /**
@@ -4420,7 +4424,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Gemini 模型检索 */
+        /**
+         * Gemini 模型检索
+         * @description 模型名允许包含 `/`；整串精确匹配，未命中 404 `model_not_found`。
+         */
         get: operations["getBetaModel"];
         put?: never;
         /**
@@ -9522,6 +9529,17 @@ export interface components {
         };
         /** @description 服务端内部错误（OpenAI 错误信封） */
         RelayError500: {
+            headers: {
+                /** @description 请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)` */
+                "X-Request-ID"?: string;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["RelayError"];
+            };
+        };
+        /** @description 服务暂不可用（部署未就绪/依赖不可用；OpenAI 错误信封） */
+        RelayError503: {
             headers: {
                 /** @description 请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)` */
                 "X-Request-ID"?: string;
@@ -16963,7 +16981,7 @@ export interface operations {
              *     是否超限就不放行，客户端不应把它当作可重试的限流。
              */
             500: components["responses"]["RelayError500"];
-            503: components["responses"]["Error503"];
+            503: components["responses"]["RelayError503"];
         };
     };
     createMessage: {
@@ -17192,7 +17210,7 @@ export interface operations {
              *     是否超限就不放行，客户端不应把它当作可重试的限流。
              */
             500: components["responses"]["RelayError500"];
-            503: components["responses"]["Error503"];
+            503: components["responses"]["RelayError503"];
         };
     };
     playgroundListModels: {
