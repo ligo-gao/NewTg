@@ -106,8 +106,9 @@ func TestMJBQueryEndpointsOnRealDB(t *testing.T) {
 	}
 	handler := NewMJHandler(MJHandlerConfig{
 		Store: repo, Channels: repo, Sealer: sealer, Tokens: tokens,
-		Billing: func(*contract.RelayContext) contract.BillingSession { return newTaskBillingRecorder() },
-		Config:  mjConfigured(nil),
+		Billing:     func(*contract.RelayContext) contract.BillingSession { return newTaskBillingRecorder() },
+		Config:      mjConfigured(nil),
+		ImageSigner: mj.NewImageSigner("mj-integration-key"),
 	})
 	mux := http.NewServeMux()
 	handler.Register(mux, RelayAuth(tokens, fakeTaskAccess{}, nil))

@@ -1078,3 +1078,41 @@ paths:
           description: 内部错误（渠道凭据不可用等）
         '502':
           description: 上游不可达/坏响应
+
+  # ---------------------------------------------------------------------------
+  # 图片代理（W8/MJ-c，relay-05 §1.3；R-MJ-05/09/10/11）。
+  #
+  # 签名 URL：`?sig=&exp=`。签名绑定 `mj_id ‖ owner_user_id ‖ exp`，TTL 300s。
+  # **仅签名访问，不要求令牌**（relay-05 §1.3/§8、security-02 §2.4：明确把该
+  # 端点排除在令牌鉴权之外；浏览器 `<img src>` 不会携带 Bearer）。签名+归属
+  # 就是能力凭证。id 畸形、签名缺失/篡改/过期、任务不存在、他人任务**一律
+  # 404**（同一固定 description），不制造存在性 oracle。出站地址规则始终
+  # 执行：`sec.ssrf.mode=off`/`sec.ssrf.enabled=false` 与 `allow_private_ip`
+  # 不豁免，策略拒绝→403。存储 URL 非法/上游非 2xx/非图片类型/超限→502
+  # （不透传上游状态码）。
+  # ---------------------------------------------------------------------------
+  /mj/image/{id}:
+    get:
+      tags: [relay]
+      operationId: mjImageProxy
+      summary: Midjourney 图片代理（签名 URL）
+      description: |
+        按 MjId 取候选任务行并对候选 owner 逐个复算 HMAC，任一匹配即通过；
+        随后用统一出站执行器校验目标地址（私网/环回/link-local/元数据/
+        CGNAT/保留段、反 rebinding、禁跟随重定向）并流式回写图片字节。
+        `sig`/`exp` 之外不接受任何参数；不要求 Bearer。
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/MJTaskID'
+        - $ref: '../components/params.yaml#/parameters/MJImageSig'
+        - $ref: '../components/params.yaml#/parameters/MJImageExp'
+      responses:
+        '200':
+          description: 图片字节流（Content-Type 透传，限 image/*；缺失按 image/jpeg）
+        '403':
+          description: 目标地址被 SSRF 策略拒绝（`{code:4,description:forbidden}`）
+        '404':
+          description: id/签名/归属任一不通过（`{code:4,description:task_not_found}`）
+        '500':
+          description: 内部错误（`{code:5,description:internal_error}`）
+        '502':
+          description: 存储 URL 不可用或上游失败（`{code:5,description:upstream_error}`）

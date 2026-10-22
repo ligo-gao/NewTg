@@ -99,8 +99,9 @@ func TestMJSubmitPersistsFamilyRowOnRealDB(t *testing.T) {
 			recorder.hold = 70
 			return recorder
 		},
-		Config:  mjConfigured(nil),
-		Uint64N: func(uint64) uint64 { return 0 },
+		Config:      mjConfigured(nil),
+		ImageSigner: mj.NewImageSigner("mj-integration-key"),
+		Uint64N:     func(uint64) uint64 { return 0 },
 	})
 	mux := http.NewServeMux()
 	handler.Register(mux, RelayAuth(tokens, fakeTaskAccess{}, nil))
@@ -168,8 +169,9 @@ func TestMJSubmitUpstreamFailureDoesNotPersistOnRealDB(t *testing.T) {
 			recorder.hold = 70
 			return recorder
 		},
-		Config:  mjConfigured(nil),
-		Uint64N: func(uint64) uint64 { return 0 },
+		Config:      mjConfigured(nil),
+		ImageSigner: mj.NewImageSigner("mj-integration-key"),
+		Uint64N:     func(uint64) uint64 { return 0 },
 	})
 	mux := http.NewServeMux()
 	handler.Register(mux, RelayAuth(tokens, fakeTaskAccess{}, nil))

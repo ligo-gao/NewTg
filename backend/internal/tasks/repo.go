@@ -396,6 +396,41 @@ func (r *Repo) ListByUserUpstreamIDs(ctx context.Context, userID int64, ids []st
 		userID, FamilyMJ, ids, limit))
 }
 
+// ListOwnersByUpstreamID 按 MjId 全局取候选任务行（W8/MJ-c 图片代理）。
+//
+// 【为什么不能带 user_id】图片代理在验签前只知道 URL 里的 MjId，不知道 owner；
+// 签名又恰好绑定 owner_user_id。因此只能先按 MjId 取出候选行，再逐个用候选
+// owner 复算 HMAC，任一匹配即通过（R-MJ-05 备选 A）。
+//
+// 【为什么有上限且固定排序】同一 MjId 理论上可能被大量用户各拿到一次（上游
+// code 21）。无界查询 + 逐候选验证会变成一次请求放大成全表扫描的 DoS 面，
+// 因此截断到 100（mj.MaxOwnerCandidates 的同一冻结值）。排序固定为
+// (user_id, id)，保证截断结果确定、可复现——否则每次请求可能验证不同的
+// 候选集合，行为不可诊断。
+//
+// 【family 过滤】插件行即便巧合有同名 upstream id 也不得成为图片候选：
+// 图片代理只服务 family='mj' 的产物。
+func (r *Repo) ListOwnersByUpstreamID(ctx context.Context, upstreamID string, limit int) ([]*Task, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("tasks: repository is not configured")
+	}
+	// 空 id 绝不查库：空串会匹配所有 inline 上传行（upstream_task_id=''），
+	// 把它们当成「MjId 的候选 owner」。
+	if strings.TrimSpace(upstreamID) == "" {
+		return []*Task{}, nil
+	}
+	// 与 mj.MaxOwnerCandidates 同值；tasks 不能反向 import mj（mj 已 import
+	// tasks），因此在这里再钳一次，防止内部调用方绕过归一化放大查询。
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	return r.scanTasks(r.db.QueryContext(ctx,
+		`SELECT `+taskColumns+` FROM tasks
+		 WHERE upstream_task_id = $1 AND family = $2
+		 ORDER BY user_id ASC, id ASC LIMIT $3`,
+		upstreamID, FamilyMJ, limit))
+}
+
 // MJChannelCandidate 是 MJ 提交路径的渠道候选投影。
 //
 // 与 contract.ChannelCandidate（中继路由用，只含 id/priority/weight）分开：

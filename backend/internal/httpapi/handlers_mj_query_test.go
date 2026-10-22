@@ -82,11 +82,12 @@ func newMJQueryHandler(t *testing.T, store *fakeMJStore, channels *fakeMJChannel
 	tokens, key42, _ := newMJTokens()
 	handler := NewMJHandler(MJHandlerConfig{
 		Store: store, Channels: channels, Sealer: sealer, Tokens: tokens,
-		Billing: func(*contract.RelayContext) contract.BillingSession { return newTaskBillingRecorder() },
-		Config:  mjConfigured(nil),
-		Querier: querier,
-		Now:     func() time.Time { return time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC) },
-		Uint64N: func(uint64) uint64 { return 0 },
+		Billing:     func(*contract.RelayContext) contract.BillingSession { return newTaskBillingRecorder() },
+		Config:      mjConfigured(nil),
+		ImageSigner: mj.NewImageSigner("mj-query-test-key"),
+		Querier:     querier,
+		Now:         func() time.Time { return time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC) },
+		Uint64N:     func(uint64) uint64 { return 0 },
 	})
 	mux := http.NewServeMux()
 	handler.Register(mux, RelayAuth(tokens, fakeTaskAccess{}, nil))

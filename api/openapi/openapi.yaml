@@ -498,6 +498,9 @@ paths:
     $ref: './paths/relay.yaml#/paths/~1mj~1task~1list-by-condition'
   /mj/task/{id}/image-seed:
     $ref: './paths/relay.yaml#/paths/~1mj~1task~1{id}~1image-seed'
+  # 绘图任务族图片代理（W8/MJ-c，relay-05 §1.3）。
+  /mj/image/{id}:
+    $ref: './paths/relay.yaml#/paths/~1mj~1image~1{id}'
   /api/task/self:
     $ref: './paths/user.yaml#/paths/~1api~1task~1self'
   /api/task:
