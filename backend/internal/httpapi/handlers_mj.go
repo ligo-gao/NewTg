@@ -80,6 +80,20 @@ type MJTaskStore interface {
 
 var _ MJTaskStore = (*tasks.Repo)(nil)
 
+// MJIdempotencyStore 是提交幂等键的存储接缝（生产 *tasks.Repo）。
+//
+// 与 MJTaskStore 分开：幂等键是提交入口的去重事实，不是任务行；把两者塞进
+// 同一接口会让只关心查询/图片代理的 fake 也被迫实现 claim 语义。
+type MJIdempotencyStore interface {
+	ClaimSubmitIdempotency(ctx context.Context,
+		claim tasks.SubmitIdempotencyClaim) (tasks.SubmitIdempotencyState, *tasks.SubmitIdempotencyRecord, error)
+	CompleteSubmitIdempotency(ctx context.Context, userID int64, key string,
+		requestHash []byte, publicTaskID string, response []byte) error
+	AbandonSubmitIdempotency(ctx context.Context, userID int64, key string, requestHash []byte) error
+}
+
+var _ MJIdempotencyStore = (*tasks.Repo)(nil)
+
 // MJChannelSource 是 MJ 渠道选择/读取接缝（生产 *tasks.Repo）。
 type MJChannelSource interface {
 	GetChannel(ctx context.Context, id int64) (*tasks.ChannelTarget, error)
@@ -149,6 +163,13 @@ type MJHandlerConfig struct {
 	// §2.4：category=security 的 mj_image_sig_rejected）。nil 时跳过。
 	Audit  *audit.Logger
 	Logger *slog.Logger
+	// Idempotency 是提交幂等键存储（R-MJ-06 第二步，生产 *tasks.Repo）。
+	// nil 允许既有测试不带幂等头运行；一旦请求携带 Idempotency-Key 而该
+	// 接缝缺失，提交会 fail-closed（500），绝不静默降级成「不去重」。
+	Idempotency MJIdempotencyStore
+	// ChannelLimiter 是网关侧渠道在飞并发限制器（W8/MJ-d）。nil 时构造
+	// 进程内默认实现；见 mj_limiter.go 的设计边界说明。
+	ChannelLimiter MJChannelLimiter
 	// Now / Uint64N 是测试接缝：时间与加权随机源。
 	Now     func() time.Time
 	Uint64N func(uint64) uint64
@@ -173,6 +194,8 @@ type MJHandler struct {
 	imageClient *http.Client
 	audit       *audit.Logger
 	log         *slog.Logger
+	idempotency MJIdempotencyStore
+	limiter     MJChannelLimiter
 	now         func() time.Time
 	uint64N     func(uint64) uint64
 }
@@ -226,6 +249,10 @@ func NewMJHandler(cfg MJHandlerConfig) *MJHandler {
 		imageGuard = egress.NewGuard(mjImagePolicy(cfg.Config))
 	}
 	imageClient := imageGuard.NewClient(egress.ClientOptions{Timeout: mjImageFetchTimeout})
+	limiter := cfg.ChannelLimiter
+	if limiter == nil {
+		limiter = newMJInFlightLimiter()
+	}
 
 	return &MJHandler{
 		store:       cfg.Store,
@@ -242,6 +269,8 @@ func NewMJHandler(cfg MJHandlerConfig) *MJHandler {
 		imageClient: imageClient,
 		audit:       cfg.Audit,
 		log:         log,
+		idempotency: cfg.Idempotency,
+		limiter:     limiter,
 		now:         now,
 		uint64N:     uint64N,
 	}
@@ -317,14 +346,15 @@ func (h *MJHandler) handleSubmit(w http.ResponseWriter, r *http.Request, endpoin
 		return
 	}
 
-	req, mjErr := decodeMJSubmitRequest(w, r)
+	req, rawBody, mjErr := decodeMJSubmitRequest(w, r)
 	if mjErr != nil {
 		writeMJError(w, mjErr)
 		return
 	}
-	// Idempotency-Key 目前只做形状/上界校验；完整的 (user,key) 去重表排
-	// MJ-d（R-MJ-06 第二步）。现在拒绝畸形值是为了避免它在将来被静默接受。
-	if _, _, keyErr := mj.ParseIdempotencyKey(r.Header.Get(mj.IdempotencyKeyHeader)); keyErr != nil {
+	// Idempotency-Key：形状/上界校验在这里，去重表在限流之后、任何资金或
+	// 上游副作用之前 claim（R-MJ-06 第二步）。
+	key, _, keyErr := mj.ParseIdempotencyKey(r.Header.Get(mj.IdempotencyKeyHeader))
+	if keyErr != nil {
 		writeMJError(w, keyErr)
 		return
 	}
@@ -361,6 +391,17 @@ func (h *MJHandler) handleSubmit(w http.ResponseWriter, r *http.Request, endpoin
 		return
 	}
 
+	// 幂等 claim（R-MJ-06 第二步）：放在限流之后、渠道/预扣/上游之前。
+	// 被拒绝的请求不占键；成功的请求由 Complete 落首次结果，任何失败由
+	// defer Abandon 释放，允许客户端用同一个键重试。
+	claim, proceed := h.beginIdempotency(r.Context(), w, principal.UserID, key, endpoint, rawBody)
+	if !proceed {
+		return
+	}
+	if claim != nil {
+		defer h.abandonIdempotency(r.Context(), claim)
+	}
+
 	channel, lockedChannelID, originIDs, mjErr := h.resolveChannel(r.Context(), rc, principal, normalized)
 	if mjErr != nil {
 		writeMJError(w, mjErr)
@@ -377,15 +418,38 @@ func (h *MJHandler) handleSubmit(w http.ResponseWriter, r *http.Request, endpoin
 		return
 	}
 
+	// 网关侧渠道在飞并发（W8/MJ-d）：只约束「上游提交」这一段同步执行，
+	// 不约束已受理任务的异步生命周期（账号池/排队在上游 proxy）。
+	// 拒绝发生在 PreConsume 之前：超限请求不冻结资金、不出站。
+	// 选择非阻塞 429 而不是排队：排队会和 60s 上游超时叠加，放大尾延迟。
+	limit := h.settingInt("mj.channel_max_inflight", mjDefaultChannelMaxInflight)
+	release, acquired := h.limiter.TryAcquire(channel.ID, limit)
+	if !acquired {
+		h.log.Warn("mj: channel in-flight limit reached",
+			"channel_id", channel.ID, "limit", limit)
+		writeMJError(w, mj.ChannelBusy())
+		return
+	}
+	defer release()
+
 	// 预扣：固定动作价走 model_pricing(mode=1) 的 mj_<action> 行（R-MJ-01）。
 	// 估算在渠道选择之后：分组倍率来自本次选中的用户分组，且无渠道时不必
 	// 触碰资金。PreConsume 失败不落行。
+	//
+	// 【免计费档位】INPAINT / CUSTOM_ZOOM 由设计冻结为 0 元（relay-05 §7.2
+	// 档位 1）。它们给会话预置显式零价快照，不去查价——免计费是档位事实，
+	// 不是「查不到价」的副产品；反过来，付费档位缺价时严格解析会 fail-closed
+	// （见 billing/session.go 的 UsePrice 分支），绝不会按 0 静默放行。
+	if tier, ok := normalized.Action.PriceTier(); ok && tier.Free() {
+		rc.PriceSnapshot = mjFreePriceSnapshot()
+	}
 	estimate := &contract.QuotaEstimate{
 		Model:    normalized.Model,
 		Group:    rc.UsingGroup,
 		UsePrice: true,
 		// FixedPriceKey 只写进 usage.Raw 供审计；金额由 model_pricing 决定
-		//（实现里没有消费方，不要依赖它定价）。
+		//（实现里没有消费方，不要依赖它定价）。它同时让引擎对任务路径
+		// 禁用信任额度旁路（见 billing.Engine.shouldTrust）。
 		FixedPriceKey: normalized.Model,
 	}
 	relay.WithQuotaEstimate(rc, estimate)
@@ -398,7 +462,10 @@ func (h *MJHandler) handleSubmit(w http.ResponseWriter, r *http.Request, endpoin
 			writeMJError(w, mj.QuotaNotEnough())
 			return
 		}
-		h.log.Warn("mj: pre-consume failed", "request_id", rc.RequestID, "model", normalized.Model, "error", err)
+		// 定价配置缺失/错模式是运营可修的错误，必须与余额不足分开（客户端
+		// 充值也解决不了）。严格解析的哨兵已在会话层保证不会静默成免费。
+		h.log.Warn("mj: pre-consume failed", "request_id", rc.RequestID,
+			"model", normalized.Model, "error", err)
 		writeMJError(w, mj.PricingUnavailable())
 		return
 	}
@@ -441,7 +508,7 @@ func (h *MJHandler) handleSubmit(w http.ResponseWriter, r *http.Request, endpoin
 			writeMJError(w, &mj.Error{Code: mj.CodeUnknownError, Description: mj.DescriptionUpstreamBadResponse, Status: http.StatusBadGateway})
 			return
 		}
-		committed, settled = h.finishUpload(w, r, session, rc, principal, channel, resp, held)
+		committed, settled = h.finishUpload(w, r, session, rc, principal, channel, resp, held, claim)
 		return
 	}
 
@@ -476,6 +543,10 @@ func (h *MJHandler) handleSubmit(w http.ResponseWriter, r *http.Request, endpoin
 				} else {
 					settled = true
 				}
+				// 复用也是「首次结果」：同键重放必须返回同一个 MjId，而不是
+				// 再提交一次（那会命中 code 21，但多一次 hold/退款与上游往返）。
+				h.completeIdempotency(r.Context(), claim, existing.PublicTaskID,
+					mj.NewSuccess(mjSuccessDescription, resp.Result))
 				writeMJSuccess(w, resp.Result)
 				return
 			}
@@ -504,6 +575,8 @@ func (h *MJHandler) handleSubmit(w http.ResponseWriter, r *http.Request, endpoin
 	// 走同一套「Detach → Terminate/Refund → billing_final/pending」。
 	if row.State.Terminal() {
 		settled = h.settleTerminalAtHeld(persistCtx, session, rc, row)
+		h.completeIdempotency(persistCtx, claim, row.PublicTaskID,
+			mj.NewSuccess(mjSuccessDescription, resp.Result))
 		writeMJSuccess(w, resp.Result)
 		return
 	}
@@ -518,6 +591,9 @@ func (h *MJHandler) handleSubmit(w http.ResponseWriter, r *http.Request, endpoin
 		}
 	}
 
+	// 受理成功才写幂等结果：客户端下一次用同键重放直接拿到同一个 MjId。
+	h.completeIdempotency(persistCtx, claim, row.PublicTaskID,
+		mj.NewSuccess(mjSuccessDescription, resp.Result))
 	writeMJSuccess(w, resp.Result)
 }
 
@@ -592,7 +668,7 @@ func (h *MJHandler) settleTerminalAtHeld(ctx context.Context, session contract.B
 func (h *MJHandler) finishUpload(w http.ResponseWriter, r *http.Request,
 	session contract.BillingSession, rc *contract.RelayContext, principal *auth.Principal,
 	channel *tasks.ChannelTarget, resp *mj.SubmitResponse,
-	held int64) (committed, settled bool) {
+	held int64, claim *mjIdempotencyClaim) (committed, settled bool) {
 
 	now := h.now().UTC()
 	publicID, err := tasks.NewPublicTaskID()
@@ -634,6 +710,11 @@ func (h *MJHandler) finishUpload(w http.ResponseWriter, r *http.Request,
 	// 尚未接线，没有 MJ 侧补偿扫描会自动重试；该标志供 MJ-b 接入后的
 	// `ListReconcilable(FamilyMJ)` 与人工按 request_id 收敛使用，不能据此
 	// 宣称「一定会被自动发现」。
+	//
+	// 幂等结果在写响应前落库：即使结算需要补偿，客户端重放也应拿到同一个
+	// 上传结果，而不是再执行一次上传。
+	h.completeIdempotency(persistCtx, claim, row.PublicTaskID,
+		mj.NewSuccess(mjSuccessDescription, resp.Results))
 	writeMJSuccessResults(w, resp.Results)
 	return true, settledOK
 }
@@ -839,6 +920,28 @@ func (h *MJHandler) settingBool(key string, fallback bool) bool {
 	return value
 }
 
+// settingInt 读取整数设置并钳制到 [1, mjMaxChannelMaxInflight]。
+//
+// 缺失/类型错误/越界一律回落默认值：脏配置不能把渠道并发上限变成 0
+// （= 拒绝一切提交）或负数（实现里视为不限，等于关掉保护）。
+func (h *MJHandler) settingInt(key string, fallback int) int {
+	if h.config == nil {
+		return fallback
+	}
+	raw, ok := h.config.Get(key)
+	if !ok {
+		return fallback
+	}
+	var value int64
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return fallback
+	}
+	if value < 1 || value > mjMaxChannelMaxInflight {
+		return fallback
+	}
+	return int(value)
+}
+
 // retentionDeadline 计算 inline 终态行的保留截止时间。
 //
 // mj.retention_terminal_days：0 = 不清理（返回 nil）；缺失/非法 → 设计默认
@@ -871,6 +974,25 @@ func MJRetentionDeadline(now time.Time, days int64) *time.Time {
 	return &deadline
 }
 
+// mjFreePriceSnapshot 构造免计费档位的显式零价快照（relay-05 §7.2）。
+//
+// 必须同时设置 Mode=PerCall 与 Price.UsePrice：计费会话在 UsePrice 估算下
+// 会校验快照模式（requirePerCallSnapshot），只有 Pricing.Mode 与 UsePrice
+// 一致时才会走按次公式。FreeModel 让免费模型预扣策略跳过金额估算，避免
+// 为 0 元动作写任何 hold 流水。
+func mjFreePriceSnapshot() *contract.PriceSnapshot {
+	return &contract.PriceSnapshot{
+		Mode: contract.BillingModePerCall,
+		Price: contract.PriceData{
+			UsePrice:   true,
+			ModelPrice: 0,
+			FreeModel:  true,
+		},
+		GroupRatio:           1,
+		PreConsumeMultiplier: 1,
+	}
+}
+
 // markBilling 更新任务行的结算旗标；失败只告警（行已存在，request_id 可收敛）。
 func (h *MJHandler) markBilling(ctx context.Context, id int64, quota *int64, flags map[string]any) {
 	if err := h.store.UpdateBilling(ctx, id, quota, flags); err != nil {
@@ -878,25 +1000,32 @@ func (h *MJHandler) markBilling(ctx context.Context, id int64, quota *int64, fla
 	}
 }
 
-// decodeMJSubmitRequest 解码有界 JSON 对象。
-func decodeMJSubmitRequest(w http.ResponseWriter, r *http.Request) (*mj.SubmitRequest, *mj.Error) {
+// decodeMJSubmitRequest 解码有界 JSON 对象，并返回原始请求体。
+//
+// 原始体用于提交幂等键的请求哈希（R-MJ-06）：哈希必须覆盖客户端实际发送
+// 的内容，而不是重新序列化后的 IR——后者会把「不同帧但同语义」变成同一个
+// 幂等请求（或反之），两者都会让重放判定与客户端预期不一致。
+func decodeMJSubmitRequest(w http.ResponseWriter, r *http.Request) (*mj.SubmitRequest, []byte, *mj.Error) {
 	if r.Body == nil {
-		return nil, mj.BadRequest(mj.DescriptionInvalidRequest)
+		return nil, nil, mj.BadRequest(mj.DescriptionInvalidRequest)
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxMJBodyBytes)
-	var req mj.SubmitRequest
-	decoder := json.NewDecoder(r.Body)
-	if err := decoder.Decode(&req); err != nil {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			return nil, mj.BadRequest(mj.DescriptionBodyTooLarge)
+			return nil, nil, mj.BadRequest(mj.DescriptionBodyTooLarge)
 		}
-		if errors.Is(err, io.EOF) {
-			return nil, mj.BadRequest(mj.DescriptionInvalidRequest)
-		}
-		return nil, mj.BadRequest(mj.DescriptionInvalidRequest)
+		return nil, nil, mj.BadRequest(mj.DescriptionInvalidRequest)
 	}
-	return &req, nil
+	if len(raw) == 0 {
+		return nil, nil, mj.BadRequest(mj.DescriptionInvalidRequest)
+	}
+	var req mj.SubmitRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, nil, mj.BadRequest(mj.DescriptionInvalidRequest)
+	}
+	return &req, raw, nil
 }
 
 // mjContextError 把 BuildRelayContext 的状态码折叠为 MJ 错误信封。
@@ -953,9 +1082,17 @@ func writeMJSuccessResults(w http.ResponseWriter, results []string) {
 }
 
 func writeMJJSON(w http.ResponseWriter, envelope mj.Envelope) {
+	// 用 Marshal + Write 而不是 Encoder：幂等重放写入的是 Complete 时保存的
+	// json.Marshal 字节，首次响应必须与之逐字节一致（否则重放体多一个换行，
+	// 客户端按字节比对时会出现「同一次提交两种响应」）。
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		writeMJError(w, &mj.Error{Code: mj.CodeUnknownError, Description: mj.DescriptionInternalError, Status: http.StatusInternalServerError})
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(envelope)
+	_, _ = w.Write(body)
 }
 
 // mjEnvelopeAuth 把 RelayAuth 的 OpenAI 错误体改写成 MJ 信封（R-MJ-17）。

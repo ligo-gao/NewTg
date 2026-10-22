@@ -1359,11 +1359,17 @@ func (s *Session) adoptImageCount(fact contract.UsageFact) int {
 // （IsClaudeUsageSemantic，见 inheritUsageSemanticLocked）。
 func (s *Session) resolveSnapshotLocked(ctx context.Context, est contract.QuotaEstimate) (*contract.PriceSnapshot, error) {
 	if s.rc != nil && s.rc.PriceSnapshot != nil {
+		if err := requirePerCallSnapshot(est.UsePrice, s.rc.PriceSnapshot); err != nil {
+			return nil, err
+		}
 		s.snap = s.rc.PriceSnapshot
 		s.inheritUsageSemanticLocked(s.snap)
 		return s.snap, nil
 	}
 	if s.snap != nil {
+		if err := requirePerCallSnapshot(est.UsePrice, s.snap); err != nil {
+			return nil, err
+		}
 		s.inheritUsageSemanticLocked(s.snap)
 		return s.snap, nil
 	}
@@ -1378,6 +1384,25 @@ func (s *Session) resolveSnapshotLocked(ctx context.Context, est contract.QuotaE
 	if group == "" {
 		group = s.group
 	}
+	// 【W8/MJ-d · UsePrice 严格解析】固定价任务族（MJ）以 UsePrice 标记
+	// 「本次请求只能按配置的按次价计费」。通用 Resolve 对未知模型回落默认
+	// 倍率价，配合空 token 用量会估算成 0（静默免费）——这是失败方向错误。
+	// 因此 UsePrice 一律走严格解析：没有启用的 mode=1 行（或分组覆盖价）
+	// 就返回 ErrNoPerCallPrice，由调用方 fail-closed。
+	if est.UsePrice {
+		strict, ok := s.engine.source.(pricing.PerCallSource)
+		if !ok {
+			return nil, fmt.Errorf("%w: 定价源不支持严格按次价", pricing.ErrNoPerCallPrice)
+		}
+		snap, err := strict.ResolvePerCall(ctx, model, group)
+		if err != nil {
+			return nil, fmt.Errorf("billing: resolve per-call pricing for model %q: %w", model, err)
+		}
+		s.snap = &snap
+		s.inheritUsageSemanticLocked(s.snap)
+		s.adoptSnapshotLocked(s.snap)
+		return s.snap, nil
+	}
 	snap, err := s.engine.source.Resolve(ctx, model, group)
 	if err != nil {
 		return nil, fmt.Errorf("billing: resolve pricing for model %q: %w", model, err)
@@ -1386,6 +1411,22 @@ func (s *Session) resolveSnapshotLocked(ctx context.Context, est contract.QuotaE
 	s.inheritUsageSemanticLocked(s.snap)
 	s.adoptSnapshotLocked(s.snap)
 	return s.snap, nil
+}
+
+// requirePerCallSnapshot 校验「UsePrice 估算」拿到的快照确实是按次价。
+//
+// 调用方可以预置 rc.PriceSnapshot（例如免计费档位写入的显式零价快照）。
+// 如果预置的是倍率快照而估算声称 UsePrice，金额会按倍率公式重算——两者
+// 组合起来正是「静默错价」。这里在预算前拒绝，绝不猜调用方意图。
+func requirePerCallSnapshot(usePrice bool, snap *contract.PriceSnapshot) error {
+	if !usePrice || snap == nil {
+		return nil
+	}
+	if snap.Mode != contract.BillingModePerCall || !snap.Price.UsePrice {
+		return fmt.Errorf("%w: UsePrice 估算要求按次快照（mode=%d use_price=%v）",
+			pricing.ErrNoPerCallPrice, snap.Mode, snap.Price.UsePrice)
+	}
+	return nil
 }
 
 // currentSnapshotLocked 在结算时取最终快照。

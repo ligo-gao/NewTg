@@ -1,6 +1,7 @@
 package mj
 
 import (
+	"crypto/sha256"
 	"strings"
 	"unicode"
 )
@@ -286,6 +287,26 @@ func stripModeFlags(prompt string) string {
 		return prompt
 	}
 	return strings.Join(kept, " ")
+}
+
+// SubmitRequestHash 计算一次提交的幂等请求指纹。
+//
+// 组成是「端点 + 0x00 + 原始请求体」：
+//   - 端点必须进哈希：同一个键被复用到 /submit/imagine 与 /submit/blend 是
+//     两个不同的副作用，不能算重放；
+//   - 原始体进哈希：客户端重放时发送的字节可能不完全一致（字段顺序/空白），
+//     我们按「不相同即冲突」的保守语义处理——把语义等价但字节不同的请求
+//     当成冲突，会得到 409，而不是悄悄执行第二个副作用。反过来放宽成
+//     「解析后 IR 相同」需要一份稳定的规范化序列化，任何字段漏掉都会让
+//     两个不同请求命中同一指纹（更危险）。
+//
+// 0x00 分隔符不在 JSON/路径字符集里，避免「端点+体」拼接的二义性。
+func SubmitRequestHash(endpoint Endpoint, body []byte) []byte {
+	h := sha256.New()
+	h.Write([]byte(endpoint))
+	h.Write([]byte{0})
+	h.Write(body)
+	return h.Sum(nil)
 }
 
 // IdempotencyKeyHeader 是客户端可重放提交的幂等键请求头（R-MJ-06 第一步）。

@@ -192,6 +192,10 @@ var EnumChecks = map[string][]string{
 		"not_start", "submitted", "queued", "in_progress",
 		"success", "failure", "unknown",
 	},
+	// W8/MJ-d 提交幂等键（R-MJ-06）：in_flight=已占位执行中（可被过期租约
+	// 接管），completed=首次结果已落库（重放命中）。没有第三种状态：失败
+	// 直接删除行（Abandon），让同键可以重试。
+	"task_submit_idempotency.status": {"in_flight", "completed"},
 	// T4 / P-04：批次聚合状态。只登记本实现会产出的三态；validating/
 	// finalizing/cancelled 属 OpenAI 状态机，取消端点当前 fail-closed，
 	// 因而不进约束（写死未使用取值会掩盖实现进度）。

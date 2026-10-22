@@ -47,6 +47,18 @@ type Source interface {
 	Resolve(ctx context.Context, model, group string) (contract.PriceSnapshot, error)
 }
 
+// PerCallSource 是「严格按次固定价」的解析能力（W8/MJ-d，relay-05 §7.2）。
+//
+// 【与 Resolve 的区别】Resolve 对未知/停用模型回落默认倍率价（billing-02
+// 的通用语义）；PerCallSource 只为固定价任务族服务：模型必须有启用的
+// per_request（mode=1）定价行，或该分组有 group_pricing 覆盖价；缺价一律
+// ErrNoPerCallPrice。这样「管理员忘配 mj_imagine」不会因为「倍率 × 空用量
+// = 0」被静默当成免费。
+type PerCallSource interface {
+	Source
+	ResolvePerCall(ctx context.Context, model, group string) (contract.PriceSnapshot, error)
+}
+
 const (
 	// quotaPerUnitKey 是模块 08 登记的兑换比键（modules-99 B-1 的唯一键名）。
 	quotaPerUnitKey = "billing.quota_per_unit"
@@ -274,6 +286,82 @@ func (s *DBSource) Resolve(ctx context.Context, model, group string) (contract.P
 	}
 
 	return ResolveExpression(&price, matched, mode, exprString)
+}
+
+// ResolvePerCall 严格解析「按次固定价」（W8/MJ-d，relay-05 §7.2）。
+//
+// 只接受两类价格来源：
+//  1. model_pricing 中启用（status=1）的 per_request 行（mode=1）且有
+//     prompt_price；或
+//  2. 上述模型行存在且启用时，group_pricing 对该分组的绝对覆盖价。
+//
+// 其余情况（无行、停用、表达式模式、per_token 模式、prompt_price 为 NULL
+// 且无覆盖价）一律 ErrNoPerCallPrice。**刻意不调用 DefaultPerCallPrice**：
+// 那是通用按次的「NULL 未设置→兜底」，对固定价任务族等于静默错价。
+//
+// 显式配置的 0 仍然合法（免费动作/运营选择），由调用方按档位决定是否
+// 需要定价行；本方法只保证「没有配置」不会伪装成「配置为 0」。
+func (s *DBSource) ResolvePerCall(ctx context.Context, model, group string) (contract.PriceSnapshot, error) {
+	if s == nil || s.db == nil {
+		return contract.PriceSnapshot{}, fmt.Errorf("%w: 定价源未装配", ErrNoPerCallPrice)
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return contract.PriceSnapshot{}, fmt.Errorf("%w: 模型名为空", ErrNoPerCallPrice)
+	}
+	group = strings.TrimSpace(group)
+	if group == "" {
+		group = "default"
+	}
+
+	row, found, err := s.lookupModel(ctx, model)
+	if err != nil {
+		return contract.PriceSnapshot{}, err
+	}
+	if !found || row.Status != 1 {
+		return contract.PriceSnapshot{}, fmt.Errorf("%w: model_pricing(%s) 不存在或已停用", ErrNoPerCallPrice, model)
+	}
+	if row.BillingExpr != nil {
+		// 固定价任务族不接受表达式：表达式会按 token/任务变量求值，而 MJ
+		// 没有可用的用量事实，结算只能按预扣额；两套价格语义混用不可审计。
+		return contract.PriceSnapshot{}, fmt.Errorf("%w: model_pricing(%s) 是表达式定价", ErrNoPerCallPrice, model)
+	}
+	if row.Mode != 1 {
+		return contract.PriceSnapshot{}, fmt.Errorf("%w: model_pricing(%s) 不是按次模式", ErrNoPerCallPrice, model)
+	}
+
+	info, err := s.groupInfo(ctx, group)
+	if err != nil {
+		return contract.PriceSnapshot{}, err
+	}
+	price := contract.PriceData{UsePrice: true, GroupRatioInfo: info}
+
+	override, hasOverride, err := s.lookupGroupPricing(ctx, group, model)
+	if err != nil {
+		return contract.PriceSnapshot{}, err
+	}
+	switch {
+	case hasOverride:
+		// 覆盖价是分组最终绝对价：生效倍率为 1（F-06-16），原倍率留在
+		// GroupRatioInfo 供日志/诊断。与 Resolve 的覆盖处理逐字一致。
+		if err := applyGroupOverride(&price, contract.BillingModePerCall, override); err != nil {
+			return contract.PriceSnapshot{}, err
+		}
+		price.GroupRatioInfo.GroupRatio = info.GroupRatio
+		price.GroupRatioInfo.GroupSpecialRatio = 1
+		price.GroupRatioInfo.HasSpecialRatio = true
+	case row.PromptPrice != nil:
+		v, err := exactPrice("prompt_price", *row.PromptPrice)
+		if err != nil {
+			return contract.PriceSnapshot{}, err
+		}
+		price.ModelPrice = v
+		price.FreeModel = v == 0
+	default:
+		return contract.PriceSnapshot{}, fmt.Errorf("%w: model_pricing(%s).prompt_price 未设置", ErrNoPerCallPrice, model)
+	}
+
+	return ResolveExpression(&price, model, contract.BillingModePerCall, "")
 }
 
 // defaultSnapshot 处理「无定价行 / 停用行」：内置表达式优先，其次默认价。

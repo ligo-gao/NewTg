@@ -283,3 +283,49 @@ func TestParseSimpleChange(t *testing.T) {
 		}
 	}
 }
+
+// TestActionPriceTiers 钉死 relay-05 §7.2 的四档映射：18 个动作全覆盖、
+// 无遗漏无重叠，且免计费档只能是 INPAINT / CUSTOM_ZOOM。
+//
+// 变异点：删/改任一条档位（例如把 INPAINT 标成付费、把 VIDEO 降档）都会
+// 让该用例红；把未知动作默认成免费档会被 TestUnknownActionIsNotFree 抓住。
+func TestActionPriceTiers(t *testing.T) {
+	want := map[PriceTier][]Action{
+		TierFree:     {ActionInpaint, ActionCustomZoom},
+		TierLow:      {ActionDescribe, ActionUpscale, ActionSwapFace, ActionUpload},
+		TierStandard: {ActionImagine, ActionBlend, ActionVariation, ActionReroll, ActionModal, ActionZoom, ActionShorten, ActionHighVariation, ActionLowVariation, ActionPan, ActionEdits},
+		TierVideo:    {ActionVideo},
+	}
+	seen := map[Action]bool{}
+	for tier, actions := range want {
+		for _, action := range actions {
+			if seen[action] {
+				t.Fatalf("动作 %s 被重复归档", action)
+			}
+			seen[action] = true
+			got, ok := action.PriceTier()
+			if !ok || got != tier {
+				t.Fatalf("%s 档位 = (%v,%v)，期望 %v", action, got, ok, tier)
+			}
+			if (tier == TierFree) != got.Free() {
+				t.Fatalf("%s Free() = %v，档位 = %v", action, got.Free(), got)
+			}
+		}
+	}
+	// 与权威动作表逐一对账：每个动作都必须有档位，且集合相等。
+	for _, action := range Actions() {
+		if !seen[action] {
+			t.Fatalf("动作 %s 没有计费档位", action)
+		}
+	}
+	if len(seen) != len(Actions()) {
+		t.Fatalf("档位表覆盖 %d 个动作，权威表 %d 个", len(seen), len(Actions()))
+	}
+}
+
+// TestUnknownActionIsNotFree 断言未知动作不会被猜成免计费档。
+func TestUnknownActionIsNotFree(t *testing.T) {
+	if tier, ok := Action("NOT_AN_ACTION").PriceTier(); ok {
+		t.Fatalf("未知动作返回档位 %v，必须返回 false", tier)
+	}
+}

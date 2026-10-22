@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 )
 
 // 线协议返回码（relay-05 §4.2；基线 constant/midjourney.go）。
@@ -96,6 +97,13 @@ const (
 	DescriptionInvalidToken             = "invalid_token"
 	DescriptionForbidden                = "forbidden"
 	DescriptionRateLimited              = "rate_limited"
+	DescriptionChannelBusy              = "channel_busy"
+	// 幂等键冲突：同键不同请求体，或同键的首次请求仍在执行。
+	//
+	// 409 而不是 400：客户端必须理解「这次请求没有被受理，也没有扣费」，
+	// 换一个键或等首次请求结束后再重放；400 会被当作参数错误反复改写请求。
+	DescriptionIdempotencyKeyReused  = "idempotency_key_reused"
+	DescriptionIdempotencyInProgress = "idempotency_in_progress"
 )
 
 // Error 是领域层错误：Code/Description 直接进 MJ 错误信封，Status 是给
@@ -241,4 +249,17 @@ func QuotaNotEnough() *Error {
 // 与余额不足分开：管理员没配价不是「充值就能用」，客户端/运营需要能区分。
 func PricingUnavailable() *Error {
 	return &Error{Code: CodeRequestError, Description: DescriptionPricingUnavailable, Status: 400}
+}
+
+// ChannelBusy 构造渠道在飞并发已满的拒绝（429，业务码 4）。
+//
+// 业务码仍用 4（客户端参数/请求错误族）：用 5 会让 MJ 客户端把它当成上游
+// 故障并立刻重试，而这里需要的是退避。429 明确表达「稍后重试」。
+func ChannelBusy() *Error {
+	return &Error{Code: CodeRequestError, Description: DescriptionChannelBusy, Status: http.StatusTooManyRequests}
+}
+
+// Conflict 构造幂等键冲突（409，业务码 4）。
+func Conflict(description string) *Error {
+	return &Error{Code: CodeRequestError, Description: description, Status: http.StatusConflict}
 }

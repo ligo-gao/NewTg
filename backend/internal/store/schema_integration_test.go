@@ -41,6 +41,7 @@ import (
 // S1（W2）追加订阅事件流 subscription_events（5 列），表数 40→41。
 // S4（W2）追加支付令牌表 payment_methods（11 列）并给 subscriptions 补 3 列
 // 自动续费状态，表数 41→42、subscriptions 23→26。
+// W8/MJ-d 追加任务提交幂等键表 task_submit_idempotency（11 列），表数 42→43。
 //
 //	subscription_plans 17 列、subscriptions 26 列（含 R-D5-03 的 5 个快照列
 //	与 S4 的 3 个自动续费状态列）、
@@ -89,6 +90,10 @@ var wantColumns = map[string]int{
 	// M6d Task 6a 任务数据面主表（relay-06 §7）：契约 §2.5 统一列 13 + 插件
 	// 附加列 14 = 27 列。列数与设计表逐行对应，多一列少一列都视为漂移。
 	"tasks": 27,
+	// W8/MJ-d 提交幂等键（R-MJ-06）：11 列 = id/归属键/请求哈希/端点/状态/
+	// 首次结果 + 时间戳。结果体落 jsonb 是为了原样回放首次响应（包括 upload
+	// 的数组形 result），只存 public_task_id 会丢失响应形状。
+	"task_submit_idempotency": 11,
 	// T4 / P-04 批次聚合：父表 9 列（归属/状态/计数/时间），关联表 2 列。
 	// 子任务本身仍是 tasks 行，不在此复制任何上游/结果字段。
 	"task_batches":       9,
@@ -151,6 +156,9 @@ var wantNoFKTables = []string{
 	// 任务行是计费/审计事实：用户或渠道被硬删除后仍要保留历史任务，
 	// user_id / channel_id 只做逻辑引用（M6d Task 6a）。
 	"tasks",
+	// W8/MJ-d：幂等键只逻辑引用 users.id；用户删除时由清理任务收敛，
+	// 不设 FK（与 tasks 的审计事实口径一致）。
+	"task_submit_idempotency",
 	// D1：供应商删除由应用层引用保护（有引用 ⇒ 409 + 计数），
 	// model_meta.vendor_id 不设 FK；model_meta 与 model_pricing 也不强制一一对应。
 	"vendors",
@@ -189,6 +197,9 @@ var wantIdentityPKTables = []string{
 	"notification_deliveries",
 	// M6d Task 6a：tasks 以 GENERATED ALWAYS AS IDENTITY 作 PK。
 	"tasks",
+	// W8/MJ-d：幂等键行同样用单列 identity 代理主键（唯一性由 (user_id,
+	// idem_key) 唯一约束承担，代理 id 只用于行定位/清理）。
+	"task_submit_idempotency",
 	// D1：模型目录两表同样使用单列 id identity 代理主键。
 	"vendors",
 	"model_meta",
@@ -308,7 +319,7 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// TestMainSchemaTableCount：（a）主库用户表恰 42 张（M0 16 + M1 认证族 6 + M6c 2 + M6d 4 + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 + T4 2 + S1 1 + S4 1，除 schema_migrations）。
+// TestMainSchemaTableCount：（a）主库用户表恰 43 张（M0 16 + M1 认证族 6 + M6c 2 + M6d 4 + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 + T4 2 + S1 1 + S4 1 + MJ-d 1，除 schema_migrations）。
 func TestMainSchemaTableCount(t *testing.T) {
 	db := openTestDB(t)
 	rows, err := db.Query(`SELECT table_name FROM information_schema.tables

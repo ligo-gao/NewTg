@@ -688,6 +688,14 @@ func buildRegistry() []Setting {
 			minInt(0), maxInt(525600)),
 		def("mj.poll_max_failures", "mj", TypeInt, int64(20),
 			minInt(0), maxInt(1000000)),
+		// 网关侧单渠道在飞提交上限（W8/MJ-d）。账号池/账号级并发在上游
+		// midjourney-proxy 内（relay-05 §5），本键只约束「同一渠道的上游
+		// 提交」这一段同步执行；超限 429、不排队、不预扣。
+		//
+		// 设计未冻结该数值，默认 8 与仓内既有可控并发口径一致；运行时可调。
+		// 缺失/脏值在读取侧回落默认值，绝不能变成 0（= 拒绝一切提交）。
+		def("mj.channel_max_inflight", "mj", TypeInt, int64(8),
+			minInt(1), maxInt(1000)),
 
 		// ==== deploy（M6d io.net 控制面，modules-08 §3.20）====
 		//

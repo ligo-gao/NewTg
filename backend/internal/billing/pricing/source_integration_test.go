@@ -550,3 +550,110 @@ func TestIntegrationSourceConcurrentResolve(t *testing.T) {
 		t.Fatalf("并发 Resolve 失败: %v", err)
 	}
 }
+
+// TestIntegrationResolvePerCallStrict 钉死固定价任务族的严格按次解析
+// （W8/MJ-d，relay-05 §7.2）：
+//
+//   - 启用 mode=1 + prompt_price → 精确返回该价；
+//   - 分组倍率参与金额（GroupRatio），分组覆盖价替代模型价且倍率固定为 1；
+//   - 缺行 / 停用 / mode=0 / prompt_price=NULL / 表达式 → ErrNoPerCallPrice
+//     （绝不回落到默认价或默认按次价）；
+//   - 显式 0 是合法免费，不等于「未配置」。
+func TestIntegrationResolvePerCallStrict(t *testing.T) {
+	db := openTestDB(t)
+	prefix := testPrefix(t)
+	cleanupPrefix(t, db, prefix)
+	ctx := context.Background()
+
+	t.Run("explicit price", func(t *testing.T) {
+		model := prefix + "-percall"
+		insertModelRow(t, db, model, 1, nil, ptr(int64(100)), nil, nil, nil)
+		src := newTestSource(t, db)
+		snap, err := src.ResolvePerCall(ctx, model, "")
+		if err != nil {
+			t.Fatalf("ResolvePerCall: %v", err)
+		}
+		if snap.Mode != contract.BillingModePerCall || !snap.Price.UsePrice {
+			t.Fatalf("mode/use_price = %v/%v，want per_call/true", snap.Mode, snap.Price.UsePrice)
+		}
+		if snap.Price.ModelPrice != 100 || snap.GroupRatio != 1 {
+			t.Fatalf("price/group = %v/%v，want 100/1", snap.Price.ModelPrice, snap.GroupRatio)
+		}
+	})
+
+	t.Run("group ratio multiplies", func(t *testing.T) {
+		model := prefix + "-ratio"
+		group := prefix + "-vip"
+		insertModelRow(t, db, model, 1, nil, ptr(int64(100)), nil, nil, nil)
+		insertGroup(t, db, group, 120)
+		src := newTestSource(t, db)
+		snap, err := src.ResolvePerCall(ctx, model, group)
+		if err != nil {
+			t.Fatalf("ResolvePerCall: %v", err)
+		}
+		if snap.Price.ModelPrice != 100 || snap.GroupRatio != 1.2 {
+			t.Fatalf("price/group = %v/%v，want 100/1.2", snap.Price.ModelPrice, snap.GroupRatio)
+		}
+	})
+
+	t.Run("group override replaces price", func(t *testing.T) {
+		model := prefix + "-override"
+		group := prefix + "-ov"
+		insertModelRow(t, db, model, 1, nil, ptr(int64(100)), nil, nil, nil)
+		insertGroup(t, db, group, 120)
+		insertGroupPricing(t, db, group, model, 50, 0, 0, 0)
+		src := newTestSource(t, db)
+		snap, err := src.ResolvePerCall(ctx, model, group)
+		if err != nil {
+			t.Fatalf("ResolvePerCall: %v", err)
+		}
+		if snap.Price.ModelPrice != 50 || snap.GroupRatio != 1 || !snap.Price.GroupRatioInfo.HasSpecialRatio {
+			t.Fatalf("override price/group/special = %v/%v/%v，want 50/1/true",
+				snap.Price.ModelPrice, snap.GroupRatio, snap.Price.GroupRatioInfo.HasSpecialRatio)
+		}
+	})
+
+	t.Run("explicit zero is free", func(t *testing.T) {
+		model := prefix + "-zero"
+		insertModelRow(t, db, model, 1, nil, ptr(int64(0)), nil, nil, nil)
+		src := newTestSource(t, db)
+		snap, err := src.ResolvePerCall(ctx, model, "")
+		if err != nil {
+			t.Fatalf("ResolvePerCall: %v", err)
+		}
+		if snap.Price.ModelPrice != 0 || !snap.Price.FreeModel {
+			t.Fatalf("price/free = %v/%v，want 0/true", snap.Price.ModelPrice, snap.Price.FreeModel)
+		}
+	})
+
+	missing := []struct {
+		name   string
+		model  string
+		insert func(model string)
+	}{
+		{"missing row", prefix + "-absent", func(string) {}},
+		{"disabled row", prefix + "-disabled", func(model string) {
+			insertDisabledModelRow(t, db, model, 100)
+		}},
+		{"per token mode", prefix + "-pertoken", func(model string) {
+			insertModelRow(t, db, model, 0, nil, ptr(int64(100)), nil, nil, nil)
+		}},
+		{"null prompt price", prefix + "-null", func(model string) {
+			insertModelRow(t, db, model, 1, nil, nil, nil, nil, nil)
+		}},
+		{"expression", prefix + "-expr", func(model string) {
+			expr := "p*2"
+			insertModelRow(t, db, model, 1, &expr, nil, nil, nil, nil)
+		}},
+	}
+	for _, tc := range missing {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			tc.insert(tc.model)
+			src := newTestSource(t, db)
+			if _, err := src.ResolvePerCall(ctx, tc.model, ""); !errors.Is(err, ErrNoPerCallPrice) {
+				t.Fatalf("ResolvePerCall(%s) err = %v，want ErrNoPerCallPrice", tc.model, err)
+			}
+		})
+	}
+}

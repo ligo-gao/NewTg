@@ -59,6 +59,66 @@ var actionModels = map[Action]string{
 	ActionEdits:         "mj_edits",
 }
 
+// PriceTier 是动作的计费档位（relay-05 §7.2 的四档冻结分类）。
+//
+// 【档位不是金额】设计把 18 个动作齐全地归入四档，但单价「落 model_pricing、
+// 金额为配置项」——基线参考价（0.8/0.1/0.05/0）明确「不写入实现」。因此本
+// 类型只承载「哪些动作免费、其余按次价查表」，绝不在代码里写死金额。
+//
+// 【为什么档位在领域包】渠道选择、/v1/models 与计价都从动作表派生；把档位
+// 放在 HTTP 层会让第二个调用方（轮询/将来的管理面）再维护一份映射，档位
+// 漂移会直接变成错价。
+type PriceTier int
+
+const (
+	// TierFree 是免计费档位：INPAINT、CUSTOM_ZOOM（relay-05 §7.2 档位 1）。
+	// 这两个动作不产生扣费（consumeQuota=false），不需要定价行。
+	TierFree PriceTier = 1
+	// TierLow 是低价档：DESCRIBE、UPSCALE、SWAP_FACE、UPLOAD。
+	TierLow PriceTier = 2
+	// TierStandard 是标准档：IMAGINE、BLEND、VARIATION、REROLL、MODAL、
+	// ZOOM、SHORTEN、HIGH_VARIATION、LOW_VARIATION、PAN、EDITS。
+	TierStandard PriceTier = 3
+	// TierVideo 是视频档：VIDEO（唯一的高价档）。
+	TierVideo PriceTier = 4
+)
+
+// actionTiers 是动作 → 档位的唯一权威表（relay-05 §7.2）。
+//
+// 与 actionModels 并列维护而不是合并成一个结构：模型名驱动渠道选择，档位
+// 驱动计费，两者任一缺失都必须在编译/测试期被发现（测试断言 18 个动作全
+// 覆盖，多一条少一条都会红）。档位只决定「是否查价」，金额仍由配置决定。
+var actionTiers = map[Action]PriceTier{
+	ActionImagine:       TierStandard,
+	ActionDescribe:      TierLow,
+	ActionBlend:         TierStandard,
+	ActionUpscale:       TierLow,
+	ActionVariation:     TierStandard,
+	ActionReroll:        TierStandard,
+	ActionInpaint:       TierFree,
+	ActionModal:         TierStandard,
+	ActionZoom:          TierStandard,
+	ActionCustomZoom:    TierFree,
+	ActionShorten:       TierStandard,
+	ActionHighVariation: TierStandard,
+	ActionLowVariation:  TierStandard,
+	ActionPan:           TierStandard,
+	ActionSwapFace:      TierLow,
+	ActionUpload:        TierLow,
+	ActionVideo:         TierVideo,
+	ActionEdits:         TierStandard,
+}
+
+// PriceTier 返回动作的计费档位。未知动作返回 false——调用方必须拒绝，不能
+// 猜成免费档（那会把任意未知动作变成白送）。
+func (a Action) PriceTier() (PriceTier, bool) {
+	tier, ok := actionTiers[a]
+	return tier, ok
+}
+
+// Free 报告档位是否免计费。
+func (t PriceTier) Free() bool { return t == TierFree }
+
 // actionOrder 是 18 个动作的稳定遍历顺序（relay-05 §3.2 的表序）。
 //
 // 与 actionModels 分开保存：map 的迭代顺序不稳定，而下发 /v1/models、

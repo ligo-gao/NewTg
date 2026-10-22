@@ -274,7 +274,11 @@ type mjTestEnv struct {
 	channels  *fakeMJChannels
 	upstream  *mjUpstream
 	recorders []*taskBillingRecorder
-	sealer    *SecretSealer
+	// priceSnapshots 记录每次计费会话创建时 RelayContext 上的预置快照
+	// （W8/MJ-d：免计费档位必须预置显式零价快照，付费档位必须留空交给
+	// 严格按次解析）。
+	priceSnapshots []*contract.PriceSnapshot
+	sealer         *SecretSealer
 	// defaultAuthorization 是 serveMJ 注入的 Bearer 头（默认用户 42）。
 	defaultAuthorization string
 }
@@ -295,6 +299,16 @@ func (e *mjTestEnv) recorderCount() int {
 	return len(e.recorders)
 }
 
+func (e *mjTestEnv) lastPriceSnapshot(t *testing.T) *contract.PriceSnapshot {
+	t.Helper()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.priceSnapshots) == 0 {
+		t.Fatalf("no billing session was constructed")
+	}
+	return e.priceSnapshots[len(e.priceSnapshots)-1]
+}
+
 // newMJTestEnv 构造 handler + mux。channels 由调用方预填（凭据已密封）。
 func newMJTestEnv(t *testing.T, store *fakeMJStore, channels *fakeMJChannels,
 	config fakeMJConfig, upstream *mjUpstream) *mjTestEnv {
@@ -306,15 +320,35 @@ func newMJTestEnv(t *testing.T, store *fakeMJStore, channels *fakeMJChannels,
 func newMJTestEnvWithBilling(t *testing.T, store *fakeMJStore, channels *fakeMJChannels,
 	config fakeMJConfig, upstream *mjUpstream, configure func(*taskBillingRecorder)) *mjTestEnv {
 	t.Helper()
+	return newMJTestEnvFull(t, store, channels, config, upstream, configure, nil, nil)
+}
+
+// newMJTestEnvFull 额外允许注入幂等存储与渠道限制器（W8/MJ-d 用例）。
+func newMJTestEnvFull(t *testing.T, store *fakeMJStore, channels *fakeMJChannels,
+	config fakeMJConfig, upstream *mjUpstream, configure func(*taskBillingRecorder),
+	idempotency MJIdempotencyStore, limiter MJChannelLimiter) *mjTestEnv {
+	t.Helper()
 	sealer := NewSecretSealer("mj-handler-test-key")
 	tokens, key42, _ := newMJTokens()
+	// 既有用例关注提交语义而非渠道并发：默认把在飞上限调高，避免并发用例
+	// 被 MJ-d 的限制器误判。专门验证限制器的用例显式覆盖该键。
+	if config == nil {
+		config = fakeMJConfig{}
+	}
+	if _, ok := config["mj.channel_max_inflight"]; !ok {
+		config["mj.channel_max_inflight"] = mjIntSetting(1000)
+	}
 	env := &mjTestEnv{store: store, channels: channels, upstream: upstream, sealer: sealer}
 	handler := NewMJHandler(MJHandlerConfig{
 		Store:    store,
 		Channels: channels,
 		Sealer:   sealer,
 		Tokens:   tokens,
-		Billing: func(*contract.RelayContext) contract.BillingSession {
+		Billing: func(rc *contract.RelayContext) contract.BillingSession {
+			// 快照在会话创建时冻结（此后引擎不再改 rc），记录指针即可。
+			env.mu.Lock()
+			env.priceSnapshots = append(env.priceSnapshots, rc.PriceSnapshot)
+			env.mu.Unlock()
 			recorder := newTaskBillingRecorder()
 			recorder.hold = 50
 			if configure != nil {
@@ -325,11 +359,13 @@ func newMJTestEnvWithBilling(t *testing.T, store *fakeMJStore, channels *fakeMJC
 			env.mu.Unlock()
 			return recorder
 		},
-		Config:      config,
-		ImageSigner: mj.NewImageSigner("mj-handler-test-key"),
-		RateLimiter: nil,
-		Now:         func() time.Time { return time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC) },
-		Uint64N:     func(uint64) uint64 { return 0 },
+		Config:         config,
+		ImageSigner:    mj.NewImageSigner("mj-handler-test-key"),
+		RateLimiter:    nil,
+		Idempotency:    idempotency,
+		ChannelLimiter: limiter,
+		Now:            func() time.Time { return time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC) },
+		Uint64N:        func(uint64) uint64 { return 0 },
 	})
 	mux := http.NewServeMux()
 	handler.Register(mux, RelayAuth(tokens, fakeTaskAccess{}, nil))
@@ -1406,5 +1442,68 @@ func TestMJUploadEmptyResultIsRejected(t *testing.T) {
 	}
 	if calls := env.lastRecorder(t).ReserveCalls(); countCall(calls, "refund") != 1 {
 		t.Fatalf("empty upload result must refund the hold: %v", calls)
+	}
+}
+
+// TestMJBillingSnapshotFollowsPriceTier 钉死 relay-05 §7.2 的档位在计费面的
+// 落地：免计费档位预置显式零价快照；付费档位必须留空，交给严格按次解析。
+//
+// 变异点：把免计费档位也留空 → INPAINT/CUSTOM_ZOOM 在缺价时会 400（与设计
+// 「不产生扣费」不符）；把付费档位也预置零价 → 所有动作变免费，本用例红。
+func TestMJBillingSnapshotFollowsPriceTier(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		free bool
+	}{
+		{"inpaint free", `{"taskId":"mj_origin_1","action":"INPAINT","index":1}`, true},
+		{"custom zoom free", `{"taskId":"mj_origin_1","action":"CUSTOM_ZOOM","index":1}`, true},
+		{"imagine paid", `{"prompt":"a cat"}`, false},
+		{"video paid", `{"taskId":"mj_origin_1"}`, false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeMJStore()
+			store.byUserUpstream[mjUserUpstreamKey(42, "mj_origin_1")] = &tasks.Task{
+				ID: 900, UpstreamTaskID: "mj_origin_1", Family: tasks.FamilyMJ,
+				UserID: 42, ChannelID: 10, State: tasks.StateSuccess,
+			}
+			upstream := newMJUpstream(t, `{"code":1,"description":"ok","result":"mj_tier_1"}`)
+			sealer := NewSecretSealer("mj-handler-test-key")
+			normal, cand := sealedMJChannel(t, sealer, 10, mj.ChannelTypeMidjourney,
+				upstream.server.URL, mjAllModels(), 10)
+			channels := &fakeMJChannels{
+				channels:   map[int64]*tasks.ChannelTarget{10: normal},
+				candidates: []tasks.MJChannelCandidate{cand},
+			}
+			env := newMJTestEnv(t, store, channels, mjConfigured(nil), upstream)
+
+			path := "/mj/submit/imagine"
+			if tc.name == "inpaint free" || tc.name == "custom zoom free" {
+				path = "/mj/submit/change"
+			}
+			if tc.name == "video paid" {
+				path = "/mj/submit/video"
+			}
+			rec := serveMJ(t, env, newMJRequest(t, http.MethodPost, path, tc.body))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d (body=%s)", rec.Code, rec.Body.String())
+			}
+			snap := env.lastPriceSnapshot(t)
+			if tc.free {
+				if snap == nil {
+					t.Fatal("免计费档位没有预置零价快照（缺价时会误判 400）")
+				}
+				if snap.Mode != contract.BillingModePerCall || !snap.Price.UsePrice || snap.Price.ModelPrice != 0 {
+					t.Fatalf("免计费快照 = mode=%v use_price=%v price=%v",
+						snap.Mode, snap.Price.UsePrice, snap.Price.ModelPrice)
+				}
+				return
+			}
+			if snap != nil {
+				t.Fatalf("付费档位预置了快照 %+v，绕过严格按次解析会让缺价静默成免费", snap)
+			}
+		})
 	}
 }

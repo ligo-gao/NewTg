@@ -403,6 +403,14 @@ var (
 	ErrInvalidMode = errors.New("pricing: 未知计价模式")
 	// ErrInvalidPrice 表示价格字段含 NaN/±Inf/负值。
 	ErrInvalidPrice = errors.New("pricing: 价格字段必须为有限非负数")
+	// ErrNoPerCallPrice 表示「按次固定价」严格解析没有找到可用价格。
+	//
+	// 【为什么需要独立哨兵】通用 Resolve 对未知模型回落到默认倍率价（设计
+	// 要求「绝不静默免费」，但也确实会给一个默认比例价）。固定价任务族
+	// （MJ）不能接受这个回落：按倍率 + 空 token 用量估算会得到 0，等于把
+	// 「管理员没配价」静默变成免费。严格解析把「没有显式按次价」变成显式
+	// 错误，由 HTTP 层 fail-closed 拒绝请求。
+	ErrNoPerCallPrice = errors.New("pricing: 未配置按次固定价")
 )
 
 func invalidf(format string, args ...any) error {

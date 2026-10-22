@@ -388,6 +388,9 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			Billing:     deps.Billing,
 			Config:      deps.Config,
 			RateLimiter: deps.RateLimiter,
+			// W8/MJ-d：提交幂等键表（R-MJ-06 第二步）。与 tasks 共用同一
+			// 仓储/连接池；缺失会让携带 Idempotency-Key 的提交 fail-closed。
+			Idempotency: taskRepo,
 			// 图片签名从 CREDENTIAL_ENCRYPTION_KEY 派生，但用独立域前缀
 			// newtg/mj-image/v1（R-MJ-09）：轮换主密钥即撤销全部已签发
 			// 图片 URL，且与产物票据互不重放。不新增必填 env。
