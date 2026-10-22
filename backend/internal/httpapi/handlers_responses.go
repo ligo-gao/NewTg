@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -77,13 +78,25 @@ func (h *TasksHandler) handleResponsesCreate(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	var body map[string]any
-	if err := json.Unmarshal(raw, &body); err != nil {
+	if err := json.Unmarshal(raw, &body); err != nil || body == nil {
 		// 参数错误一律 400 OpenAI 信封；不得泄漏解码器原文（可能回显输入片段）。
 		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request_error",
 			"request body must be a JSON object")
 		return
 	}
-	stream, _ := body["stream"].(bool)
+	// M2（W18-C 复核）：宿主必须自己校验协议字段类型。此前 `stream` 非 bool
+	// 会被静默当成 false，`input`/`tools` 的错误形状则一路交给插件——最终以
+	// 502（上游/插件内部错误）出现，把客户端参数问题误报成服务故障。
+	stream, ok := responsesStreamFlag(body)
+	if !ok {
+		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request_error",
+			"stream must be a boolean")
+		return
+	}
+	if message := validateResponsesRequestShape(body); message != "" {
+		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request_error", message)
+		return
+	}
 
 	// 复原 body 供 handleSubmit 重新解码（它自己也会做有界读取与 model 校验）。
 	r.Body = io.NopCloser(bytes.NewReader(raw))
@@ -114,6 +127,9 @@ func (h *TasksHandler) writeResponsesSubmit(w http.ResponseWriter, r *http.Reque
 	if mode.Stream {
 		events, err := tasks.RenderResponsesEvents(r.Context(), in)
 		if err != nil {
+			// 复核 Low：渲染失败必须留痕，但不得把插件错误/上游文本回给客户端。
+			slog.Error("tasks: render responses stream failed",
+				"request_id", requestID, "plugin", compiled.Key, "error", err)
 			writeRelayError(w, http.StatusInternalServerError, requestID, "internal_error",
 				"failed to render the response stream")
 			return
@@ -123,6 +139,8 @@ func (h *TasksHandler) writeResponsesSubmit(w http.ResponseWriter, r *http.Reque
 	}
 	object, err := tasks.RenderResponsesFinal(r.Context(), in)
 	if err != nil {
+		slog.Error("tasks: render responses object failed",
+			"request_id", requestID, "plugin", compiled.Key, "error", err)
 		writeRelayError(w, http.StatusInternalServerError, requestID, "internal_error",
 			"failed to render the response")
 		return
@@ -161,6 +179,49 @@ func writeResponsesSSE(w http.ResponseWriter, events []map[string]any) {
 // 不做哈希/转义，检索面才能反解。
 func responsesIDForTask(publicTaskID string) string {
 	return responsesIDPrefix + strings.TrimPrefix(publicTaskID, tasks.PublicTaskIDPrefix)
+}
+
+// responsesStreamFlag 解析 stream 字段：缺省/null = false；其它非 bool 值
+// 视为参数错误（ok=false），不再静默降级。
+func responsesStreamFlag(body map[string]any) (stream bool, ok bool) {
+	value, exists := body["stream"]
+	if !exists || value == nil {
+		return false, true
+	}
+	typed, isBool := value.(bool)
+	if !isBool {
+		return false, false
+	}
+	return typed, true
+}
+
+// validateResponsesRequestShape 校验本波支持的核心字段形状（M2）。
+//
+// 只校验宿主需要用到的结构，不做完整 Responses schema 建模（本波不引入 IR）：
+//   - input：字符串或 item 数组；
+//   - tools：数组；
+//   - instructions：字符串。
+//
+// 返回固定文案（不拼接用户输入），空串表示通过。
+func validateResponsesRequestShape(body map[string]any) string {
+	if value, exists := body["input"]; exists && value != nil {
+		switch value.(type) {
+		case string, []any:
+		default:
+			return "input must be a string or an array of items"
+		}
+	}
+	if value, exists := body["tools"]; exists && value != nil {
+		if _, ok := value.([]any); !ok {
+			return "tools must be an array"
+		}
+	}
+	if value, exists := body["instructions"]; exists && value != nil {
+		if _, ok := value.(string); !ok {
+			return "instructions must be a string"
+		}
+	}
+	return ""
 }
 
 // isResponsesCreateRoute 判定命中的路由是否应走 Responses 创建出口。

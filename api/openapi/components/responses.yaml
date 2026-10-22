@@ -109,3 +109,40 @@ responses:
       application/problem+json:
         schema:
           $ref: './problem.yaml#/schemas/Problem'
+
+  # —— W18-C（Responses 原生协议面）——
+  #
+  # 真源是 backend/internal/tasks/responses.go 的 BuildResponsesObject。
+  # relay paths 不得内联协议 schema（layout 规则 §9.3），所以成功/错误形状
+  # 统一登记在这里，路径侧只放 $ref。
+  ResponsesCreateOK:
+    description: |
+      Responses 对象（非流式）或 SSE 事件流（`stream: true`）。
+      SSE 最小事件集：response.created / response.output_text.delta /
+      response.completed / response.failed；created 恒为首帧、终止事件恒为末帧，
+      终止事件携带 response.usage。任务非终态时以 response.in_progress 收尾。
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/ResponsesObject'
+      text/event-stream:
+        schema:
+          type: string
+        description: |
+          每帧 `event: <type>` + `data: <json>`。未知事件类型按 raw 透传。
+  ResponsesGetOK:
+    description: |
+      Responses 对象。非终态 status=queued/in_progress/incomplete 且 output=[]；
+      终态含产物投影 output[] 与 usage。身份字段与 create 使用同一套投影。
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/ResponsesObject'
+  RelayError501:
+    description: |
+      /v1 中继面 501（端点形态不支持）。错误体是 OpenAI 兼容信封
+      （`{error:{message,type,code}}`），不是 RFC 7807 problem+json。
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/RelayError'

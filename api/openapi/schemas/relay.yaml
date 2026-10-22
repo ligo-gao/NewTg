@@ -33,6 +33,43 @@ schemas:
               机器可读 code。限流为 `rate_limit_exceeded`，限流器故障为
               `rate_limit_check_failed`；令牌/会话类错误为空串（不提供存在性信息）。
 
+  # OpenAI Responses 对象（W18-C）。真源是 tasks/responses.go 的
+  # BuildResponsesObject：id/object/created_at/status/model 由宿主写死，
+  # output 由插件 renderFinal 或产物投影提供；usage 只在终态出现。
+  ResponsesObject:
+    type: object
+    description: |
+      Responses 对象。`output` 元素本波不做 IR 建模（插件渲染项或产物投影项），
+      因此按开放对象声明；`usage` 仅在终态（completed/failed/incomplete）出现。
+    required: [id, object, created_at, status, output]
+    properties:
+      id:
+        type: string
+        description: "`resp_` 前缀；与任务 `task_` id 共享同一段随机量"
+      object:
+        type: string
+        enum: [response]
+      created_at:
+        type: integer
+        format: int64
+      status:
+        type: string
+        enum: [queued, in_progress, completed, failed, incomplete]
+      model:
+        type: string
+      output:
+        type: array
+        items:
+          type: object
+          additionalProperties: true
+      usage:
+        type: object
+        description: 只在终态出现；input_tokens ← prompt_tokens、output_tokens ← completion_tokens
+        properties:
+          input_tokens: {type: integer}
+          output_tokens: {type: integer}
+          total_tokens: {type: integer}
+
   # list-by-condition 的请求体（W8/MJ-b）。网关自有形状（非上游协议），
   # 因此登记在本域 schemas；上限与 R-MJ-16 冻结值一致。
   MJTaskListRequest:

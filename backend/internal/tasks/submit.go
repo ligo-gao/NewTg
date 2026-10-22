@@ -34,6 +34,12 @@ func PluginGeneration(p *plugin.CompiledPlugin) int64 {
 var (
 	// ErrPluginHook 表示插件钩子执行失败（超时/异常/缺钩子）。
 	ErrPluginHook = errors.New("tasks: plugin hook failed")
+	// ErrDecodeRequest 表示入站协议体无法被插件解码。
+	//
+	// 与 ErrPluginHook 分开是为了错误分类（W18-C 复核 M2）：decodeRequest
+	// 阶段的失败通常可归因于请求参数/形状（客户端可修正），HTTP 面映射 400；
+	// 其余钩子/上游失败才是 502。内部细节不外泄给客户端。
+	ErrDecodeRequest = errors.New("tasks: decode request failed")
 	// ErrSubmitResponse 表示 parseSubmitResponse 的返回值形状非法。
 	ErrSubmitResponse = errors.New("tasks: invalid submit response")
 	// ErrUpstreamStatus 表示上游返回非 2xx。
@@ -94,11 +100,11 @@ func Submit(ctx context.Context, client *http.Client, in SubmitInput) (*SubmitRe
 	if in.Plugin.HasHook("decodeRequest") {
 		decoded, err := in.Plugin.Call(ctx, "decodeRequest", pluginCtx)
 		if err != nil {
-			return nil, fmt.Errorf("%w: decodeRequest", ErrPluginHook)
+			return nil, fmt.Errorf("%w: %v", ErrDecodeRequest, err)
 		}
 		decodedBody, ok := decoded.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("%w: decodeRequest must return an object", ErrSubmitResponse)
+			return nil, fmt.Errorf("%w: decodeRequest must return an object", ErrDecodeRequest)
 		}
 		pluginCtx = buildPluginContext(SubmitInput{
 			Plugin: in.Plugin, Channel: in.Channel, Model: in.Model,

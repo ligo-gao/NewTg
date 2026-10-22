@@ -419,6 +419,14 @@ func (h *TasksHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		AllowPrivate: h.allowPrivate,
 	})
 	if err != nil {
+		// M2（W18-C 复核）：decodeRequest 阶段失败可归因于入站请求形状，
+		// 映射 400（固定文案、固定 code）；只有上游/插件内部错误才是 502。
+		// 该出口对所有任务入口生效（/v1/tasks、原生路由、宿主协议）。
+		if errors.Is(err, tasks.ErrDecodeRequest) {
+			writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request_error",
+				"the task plugin could not decode the request")
+			return
+		}
 		// 提交失败不落任务行（brief 步骤 8 的冻结选择）：没有 upstream_task_id
 		// 的行既不能轮询也不能结算，只会成为孤儿。失败事实由 usage_logs 与
 		// 退款流水承载。
@@ -885,8 +893,6 @@ const (
 	// responsesIDPrefix 是 OpenAI Responses 的对外 id 前缀。任务行的 public id
 	// 用 task_ 前缀；两者共享同一段随机量，因此映射是纯前缀替换。
 	responsesIDPrefix = "resp_"
-	// responsesObjectType 是 Responses 对象的 object 字段冻结值。
-	responsesObjectType = "response"
 )
 
 // resolvetaskFromResponseID 把 Responses 的 response_id 映射为 tasks.public_task_id。
@@ -907,21 +913,6 @@ func resolvetaskFromResponseID(raw string) (taskID string, ok bool) {
 	return tasks.PublicTaskIDPrefix + suffix, true
 }
 
-// responsesObject 是 GET /v1/responses/{id} 的成功响应体。
-//
-// 字段集合对齐 OpenAI Responses 对象的只读子集：网关不持有 Responses 对话
-// 历史（基线-09 §1.5），能如实给出的只有由任务行派生的部分（id/状态/模型/
-// 产物）。刻意不填 output_text / usage 等需要上游原始响应的字段——凭空构造
-// 会让客户端按不存在的语义解析。
-type responsesObject struct {
-	ID        string                `json:"id"`
-	Object    string                `json:"object"`
-	CreatedAt int64                 `json:"created_at"`
-	Status    string                `json:"status"`
-	Model     string                `json:"model,omitempty"`
-	Output    []responsesOutputItem `json:"output"`
-}
-
 // responsesOutputItem 是 output[] 的一项：一个可检索产物 + 能力 URL。
 //
 // Type 原样取插件声明的产物类别（video / image / audio …），不映射到 OpenAI
@@ -937,11 +928,17 @@ type responsesOutputItem struct {
 
 // handleResponsesGet 回放插件任务的产物（T3 / P-02）。
 //
-// 服务范围（冻结）：只服务**插件任务产物**——`resp_<x>` 映射为 `task_<x>`，
+// 服务范围（冻结）：只服务**插件任务**——`resp_<x>` 映射为 `task_<x>`，
 // 任务归属必须是当前令牌的 user_id，插件必须仍在装且声明
-// `openai_responses` 协议，且任务至少有一个可检索产物。任一条件不满足都
-// 返回 404，不区分原因：resp_<32 hex> 是高熵 id，但「存在但无权」与「不存在」
-// 若给出不同状态码（403 vs 404），仍然构成存在性 oracle。
+// `openai_responses` 协议且 supports 含 retrieve。
+//
+// 状态语义（W18-C 复核 H1）：
+//   - 非终态（queued/in_progress/unknown）：200 + `{status:queued|in_progress,
+//     output:[], …}`，与 create 返回的是同一个对象；
+//   - 终态：必须有可检索产物，否则 404（检索面只回放产物）；
+//   - 不存在/他人/插件未声明 retrieve/保留期已过：404，不区分原因——resp_<32
+//     hex> 是高熵 id，但「存在但无权」与「不存在」若给出不同状态码（403 vs
+//     404），仍然构成存在性 oracle。
 //
 // 为什么先查 RouteIndex（R-10 / pluginDispatchedBuiltinShapes）：本形状登记为
 // 「处理器先查插件索引」的内建路由。插件声明 GET /v1/responses/{id} 的 query
@@ -995,6 +992,24 @@ func (h *TasksHandler) handleResponsesGet(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	renderInput := tasks.ResponsesRenderInput{
+		ResponseID: responsesIDPrefix + strings.TrimPrefix(task.PublicTaskID, tasks.PublicTaskIDPrefix),
+		Model:      toStringValue(task.Properties["OriginModelName"]),
+		CreatedAt:  responsesCreatedAt(task),
+		Status:     responsesStatusForState(task.State),
+		State:      task.State,
+		Usage:      tasks.ResponsesUsageFromData(task.Data),
+	}
+
+	// H1（W18-C 复核）：非终态任务必须可检索为 queued/in_progress + output=[]，
+	// 而不是 404。否则 create 已经返回 `resp_…`，客户端却拿不到同一个对象——
+	// 这在异步插件上等于「创建成功但对象不存在」。终态仍要求产物可检索
+	// （G-04：检索面只回放产物），无产物 → 404。
+	if !task.State.Terminal() {
+		writeJSON(w, http.StatusOK, tasks.BuildResponsesObject(renderInput, nil))
+		return
+	}
+
 	artifacts := h.signArtifacts(r, task.PluginKey, task, tasks.ProjectArtifacts(task.Data))
 	output := make([]responsesOutputItem, 0, len(artifacts))
 	for _, artifact := range artifacts {
@@ -1011,7 +1026,7 @@ func (h *TasksHandler) handleResponsesGet(w http.ResponseWriter, r *http.Request
 			URL:      artifact.ContentURL,
 		})
 	}
-	// 产物为空 = 这个 Responses 对象没有可回放的内容（还在生成、失败、或
+	// 终态产物为空 = 这个 Responses 对象没有可回放的内容（失败、或
 	// retainResult=false 已丢弃）。按 P-02 一律 404，而不是返回一个空 output
 	// 的 200——后者会让客户端以为检索成功但拿不到任何产物。
 	if len(output) == 0 {
@@ -1019,14 +1034,11 @@ func (h *TasksHandler) handleResponsesGet(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	writeJSON(w, http.StatusOK, responsesObject{
-		ID:        responsesIDPrefix + strings.TrimPrefix(task.PublicTaskID, tasks.PublicTaskIDPrefix),
-		Object:    responsesObjectType,
-		CreatedAt: responsesCreatedAt(task),
-		Status:    responsesStatusForState(task.State),
-		Model:     toStringValue(task.Properties["OriginModelName"]),
-		Output:    output,
-	})
+	items := make([]any, 0, len(output))
+	for _, item := range output {
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, tasks.BuildResponsesObject(renderInput, items))
 }
 
 // responsesCreatedAt 返回 Responses 对象的 created_at（Unix 秒）。

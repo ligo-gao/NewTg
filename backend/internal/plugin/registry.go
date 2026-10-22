@@ -703,8 +703,30 @@ func registerRoutes(index map[string]string, routeIndex *RouteIndex, plugin *Com
 		protocolShapes[routeShape(route)] = struct{}{}
 	}
 	for idx, route := range manifest.Routes {
+		shape := routeShape(route)
+		// M1（W18-C 复核）：声明了 protocols.openai_responses 的插件，routes[]
+		// 不得绕过 supports 的能力收窄。宿主端点形状只有在 supports 明确包含
+		// 对应操作时才允许出现；否则整插件 compile_failed。
+		//
+		// 没有协议声明的历史插件保持原 routes[] 语义（向后兼容）：它没有能力
+		// 声明可以被「覆盖」，由 HTTP 面按路径统一渲染 Responses 形状。
+		if manifest.Responses != nil {
+			if operation := responsesHostOperation(shape); operation != "" {
+				if !manifestSupportsResponsesOperation(manifest, operation) {
+					issues = append(issues, issuef(plugin.Key, routeFieldPath(idx), "", "protocol_capability_mismatch",
+						"routes[] 声明 %s 需要 protocols.openai_responses.supports 含 %q", shape, operation))
+					continue
+				}
+				// create 已由协议派生路由接管：routes[] 的重复声明视为冗余。
+				if operation == ResponsesOpCreate {
+					continue
+				}
+				// retrieve 的宿主端点没有派生路由（见 protocolRoutes 注释），
+				// 插件显式 query 路由在这里保留；它已被上面的 supports 校验收窄。
+			}
+		}
 		// 协议已接管的宿主端点：routes[] 里的重复声明不报错（见函数注释）。
-		if _, ok := protocolShapes[routeShape(route)]; ok {
+		if _, ok := protocolShapes[shape]; ok {
 			continue
 		}
 		entries = append(entries, routeEntry{route: route, path: routeFieldPath(idx)})
@@ -762,6 +784,25 @@ func registerRoutes(index map[string]string, routeIndex *RouteIndex, plugin *Com
 		return issues
 	}
 	return nil
+}
+
+// responsesHostOperation 返回宿主 Responses 形状对应的协议操作。
+//
+// 只认规范化形状（参数段已统一为 `{}`），与 RouteIndex/routeShape 同一口径。
+func responsesHostOperation(shape string) string {
+	switch shape {
+	case "POST /v1/responses":
+		return ResponsesOpCreate
+	case "GET /v1/responses/{}":
+		return ResponsesOpRetrieve
+	}
+	return ""
+}
+
+// manifestSupportsResponsesOperation 判定 manifest 是否显式声明了某个
+// Responses 操作。routes[] 的宿主端点声明必须通过这一闸门（M1）。
+func manifestSupportsResponsesOperation(m *Manifest, operation string) bool {
+	return m != nil && m.Responses != nil && m.Responses.SupportsOperation(operation)
 }
 
 // protocolRoutes 把 meta.protocols 翻译成宿主端点绑定（R-W18-07）。

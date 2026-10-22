@@ -4040,13 +4040,23 @@ export interface paths {
         put?: never;
         /**
          * OpenAI Responses 创建（仅插件任务渠道）
-         * @description 分发顺序（冻结）：先查插件 manifest 的 `routes[]`（方法 + 路径精确匹配），
-         *     命中即转任务插件提交（`202` + `public_task_id`，计费由任务提交路径扣除）。
+         * @description 分发顺序（冻结）：`protocols.openai_responses.supports` 含 `create` 的
+         *     插件派生绑定 `POST /v1/responses`（历史 `routes[]` 显式声明同样可达）。
+         *     命中即转任务插件提交（鉴权/限流/预扣/落库/结算只有一份实现），并按
+         *     Responses 协议渲染响应：
          *
-         *     未命中插件路由一律 `501` + `application/problem+json`
-         *     （`type=https://newtg.dev/problems/endpoint-not-supported`）：通用中继是
-         *     Chat 管线，无法表达 Responses 的 input/instructions 与响应形态，放行会
-         *     返回与输入无关的 200 并按错误 usage 结算。该分支零计费、零上游调用。
+         *     - 非流式：`200 application/json` + `ResponsesObject`（不再是 202 task 形状）；
+         *     - `stream: true`：`200 text/event-stream`，最少
+         *       `response.created → response.output_text.delta* → response.completed`
+         *       （失败为 `response.failed`）；`response.created` 恒为首帧、终止事件恒为
+         *       末帧，未知事件原样透传。任务非终态时以 `response.in_progress` 收尾并
+         *       正常 EOF（宿主不在 HTTP 连接内长等待后台轮询），客户端改用
+         *       `GET /v1/responses/{id}` 回读终态。
+         *
+         *     未命中插件绑定一律 `501` OpenAI 信封（`code=endpoint_not_supported`）：
+         *     通用中继是 Chat 管线，无法表达 Responses 的 input/instructions 与响应
+         *     形态，放行会返回与输入无关的 200 并按错误 usage 结算。该分支零计费、
+         *     零上游调用。
          */
         post: operations["createResponse"];
         delete?: never;
@@ -4063,50 +4073,27 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 取回 Responses 对象（仅插件任务产物）
-         * @description `resp_<x>` 映射为 `task_<x>` 后按任务检索面回放**产物**：
-         *     `{id, object, created_at, status, model, output[]}`；`output[]` 每项为
-         *     `{type, id, status, mime_type?, url}`，`url` 是宿主签发的产物能力 URL
-         *     （与 `/v1/tasks/{key}/artifacts` 的 `content_url` 同一签名）。
+         * 取回 Responses 对象（插件任务）
+         * @description `resp_<x>` 映射为 `task_<x>` 后按任务检索面返回 Responses 对象，
+         *     身份/usage 与 create 使用同一套投影（`BuildResponsesObject`）。
          *
-         *     只服务同时满足以下条件的任务：产物可检索、归属当前令牌用户、插件在装
-         *     且声明 `openai_responses` 协议。其余来源（非 `resp_` 前缀、任务不存在、
-         *     属于他人、插件未声明协议或已卸载、无产物、已过保留期）**一律 404**
-         *     且不区分原因——区分会把 `resp_` 空间变成存在性 oracle。
+         *     - 非终态（queued / in_progress；unknown 映射 incomplete）：
+         *       `200` + `{status:queued|in_progress|incomplete, output:[], ...}`，与
+         *       create 的异步语义一致；
+         *     - 终态：`200` + `output[]` 产物投影（`{type,id,status,mime_type?,url}`，
+         *       `url` 是宿主签发的产物能力 URL），并携带 `usage`；
+         *     - 终态但没有可检索产物：`404`。
+         *
+         *     只服务归属当前令牌用户、插件在装且 `protocols.openai_responses.supports`
+         *     含 `retrieve` 的任务。不存在/他人/插件未声明 retrieve/已过保留期
+         *     **一律 404** 且不区分原因——区分会把 `resp_` 空间变成存在性 oracle。
          *
          *     插件若声明了 `GET /v1/responses/{id}` 原生路由，请求由插件接管
-         *     （内建回放只在路由索引未命中时生效）。
+         *     （内建回放只在路由索引未命中时生效；该路由仍受 supports=retrieve 约束）。
          */
         get: operations["getResponse"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/responses/compact": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * OpenAI Responses 压缩（当前 fail-closed）
-         * @description 压缩端点按 G7-R51 有**独立计费口径**、**不产生任务行**，输出是压缩后的
-         *     Responses 对象。通用中继没有该语义：转成 chat 形态会返回与压缩结果无关
-         *     的对象并按真实 usage 结算（P-03 明文禁止）；原样转发上游则绕过定价。
-         *
-         *     因此当前实现 fail-closed：`501` + `application/problem+json`
-         *     （`type=https://newtg.dev/problems/endpoint-not-supported`），
-         *     **不读请求体、不产生计费、不调用上游**。真实实现（独立计费表达式 +
-         *     上游压缩转发）登记为后续项。
-         */
-        post: operations["compactResponse"];
         delete?: never;
         options?: never;
         head?: never;
@@ -8832,6 +8819,30 @@ export interface components {
             api_version?: string;
         };
         /**
+         * @description Responses 对象。`output` 元素本波不做 IR 建模（插件渲染项或产物投影项），
+         *     因此按开放对象声明；`usage` 仅在终态（completed/failed/incomplete）出现。
+         */
+        ResponsesObject: {
+            /** @description `resp_` 前缀；与任务 `task_` id 共享同一段随机量 */
+            id: string;
+            /** @enum {string} */
+            object: "response";
+            /** Format: int64 */
+            created_at: number;
+            /** @enum {string} */
+            status: "queued" | "in_progress" | "completed" | "failed" | "incomplete";
+            model?: string;
+            output: {
+                [key: string]: unknown;
+            }[];
+            /** @description 只在终态出现；input_tokens ← prompt_tokens、output_tokens ← completion_tokens */
+            usage?: {
+                input_tokens?: number;
+                output_tokens?: number;
+                total_tokens?: number;
+            };
+        };
+        /**
          * @description GET /api/logs/by-key 的行投影：字段与 UsageLogItem 相同（全部显式列出），
          *     但**永不含 username**（该字段仅 admin+logs:read 的列表/详情出现），也不
          *     存在 key/key_masked/明文令牌字段。error_message 恒为 ••••••，retry_chain
@@ -9208,6 +9219,46 @@ export interface components {
             };
             content: {
                 "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /**
+         * @description Responses 对象（非流式）或 SSE 事件流（`stream: true`）。
+         *     SSE 最小事件集：response.created / response.output_text.delta /
+         *     response.completed / response.failed；created 恒为首帧、终止事件恒为末帧，
+         *     终止事件携带 response.usage。任务非终态时以 response.in_progress 收尾。
+         */
+        ResponsesCreateOK: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ResponsesObject"];
+                /** @description 每帧 `event: <type>` + `data: <json>`。未知事件类型按 raw 透传。 */
+                "text/event-stream": string;
+            };
+        };
+        /**
+         * @description /v1 中继面 501（端点形态不支持）。错误体是 OpenAI 兼容信封
+         *     （`{error:{message,type,code}}`），不是 RFC 7807 problem+json。
+         */
+        RelayError501: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["RelayError"];
+            };
+        };
+        /**
+         * @description Responses 对象。非终态 status=queued/in_progress/incomplete 且 output=[]；
+         *     终态含产物投影 output[] 与 usage。身份字段与 create 使用同一套投影。
+         */
+        ResponsesGetOK: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ResponsesObject"];
             };
         };
     };
@@ -16698,13 +16749,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description 任务插件已接受；任务已持久化（`{public_task_id, state, upstream_task_id?}`） */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+            200: components["responses"]["ResponsesCreateOK"];
             400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
             402: components["responses"]["Error402"];
@@ -16736,7 +16781,7 @@ export interface operations {
              *     是否超限就不放行，客户端不应把它当作可重试的限流。
              */
             500: components["responses"]["Error500"];
-            501: components["responses"]["Error501"];
+            501: components["responses"]["RelayError501"];
             /** @description 上游提交失败（任务插件路径） */
             502: {
                 headers: {
@@ -16758,17 +16803,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /**
-             * @description `{id, object:"response", created_at, status, model?, output[]}`。
-             *     `status` 取任务状态：queued / in_progress / completed / failed /
-             *     incomplete（任务状态 unknown）。
-             */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+            200: components["responses"]["ResponsesGetOK"];
             401: components["responses"]["Error401"];
             /** @description 该 Responses 对象不可检索（原因不区分，见上方说明） */
             404: {
@@ -16778,19 +16813,6 @@ export interface operations {
                 content?: never;
             };
             500: components["responses"]["Error500"];
-        };
-    };
-    compactResponse: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            401: components["responses"]["Error401"];
-            501: components["responses"]["Error501"];
         };
     };
     playgroundChatCompletion: {

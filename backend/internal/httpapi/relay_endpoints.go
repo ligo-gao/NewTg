@@ -481,6 +481,10 @@ func (h *RelayHandler) nativeRouteFallback(authMiddleware func(http.Handler) htt
 //   - `POST /v1/responses/compact`：独立计费口径的压缩端点，本波不做 →
 //     不注册路由 → 404（501 半死桩已删除）。
 //
+// 只有 GET /v1/responses 收敛为 404：其它方法（PUT/DELETE…）走既有 405
+// 探测（POST /v1/responses 已注册，Allow 必须如实列出 POST）。compact 的
+// 路径不存在，任何方法都应 404。
+//
 // 只匹配精确路径（尾斜杠归一）；`/v1/responses/{id}` 属于已提供的检索面，
 // 不得被这条规则误伤。
 func responsesEndpointUnprovided(method, path string) bool {
@@ -489,7 +493,7 @@ func responsesEndpointUnprovided(method, path string) bool {
 	case "/v1/responses/compact":
 		return true
 	case "/v1/responses":
-		return !strings.EqualFold(method, http.MethodPost)
+		return strings.EqualFold(method, http.MethodGet)
 	}
 	return false
 }

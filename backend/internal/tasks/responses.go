@@ -101,9 +101,13 @@ func RenderResponsesFinal(ctx context.Context, in ResponsesRenderInput) (map[str
 		}
 		out["output"] = items
 	}
-	if usage, ok := rendered["usage"].(map[string]any); ok {
-		if normalized := NormalizeResponsesUsage(usage); normalized != nil {
-			out["usage"] = normalized
+	// usage 只在终态出现（W18-C 复核 H1）：非终态对象与 in_progress 事件不得
+	// 携带尚未结算的用量，否则客户端会把预估值当成最终账。
+	if in.Terminal() && terminalResponsesStatus(in.Status) {
+		if usage, ok := rendered["usage"].(map[string]any); ok {
+			if normalized := NormalizeResponsesUsage(usage); normalized != nil {
+				out["usage"] = normalized
+			}
 		}
 	}
 	return out, nil
@@ -181,6 +185,12 @@ func RenderResponsesEvents(ctx context.Context, in ResponsesRenderInput) ([]map[
 		events = append(events, map[string]any{"type": ResponsesEventCompleted, "response": final})
 	default:
 		// 异步语义保留：只到 in_progress 为止，不写终止事件。
+		//
+		// 已知限制（W18-C 复核 H1）：HTTP SSE 连接内不等待后台轮询完成——
+		// 宿主没有跨副本的长轮询接缝，硬等会把连接/资源压在无状态网关上。
+		// 因此 async `stream:true` 以 response.in_progress 收尾并正常 EOF；
+		// 客户端应改用 GET /v1/responses/{id} 回读终态。这里**绝不**伪造
+		// response.completed（那会谎报终态并触发错误结算假设）。
 		inProgress := responsesObject(in, in.Status)
 		events = append(events, map[string]any{"type": ResponsesEventInProgress, "response": inProgress})
 	}
@@ -234,31 +244,45 @@ func ResponsesUsageFromData(data map[string]any) map[string]any {
 	return NormalizeResponsesUsage(usage)
 }
 
-// responsesObject 构造宿主权威的 Responses 对象。
+// BuildResponsesObject 构造宿主权威的 Responses 对象。
 //
-// output 恒为数组：非终态按裁决为空；终态由 renderFinal 填充。
-func responsesObject(in ResponsesRenderInput, status string) map[string]any {
-	if status == "" {
-		status = in.Status
+// create（renderFinal）与 GET /v1/responses/{id}（产物回放）共用本函数：
+// 同一任务在创建与检索两个面上必须得到一致的 id/created_at/status/model
+// 与 usage 投影（W18-C 复核 H1）。output 由调用方决定（插件渲染项或产物
+// 投影项），但身份与 usage 规则只有一份。
+//
+// usage 只在终态出现：非终态（queued/in_progress）的用量尚未结算，展示它
+// 会让客户端把预估值当成最终账。
+func BuildResponsesObject(in ResponsesRenderInput, output []any) map[string]any {
+	if output == nil {
+		output = []any{}
 	}
-	if status == "" {
-		status = ResponsesStatusQueued
+	if in.Status == "" {
+		in.Status = ResponsesStatusQueued
 	}
-	output := []any{}
 	out := map[string]any{
 		"id":         in.ResponseID,
 		"object":     ResponsesObjectType,
 		"created_at": in.CreatedAt,
-		"status":     status,
+		"status":     in.Status,
 		"output":     output,
 	}
 	if in.Model != "" {
 		out["model"] = in.Model
 	}
-	if len(in.Usage) > 0 {
+	if in.Terminal() && terminalResponsesStatus(in.Status) && len(in.Usage) > 0 {
 		out["usage"] = in.Usage
 	}
 	return out
+}
+
+// responsesObject 是 BuildResponsesObject 的 status 覆盖简写。
+func responsesObject(in ResponsesRenderInput, status string) map[string]any {
+	if status == "" {
+		status = in.Status
+	}
+	in.Status = status
+	return BuildResponsesObject(in, nil)
 }
 
 // responsesRenderContext 组装传给 renderFinal / renderEvents 的只读上下文。
@@ -312,6 +336,19 @@ func decodeResponsesEvents(raw any) ([]map[string]any, error) {
 		out = append(out, event)
 	}
 	return out, nil
+}
+
+// terminalResponsesStatus 判定 Responses status 字面量是否终态。
+//
+// 用 status 而不是任务 State 判定 usage 是否可见：response.created 事件
+// 即使来自一个已终态的任务也必须是 in_progress 且不带 usage（事件语义优先），
+// 否则客户端会在流开头看到最终账。
+func terminalResponsesStatus(status string) bool {
+	switch status {
+	case ResponsesStatusCompleted, ResponsesStatusFailed, "incomplete":
+		return true
+	}
+	return false
 }
 
 func isTerminalResponsesEvent(eventType string) bool {

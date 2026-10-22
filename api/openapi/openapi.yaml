@@ -410,14 +410,13 @@ paths:
   # 协议族上游 fail-closed 501（R-59）。
   /v1/messages:
     $ref: './paths/relay.yaml#/paths/~1v1~1messages'
-  # Responses 创建（T2 / P-01：插件优先，未命中返回 501，不回落通用中继）。
+  # Responses 创建（W18-C / R-W18-07：protocols 派生绑定，返回 Responses 对象/SSE）。
   /v1/responses:
     $ref: './paths/relay.yaml#/paths/~1v1~1responses'
-  # Responses 产物回放（T3 / P-02：只服务插件任务产物）与压缩（P-03：fail-closed 501）。
+  # Responses 取回（W18-C：非终态 200 queued/in_progress；终态需产物）。
+  # `POST /v1/responses/compact` 与 `GET /v1/responses`（WS）本波不提供，故不登记。
   /v1/responses/{response_id}:
     $ref: './paths/relay.yaml#/paths/~1v1~1responses~1{response_id}'
-  /v1/responses/compact:
-    $ref: './paths/relay.yaml#/paths/~1v1~1responses~1compact'
   # Playground 会话中继（relay-01 §1.5）。入口必须显式引用：bundle 只内联
   # openapi.yaml 可达的节点，片段文件里的孤儿 path 不会进入生成物。
   /pg/chat/completions:

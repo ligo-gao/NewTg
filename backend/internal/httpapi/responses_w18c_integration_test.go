@@ -89,6 +89,47 @@ const responsesW18CIntegrationSource = `globalThis.__NEWTG_PLUGIN__ = {
   }
 };`
 
+// responsesW18CIntegrationAsyncSource 提交后保持 SUBMITTED，产物稍后才出现。
+// 用于 H1：create 的 resp_ id 必须立即可 retrieve 为 queued（不是 404）。
+const responsesW18CIntegrationAsyncSource = `globalThis.__NEWTG_PLUGIN__ = {
+  apiVersion: 1,
+  key: "video",
+  name: "Video",
+  version: "1.2.1",
+  author: { name: "NewTG" },
+  description: { en: "Video task plugin", zh: "视频任务插件" },
+  models: ["video-model"],
+  fetchMode: "per_task",
+  auth: { type: "api_key" },
+  channelTypes: [],
+  routes: [],
+  protocols: { openai_responses: { supports: ["create", "retrieve"] } },
+  usageSchema: {
+    seconds: { type: "number", unit: "second", description: { en: "Video generation unit price", zh: "视频生成单价" } }
+  },
+  usageProfiles: [],
+  usageExamples: [{ seconds: 5 }],
+  requiredCapabilities: [],
+  decodeRequest: function (ctx) { return ctx.body; },
+  buildSubmitRequest: function (ctx) {
+    return { url: ctx.baseUrl + "/tasks", method: "POST", body: { model: ctx.upstreamModel } };
+  },
+  parseSubmitResponse: function () {
+    return { taskId: "up_w18c_async", state: "SUBMITTED" };
+  },
+  buildQueryRequest: function (ctx) { return { url: ctx.baseUrl + "/t/" + ctx.taskId, method: "GET" }; },
+  parseTaskResult: function () { return { state: "SUCCESS" }; },
+  renderFinal: function () {
+    return {
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hello" }] }],
+      usage: { input_tokens: 5, output_tokens: 7 }
+    };
+  },
+  renderEvents: function () {
+    return [{ type: "response.output_text.delta", delta: "hello", output_index: 0, content_index: 0 }];
+  }
+};`
+
 type responsesW18CIntegrationEnv struct {
 	mux    http.Handler
 	mainDB *sql.DB
@@ -96,7 +137,7 @@ type responsesW18CIntegrationEnv struct {
 	userID int64
 }
 
-func newResponsesW18CIntegrationEnv(t *testing.T) *responsesW18CIntegrationEnv {
+func newResponsesW18CIntegrationEnv(t *testing.T, pluginSource string) *responsesW18CIntegrationEnv {
 	t.Helper()
 	dsn := os.Getenv("NEWTG_TEST_DB_DSN")
 	logsDSN := os.Getenv("NEWTG_TEST_LOGS_DSN")
@@ -197,7 +238,7 @@ func newResponsesW18CIntegrationEnv(t *testing.T) *responsesW18CIntegrationEnv {
 	engine := billing.NewEngine(gormDB, logsDB, rdb, relayBillingTestConfig(), source,
 		billing.NewRegistry(rdb), billing.NewDBLogger(logsDB))
 
-	manager := newTaskManager(t, map[string]string{"video": responsesW18CIntegrationSource})
+	manager := newTaskManager(t, map[string]string{"video": pluginSource})
 	repo := tasks.NewRepo(mainDB)
 	tokens := &fakeTaskTokens{meta: &auth.TokenMeta{
 		ID: tokenID, UserID: userID, Status: "enabled", Group: "default", UnlimitedQuota: true,
@@ -238,7 +279,7 @@ func (e *responsesW18CIntegrationEnv) counts(t *testing.T) (tasksCount, usageLog
 }
 
 func TestIntegrationResponsesW18CCreateSettlesOnce(t *testing.T) {
-	env := newResponsesW18CIntegrationEnv(t)
+	env := newResponsesW18CIntegrationEnv(t, responsesW18CIntegrationSource)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses",
 		strings.NewReader(`{"model":"video-model","input":"hello","seconds":5}`))
@@ -291,5 +332,84 @@ func TestIntegrationResponsesW18CCreateSettlesOnce(t *testing.T) {
 	}
 	if usageLogs != 1 {
 		t.Fatalf("usage_logs after retrieve = %d, want 1 (retrieve must not settle again)", usageLogs)
+	}
+}
+
+// TestIntegrationResponsesW18CAsyncRetrievable 是 H1 的集成验收：async create
+// 返回的 resp_ id 必须立即可检索为 queued（不是 404）；后台完成后同一 id 返回
+// completed + output + usage，且重复检索不产生新的任务行。
+func TestIntegrationResponsesW18CAsyncRetrievable(t *testing.T) {
+	env := newResponsesW18CIntegrationEnv(t, responsesW18CIntegrationAsyncSource)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses",
+		strings.NewReader(`{"model":"video-model","input":"hello","seconds":5}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+relayTestToken)
+	rec := httptest.NewRecorder()
+	env.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("async create status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID     string         `json:"id"`
+		Status string         `json:"status"`
+		Output []any          `json:"output"`
+		Usage  map[string]any `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create: %v; body=%s", err, rec.Body.String())
+	}
+	if created.Status != "queued" || created.Output == nil || len(created.Output) != 0 || created.Usage != nil {
+		t.Fatalf("async create = %+v, want queued/[]/no usage", created)
+	}
+
+	get := httptest.NewRequest(http.MethodGet, "/v1/responses/"+created.ID, nil)
+	get.Header.Set("Authorization", "Bearer "+relayTestToken)
+	getRec := httptest.NewRecorder()
+	env.mux.ServeHTTP(getRec, get)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("async retrieve before completion = %d, want 200; body=%s", getRec.Code, getRec.Body.String())
+	}
+	var pending struct {
+		Status string `json:"status"`
+		Output []any  `json:"output"`
+	}
+	if err := json.Unmarshal(getRec.Body.Bytes(), &pending); err != nil {
+		t.Fatalf("decode pending: %v", err)
+	}
+	if pending.Status != "queued" || pending.Output == nil || len(pending.Output) != 0 {
+		t.Fatalf("pending retrieve = %+v, want queued/[]", pending)
+	}
+
+	// 模拟后台轮询完成（真实轮询器由 tasks 集成用例覆盖）：写入终态与产物。
+	if _, err := env.mainDB.Exec(
+		`UPDATE tasks SET state = 'success', data = $1::jsonb WHERE user_id = $2`,
+		`{"usage":{"input_tokens":5,"output_tokens":7},"artifacts":[{"key":"v1","type":"video","mimeType":"video/mp4"}]}`,
+		env.userID); err != nil {
+		t.Fatalf("complete task: %v", err)
+	}
+	getRec = httptest.NewRecorder()
+	get = httptest.NewRequest(http.MethodGet, "/v1/responses/"+created.ID, nil)
+	get.Header.Set("Authorization", "Bearer "+relayTestToken)
+	env.mux.ServeHTTP(getRec, get)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("completed retrieve = %d, want 200; body=%s", getRec.Code, getRec.Body.String())
+	}
+	var completed struct {
+		Status string           `json:"status"`
+		Output []map[string]any `json:"output"`
+		Usage  map[string]any   `json:"usage"`
+	}
+	if err := json.Unmarshal(getRec.Body.Bytes(), &completed); err != nil {
+		t.Fatalf("decode completed: %v", err)
+	}
+	if completed.Status != "completed" || len(completed.Output) != 1 {
+		t.Fatalf("completed retrieve = %+v, want completed/1 artifact", completed)
+	}
+	if completed.Usage["input_tokens"] != float64(5) || completed.Usage["total_tokens"] != float64(12) {
+		t.Fatalf("completed usage = %#v, want normalized token usage", completed.Usage)
+	}
+	if tasksCount, _ := env.counts(t); tasksCount != 1 {
+		t.Fatalf("tasks rows = %d, want 1 (retrieve must not create rows)", tasksCount)
 	}
 }

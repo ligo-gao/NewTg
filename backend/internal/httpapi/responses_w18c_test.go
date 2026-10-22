@@ -64,9 +64,10 @@ const responsesW18CPluginSource = `globalThis.__NEWTG_PLUGIN__ = {
 };`
 
 type responsesW18CEnv struct {
-	mux     http.Handler
-	store   *fakeTaskStore
-	billing *taskBillingRecorder
+	mux         http.Handler
+	store       *fakeTaskStore
+	billing     *taskBillingRecorder
+	taskHandler *TasksHandler
 }
 
 func newResponsesW18CEnv(t *testing.T, source string) *responsesW18CEnv {
@@ -99,7 +100,7 @@ func newResponsesW18CEnv(t *testing.T, source string) *responsesW18CEnv {
 	mux := http.NewServeMux()
 	relayHandler.Register(mux)
 	taskHandler.RegisterRelay(mux, relayHandler.AuthMiddleware())
-	return &responsesW18CEnv{mux: mux, store: store, billing: billing}
+	return &responsesW18CEnv{mux: mux, store: store, billing: billing, taskHandler: taskHandler}
 }
 
 func (e *responsesW18CEnv) post(t *testing.T, body string) *httptest.ResponseRecorder {
@@ -230,6 +231,155 @@ func TestResponsesCreateParameterErrorsUseRelayEnvelope(t *testing.T) {
 		if envelope.Error.Code != "invalid_request_error" {
 			t.Fatalf("body %q: code = %q, want invalid_request_error", body, envelope.Error.Code)
 		}
+	}
+	if env.store.inserted != 0 {
+		t.Fatalf("tasks inserted = %d, want 0", env.store.inserted)
+	}
+}
+
+// responsesW18CAsyncPluginSource 是「提交后仍在跑」的插件：create 只能拿到
+// queued，产物稍后才出现。用于验证 create 与 retrieve 的异步自洽（H1）。
+var responsesW18CAsyncPluginSource = strings.Replace(
+	strings.Replace(responsesW18CPluginSource,
+		`immediate: { status: "SUCCESS" }`, `state: "SUBMITTED"`, 1),
+	`artifacts: [{ key: "v1", type: "video", mimeType: "video/mp4" }]`, ``, 1)
+
+// TestResponsesAsyncCreateThenRetrieve 是 H1 的验收：
+//   - async create 返回 200 queued + output=[]，usage 不出现；
+//   - 立即 GET 同一 id 返回 200 queued（不是 404），身份字段与 create 一致；
+//   - 任务完成后 GET 返回 200 completed，output/usage 按同一套投影出现；
+//   - 他人令牌仍是 404。
+func TestResponsesAsyncCreateThenRetrieve(t *testing.T) {
+	env := newResponsesW18CEnv(t, responsesW18CAsyncPluginSource)
+
+	rec := env.post(t, `{"model":"video-model","input":"hello","seconds":5}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("async create status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID        string         `json:"id"`
+		Object    string         `json:"object"`
+		Status    string         `json:"status"`
+		CreatedAt int64          `json:"created_at"`
+		Output    []any          `json:"output"`
+		Usage     map[string]any `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create: %v; body=%s", err, rec.Body.String())
+	}
+	if created.Object != "response" || created.Status != "queued" {
+		t.Fatalf("async create = %+v, want response/queued", created)
+	}
+	if created.Output == nil || len(created.Output) != 0 || created.Usage != nil {
+		t.Fatalf("async create output/usage = %#v/%#v, want []/absent", created.Output, created.Usage)
+	}
+
+	ownerMux := newResponsesLookupMux(t, env.taskHandler, 42)
+	rec = getResponseObject(t, ownerMux, created.ID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("async retrieve status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var pending struct {
+		ID        string         `json:"id"`
+		Object    string         `json:"object"`
+		Status    string         `json:"status"`
+		CreatedAt int64          `json:"created_at"`
+		Output    []any          `json:"output"`
+		Usage     map[string]any `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pending); err != nil {
+		t.Fatalf("decode pending retrieve: %v", err)
+	}
+	if pending.ID != created.ID || pending.CreatedAt != created.CreatedAt || pending.Object != "response" {
+		t.Fatalf("create/retrieve identity mismatch: created=%+v pending=%+v", created, pending)
+	}
+	if pending.Status != "queued" || pending.Output == nil || len(pending.Output) != 0 || pending.Usage != nil {
+		t.Fatalf("pending retrieve = %+v, want queued/[]/no usage", pending)
+	}
+
+	// 模拟后台完成（轮询器的真实验证在 tasks 集成用例；这里只验证检索投影）。
+	env.store.rows[0].State = tasks.StateSuccess
+	env.store.rows[0].Data = map[string]any{
+		"usage":     map[string]any{"input_tokens": float64(5), "output_tokens": float64(7)},
+		"artifacts": []any{map[string]any{"key": "v1", "type": "video", "mimeType": "video/mp4"}},
+	}
+	rec = getResponseObject(t, ownerMux, created.ID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("completed retrieve status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var completed struct {
+		Status string           `json:"status"`
+		Output []map[string]any `json:"output"`
+		Usage  map[string]any   `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &completed); err != nil {
+		t.Fatalf("decode completed retrieve: %v", err)
+	}
+	if completed.Status != "completed" || len(completed.Output) != 1 {
+		t.Fatalf("completed retrieve = %+v, want completed/1 artifact", completed)
+	}
+	if completed.Usage["input_tokens"] != float64(5) || completed.Usage["total_tokens"] != float64(12) {
+		t.Fatalf("completed usage = %#v, want normalized token usage", completed.Usage)
+	}
+
+	// 归属校验：他人令牌对同一 id 仍是 404。
+	foreignMux := newResponsesLookupMux(t, env.taskHandler, 43)
+	foreign := getResponseObject(t, foreignMux, created.ID)
+	requireRelayErrorCode(t, foreign, http.StatusNotFound, "not_found")
+}
+
+// TestResponsesCreateRejectsInvalidFieldTypes 是 M2：宿主校验 stream/input/tools
+// 的类型，非法 → 400；不得静默降级或把参数问题拖到插件阶段变成 502。
+func TestResponsesCreateRejectsInvalidFieldTypes(t *testing.T) {
+	env := newResponsesW18CEnv(t, responsesW18CPluginSource)
+	for _, body := range []string{
+		`{"model":"video-model","input":123,"seconds":5}`,
+		`{"model":"video-model","tools":{},"seconds":5}`,
+		`{"model":"video-model","input":"hi","seconds":5,"stream":"yes"}`,
+		`{"model":"video-model","instructions":42,"seconds":5}`,
+	} {
+		rec := env.post(t, body)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %s: status = %d, want 400; body=%s", body, rec.Code, rec.Body.String())
+		}
+		var envelope struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+			t.Fatalf("body %s: decode envelope: %v", body, err)
+		}
+		if envelope.Error.Code != "invalid_request_error" {
+			t.Fatalf("body %s: code = %q, want invalid_request_error", body, envelope.Error.Code)
+		}
+	}
+	if env.store.inserted != 0 {
+		t.Fatalf("tasks inserted = %d, want 0", env.store.inserted)
+	}
+}
+
+// TestResponsesCreateDecodeFailureIs400 是 M2 的错误分类：decodeRequest 抛错
+// 属于入站请求可归因失败 → 400，而不是上游/插件内部错误 502。
+func TestResponsesCreateDecodeFailureIs400(t *testing.T) {
+	broken := strings.Replace(responsesW18CPluginSource,
+		`decodeRequest: function (ctx) { return ctx.body; },`,
+		`decodeRequest: function () { throw new Error("bad input"); },`, 1)
+	env := newResponsesW18CEnv(t, broken)
+	rec := env.post(t, `{"model":"video-model","input":"hi","seconds":5}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if envelope.Error.Code != "invalid_request_error" {
+		t.Fatalf("code = %q, want invalid_request_error", envelope.Error.Code)
 	}
 	if env.store.inserted != 0 {
 		t.Fatalf("tasks inserted = %d, want 0", env.store.inserted)

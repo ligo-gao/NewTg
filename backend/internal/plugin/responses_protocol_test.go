@@ -144,6 +144,47 @@ func TestProtocolsRoutesStillWork(t *testing.T) {
 	}
 }
 
+// TestRoutesCannotBypassSupports 是 M1（W18-C 复核）：声明了协议后，routes[]
+// 不能通过显式声明宿主端点来绕过 supports 的能力收窄。双向都拒绝；与
+// supports 一致的显式声明保持可用。
+func TestRoutesCannotBypassSupports(t *testing.T) {
+	const getRoute = `[ { method: "GET", path: "/v1/responses/:response_id", kind: "query", taskIdParam: "response_id", render: "parseTaskResult" } ]`
+	const postRoute = `[ { method: "POST", path: "/v1/responses", kind: "submit", decode: "decodeRequest", render: "renderFinal" } ]`
+
+	cases := []struct {
+		name       string
+		supports   string
+		routes     string
+		wantStatus PluginStatus
+		wantRule   string
+	}{
+		{"create_only_cannot_own_retrieve", `["create"]`, getRoute, StatusCompileFailed, "protocol_capability_mismatch"},
+		{"retrieve_only_cannot_own_create", `["retrieve"]`, postRoute, StatusCompileFailed, "protocol_capability_mismatch"},
+		{"create_redundant_post_is_ok", `["create"]`, postRoute, StatusRegistered, ""},
+		{"retrieve_explicit_get_is_ok", `["retrieve"]`, getRoute, StatusRegistered, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fix := responsesProtocolFixture("sample", tc.supports)
+			fix.Routes = tc.routes
+			manager, err := NewManager(map[string]string{"sample": fix.Source()}, nil, Options{MasterEnabled: true})
+			if err != nil {
+				t.Fatalf("NewManager: %v", err)
+			}
+			if err := manager.Reload(context.Background()); err != nil {
+				t.Fatalf("Reload: %v", err)
+			}
+			entry := manager.Snapshot().Lookup("sample")
+			if entry.Status != tc.wantStatus {
+				t.Fatalf("status = %s, want %s: %+v", entry.Status, tc.wantStatus, entry)
+			}
+			if tc.wantRule != "" && !entry.Errors.hasRule(tc.wantRule) {
+				t.Fatalf("errors = %v, want rule %s", entry.Errors, tc.wantRule)
+			}
+		})
+	}
+}
+
 // TestProtocolsCreateBindingConflictAcrossPlugins：协议声明面同样受注册期
 // 冲突语义约束——两个插件都接管 create 时，后到者整插件失败，运行期归属
 // 不得依赖注册顺序之外的不确定因素。

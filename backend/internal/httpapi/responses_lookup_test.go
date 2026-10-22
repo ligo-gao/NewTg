@@ -502,6 +502,19 @@ func TestResponsesUnprovidedEndpointsReturn404(t *testing.T) {
 	if n := transport.count(); n != 0 {
 		t.Fatalf("upstream requests = %d, want 0; calls=%v", n, transport.paths())
 	}
+
+	// 复核 Low：只有 GET 收敛为 404；其它非 POST 方法保留 405（端点存在，
+	// Allow 必须如实列出 POST）。
+	put := httptest.NewRequest(http.MethodPut, "/v1/responses", strings.NewReader(`{}`))
+	put.Header.Set("Authorization", "Bearer "+relayTestToken)
+	putRec := httptest.NewRecorder()
+	mux.ServeHTTP(putRec, put)
+	if putRec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("PUT /v1/responses = %d, want 405; body=%s", putRec.Code, putRec.Body.String())
+	}
+	if allow := putRec.Header().Get("Allow"); !strings.Contains(allow, http.MethodPost) {
+		t.Fatalf("Allow = %q, want it to contain POST", allow)
+	}
 }
 
 // TestResponsesRouteShapesFollowR10 维护 R-10 契约（形状表本身在 plugin 包，

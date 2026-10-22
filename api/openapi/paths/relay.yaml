@@ -101,8 +101,9 @@ paths:
         '503':
           description: 该模型没有可用渠道
 
-  # Responses 创建端点（T2 / P-01 / R-13）：只有插件任务渠道能执行；未命中
-  # 插件原生路由时 fail-closed（501 problem+json），不回落通用中继。
+  # Responses 创建端点（W18-C / R-W18-07）：protocols.openai_responses.supports
+  # 含 create 的插件直接接管本端点（routes[] 不需要重复声明）。未命中任何
+  # 插件绑定一律 fail-closed 501（OpenAI 信封），不回落通用中继。
   /v1/responses:
     post:
       tags: [relay]
@@ -111,21 +112,31 @@ paths:
       x-relay-format: openai_responses
       summary: OpenAI Responses 创建（仅插件任务渠道）
       description: |
-        分发顺序（冻结）：先查插件 manifest 的 `routes[]`（方法 + 路径精确匹配），
-        命中即转任务插件提交（`202` + `public_task_id`，计费由任务提交路径扣除）。
+        分发顺序（冻结）：`protocols.openai_responses.supports` 含 `create` 的
+        插件派生绑定 `POST /v1/responses`（历史 `routes[]` 显式声明同样可达）。
+        命中即转任务插件提交（鉴权/限流/预扣/落库/结算只有一份实现），并按
+        Responses 协议渲染响应：
 
-        未命中插件路由一律 `501` + `application/problem+json`
-        （`type=https://newtg.dev/problems/endpoint-not-supported`）：通用中继是
-        Chat 管线，无法表达 Responses 的 input/instructions 与响应形态，放行会
-        返回与输入无关的 200 并按错误 usage 结算。该分支零计费、零上游调用。
+        - 非流式：`200 application/json` + `ResponsesObject`（不再是 202 task 形状）；
+        - `stream: true`：`200 text/event-stream`，最少
+          `response.created → response.output_text.delta* → response.completed`
+          （失败为 `response.failed`）；`response.created` 恒为首帧、终止事件恒为
+          末帧，未知事件原样透传。任务非终态时以 `response.in_progress` 收尾并
+          正常 EOF（宿主不在 HTTP 连接内长等待后台轮询），客户端改用
+          `GET /v1/responses/{id}` 回读终态。
+
+        未命中插件绑定一律 `501` OpenAI 信封（`code=endpoint_not_supported`）：
+        通用中继是 Chat 管线，无法表达 Responses 的 input/instructions 与响应
+        形态，放行会返回与输入无关的 200 并按错误 usage 结算。该分支零计费、
+        零上游调用。
       security:
         - bearerToken: []
       externalDocs:
         description: OpenAI Responses API reference
         url: https://platform.openai.com/docs/api-reference/responses
       responses:
-        '202':
-          description: 任务插件已接受；任务已持久化（`{public_task_id, state, upstream_task_id?}`）
+        '200':
+          $ref: '../components/responses.yaml#/responses/ResponsesCreateOK'
         '400':
           $ref: '../components/responses.yaml#/responses/Error400'
         '401':
@@ -147,32 +158,38 @@ paths:
             `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
             是否超限就不放行，客户端不应把它当作可重试的限流。
         '501':
-          $ref: '../components/responses.yaml#/responses/Error501'
+          $ref: '../components/responses.yaml#/responses/RelayError501'
         '502':
           description: 上游提交失败（任务插件路径）
 
-  # Responses 产物回放（T3 / P-02 / 基线-09 §1.5）：只服务插件任务产物。
-  # 网关不保存 Responses 对话历史——可回放的只有任务行派生出的产物。
+  # Responses 取回（W18-C）：`resp_<x>` 映射为 `task_<x>`。
+  #
+  # 状态语义：非终态 → 200 queued/in_progress + output=[]（与 create 返回同一
+  # 对象）；终态 → 需有可检索产物，否则 404。usage 只在终态出现。
   /v1/responses/{response_id}:
     get:
       tags: [relay]
       operationId: getResponse
       x-openai-compatible: true
       x-relay-format: openai_responses
-      summary: 取回 Responses 对象（仅插件任务产物）
+      summary: 取回 Responses 对象（插件任务）
       description: |
-        `resp_<x>` 映射为 `task_<x>` 后按任务检索面回放**产物**：
-        `{id, object, created_at, status, model, output[]}`；`output[]` 每项为
-        `{type, id, status, mime_type?, url}`，`url` 是宿主签发的产物能力 URL
-        （与 `/v1/tasks/{key}/artifacts` 的 `content_url` 同一签名）。
+        `resp_<x>` 映射为 `task_<x>` 后按任务检索面返回 Responses 对象，
+        身份/usage 与 create 使用同一套投影（`BuildResponsesObject`）。
 
-        只服务同时满足以下条件的任务：产物可检索、归属当前令牌用户、插件在装
-        且声明 `openai_responses` 协议。其余来源（非 `resp_` 前缀、任务不存在、
-        属于他人、插件未声明协议或已卸载、无产物、已过保留期）**一律 404**
-        且不区分原因——区分会把 `resp_` 空间变成存在性 oracle。
+        - 非终态（queued / in_progress；unknown 映射 incomplete）：
+          `200` + `{status:queued|in_progress|incomplete, output:[], ...}`，与
+          create 的异步语义一致；
+        - 终态：`200` + `output[]` 产物投影（`{type,id,status,mime_type?,url}`，
+          `url` 是宿主签发的产物能力 URL），并携带 `usage`；
+        - 终态但没有可检索产物：`404`。
+
+        只服务归属当前令牌用户、插件在装且 `protocols.openai_responses.supports`
+        含 `retrieve` 的任务。不存在/他人/插件未声明 retrieve/已过保留期
+        **一律 404** 且不区分原因——区分会把 `resp_` 空间变成存在性 oracle。
 
         插件若声明了 `GET /v1/responses/{id}` 原生路由，请求由插件接管
-        （内建回放只在路由索引未命中时生效）。
+        （内建回放只在路由索引未命中时生效；该路由仍受 supports=retrieve 约束）。
       security:
         - bearerToken: []
       parameters:
@@ -182,10 +199,7 @@ paths:
         url: https://platform.openai.com/docs/api-reference/responses
       responses:
         '200':
-          description: |
-            `{id, object:"response", created_at, status, model?, output[]}`。
-            `status` 取任务状态：queued / in_progress / completed / failed /
-            incomplete（任务状态 unknown）。
+          $ref: '../components/responses.yaml#/responses/ResponsesGetOK'
         '401':
           $ref: '../components/responses.yaml#/responses/Error401'
         '404':
@@ -193,31 +207,8 @@ paths:
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
 
-  # Responses 压缩端点（T3 / P-03）：独立计费口径、不产生任务行。中继当前
-  # 无法表达压缩语义，因此 fail-closed 501（不返回 chat 形态）。
-  /v1/responses/compact:
-    post:
-      tags: [relay]
-      operationId: compactResponse
-      x-relay-format: openai_responses
-      summary: OpenAI Responses 压缩（当前 fail-closed）
-      description: |
-        压缩端点按 G7-R51 有**独立计费口径**、**不产生任务行**，输出是压缩后的
-        Responses 对象。通用中继没有该语义：转成 chat 形态会返回与压缩结果无关
-        的对象并按真实 usage 结算（P-03 明文禁止）；原样转发上游则绕过定价。
-
-        因此当前实现 fail-closed：`501` + `application/problem+json`
-        （`type=https://newtg.dev/problems/endpoint-not-supported`），
-        **不读请求体、不产生计费、不调用上游**。真实实现（独立计费表达式 +
-        上游压缩转发）登记为后续项。
-      security:
-        - bearerToken: []
-      responses:
-        '401':
-          $ref: '../components/responses.yaml#/responses/Error401'
-        '501':
-          $ref: '../components/responses.yaml#/responses/Error501'
-
+  # 本波不提供：POST /v1/responses/compact（R-W18-12）。不注册路由 → 404，
+  # 因此不在 paths 中登记（501 半死桩已删除）。
   /pg/chat/completions:
     post:
       tags: [relay]
