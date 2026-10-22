@@ -156,9 +156,19 @@ func TestWorkerTaskTablesMigrationUpDown(t *testing.T) {
 		}
 	}
 
-	// down：只回退本迁移（全链最新就是它）。
-	if err := m.Steps(-1); err != nil {
-		t.Fatalf("migrate down one step: %v", err)
+	// down：worker_tasks 之后可能还有更晚的迁移（例如 payment_compliance），
+	// 因此逐步回退直到三表消失，而不是假定 worker_tasks 是链尾。
+	for i := 0; i < 100; i++ {
+		var exists bool
+		if err := db.QueryRow(`SELECT to_regclass('worker_tasks') IS NOT NULL`).Scan(&exists); err != nil {
+			t.Fatalf("check worker_tasks: %v", err)
+		}
+		if !exists {
+			break
+		}
+		if err := m.Steps(-1); err != nil {
+			t.Fatalf("migrate down one step: %v", err)
+		}
 	}
 	for _, table := range []string{"worker_tasks", "worker_task_locks", "worker_task_runs"} {
 		var count int

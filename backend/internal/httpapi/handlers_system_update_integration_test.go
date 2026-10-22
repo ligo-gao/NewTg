@@ -5,6 +5,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -263,12 +264,31 @@ func TestSystemStatusMFAIntegration(t *testing.T) {
 	if !body.MFA.Available {
 		t.Fatal("有 DB 时 mfa.available 应为 true")
 	}
-	// 设计口径：全局计数包含管理员（status=enabled 的全部账号）。本用例
-	// 插入 2 名 enabled 用户 + 2 名 enabled 管理员，其中各 1 名启用 TOTP。
-	if body.MFA.TotalUsers != 4 || body.MFA.TotpEnabledUsers != 2 || body.MFA.MFACoveragePct != 50 {
-		t.Fatalf("全局口径 = %+v，期望 2/4 = 50.0", body.MFA)
+	// 设计口径：全局计数包含管理员（status=enabled 的全部账号）。
+	// 集成测试库可能已有其他用例留下的账号，因此以数据库当前计数为真值，
+	// 而不是假定只有本用例插入的 4 行。
+	var wantTotal, wantTotp, wantAdmins, wantAdminTotp int64
+	if err := db.QueryRowContext(ctx, `
+		SELECT
+			count(*) FILTER (WHERE status = 'enabled'),
+			count(*) FILTER (WHERE status = 'enabled' AND totp_enabled),
+			count(*) FILTER (WHERE status = 'enabled' AND role = 'admin'),
+			count(*) FILTER (WHERE status = 'enabled' AND role = 'admin' AND totp_enabled)
+		FROM users`).Scan(&wantTotal, &wantTotp, &wantAdmins, &wantAdminTotp); err != nil {
+		t.Fatalf("read expected MFA counts: %v", err)
 	}
-	if body.MFA.TotalAdmins != 2 || body.MFA.TotpEnabledAdmins != 1 || body.MFA.AdminMFACoveragePct != 50 {
-		t.Fatalf("管理面口径 = %+v，期望 1/2 = 50.0", body.MFA)
+	wantPct := 0.0
+	if wantTotal > 0 {
+		wantPct = math.Round(float64(wantTotp)/float64(wantTotal)*1000) / 10
+	}
+	wantAdminPct := 0.0
+	if wantAdmins > 0 {
+		wantAdminPct = math.Round(float64(wantAdminTotp)/float64(wantAdmins)*1000) / 10
+	}
+	if body.MFA.TotalUsers != wantTotal || body.MFA.TotpEnabledUsers != wantTotp || body.MFA.MFACoveragePct != wantPct {
+		t.Fatalf("全局口径 = %+v，期望 %d/%d = %.1f", body.MFA, wantTotp, wantTotal, wantPct)
+	}
+	if body.MFA.TotalAdmins != wantAdmins || body.MFA.TotpEnabledAdmins != wantAdminTotp || body.MFA.AdminMFACoveragePct != wantAdminPct {
+		t.Fatalf("管理面口径 = %+v，期望 %d/%d = %.1f", body.MFA, wantAdminTotp, wantAdmins, wantAdminPct)
 	}
 }
