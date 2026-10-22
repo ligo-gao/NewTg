@@ -298,7 +298,9 @@
       "expand": "展開 {name} 的詳情",
       "collapse": "收合 {name} 的詳情",
       "moreModels": "+{count}",
-      "neverTested": "從未測試"
+      "neverTested": "從未測試",
+      "successRate24h": "成功（24h）",
+      "avgLatency24h": "延遲（24h）"
     },
     "empty": {
       "none": "尚無通道",
@@ -504,6 +506,25 @@
       "defaultOff": "開關預設關閉。關閉期間，攜帶 x-newtg-protocol 的請求會以 403 失敗，而不會被轉送。",
       "managedBy": "此開關位於網站設定中，本版本尚未提供，因此此控制台無法讀取或修改。",
       "editableDeferred": "網站設定可用後將提供可編輯開關與協定對應；在此之前此處不顯示控制項。"
+    },
+    "metrics": {
+      "title": "用量指標",
+      "trend": "成功率趨勢",
+      "refresh": "重新整理",
+      "retry": "重試",
+      "empty": "尚無用量資料。",
+      "error": "渠道指標載入失敗。",
+      "offline": "目前為離線狀態，連線後將自動載入指標。",
+      "requests": "請求數",
+      "successRate": "成功率",
+      "avgLatency": "平均延遲",
+      "avgFirstToken": "平均首字延遲",
+      "avgCost": "平均成本",
+      "usedCredits": "積分（24h）",
+      "range": {
+        "24h": "24 小時",
+        "7d": "7 天"
+      }
     }
   },
   "tokens": {

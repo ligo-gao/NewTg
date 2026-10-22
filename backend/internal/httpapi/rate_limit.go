@@ -68,6 +68,17 @@ const (
 	ChannelRevealRateMark   = "CR"
 	ChannelRevealRateLimit  = 10
 	ChannelRevealRateWindow = time.Hour
+
+	// 渠道测试桶（POST /api/channels/{id}/test；W16-1 裁决 R-W16-02）。
+	// 阈值唯一来源：modules-08 F-08-16「渠道测试接口 10 req/min/admin」。
+	// 维度是**管理员**而不是 IP（批量测试由前端逐模型调用，同一管理员换 IP
+	// 不应刷新配额）。与 reveal 桶同族，仅 mark 不同。
+	//
+	// Redis 不可用时本桶 **fail-open**（放行 + WARN）：测试是只读探针，不是
+	// 敏感数据出口——与 reveal 的 fail-closed 刻意不同（R-W16-02 冻结）。
+	ChannelTestRateMark   = "CT"
+	ChannelTestRateLimit  = 10
+	ChannelTestRateWindow = time.Minute
 )
 
 // SetupRateLimitKey 构造 B13 桶键：rateLimit:v2:ip:ST:<ip>。
@@ -99,6 +110,12 @@ func PublicReadRateLimitKey(ip, path string) string {
 // IP 段——键必须自描述，运维直读 Redis 时不能把用户 id 误读成地址。
 func ChannelRevealRateLimitKey(userID int64) string {
 	return "rateLimit:v2:user:" + ChannelRevealRateMark + ":" + strconv.FormatInt(userID, 10)
+}
+
+// ChannelTestRateLimitKey 构造渠道测试桶键：rateLimit:v2:user:CT:<userID>。
+// 与 reveal 桶同族（用户维冻结形状），运维直读 Redis 时自描述。
+func ChannelTestRateLimitKey(userID int64) string {
+	return "rateLimit:v2:user:" + ChannelTestRateMark + ":" + strconv.FormatInt(userID, 10)
 }
 
 // allowRequestRate 消耗固定窗口中的一个名额。

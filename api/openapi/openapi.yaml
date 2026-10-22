@@ -404,6 +404,13 @@ paths:
   # W11：凭据受控揭示（security-03 §2.10）。唯一返回完整凭据的端点。
   /api/channels/{id}/credentials/reveal:
     $ref: './paths/admin.yaml#/paths/~1api~1channels~1{id}~1credentials~1reveal'
+
+  # W16-1：渠道指标（F-06-11）与连通性测试（F-06-06）。
+  /api/channels/{id}/metrics:
+    $ref: './paths/admin.yaml#/paths/~1api~1channels~1{id}~1metrics'
+
+  /api/channels/{id}/test:
+    $ref: './paths/admin.yaml#/paths/~1api~1channels~1{id}~1test'
   /v1/chat/completions:
     $ref: './paths/relay.yaml#/paths/~1v1~1chat~1completions'
   # Anthropic Messages 原生入口（W7/M1）：Claude 原生客户端直连；非 Anthropic

@@ -298,7 +298,9 @@
       "expand": "展开 {name} 的详情",
       "collapse": "收起 {name} 的详情",
       "moreModels": "+{count}",
-      "neverTested": "从未测试"
+      "neverTested": "从未测试",
+      "successRate24h": "成功（24h）",
+      "avgLatency24h": "延迟（24h）"
     },
     "empty": {
       "none": "暂无渠道",
@@ -504,6 +506,25 @@
       "defaultOff": "开关默认关闭。关闭期间，携带 x-newtg-protocol 的请求会以 403 失败，而不会被中继。",
       "managedBy": "该开关位于站点设置中，本版本尚未提供，因此此控制台无法读取或修改。",
       "editableDeferred": "站点设置可用后将提供可编辑开关与协议映射；在此之前此处不显示控件。"
+    },
+    "metrics": {
+      "title": "用量指标",
+      "trend": "成功率趋势",
+      "refresh": "刷新",
+      "retry": "重试",
+      "empty": "暂无用量数据。",
+      "error": "渠道指标加载失败。",
+      "offline": "当前处于离线状态，联网后将自动加载指标。",
+      "requests": "请求数",
+      "successRate": "成功率",
+      "avgLatency": "平均延迟",
+      "avgFirstToken": "平均首字延迟",
+      "avgCost": "平均成本",
+      "usedCredits": "积分（24h）",
+      "range": {
+        "24h": "24 小时",
+        "7d": "7 天"
+      }
     }
   },
   "tokens": {

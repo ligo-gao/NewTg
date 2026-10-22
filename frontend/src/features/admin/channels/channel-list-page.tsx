@@ -27,6 +27,7 @@ import {
   updateChannel,
 } from './api'
 import { ChannelMutateSheet } from './channel-mutate-sheet'
+import { ChannelMetricsPanel } from './channel-metrics-panel'
 import { channelDisabledReasonKey } from './channel-disabled-reason'
 import { ChannelStatusBadge } from './channel-status-badge'
 import { ChannelTestDialog } from './channel-test-dialog'
@@ -621,6 +622,12 @@ export function ChannelListPage() {
                 {t('common.channels.table.lastTest')}
               </th>
               <th scope="col" className="border-b border-border-hairline bg-surface-subtle px-3 py-2 text-left text-xs font-medium text-ink-2">
+                {t('common.channels.table.successRate24h')}
+              </th>
+              <th scope="col" className="border-b border-border-hairline bg-surface-subtle px-3 py-2 text-right text-xs font-medium text-ink-2">
+                {t('common.channels.table.avgLatency24h')}
+              </th>
+              <th scope="col" className="border-b border-border-hairline bg-surface-subtle px-3 py-2 text-left text-xs font-medium text-ink-2">
                 {t('common.channels.table.actions')}
               </th>
             </tr>
@@ -629,14 +636,14 @@ export function ChannelListPage() {
             {loading ? (
               Array.from({ length: 5 }, (_, index) => (
                 <tr key={`skeleton-${index}`}>
-                  <td colSpan={10} className="border-b border-border-hairline px-3 py-3">
+                  <td colSpan={12} className="border-b border-border-hairline px-3 py-3">
                     <div className="h-6 animate-pulse rounded bg-surface-subtle" />
                   </td>
                 </tr>
               ))
             ) : channelsQuery.isError ? (
               <tr>
-                <td colSpan={10} className="px-3 py-8 text-center">
+                <td colSpan={12} className="px-3 py-8 text-center">
                   <div role="alert" className="flex flex-col items-center gap-2 text-sm text-danger">
                     <p>{t('common.channels.error.load')}</p>
                     <Button
@@ -652,7 +659,7 @@ export function ChannelListPage() {
               </tr>
             ) : items.length === 0 ? (
               <tr>
-                <td colSpan={10} className="px-3 py-10 text-center">
+                <td colSpan={12} className="px-3 py-10 text-center">
                   <p className="text-sm text-ink-2">
                     {hasFilters
                       ? t('common.channels.empty.filtered')
@@ -728,6 +735,12 @@ export function ChannelListPage() {
                       </td>
                       <td className="border-b border-border-hairline px-3 py-3">
                         <LastTestCell channel={channel} />
+                      </td>
+                      <td className="border-b border-border-hairline px-3 py-3">
+                        <MetricsSuccessCell channel={channel} />
+                      </td>
+                      <td className="border-b border-border-hairline px-3 py-3 text-right tabular-nums">
+                        <MetricsLatencyCell channel={channel} />
                       </td>
                       <td className="border-b border-border-hairline px-3 py-3">
                         <div className="flex items-center gap-1">
@@ -815,7 +828,7 @@ export function ChannelListPage() {
                     {expanded ? (
                       <tr>
                         <td
-                          colSpan={10}
+                          colSpan={12}
                           data-testid={`channel-detail-${channel.id}`}
                           className="border-b border-border-hairline bg-surface-subtle px-5 py-4"
                         >
@@ -1037,6 +1050,36 @@ function GroupsCell({ groups }: { groups: string[] | null }) {
   )
 }
 
+/**
+ * 24h success-rate cell (W16-1). `channel.metrics` is absent when the logs
+ * database is unavailable and `success_rate` is null when the channel had no
+ * traffic — both render — rather than inventing 0%.
+ */
+function MetricsSuccessCell({ channel }: { channel: Channel }) {
+  const rate = channel.metrics?.success_rate ?? null
+  return (
+    <span
+      data-testid={`channel-metrics-rate-${channel.id}`}
+      className="text-xs tabular-nums text-ink-1"
+    >
+      {rate === null ? '—' : `${(rate * 100).toFixed(1)}%`}
+    </span>
+  )
+}
+
+/** 24h average latency cell (W16-1). Null means "no samples". */
+function MetricsLatencyCell({ channel }: { channel: Channel }) {
+  const latency = channel.metrics?.avg_latency_ms ?? null
+  return (
+    <span
+      data-testid={`channel-metrics-latency-${channel.id}`}
+      className="text-xs tabular-nums text-ink-1"
+    >
+      {latency === null ? '—' : `${Math.round(latency)} ms`}
+    </span>
+  )
+}
+
 function LastTestCell({ channel }: { channel: Channel }) {
   const { t, locale } = useI18n()
   if (channel.last_test_at === null) {
@@ -1111,13 +1154,16 @@ function ChannelDetailPanel({ channel }: { channel: Channel }) {
   // has no credentials cell to render — the mask is shown by the edit sheet's
   // detail load (and verified through the POST/detail response).
   return (
-    <dl className="grid grid-cols-4 gap-4 text-sm">
-      {rows.map((row) => (
-        <div key={row.label}>
-          <dt className="text-xs text-ink-2">{row.label}</dt>
-          <dd className="mt-0.5 text-ink-1">{row.value}</dd>
-        </div>
-      ))}
-    </dl>
+    <div>
+      <dl className="grid grid-cols-4 gap-4 text-sm">
+        {rows.map((row) => (
+          <div key={row.label}>
+            <dt className="text-xs text-ink-2">{row.label}</dt>
+            <dd className="mt-0.5 text-ink-1">{row.value}</dd>
+          </div>
+        ))}
+      </dl>
+      <ChannelMetricsPanel channel={channel} />
+    </div>
   )
 }

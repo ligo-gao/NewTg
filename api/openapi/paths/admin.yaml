@@ -615,6 +615,107 @@ paths:
         '503':
           $ref: '../components/responses.yaml#/responses/Error503'
 
+  # 渠道指标（W16-1 / modules-06 F-06-11）。只读；数据源是日志库 usage_logs，
+  # 当前实现为「直查 + 60s Redis 缓存」（worker 预聚合登记为后续收敛）。
+  /api/channels/{id}/metrics:
+    get:
+      tags: [admin]
+      operationId: getChannelMetrics
+      x-required-permission: channels:read
+      summary: 渠道健康与用量指标（24h/7d 整点桶）
+      description: |
+        返回 24（window=24h，默认）或 168（window=7d）个整点桶及窗口汇总。
+        成功率口径 = success / (success + error + refused)（modules-05 §10.2）；
+        refunded 计入 request_count 但不入成功率分母。空桶计数为 0、比率与
+        均值为 null（UI 显示 —，不是 0）。日志库不可用 → 503（渠道列表仍可用）；
+        渠道不存在 → 404；window 非法 → 422。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 渠道 id（正整数）；非法/不存在同形 404。
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - name: window
+          in: query
+          required: false
+          description: 时间窗口；缺省 24h。
+          schema:
+            type: string
+            enum: [24h, 7d]
+            default: 24h
+      responses:
+        '200':
+          description: 指标序列与汇总
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/ChannelMetrics'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  # 渠道连通性测试（modules-06 F-06-06）。W16-1 起增加独立桶
+  # 「10 次/分钟/管理员」（modules-08 F-08-16 冻结值），超限 429 + Retry-After；
+  # Redis 不可用时 fail-open（测试是只读探针，不阻断管理动作）。
+  /api/channels/{id}/test:
+    post:
+      tags: [admin]
+      operationId: testChannel
+      x-required-permission: channels:manage
+      summary: 对渠道发起一次连通性测试
+      description: |
+        请求体可选（model 必须属于该渠道 supported_models；缺省用 test_model
+        或首个模型）。连通性失败是业务结果：仍为 200，body.success=false 并带
+        error_class。失败不返回上游 URL/密钥等内部细节（GC-6）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/ChannelTestRequest'
+      responses:
+        '200':
+          description: 测试结果（success=false 也是 200）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/ChannelTestResult'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
   # ---------------------------------------------------------------------------
   # 定价管理（M3 Task 7 / modules-06 F-06-13/14/16）
   #

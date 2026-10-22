@@ -79,6 +79,20 @@ var (
 	_ UserAccessStore = (*store.TokenRepo)(nil)
 )
 
+// ChannelMetricsStore 是渠道指标（F-06-11）的日志库读取面。生产实现是
+// *store.ChannelMetricsRepo（查 usage_logs）；测试注入内存 fake 以验证
+// handler 契约（缓存、窗口、权限、错误映射）而不连真日志库。
+//
+// 两个方法都接收 now 作为时钟接缝：桶边界必须由调用方决定，避免 handler
+// 与仓储各自取时导致测试边界抖动。
+type ChannelMetricsStore interface {
+	Get(ctx context.Context, channelID int64, window string, now time.Time) (*store.ChannelMetrics, error)
+	Summaries(ctx context.Context, channelIDs []int64, now time.Time) (map[int64]store.ChannelSummary, error)
+}
+
+// 编译期断言：production wiring 直接传 *store.ChannelMetricsRepo。
+var _ ChannelMetricsStore = (*store.ChannelMetricsRepo)(nil)
+
 // ChannelTester 是连通性测试接缝（modules-06 F-06-06）。phase 8B 的真实实现
 // 负责构造适配器、以 max_tokens=1 发一次上游请求；本任务只约束 handler 的错误
 // 映射（失败 → 泛化 RFC7807，绝不回传上游 URL/key）。
@@ -425,6 +439,22 @@ type ChannelResponse struct {
 
 	CredentialsMasked *ChannelCredentialsMasked `json:"credentials_masked,omitempty"`
 	CredentialsSet    *bool                     `json:"credentials_set,omitempty"`
+
+	// Metrics 是列表内嵌的 24h 概要（W16-1；modules-06 F-06-11 列表列）。
+	//
+	// 可选：日志库不可用时整批省略（nil），前端列显示 —，渠道管理主功能
+	// 不受影响（F-06-11 异常流程）。批量成功时每个渠道都带对象——无流量
+	// 渠道是 {request_count:0, success_rate:null, avg_latency_ms:null}，
+	// 以便区分「0 次请求」与「指标不可用」。详情端点不返回本字段。
+	Metrics *ChannelListMetrics `json:"metrics,omitempty"`
+}
+
+// ChannelListMetrics 是渠道行的 24h 概要（列表批量查询投影）。
+// success_rate / avg_latency_ms 为 nil 表示该窗口无样本（显示 —）。
+type ChannelListMetrics struct {
+	RequestCount int64    `json:"request_count"`
+	SuccessRate  *float64 `json:"success_rate"`
+	AvgLatencyMS *float64 `json:"avg_latency_ms"`
 }
 
 type channelListResponse struct {
@@ -547,6 +577,11 @@ type ChannelHandlerOptions struct {
 	// Audit 记录渠道写操作与凭据揭示（O-1 缺口 + security-03 §2.10）。nil 时
 	// 跳过（仅未装配日志库的测试）；生产必须接线。
 	Audit *audit.Logger
+	// Metrics 是渠道指标的日志库读取面（W16-1 / F-06-11）。nil 时指标端点
+	// 返回 503（日志库不可用），列表省略 metrics 字段——绝不伪造 0。
+	Metrics ChannelMetricsStore
+	// Now 是指标桶边界的时钟接缝；nil 时使用 time.Now。
+	Now func() time.Time
 	// Logger 记录幂等 finalize 失败等不可返回给客户端的内部错误；
 	// nil 时使用 slog.Default()（不得静默丢弃错误）。
 	Logger *slog.Logger
@@ -565,6 +600,8 @@ type ChannelHandler struct {
 	rdb           *redis.Client
 	reauth        *auth.ReauthGate
 	audit         *audit.Logger
+	metrics       ChannelMetricsStore
+	now           func() time.Time
 	log           *slog.Logger
 }
 
@@ -585,6 +622,10 @@ func NewChannelHandler(channels ChannelStore, access UserAccessStore, sealer *Se
 	if logger == nil {
 		logger = slog.Default()
 	}
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
 	return &ChannelHandler{
 		channels:      channels,
 		access:        access,
@@ -597,6 +638,8 @@ func NewChannelHandler(channels ChannelStore, access UserAccessStore, sealer *Se
 		rdb:           opts.Redis,
 		reauth:        opts.Reauth,
 		audit:         opts.Audit,
+		metrics:       opts.Metrics,
+		now:           now,
 		log:           logger,
 	}
 }
@@ -612,6 +655,8 @@ func (h *ChannelHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/channels/{id}", h.handleUpdate)
 	mux.HandleFunc("DELETE /api/channels/{id}", h.handleDelete)
 	mux.HandleFunc("POST /api/channels/{id}/test", h.handleTest)
+	// 渠道指标（W16-1 / F-06-11）：只读，权限与渠道读取同源。
+	mux.HandleFunc("GET /api/channels/{id}/metrics", h.handleMetrics)
 	// 凭据揭示是只读受控例外（security-03 §2.10）；路径按 G7-R13 资源命名。
 	mux.HandleFunc("POST /api/channels/{id}/credentials/reveal", h.handleRevealCredentials)
 }
@@ -646,7 +691,38 @@ func (h *ChannelHandler) handleList(w http.ResponseWriter, r *http.Request) {
 		}
 		out.Items = append(out.Items, resp)
 	}
+	// W16-1：24h 概要随列表返回，但**一次**批量查询（绝不逐渠道 N+1）。
+	// 失败时整批省略，列表仍 200（F-06-11 异常流程：指标不可用不阻断管理）。
+	h.attachChannelSummaries(r.Context(), out.Items)
 	writeChannelJSON(w, http.StatusOK, out)
+}
+
+// attachChannelSummaries 给列表页填 24h 概要。
+//
+// 所有渠道共用一次 Summaries 调用；无样本渠道填零值概要（request_count=0、
+// 比率为 null），从而把「没流量」与「日志库不可用」（Metrics 保持 nil）区分开。
+func (h *ChannelHandler) attachChannelSummaries(ctx context.Context, items []ChannelResponse) {
+	if h.metrics == nil || len(items) == 0 {
+		return
+	}
+	ids := make([]int64, len(items))
+	for i := range items {
+		ids[i] = items[i].ID
+	}
+	summaries, err := h.metrics.Summaries(ctx, ids, h.now().UTC())
+	if err != nil {
+		// fail-open：指标是可选展示列，日志库故障不得让渠道管理整体 500。
+		h.log.Warn("channel list metrics unavailable; omitting summaries", "error", err)
+		return
+	}
+	for i := range items {
+		s := summaries[items[i].ID]
+		items[i].Metrics = &ChannelListMetrics{
+			RequestCount: s.RequestCount,
+			SuccessRate:  s.SuccessRate,
+			AvgLatencyMS: s.AvgLatencyMS,
+		}
+	}
 }
 
 func (h *ChannelHandler) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -669,6 +745,136 @@ func (h *ChannelHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeChannelJSON(w, http.StatusOK, resp)
+}
+
+// ---------- 指标（F-06-11） ----------
+
+// channelMetricsResponse 是 GET /api/channels/{id}/metrics 的响应。
+//
+// points 恒为 24 或 168 个整点桶（空桶补零/比率 null），summary 是窗口汇总；
+// last_test_* 来自主库渠道行（不缓存在指标缓存里，避免测试结果被缓存拖旧）。
+type channelMetricsResponse struct {
+	ChannelID      int64                       `json:"channel_id"`
+	Window         string                      `json:"window"`
+	BucketSeconds  int                         `json:"bucket_seconds"`
+	Points         []store.ChannelMetricsPoint `json:"points"`
+	Summary        store.ChannelMetricsSummary `json:"summary"`
+	LastTestAt     *string                     `json:"last_test_at"`
+	LastTestResult *bool                       `json:"last_test_result"`
+}
+
+// channelMetricsCacheTTL 冻结 60s：直查模式下的成本与新鲜度折中。
+// 设计原本要求 worker 预聚合到 Redis（modules-06:551）；W16-1 用「直查 +
+// 60s 缓存」落地，读契约不变，后续 worker 写同一键即可切换（不做预聚合，
+// 避免与 W17-2 调度框架顺序耦合）。
+const channelMetricsCacheTTL = 60 * time.Second
+
+// channelMetricsCacheKey 形状冻结为 newtg:channel_metrics:<id>:<window>:<bucket>。
+//
+// window 与 bucket 都必须进键：只按 id 缓存会让 24h/7d 互相命中（变异点 ①
+// 的守护用例），bucket 进键为将来多粒度（如 5m）预留且让键自描述。
+func channelMetricsCacheKey(channelID int64, window string) string {
+	return fmt.Sprintf("newtg:channel_metrics:%d:%s:1h", channelID, window)
+}
+
+func (h *ChannelHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if !h.authorize(w, r, PermChannelsRead) {
+		return
+	}
+	id, ok := channelIDFromRequest(r)
+	if !ok {
+		writeAPIError(w, channelNotFoundError())
+		return
+	}
+	// 默认 24h；非法值 422 而不是静默回退（静默回退会让前端 Tab 与数据不一致）。
+	window := strings.TrimSpace(r.URL.Query().Get("window"))
+	if window == "" {
+		window = store.ChannelMetricsWindow24h
+	}
+	buckets, ok := store.ChannelMetricsWindowBuckets(window)
+	if !ok {
+		writeAPIError(w, validationError("window", "window must be one of 24h or 7d"))
+		return
+	}
+	// 渠道不存在必须 404，且先于日志库查询（不把 404 伪装成 503）。
+	ch, err := h.channels.Get(r.Context(), id)
+	if err != nil {
+		writeAPIError(w, storeErrorResponse(err))
+		return
+	}
+	if h.metrics == nil {
+		// 日志库未装配：按「指标服务不可用」处理（F-06-11 异常流程）。
+		h.log.Error("channel metrics requested but logs database is not configured", "channel_id", id)
+		writeChannelMetricsUnavailable(w)
+		return
+	}
+	metrics, err := h.loadChannelMetrics(r.Context(), id, window)
+	if err != nil {
+		// 日志库不可用 → 503 + RFC7807；主库渠道列表仍可用（测试矩阵 W16-1）。
+		h.log.Error("load channel metrics failed", "channel_id", id, "window", window, "error", err)
+		writeChannelMetricsUnavailable(w)
+		return
+	}
+	resp := channelMetricsResponse{
+		ChannelID:      id,
+		Window:         window,
+		BucketSeconds:  3600,
+		Points:         metrics.Points,
+		Summary:        metrics.Summary,
+		LastTestAt:     formatChannelTimePtr(ch.LastTestAt),
+		LastTestResult: ch.LastTestResult,
+	}
+	if resp.Points == nil {
+		// 仓储契约保证非 nil；防御性兜底，避免 JSON 出现 points:null。
+		resp.Points = make([]store.ChannelMetricsPoint, 0, buckets)
+	}
+	writeChannelJSON(w, http.StatusOK, resp)
+}
+
+// loadChannelMetrics 是「Redis 缓存 → 日志库直查 → 回填缓存」的读路径。
+//
+// Redis 故障一律 fail-open：读缓存失败/写缓存失败都只记 WARN，然后回落直查
+// 并正常返回。指标是只读展示数据，不能让缓存层故障变成管理面 503。
+func (h *ChannelHandler) loadChannelMetrics(ctx context.Context, channelID int64, window string) (*store.ChannelMetrics, error) {
+	key := channelMetricsCacheKey(channelID, window)
+	if h.rdb != nil {
+		raw, err := h.rdb.Get(ctx, key).Bytes()
+		switch {
+		case err == nil:
+			var cached store.ChannelMetrics
+			if err := json.Unmarshal(raw, &cached); err == nil {
+				return &cached, nil
+			}
+			// 缓存内容损坏（版本升级/手工写入）：丢弃并回源，不返回错误。
+			h.log.Warn("channel metrics cache entry is corrupt; querying logs database",
+				"channel_id", channelID, "window", window)
+		case !errors.Is(err, redis.Nil):
+			h.log.Warn("channel metrics cache read failed; querying logs database",
+				"channel_id", channelID, "window", window, "error", err)
+		}
+	}
+	metrics, err := h.metrics.Get(ctx, channelID, window, h.now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	if h.rdb != nil {
+		if raw, err := json.Marshal(metrics); err == nil {
+			if err := h.rdb.Set(ctx, key, raw, channelMetricsCacheTTL).Err(); err != nil {
+				h.log.Warn("channel metrics cache write failed",
+					"channel_id", channelID, "window", window, "error", err)
+			}
+		}
+	}
+	return metrics, nil
+}
+
+// writeChannelMetricsUnavailable 输出指标服务不可用（503，RFC7807）。
+func writeChannelMetricsUnavailable(w http.ResponseWriter) {
+	writeAPIError(w, &apiError{
+		Status: http.StatusServiceUnavailable,
+		Type:   "https://newtg.dev/problems/metrics_unavailable",
+		Title:  "Channel metrics unavailable",
+	})
 }
 
 // ---------- 创建 ----------
@@ -1555,6 +1761,25 @@ func (h *ChannelHandler) handleTest(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		writeAPIError(w, channelNotFoundError())
 		return
+	}
+	// W16-1 / R-W16-02：测试接口独立桶 10 次/分钟/管理员（modules-08 F-08-16
+	// 冻结值）。批量测试由前端逐模型调用，因此按请求计数；桶在请求体解析前
+	// 判定，超限不消耗任何上游/解析成本。
+	//
+	// Redis 不可用时 **fail-open**（只记 WARN）：测试是只读探针，不是敏感数据
+	// 出口，与 reveal 的 fail-closed 刻意不同；不能让 Redis 抖动把管理员的
+	// 连通性测试整体打成 503。
+	if h.rdb != nil {
+		over, retryAfter, err := allowRequestRate(r.Context(), h.rdb,
+			ChannelTestRateLimitKey(actorID(r)), ChannelTestRateLimit, ChannelTestRateWindow)
+		if err != nil {
+			h.log.Warn("channel test rate limit check failed; allowing request (fail-open)", "error", err)
+		} else if over {
+			writeRateLimited(w, retryAfter, "Too many channel test requests")
+			return
+		}
+	} else {
+		h.log.Warn("channel test rate limit store is not configured; allowing request (fail-open)")
 	}
 	var req channelTestRequest
 	if err := decodeChannelJSON(r, &req); err != nil {

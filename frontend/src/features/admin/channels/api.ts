@@ -23,6 +23,8 @@ import type {
   Channel,
   ChannelListParams,
   ChannelListResponse,
+  ChannelMetrics,
+  ChannelMetricsWindow,
   ChannelTestInput,
   ChannelTestResult,
   CreateChannelInput,
@@ -188,6 +190,24 @@ export function listChannels(params: ChannelListParams): Promise<ChannelListResp
 
 export function getChannel(id: number): Promise<Channel> {
   return request<Channel>(`/api/channels/${id}`)
+}
+
+/**
+ * GET /api/channels/{id}/metrics (W16-1 / F-06-11).
+ *
+ * `signal` lets React Query cancel the in-flight request when the user flips
+ * the 24h/7d tab or collapses the row; the backend caches the aggregate for
+ * 60s under `newtg:channel_metrics:<id>:<window>:1h`, so a re-open is cheap.
+ */
+export function getChannelMetrics(
+  id: number,
+  window: ChannelMetricsWindow,
+  signal?: AbortSignal,
+): Promise<ChannelMetrics> {
+  const query = new URLSearchParams({ window })
+  return request<ChannelMetrics>(`/api/channels/${id}/metrics?${query.toString()}`, {
+    signal,
+  })
 }
 
 /**

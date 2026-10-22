@@ -54,6 +54,61 @@ export interface Channel {
    */
   credentials_masked?: ChannelCredentialsMasked
   credentials_set?: boolean
+  /**
+   * W16-1 (F-06-11): 24h overview embedded in list rows. Omitted entirely when
+   * the logs database is unavailable; present with `request_count: 0` and null
+   * rates when the channel simply has no traffic.
+   */
+  metrics?: ChannelListMetrics
+}
+
+/** 24h overview column projection (W16-1). */
+export interface ChannelListMetrics {
+  request_count: number
+  success_rate: number | null
+  avg_latency_ms: number | null
+}
+
+/** Metrics window frozen by modules-06 F-06-11 (24 or 168 hourly buckets). */
+export type ChannelMetricsWindow = '24h' | '7d'
+
+/** One hourly bucket. Null rates/means mean "no samples" (render —, never 0). */
+export interface ChannelMetricsPoint {
+  bucket_start: string
+  request_count: number
+  success_count: number
+  failure_count: number
+  success_rate: number | null
+  avg_latency_ms: number | null
+  avg_first_token_ms: number | null
+  avg_cost: number | null
+}
+
+export interface ChannelMetricsSummary {
+  request_count: number
+  success_count: number
+  failure_count: number
+  success_rate: number | null
+  avg_latency_ms: number | null
+  avg_first_token_ms: number | null
+  avg_cost: number | null
+  cost_total: number
+  /** Channel lifetime settled credits. */
+  used_credits: number
+  /** Settled credits in the last 24h (independent of the selected window). */
+  used_credits_24h: number
+  request_count_24h: number
+}
+
+/** GET /api/channels/{id}/metrics response (W16-1). */
+export interface ChannelMetrics {
+  channel_id: number
+  window: ChannelMetricsWindow
+  bucket_seconds: number
+  points: ChannelMetricsPoint[]
+  summary: ChannelMetricsSummary
+  last_test_at: string | null
+  last_test_result: boolean | null
 }
 
 export interface ChannelListResponse {

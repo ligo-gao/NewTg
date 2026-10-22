@@ -298,7 +298,9 @@
       "expand": "Développer les détails de {name}",
       "collapse": "Réduire les détails de {name}",
       "moreModels": "+{count}",
-      "neverTested": "Jamais testé"
+      "neverTested": "Jamais testé",
+      "successRate24h": "Succès (24 h)",
+      "avgLatency24h": "Latence (24 h)"
     },
     "empty": {
       "none": "Aucun canal pour l'instant",
@@ -504,6 +506,25 @@
       "defaultOff": "L'interrupteur est désactivé par défaut. Tant qu'il l'est, une requête portant x-newtg-protocol échoue avec 403 au lieu d'être relayée.",
       "managedBy": "L'interrupteur se trouve dans les paramètres du site, non disponibles dans cette version ; cette console ne peut donc ni le lire ni le modifier.",
       "editableDeferred": "Un interrupteur modifiable et un mappage de protocoles suivront lorsque les paramètres du site seront disponibles ; aucun contrôle n'est affiché ici d'ici là."
+    },
+    "metrics": {
+      "title": "Indicateurs d'utilisation",
+      "trend": "Évolution du taux de réussite",
+      "refresh": "Actualiser",
+      "retry": "Réessayer",
+      "empty": "Aucune donnée d'utilisation pour le moment.",
+      "error": "Impossible de charger les indicateurs du canal.",
+      "offline": "Vous êtes hors ligne. Les indicateurs se chargeront au retour de la connexion.",
+      "requests": "Requêtes",
+      "successRate": "Taux de réussite",
+      "avgLatency": "Latence moyenne",
+      "avgFirstToken": "Premier jeton moyen",
+      "avgCost": "Coût moyen",
+      "usedCredits": "Crédits (24 h)",
+      "range": {
+        "24h": "24 h",
+        "7d": "7 j"
+      }
     }
   },
   "tokens": {

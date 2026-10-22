@@ -237,6 +237,24 @@ func (e ChannelStatus) Valid() bool {
 	}
 }
 
+// Defines values for ChannelMetricsWindow.
+const (
+	ChannelMetricsWindowN24h ChannelMetricsWindow = "24h"
+	ChannelMetricsWindowN7d  ChannelMetricsWindow = "7d"
+)
+
+// Valid indicates whether the value is a known member of the ChannelMetricsWindow enum.
+func (e ChannelMetricsWindow) Valid() bool {
+	switch e {
+	case ChannelMetricsWindowN24h:
+		return true
+	case ChannelMetricsWindowN7d:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for CreateOrderRequestCurrency.
 const (
 	CreateOrderRequestCurrencyCNY CreateOrderRequestCurrency = "CNY"
@@ -3126,6 +3144,24 @@ func (e ListAuditLogsParamsRange) Valid() bool {
 	}
 }
 
+// Defines values for GetChannelMetricsParamsWindow.
+const (
+	GetChannelMetricsParamsWindowN24h GetChannelMetricsParamsWindow = "24h"
+	GetChannelMetricsParamsWindowN7d  GetChannelMetricsParamsWindow = "7d"
+)
+
+// Valid indicates whether the value is a known member of the GetChannelMetricsParamsWindow enum.
+func (e GetChannelMetricsParamsWindow) Valid() bool {
+	switch e {
+	case GetChannelMetricsParamsWindowN24h:
+		return true
+	case GetChannelMetricsParamsWindowN7d:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ListGroupPricingParamsStatus.
 const (
 	ListGroupPricingParamsStatusDisabled ListGroupPricingParamsStatus = "disabled"
@@ -4663,14 +4699,15 @@ type Channel struct {
 	FailCount int `json:"fail_count"`
 
 	// GroupTags null = 全部分组（与空数组语义不同）。
-	GroupTags      *[]string  `json:"group_tags,omitempty"`
-	Id             int64      `json:"id"`
-	LastTestAt     *time.Time `json:"last_test_at,omitempty"`
-	LastTestResult *bool      `json:"last_test_result,omitempty"`
-	Name           string     `json:"name"`
-	Priority       int        `json:"priority"`
-	RateLimit      *int       `json:"rate_limit,omitempty"`
-	Remark         *string    `json:"remark,omitempty"`
+	GroupTags      *[]string           `json:"group_tags,omitempty"`
+	Id             int64               `json:"id"`
+	LastTestAt     *time.Time          `json:"last_test_at,omitempty"`
+	LastTestResult *bool               `json:"last_test_result,omitempty"`
+	Metrics        *ChannelListMetrics `json:"metrics,omitempty"`
+	Name           string              `json:"name"`
+	Priority       int                 `json:"priority"`
+	RateLimit      *int                `json:"rate_limit,omitempty"`
+	Remark         *string             `json:"remark,omitempty"`
 
 	// Status 1 enabled、2 manual_disabled、3 auto_disabled（无 deleted 状态）。
 	Status               ChannelStatus `json:"status"`
@@ -4732,6 +4769,101 @@ type ChannelList struct {
 
 	// Total 满足条件的总条数
 	Total int `json:"total"`
+}
+
+// ChannelListMetrics defines model for ChannelListMetrics.
+type ChannelListMetrics struct {
+	// AvgLatencyMs 近 24h 平均总耗时（毫秒）；无样本为 null。
+	AvgLatencyMs *float32 `json:"avg_latency_ms,omitempty"`
+
+	// RequestCount 近 24h 请求数。
+	RequestCount int64 `json:"request_count"`
+
+	// SuccessRate success / (success + error + refused)；无样本为 null（显示 —）。
+	SuccessRate *float32 `json:"success_rate,omitempty"`
+}
+
+// ChannelMetrics defines model for ChannelMetrics.
+type ChannelMetrics struct {
+	// BucketSeconds 桶宽，固定 3600（整点小时桶）。
+	BucketSeconds int   `json:"bucket_seconds"`
+	ChannelId     int64 `json:"channel_id"`
+
+	// LastTestAt 来自主库渠道行（不缓存在指标缓存里）。
+	LastTestAt     *time.Time            `json:"last_test_at,omitempty"`
+	LastTestResult *bool                 `json:"last_test_result,omitempty"`
+	Points         []ChannelMetricsPoint `json:"points"`
+	Summary        ChannelMetricsSummary `json:"summary"`
+	Window         ChannelMetricsWindow  `json:"window"`
+}
+
+// ChannelMetricsWindow defines model for ChannelMetrics.Window.
+type ChannelMetricsWindow string
+
+// ChannelMetricsPoint defines model for ChannelMetricsPoint.
+type ChannelMetricsPoint struct {
+	// AvgCost 桶内平均结算积分（cost 求和 / 请求数）；无请求为 null。
+	AvgCost *float32 `json:"avg_cost,omitempty"`
+
+	// AvgFirstTokenMs 非空 first_token_ms 的平均值（非流式请求为 null 样本）；无样本为 null。
+	AvgFirstTokenMs *float32 `json:"avg_first_token_ms,omitempty"`
+
+	// AvgLatencyMs 非空 latency_ms 的平均值；无样本为 null。
+	AvgLatencyMs *float32 `json:"avg_latency_ms,omitempty"`
+
+	// BucketStart 整点桶起点（UTC）。
+	BucketStart time.Time `json:"bucket_start"`
+
+	// FailureCount status ∈ {error, refused}；refunded 不算失败。
+	FailureCount int64 `json:"failure_count"`
+
+	// RequestCount 桶内全部状态请求数（含 refunded）。
+	RequestCount int64 `json:"request_count"`
+	SuccessCount int64 `json:"success_count"`
+
+	// SuccessRate success / (success + error + refused)；无样本为 null。
+	SuccessRate *float32 `json:"success_rate,omitempty"`
+}
+
+// ChannelMetricsSummary defines model for ChannelMetricsSummary.
+type ChannelMetricsSummary struct {
+	AvgCost         *float32 `json:"avg_cost,omitempty"`
+	AvgFirstTokenMs *float32 `json:"avg_first_token_ms,omitempty"`
+	AvgLatencyMs    *float32 `json:"avg_latency_ms,omitempty"`
+
+	// CostTotal 窗口内结算积分合计。
+	CostTotal    int64 `json:"cost_total"`
+	FailureCount int64 `json:"failure_count"`
+	RequestCount int64 `json:"request_count"`
+
+	// RequestCount24h 近 24h 请求数（与所选 window 无关）。
+	RequestCount24h int64    `json:"request_count_24h"`
+	SuccessCount    int64    `json:"success_count"`
+	SuccessRate     *float32 `json:"success_rate,omitempty"`
+
+	// UsedCredits 渠道**累计**结算积分（全量历史）。
+	UsedCredits int64 `json:"used_credits"`
+
+	// UsedCredits24h 近 24h 结算积分（与所选 window 无关）。
+	UsedCredits24h int64 `json:"used_credits_24h"`
+}
+
+// ChannelTestRequest 请求体必填（`{}` 也可）；model 缺省时用 test_model 或首个模型。
+type ChannelTestRequest struct {
+	// Model 必须属于该渠道 supported_models；缺省用 test_model 或首模型。
+	Model *string `json:"model,omitempty"`
+
+	// Stream 设计字段；当前实现固定最小非流式请求，值被接受但不改变行为。
+	Stream *bool `json:"stream,omitempty"`
+}
+
+// ChannelTestResult defines model for ChannelTestResult.
+type ChannelTestResult struct {
+	// ErrorClass 失败时是 F-06-06 五值枚举；成功时省略。
+	ErrorClass *string `json:"error_class,omitempty"`
+	LatencyMs  int     `json:"latency_ms"`
+	Model      string  `json:"model"`
+	Success    bool    `json:"success"`
 }
 
 // CompleteOrderRequest defines model for CompleteOrderRequest.
@@ -9442,6 +9574,22 @@ type RevealChannelCredentialsParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// GetChannelMetricsParams defines parameters for GetChannelMetrics.
+type GetChannelMetricsParams struct {
+	// Window 时间窗口；缺省 24h。
+	Window *GetChannelMetricsParamsWindow `form:"window,omitempty" json:"window,omitempty"`
+}
+
+// GetChannelMetricsParamsWindow defines parameters for GetChannelMetrics.
+type GetChannelMetricsParamsWindow string
+
+// TestChannelParams defines parameters for TestChannel.
+type TestChannelParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
 // ListDeploymentsParams defines parameters for ListDeployments.
 type ListDeploymentsParams struct {
 	Status   *string `form:"status,omitempty" json:"status,omitempty"`
@@ -10840,6 +10988,9 @@ type UpdateBillingPreferenceJSONRequestBody = BillingPreferenceUpdateRequest
 
 // RevealChannelCredentialsJSONRequestBody defines body for RevealChannelCredentials for application/json ContentType.
 type RevealChannelCredentialsJSONRequestBody = ChannelCredentialsRevealRequest
+
+// TestChannelJSONRequestBody defines body for TestChannel for application/json ContentType.
+type TestChannelJSONRequestBody = ChannelTestRequest
 
 // CreateDeploymentJSONRequestBody defines body for CreateDeployment for application/json ContentType.
 type CreateDeploymentJSONRequestBody = CreateDeploymentRequest

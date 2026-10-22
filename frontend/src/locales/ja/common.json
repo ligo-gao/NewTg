@@ -298,7 +298,9 @@
       "expand": "{name} の詳細を展開",
       "collapse": "{name} の詳細を折りたたむ",
       "moreModels": "+{count}",
-      "neverTested": "未テスト"
+      "neverTested": "未テスト",
+      "successRate24h": "成功（24時間）",
+      "avgLatency24h": "レイテンシ（24時間）"
     },
     "empty": {
       "none": "チャネルはまだありません",
@@ -504,6 +506,25 @@
       "defaultOff": "スイッチは既定でオフです。オフの間、x-newtg-protocol を持つリクエストは中継されず 403 で失敗します。",
       "managedBy": "このスイッチはサイト設定にあり、このリリースではまだ利用できないため、このコンソールからは読み取りも変更もできません。",
       "editableDeferred": "サイト設定が利用可能になった時点で、編集可能なスイッチとプロトコルマッピングが提供されます。それまではここにコントロールは表示されません。"
+    },
+    "metrics": {
+      "title": "利用指標",
+      "trend": "成功率の推移",
+      "refresh": "更新",
+      "retry": "再試行",
+      "empty": "利用データはまだありません。",
+      "error": "チャネル指標の読み込みに失敗しました。",
+      "offline": "オフラインです。接続が戻ると指標を読み込みます。",
+      "requests": "リクエスト数",
+      "successRate": "成功率",
+      "avgLatency": "平均レイテンシ",
+      "avgFirstToken": "平均初回トークン",
+      "avgCost": "平均コスト",
+      "usedCredits": "クレジット（24時間）",
+      "range": {
+        "24h": "24 時間",
+        "7d": "7 日"
+      }
     }
   },
   "tokens": {
