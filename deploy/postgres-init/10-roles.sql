@@ -78,6 +78,10 @@ GRANT newtg_retention TO newtg_migrate;
 -- ---- 主库（POSTGRES_DB）上的权限 -----------------------------------------
 -- 连接权：三个应用角色都只连需要的库；newtg_retention **不连主库**
 -- （保留任务只碰日志库的 usage_logs / audit_logs，R-W10-01）。
+-- 先收回 PUBLIC 的默认 CONNECT：PostgreSQL 默认把 CONNECT 授给所有角色，
+-- 只写「不 GRANT 给 retention」并不能阻止它连主库。收回后仅显式列出的
+-- 角色可连（引导超级用户不受影响）。
+REVOKE CONNECT ON DATABASE :"db_name" FROM PUBLIC;
 GRANT CONNECT ON DATABASE :"db_name" TO newtg_app, newtg_migrate, newtg_backup;
 
 -- schema public：app/backup 仅使用，migrate 可建对象（唯一 DDL 入口）。

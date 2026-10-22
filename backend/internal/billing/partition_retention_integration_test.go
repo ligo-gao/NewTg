@@ -14,6 +14,8 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/redis/go-redis/v9"
+
+	"newtg/gateway/internal/settings"
 )
 
 // 本文件是 W10-N10 的真 PG（日志库）验收（R-W10-03/04）。
@@ -32,7 +34,7 @@ func openPartitionLogsDB(t *testing.T, env string) *sql.DB {
 	t.Helper()
 	dsn := os.Getenv(env)
 	if dsn == "" {
-		t.Skipf("%s 未设置，跳过分区保留集成测试", env)
+		t.Skipf("%s 未设置，跳过分区保留集成测试（门禁同时设置 NEWTG_TEST_LOGS_DSN 与 NEWTG_TEST_RETENTION_DSN）", env)
 	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -390,5 +392,85 @@ func TestEnsureUsagePartitionsLookahead(t *testing.T) {
 	}
 	if partitionExists(t, admin, "usage_logs_203104") {
 		t.Fatal("lookahead=0 must not create the next month")
+	}
+}
+
+// TestEnsureUsagePartitionsReconcilesExistingOwnership 锁定 I-1：
+// 「分区已存在」也必须把属主对账到 newtg_retention。变异（只在新建时转属主）
+// 会让本用例红：预建的 admin-owned 分区永远无法被保留任务 DROP。
+func TestEnsureUsagePartitionsReconcilesExistingOwnership(t *testing.T) {
+	admin := openPartitionLogsDB(t, "NEWTG_TEST_LOGS_DSN")
+	ctx := context.Background()
+	now := time.Date(2032, 1, 15, 0, 0, 0, 0, time.UTC)
+	name := "usage_logs_203201"
+	_, _ = admin.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS %s`, name))
+	t.Cleanup(func() { _, _ = admin.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS %s`, name)) })
+	// 故意以 admin 身份预建（模拟历史卷/旧迁移留下的属主），不转给 retention。
+	if _, err := admin.Exec(fmt.Sprintf(
+		`CREATE TABLE %s PARTITION OF usage_logs FOR VALUES FROM ('2032-01-01') TO ('2032-02-01')`,
+		name)); err != nil {
+		t.Fatalf("pre-create partition: %v", err)
+	}
+	var owner string
+	if err := admin.QueryRow(
+		`SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = to_regclass($1)`, name).
+		Scan(&owner); err != nil {
+		t.Fatalf("read pre owner: %v", err)
+	}
+	if owner == retentionRoleName {
+		t.Fatalf("precondition: partition already owned by %s", retentionRoleName)
+	}
+
+	// lookahead=0（只保证当月）：月份已存在 → 走「全部存在」的对账分支。
+	if err := EnsureUsagePartitionsWithLookahead(ctx, admin, now, 0); err != nil {
+		t.Fatalf("ensure with existing months: %v", err)
+	}
+	if err := admin.QueryRow(
+		`SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = to_regclass($1)`, name).
+		Scan(&owner); err != nil {
+		t.Fatalf("read reconciled owner: %v", err)
+	}
+	if owner != retentionRoleName {
+		t.Fatalf("owner after reconcile = %s, want %s", owner, retentionRoleName)
+	}
+	// 再调用一次 = no-op（幂等，不产生 DDL 噪声）。
+	if err := EnsureUsagePartitionsWithLookahead(ctx, admin, now, 0); err != nil {
+		t.Fatalf("second ensure: %v", err)
+	}
+}
+
+// TestEnsureUsagePartitionsDefaultLookaheadFromRegistry 锁定 M5：装配层的默认
+// lookahead 来自 settings 注册表（3），而不是代码里另一份魔数；用注册表默认值
+// 调用后应恰好创建「当月 + 下 3」，第 5 个月不存在。
+func TestEnsureUsagePartitionsDefaultLookaheadFromRegistry(t *testing.T) {
+	admin := openPartitionLogsDB(t, "NEWTG_TEST_LOGS_DSN")
+	row, ok := settings.Lookup("log.partition_lookahead_months")
+	if !ok {
+		t.Fatal("log.partition_lookahead_months not registered")
+	}
+	lookahead, ok := row.Default.(int64)
+	if !ok || lookahead != 3 {
+		t.Fatalf("registry default = %v (%T), want int64 3", row.Default, row.Default)
+	}
+
+	now := time.Date(2033, 5, 15, 0, 0, 0, 0, time.UTC)
+	months := []string{
+		"usage_logs_203305", "usage_logs_203306",
+		"usage_logs_203307", "usage_logs_203308",
+	}
+	for _, m := range months {
+		_, _ = admin.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS %s`, m))
+		t.Cleanup(func() { _, _ = admin.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS %s`, m)) })
+	}
+	if err := EnsureUsagePartitionsWithLookahead(context.Background(), admin, now, int(lookahead)); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	for _, m := range months {
+		if !partitionExists(t, admin, m) {
+			t.Fatalf("%s missing with registry default lookahead", m)
+		}
+	}
+	if partitionExists(t, admin, "usage_logs_203309") {
+		t.Fatal("month beyond registry lookahead must not be created")
 	}
 }

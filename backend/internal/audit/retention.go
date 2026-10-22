@@ -272,16 +272,19 @@ func (w *retentionWorker) runOnce(ctx context.Context) {
 	}()
 
 	now := w.now().UTC()
+	// 两个分支**互相独立**：删除行失败不应阻止 IP 擦除（90 天时效更短、
+	// 隐私优先级更高），反之亦然。错误分别记录，status 只要有一个失败即 failed；
+	// 已经完成的部分计数仍写入自审计（不掩盖成功的那一半）。
+	var deleteErr, eraseErr error
 	if w.retentionMonths > 0 {
 		// 用日历月（AddDate）而不是 30 天倍数：设计口径是「12 个月」，
 		// 2 月/闰年不应让边界漂移。
 		cutoff := now.AddDate(0, -w.retentionMonths, 0)
 		n, err := w.runBatches(ctx, w.deleteFn, cutoff)
 		if err != nil {
-			status = "failed"
+			deleteErr = err
 			w.log.Error("audit row retention failed; retrying next round",
 				"cutoff", cutoff, "error", err)
-			return
 		}
 		deleted = n
 	}
@@ -289,12 +292,14 @@ func (w *retentionWorker) runOnce(ctx context.Context) {
 		cutoff := now.Add(-time.Duration(w.ipEraseDays) * 24 * time.Hour)
 		n, err := w.runBatches(ctx, w.eraseIPFn, cutoff)
 		if err != nil {
-			status = "failed"
+			eraseErr = err
 			w.log.Error("audit ip erasure failed; retrying next round",
 				"cutoff", cutoff, "error", err)
-			return
 		}
 		erased = n
+	}
+	if deleteErr != nil || eraseErr != nil {
+		status = "failed"
 	}
 
 	if deleted > 0 || erased > 0 {

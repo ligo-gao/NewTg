@@ -19,6 +19,9 @@ DO $$ BEGIN RAISE EXCEPTION 'POSTGRES_LOGS_DB is empty'; END $$;
 SELECT format('CREATE DATABASE %I', :'logs_db')
 WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'logs_db')\gexec
 
+-- 日志库也只允许显式角色连接（PUBLIC 默认 CONNECT 被收回；见 10-roles.sql
+-- 对主库的同口径处理）。newtg_retention 只在这里获得 CONNECT。
+REVOKE CONNECT ON DATABASE :"logs_db" FROM PUBLIC;
 GRANT CONNECT ON DATABASE :"logs_db" TO newtg_app, newtg_migrate, newtg_backup, newtg_retention;
 
 -- 切到日志库：schema 与默认权限按库分别设置。
@@ -76,6 +79,10 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'newtg_retention') THEN
         RETURN;
     END IF;
+    -- 既有表补 SELECT：审计 DELETE 的 WHERE 引用 created_at/id，PostgreSQL
+    -- 要求 SELECT；旧版 20-databases 没有对既有表补授，重跑本脚本即可修复
+    -- （I-2 升级路径）。新库的同类授权由日志库迁移执行。
+    EXECUTE 'GRANT SELECT ON ALL TABLES IN SCHEMA public TO newtg_retention';
     IF to_regclass('public.audit_logs') IS NOT NULL THEN
         EXECUTE 'GRANT DELETE ON audit_logs TO newtg_retention';
         -- 顺序同日志库迁移：表级 REVOKE UPDATE 会清掉列级授权，必须先收回

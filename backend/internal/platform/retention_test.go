@@ -248,3 +248,55 @@ func TestOpenRetentionDBNeverFallsBackToAppDSN(t *testing.T) {
 		t.Fatal("empty retention DSN opened a database (must never fall back to app DSN)")
 	}
 }
+
+// TestLogRetentionSettingsClampToRegistryMax 锁定 M2：手工/历史脏行超过注册表
+// 上界时读取侧钳制，避免超大 lookahead 生成海量分区 DDL。
+func TestLogRetentionSettingsClampToRegistryMax(t *testing.T) {
+	log, _ := newLimitsLog()
+	got := resolveLogRetentionSettings(fakeSettingReader{
+		settingLogPartitionLookaheadMonths: json.RawMessage(`100000`),
+		settingAuditRetentionMonths:        json.RawMessage(`9999`),
+		settingAuditIPEraseDays:            json.RawMessage(`99999`),
+	}, log)
+	if got.PartitionLookaheadMonths != maxLogPartitionLookaheadMonths {
+		t.Fatalf("lookahead = %d, want clamp %d", got.PartitionLookaheadMonths, maxLogPartitionLookaheadMonths)
+	}
+	if got.AuditRetentionMonths != maxAuditRetentionMonths {
+		t.Fatalf("audit months = %d, want clamp %d", got.AuditRetentionMonths, maxAuditRetentionMonths)
+	}
+	if got.AuditIPEraseDays != maxAuditIPEraseDays {
+		t.Fatalf("ip erase days = %d, want clamp %d", got.AuditIPEraseDays, maxAuditIPEraseDays)
+	}
+}
+
+// TestPlanLogRetentionFailClosedWithoutDSN 锁定 M5 wiring：缺 DB_RETENTION_DSN
+// 时 N10/N11 一个都不启动（即使开关为 true、审计保留期非 0），不得回退 app DSN。
+func TestPlanLogRetentionFailClosedWithoutDSN(t *testing.T) {
+	enabled := logRetentionSettings{
+		PartitionLookaheadMonths: 3,
+		PartitionDropEnabled:     true,
+		AuditRetentionMonths:     12,
+		AuditIPEraseDays:         90,
+	}
+	plan := planLogRetention(&config.Config{}, enabled)
+	if plan.OpenRetention || plan.PartitionDrop || plan.AuditRetention {
+		t.Fatalf("no DSN plan = %+v, want all false", plan)
+	}
+
+	plan = planLogRetention(&config.Config{DBRetentionDSN: "postgres://retention/db"}, enabled)
+	if !plan.OpenRetention || !plan.PartitionDrop || !plan.AuditRetention {
+		t.Fatalf("with DSN + enabled plan = %+v, want all true", plan)
+	}
+
+	// 开关关闭 / 两个审计窗口都为 0：分别是「只跑审计」「只跑删除」。
+	plan = planLogRetention(&config.Config{DBRetentionDSN: "postgres://retention/db"},
+		logRetentionSettings{PartitionDropEnabled: false, AuditRetentionMonths: 12, AuditIPEraseDays: 90})
+	if plan.PartitionDrop || !plan.AuditRetention {
+		t.Fatalf("drop disabled plan = %+v, want audit only", plan)
+	}
+	plan = planLogRetention(&config.Config{DBRetentionDSN: "postgres://retention/db"},
+		logRetentionSettings{PartitionDropEnabled: true})
+	if !plan.PartitionDrop || plan.AuditRetention {
+		t.Fatalf("audit disabled plan = %+v, want drop only", plan)
+	}
+}

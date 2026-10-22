@@ -90,18 +90,16 @@ var sectionOrder = []string{
 	"site", "nav", "auth", "auth.turnstile", "billing", "billing_setting",
 	"pay", "pay.stripe", "pay.alipay", "pay.epay", "pay.creem", "pay.waffo", "pay.waffo_pancake",
 	"rl", "rl.health", "sec", "notify.smtp", "notify.webhook",
-	// W10-N10/N11：日志分区维护与审计保留。两组键都只服务 worker 的保留
-	// 循环，不进入公开下发全集（§1.4.1 未登记），避免把内部维护策略暴露给
-	// 匿名面。默认值只在注册表写一处（§3.16 Q1）。
+	// W10-N10/N11：日志分区维护、审计保留与 W10-N2 的日志批处理开关。
+	// 同属 `log` section（合并后只声明一次，否则 All() 会重复整族、唯一性
+	// 测试直接失败）。这些键只服务 worker/日志写入路径，不进入公开下发全集
+	// （§1.4.1 未登记），避免把内部维护/写入策略暴露给匿名面。
 	"log", "audit",
 	// W10-N4 / N9：兑换码回收与任务保留清理。两组保留键都只服务 worker，
 	// 不进入公开下发全集；独立 section 让运营按域查看而不互相覆盖。
 	// rebase 修复：mj section 已在下方 W8/MJ-a2 组声明，这里不得重复，
 	// 否则 All() 会把整族设置追加两次（注册表唯一性测试直接失败）。
 	"redemption",
-	// W10-N2：日志批处理开关（log.batch_enabled）。只服务 worker/日志写入
-	// 路径，不进入公开下发全集；默认关闭以保持既有同步语义。
-	"log",
 	// M6d：任务插件平台与模型部署控制面。两者都是独立页，但设置 Tab /
 	// 插件主开关仍走同一注册表（modules-08 §3.10 / §3.20）。
 	"plugin", "task", "deploy",

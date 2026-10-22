@@ -7,6 +7,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -189,21 +191,47 @@ func TestRunOnceSelfAuditBoundedAndOnlyOnChange(t *testing.T) {
 	}
 }
 
-func TestRunOnceDeleteFailureSkipsEraseAndAudit(t *testing.T) {
+func TestRunOnceDeleteFailureDoesNotSkipErase(t *testing.T) {
+	// M1：两个分支独立。删除行失败时 IP 擦除仍必须执行（90 天时效更短），
+	// 且只对**实际完成**的部分写一条自审计。
 	var eraseCalled, auditCalled bool
 	w := newTestRetentionWorker(
 		func(context.Context, time.Time, int) (int64, error) {
-			return 0, errors.New("permission denied")
+			return 0, errors.New("transient connection reset")
 		},
-		func(context.Context, time.Time, int) (int64, error) { eraseCalled = true; return 0, nil })
+		func(context.Context, time.Time, int) (int64, error) {
+			eraseCalled = true
+			return 70, nil
+		})
 	w.audit = func(context.Context, json.RawMessage) error { auditCalled = true; return nil }
 
 	w.runOnce(context.Background())
-	if eraseCalled {
-		t.Fatal("ip erase ran after row deletion failed")
+	if !eraseCalled {
+		t.Fatal("ip erase must run even when row deletion failed")
 	}
-	if auditCalled {
-		t.Fatal("self-audit written after a failed pass")
+	if !auditCalled {
+		t.Fatal("partial success (erased ip) must still write one bounded self-audit")
+	}
+}
+
+func TestRunOnceEraseFailureDoesNotSkipDelete(t *testing.T) {
+	var deleteCalled, auditCalled bool
+	w := newTestRetentionWorker(
+		func(context.Context, time.Time, int) (int64, error) {
+			deleteCalled = true
+			return 12, nil
+		},
+		func(context.Context, time.Time, int) (int64, error) {
+			return 0, errors.New("transient connection reset")
+		})
+	w.audit = func(context.Context, json.RawMessage) error { auditCalled = true; return nil }
+
+	w.runOnce(context.Background())
+	if !deleteCalled {
+		t.Fatal("row deletion must run even when ip erasure failed")
+	}
+	if !auditCalled {
+		t.Fatal("partial success (deleted rows) must still write one bounded self-audit")
 	}
 }
 
@@ -214,5 +242,26 @@ func TestAuditRetentionActionIsRegistered(t *testing.T) {
 	}
 	if category != categoryOperation {
 		t.Fatalf("category = %q, want operation", category)
+	}
+}
+
+// TestRetentionMigrationFailsLoudlyWithoutRole 是 I-2 的静态回归：
+// 迁移在 newtg_retention 缺失时必须 **失败**（版本不被记为已应用），
+// 而不是 NOTICE+RETURN 后仍标成功——否则之后所有保留任务永久失败且无法
+// 靠重跑迁移修复。同时锁定既有卷必需的 SELECT 授权。
+func TestRetentionMigrationFailsLoudlyWithoutRole(t *testing.T) {
+	sqlBytes, err := os.ReadFile("../../migrations-logs/20261022000000_retention_role.up.sql")
+	if err != nil {
+		t.Fatalf("read retention migration: %v", err)
+	}
+	sqlText := string(sqlBytes)
+	if !strings.Contains(sqlText, "RAISE EXCEPTION 'newtg_retention role is missing") {
+		t.Fatal("migration must RAISE EXCEPTION when newtg_retention is missing (I-2)")
+	}
+	if strings.Contains(sqlText, "retention grants skipped") {
+		t.Fatal("migration must not silently skip when the role is missing")
+	}
+	if !strings.Contains(sqlText, "GRANT SELECT ON ALL TABLES IN SCHEMA public TO newtg_retention") {
+		t.Fatal("migration must grant SELECT (audit DELETE WHERE needs it)")
 	}
 }

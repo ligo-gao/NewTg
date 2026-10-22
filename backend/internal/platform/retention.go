@@ -77,14 +77,38 @@ func resolveLogRetentionSettings(reader settingReader, log *slog.Logger) logRete
 		log = slog.Default()
 	}
 	return logRetentionSettings{
-		PartitionLookaheadMonths: resolveRetentionDays(reader, settingLogPartitionLookaheadMonths,
-			billing.DefaultPartitionLookaheadMonths, log),
+		PartitionLookaheadMonths: clampSetting(resolveRetentionDays(reader,
+			settingLogPartitionLookaheadMonths, billing.DefaultPartitionLookaheadMonths, log),
+			maxLogPartitionLookaheadMonths, settingLogPartitionLookaheadMonths, log),
 		PartitionDropEnabled: readSettingBool(reader, settingLogPartitionDropEnabled, false, log),
-		AuditRetentionMonths: resolveRetentionDays(reader, settingAuditRetentionMonths,
-			audit.DefaultRetentionMonths, log),
-		AuditIPEraseDays: resolveRetentionDays(reader, settingAuditIPEraseDays,
-			audit.DefaultIPEraseDays, log),
+		AuditRetentionMonths: clampSetting(resolveRetentionDays(reader,
+			settingAuditRetentionMonths, audit.DefaultRetentionMonths, log),
+			maxAuditRetentionMonths, settingAuditRetentionMonths, log),
+		AuditIPEraseDays: clampSetting(resolveRetentionDays(reader,
+			settingAuditIPEraseDays, audit.DefaultIPEraseDays, log),
+			maxAuditIPEraseDays, settingAuditIPEraseDays, log),
 	}
+}
+
+// 注册表上界在读取侧再钳制一次（M2）。
+//
+// configcenter 的历史行/手工写入不经过注册表校验：一个手滑的
+// `log.partition_lookahead_months=100000` 会让预建循环生成海量分区 DDL，
+// `audit.retention_months` 的极端值虽不会溢出（有 Duration 护栏），但仍会
+// 让「保留期」语义失控。读取侧钳到注册表上界并 warn，方向始终是「更保守」。
+const (
+	maxLogPartitionLookaheadMonths = 36
+	maxAuditRetentionMonths        = 120
+	maxAuditIPEraseDays            = 3650
+)
+
+func clampSetting(value, max int, key string, log *slog.Logger) int {
+	if value <= max {
+		return value
+	}
+	log.Warn("worker: retention setting exceeds the registry maximum; clamping",
+		"key", key, "value", value, "max", max)
+	return max
 }
 
 // readSettingBool 读取布尔设置；缺省/非布尔/JSON null 一律回落 fallback。
@@ -179,20 +203,28 @@ func startRetentionWorkers(parent context.Context, cfg *config.Config, db *sql.D
 	}()
 
 	// ---- W10-N10/N11：retention 身份（独立 DSN，缺省 fail-closed） ----
-	retentionDB, err := openRetentionDB(parent, cfg)
-	if err != nil {
-		// 连接失败同样不降级：宁可本轮不清理，也不误用应用身份。
-		log.Error("worker: open retention database failed; log partition drop and audit retention are disabled (fail-closed)",
-			"error", err)
-	} else if retentionDB == nil {
+	plan := planLogRetention(cfg, logRetention)
+	var retentionDB *sql.DB
+	if !plan.OpenRetention {
 		// N10/N11 的删除面只能由维护角色执行；缺 DSN 时保持「什么都不删」，
 		// 而不是借用 app DSN 悄悄降级。这是部署配置问题，需要运维补齐。
 		log.Warn("worker: DB_RETENTION_DSN is not set; log partition drop and audit retention are disabled (fail-closed)",
-			"partition_drop_enabled", logRetention.PartitionDropEnabled)
+			"partition_drop_enabled", logRetention.PartitionDropEnabled,
+			"audit_retention_months", logRetention.AuditRetentionMonths,
+			"audit_ip_erase_days", logRetention.AuditIPEraseDays)
+	} else {
+		var err error
+		retentionDB, err = openRetentionDB(parent, cfg)
+		if err != nil {
+			// 连接失败同样不降级：宁可本轮不清理，也不误用应用身份。
+			log.Error("worker: open retention database failed; log partition drop and audit retention are disabled (fail-closed)",
+				"error", err)
+			retentionDB = nil
+		}
 	}
 
 	if retentionDB != nil {
-		if logRetention.PartitionDropEnabled {
+		if plan.PartitionDrop {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -214,7 +246,7 @@ func startRetentionWorkers(parent context.Context, cfg *config.Config, db *sql.D
 				"enable only after usage_dashboards or rankings_timeseries year reads land")
 		}
 
-		if logRetention.AuditRetentionMonths > 0 || logRetention.AuditIPEraseDays > 0 {
+		if plan.AuditRetention {
 			// 自审计走 app 的 append-only 写入口（audit_logs INSERT 属 app），
 			// retention 角色只需要 SELECT/DELETE/UPDATE(ip)；每轮最多一条。
 			auditLogger := audit.New(logsDB)
@@ -248,6 +280,28 @@ func startRetentionWorkers(parent context.Context, cfg *config.Config, db *sql.D
 				log.Warn("worker: close retention database failed", "error", err)
 			}
 		}
+	}
+}
+
+// logRetentionPlan 是「哪些保留循环应该启动」的纯决策结果（M5 wiring）。
+//
+// 抽成纯函数让「缺 retention DSN 时 N10/N11 一个都不启动」可以被单测锁定：
+// 即使 operator 把 log.partition_drop_enabled 设为 true、审计保留期非 0，
+// 只要 DSN 缺失，三个布尔值都必须是 false（fail-closed），绝不回退 app DSN。
+type logRetentionPlan struct {
+	OpenRetention  bool // 是否打开独立 retention 连接池
+	PartitionDrop  bool // 是否启动 N10 分区删除
+	AuditRetention bool // 是否启动 N11 审计保留/IP 擦除
+}
+
+func planLogRetention(cfg *config.Config, settings logRetentionSettings) logRetentionPlan {
+	if cfg == nil || cfg.DBRetentionDSN == "" {
+		return logRetentionPlan{}
+	}
+	return logRetentionPlan{
+		OpenRetention:  true,
+		PartitionDrop:  settings.PartitionDropEnabled,
+		AuditRetention: settings.AuditRetentionMonths > 0 || settings.AuditIPEraseDays > 0,
 	}
 }
 

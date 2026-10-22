@@ -29,21 +29,29 @@ DECLARE
     part_schema text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'newtg_retention') THEN
-        RAISE NOTICE 'newtg_retention role absent; retention grants skipped';
-        RETURN;
+        -- 不能静默 RETURN：迁移会以成功结束、之后所有保留任务都以「角色
+        -- 不存在」失败且无法靠重跑迁移修复（I-2 升级路径）。失败会让
+        -- golang-migrate 留下 dirty 版本（阻断后续迁移并强制人工修复），
+        -- 运维按顺序补齐角色后清理 dirty 再重跑。
+        RAISE EXCEPTION 'newtg_retention role is missing; run deploy/postgres-init/10-roles.sql '
+            '(or deploy/scripts/retention-upgrade.sql) as the bootstrap superuser, then re-run this migration';
     END IF;
 
     -- schema USAGE + CREATE。CREATE 仅为满足 PostgreSQL 的所有权转移前置
     -- 条件：ALTER TABLE ... OWNER TO 要求**新属主**在 schema 上有 CREATE。
     -- 保留角色因此可创建对象，但仍不拥有父表 usage_logs（无法整表 DROP）。
     -- 生产由 postgres-init 以超级用户授予；migrate 不是 schema 属主、也没有
-    -- GRANT OPTION 时无法代授，只能探测后跳过（需运维按部署注记补授）。
+    -- GRANT OPTION 时无法代授，只能探测后跳过（由 deploy/scripts/retention-upgrade.sql
+    -- 以超级用户身份补齐，再重跑迁移）。
     IF has_schema_privilege(current_user, 'public', 'USAGE WITH GRANT OPTION') THEN
         EXECUTE 'GRANT USAGE ON SCHEMA public TO newtg_retention';
     END IF;
     IF has_schema_privilege(current_user, 'public', 'CREATE WITH GRANT OPTION') THEN
         EXECUTE 'GRANT CREATE ON SCHEMA public TO newtg_retention';
     END IF;
+    -- 【N11 回归说明】DELETE 的 WHERE 引用 created_at/id，PostgreSQL 要求
+    -- 调用者对这些列有 SELECT；只给 DELETE 不给 SELECT 仍会 permission denied。
+    -- 因而 SELECT 是审计保留的必要授权，不是「只读便利」。
     EXECUTE 'GRANT SELECT ON ALL TABLES IN SCHEMA public TO newtg_retention';
 
     IF to_regclass('public.audit_logs') IS NOT NULL THEN

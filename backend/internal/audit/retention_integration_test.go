@@ -28,7 +28,7 @@ func openAuditDB(t *testing.T, env string) *sql.DB {
 	t.Helper()
 	dsn := os.Getenv(env)
 	if dsn == "" {
-		t.Skipf("%s 未设置，跳过审计保留集成测试", env)
+		t.Skipf("%s 未设置，跳过审计保留集成测试（门禁同时设置 NEWTG_TEST_LOGS_DSN 与 NEWTG_TEST_RETENTION_DSN）", env)
 	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -334,5 +334,52 @@ func TestRetentionMigrationIsRepeatable(t *testing.T) {
 		if _, err := db.Exec(string(sqlBytes)); err != nil {
 			t.Fatalf("apply retention migration (run %d): %v", i+1, err)
 		}
+	}
+}
+
+// TestAuditRetentionDeleteOnlyRoleDeniedWithoutSelect 是 I-2 的权限回归：
+// PostgreSQL 的 DELETE 会读 WHERE 引用的列（created_at/id），因此「只给 DELETE、
+// 不给 SELECT」仍会 permission denied。既有卷升级必须补 SELECT（20-databases /
+// retention-upgrade.sql / 迁移），这也是迁移里保留 SELECT 授权的原因。
+func TestAuditRetentionDeleteOnlyRoleDeniedWithoutSelect(t *testing.T) {
+	admin := openAuditDB(t, "NEWTG_TEST_LOGS_DSN")
+	role := "w10nn_del_only"
+	if _, err := admin.Exec(fmt.Sprintf(
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='%s') THEN
+		   CREATE ROLE %s LOGIN PASSWORD 'w10nn'; END IF; END $$`, role, role)); err != nil {
+		t.Skipf("cannot create role (need superuser): %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = admin.Exec(fmt.Sprintf(`DROP OWNED BY %s`, role))
+		_, _ = admin.Exec(fmt.Sprintf(`DROP ROLE IF EXISTS %s`, role))
+	})
+	dbName := os.Getenv("NEWTG_TEST_DB_NAME")
+	if dbName == "" {
+		dbName = "newtg_dom_w10nn_logs"
+	}
+	for _, stmt := range []string{
+		fmt.Sprintf(`GRANT CONNECT ON DATABASE %s TO %s`, dbName, role),
+		fmt.Sprintf(`GRANT USAGE ON SCHEMA public TO %s`, role),
+		fmt.Sprintf(`GRANT DELETE ON audit_logs TO %s`, role),
+	} {
+		if _, err := admin.Exec(stmt); err != nil {
+			t.Skipf("grant failed: %v", err)
+		}
+	}
+	appDSN := os.Getenv("NEWTG_TEST_APP_DSN")
+	if appDSN == "" {
+		appDSN = strings.Replace(os.Getenv("NEWTG_TEST_LOGS_DSN"),
+			"newtg:newtg@", role+":w10nn@", 1)
+	}
+	db, err := sql.Open("pgx", appDSN)
+	if err != nil {
+		t.Skipf("open dsn: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := db.Ping(); err != nil {
+		t.Skipf("ping dsn: %v", err)
+	}
+	if _, err := DeleteAuditBefore(context.Background(), db, time.Now().AddDate(0, -12, 0), 10); err == nil {
+		t.Fatal("DELETE-only role deleted rows without SELECT; expected permission denied")
 	}
 }

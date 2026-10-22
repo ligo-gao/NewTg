@@ -262,6 +262,28 @@ if [ -z "$(q '.services.gateway.environment.DB_RETENTION_DSN // ""')" ]; then
 else
   bad "services.gateway 不应持有 DB_RETENTION_DSN"
 fi
+if [ -z "$(q '.services.migrate.environment.DB_RETENTION_DSN // ""')" ]; then
+  ok "services.migrate 不含 DB_RETENTION_DSN（迁移不需要维护 DSN）"
+else
+  bad "services.migrate 不应持有 DB_RETENTION_DSN"
+fi
+
+# W10-N10/N11：既有卷升级路径可执行 + CONNECT 最小化（M4）。
+if [ -f "$root/deploy/scripts/retention-upgrade.sql" ]; then
+  ok "存在 deploy/scripts/retention-upgrade.sql（既有卷升级）"
+else
+  bad "缺少 deploy/scripts/retention-upgrade.sql"
+fi
+if grep -Fq 'REVOKE CONNECT ON DATABASE :"db_name" FROM PUBLIC' "$root/deploy/postgres-init/10-roles.sql"; then
+  ok "主库收回 PUBLIC CONNECT（newtg_retention 不连主库）"
+else
+  bad "10-roles.sql 缺少主库 REVOKE CONNECT ... FROM PUBLIC"
+fi
+if grep -Fq 'GRANT CONNECT ON DATABASE :"logs_db" TO newtg_app, newtg_migrate, newtg_backup, newtg_retention' "$root/deploy/postgres-init/20-databases.sql"; then
+  ok "日志库显式授予 newtg_retention CONNECT"
+else
+  bad "20-databases.sql 未显式授予 newtg_retention CONNECT"
+fi
 
 # --- i. 日志库 UPDATE 例外与分区预建（R-25/R-56/R-59/R-60/R-61） ---------
 # usage_logs 是唯一需要 newtg_app UPDATE 的日志表，且只授五列；audit_logs
