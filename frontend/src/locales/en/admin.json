@@ -808,7 +808,11 @@
       "generation": "generation {n}",
       "reloaded": "Rebuilt {time}",
       "no_errors": "No plugin errors.",
-      "generation_hint": "generation is node-local. Compare across nodes by DB revision."
+      "generation_hint": "generation is node-local. Compare across nodes by DB revision.",
+      "local_replica": "local replica",
+      "last_seen": "Last seen {time}",
+      "aggregate_unavailable": "Redis aggregation unavailable — showing this replica only.",
+      "empty_replicas": "No replicas reported runtime status."
     },
     "detail": {
       "tabs_label": "Plugin detail sections",

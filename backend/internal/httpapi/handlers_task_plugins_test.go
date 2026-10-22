@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +31,28 @@ type pluginTestEnv struct {
 	audit    *fakeAuditExec
 	handlers *TaskPluginHandlers
 	bindings *fakeChannelBindingCounter
+	changes  *fakePluginChangePublisher
+}
+
+// fakePluginChangePublisher 统计写后广播次数；err 用于验证 Redis 抖动只
+// Warn、不影响写响应。
+type fakePluginChangePublisher struct {
+	mu    sync.Mutex
+	calls int
+	err   error
+}
+
+func (f *fakePluginChangePublisher) PublishPluginChanged(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return f.err
+}
+
+func (f *fakePluginChangePublisher) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
 }
 
 // fakeChannelBindingCounter 是绑定计数接缝的内存实现（M6d Task 7a）。
@@ -106,6 +129,7 @@ func newPluginTestEnvWithMarket(t *testing.T, manager *plugin.Manager, marketCli
 		manager = created
 	}
 	bindings := newFakeChannelBindingCounter()
+	changes := &fakePluginChangePublisher{}
 	handlers, err := NewTaskPluginHandlers(TaskPluginHandlerConfig{
 		Store:    store,
 		Manager:  manager,
@@ -114,13 +138,15 @@ func newPluginTestEnvWithMarket(t *testing.T, manager *plugin.Manager, marketCli
 		Access:   newFakeUserAccess(),
 		Market:   marketClient,
 		Bindings: bindings,
+		Changes:  changes,
 	})
 	if err != nil {
 		t.Fatalf("NewTaskPluginHandlers: %v", err)
 	}
 	mux := http.NewServeMux()
 	handlers.Register(mux)
-	return &pluginTestEnv{mux: mux, store: store, manager: manager, audit: exec, handlers: handlers, bindings: bindings}
+	return &pluginTestEnv{mux: mux, store: store, manager: manager, audit: exec,
+		handlers: handlers, bindings: bindings, changes: changes}
 }
 
 // sha256HexForTest 直接计算字节哈希：测试 loader 里可能出现故意不可编译的
@@ -257,6 +283,42 @@ func TestTaskPluginUploadSuccessAndIdempotency(t *testing.T) {
 	}
 }
 
+func TestTaskPluginWritesPublishRegistryChange(t *testing.T) {
+	env := newPluginTestEnv(t, nil)
+	body := `{"source_text":` + mustJSON(t, samplePluginSource(t)) + `}`
+
+	// 首次上传：本地 Reload 后广播一次。
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/plugin/task", body, pluginAdmin(),
+		map[string]string{"Idempotency-Key": "publish-a"}))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("上传 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	if env.changes.count() != 1 {
+		t.Fatalf("写成功后应广播一次，got %d", env.changes.count())
+	}
+
+	// 幂等重放不执行写路径，也不重复广播。
+	rr = httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/plugin/task", body, pluginAdmin(),
+		map[string]string{"Idempotency-Key": "publish-a"}))
+	if rr.Code != http.StatusCreated || env.changes.count() != 1 {
+		t.Fatalf("重放不应重复广播：status=%d calls=%d", rr.Code, env.changes.count())
+	}
+
+	// Redis 发布失败只 Warn：写响应仍成功（DB 是权威真源，30s ticker 兜底）。
+	env.changes.err = fmt.Errorf("redis unavailable")
+	rr = httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/plugin/task", body, pluginAdmin(),
+		map[string]string{"Idempotency-Key": "publish-b"}))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("广播失败不得影响写响应：%d（body=%s）", rr.Code, rr.Body.String())
+	}
+	if env.changes.count() != 2 {
+		t.Fatalf("广播失败仍应尝试一次，got %d", env.changes.count())
+	}
+}
+
 func TestTaskPluginUploadCompileFailureWritesNothing(t *testing.T) {
 	env := newPluginTestEnv(t, nil)
 	body := `{"source_text":"globalThis.__NEWTG_PLUGIN__ = { key: \"x\" }"}`
@@ -366,12 +428,16 @@ func TestTaskPluginRuntimeStatusFiveStates(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("runtime status = %d（body=%s）", rr.Code, rr.Body.String())
 	}
-	var status plugin.RuntimeStatus
-	if err := json.Unmarshal(rr.Body.Bytes(), &status); err != nil {
+	var aggregate plugin.RuntimeAggregate
+	if err := json.Unmarshal(rr.Body.Bytes(), &aggregate); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if status.Node == "" || status.Generation == 0 {
-		t.Fatalf("runtime status 缺 node/generation：%+v", status)
+	if len(aggregate.Instances) != 1 {
+		t.Fatalf("未装配协调器时应只返回本地副本：%+v", aggregate)
+	}
+	status := aggregate.Instances[0]
+	if !status.Local || status.InstanceID == "" || status.Node == "" || status.Generation == 0 {
+		t.Fatalf("runtime status 缺 instance_id/node/generation/local：%+v", status)
 	}
 	states := map[plugin.PluginStatus]bool{}
 	for _, p := range status.Plugins {
@@ -535,10 +601,14 @@ func TestTaskPluginRuntimeStatusAllFiveStates(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("runtime status = %d", rr.Code)
 	}
-	var status plugin.RuntimeStatus
-	if err := json.Unmarshal(rr.Body.Bytes(), &status); err != nil {
+	var aggregate plugin.RuntimeAggregate
+	if err := json.Unmarshal(rr.Body.Bytes(), &aggregate); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+	if len(aggregate.Instances) != 1 {
+		t.Fatalf("未装配协调器时应只返回本地副本：%+v", aggregate)
+	}
+	status := aggregate.Instances[0]
 	states := map[plugin.PluginStatus]bool{}
 	for _, p := range status.Plugins {
 		states[p.Status] = true

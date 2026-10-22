@@ -115,6 +115,11 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 		if assembly != nil && assembly.PerfMetricsStop != nil {
 			assembly.PerfMetricsStop()
 		}
+		// 插件运行时必须在 Redis 连接关闭前停止：它会删除本实例的
+		// newtg:plugin:runtime:<id>，否则实例会在 TTL 内继续显示为存活。
+		if assembly != nil && assembly.PluginRuntimeStop != nil {
+			assembly.PluginRuntimeStop()
+		}
 	}
 
 	// metrics 侧车：MetricsAddr=="0" 时 RunMetricsServer 直接返回 nil，goroutine 立即结束。
@@ -592,7 +597,7 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 
 	// 任务轮询（M6d T6b）：装配插件运行时 + async_task_poll 循环。失败即
 	// 阻止 worker 上线——没有轮询器时任务会一直停在 submitted，预扣永久冻结。
-	stopTaskPoller, err := startTaskPoller(ctx, cfg, sqlDB, center, engine, log)
+	stopTaskPoller, err := startTaskPoller(ctx, cfg, sqlDB, center, engine, rr.client, log)
 	if err != nil {
 		_ = redisRes.Close()
 		_ = logsRes.Close()

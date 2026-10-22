@@ -808,7 +808,11 @@
       "generation": "generation {n}",
       "reloaded": "最近重建 {time}",
       "no_errors": "无插件错误。",
-      "generation_hint": "generation 为节点本地号，跨节点比较请用 DB revision。"
+      "generation_hint": "generation 为节点本地号，跨节点比较请用 DB revision。",
+      "local_replica": "本副本",
+      "last_seen": "最近心跳 {time}",
+      "aggregate_unavailable": "Redis 聚合不可用，仅显示本副本。",
+      "empty_replicas": "暂无副本上报运行时状态。"
     },
     "detail": {
       "tabs_label": "插件详情分区",

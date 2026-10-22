@@ -84,6 +84,9 @@ type gatewayAssembly struct {
 	// （G-M6C-13）。与 reporter 同理，必须在关闭日志库之前调用；nil 表示
 	// PERF_METRICS_ENABLED=false（禁用时零开销，不构造采集器）。
 	PerfMetricsStop func()
+	// PluginRuntimeStop 停止插件注册表热刷新/状态循环，并在 Redis 关闭前
+	// DEL 本实例的 newtg:plugin:runtime:<id>。nil 表示未装配插件运行时。
+	PluginRuntimeStop func()
 	// EmailSender 是事务性邮件适配器（W13-EMAIL）：同一实例同时实现验证码、
 	// 密码重置与通知测试三个 handler 接缝。装配测试据此断言生产路径确实
 	// 注入，而不是让端点退化到 503。
@@ -627,6 +630,15 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		return nil, err
 	}
 
+	// 插件注册表热刷新（G-M6D-04/05/21）：启动即 Reload，此后 30s 重载 +
+	// 订阅 newtg:plugin:changed；每 30s 写本副本 runtime 状态。Start 不会因
+	// Redis 故障失败——ticker 是 Redis 不可用时的收敛路径。
+	pluginRuntimeStop := func() {}
+	if pluginRuntime := router.PluginRuntime(); pluginRuntime != nil {
+		pluginRuntime.Start(ctx)
+		pluginRuntimeStop = pluginRuntime.Stop
+	}
+
 	// 单 goroutine、随网关 ctx 退出；ReportAttemptFailure/ReportProbeFailure
 	// 只做非阻塞入队，请求响应不等待条件更新/审计/通知（brief 第 2 条）。
 	//
@@ -659,6 +671,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		AttemptFailureReporter: attemptReporter,
 		EmailSender:            transactionalEmail,
 		PerfMetricsStop:        perfStop,
+		PluginRuntimeStop:      pluginRuntimeStop,
 		AttemptFailureReporterStop: func() {
 			reporterCancel()
 			attemptReporter.Wait()

@@ -29,8 +29,14 @@ describe('pricing tab (F-08-37)', () => {
   })
 })
 
-const RUNTIME = {
-  node: 'gateway-1',
+const RUNTIME_INSTANCE = {
+  instance_id: 'gateway-1',
+  node: 'node-a',
+  role: 'gateway',
+  version: '1.5.0',
+  local: true,
+  started_at: '2026-10-19T09:00:00Z',
+  last_seen: '2026-10-19T10:00:00Z',
   generation: 12,
   revision: 'rev-abc123',
   reloaded_at: '2026-10-19T10:00:00Z',
@@ -42,6 +48,11 @@ const RUNTIME = {
       layer: 'factory',
     },
   ],
+}
+
+const RUNTIME = {
+  instances: [RUNTIME_INSTANCE],
+  aggregate_unavailable: false,
 }
 
 describe('runtime tab (F-08-36)', () => {
@@ -58,10 +69,43 @@ describe('runtime tab (F-08-36)', () => {
     expect(card.textContent).toContain('gateway-1')
     expect(card.textContent).toContain('generation 12')
     expect(card.textContent).toContain('revision rev-abc123')
+    expect(screen.getByTestId('runtime-local-badge')).toBeTruthy()
     expect(
       screen.getByText('generation is node-local. Compare across nodes by DB revision.'),
     ).toBeTruthy()
     expect(screen.getByText('No plugin errors.')).toBeTruthy()
+  })
+
+  it('renders every replica in the aggregate and flags Redis degradation', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/plugin/task/runtime/status`, () =>
+        HttpResponse.json({
+          aggregate_unavailable: true,
+          instances: [
+            RUNTIME_INSTANCE,
+            {
+              ...RUNTIME_INSTANCE,
+              instance_id: 'worker-1',
+              node: 'node-b',
+              role: 'worker',
+              local: false,
+            },
+          ],
+        }),
+      ),
+    )
+
+    await renderWithProviders(<RuntimeTab />, ['common', 'admin'])
+
+    const cards = await screen.findAllByTestId('runtime-node-card')
+    expect(cards.map((card) => card.getAttribute('data-instance-id'))).toEqual([
+      'gateway-1',
+      'worker-1',
+    ])
+    expect(screen.getAllByTestId('runtime-local-badge')).toHaveLength(1)
+    expect(screen.getByTestId('runtime-aggregate-unavailable').textContent).toContain(
+      'Redis aggregation unavailable',
+    )
   })
 
   it('shows per-plugin errors with the failing node status', async () => {
@@ -69,19 +113,24 @@ describe('runtime tab (F-08-36)', () => {
       http.get(`${ORIGIN}/api/plugin/task/runtime/status`, () =>
         HttpResponse.json({
           ...RUNTIME,
-          reload_error: 'reload failed',
-          plugins: [
+          instances: [
             {
-              key: 'mj',
-              status: 'compile_failed',
-              version: '0.9.1',
-              errors: [
+              ...RUNTIME_INSTANCE,
+              reload_error: 'reload failed',
+              plugins: [
                 {
                   key: 'mj',
-                  fieldPath: 'plugin.js:42',
-                  locale: '',
-                  rule: 'compile',
-                  message: 'unexpected token',
+                  status: 'compile_failed',
+                  version: '0.9.1',
+                  errors: [
+                    {
+                      key: 'mj',
+                      fieldPath: 'plugin.js:42',
+                      locale: '',
+                      rule: 'compile',
+                      message: 'unexpected token',
+                    },
+                  ],
                 },
               ],
             },

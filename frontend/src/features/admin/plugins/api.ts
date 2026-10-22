@@ -28,8 +28,9 @@ export type TaskPluginVersion = components['schemas']['TaskPluginVersion']
 export type TaskPluginDetail = components['schemas']['TaskPluginDetail']
 export type TaskPluginSourceText = components['schemas']['TaskPluginSourceText']
 export type PluginIssue = components['schemas']['PluginIssue']
-export type PluginRuntimeStatus = components['schemas']['PluginRuntimeStatus']
 export type PluginRuntimePlugin = components['schemas']['PluginRuntimePlugin']
+export type PluginRuntimeInstance = components['schemas']['PluginRuntimeInstance']
+export type PluginRuntimeAggregate = components['schemas']['PluginRuntimeAggregate']
 export type UploadTaskPluginResponse =
   components['schemas']['UploadTaskPluginResponse']
 export type PluginDryRunResult = components['schemas']['PluginDryRunResult']
@@ -126,7 +127,7 @@ export async function getTaskPluginSourceText(
 
 export async function getTaskPluginRuntimeStatus(
   signal?: AbortSignal,
-): Promise<PluginRuntimeStatus> {
+): Promise<PluginRuntimeAggregate> {
   return requireData(
     await apiClient.GET('/api/plugin/task/runtime/status', { signal }),
   )

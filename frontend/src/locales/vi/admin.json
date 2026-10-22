@@ -808,7 +808,11 @@
       "generation": "generation {n}",
       "reloaded": "Xây dựng lại {time}",
       "no_errors": "Không có lỗi plugin.",
-      "generation_hint": "generation là số cục bộ của nút; so sánh giữa các nút bằng revision trong DB."
+      "generation_hint": "generation là số cục bộ của nút; so sánh giữa các nút bằng revision trong DB.",
+      "local_replica": "bản sao cục bộ",
+      "last_seen": "Lần cuối {time}",
+      "aggregate_unavailable": "Không thể tổng hợp Redis — chỉ hiển thị bản sao này.",
+      "empty_replicas": "Chưa có bản sao nào báo cáo trạng thái chạy."
     },
     "detail": {
       "tabs_label": "Các mục chi tiết plugin",
