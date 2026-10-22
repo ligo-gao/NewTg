@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"gorm.io/gorm"
+
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/store"
 )
@@ -731,6 +733,128 @@ func refundedEventCount(t *testing.T, db *sql.DB, subscriptionID int64) int {
 		}
 	}
 	return count
+}
+
+// TestSubscriptionRefundConcurrentProviderLoserIsIdempotent 是
+// TestSubscriptionRefundConcurrentProvider 的确定性版本：用 GORM 查询回调把
+// 输家卡在「事务外第一次资格检查」的 subscriptions 查询上，等赢家完整跑完
+// 「调渠道 → finalize（订单 refunded + 订阅 cancelled）」提交后再放行。
+//
+// 交错完全由 channel 控制，不依赖 goroutine 调度概率：
+//  1. 输家已经读完订单（手里的快照是 succeeded），在资格检查的订阅查询上
+//     阻塞；此时还没有任何资金动作；
+//  2. 赢家在测试主 goroutine 同步完成退款：渠道成功 → finalize 在同一事务里
+//     把订单置 refunded、订阅置 cancelled；
+//  3. 放行输家，它的订阅查询必然在赢家提交之后执行，读到 status=cancelled。
+//
+// 修复前：输家资格检查看到 cancelled → 直接返回 ErrSubscriptionInUse（422）。
+// 修复后：输家重读订单看到 refunded，返回 err=nil / Refunded=false /
+// Amount=既有退款额；渠道只被调用一次，refunded 事件只有一条，订单与订阅
+// 都停留在赢家写下的终态。
+func TestSubscriptionRefundConcurrentProviderLoserIsIdempotent(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	stripeServer, stripeState := newStripeRefundStub(t, false)
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+	planID := insertSubscriptionPlan(t, db, 9900, 1000, 30, false, "enabled", "")
+
+	now := time.Now().UTC()
+	orderID := insertRefundOrder(t, db, userID, ProviderStripe,
+		string(OrderSucceeded), store.OrderBizKindSubscribe, planID, 9900, "pi_loser_idem")
+	subID := insertRefundSubscription(t, db, userID, planID, now.Add(-time.Hour), 0, &orderID)
+	svc := newStripeTopupService(t, gormDB, stripeServer.URL)
+
+	// 只对带着标记 ctx 的请求生效：赢家用普通 ctx，不会被卡住。
+	type loserCtxKey struct{}
+	loserKey := loserCtxKey{}
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseLoser := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseLoser()
+
+	const cbName = "test:block_refund_eligibility_query"
+	if err := gormDB.Callback().Query().Before("gorm:query").Register(cbName,
+		func(tx *gorm.DB) {
+			if tx.Statement.Context == nil || tx.Statement.Context.Value(loserKey) == nil {
+				return
+			}
+			// loadRefundSubscription 读的是 subscriptions；订单查询（GetOrder）
+			// 不拦，输家必须在暂停前就拿到 succeeded 的订单快照。
+			if tx.Statement.Table != "subscriptions" {
+				return
+			}
+			entered <- struct{}{}
+			<-release
+		}); err != nil {
+		t.Fatalf("register gorm query callback: %v", err)
+	}
+	t.Cleanup(func() { _ = gormDB.Callback().Query().Remove(cbName) })
+
+	type outcome struct {
+		result *RefundResult
+		err    error
+	}
+	loserDone := make(chan outcome, 1)
+	loserCtx := context.WithValue(context.Background(), loserKey, true)
+	go func() {
+		result, err := svc.RefundSubscription(loserCtx, RefundInput{
+			OrderID: orderID, Reason: "并发渠道退款", ActorUserID: 2,
+		})
+		loserDone <- outcome{result: result, err: err}
+	}()
+
+	// 输家已阻塞在资格检查的订阅查询上（订单快照必然是 succeeded）。
+	// 超时只是失败时快速报错，不是调度依赖：正常路径由 channel 精确交错。
+	select {
+	case <-entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("loser 未进入资格检查的订阅查询（查询回调未命中）")
+	}
+
+	winner, err := svc.RefundSubscription(context.Background(), RefundInput{
+		OrderID: orderID, Reason: "并发渠道退款", ActorUserID: 1,
+	})
+	if err != nil {
+		t.Fatalf("winner refund: %v", err)
+	}
+	if !winner.Refunded || winner.Amount != 9900 {
+		t.Fatalf("winner = %+v，期望本次真实退款 9900", winner)
+	}
+
+	releaseLoser()
+	var loser outcome
+	select {
+	case loser = <-loserDone:
+	case <-time.After(30 * time.Second):
+		t.Fatal("loser 放行后未返回")
+	}
+	if loser.err != nil {
+		t.Fatalf("loser err = %v，期望幂等成功（err=nil）", loser.err)
+	}
+	if loser.result == nil || loser.result.Refunded {
+		t.Fatalf("loser result = %+v，期望 Refunded=false", loser.result)
+	}
+	if loser.result.Amount != 9900 || loser.result.Order.Status != string(OrderRefunded) {
+		t.Fatalf("loser result = %+v，期望 Amount=9900 / order=refunded", loser.result)
+	}
+
+	// 只出账一次：渠道一次、事件一条、订单/订阅停在终态。
+	if calls, key, _, _ := stripeState.snapshot(); calls != 1 {
+		t.Fatalf("渠道调用次数 = %d，期望恰好 1（输家不应再调渠道）", calls)
+	} else if key != fmt.Sprintf("refund-order-%d", orderID) {
+		t.Fatalf("幂等键 = %q", key)
+	}
+	if events := refundedEventCount(t, db, subID); events != 1 {
+		t.Fatalf("refunded 事件 = %d，期望 1", events)
+	}
+	status, failure, amount, refundedAt := readOrderRefundState(t, db, orderID)
+	if status != string(OrderRefunded) || amount != 9900 || failure != "" || refundedAt == nil {
+		t.Fatalf("订单 = status:%s failure:%s amount:%d at:%v", status, failure, amount, refundedAt)
+	}
+	if got := readSubscriptionStatus(t, db, subID); got != "cancelled" {
+		t.Fatalf("订阅状态 = %s，期望 cancelled", got)
+	}
 }
 
 // TestSubscriptionRefundMarksInProgress 验证 R-37：调用渠道期间订单的
