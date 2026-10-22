@@ -39,6 +39,7 @@ import (
 	"newtg/gateway/internal/contract"
 	deploybilling "newtg/gateway/internal/deploy/billing"
 	"newtg/gateway/internal/deploy/ionet"
+	"newtg/gateway/internal/egress"
 	"newtg/gateway/internal/mj"
 	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/perfmetrics"
@@ -367,6 +368,13 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		if err != nil {
 			return nil, err
 		}
+
+		// 任务插件数据面的统一出站策略（relay-06 §5.2 / security-04 §2.4）：
+		// 提交、查询、轮询、产物内容与 dryrun 共用 sec.ssrf.* 的同一份快照。
+		// 任务面另叠加「渠道 base URL + meta.allowedHosts」允许清单（见
+		// tasks.PolicyForHosts）；dryrun 用同一策略读取面。
+		tasks.SetOutboundPolicy(egress.PolicyFromConfig(deps.Config))
+		plugin.ConfigureEgress(deps.Config)
 
 		// 任务数据面（M6d Task 6a）：渠道选择与任务行共用一个 tasks.Repo
 		// 连接面；凭据 Sealer 与渠道管理同源（CREDENTIAL_ENCRYPTION_KEY）。

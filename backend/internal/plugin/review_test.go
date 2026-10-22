@@ -128,16 +128,29 @@ func TestReviewTemplateLiteralInterpolation(t *testing.T) {
 	}
 }
 
-// L2：allow_outbound=true 显式拒绝。
-func TestReviewDryRunOutboundUnavailable(t *testing.T) {
+// L2：allow_outbound=true 不再返回 unavailable；改为受守卫的最小请求。
+// 本用例只验证旧哨兵已消失（出站行为由 dryrun_outbound_test.go 覆盖）。
+func TestReviewDryRunOutboundNoLongerUnavailable(t *testing.T) {
 	m := newManager(t, nil, Options{MasterEnabled: true})
 	if err := m.Reload(context.Background()); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	_, err := m.DryRun(context.Background(), DryRunRequest{Key: "sample", AllowOutbound: true})
+	_, err := m.DryRun(context.Background(), DryRunRequest{
+		Key: "sample", AllowOutbound: true,
+		Payload: map[string]any{"baseUrl": ""},
+	})
+	if err == nil {
+		t.Fatal("相对 URL 的描述符必须被拒绝")
+	}
 	issues, ok := err.(Issues)
-	if !ok || !issues.hasRule("dryrun_outbound_unavailable") {
-		t.Fatalf("allow_outbound=true 必须显式拒绝: %v", err)
+	if !ok {
+		t.Fatalf("want Issues, got %T: %v", err, err)
+	}
+	if issues.hasRule("dryrun_outbound_unavailable") {
+		t.Fatalf("dryrun_outbound_unavailable 必须已删除: %v", err)
+	}
+	if !issues.hasRule("dryrun_outbound_rejected") {
+		t.Fatalf("非法描述符应返回结构化 outbound 拒绝: %v", err)
 	}
 }
 

@@ -32,7 +32,7 @@ func validateManifest(key string, m *Manifest, hooks map[string]struct{}) (Issue
 	validateArtifactPair(d, hooks)
 	validateProtocolHooks(d, m, hooks)
 	validateRouteHooks(d, m, hooks)
-	validateCapabilities(d, m)
+	validateCapabilities(d, m, hooks)
 	validateUsage(d, m)
 
 	return d.issues, d.warnings
@@ -126,13 +126,46 @@ func itoa(n int) string {
 	return string(buf[pos:])
 }
 
-func validateCapabilities(d *decoder, m *Manifest) {
+func validateCapabilities(d *decoder, m *Manifest, hooks map[string]struct{}) {
+	deltaDeclared := false
 	for _, capability := range m.RequiredCapabilities {
+		if capability != "submit-sse-delta@1" {
+			continue
+		}
+		deltaDeclared = true
 		// submit-sse-delta@1 要求插件同时声明 sse 提交响应（relay-06 §3.5）；
 		// 否则宿主会走「增量累积」路径却永远收不到 SSE 帧。
-		if capability == "submit-sse-delta@1" && !containsString(m.SubmitResponseTypes, "sse") {
+		if !containsString(m.SubmitResponseTypes, "sse") {
 			d.add("meta.requiredCapabilities", "", "capability_mismatch",
 				"submit-sse-delta@1 要求 submitResponseTypes 含 \"sse\"")
+		}
+		// 声明了增量能力就必须导出增量钩子：否则运行期只能回退到快照钩子，
+		// 而「声明与实际行为不符」会让作者误以为累积由宿主托管。
+		if _, ok := hooks["parseSubmitEventDelta"]; !ok {
+			d.add("hooks.parseSubmitEventDelta", "", "hook_missing",
+				"submit-sse-delta@1 需要导出 parseSubmitEventDelta")
+		}
+	}
+	// 反向：导出增量钩子却没声明能力，宿主永远不会调用它。这里拒绝而不是
+	// 静默忽略，避免插件作者以为增量路径已生效。
+	if !deltaDeclared {
+		if _, ok := hooks["parseSubmitEventDelta"]; ok {
+			d.add("meta.requiredCapabilities", "", "capability_missing",
+				"导出 parseSubmitEventDelta 必须声明 submit-sse-delta@1")
+		}
+	}
+	// 任何 SSE 解析钩子都要求 submitResponseTypes 含 sse（否则永不触发）。
+	if _, ok := hooks["parseSubmitEvent"]; ok && !containsString(m.SubmitResponseTypes, "sse") {
+		d.add("meta.submitResponseTypes", "", "capability_mismatch",
+			"导出 parseSubmitEvent 要求 submitResponseTypes 含 \"sse\"")
+	}
+	// 声明 sse 却没有解析钩子：提交时会无法消费事件流，加载期就拒绝。
+	if containsString(m.SubmitResponseTypes, "sse") {
+		_, snapshot := hooks["parseSubmitEvent"]
+		_, incremental := hooks["parseSubmitEventDelta"]
+		if !snapshot && !incremental {
+			d.add("hooks.parseSubmitEvent", "", "hook_missing",
+				"submitResponseTypes 含 \"sse\" 时需要导出 parseSubmitEvent 或 parseSubmitEventDelta")
 		}
 	}
 }

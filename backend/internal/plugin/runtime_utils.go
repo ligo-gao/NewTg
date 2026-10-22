@@ -9,10 +9,14 @@ import (
 
 // 本文件提供本任务范围内的最小宿主工具面（t3-brief 冻结约定 9）。
 //
-// 只实现 `json-clone@1`：`utils.json.clone(value)` 返回一个独立的 JSON 快照。
+// 已实现 `json-clone@1`：`utils.json.clone(value)` 返回一个独立的 JSON 快照。
 // 完整工具集（unixNow / uuid / hmacSHA256 / jwtSignHS256 / base64 / volcSignV4）
 // 需要各自的同步上界与密钥语义，留给后续宿主 API 任务；未实现的工具不在
 // 全局对象上存在（调用即 ReferenceError/TypeError），而不是返回空值。
+//
+// `utils.hasCapability(name)` 不授予能力，只让插件探测**宿主支持**的某个
+// 版本化能力（v1.d.ts）；真正的能力选择仍在加载期由 requiredCapabilities
+// 决定，声明未知/重复版本会被拒绝。
 //
 // 安全边界：json.clone 无 I/O，唯一风险是内存放大，因此按 relay-06 §3.5
 // 冻结 1 MiB / 32 层 / 32768 节点三重上限；超限抛 JS TypeError，绝不截断
@@ -32,6 +36,16 @@ func installHostUtils(rt *sobek.Runtime) {
 	jsonObject := rt.NewObject()
 	jsonObject.Set("clone", func(call sobek.FunctionCall) sobek.Value { return jsonClone(rt, call) })
 	utils.Set("json", jsonObject)
+	utils.Set("hasCapability", func(call sobek.FunctionCall) sobek.Value {
+		name := ""
+		if len(call.Arguments) > 0 {
+			name = call.Argument(0).String()
+		}
+		// hasCapability 探测**宿主支持**的能力，与本次插件声明无关；
+		// 它不授予任何能力（声明与加载期校验仍由 requiredCapabilities 决定）。
+		_, supported := supportedCapabilities[name]
+		return rt.ToValue(supported)
+	})
 	rt.GlobalObject().Set("utils", utils)
 }
 
