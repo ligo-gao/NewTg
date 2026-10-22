@@ -174,6 +174,11 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	if err := center.Load(ctx); err != nil {
 		return nil, fmt.Errorf("gateway: load config center: %w", err)
 	}
+	// I2（控制端裁决）：演示模式的部署侧覆盖 NEWTG_DEMO_ENABLED。把配置
+	// 读取面包装一次后同时交给**守卫、中继额度与计费引擎**，三处读到的
+	// 是同一个有效值，不会出现「守卫关了、额度还在扣」的分裂。
+	// 未设置 env 时 WithDemoOverride 原样返回 center（行为不变）。
+	demoConfig := config.WithDemoOverride(center, cfg.DemoEnabled)
 	// I2 的 MJ 结算守卫需要计费引擎，因此推迟到引擎构造之后（见下方
 	// engine.ValidateSubscriptionLeaseConfig 之后的 mjSettlerGuard）。
 	// 计费进程级装配（N2/N5）：定价源构造写入进程级 QPU（admin API 的
@@ -195,7 +200,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	// 回退」；默认关闭，行为与既有同步路径完全一致。live_feed 投递无论在
 	// 哪种模式下都保持「只有真正插入新行才投递」。
 	feedPublisher := billing.NewRedisFeedPublisher(rdb)
-	engine := billing.NewEngine(gormDB, logsDB, rdb, center, source,
+	engine := billing.NewEngine(gormDB, logsDB, rdb, demoConfig, source,
 		billing.NewRegistry(rdb), newUsageLogDBLogger(logsDB, feedPublisher, center, rdb, log))
 	// S4a：订阅是请求路径的资金来源之一，必须装配到引擎；未装配时引擎
 	// 会保持纯钱包行为（订阅偏好被忽略）。
@@ -416,7 +421,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		LogDB:                   logsDB,
 		Redis:                   rdb,
 		Sessions:                auth.NewSessionManager(rdb, []byte(cfg.SessionSecret)),
-		Config:                  center,
+		Config:                  demoConfig,
 		Sealer:                  cipher,
 		Audit:                   auditor,
 		Authz:                   authz,
@@ -466,7 +471,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		Handler:                router,
 		Billing:                engine.NewSession,
 		ModelStatus:            pricingRepo,
-		Config:                 center,
+		Config:                 demoConfig,
 		PricingSource:          source,
 		PricingOnChange:        pricingChanged,
 		Tasks:                  router.TasksHandler(),

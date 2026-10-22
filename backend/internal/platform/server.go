@@ -535,7 +535,10 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	// W10-N2：退款事件必须与成功事件同流（R-W10-02），因此 worker 的写入器
 	// 也按同一开关装配 Stream 生产者；消费循环在下方与本角色一起启动。
 	feedPublisher := billing.NewRedisFeedPublisher(rr.client)
-	engine := billing.NewEngine(gormDB, sqlLogs, rr.client, center, source, registry,
+	// I2：worker 也会结算任务/兜底退款，必须与 gateway 共用同一个演示模式
+	// 有效值（NEWTG_DEMO_ENABLED 覆盖），否则 gateway 免单、worker 补扣。
+	engine := billing.NewEngine(gormDB, sqlLogs, rr.client,
+		config.WithDemoOverride(center, cfg.DemoEnabled), source, registry,
 		newUsageLogDBLogger(sqlLogs, feedPublisher, center, rr.client, log))
 	// S4a：与 gateway 同一装配口径。worker 复用引擎做兜底恢复，
 	// 未装配会让订阅偏好退化为纯钱包行为。

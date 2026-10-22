@@ -141,7 +141,8 @@ func (s *rateLimitBillingSession) PreConsume(est contract.QuotaEstimate) error {
 }
 
 type rateLimitEnvOptions struct {
-	config      mapConfig
+	// config 是任意配置读取面（mapConfig 或 WithDemoOverride 包装）。
+	config      ConfigReader
 	channelType contract.ChannelType
 	model       string
 	upstream    http.HandlerFunc

@@ -7,12 +7,17 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// DemoEnabledKey 是演示模式设置键（settings 注册表同名）。
+const DemoEnabledKey = "site.demo.enabled"
 
 // Config 覆盖 platform-03 §3.1 全部 26 项应用侧环境变量。
 type Config struct {
@@ -54,6 +59,14 @@ type Config struct {
 	PerfMetricsFlushInterval time.Duration // PERF_METRICS_FLUSH_INTERVAL
 	PerfMetricsRetentionDays int           // PERF_METRICS_RETENTION_DAYS
 	TLSDMinVersion           string        // TLS_MIN_VERSION（仅 edge 消费）
+
+	// DemoEnabled 是演示模式的**部署侧覆盖**（NEWTG_DEMO_ENABLED）。
+	//
+	// nil 表示未设置/非法值：演示模式以 site.demo.enabled 设置为准（保持
+	// 既有单一真源）；非 nil 时强制覆盖设置值。它解决的是设计 F-08-46 的
+	// 单向门：只读守卫同时拒绝了 PUT /api/settings，演示站开启后没有任何
+	// 受控出口，只能由部署侧显式关闭（控制端裁决 I2）。
+	DemoEnabled *bool // NEWTG_DEMO_ENABLED
 }
 
 // defaults 包级默认值表，与 platform-03 §3.1 的「默认」列一一对应。
@@ -128,6 +141,9 @@ func Load() (*Config, error) {
 		PublicBaseURL:   lookup("PUBLIC_BASE_URL"),
 		OpenAPIValidate: lookup("OPENAPI_VALIDATE"),
 		TLSDMinVersion:  lookup("TLS_MIN_VERSION"),
+		// 非法值按「未设置」处理：部署侧拼写错误只告警，不得让整站无法启动
+		// （控制端裁决 I2；fail-closed 在这里反而会把演示站永久锁死）。
+		DemoEnabled: parseDemoEnabled(lookup("NEWTG_DEMO_ENABLED")),
 	}
 
 	// NODE_NAME 空 → hostname。
@@ -180,6 +196,93 @@ func parseBool(key, raw string) (bool, error) {
 		return false, fmt.Errorf("config: invalid %s %q: %w", key, raw, err)
 	}
 	return v, nil
+}
+
+// parseDemoEnabled 解析 NEWTG_DEMO_ENABLED 的冻结取值：
+//
+//	"true"/"1"  → 强制开启
+//	"false"/"0" → 强制关闭
+//	空/非法    → nil（跟随 site.demo.enabled），非法值额外告警
+//
+// 为什么不用 strconv.ParseBool：它会接受 "t"/"T"/"TRUE" 等拼写，扩大了
+// 部署面可表达的集合；这里只认 frozen 四值，其余一律按未设置处理。
+// 为什么不 fail 启动：一个拼错的覆盖变量不应该让整站下线（I2 裁决）。
+func parseDemoEnabled(raw string) *bool {
+	switch strings.TrimSpace(raw) {
+	case "":
+		return nil
+	case "true", "1":
+		enabled := true
+		return &enabled
+	case "false", "0":
+		enabled := false
+		return &enabled
+	default:
+		slog.Warn("config: invalid NEWTG_DEMO_ENABLED; ignoring override",
+			"value", raw, "want", "true|false|1|0")
+		return nil
+	}
+}
+
+// ConfigGetter 是 configcenter.Center.Get 的最小读取面。
+//
+// httpapi / billing 各自声明了形状相同的窄接口；这里的类型只用于让
+// WithDemoOverride 同时适配两者（接口的方法集相同即可赋值）。
+type ConfigGetter interface {
+	Get(key string) (json.RawMessage, bool)
+}
+
+// DemoEnabled 返回**有效**演示模式：读取（可能已被 WithDemoOverride 包装的）
+// 配置快照。
+//
+// 这是守卫、中继额度、计费豁免三处唯一的有效值函数（控制端裁决 I2）：
+// 三处都调用它，避免「守卫按设置关闭、额度按 env 仍在扣」的分裂。
+// 缺键/脏值视为关闭，与 settings 注册表默认 false 一致。
+func DemoEnabled(getter ConfigGetter) bool {
+	if getter == nil {
+		return false
+	}
+	raw, ok := getter.Get(DemoEnabledKey)
+	if !ok {
+		return false
+	}
+	var enabled bool
+	if err := json.Unmarshal(raw, &enabled); err != nil {
+		return false
+	}
+	return enabled
+}
+
+// WithDemoOverride 返回配置读取面包装：NEWTG_DEMO_ENABLED 非 nil 时
+// 覆盖 site.demo.enabled 的读取值。
+//
+// 只覆盖这一个键，其余键原样透传——调用方可以把这个包装同时交给管理面
+// 守卫、中继 handler 与计费引擎，而不改变其它设置语义。override 为 nil
+// 时原样返回 inner（未设置 env 的部署与既有行为完全一致）。
+func WithDemoOverride(inner ConfigGetter, override *bool) ConfigGetter {
+	if override == nil {
+		return inner
+	}
+	return demoOverrideReader{inner: inner, enabled: *override}
+}
+
+type demoOverrideReader struct {
+	inner   ConfigGetter
+	enabled bool
+}
+
+func (r demoOverrideReader) Get(key string) (json.RawMessage, bool) {
+	if key == DemoEnabledKey {
+		// 返回合法 JSON：下游（如 settings 校验器）仍按 bool 反序列化。
+		if r.enabled {
+			return json.RawMessage("true"), true
+		}
+		return json.RawMessage("false"), true
+	}
+	if r.inner == nil {
+		return nil, false
+	}
+	return r.inner.Get(key)
 }
 
 func parseInt(key, raw string) (int, error) {

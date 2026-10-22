@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"strconv"
 	"strings"
@@ -29,6 +30,7 @@ import (
 	"gorm.io/gorm"
 
 	"newtg/gateway/internal/billing/pricing"
+	platformconfig "newtg/gateway/internal/config"
 	"newtg/gateway/internal/contract"
 )
 
@@ -302,6 +304,36 @@ func (e *Engine) NewSession(rc *contract.RelayContext) contract.BillingSession {
 		s.tokenID = int64(rc.TokenID)
 	}
 	return s
+}
+
+// demoExemptToken 判定「演示模式 + 不限额度令牌」的计费免单口径
+// （modules-08 §3.17.2 / 控制端裁决 I1）。
+//
+// 为什么只认 unlimited_quota：设计原文把演示账号的识别方式冻结为
+// 「其令牌置 unlimited_quota=true」。它不是 unlimited_quota 的通用语义——
+// 非演示模式下该标志仍然只解除令牌余额门，users.balance 照常扣减。
+//
+// 为什么这里直接查库：任务/崩溃恢复路径会按 requestID 重建会话，重建的
+// RelayContext 没有鉴权层的 TokenUnlimitedQuota 投影；演示模式是稀有部署，
+// 仅在演示模式下才多这一次查询。查询失败按「应计费」处理（fail-closed 到
+// 不扩大豁免面），只告警。
+func (e *Engine) demoExemptToken(ctx context.Context, tokenID int64) bool {
+	if e == nil || e.db == nil || tokenID <= 0 {
+		return false
+	}
+	if !platformconfig.DemoEnabled(e.cfg) {
+		return false
+	}
+	var unlimited bool
+	err := e.db.WithContext(ctx).Raw(
+		`SELECT remain_quota IS NULL FROM api_tokens WHERE id = ?`, tokenID).
+		Row().Scan(&unlimited)
+	if err != nil {
+		slog.Warn("billing: read token unlimited flag failed; treating request as billable",
+			"token_id", tokenID, "error", err)
+		return false
+	}
+	return unlimited
 }
 
 // heartbeatInterval 返回心跳间隔（测试可注入更短值）。

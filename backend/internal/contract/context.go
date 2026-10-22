@@ -28,6 +28,13 @@ type RelayContext struct {
 	// （relay-01 §7.1、R-61/R-62）；本字段只承载序列，不参与定价。
 	AutoGroups      []string
 	CrossGroupRetry bool // 跨分组重试开关（写入方：鉴权层；读取方：路由层，R-62）
+	// TokenUnlimitedQuota 是「api_tokens.remain_quota IS NULL」的鉴权投影
+	// （写入方：鉴权层 BuildRelayContext）。
+	//
+	// 只用于 §3.17.2 的演示账号识别：演示模式**且**令牌不限额度时，结算
+	// 不计入用户账单。它不是 unlimited_quota 的通用语义——非演示模式下该
+	// 字段不改变任何计费行为（余额门由 tokenUsable 单独判定）。
+	TokenUnlimitedQuota bool
 
 	// —— 请求组（写入方：归一化层）——
 	OriginModel string

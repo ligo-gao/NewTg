@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	platformconfig "newtg/gateway/internal/config"
 	"newtg/gateway/internal/metrics"
 	"newtg/gateway/internal/ratelimit"
 	"newtg/gateway/internal/settings"
@@ -133,24 +134,13 @@ func DemoReadOnlyGuard(config ConfigReader) func(http.Handler) http.Handler {
 	}
 }
 
-// demoModeEnabled 读取 site.demo.enabled。
+// demoModeEnabled 读取**有效**演示模式（设置值 + NEWTG_DEMO_ENABLED 覆盖）。
 //
-// 缺键/脏值一律按关闭处理：注册表默认是 false（§3.17 F-08-46 数据字段），
-// 与其它读取面「缺键回落默认」的口径一致。演示模式的开启只能经设置面
-// 写入（单事务 + 广播，≤1s 生效）。
+// 委托给 platformconfig.DemoEnabled：守卫、中继额度与计费豁免必须共用同一
+// 实现（控制端裁决 I2），否则会出现「守卫按 env 关闭、额度仍按设置扣费」。
+// 缺键/脏值一律按关闭处理：注册表默认是 false（§3.17 F-08-46 数据字段）。
 func demoModeEnabled(config ConfigReader) bool {
-	if config == nil {
-		return false
-	}
-	raw, ok := config.Get(keyDemoEnabled)
-	if !ok {
-		return false
-	}
-	var enabled bool
-	if err := json.Unmarshal(raw, &enabled); err != nil {
-		return false
-	}
-	return enabled
+	return platformconfig.DemoEnabled(config)
 }
 
 // demoWriteRouteFamily 把被拒路径归并为有限标签集；未知路径记 other。
@@ -330,7 +320,11 @@ func demoQuotaWindow(now time.Time, loc *time.Location) (string, time.Duration) 
 	return local.Format("20060102"), window
 }
 
-// demoQuotaLocation 读取站点时区（site.timezone），失败回落注册表默认/UTC。
+// demoQuotaLocation 读取站点时区（site.timezone）。
+//
+// 回退顺序：设置值 → 注册表默认值（仅当设置为空时使用）→ 以上任一不是
+// 合法 IANA 名称时回落 UTC。注意非法名称**不会**再回落注册表默认：设置
+// 已经给出一个（错的）值，再猜一个默认时区只会让「当日键」静默漂移。
 func demoQuotaLocation(config ConfigReader) *time.Location {
 	name := ""
 	if config != nil {

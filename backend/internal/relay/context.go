@@ -164,6 +164,10 @@ func BuildRelayContext(ctx context.Context, principal *auth.Principal, req *http
 		}
 
 		rc.TokenID = tokenID
+		// §3.17.2 演示账号识别：把令牌的不限额度投影带进 RelayContext，
+		// 计费结算据此判断「演示模式 + unlimited_quota」的免单口径。非演示
+		// 模式下该字段不参与任何判定。
+		rc.TokenUnlimitedQuota = meta.UnlimitedQuota
 		// R-61：group=auto 在鉴权层解析成「有序分组序列」。
 		//   - 空列表 → fail-closed，绝不回退用户分组（I-20）；
 		//   - 否则 UsingGroup = 有序第一项，全表写进 rc.AutoGroups 供路由层换组；

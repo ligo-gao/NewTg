@@ -217,7 +217,27 @@ func (e *Engine) terminateAtHeld(requestID string, tokenID int64, fact contract.
 		return fmt.Errorf("billing: read task holds for %s: %w", requestID, err)
 	}
 	if st.Held == 0 {
-		// 已结算/已退款（closed）或本来就没有 hold：幂等 no-op。
+		// §3.17.2（控制端裁决 I1）：演示账号的提交阶段没有 hold，但 usage_logs
+		// 仍要照常写，否则运维看不到演示站的「成本」。这里以 0 成本补一条成功
+		// 日志；真正有计价表达式的任务会走 TerminateByRequestIDForTokenCost，
+		// 由 Session 的免单分支写入真实成本。
+		if !e.demoExemptToken(ctx, tokenID) {
+			// 已结算/已退款（closed）或本来就没有 hold：幂等 no-op。
+			return nil
+		}
+		outcome := SettlementOutcome{
+			Cost: 0, PreDeducted: 0, Refunded: 0, Status: UsageLogStatusSuccess,
+		}
+		rc := &contract.RelayContext{
+			RequestID: requestID,
+			UserID:    int(st.UserID),
+			TokenID:   int(tokenID),
+		}
+		if e.saturator != nil {
+			if err := e.saturator.Saturate(ctx, &fact, rc, outcome); err != nil {
+				return fmt.Errorf("billing: write usage log for demo task: %w", err)
+			}
+		}
 		return nil
 	}
 	cost := st.Held

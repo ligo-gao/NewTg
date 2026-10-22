@@ -2,7 +2,11 @@
 package config
 
 import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -248,5 +252,123 @@ func TestValidateStandalone(t *testing.T) {
 	bad.OpenAPIValidate = "banana"
 	if err := bad.Validate(); err == nil {
 		t.Errorf("Validate() with OpenAPIValidate=banana: expected error, got nil")
+	}
+}
+
+// ---------- NEWTG_DEMO_ENABLED（I2 部署侧覆盖）----------
+
+type demoTestConfig map[string]json.RawMessage
+
+func (m demoTestConfig) Get(key string) (json.RawMessage, bool) {
+	v, ok := m[key]
+	return v, ok
+}
+
+func TestParseDemoEnabledFrozenValues(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want *bool
+	}{
+		{"", nil},
+		{"true", boolPtr(true)},
+		{"1", boolPtr(true)},
+		{"false", boolPtr(false)},
+		{"0", boolPtr(false)},
+		// 非法值按未设置处理；parseBool 会接受的 t/T/TRUE 也不在冻结集合内。
+		{"yes", nil},
+		{"t", nil},
+		{" FALSE ", nil},
+	}
+	for _, tc := range cases {
+		got := parseDemoEnabled(tc.raw)
+		if (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
+			t.Errorf("parseDemoEnabled(%q) = %v，期望 %v", tc.raw, fmtPointer(got), fmtPointer(tc.want))
+		}
+	}
+}
+
+func boolPtr(v bool) *bool { return &v }
+
+func fmtPointer(p *bool) string {
+	if p == nil {
+		return "<nil>"
+	}
+	return strconv.FormatBool(*p)
+}
+
+func TestLoadDemoEnabledOverride(t *testing.T) {
+	setRequired(t)
+	t.Setenv("NEWTG_DEMO_ENABLED", "false")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.DemoEnabled == nil || *c.DemoEnabled {
+		t.Fatalf("DemoEnabled = %v，期望 ptr(false)", c.DemoEnabled)
+	}
+
+	// 未设置 → nil（跟随 site.demo.enabled）。
+	t.Setenv("NEWTG_DEMO_ENABLED", "")
+	c, err = Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.DemoEnabled != nil {
+		t.Fatalf("未设置时 DemoEnabled = %v，期望 nil", *c.DemoEnabled)
+	}
+}
+
+func TestLoadInvalidDemoEnabledWarnsAndFallsBack(t *testing.T) {
+	setRequired(t)
+	t.Setenv("NEWTG_DEMO_ENABLED", "maybe")
+
+	old := slog.Default()
+	defer slog.SetDefault(old)
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("非法覆盖值不得让启动失败: %v", err)
+	}
+	if c.DemoEnabled != nil {
+		t.Fatalf("非法值应按未设置处理，got %v", *c.DemoEnabled)
+	}
+	if !strings.Contains(buf.String(), "NEWTG_DEMO_ENABLED") {
+		t.Fatalf("期望 warn 日志包含变量名，got %q", buf.String())
+	}
+}
+
+func TestDemoEnabledEffectiveValue(t *testing.T) {
+	withSetting := func(v bool) demoTestConfig {
+		return demoTestConfig{DemoEnabledKey: json.RawMessage(strconv.FormatBool(v))}
+	}
+	cases := []struct {
+		name     string
+		setting  bool
+		override *bool
+		want     bool
+	}{
+		{"未设置跟随开启", true, nil, true},
+		{"未设置跟随关闭", false, nil, false},
+		{"env=false 覆盖设置 true", true, boolPtr(false), false},
+		{"env=true 覆盖设置 false", false, boolPtr(true), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := DemoEnabled(WithDemoOverride(withSetting(tc.setting), tc.override))
+			if got != tc.want {
+				t.Fatalf("有效演示模式 = %v，期望 %v", got, tc.want)
+			}
+		})
+	}
+	// 包装只覆盖演示键，其余键原样透传。
+	inner := demoTestConfig{"site.title": json.RawMessage(`"TG"`)}
+	wrapped := WithDemoOverride(inner, boolPtr(true))
+	if raw, ok := wrapped.Get("site.title"); !ok || string(raw) != `"TG"` {
+		t.Fatalf("其它键被包装改动: %s ok=%v", raw, ok)
+	}
+	if DemoEnabled(nil) {
+		t.Fatal("nil 读取面必须按关闭处理")
 	}
 }

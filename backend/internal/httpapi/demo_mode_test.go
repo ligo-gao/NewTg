@@ -15,8 +15,11 @@ package httpapi
 //     （设计原文「兜底全在这两个计数器里」）。
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,7 +27,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
+
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	platformconfig "newtg/gateway/internal/config"
+	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/metrics"
+	"newtg/gateway/internal/mj"
+	"newtg/gateway/internal/ratelimit"
+	"newtg/gateway/internal/tasks"
 )
 
 // demoProblemBody 是守卫拒绝的完整 problem 体（比现有 decodeProblem 多 detail）。
@@ -78,7 +91,8 @@ func TestDemoReadOnlyGuardNilConfigIsPassthrough(t *testing.T) {
 }
 
 func TestDemoReadOnlyGuardAllowsSafeMethods(t *testing.T) {
-	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions} {
+	// TRACE 是 RFC 9110 的安全方法，必须与 GET/HEAD/OPTIONS 同等放行。
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace} {
 		t.Run(method, func(t *testing.T) {
 			var called atomic.Bool
 			h := DemoReadOnlyGuard(demoConfig(true))(demoGuardTestHandler(&called))
@@ -178,6 +192,11 @@ func TestNewRouterInstallsDemoGuard(t *testing.T) {
 		"auth.password_login_enabled": configBool(true),
 		"auth.signup_enabled":         configBool(true),
 	}, authTestOptions{})
+	// 预置演示账号：登录放行必须真的成功（M2 强化），不是「恰好没被 403」。
+	env.repo.add(UserRecord{
+		Username: "demo-user", Email: "demo@example.com",
+		PasswordHash: authTestPasswordHash(),
+	})
 
 	// 未认证的管理面写：守卫先于 SessionAuth，必须是 403 demo（不是 401）。
 	rr := env.request(http.MethodPost, "/api/settings", nil, nil)
@@ -205,14 +224,16 @@ func TestNewRouterInstallsDemoGuard(t *testing.T) {
 		t.Fatalf("POST /api/auth/register = %d，期望守卫 403；body=%s", rr.Code, rr.Body.String())
 	}
 
-	// 登录不被守卫拦（具体状态由登录逻辑决定）。
+	// 登录必须真正成功（M2 强化）：守卫放行之后，#Q2① 的会话入口可用，
+	// 且拿到会话 Cookie。只断言「不是 403」会把登录逻辑回归伪装成放行。
 	rr = env.request(http.MethodPost, "/api/auth/login", map[string]any{
-		"identifier": "demo-user", "password": "wrong",
+		"identifier": "demo-user", "password": authTestPassword,
 	}, nil)
-	if rr.Code == http.StatusForbidden {
-		if body := decodeDemoProblem(t, rr); body.Type == problemTypeDemoReadOnly {
-			t.Fatalf("登录被只读守卫误拦：%s", rr.Body.String())
-		}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("登录 = %d，期望 200；body=%s", rr.Code, rr.Body.String())
+	}
+	if cookieByName(rr, auth.SessionCookieName) == nil {
+		t.Fatal("登录成功必须下发会话 Cookie")
 	}
 }
 
@@ -223,13 +244,15 @@ func TestNewRouterDemoDisabledKeepsWrites(t *testing.T) {
 		"auth.password_login_enabled": configBool(true),
 		"auth.signup_enabled":         configBool(true),
 	}, authTestOptions{})
-	rr := env.request(http.MethodPost, "/api/auth/register", map[string]any{
-		"username": "demo-user", "email": "demo@example.com", "password": "correct horse battery staple",
-	}, nil)
-	if rr.Code == http.StatusForbidden {
-		if body := decodeDemoProblem(t, rr); body.Type == problemTypeDemoReadOnly {
-			t.Fatalf("关闭演示站后注册仍被守卫拒绝：%s", rr.Body.String())
-		}
+	rr := env.request(http.MethodPost, "/api/auth/register",
+		registerPayload("demo-user", "demo@example.com", authTestPassword, ""), nil)
+	// 关闭演示站后注册必须真的成功（M2 强化）：201 表示请求穿过了守卫并
+	// 完成业务写入，而不只是「没被 demo problem 拒绝」。
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("关闭演示站后注册 = %d，期望 201；body=%s", rr.Code, rr.Body.String())
+	}
+	if len(env.repo.created) != 1 {
+		t.Fatalf("注册写入次数 = %d，期望 1", len(env.repo.created))
 	}
 }
 
@@ -443,11 +466,13 @@ func TestDemoRelayQuotaStacksWithBPools(t *testing.T) {
 	}
 }
 
-// TestDemoRelayQuotaDemoAccountUnlimitedOnlyBypassesBalance 固定设计口径：
+// TestDemoRelayQuotaCountsEvenForUnlimitedToken 固定设计口径：
 // 演示账号用 `unlimited_quota=true` 识别（§3.17.2「其令牌置
-// unlimited_quota=true」），它绕过的是余额门；两个日计数器仍是兜底，
-// 不因账号身份豁免（「兜底全在这两个计数器里」）。
-func TestDemoRelayQuotaDemoAccountUnlimitedOnlyBypassesBalance(t *testing.T) {
+// unlimited_quota=true」）。该标志在演示模式下换取的是**账单豁免**（
+// 余额不扣，见 billing 的 demoExempt），但**不豁免**两个日计数器——
+// 「兜底全在这两个计数器里」。改名以表达真实语义，避免旧名
+// 「OnlyBypassesBalance」误导读者以为额度也被绕过。
+func TestDemoRelayQuotaCountsEvenForUnlimitedToken(t *testing.T) {
 	env := newRateLimitTestEnv(t, rateLimitEnvOptions{
 		config: demoQuotaConfig(true, 2, 2000),
 		tokens: []rateLimitSeedToken{{
@@ -510,5 +535,580 @@ func TestDemoQuotaWindowUsesSiteTimezone(t *testing.T) {
 	utcDate, _ := demoQuotaWindow(now.UTC(), time.UTC)
 	if utcDate == date {
 		t.Fatalf("UTC 与站点时区不应得到同一日期（UTC=%s site=%s）", utcDate, date)
+	}
+}
+
+// ---------- I2：NEWTG_DEMO_ENABLED 部署侧覆盖 ----------
+
+func boolPtr(v bool) *bool { return &v }
+
+// TestDemoModeEnvOverrideIsSingleEffectiveValue 验证守卫与中继额度都走
+// platformconfig.DemoEnabled / WithDemoOverride 这一条有效值路径。
+func TestDemoModeEnvOverrideIsSingleEffectiveValue(t *testing.T) {
+	t.Run("env=false overrides setting=true", func(t *testing.T) {
+		wrapped := platformconfig.WithDemoOverride(demoConfig(true), boolPtr(false))
+
+		// 守卫按 env 关闭：写请求透传（204 来自测试 handler）。
+		var called atomic.Bool
+		h := DemoReadOnlyGuard(wrapped)(demoGuardTestHandler(&called))
+		rr := serve(h, httptest.NewRequest(http.MethodPost, "/api/settings", nil))
+		if rr.Code != http.StatusNoContent || !called.Load() {
+			t.Fatalf("env=false 时 POST /api/settings = %d called=%v，期望放行", rr.Code, called.Load())
+		}
+
+		// 中继额度同样按 env 关闭：per-IP=1 也不应触发 429。
+		env := newRateLimitTestEnv(t, rateLimitEnvOptions{
+			config: platformconfig.WithDemoOverride(demoQuotaConfig(true, 1, 100), boolPtr(false)),
+		})
+		for i := 0; i < 3; i++ {
+			if w := env.chatFromIP(t, relayTestToken, "203.0.113.91"); w.Code != http.StatusOK {
+				t.Fatalf("env=false 第 %d 次 = %d，期望 200（额度必须随守卫一起关闭）；body=%s",
+					i+1, w.Code, w.Body.String())
+			}
+		}
+	})
+
+	t.Run("env=true overrides setting=false", func(t *testing.T) {
+		wrapped := platformconfig.WithDemoOverride(demoConfig(false), boolPtr(true))
+
+		var called atomic.Bool
+		h := DemoReadOnlyGuard(wrapped)(demoGuardTestHandler(&called))
+		rr := serve(h, httptest.NewRequest(http.MethodPost, "/api/settings", nil))
+		if rr.Code != http.StatusForbidden || called.Load() {
+			t.Fatalf("env=true 时 POST /api/settings = %d called=%v，期望 403", rr.Code, called.Load())
+		}
+
+		env := newRateLimitTestEnv(t, rateLimitEnvOptions{
+			config: platformconfig.WithDemoOverride(demoQuotaConfig(false, 1, 100), boolPtr(true)),
+		})
+		if w := env.chatFromIP(t, relayTestToken, "203.0.113.92"); w.Code != http.StatusOK {
+			t.Fatalf("env=true 第 1 次 = %d，期望 200", w.Code)
+		}
+		w := env.chatFromIP(t, relayTestToken, "203.0.113.92")
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("env=true 第 2 次 = %d，期望 429（额度必须随守卫一起开启）；body=%s", w.Code, w.Body.String())
+		}
+		if code := decodeRelayError(t, w.Body.Bytes()).Error.Code; code != demoRelayQuotaExceededCode {
+			t.Fatalf("code = %q，期望 %s", code, demoRelayQuotaExceededCode)
+		}
+	})
+}
+
+// ---------- I3：可观测断言 ----------
+
+// demoMetricValue 从进程级 registry 读取一个带标签的计数器当前值。
+// 只用于测试，不给生产新增读取接口。
+func demoMetricValue(t *testing.T, name string, labels map[string]string) float64 {
+	t.Helper()
+	families, err := metrics.Registry().Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, mf := range families {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			matched := true
+			for wantKey, wantValue := range labels {
+				found := false
+				for _, lp := range m.GetLabel() {
+					if lp.GetName() == wantKey && lp.GetValue() == wantValue {
+						found = true
+						break
+					}
+				}
+				if !found {
+					matched = false
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+			if c := m.GetCounter(); c != nil {
+				return c.GetValue()
+			}
+			if g := m.GetGauge(); g != nil {
+				return g.GetValue()
+			}
+		}
+	}
+	return 0
+}
+
+// demoCountingExecer 只统计审计写入次数：用来断言「被拒写入后审计表行数不变」。
+type demoCountingExecer struct{ calls atomic.Int64 }
+
+func (e *demoCountingExecer) ExecContext(context.Context, string, ...any) (sql.Result, error) {
+	e.calls.Add(1)
+	return demoSQLResult{}, nil
+}
+
+type demoSQLResult struct{}
+
+func (demoSQLResult) LastInsertId() (int64, error) { return 0, nil }
+func (demoSQLResult) RowsAffected() (int64, error) { return 1, nil }
+
+func TestDemoGuardRejectionIsObservableButNotAudited(t *testing.T) {
+	exec := &demoCountingExecer{}
+	env := newAuthTestEnv(t, mapConfig{keyDemoEnabled: configBool(true)},
+		authTestOptions{audit: audit.New(exec)})
+
+	before := demoMetricValue(t, "newtg_demo_write_rejected_total",
+		map[string]string{"route_family": "settings"})
+	rr := env.request(http.MethodPost, "/api/settings", map[string]any{}, nil)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("POST /api/settings = %d，期望 403；body=%s", rr.Code, rr.Body.String())
+	}
+	after := demoMetricValue(t, "newtg_demo_write_rejected_total",
+		map[string]string{"route_family": "settings"})
+	if delta := after - before; delta != 1 {
+		t.Fatalf("demo_write_rejected_total{route_family=settings} 增量 = %v，期望 1", delta)
+	}
+	if got := exec.calls.Load(); got != 0 {
+		t.Fatalf("被拒写入产生 %d 条审计，期望 0（Q6：不写审计）", got)
+	}
+}
+
+func TestDemoRelayQuotaExceededMetricsByScope(t *testing.T) {
+	t.Run("ip", func(t *testing.T) {
+		env := newRateLimitTestEnv(t, rateLimitEnvOptions{config: demoQuotaConfig(true, 1, 1000)})
+		ipBefore := demoMetricValue(t, "newtg_demo_relay_quota_exceeded_total", map[string]string{"scope": "ip"})
+		globalBefore := demoMetricValue(t, "newtg_demo_relay_quota_exceeded_total", map[string]string{"scope": "global"})
+		if w := env.chatFromIP(t, relayTestToken, "203.0.113.94"); w.Code != http.StatusOK {
+			t.Fatalf("第 1 次 = %d，期望 200", w.Code)
+		}
+		if w := env.chatFromIP(t, relayTestToken, "203.0.113.94"); w.Code != http.StatusTooManyRequests {
+			t.Fatalf("第 2 次 = %d，期望 429", w.Code)
+		}
+		if delta := demoMetricValue(t, "newtg_demo_relay_quota_exceeded_total", map[string]string{"scope": "ip"}) - ipBefore; delta != 1 {
+			t.Fatalf("scope=ip 增量 = %v，期望 1", delta)
+		}
+		if delta := demoMetricValue(t, "newtg_demo_relay_quota_exceeded_total", map[string]string{"scope": "global"}) - globalBefore; delta != 0 {
+			t.Fatalf("scope=global 增量 = %v，期望 0", delta)
+		}
+	})
+
+	t.Run("global", func(t *testing.T) {
+		env := newRateLimitTestEnv(t, rateLimitEnvOptions{config: demoQuotaConfig(true, 1000, 1)})
+		ipBefore := demoMetricValue(t, "newtg_demo_relay_quota_exceeded_total", map[string]string{"scope": "ip"})
+		globalBefore := demoMetricValue(t, "newtg_demo_relay_quota_exceeded_total", map[string]string{"scope": "global"})
+		if w := env.chatFromIP(t, relayTestToken, "203.0.113.95"); w.Code != http.StatusOK {
+			t.Fatalf("第 1 次 = %d，期望 200", w.Code)
+		}
+		if w := env.chatFromIP(t, relayTestToken, "203.0.113.96"); w.Code != http.StatusTooManyRequests {
+			t.Fatalf("全站超限 = %d，期望 429", w.Code)
+		}
+		if delta := demoMetricValue(t, "newtg_demo_relay_quota_exceeded_total", map[string]string{"scope": "global"}) - globalBefore; delta != 1 {
+			t.Fatalf("scope=global 增量 = %v，期望 1", delta)
+		}
+		if delta := demoMetricValue(t, "newtg_demo_relay_quota_exceeded_total", map[string]string{"scope": "ip"}) - ipBefore; delta != 0 {
+			t.Fatalf("scope=ip 增量 = %v，期望 0", delta)
+		}
+	})
+}
+
+// ---------- M3：顺序短路 ----------
+
+// TestDemoRelayQuotaIPRejectionDoesNotIncrementGlobal 读 Redis 键值证明：
+// IP 层已经拒绝时全站计数器不再自增。把顺序改成 global→ip 时本用例必须红。
+func TestDemoRelayQuotaIPRejectionDoesNotIncrementGlobal(t *testing.T) {
+	env := newRateLimitTestEnv(t, rateLimitEnvOptions{config: demoQuotaConfig(true, 1, 100)})
+	const ip = "203.0.113.97"
+	if w := env.chatFromIP(t, relayTestToken, ip); w.Code != http.StatusOK {
+		t.Fatalf("第 1 次 = %d，期望 200", w.Code)
+	}
+	if w := env.chatFromIP(t, relayTestToken, ip); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("第 2 次 = %d，期望 429", w.Code)
+	}
+	var globalKey string
+	for _, key := range env.mr.Keys() {
+		if strings.HasPrefix(key, "demo:relay:") && strings.HasSuffix(key, ":global") {
+			globalKey = key
+			break
+		}
+	}
+	if globalKey == "" {
+		t.Fatalf("未找到全站计数键；keys=%v", env.mr.Keys())
+	}
+	got, err := env.mr.Get(globalKey)
+	if err != nil {
+		t.Fatalf("读取全站计数: %v", err)
+	}
+	if got != "1" {
+		t.Fatalf("全站计数 = %s，期望 1（IP 已拒绝的请求不得再自增全站）", got)
+	}
+}
+
+// ---------- I4：非 chat 入口的额度覆盖 ----------
+
+func (e *rateLimitTestEnv) doFromIP(t *testing.T, path, body, ip string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	req.RemoteAddr = ip + ":1234"
+	w := httptest.NewRecorder()
+	e.mux.ServeHTTP(w, req)
+	return w
+}
+
+func assertDemoQuotaRejected(t *testing.T, env *rateLimitTestEnv, w *httptest.ResponseRecorder,
+	ip string, wantUpstream, wantPreConsume int) {
+	t.Helper()
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("超限 status = %d，期望 429；body=%s", w.Code, w.Body.String())
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Fatal("Retry-After 缺失")
+	}
+	if code := decodeRelayError(t, w.Body.Bytes()).Error.Code; code != demoRelayQuotaExceededCode {
+		t.Fatalf("code = %q，期望 %s", code, demoRelayQuotaExceededCode)
+	}
+	if got := env.upstream.count(); got != wantUpstream {
+		t.Fatalf("上游调用 = %d，期望 %d（被拒不得触达上游）", got, wantUpstream)
+	}
+	if got := env.billing.preConsumeCount(); got != wantPreConsume {
+		t.Fatalf("PreConsume = %d，期望 %d（被拒不得预扣）", got, wantPreConsume)
+	}
+	// 计数键按真实 IP 归桶，而不是共享的 unknown 桶。
+	foundIP := false
+	for _, key := range env.mr.Keys() {
+		if strings.HasPrefix(key, "demo:relay:") && strings.Contains(key, ":ip:"+demoIPHash(ip)) {
+			foundIP = true
+		}
+	}
+	if !foundIP {
+		t.Fatalf("未找到 %s 的 per-IP 计数键（不得归到 unknown）；keys=%v", ip, env.mr.Keys())
+	}
+}
+
+func TestDemoRelayQuotaCoversMessages(t *testing.T) {
+	// /v1/messages 只接受 Anthropic 协议族渠道；用真实的 messages 装置
+	// （假上游 + 原生回写）保证第 1 次是 200 而不是 501。
+	env, counter := messagesTestEnv(t, contract.ChannelTypeAnthropic,
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, messagesUpstreamBody)
+		})
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	env.handler.rateLimiter = ratelimit.New(rdb)
+	env.handler.config = demoQuotaConfig(true, 1, 100)
+
+	const ip = "203.0.113.101"
+	body := `{"model":"` + messagesTestModel + `","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`
+	do := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", relayTestToken)
+		req.RemoteAddr = ip + ":1234"
+		rec := httptest.NewRecorder()
+		env.handler.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	if first := do(); first.Code != http.StatusOK {
+		t.Fatalf("第 1 次 = %d，期望 200；body=%s", first.Code, first.Body.String())
+	}
+	if counter.count() != 1 || env.billing.preConsumeCount() != 1 {
+		t.Fatalf("第 1 次副作用 = upstream %d / preconsume %d，期望 1/1",
+			counter.count(), env.billing.preConsumeCount())
+	}
+	second := do()
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("第 2 次 = %d，期望 429；body=%s", second.Code, second.Body.String())
+	}
+	if second.Header().Get("Retry-After") == "" {
+		t.Fatal("Retry-After 缺失")
+	}
+	if code := decodeRelayError(t, second.Body.Bytes()).Error.Code; code != demoRelayQuotaExceededCode {
+		t.Fatalf("code = %q，期望 %s", code, demoRelayQuotaExceededCode)
+	}
+	if counter.count() != 1 || env.billing.preConsumeCount() != 1 {
+		t.Fatalf("被拒请求产生副作用：upstream %d / preconsume %d，期望仍为 1/1",
+			counter.count(), env.billing.preConsumeCount())
+	}
+	assertDemoIPKey(t, mr, ip)
+}
+
+func TestDemoRelayQuotaCoversMultimodal(t *testing.T) {
+	env := newRateLimitTestEnv(t, rateLimitEnvOptions{
+		config:     demoQuotaConfig(true, 1, 100),
+		multimodal: true,
+	})
+	const ip = "203.0.113.102"
+	body := `{"model":"` + rateLimitTestModel + `","input":"hi"}`
+	first := env.doFromIP(t, "/v1/embeddings", body, ip, map[string]string{"Authorization": "Bearer " + relayTestToken})
+	if first.Code != http.StatusOK {
+		t.Fatalf("第 1 次 = %d，期望 200；body=%s", first.Code, first.Body.String())
+	}
+	// dispatcher 是接缝替身：真正的 PreConsume 在 dispatcher 内部（本用例
+	// 只验证额度先于 dispatcher 执行），因此这里断言 dispatch 发生、预扣 0。
+	if env.multimodal.calls != 1 || env.billing.preConsumeCount() != 0 {
+		t.Fatalf("第 1 次副作用 = dispatch %d / preconsume %d，期望 1/0",
+			env.multimodal.calls, env.billing.preConsumeCount())
+	}
+	second := env.doFromIP(t, "/v1/embeddings", body, ip, map[string]string{"Authorization": "Bearer " + relayTestToken})
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("第 2 次 = %d，期望 429；body=%s", second.Code, second.Body.String())
+	}
+	if second.Header().Get("Retry-After") == "" {
+		t.Fatal("Retry-After 缺失")
+	}
+	if code := decodeRelayError(t, second.Body.Bytes()).Error.Code; code != demoRelayQuotaExceededCode {
+		t.Fatalf("code = %q，期望 %s", code, demoRelayQuotaExceededCode)
+	}
+	// 多模态经由 dispatcher 接缝执行；被拒请求不得到达 dispatcher。
+	if env.multimodal.calls != 1 || env.billing.preConsumeCount() != 0 {
+		t.Fatalf("被拒请求产生副作用：dispatch %d / preconsume %d，期望仍为 1/0",
+			env.multimodal.calls, env.billing.preConsumeCount())
+	}
+	assertDemoIPKey(t, env.mr, ip)
+}
+
+// assertDemoIPKey 断言 per-IP 计数键使用请求真实地址的哈希（不是 unknown）。
+func assertDemoIPKey(t *testing.T, mr *miniredis.Miniredis, ip string) {
+	t.Helper()
+	for _, key := range mr.Keys() {
+		if strings.HasPrefix(key, "demo:relay:") && strings.Contains(key, ":ip:"+demoIPHash(ip)) {
+			if strings.Contains(key, ip) {
+				t.Fatalf("Redis 键含明文 IP：%q", key)
+			}
+			return
+		}
+	}
+	t.Fatalf("未找到 %s 的 per-IP 计数键（不得归到 unknown）；keys=%v", ip, mr.Keys())
+}
+
+func TestDemoRelayQuotaCoversTaskSubmit(t *testing.T) {
+	env := newRateLimitTaskEnv(t, demoQuotaConfig(true, 1, 100), nil)
+	const ip = "203.0.113.103"
+	submit := func() *httptest.ResponseRecorder {
+		req := newTaskSubmitHTTPReq(`{"model":"sample-model"}`)
+		req.RemoteAddr = ip + ":1234"
+		rec := httptest.NewRecorder()
+		env.mux.ServeHTTP(rec, req)
+		return rec
+	}
+	if w := submit(); w.Code != http.StatusAccepted {
+		t.Fatalf("第 1 次提交 = %d，期望 202；body=%s", w.Code, w.Body.String())
+	}
+	w := submit()
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("第 2 次提交 = %d，期望 429；body=%s", w.Code, w.Body.String())
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Fatal("Retry-After 缺失")
+	}
+	if code := decodeRelayError(t, w.Body.Bytes()).Error.Code; code != demoRelayQuotaExceededCode {
+		t.Fatalf("code = %q，期望 %s", code, demoRelayQuotaExceededCode)
+	}
+	if got := taskPreConsumeCount(env.billing); got != 1 {
+		t.Fatalf("PreConsume = %d，期望 1", got)
+	}
+	if got := env.upstream.count(); got != 1 {
+		t.Fatalf("上游调用 = %d，期望 1", got)
+	}
+	if env.store.inserted != 1 {
+		t.Fatalf("任务行 = %d，期望 1", env.store.inserted)
+	}
+	foundIP := false
+	for _, key := range env.mr.Keys() {
+		if strings.HasPrefix(key, "demo:relay:") && strings.Contains(key, ":ip:"+demoIPHash(ip)) {
+			foundIP = true
+		}
+	}
+	if !foundIP {
+		t.Fatalf("未找到提交 IP 的计数键；keys=%v", env.mr.Keys())
+	}
+}
+
+// demoMJEnv 是演示额度用例的 MJ 接线：提交走假上游，image-seed 走假 querier，
+// 两者共用同一 Redis 限流器与 demo 配置。
+type demoMJEnv struct {
+	mux      *http.ServeMux
+	mr       *miniredis.Miniredis
+	billing  *rateLimitBilling
+	upstream *mjUpstream
+	querier  *fakeMJQuerier
+	store    *fakeMJStore
+	auth     string
+}
+
+func newDemoMJEnv(t *testing.T, cfg fakeMJConfig, perIP int64) *demoMJEnv {
+	t.Helper()
+	if cfg == nil {
+		cfg = fakeMJConfig{}
+	}
+	if _, ok := cfg["mj.enabled"]; !ok {
+		cfg["mj.enabled"] = mjBoolSetting(true)
+	}
+	if _, ok := cfg["mj.channel_max_inflight"]; !ok {
+		cfg["mj.channel_max_inflight"] = mjIntSetting(1000)
+	}
+	cfg[keyDemoEnabled] = configBool(true)
+	cfg[keyDemoRelayPerIPDaily] = configInt(perIP)
+	cfg[keyDemoRelayGlobalDaily] = configInt(1000)
+
+	store := newFakeMJStore()
+	store.byUserUpstream[mjUserUpstreamKey(42, "mj_1")] = mjQueryTask(42, "mj_1", tasks.StateSuccess)
+	upstream := newMJUpstream(t, `{"code":1,"description":"ok","result":"mj_up_1"}`)
+	sealer := NewSecretSealer("mj-handler-test-key")
+	target, candidate := sealedMJChannel(t, sealer, 10, mj.ChannelTypeMidjourney, upstream.server.URL, mjAllModels(), 10)
+	channels := &fakeMJChannels{
+		channels:   map[int64]*tasks.ChannelTarget{10: target},
+		candidates: []tasks.MJChannelCandidate{candidate},
+	}
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	tokens, key, _ := newMJTokens()
+	querier := &fakeMJQuerier{seedBody: []byte(`{"code":1,"description":"ok","result":"seed"}`)}
+	billing := newRateLimitBilling()
+	handler := NewMJHandler(MJHandlerConfig{
+		Store:       store,
+		Channels:    channels,
+		Sealer:      sealer,
+		Tokens:      tokens,
+		Billing:     billing.factory,
+		Config:      cfg,
+		RateLimiter: ratelimit.New(rdb),
+		ImageSigner: mj.NewImageSigner("mj-handler-test-key"),
+		Querier:     querier,
+		Now:         func() time.Time { return time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC) },
+		Uint64N:     func(uint64) uint64 { return 0 },
+	})
+	mux := http.NewServeMux()
+	handler.Register(mux, RelayAuth(tokens, fakeTaskAccess{}, nil))
+	return &demoMJEnv{mux: mux, mr: mr, billing: billing, upstream: upstream, querier: querier, store: store, auth: "Bearer " + key}
+}
+
+func (e *demoMJEnv) do(t *testing.T, path, body, ip string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", e.auth)
+	req.RemoteAddr = ip + ":1234"
+	rec := httptest.NewRecorder()
+	e.mux.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestDemoRelayQuotaCoversMJSubmit(t *testing.T) {
+	env := newDemoMJEnv(t, nil, 1)
+	const ip = "203.0.113.104"
+	first := env.do(t, "/mj/submit/imagine", `{"prompt":"a cat"}`, ip)
+	if first.Code != http.StatusOK {
+		t.Fatalf("第 1 次 = %d，期望 200；body=%s", first.Code, first.Body.String())
+	}
+	second := env.do(t, "/mj/submit/imagine", `{"prompt":"a cat"}`, ip)
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("第 2 次 = %d，期望 429；body=%s", second.Code, second.Body.String())
+	}
+	if second.Header().Get("Retry-After") == "" {
+		t.Fatal("Retry-After 缺失")
+	}
+	if desc := fmt.Sprint(decodeMJEnvelope(t, second)["description"]); desc != mj.DescriptionRateLimited {
+		t.Fatalf("description = %q，期望 %s", desc, mj.DescriptionRateLimited)
+	}
+	if got := env.upstream.calls(); got != 1 {
+		t.Fatalf("上游调用 = %d，期望 1（被拒不得提交上游）", got)
+	}
+	if got := env.billing.preConsumeCount(); got != 1 {
+		t.Fatalf("PreConsume = %d，期望 1", got)
+	}
+	foundIP := false
+	for _, key := range env.mr.Keys() {
+		if strings.HasPrefix(key, "demo:relay:") && strings.Contains(key, ":ip:"+demoIPHash(ip)) {
+			foundIP = true
+		}
+	}
+	if !foundIP {
+		t.Fatalf("未找到 MJ 提交 IP 的计数键；keys=%v", env.mr.Keys())
+	}
+}
+
+// TestDemoRelayQuotaMJMapping 覆盖 429/403/503 三条映射，且拒绝路径零上游、
+// 零预扣（因此真实引擎也不会写 usage_logs：日志发生在 PreConsume 之后）。
+func TestDemoRelayQuotaMJMapping(t *testing.T) {
+	t.Run("quota exhausted 429", func(t *testing.T) {
+		env := newDemoMJEnv(t, nil, 1)
+		const ip = "203.0.113.105"
+		if w := env.do(t, "/mj/submit/imagine", `{"prompt":"a cat"}`, ip); w.Code != http.StatusOK {
+			t.Fatalf("第 1 次 = %d，期望 200", w.Code)
+		}
+		w := env.do(t, "/mj/submit/imagine", `{"prompt":"a cat"}`, ip)
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("超限 = %d，期望 429；body=%s", w.Code, w.Body.String())
+		}
+		if desc := fmt.Sprint(decodeMJEnvelope(t, w)["description"]); desc != mj.DescriptionRateLimited {
+			t.Fatalf("description = %q，期望 %s", desc, mj.DescriptionRateLimited)
+		}
+		if env.upstream.calls() != 1 || env.billing.preConsumeCount() != 1 {
+			t.Fatalf("被拒请求产生副作用：upstream=%d preconsume=%d，期望 1/1",
+				env.upstream.calls(), env.billing.preConsumeCount())
+		}
+	})
+
+	t.Run("quota zero 403", func(t *testing.T) {
+		env := newDemoMJEnv(t, nil, 0)
+		w := env.do(t, "/mj/submit/imagine", `{"prompt":"a cat"}`, "203.0.113.106")
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("额度为 0 = %d，期望 403；body=%s", w.Code, w.Body.String())
+		}
+		if env.upstream.calls() != 0 || env.billing.preConsumeCount() != 0 {
+			t.Fatalf("403 必须零上游零预扣：upstream=%d preconsume=%d",
+				env.upstream.calls(), env.billing.preConsumeCount())
+		}
+	})
+
+	t.Run("redis failure 503", func(t *testing.T) {
+		env := newDemoMJEnv(t, nil, 1)
+		env.mr.Close()
+		w := env.do(t, "/mj/submit/imagine", `{"prompt":"a cat"}`, "203.0.113.107")
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("Redis 故障 = %d，期望 503；body=%s", w.Code, w.Body.String())
+		}
+		if env.upstream.calls() != 0 || env.billing.preConsumeCount() != 0 {
+			t.Fatalf("503 必须零上游零预扣：upstream=%d preconsume=%d",
+				env.upstream.calls(), env.billing.preConsumeCount())
+		}
+	})
+}
+
+// TestDemoRelayQuotaCoversMJImageSeed 覆盖 M5：image-seed 会真实转发上游，
+// 必须在转发之前消耗同一套两层日额度。
+func TestDemoRelayQuotaCoversMJImageSeed(t *testing.T) {
+	env := newDemoMJEnv(t, nil, 1)
+	const ip = "203.0.113.108"
+	first := env.do(t, "/mj/task/mj_1/image-seed", ``, ip)
+	if first.Code != http.StatusOK {
+		t.Fatalf("第 1 次 = %d，期望 200；body=%s", first.Code, first.Body.String())
+	}
+	if env.querier.calls() != 1 {
+		t.Fatalf("上游 image-seed 调用 = %d，期望 1", env.querier.calls())
+	}
+	second := env.do(t, "/mj/task/mj_1/image-seed", ``, ip)
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("第 2 次 = %d，期望 429；body=%s", second.Code, second.Body.String())
+	}
+	if second.Header().Get("Retry-After") == "" {
+		t.Fatal("Retry-After 缺失")
+	}
+	if env.querier.calls() != 1 {
+		t.Fatalf("被拒请求仍触达上游：image-seed 调用 = %d，期望仍为 1", env.querier.calls())
+	}
+	foundIP := false
+	for _, key := range env.mr.Keys() {
+		if strings.HasPrefix(key, "demo:relay:") && strings.Contains(key, ":ip:"+demoIPHash(ip)) {
+			foundIP = true
+		}
+	}
+	if !foundIP {
+		t.Fatalf("未找到 image-seed 请求 IP 的计数键；keys=%v", env.mr.Keys())
 	}
 }
