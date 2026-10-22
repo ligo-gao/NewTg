@@ -69,19 +69,6 @@
     "name_vi": "Tiếng Việt",
     "saved_locally": "语言已在此设备切换，但未能保存到服务端偏好。"
   },
-  "compliance": {
-    "title": "支付前确认",
-    "description": "完成支付或订阅前，请阅读以下要点。",
-    "payment_point": "支付前显示的金额即为支付渠道实际扣款的金额。",
-    "refund_point": "退款按照退款政策处理；已完成的支付不会自动撤回。",
-    "terms_point": "您同意服务条款：",
-    "privacy_point": "我们按照隐私政策处理您的数据：",
-    "terms_link": "服务条款",
-    "privacy_link": "隐私政策",
-    "acknowledge": "我已阅读并同意服务条款与隐私政策，并了解支付与退款规则。",
-    "cancel": "取消",
-    "continue": "同意并继续"
-  },
   "topup": {
     "title": "充值",
     "balance_title": "可用余额",

@@ -4,8 +4,6 @@ import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '@/api/client'
 import { ApiError } from '@/api/errors'
 import { requireData } from '@/api/result'
-import { ComplianceGate } from '@/features/account/compliance/compliance-gate'
-import { useComplianceGate } from '@/features/account/compliance/use-compliance-gate'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { formatCredits } from '@/shared/lib/format'
 import { Dialog } from '@/shared/ui/base/dialog'
@@ -91,12 +89,6 @@ export function SubscriptionPurchaseDialog({
   const [error, setError] = useState<InlineError | null>(null)
   const [activated, setActivated] = useState(false)
   const [checkout, setCheckout] = useState<CheckoutState | null>(null)
-  const {
-    gateOpen,
-    requireCompliance,
-    confirmCompliance,
-    cancelCompliance,
-  } = useComplianceGate()
 
   const configQuery = useQuery({
     queryKey: TOPUP_CONFIG_KEY,
@@ -197,7 +189,7 @@ export function SubscriptionPurchaseDialog({
     })
   }
 
-  async function submitPurchase(): Promise<void> {
+  async function submit(): Promise<void> {
     if (submitting || offline || plan === null) return
     const effectiveProvider: SubscriptionProvider | null = isFree
       ? (providers[0] ?? 'stripe')
@@ -246,18 +238,6 @@ export function SubscriptionPurchaseDialog({
     } finally {
       setSubmitting(false)
     }
-  }
-
-  /**
-   * G-M6C-19: purchase is a paid action too (wallet funding included), so the
-   * compliance gate runs before `POST /api/subscription/purchase`. The pending
-   * action is discarded if the gate is cancelled.
-   */
-  function submit(): void {
-    if (submitting || offline || plan === null) return
-    requireCompliance(() => {
-      void submitPurchase()
-    })
   }
 
   const providerSection = isFree ? (
@@ -335,7 +315,7 @@ export function SubscriptionPurchaseDialog({
           submitting ||
           (!isFree && (provider === null || providers.length === 0))
         }
-        onClick={submit}
+        onClick={() => void submit()}
       >
         {submitting
           ? t('account.subscription.action.creating')
@@ -443,14 +423,6 @@ export function SubscriptionPurchaseDialog({
           }}
         />
       ) : null}
-
-      <ComplianceGate
-        open={gateOpen}
-        onOpenChange={(next) => {
-          if (!next) cancelCompliance()
-        }}
-        onConfirm={confirmCompliance}
-      />
     </>
   )
 }

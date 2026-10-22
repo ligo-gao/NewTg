@@ -2,8 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 
 import { apiClient } from '@/api/client'
 import { requireData } from '@/api/result'
-import { ComplianceGate } from '@/features/account/compliance/compliance-gate'
-import { useComplianceGate } from '@/features/account/compliance/use-compliance-gate'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { formatCredits } from '@/shared/lib/format'
 import { Dialog } from '@/shared/ui/base/dialog'
@@ -50,12 +48,6 @@ export function PaymentConfirmDialog({
   const push = useToastStore((state) => state.push)
   const keyRef = useRef<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
-  const {
-    gateOpen,
-    requireCompliance,
-    confirmCompliance,
-    cancelCompliance,
-  } = useComplianceGate()
 
   useEffect(() => {
     keyRef.current = open ? newKey() : null
@@ -69,7 +61,7 @@ export function PaymentConfirmDialog({
       : 'account.orders.provider_alipay',
   )
 
-  async function createOrder(): Promise<void> {
+  async function confirm(): Promise<void> {
     if (submitting) return
     const key = keyRef.current ?? (keyRef.current = newKey())
     setSubmitting(true)
@@ -106,65 +98,43 @@ export function PaymentConfirmDialog({
     }
   }
 
-  /**
-   * G-M6C-19: no `POST /api/orders` before the compliance gate is acknowledged.
-   * The flag is remembered for the tab session, so later payments in the same
-   * session submit directly instead of stacking a second modal.
-   */
-  function confirm(): void {
-    if (submitting) return
-    requireCompliance(() => {
-      void createOrder()
-    })
-  }
-
   return (
-    <>
-      <Dialog
-        open={open}
-        onOpenChange={(next) => {
-          if (!submitting) onOpenChange(next)
-        }}
-        title={t('account.topup.confirm_title')}
-        dismissible={!submitting}
-        footer={
-          <>
-            <Button
-              variant="ghost"
-              disabled={submitting}
-              onClick={() => {
-                onOpenChange(false)
-              }}
-            >
-              {t('account.topup.cancel')}
-            </Button>
-            <Button disabled={submitting} onClick={confirm}>
-              {submitting ? t('account.topup.creating') : t('account.topup.confirm_pay')}
-            </Button>
-          </>
-        }
-      >
-        <dl className="flex flex-col gap-2">
-          <LedgerRow label={t('account.topup.you_pay')} value={formatYuan(amount)} />
-          <LedgerRow
-            label={t('account.topup.credits_received')}
-            value={formatCredits(credits)}
-          />
-          <div className="flex items-center justify-between gap-4 text-sm">
-            <dt className="text-ink-2">{t('account.topup.payment_method')}</dt>
-            <dd className="font-medium text-ink-1">{providerLabel}</dd>
-          </div>
-        </dl>
-      </Dialog>
-
-      <ComplianceGate
-        open={gateOpen}
-        onOpenChange={(next) => {
-          if (!next) cancelCompliance()
-        }}
-        onConfirm={confirmCompliance}
-      />
-    </>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!submitting) onOpenChange(next)
+      }}
+      title={t('account.topup.confirm_title')}
+      dismissible={!submitting}
+      footer={
+        <>
+          <Button
+            variant="ghost"
+            disabled={submitting}
+            onClick={() => {
+              onOpenChange(false)
+            }}
+          >
+            {t('account.topup.cancel')}
+          </Button>
+          <Button disabled={submitting} onClick={() => void confirm()}>
+            {submitting ? t('account.topup.creating') : t('account.topup.confirm_pay')}
+          </Button>
+        </>
+      }
+    >
+      <dl className="flex flex-col gap-2">
+        <LedgerRow label={t('account.topup.you_pay')} value={formatYuan(amount)} />
+        <LedgerRow
+          label={t('account.topup.credits_received')}
+          value={formatCredits(credits)}
+        />
+        <div className="flex items-center justify-between gap-4 text-sm">
+          <dt className="text-ink-2">{t('account.topup.payment_method')}</dt>
+          <dd className="font-medium text-ink-1">{providerLabel}</dd>
+        </div>
+      </dl>
+    </Dialog>
   )
 }
 

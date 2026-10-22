@@ -69,19 +69,6 @@
     "name_vi": "Tiếng Việt",
     "saved_locally": "Ngôn ngữ chỉ được đổi trên thiết bị này. Không thể lưu tùy chọn lên máy chủ."
   },
-  "compliance": {
-    "title": "Trước khi thanh toán",
-    "description": "Vui lòng xem các điểm sau trước khi thanh toán hoặc mua gói đăng ký.",
-    "payment_point": "Số tiền hiển thị trước khi thanh toán là số tiền nhà cung cấp thanh toán sẽ trừ.",
-    "refund_point": "Hoàn tiền được xử lý theo chính sách hoàn tiền; các khoản thanh toán đã hoàn tất không tự động được hoàn lại.",
-    "terms_point": "Bạn đồng ý với Điều khoản dịch vụ:",
-    "privacy_point": "Dữ liệu của bạn được xử lý theo Chính sách quyền riêng tư:",
-    "terms_link": "Điều khoản dịch vụ",
-    "privacy_link": "Chính sách quyền riêng tư",
-    "acknowledge": "Tôi đã đọc và đồng ý với Điều khoản dịch vụ và Chính sách quyền riêng tư, đồng thời hiểu các quy tắc thanh toán và hoàn tiền.",
-    "cancel": "Hủy",
-    "continue": "Đồng ý và tiếp tục"
-  },
   "topup": {
     "title": "Nạp tiền",
     "balance_title": "Số dư khả dụng",

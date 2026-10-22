@@ -2,11 +2,9 @@ import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
 import { screen, waitFor, within } from '@testing-library/react'
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
-
-import { acknowledgeCompliance } from '@/features/account/compliance/compliance-session'
 
 import { TopupPage } from './topup-page'
 
@@ -14,10 +12,6 @@ const ORIGIN = 'http://localhost:3000'
 const server = setupServer()
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
-// The compliance gate itself is covered by compliance-gate.test.tsx and the
-// PaymentConfirmDialog integration test; these cases start from a session that
-// already acknowledged it so they keep exercising the payment flow.
-beforeEach(() => acknowledgeCompliance())
 afterEach(() => server.resetHandlers())
 afterAll(() => server.close())
 

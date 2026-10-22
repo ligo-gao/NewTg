@@ -2,8 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 
 import { apiClient } from '@/api/client'
 import { requireData } from '@/api/result'
-import { ComplianceGate } from '@/features/account/compliance/compliance-gate'
-import { useComplianceGate } from '@/features/account/compliance/use-compliance-gate'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Dialog } from '@/shared/ui/base/dialog'
 import { Button } from '@/shared/ui/button'
@@ -69,12 +67,6 @@ export function RenewDialog({
   const [error, setError] = useState<SubscriptionInlineError | null>(null)
   const [activated, setActivated] = useState(false)
   const [checkout, setCheckout] = useState<CheckoutState | null>(null)
-  const {
-    gateOpen,
-    requireCompliance,
-    confirmCompliance,
-    cancelCompliance,
-  } = useComplianceGate()
 
   const subscriptionId = subscription?.id ?? null
   const plan = subscription === null ? undefined : findMatchingPlan(subscription, plans)
@@ -105,7 +97,7 @@ export function RenewDialog({
     push({ tone: 'success', message: t('account.subscription.renew.success') })
   }
 
-  async function renew(): Promise<void> {
+  async function submit(): Promise<void> {
     if (submitting || offline || subscription === null) return
     // 0 元套餐服务端仍要求 provider 字段，但不会调用渠道；与购买同口径，
     // 发送第一个已启用渠道，未配置时用 stripe（零金额不触达渠道）。
@@ -152,18 +144,6 @@ export function RenewDialog({
     }
   }
 
-  /**
-   * G-M6C-19: renewal creates a paid order, so the same compliance gate runs
-   * before `POST /api/subscriptions/{id}/renew`. Cancelling the gate leaves the
-   * renewal dialog untouched and sends nothing.
-   */
-  function submit(): void {
-    if (submitting || offline || subscription === null) return
-    requireCompliance(() => {
-      void renew()
-    })
-  }
-
   const footer = activated ? (
     <Button onClick={() => onOpenChange(false)}>
       {t('account.subscription.action.done')}
@@ -179,7 +159,7 @@ export function RenewDialog({
           submitting ||
           (!isFree && (providers.length === 0 || provider === null))
         }
-        onClick={submit}
+        onClick={() => void submit()}
       >
         {submitting
           ? t('account.subscription.renew.renewing')
@@ -293,14 +273,6 @@ export function RenewDialog({
           }}
         />
       ) : null}
-
-      <ComplianceGate
-        open={gateOpen}
-        onOpenChange={(next) => {
-          if (!next) cancelCompliance()
-        }}
-        onConfirm={confirmCompliance}
-      />
     </>
   )
 }

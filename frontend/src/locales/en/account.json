@@ -69,19 +69,6 @@
     "name_vi": "Tiếng Việt",
     "saved_locally": "Language changed on this device only. The server preference could not be saved."
   },
-  "compliance": {
-    "title": "Before you pay",
-    "description": "Please review these points before completing a payment or subscription.",
-    "payment_point": "The amount shown before payment is the amount charged by the payment provider.",
-    "refund_point": "Refunds follow the refund policy; a completed payment is not automatically reversible.",
-    "terms_point": "You agree to the Terms of Service:",
-    "privacy_point": "Your data is processed as described in the Privacy Policy:",
-    "terms_link": "Terms of Service",
-    "privacy_link": "Privacy Policy",
-    "acknowledge": "I have read and agree to the Terms of Service and Privacy Policy, and I understand the payment and refund rules.",
-    "cancel": "Cancel",
-    "continue": "Agree & Continue"
-  },
   "topup": {
     "title": "Top Up",
     "balance_title": "Available balance",
