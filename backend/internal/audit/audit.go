@@ -115,6 +115,12 @@ const (
 	// system_settings，但属于管理配置，归 operation 类。
 	ActionNotificationTemplateUpdate = "notification_template.update"
 
+	// ActionNotificationTemplateRestoreDefault 是「恢复默认」的写审计。
+	// 单行与批量共用同一动作名：两者都是把模板内容回写为内置 bundle，
+	// detail 里的 scope=single|all 区分范围；批量不逐行写审计，避免一次
+	// 恢复 133 行产生 133 条噪声事件。
+	ActionNotificationTemplateRestoreDefault = "notification_template.restore_default"
+
 	// M6d 模型部署控制面（modules-08 §3.20.6）。两类事件都归 operation：
 	// 设置更新是管理配置，连接测试是对外部 provider 的探测（也是管理动作）。
 	// detail 只允许 enabled/has_secret 这类布尔事实，密钥值与其任何片段
@@ -293,7 +299,8 @@ var actionCategories = map[string]string{
 	ActionSettingsTestWebhook:   categoryOperation,
 	ActionSettingsWebhookResume: categoryOperation,
 
-	ActionNotificationTemplateUpdate: categoryOperation,
+	ActionNotificationTemplateUpdate:         categoryOperation,
+	ActionNotificationTemplateRestoreDefault: categoryOperation,
 
 	ActionDeploySettingsUpdate:   categoryOperation,
 	ActionDeployConnectionTest:   categoryOperation,

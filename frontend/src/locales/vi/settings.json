@@ -482,7 +482,8 @@
       "trigger_success": "Đã đưa tác vụ vào hàng đợi (lần chạy #{run_id}).",
       "trigger_already_running": "Tác vụ đang chạy hoặc đã có trong hàng đợi.",
       "trigger_forbidden": "Bạn không có quyền chạy tác vụ này."
-    }},
+    }
+  },
   "notification_templates": {
     "entry": {
       "title": "Mẫu thông báo",
@@ -520,7 +521,8 @@
     },
     "toolbar": {
       "rows": "{count} dòng",
-      "modified_rows": "{count} dòng đã sửa"
+      "modified_rows": "{count} dòng đã sửa",
+      "restore_all": "Khôi phục tất cả mặc định"
     },
     "table": {
       "key": "Khóa mẫu",
@@ -540,7 +542,8 @@
       "disabled": "Đã tắt",
       "locked": "Đã khóa",
       "empty": "Không có mẫu nào khớp với bộ lọc.",
-      "not_seeded": "Mẫu chưa được khởi tạo."
+      "not_seeded": "Mẫu chưa được khởi tạo.",
+      "restore": "Khôi phục mặc định"
     },
     "pagination": {
       "label": "Phân trang",
@@ -662,7 +665,40 @@
       "status_sent": "Đã gửi",
       "status_failed": "Thất bại",
       "status_bounced": "Bị trả lại",
-      "status_suppressed": "Đã chặn"
+      "status_suppressed": "Đã chặn",
+      "attempt": "Số lần thử",
+      "details": "Chi tiết",
+      "detail_title": "Chi tiết gửi",
+      "detail_attempt": "Số lần thử",
+      "detail_next_retry": "Lần thử lại tiếp theo",
+      "detail_dedupe_key": "Khóa chống trùng",
+      "detail_provider_message_id": "ID tin nhắn nhà cung cấp",
+      "detail_close": "Đóng",
+      "detail_refresh_error": "Không thể làm mới bản ghi này. Đang hiển thị giá trị từ danh sách.",
+      "time_range": "Khoảng thời gian",
+      "range_all": "Mọi lúc",
+      "range_24h": "24 giờ qua",
+      "range_7d": "7 ngày qua",
+      "range_30d": "30 ngày qua",
+      "range_custom": "Khoảng tùy chỉnh",
+      "from": "Từ",
+      "to": "Đến",
+      "time_range_too_large": "Khoảng thời gian quá lớn. Hãy thu hẹp trong 90 ngày.",
+      "time_range_invalid": "Ngày bắt đầu phải trước hoặc bằng ngày kết thúc."
+    },
+    "restore": {
+      "single_title": "Khôi phục mẫu này về giá trị mặc định?",
+      "single_body": "Bỏ qua các chỉnh sửa thủ công cho ngôn ngữ này và khôi phục nội dung mặc định. Trạng thái bật không thay đổi.",
+      "single_confirm": "Khôi phục mặc định",
+      "single_success": "Đã khôi phục mẫu về giá trị mặc định.",
+      "all_title": "Khôi phục mẫu về mặc định?",
+      "all_body": "Sẽ khôi phục {count} dòng mẫu về giá trị mặc định. Các chỉnh sửa thủ công sẽ bị mất.",
+      "all_input_label": "Nhập số dòng bị ảnh hưởng để xác nhận",
+      "all_input_mismatch": "Nhập {count} để xác nhận.",
+      "all_confirm": "Khôi phục tất cả",
+      "all_success": "Đã khôi phục {count} dòng mẫu.",
+      "cancel": "Hủy",
+      "working": "Đang khôi phục…"
     }
   },
   "webhook": {

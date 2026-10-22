@@ -12,6 +12,7 @@ import { StatusBadge, type StatusBadgeVariant } from '@/shared/ui/status-badge'
 import { Tag } from '@/shared/ui/tag'
 
 import { listDeliveries, listTemplates, previewTemplate } from './api'
+import { DeliveryDetailDrawer } from './delivery-detail-drawer'
 import { PreviewDialog } from './preview-dialog'
 import {
   NOTIFICATION_CATEGORY_KEYS,
@@ -19,6 +20,7 @@ import {
   categoryLabelKey,
   isLockedTemplate,
 } from './registry'
+import { RestoreAllDialog, RestoreSingleDialog } from './restore-dialogs'
 import {
   categoriesFromSearch,
   categoriesToSearch,
@@ -32,12 +34,13 @@ import {
   NOTIFICATION_LOCALES,
   isNotificationLocale,
   type DeliveryStatus,
+  type DeliveryTimeRange,
   type NotificationDelivery,
   type NotificationDeliveryChannel,
   type NotificationTemplate,
   type NotificationTemplateChannel,
 } from './types'
-import { maskRecipient } from './utils'
+import { deliveryBounds, maskRecipient } from './utils'
 
 const TEMPLATE_PAGE_SIZE = 20
 const DELIVERY_PAGE_SIZE = 20
@@ -123,6 +126,9 @@ export function NotificationTemplatesPage({
   const [drawerTarget, setDrawerTarget] = useState<NotificationTemplate | null>(null)
   const [previewTarget, setPreviewTarget] = useState<NotificationTemplate | null>(null)
   const [testTarget, setTestTarget] = useState<NotificationTemplate | null>(null)
+  const [restoreTarget, setRestoreTarget] = useState<NotificationTemplate | null>(null)
+  const [restoreAllOpen, setRestoreAllOpen] = useState(false)
+  const [deliveryTarget, setDeliveryTarget] = useState<NotificationDelivery | null>(null)
 
   const templateQuery = useQuery({
     queryKey: ['notification-templates', search.channel, search.locale, search.modified === true],
@@ -154,12 +160,23 @@ export function NotificationTemplatesPage({
   )
   const modifiedCount = filteredRows.filter((row) => row.customized).length
 
+  // 时间范围在客户端换算成 RFC3339；自定义范围非法或超过 90 天时阻断查询，
+  // 与设计「时间跨度 >90 天 → 阻断并提示缩小范围」一致。
+  const deliveryWindow = useMemo(
+    () => deliveryBounds(search.d_range, search.d_from, search.d_to),
+    [search.d_range, search.d_from, search.d_to],
+  )
+  const deliveryRangeError = deliveryWindow.error
+
   const deliveryQuery = useQuery({
     queryKey: [
       'notification-deliveries',
       search.d_category,
       search.d_channel,
       search.d_status,
+      search.d_range,
+      search.d_from,
+      search.d_to,
       search.d_page,
     ],
     queryFn: ({ signal }) =>
@@ -170,10 +187,12 @@ export function NotificationTemplatesPage({
           category: search.d_category,
           channel: search.d_channel,
           status: search.d_status,
+          from: deliveryWindow.from,
+          to: deliveryWindow.to,
         },
         signal,
       ),
-    enabled: tab === 'deliveries',
+    enabled: tab === 'deliveries' && deliveryRangeError === undefined,
   })
 
   const previewQuery = useQuery({
@@ -356,15 +375,27 @@ export function NotificationTemplatesPage({
             </label>
           </div>
 
-          <p className="text-xs text-ink-3" role="status">
-            {t('settings.notification_templates.toolbar.rows', {
-              count: filteredRows.length,
-            })}
-            {' · '}
-            {t('settings.notification_templates.toolbar.modified_rows', {
-              count: modifiedCount,
-            })}
-          </p>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-ink-3" role="status">
+              {t('settings.notification_templates.toolbar.rows', {
+                count: filteredRows.length,
+              })}
+              {' · '}
+              {t('settings.notification_templates.toolbar.modified_rows', {
+                count: modifiedCount,
+              })}
+            </p>
+            {canManage ? (
+              <Button
+                variant="danger"
+                className="h-8 px-3 text-xs"
+                disabled={filteredRows.length === 0}
+                onClick={() => setRestoreAllOpen(true)}
+              >
+                {t('settings.notification_templates.toolbar.restore_all')}
+              </Button>
+            ) : null}
+          </div>
 
           {templateQuery.isPending ? (
             <div className="space-y-2" aria-hidden="true">
@@ -520,6 +551,15 @@ export function NotificationTemplatesPage({
                                     {t('settings.notification_templates.table.test')}
                                   </Button>
                                 ) : null}
+                                {canManage ? (
+                                  <Button
+                                    variant="ghost"
+                                    className="h-7 px-2 text-xs text-danger hover:text-danger"
+                                    onClick={() => setRestoreTarget(row)}
+                                  >
+                                    {t('settings.notification_templates.table.restore')}
+                                  </Button>
+                                ) : null}
                               </div>
                             </td>
                           </tr>
@@ -644,9 +684,75 @@ export function NotificationTemplatesPage({
                 ))}
               </select>
             </label>
+
+            <label className="flex flex-col gap-1 text-xs text-ink-2">
+              {t('settings.notification_templates.deliveries.time_range')}
+              <select
+                aria-label={t('settings.notification_templates.deliveries.time_range')}
+                value={search.d_range ?? ''}
+                onChange={(event) => {
+                  const value = event.target.value
+                  const range: DeliveryTimeRange | undefined =
+                    value === '24h' || value === '7d' || value === '30d' || value === 'custom'
+                      ? (value as DeliveryTimeRange)
+                      : undefined
+                  onSearchChange({
+                    d_range: range,
+                    // 离开自定义模式时清掉日期，避免 URL 留下不可见筛选。
+                    d_from: range === 'custom' ? search.d_from : undefined,
+                    d_to: range === 'custom' ? search.d_to : undefined,
+                    d_page: undefined,
+                  })
+                }}
+                className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+              >
+                <option value="">{t('settings.notification_templates.deliveries.range_all')}</option>
+                <option value="24h">{t('settings.notification_templates.deliveries.range_24h')}</option>
+                <option value="7d">{t('settings.notification_templates.deliveries.range_7d')}</option>
+                <option value="30d">{t('settings.notification_templates.deliveries.range_30d')}</option>
+                <option value="custom">{t('settings.notification_templates.deliveries.range_custom')}</option>
+              </select>
+            </label>
+
+            {search.d_range === 'custom' ? (
+              <>
+                <label className="flex flex-col gap-1 text-xs text-ink-2">
+                  {t('settings.notification_templates.deliveries.from')}
+                  <input
+                    type="date"
+                    aria-label={t('settings.notification_templates.deliveries.from')}
+                    value={search.d_from ?? ''}
+                    onChange={(event) =>
+                      onSearchChange({ d_from: event.target.value || undefined, d_page: undefined })
+                    }
+                    className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-xs text-ink-2">
+                  {t('settings.notification_templates.deliveries.to')}
+                  <input
+                    type="date"
+                    aria-label={t('settings.notification_templates.deliveries.to')}
+                    value={search.d_to ?? ''}
+                    onChange={(event) =>
+                      onSearchChange({ d_to: event.target.value || undefined, d_page: undefined })
+                    }
+                    className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+                  />
+                </label>
+              </>
+            ) : null}
           </div>
 
-          {deliveryQuery.isPending ? (
+          {deliveryRangeError !== undefined ? (
+            <FormAlert tone="danger">
+              {deliveryRangeError === 'too_large'
+                ? t('settings.notification_templates.deliveries.time_range_too_large')
+                : t('settings.notification_templates.deliveries.time_range_invalid')}
+            </FormAlert>
+          ) : null}
+
+          {deliveryQuery.isPending && deliveryRangeError === undefined ? (
             <div className="space-y-2" aria-hidden="true">
               {Array.from({ length: 5 }, (_, index) => (
                 <div key={index} className="h-12 rounded-lg bg-surface-subtle" />
@@ -697,7 +803,13 @@ export function NotificationTemplatesPage({
                           {t('settings.notification_templates.deliveries.status')}
                         </th>
                         <th className="px-3 py-2 font-medium">
+                          {t('settings.notification_templates.deliveries.attempt')}
+                        </th>
+                        <th className="px-3 py-2 font-medium">
                           {t('settings.notification_templates.deliveries.error')}
+                        </th>
+                        <th className="px-3 py-2 font-medium">
+                          {t('settings.notification_templates.table.actions')}
                         </th>
                       </tr>
                     </thead>
@@ -734,8 +846,18 @@ export function NotificationTemplatesPage({
                               )}
                             </StatusBadge>
                           </td>
+                          <td className="px-3 py-2 text-xs text-ink-2">{delivery.attempt}</td>
                           <td className="max-w-64 truncate px-3 py-2 font-mono text-xs text-ink-3">
                             {delivery.error ?? '—'}
+                          </td>
+                          <td className="px-3 py-2">
+                            <Button
+                              variant="ghost"
+                              className="h-7 px-2 text-xs"
+                              onClick={() => setDeliveryTarget(delivery)}
+                            >
+                              {t('settings.notification_templates.deliveries.details')}
+                            </Button>
                           </td>
                         </tr>
                       ))}
@@ -828,6 +950,40 @@ export function NotificationTemplatesPage({
         template={testTarget}
         defaultRecipient={me.data?.email ?? ''}
         smtpConfigured={smtpConfigured}
+      />
+
+      <RestoreSingleDialog
+        open={restoreTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setRestoreTarget(null)
+        }}
+        template={restoreTarget}
+        onRestored={() => {
+          void queryClient.invalidateQueries({ queryKey: ['notification-templates'] })
+          void queryClient.invalidateQueries({ queryKey: ['notification-template-detail'] })
+        }}
+      />
+
+      <RestoreAllDialog
+        open={restoreAllOpen}
+        onOpenChange={setRestoreAllOpen}
+        count={filteredRows.length}
+        categories={categories}
+        channel={search.channel}
+        locale={search.locale}
+        modifiedOnly={search.modified === true}
+        onRestored={() => {
+          void queryClient.invalidateQueries({ queryKey: ['notification-templates'] })
+          void queryClient.invalidateQueries({ queryKey: ['notification-template-detail'] })
+        }}
+      />
+
+      <DeliveryDetailDrawer
+        open={deliveryTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeliveryTarget(null)
+        }}
+        delivery={deliveryTarget}
       />
     </div>
   )

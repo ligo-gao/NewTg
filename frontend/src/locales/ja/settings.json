@@ -482,7 +482,8 @@
       "trigger_success": "タスクをキューに追加しました（実行 #{run_id}）。",
       "trigger_already_running": "タスクは既に実行中またはキューにあります。",
       "trigger_forbidden": "このタスクを実行する権限がありません。"
-    }},
+    }
+  },
   "notification_templates": {
     "entry": {
       "title": "通知テンプレート",
@@ -520,7 +521,8 @@
     },
     "toolbar": {
       "rows": "{count} 行",
-      "modified_rows": "変更済み {count} 行"
+      "modified_rows": "変更済み {count} 行",
+      "restore_all": "すべてデフォルトに戻す"
     },
     "table": {
       "key": "テンプレートキー",
@@ -540,7 +542,8 @@
       "disabled": "無効",
       "locked": "ロック中",
       "empty": "この条件に一致するテンプレートはありません。",
-      "not_seeded": "テンプレートがまだ初期化されていません。"
+      "not_seeded": "テンプレートがまだ初期化されていません。",
+      "restore": "デフォルトに戻す"
     },
     "pagination": {
       "label": "ページ送り",
@@ -662,7 +665,40 @@
       "status_sent": "送信済み",
       "status_failed": "失敗",
       "status_bounced": "バウンス",
-      "status_suppressed": "抑制済み"
+      "status_suppressed": "抑制済み",
+      "attempt": "試行回数",
+      "details": "詳細",
+      "detail_title": "配信の詳細",
+      "detail_attempt": "試行回数",
+      "detail_next_retry": "次回の再試行",
+      "detail_dedupe_key": "重複排除キー",
+      "detail_provider_message_id": "プロバイダーのメッセージ ID",
+      "detail_close": "閉じる",
+      "detail_refresh_error": "このレコードを更新できませんでした。一覧の値を表示しています。",
+      "time_range": "期間",
+      "range_all": "全期間",
+      "range_24h": "過去 24 時間",
+      "range_7d": "過去 7 日間",
+      "range_30d": "過去 30 日間",
+      "range_custom": "カスタム期間",
+      "from": "開始",
+      "to": "終了",
+      "time_range_too_large": "期間が長すぎます。90 日以内に絞ってください。",
+      "time_range_invalid": "開始日は終了日以前である必要があります。"
+    },
+    "restore": {
+      "single_title": "このテンプレートを組み込みのデフォルトに戻しますか？",
+      "single_body": "この言語の手動編集を破棄し、組み込みのデフォルト文面に戻します。有効状態は変わりません。",
+      "single_confirm": "デフォルトに戻す",
+      "single_success": "テンプレートを組み込みのデフォルトに戻しました。",
+      "all_title": "テンプレートをデフォルトに戻しますか？",
+      "all_body": "{count} 行のテンプレートを組み込みのデフォルトに戻します。手動編集は失われます。",
+      "all_input_label": "確認のため影響を受ける行数を入力してください",
+      "all_input_mismatch": "確認のため {count} を入力してください。",
+      "all_confirm": "すべて戻す",
+      "all_success": "{count} 行のテンプレートを戻しました。",
+      "cancel": "キャンセル",
+      "working": "復元中…"
     }
   },
   "webhook": {

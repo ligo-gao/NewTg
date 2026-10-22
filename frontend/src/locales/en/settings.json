@@ -520,7 +520,8 @@
     },
     "toolbar": {
       "rows": "{count} rows",
-      "modified_rows": "{count} modified"
+      "modified_rows": "{count} modified",
+      "restore_all": "Restore all defaults"
     },
     "table": {
       "key": "Template key",
@@ -539,6 +540,7 @@
       "enabled_value": "Enabled",
       "disabled": "Disabled",
       "locked": "Locked",
+      "restore": "Restore default",
       "empty": "No templates match these filters.",
       "not_seeded": "Templates have not been seeded."
     },
@@ -548,6 +550,20 @@
       "next": "Next",
       "page": "Page {page} of {pages}",
       "summary": "{from}–{to} of {total}"
+    },
+    "restore": {
+      "single_title": "Restore this template to the built-in default?",
+      "single_body": "Discard manual edits for this locale and restore the built-in default copy. The enabled state is unchanged.",
+      "single_confirm": "Restore default",
+      "single_success": "Template restored to the built-in default.",
+      "all_title": "Restore templates to defaults?",
+      "all_body": "Restore {count} template rows to built-in defaults. Manual edits will be lost.",
+      "all_input_label": "Type the number of affected rows to confirm",
+      "all_input_mismatch": "Enter {count} to confirm.",
+      "all_confirm": "Restore all",
+      "all_success": "Restored {count} template rows.",
+      "cancel": "Cancel",
+      "working": "Restoring…"
     },
     "categories": {
       "auth_verify_code": "Verification code",
@@ -662,7 +678,26 @@
       "status_sent": "Sent",
       "status_failed": "Failed",
       "status_bounced": "Bounced",
-      "status_suppressed": "Suppressed"
+      "status_suppressed": "Suppressed",
+      "attempt": "Attempt",
+      "details": "Details",
+      "detail_title": "Delivery details",
+      "detail_attempt": "Attempt",
+      "detail_next_retry": "Next retry",
+      "detail_dedupe_key": "Dedupe key",
+      "detail_provider_message_id": "Provider message ID",
+      "detail_close": "Close",
+      "detail_refresh_error": "Could not refresh this record. Showing the values from the list.",
+      "time_range": "Time range",
+      "range_all": "All time",
+      "range_24h": "Last 24 hours",
+      "range_7d": "Last 7 days",
+      "range_30d": "Last 30 days",
+      "range_custom": "Custom range",
+      "from": "From",
+      "to": "To",
+      "time_range_too_large": "Time range is too large. Narrow it to under 90 days.",
+      "time_range_invalid": "The start date must be on or before the end date."
     }
   },
   "webhook": {

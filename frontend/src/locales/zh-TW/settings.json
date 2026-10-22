@@ -482,7 +482,8 @@
       "trigger_success": "任務已入列（執行 #{run_id}）。",
       "trigger_already_running": "任務正在執行或已入列。",
       "trigger_forbidden": "你沒有觸發此任務的權限。"
-    }},
+    }
+  },
   "notification_templates": {
     "entry": {
       "title": "通知範本",
@@ -520,7 +521,8 @@
     },
     "toolbar": {
       "rows": "共 {count} 列",
-      "modified_rows": "已修改 {count} 列"
+      "modified_rows": "已修改 {count} 列",
+      "restore_all": "恢復全部預設"
     },
     "table": {
       "key": "範本 key",
@@ -540,7 +542,8 @@
       "disabled": "已停用",
       "locked": "鎖定",
       "empty": "沒有符合篩選條件的範本。",
-      "not_seeded": "範本尚未填入。"
+      "not_seeded": "範本尚未填入。",
+      "restore": "恢復預設"
     },
     "pagination": {
       "label": "分頁",
@@ -662,7 +665,40 @@
       "status_sent": "已寄送",
       "status_failed": "失敗",
       "status_bounced": "退信",
-      "status_suppressed": "已抑制"
+      "status_suppressed": "已抑制",
+      "attempt": "嘗試次數",
+      "details": "詳情",
+      "detail_title": "投遞詳情",
+      "detail_attempt": "嘗試次數",
+      "detail_next_retry": "下次重試",
+      "detail_dedupe_key": "去重鍵",
+      "detail_provider_message_id": "上游訊息 ID",
+      "detail_close": "關閉",
+      "detail_refresh_error": "無法重新整理此記錄，目前顯示列表中的值。",
+      "time_range": "時間範圍",
+      "range_all": "全部時間",
+      "range_24h": "最近 24 小時",
+      "range_7d": "最近 7 天",
+      "range_30d": "最近 30 天",
+      "range_custom": "自訂範圍",
+      "from": "開始",
+      "to": "結束",
+      "time_range_too_large": "時間範圍過大，請縮小至 90 天以內。",
+      "time_range_invalid": "開始日期不能晚於結束日期。"
+    },
+    "restore": {
+      "single_title": "將此範本恢復為內建預設？",
+      "single_body": "將捨棄本語言的手動修改並恢復為內建預設文案，啟用狀態保持不變。",
+      "single_confirm": "恢復預設",
+      "single_success": "已恢復為內建預設文案。",
+      "all_title": "恢復範本預設？",
+      "all_body": "將恢復 {count} 列範本為內建預設文案，手動修改將遺失。",
+      "all_input_label": "輸入受影響列數以確認",
+      "all_input_mismatch": "請輸入 {count} 以確認。",
+      "all_confirm": "恢復全部",
+      "all_success": "已恢復 {count} 列範本。",
+      "cancel": "取消",
+      "working": "正在恢復…"
     }
   },
   "webhook": {

@@ -26,12 +26,16 @@ import { parseProblem } from '@/api/errors'
 import type {
   DeliveryListParams,
   DeliveryListResponse,
+  NotificationDelivery,
   NotificationTemplate,
   NotificationTemplateChannel,
   NotificationTemplateListResponse,
   NotificationLocale,
   PreviewTemplateInput,
   PreviewTemplateResponse,
+  RestoreAllInput,
+  RestoreAllResponse,
+  RestoreTemplateInput,
   TemplateListParams,
   TestSendInput,
   TestSendResponse,
@@ -167,6 +171,47 @@ export function testTemplate(
   })
 }
 
+/**
+ * 单行恢复默认。恢复是幂等写：服务端不要求 expect_updated_at（见
+ * notify.Store.RestoreDefaults 的 why 注释），确认对话框是管理员的同意边界。
+ */
+export function restoreTemplate(
+  key: string,
+  input: RestoreTemplateInput,
+  signal?: AbortSignal,
+): Promise<NotificationTemplate> {
+  return request<NotificationTemplate>(`${templatePath(key)}:restore-default`, {
+    method: 'POST',
+    body: input,
+    signal,
+  })
+}
+
+/** 批量恢复默认；范围与模板列表筛选同口径。 */
+export function restoreAllTemplates(
+  input: RestoreAllInput,
+  signal?: AbortSignal,
+): Promise<RestoreAllResponse> {
+  return request<RestoreAllResponse>('/api/notification-templates:restore-default', {
+    method: 'POST',
+    body: {
+      categories: input.categories ?? [],
+      channel: input.channel,
+      locale: input.locale,
+      modified_only: input.modifiedOnly ?? false,
+    },
+    signal,
+  })
+}
+
+/** 单条投递详情（详情抽屉按需刷新）。 */
+export function getDelivery(
+  id: number,
+  signal?: AbortSignal,
+): Promise<NotificationDelivery> {
+  return request<NotificationDelivery>(`/api/notification-deliveries/${id}`, { signal })
+}
+
 export function listDeliveries(
   params: DeliveryListParams,
   signal?: AbortSignal,
@@ -178,6 +223,8 @@ export function listDeliveries(
   if (params.category !== undefined) query.set('category', params.category)
   if (params.channel !== undefined) query.set('channel', params.channel)
   if (params.status !== undefined) query.set('status', params.status)
+  if (params.from !== undefined) query.set('from', params.from)
+  if (params.to !== undefined) query.set('to', params.to)
   return request<DeliveryListResponse>(`/api/notification-deliveries?${query.toString()}`, {
     signal,
   })

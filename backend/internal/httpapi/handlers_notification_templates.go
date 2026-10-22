@@ -7,7 +7,10 @@
 //	PUT  /api/notification-templates/{key}                                 settings:manage
 //	POST /api/notification-templates/{key}:preview                         admin
 //	POST /api/notification-templates/{key}:test                            settings:manage
-//	GET  /api/notification-deliveries?p=&page_size=&status=                admin
+//	POST /api/notification-templates/{key}:restore-default                 settings:manage
+//	POST /api/notification-templates:restore-default                       settings:manage
+//	GET  /api/notification-deliveries?p=&page_size=&status=&from=&to=      admin
+//	GET  /api/notification-deliveries/{id}                                 admin
 //
 // 路由实现细节：Go 1.22 ServeMux 的通配符必须是完整路径段，`{key}:preview`
 // 会被拒绝（bad wildcard segment）。因此 POST 只注册 `{key}`，在处理器内
@@ -43,6 +46,10 @@ const notificationTemplateMaxBody = 64 << 10
 var (
 	notificationTemplateUpdateAction = rbac.AuthzAction{ResourceKind: "notification_template", ActionName: "update"}
 	notificationTemplateTestAction   = rbac.AuthzAction{ResourceKind: "notification_template", ActionName: "test"}
+	// 恢复默认是独立写动作：它不经过乐观锁（见 notify.Store.RestoreDefaults），
+	// 字段白名单也与 PUT 不同，因此不能复用 update 的策略。
+	notificationTemplateRestoreAction    = rbac.AuthzAction{ResourceKind: "notification_template", ActionName: "restore_default"}
+	notificationTemplateRestoreAllAction = rbac.AuthzAction{ResourceKind: "notification_template", ActionName: "restore_default_all"}
 )
 
 // NotificationTemplateService 是 httpapi 对 notify.Service 的最小依赖面，
@@ -51,9 +58,12 @@ type NotificationTemplateService interface {
 	List(ctx context.Context, filter notify.TemplateFilter) ([]notify.TemplateView, error)
 	Get(ctx context.Context, key string, channel notify.Channel, locale notify.Locale) (notify.TemplateView, error)
 	Update(ctx context.Context, in notify.UpdateInput) (notify.TemplateView, error)
+	RestoreDefault(ctx context.Context, key string, channel notify.Channel, locale notify.Locale, actor int64) (notify.TemplateView, error)
+	RestoreDefaults(ctx context.Context, filter notify.RestoreFilter, actor int64) ([]notify.TemplateView, error)
 	Preview(ctx context.Context, key string, channel notify.Channel, locale notify.Locale, variables map[string]any) (notify.Rendered, error)
 	TestSend(ctx context.Context, in notify.TestInput) (notify.Delivery, error)
 	ListDeliveries(ctx context.Context, filter notify.DeliveryFilter) ([]notify.DeliveryView, int, error)
+	GetDelivery(ctx context.Context, id int64) (notify.DeliveryView, error)
 }
 
 // NotificationTemplateHandlerConfig 是端点装配输入。
@@ -75,8 +85,10 @@ type NotificationTemplateHandlers struct {
 	limiter *testSendLimiter
 	// preview / test 是预先包好鉴权链的处理器：POST 只有一个模式，
 	// 分派时必须应用各自的权限（preview=admin，test=settings:manage）。
-	preview http.Handler
-	test    http.Handler
+	preview    http.Handler
+	test       http.Handler
+	restore    http.Handler
+	restoreAll http.Handler
 }
 
 // NewNotificationTemplateHandlers 构造端点。
@@ -115,6 +127,16 @@ func NewNotificationTemplateHandlers(cfg NotificationTemplateHandlerConfig) (*No
 		"variables": nil,
 		"recipient": nil,
 	}})
+	authz.SetWritePolicy(notificationTemplateRestoreAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{
+		"locale":  nil,
+		"channel": nil,
+	}})
+	authz.SetWritePolicy(notificationTemplateRestoreAllAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{
+		"categories":    nil,
+		"channel":       nil,
+		"locale":        nil,
+		"modified_only": nil,
+	}})
 
 	h := &NotificationTemplateHandlers{
 		service: cfg.Service,
@@ -123,9 +145,11 @@ func NewNotificationTemplateHandlers(cfg NotificationTemplateHandlerConfig) (*No
 		log:     log,
 		limiter: newTestSendLimiter(now),
 	}
-	// preview 是读语义（brief：admin）；test 是写语义（settings:manage）。
+	// preview 是读语义（brief：admin）；test/restore 是写语义（settings:manage）。
 	h.preview = requireAdminRole(http.HandlerFunc(h.handlePreview))
 	h.test = authz.Handler(rbac.PermSettingsManage, notificationTemplateTestAction)(http.HandlerFunc(h.handleTestSend))
+	h.restore = authz.Handler(rbac.PermSettingsManage, notificationTemplateRestoreAction)(http.HandlerFunc(h.handleRestoreDefault))
+	h.restoreAll = authz.Handler(rbac.PermSettingsManage, notificationTemplateRestoreAllAction)(http.HandlerFunc(h.handleRestoreAll))
 	return h, nil
 }
 
@@ -138,7 +162,12 @@ func (h *NotificationTemplateHandlers) Register(mux *http.ServeMux) {
 	// ServeMux 不接受 `{key}:preview` 作为模式（通配符必须占满路径段），
 	// 故 POST 统一入口后按后缀分派。
 	mux.Handle("POST /api/notification-templates/{key}", http.HandlerFunc(h.handlePost))
+	// 批量恢复是集合级动作，路径是独立字面量段（与 {key} 不冲突）：
+	// `notification-templates:restore-default` 只有一个路径段，不会命中
+	// `/api/notification-templates/{key}`。
+	mux.Handle("POST /api/notification-templates:restore-default", h.restoreAll)
 	mux.Handle("GET /api/notification-deliveries", requireAdminRole(http.HandlerFunc(h.handleDeliveries)))
+	mux.Handle("GET /api/notification-deliveries/{id}", requireAdminRole(http.HandlerFunc(h.handleDeliveryDetail)))
 }
 
 func (h *NotificationTemplateHandlers) handlePost(w http.ResponseWriter, r *http.Request) {
@@ -148,6 +177,8 @@ func (h *NotificationTemplateHandlers) handlePost(w http.ResponseWriter, r *http
 		h.preview.ServeHTTP(w, r)
 	case strings.HasSuffix(rawKey, ":test"):
 		h.test.ServeHTTP(w, r)
+	case strings.HasSuffix(rawKey, ":restore-default"):
+		h.restore.ServeHTTP(w, r)
 	default:
 		writeNotificationProblem(w, http.StatusNotFound, "not_found",
 			"Not found", "unknown notification-template action")
@@ -264,6 +295,114 @@ func (h *NotificationTemplateHandlers) handlePut(w http.ResponseWriter, r *http.
 	}
 	h.auditUpdate(r, before, view)
 	writeJSON(w, http.StatusOK, view)
+}
+
+type notificationTemplateRestoreRequest struct {
+	Locale  string `json:"locale"`
+	Channel string `json:"channel"`
+}
+
+// handleRestoreDefault 是 POST /api/notification-templates/{key}:restore-default。
+// 单行恢复只重置内容（subject/body/CTA）与 is_modified；enabled 保持不变。
+func (h *NotificationTemplateHandlers) handleRestoreDefault(w http.ResponseWriter, r *http.Request) {
+	key, ok := stripActionSuffix(r.PathValue("key"), ":restore-default")
+	if !ok || !templateKeyRegistered(w, key) {
+		return
+	}
+	var req notificationTemplateRestoreRequest
+	if !decodeNotificationBody(w, r, &req) {
+		return
+	}
+	channel, ok := resolveTemplateChannel(w, key, req.Channel)
+	if !ok {
+		return
+	}
+	locale, ok := notify.ParseLocale(req.Locale)
+	if !ok {
+		writeNotificationProblem(w, http.StatusBadRequest, "invalid_request",
+			"Invalid request", "unknown locale")
+		return
+	}
+	// before 只用于审计摘要；读取失败不阻断恢复（行可能尚未播种）。
+	var before *notify.TemplateView
+	if previous, err := h.service.Get(r.Context(), key, channel, locale); err == nil {
+		before = &previous
+	}
+	view, err := h.service.RestoreDefault(r.Context(), key, channel, locale, actorID(r))
+	if err != nil {
+		h.writeServiceError(w, "restore notification template", err)
+		return
+	}
+	h.auditRestore(r, map[string]any{
+		"scope":        "single",
+		"template_key": view.Key,
+		"channel":      view.Channel,
+		"locale":       view.Locale,
+		"category":     view.Category,
+	}, before, &view)
+	writeJSON(w, http.StatusOK, view)
+}
+
+type notificationTemplateRestoreAllRequest struct {
+	Categories   []string `json:"categories"`
+	Channel      string   `json:"channel"`
+	Locale       string   `json:"locale"`
+	ModifiedOnly bool     `json:"modified_only"`
+}
+
+// handleRestoreAll 是 POST /api/notification-templates:restore-default。
+// 范围由与列表相同的筛选维度描述；批量恢复不逐行写审计，只写一条汇总。
+func (h *NotificationTemplateHandlers) handleRestoreAll(w http.ResponseWriter, r *http.Request) {
+	var req notificationTemplateRestoreAllRequest
+	if !decodeNotificationBody(w, r, &req) {
+		return
+	}
+	filter := notify.RestoreFilter{
+		Categories:   req.Categories,
+		ModifiedOnly: req.ModifiedOnly,
+	}
+	for _, category := range req.Categories {
+		if !notify.IsRegisteredCategory(category) {
+			writeNotificationProblem(w, http.StatusBadRequest, "invalid_request",
+				"Invalid request", "unknown category")
+			return
+		}
+	}
+	if raw := strings.TrimSpace(req.Channel); raw != "" {
+		channel, ok := notify.ParseChannel(raw)
+		if !ok {
+			writeNotificationProblem(w, http.StatusBadRequest, "invalid_request",
+				"Invalid request", "unknown channel")
+			return
+		}
+		filter.Channel = channel
+	}
+	if raw := strings.TrimSpace(req.Locale); raw != "" {
+		locale, ok := notify.ParseLocale(raw)
+		if !ok {
+			writeNotificationProblem(w, http.StatusBadRequest, "invalid_request",
+				"Invalid request", "unknown locale")
+			return
+		}
+		filter.Locale = locale
+	}
+	items, err := h.service.RestoreDefaults(r.Context(), filter, actorID(r))
+	if err != nil {
+		h.writeServiceError(w, "restore notification templates", err)
+		return
+	}
+	h.auditRestore(r, map[string]any{
+		"scope":         "all",
+		"categories":    req.Categories,
+		"channel":       filter.Channel,
+		"locale":        filter.Locale,
+		"modified_only": filter.ModifiedOnly,
+		"restored":      len(items),
+	}, nil, nil)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":    items,
+		"restored": len(items),
+	})
 }
 
 type notificationTemplatePreviewRequest struct {
@@ -385,6 +524,22 @@ func (h *NotificationTemplateHandlers) handleDeliveries(w http.ResponseWriter, r
 		}
 		filter.Channel = channel
 	}
+	// 时间范围：from/to 是 RFC3339 时刻（闭区间）。倒置或跨度 >90 天由
+	// Service 统一拒绝为 400——预设 24h/7d/30d 也走同一条校验。
+	from, ok := parseOptionalRFC3339(query.Get("from"))
+	if !ok {
+		writeNotificationProblem(w, http.StatusBadRequest, "invalid_request",
+			"Invalid request", "from must be an RFC3339 timestamp")
+		return
+	}
+	to, ok := parseOptionalRFC3339(query.Get("to"))
+	if !ok {
+		writeNotificationProblem(w, http.StatusBadRequest, "invalid_request",
+			"Invalid request", "to must be an RFC3339 timestamp")
+		return
+	}
+	filter.From = from
+	filter.To = to
 	items, total, err := h.service.ListDeliveries(r.Context(), filter)
 	if err != nil {
 		h.writeServiceError(w, "list notification deliveries", err)
@@ -396,6 +551,37 @@ func (h *NotificationTemplateHandlers) handleDeliveries(w http.ResponseWriter, r
 		"page":      page,
 		"page_size": pageSize,
 	})
+}
+
+// handleDeliveryDetail 是 GET /api/notification-deliveries/{id}。列表已带全部
+// 详情字段，但详情端点让抽屉可以直接深链/刷新单条记录，而不必回读整页。
+func (h *NotificationTemplateHandlers) handleDeliveryDetail(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeNotificationProblem(w, http.StatusBadRequest, "invalid_request",
+			"Invalid request", "id must be a positive integer")
+		return
+	}
+	view, err := h.service.GetDelivery(r.Context(), id)
+	if err != nil {
+		h.writeServiceError(w, "get notification delivery", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// parseOptionalRFC3339 解析可选的时间边界；空串表示不设边界。
+func parseOptionalRFC3339(raw string) (*time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, true
+	}
+	value, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return nil, false
+	}
+	utc := value.UTC()
+	return &utc, true
 }
 
 // parseTemplateTarget 解析 GET /{key} 的 channel/locale。
@@ -553,6 +739,35 @@ func (h *NotificationTemplateHandlers) auditUpdate(r *http.Request, before *noti
 	}
 }
 
+// auditRestore 写「恢复默认」审计。单行记录 before/after 摘要；批量只记录
+// 筛选范围与恢复行数（逐行事件会把一次 133 行的恢复变成审计洪水）。
+func (h *NotificationTemplateHandlers) auditRestore(r *http.Request, detail map[string]any, before *notify.TemplateView, after *notify.TemplateView) {
+	if h.audit == nil {
+		return
+	}
+	raw, _ := json.Marshal(detail)
+	summary := func(view *notify.TemplateView) json.RawMessage {
+		if view == nil {
+			return nil
+		}
+		value, _ := json.Marshal(map[string]any{
+			"subject":    view.Subject,
+			"enabled":    view.Enabled,
+			"customized": view.Customized,
+		})
+		return value
+	}
+	if err := writeAuditEvent(r.Context(), h.audit, audit.Event{
+		Action: audit.ActionNotificationTemplateRestoreDefault,
+		Actor:  actorID(r),
+		Detail: raw,
+		Before: summary(before),
+		After:  summary(after),
+	}); err != nil {
+		h.log.Error("notify: write restore-default audit failed", "error", err)
+	}
+}
+
 // writeServiceError 把 notify 包的语义错误映射为 RFC 7807。
 // 映射顺序与设计一致：未知 key 404；变量/锁定/停用/SMTP 422；冲突 409。
 func (h *NotificationTemplateHandlers) writeServiceError(w http.ResponseWriter, operation string, err error) {
@@ -569,6 +784,12 @@ func (h *NotificationTemplateHandlers) writeServiceError(w http.ResponseWriter, 
 	case errors.Is(err, notify.ErrUnknownCategory):
 		writeNotificationProblem(w, http.StatusBadRequest, "invalid_request",
 			"Invalid request", "unknown category")
+	case errors.Is(err, notify.ErrInvalidTimeRange):
+		writeNotificationProblem(w, http.StatusBadRequest, "invalid_request",
+			"Invalid request", "time range must be ordered and no longer than 90 days")
+	case errors.Is(err, notify.ErrDeliveryNotFound):
+		writeNotificationProblem(w, http.StatusNotFound, "not_found",
+			"Not found", "notification delivery not found")
 	case errors.Is(err, notify.ErrConflict):
 		writeNotificationProblem(w, http.StatusConflict, "conflict",
 			"Conflict", "template was updated by someone else")
