@@ -12,17 +12,22 @@ import (
 // usageLogParentTable 是 usage_logs 分区父表（platform-01 §12）。
 const usageLogParentTable = "usage_logs"
 
-// usagePartitionMonths 是 worker 侧每次滚动预建的分区数：当月 + 下月。
+// DefaultPartitionLookaheadMonths 是分区预建的默认 lookahead（R-W10-04 A）：
+// 当月 + 下 3 个月。与 platform-04 §5.2 / billing-06 §6.2 的
+// `log.partition_lookahead_months` 默认 3 对齐。
 //
-// 契约（R-12 / platform-04 §5.2）冻结为 2 个月；能跑 DDL 的执行者（migrate
-// 凭据）每天调用即可覆盖跨月。**不建 DEFAULT 分区**（裁决 V11）：落入未建
-// 月份必须直接失败并由 /readyz 告警，而不是静默进入一个无法按保留期 drop
-// 的默认分区。
+// 为什么从 2 改成 3：迁移预建窗口是 12 个月（R-56），而 worker 滚动预建供
+// 月边界之外再留 3 个月的缓冲；2 个月在下游迁移延迟时会逼近断档。M3 冻结的
+// R-12=2 已被 R-W10-04 A 取代，这里保留常量作为「设置缺失/非法」时的回退。
 //
-// 【M7 已登记】platform-01 §12 提到可配 `log.partition_lookahead_months`
-// 默认 3，与本函数的 2 个月口径不一致；M3 冻结 R-12=2 个月，配置化留后续。
-// 生产兜底不依赖 worker DDL，而是日志迁移预建的 12 个月窗口（R-56）。
-const usagePartitionMonths = 2
+// `0` 表示只保证当月（关闭滚动预建），由调用方显式传入。
+const DefaultPartitionLookaheadMonths = 3
+
+// usagePartitionMonths 是旧 R-12 常量名，保留为默认 lookahead 的别名，
+// 避免既有调用点/文档引用失效。
+//
+// Deprecated: 使用 DefaultPartitionLookaheadMonths。
+const usagePartitionMonths = DefaultPartitionLookaheadMonths
 
 // PartitionDDLUnavailableError 表示当前数据库连接没有执行分区 DDL 的权限（R-56）。
 //
@@ -51,13 +56,21 @@ func (e *PartitionDDLUnavailableError) Error() string {
 		e.Schema, e.SchemaCreate, e.OwnsParent)
 }
 
-// EnsureUsagePartitions 创建当月与下月的 usage_logs 月分区（UTC）。
+// EnsureUsagePartitions 创建当月与后续默认 lookahead 个月份的 usage_logs 月分区
+// （UTC）。等价于 EnsureUsagePartitionsWithLookahead(..., DefaultPartitionLookaheadMonths)；
+// 保留旧签名给不关心配置的调用点（测试、迁移前置检查）。
+func EnsureUsagePartitions(ctx context.Context, logsDB *sql.DB, now time.Time) error {
+	return EnsureUsagePartitionsWithLookahead(ctx, logsDB, now, DefaultPartitionLookaheadMonths)
+}
+
+// EnsureUsagePartitionsWithLookahead 创建 [当月, 当月+lookaheadMonths] 的
+// usage_logs 月分区（UTC）。lookaheadMonths=0 表示只保证当月。
 //
-// 由 T5 的 worker 在启动时与每 24h 调用一次；本任务只导出函数与类型。
+// 由 worker 在启动时与每 24h 调用一次；本任务只导出函数与类型。
 //
 // 【执行顺序（R-56 运维友好）】
-//  1. 只读解析父表 schema 并检查**当月 + 下月**是否都已存在；
-//  2. 两者都存在 → 直接返回 nil：分区已由迁移预建，不需要 DDL，也**不应**
+//  1. 只读解析父表 schema 并检查目标月份是否都已存在；
+//  2. 全部存在 → 直接返回 nil：分区已由迁移预建，不需要 DDL，也**不应**
 //     产生「DDL 权限不可用」告警；
 //  3. 缺任一分区 → 才探测 DDL 权限（schema CREATE + 父表属主）：
 //     - 无权 → *PartitionDDLUnavailableError（worker 记 warn）；
@@ -66,6 +79,11 @@ func (e *PartitionDDLUnavailableError) Error() string {
 // 因此生产 worker（newtg_app）在迁移预建窗口内是**静默 no-op**，只有窗口
 // 真正耗尽时才得到可识别的 warn；真正的分区供给由日志迁移的 12 个月预建
 // 承担（见 migrations-logs/20261019000001_usage_logs_app_update_v2.up.sql）。
+//
+// 【分区所有权（W10-N10 / R-W10-01 A）】新分区创建后若存在 newtg_retention
+// 角色，尽力把属主转给它。retention 角色只拥有**子分区**（DROP TABLE 子分区
+// 即隐式 detach），不拥有父表——最小权限，不能整表 DROP。转换失败只作为
+// 本轮 error 返回（下一轮重试），不改变「分区已存在」的事实。
 //
 // 其余语义：
 //   - 分区名 usage_logs_YYYYMM，区间左闭右开 [月初, 次月初)，一律按 UTC
@@ -77,10 +95,16 @@ func (e *PartitionDDLUnavailableError) Error() string {
 // 幂等的并发面：PostgreSQL 的 CREATE TABLE IF NOT EXISTS 在并发创建同名表
 // 时可能抛 duplicate key 而不是安静返回。这里在错误后复核分区是否已真实
 // 存在（按 schema+name 查 pg_class），存在即视为本轮成功。
-func EnsureUsagePartitions(ctx context.Context, logsDB *sql.DB, now time.Time) error {
+func EnsureUsagePartitionsWithLookahead(ctx context.Context, logsDB *sql.DB, now time.Time,
+	lookaheadMonths int) error {
 	if logsDB == nil {
 		return errors.New("billing: EnsureUsagePartitions requires a logs database")
 	}
+	if lookaheadMonths < 0 {
+		lookaheadMonths = 0
+	}
+	// 目标月份数 = 当月 + lookahead。0 仍是 1 个月（当月必须存在）。
+	monthCount := lookaheadMonths + 1
 
 	// 只读解析父表 schema：后续存在性检查与 DDL 都必须落在同一个 schema
 	// （N3），避免执行期 search_path 与探测结果不一致。
@@ -91,7 +115,7 @@ func EnsureUsagePartitions(ctx context.Context, logsDB *sql.DB, now time.Time) e
 
 	start := usageMonthStart(now)
 	missing := false
-	for i := 0; i < usagePartitionMonths; i++ {
+	for i := 0; i < monthCount; i++ {
 		name := usagePartitionName(start.AddDate(0, i, 0))
 		exists, err := usagePartitionExists(ctx, logsDB, schema, name)
 		if err != nil {
@@ -102,7 +126,7 @@ func EnsureUsagePartitions(ctx context.Context, logsDB *sql.DB, now time.Time) e
 		}
 	}
 	if !missing {
-		// 迁移预建窗口覆盖当前月：无 DDL 需求，静默返回。
+		// 迁移预建窗口覆盖当前 lookahead：无 DDL 需求，静默返回。
 		return nil
 	}
 
@@ -121,7 +145,7 @@ func EnsureUsagePartitions(ctx context.Context, logsDB *sql.DB, now time.Time) e
 	// DDL 必须与权限探测使用**同一个 schema**。父表与分区名都显式 schema
 	// 限定，避免执行期 search_path 变化把 DDL 指向别的 schema（N3）。
 	parent := quoteSQLIdent(schema) + "." + quoteSQLIdent(usageLogParentTable)
-	for i := 0; i < usagePartitionMonths; i++ {
+	for i := 0; i < monthCount; i++ {
 		from := start.AddDate(0, i, 0)
 		to := from.AddDate(0, 1, 0)
 		name := usagePartitionName(from)
@@ -140,6 +164,40 @@ func EnsureUsagePartitions(ctx context.Context, logsDB *sql.DB, now time.Time) e
 				continue
 			}
 			return fmt.Errorf("billing: create usage partition %s.%s: %w", schema, name, err)
+		}
+	}
+	// 仅当确实创建过（或补建过）分区时才尝试转移属主；角色缺失是正常部署
+	// 形态（单机/测试），静默跳过而不是让预建失败。
+	if err := transferUsagePartitionsToRetention(ctx, logsDB, schema, start, monthCount); err != nil {
+		return fmt.Errorf("billing: transfer usage partition ownership: %w", err)
+	}
+	return nil
+}
+
+// retentionRoleName 是保留/维护主体的角色名（R-W10-01 A）。
+const retentionRoleName = "newtg_retention"
+
+// transferUsagePartitionsToRetention 把目标月份分区的属主转给 newtg_retention。
+//
+// retention 角色不存在时直接 no-op：角色由 deploy/postgres-init/10-roles.sql
+// 创建，测试库可能没有。只在 DDL 可用时被调用（此处已通过权限探测）。
+func transferUsagePartitionsToRetention(ctx context.Context, logsDB *sql.DB, schema string,
+	start time.Time, monthCount int) error {
+	var roleExists bool
+	if err := logsDB.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)`, retentionRoleName).
+		Scan(&roleExists); err != nil {
+		return err
+	}
+	if !roleExists {
+		return nil
+	}
+	for i := 0; i < monthCount; i++ {
+		name := usagePartitionName(start.AddDate(0, i, 0))
+		stmt := fmt.Sprintf(`ALTER TABLE %s.%s OWNER TO %s`,
+			quoteSQLIdent(schema), quoteUsagePartitionIdent(name), quoteSQLIdent(retentionRoleName))
+		if _, err := logsDB.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("alter %s.%s owner: %w", schema, name, err)
 		}
 	}
 	return nil

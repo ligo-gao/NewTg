@@ -907,12 +907,14 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		return fmt.Errorf("worker: start instance heartbeat: %w", err)
 	}
 
-	// W10-N4/N9：兑换码回收与任务保留清理。两者都是每日后台维护，独立
-	// cancel/WaitGroup；设置键在启动时解析一次快照（见 platform/retention.go）。
-	// 放在其余装配之后、进入主循环之前，停机序统一在下方 cancel+Wait，
-	// 保证进行中的 DELETE 先于连接池关闭退出。
-	stopRetention := startRetentionWorkers(ctx, sqlDB, rr.client, center,
-		cfg.NodeName, httpapi.ResolveProcessInstanceID(), log)
+	// W10-N4/N9/N10/N11：兑换码回收、任务保留、过期日志分区删除与审计
+	// 保留（N10/N11 使用独立 DB_RETENTION_DSN）。设置键在启动时解析一次快照；
+	// N10 的 lookahead 同时供下面的分区预建循环使用，必须来自同一份快照。
+	// 停机序统一在下方 stopRetention（cancel + Wait + 关闭 retention 连接池），
+	// 保证进行中的 DELETE/DROP 先于连接池关闭退出。
+	retentionSettings := resolveLogRetentionSettings(center, log)
+	stopRetention := startRetentionWorkers(ctx, cfg, sqlDB, sqlLogs, rr.client, center,
+		retentionSettings, cfg.NodeName, httpapi.ResolveProcessInstanceID(), log)
 
 	// W10-N2：usage_logs 批处理消费者。默认关闭（log.batch_enabled=false）：
 	// 关闭时不启动任何 goroutine，日志写入仍走生产侧的同步路径。打开后
@@ -950,6 +952,8 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		SubscriptionRecoverer: engine,
 		LogsDB:                sqlLogs,
 		Logger:                log,
+		// R-W10-04：lookahead 来自启动期设置快照（默认 3），与删除循环一致。
+		PartitionLookaheadMonths: retentionSettings.PartitionLookaheadMonths,
 	})
 	// 先停后台循环（过期扫描 + 任务轮询 + 排行榜 + 订阅维护）再关连接池：
 	// 否则下一次 DB 调用会拿到「连接已关闭」错误，把正常停机噪声打进告警。

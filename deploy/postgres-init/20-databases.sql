@@ -19,12 +19,17 @@ DO $$ BEGIN RAISE EXCEPTION 'POSTGRES_LOGS_DB is empty'; END $$;
 SELECT format('CREATE DATABASE %I', :'logs_db')
 WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'logs_db')\gexec
 
-GRANT CONNECT ON DATABASE :"logs_db" TO newtg_app, newtg_migrate, newtg_backup;
+GRANT CONNECT ON DATABASE :"logs_db" TO newtg_app, newtg_migrate, newtg_backup, newtg_retention;
 
 -- 切到日志库：schema 与默认权限按库分别设置。
 \connect :"logs_db"
 
 GRANT USAGE ON SCHEMA public TO newtg_app, newtg_backup;
+-- newtg_retention 需要 CREATE 才能成为 usage_logs 子分区的新属主：
+-- PostgreSQL 的 ALTER TABLE ... OWNER TO 要求新属主在对象所在 schema 上有
+-- CREATE（只是所有权转移的前置检查，不是让保留任务执行 DDL）。它仍不拥有
+-- 父表 usage_logs，无法 DROP/改写整表。
+GRANT USAGE, CREATE ON SCHEMA public TO newtg_retention;
 GRANT USAGE, CREATE ON SCHEMA public TO newtg_migrate;
 REVOKE CREATE ON SCHEMA public FROM newtg_app, newtg_backup;
 
@@ -43,6 +48,10 @@ ALTER DEFAULT PRIVILEGES FOR ROLE newtg_migrate IN SCHEMA public
     GRANT SELECT ON TABLES TO newtg_backup;
 ALTER DEFAULT PRIVILEGES FOR ROLE newtg_migrate IN SCHEMA public
     GRANT SELECT ON SEQUENCES TO newtg_backup;
+-- W10-N10/N11：保留/维护主体只读 + 审计行的删除/ip 擦除（表存在后由日志库
+-- 迁移 20261022000000 授权；此处为「对既有数据卷重跑脚本」的条件补授）。
+ALTER DEFAULT PRIVILEGES FOR ROLE newtg_migrate IN SCHEMA public
+    GRANT SELECT ON TABLES TO newtg_retention;
 
 -- usage_logs 的列级 UPDATE 例外（R-25/R-59/R-60）。initdb 早于迁移：首次
 -- 初始化时 usage_logs 还不存在，因此这里只能对「表已存在」的情形补授（例如
@@ -52,6 +61,39 @@ DO $$
 BEGIN
     IF to_regclass('public.usage_logs') IS NOT NULL THEN
         EXECUTE 'GRANT UPDATE (status, cost, refunded, error_class, error_message) ON usage_logs TO newtg_app';
+    END IF;
+END
+$$;
+
+-- W10-N10/N11：newtg_retention 的表级授权与分区属主（R-W10-01 A）。
+-- 同样只在「表已存在」时生效：首次 initdb 早于迁移，真正的授权由日志库
+-- 迁移 20261022000000_retention_role 执行；这里是既有数据卷重跑脚本的补授。
+DO $$
+DECLARE
+    part_name   text;
+    part_schema text;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'newtg_retention') THEN
+        RETURN;
+    END IF;
+    IF to_regclass('public.audit_logs') IS NOT NULL THEN
+        EXECUTE 'GRANT DELETE ON audit_logs TO newtg_retention';
+        -- 顺序同日志库迁移：表级 REVOKE UPDATE 会清掉列级授权，必须先收回
+        -- 表级 UPDATE 再授 ip 列，否则 90 天 IP 擦除会因权限不足失败。
+        EXECUTE 'REVOKE UPDATE, INSERT, TRUNCATE ON audit_logs FROM newtg_retention';
+        EXECUTE 'GRANT UPDATE (ip) ON audit_logs TO newtg_retention';
+    END IF;
+    IF to_regclass('public.usage_logs') IS NOT NULL THEN
+        FOR part_name, part_schema IN
+            SELECT c.relname, n.nspname
+              FROM pg_inherits i
+              JOIN pg_class c     ON c.oid = i.inhrelid
+              JOIN pg_class p     ON p.oid = i.inhparent
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE p.oid = to_regclass('public.usage_logs')
+        LOOP
+            EXECUTE format('ALTER TABLE %I.%I OWNER TO newtg_retention', part_schema, part_name);
+        END LOOP;
     END IF;
 END
 $$;

@@ -23,6 +23,13 @@ type Config struct {
 	SessionSecret           string // SESSION_SECRET
 	CredentialEncryptionKey string // CREDENTIAL_ENCRYPTION_KEY
 	DBLogsDSN               string // DB_LOGS_DSN
+	// DBRetentionDSN 是保留/维护主体（newtg_retention）的日志库 DSN（W10-N10/N11）。
+	//
+	// **可选**：为空表示部署未提供独立维护凭据，分区删除与审计保留一律
+	// 不执行（fail-closed）。绝不回退到 DB_LOGS_DSN——那会用应用身份执行
+	// DROP/DELETE，既违反 platform-01 §12.6 的最小权限，也会把「没配置」
+	// 静默变成「用错身份删数据」。主库不需要该凭据（保留任务只碰日志库）。
+	DBRetentionDSN string // DB_RETENTION_DSN
 
 	// 可选（#5-#21、#23-#26）；REDIS_URL 因与同名的 RedisURL() 方法冲突，以非导出字段存储。
 	redisURL                 string        // REDIS_URL
@@ -106,18 +113,21 @@ func Load() (*Config, error) {
 		SessionSecret:           os.Getenv("SESSION_SECRET"),
 		CredentialEncryptionKey: os.Getenv("CREDENTIAL_ENCRYPTION_KEY"),
 		DBLogsDSN:               os.Getenv("DB_LOGS_DSN"),
-		RunMode:                 lookup("RUN_MODE"),
-		HTTPAddr:                lookup("HTTP_ADDR"),
-		AppEnv:                  lookup("APP_ENV"),
-		LogLevel:                lookup("LOG_LEVEL"),
-		LogFormat:               lookup("LOG_FORMAT"),
-		TZ:                      lookup("TZ"),
-		TrustedProxies:          lookup("TRUSTED_PROXIES"),
-		MetricsAddr:             lookup("METRICS_ADDR"),
-		MetricsToken:            lookup("METRICS_TOKEN"),
-		PublicBaseURL:           lookup("PUBLIC_BASE_URL"),
-		OpenAPIValidate:         lookup("OPENAPI_VALIDATE"),
-		TLSDMinVersion:          lookup("TLS_MIN_VERSION"),
+		// 只消费已拼好的 DSN；缺失时保留空串，由 worker 装配层按 fail-closed
+		// 处理（W10-N10/N11 不静默复用应用 DSN）。
+		DBRetentionDSN:  os.Getenv("DB_RETENTION_DSN"),
+		RunMode:         lookup("RUN_MODE"),
+		HTTPAddr:        lookup("HTTP_ADDR"),
+		AppEnv:          lookup("APP_ENV"),
+		LogLevel:        lookup("LOG_LEVEL"),
+		LogFormat:       lookup("LOG_FORMAT"),
+		TZ:              lookup("TZ"),
+		TrustedProxies:  lookup("TRUSTED_PROXIES"),
+		MetricsAddr:     lookup("METRICS_ADDR"),
+		MetricsToken:    lookup("METRICS_TOKEN"),
+		PublicBaseURL:   lookup("PUBLIC_BASE_URL"),
+		OpenAPIValidate: lookup("OPENAPI_VALIDATE"),
+		TLSDMinVersion:  lookup("TLS_MIN_VERSION"),
 	}
 
 	// NODE_NAME 空 → hostname。

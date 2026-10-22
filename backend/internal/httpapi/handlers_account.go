@@ -206,6 +206,9 @@ func (r *SQLAccountRepo) DeleteAccount(ctx context.Context, userID int64) ([]int
 	}
 	rows.Close()
 
+	// 【R-W10-09 A】与管理员删除同一口径：不触碰 audit_logs。审计行保留
+	// 12 个月、ip 90 天后由保留任务置 NULL、username 快照保留；删除账号
+	// 不做即时擦除，避免改写 append-only 的合规追溯链。
 	for _, stmt := range []string{
 		`DELETE FROM login_sessions WHERE user_id = $1`,
 		`DELETE FROM user_oauth_bindings WHERE user_id = $1`,

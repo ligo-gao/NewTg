@@ -118,6 +118,9 @@ services:
       RUN_MODE: worker
       DB_MIGRATE_ON_START: "false"
       NODE_NAME: "${NODE_NAME:-newtg}-worker"
+      # W10-N10/N11：保留/维护主体的日志库 DSN。只授 worker（gateway 不执行
+      # DROP/DELETE）；与 app DSN 角色/口令独立，缺失时保留任务 fail-closed。
+      DB_RETENTION_DSN: "postgres://newtg_retention:${POSTGRES_RETENTION_PASSWORD:?set POSTGRES_RETENTION_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_LOGS_DB:-newtg_logs}?sslmode=${DATABASE_TLS:-disable}"
       METRICS_ADDR: ":8006"
       METRICS_TOKEN: "${METRICS_TOKEN:-}"
     depends_on:
@@ -160,10 +163,11 @@ services:
       POSTGRES_USER: "${POSTGRES_USER:-newtg}"      # 引导超级用户：仅 initdb 建库/建角色
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}"
       POSTGRES_DB: "${POSTGRES_DB:-newtg}"
-      # 以下三项只被 postgres-init/10-roles.sql 读取（psql \getenv），与引导口令无派生关系。
+      # 以下四项只被 postgres-init/10-roles.sql 读取（psql \getenv），与引导口令无派生关系。
       POSTGRES_APP_PASSWORD: "${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in deploy/.env}"
       POSTGRES_MIGRATE_PASSWORD: "${POSTGRES_MIGRATE_PASSWORD:?set POSTGRES_MIGRATE_PASSWORD in deploy/.env}"
       POSTGRES_BACKUP_PASSWORD: "${POSTGRES_BACKUP_PASSWORD:?set POSTGRES_BACKUP_PASSWORD in deploy/.env}"
+      POSTGRES_RETENTION_PASSWORD: "${POSTGRES_RETENTION_PASSWORD:?set POSTGRES_RETENTION_PASSWORD in deploy/.env}"
       # 日志库名由 20-databases.sql 读取，与 DB_LOGS_DSN 保持同一插值变量。
       POSTGRES_LOGS_DB: "${POSTGRES_LOGS_DB:-newtg_logs}"
     volumes:

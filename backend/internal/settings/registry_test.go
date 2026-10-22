@@ -250,6 +250,9 @@ func TestRegistryGoldenSets(t *testing.T) {
 		"auth.password_login_enabled:off", "auth.signup_enabled:off",
 		"billing.currency_symbol:on", "billing.quota_per_unit:on",
 		"deploy.ionet.api_key:any", "deploy.ionet.enabled:off",
+		// W10-N10：打开过期分区删除会物理丢弃历史数据（不可恢复），
+		// 任意方向变更都需要二次确认；默认 false，见 R-W10-03 上线闸门。
+		"log.partition_drop_enabled:any",
 		"pay.alipay.private_key:any", "pay.alipay.public_key:any",
 		"pay.epay.key:any", "pay.epay.pid:on", "pay.force_complete_max_amount:on",
 		"pay.online_enabled:off", "pay.stripe.secret_key:any",

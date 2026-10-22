@@ -1913,6 +1913,11 @@ func (r *SQLAdminUserRepo) DeleteUser(ctx context.Context, id int64) (DeletedUse
 	deleted.TokensDeleted = int64(len(deleted.TokenIDs))
 	// 与自助删除（SQLAccountRepo.DeleteAccount）保持同一依赖清单：这些表都是
 	// 逻辑引用 users.id（无 FK），不清理会留下孤儿行。
+	//
+	// 【R-W10-09 A】刻意**不**触碰日志库的 audit_logs：审计行保留 12 个月、
+	// ip 由保留任务在 90 天后置 NULL，用户名快照保留（管理员仍可追溯「谁做的」）。
+	// 用户删除不做即时 IP 擦除/匿名化——审计是 append-only 的合规追溯面，
+	// 删除用户不应改写取证链；隐私政策与数据主体流程负责说明该保留口径。
 	for _, statement := range []string{
 		`DELETE FROM login_sessions WHERE user_id = $1`,
 		`DELETE FROM user_oauth_bindings WHERE user_id = $1`,

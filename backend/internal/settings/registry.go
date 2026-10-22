@@ -90,6 +90,10 @@ var sectionOrder = []string{
 	"site", "nav", "auth", "auth.turnstile", "billing", "billing_setting",
 	"pay", "pay.stripe", "pay.alipay", "pay.epay", "pay.creem", "pay.waffo", "pay.waffo_pancake",
 	"rl", "rl.health", "sec", "notify.smtp", "notify.webhook",
+	// W10-N10/N11：日志分区维护与审计保留。两组键都只服务 worker 的保留
+	// 循环，不进入公开下发全集（§1.4.1 未登记），避免把内部维护策略暴露给
+	// 匿名面。默认值只在注册表写一处（§3.16 Q1）。
+	"log", "audit",
 	// W10-N4 / N9：兑换码回收与任务保留清理。两组保留键都只服务 worker，
 	// 不进入公开下发全集；独立 section 让运营按域查看而不互相覆盖。
 	// rebase 修复：mj section 已在下方 W8/MJ-a2 组声明，这里不得重复，
@@ -556,6 +560,34 @@ func buildRegistry() []Setting {
 		// 阈值键（billing.balance_alert_threshold_credits）同口径。
 		def("notify.webhook.balance_low_threshold", "notify.webhook", TypeInt, int64(0),
 			minInt(0), maxInt(1000000000000)),
+
+		// ==== log（W10-N10 / R-W10-03/04：日志分区预建与过期分区删除）====
+		//
+		// 分区预建 lookahead 从代码常量 2 个月改为设置键（默认 3，R-W10-04 A）：
+		// 当月 + 下 N 个月。`0` 表示关闭滚动预建（只依赖迁移预建窗口），
+		// 与冻结的「0 = 关闭」语义一致。
+		def("log.partition_lookahead_months", "log", TypeInt, int64(3),
+			minInt(0), maxInt(36)),
+		// 过期分区删除默认 **false**（R-W10-03 A 的显式偏离）。
+		//
+		// 设计原文是「默认开」，但 year 排行榜仍直接聚合 12 个月 usage_logs
+		// （rankings/aggregate.go），而设计承诺的 usage_dashboards 在代码与
+		// 迁移中都不存在。若默认开，90 天后 year 榜会静默退化为「最近 90 天」。
+		// **上线闸门**：必须先有 usage_dashboards 或 year 榜改读
+		// rankings_timeseries，才允许把本键置 true。开关是破坏性的（删除
+		// 历史分区不可恢复），因此按任意变更均需二次确认处理。
+		def("log.partition_drop_enabled", "log", TypeBool, false, dangerousAny()),
+
+		// ==== audit（W10-N11 / R-W10-09 A：审计保留与 IP 擦除）====
+		//
+		// 审计行保留 12 个月（platform-01 §5 / G7-R47）。`0` = 不删除审计行
+		// （不是「立即删除」）；上限 120 个月防止「月」误写成极大值。
+		def("audit.retention_months", "audit", TypeInt, int64(12),
+			minInt(0), maxInt(120)),
+		// 审计 IP 字段级擦除：90 天后置 NULL，行本身保留（≥180 天下限）。
+		// `0` = 不擦除（隐私政策需说明）；上限 10 年与其他保留键同口径。
+		def("audit.ip_erase_days", "audit", TypeInt, int64(90),
+			minInt(0), maxInt(3650)),
 
 		// ==== redemption（W10-N4 / R-W10-05：兑换码回收）====
 		//

@@ -275,6 +275,9 @@ var actionCategories = map[string]string{
 
 	ActionSystemInitialized: categoryOperation,
 
+	// W10-N11：审计保留任务的自记录（每轮最多一条，只含计数与窗口参数）。
+	ActionAuditRetention: categoryOperation,
+
 	ActionLogExport: categoryOperation,
 
 	ActionAuthzDenied: categorySecurity,

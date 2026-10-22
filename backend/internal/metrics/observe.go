@@ -209,6 +209,8 @@ var workerPlaceholderTasks = []string{
 	"rankings_snapshot",
 	"email",
 	"retention",
+	// W10-N10：过期 usage_logs 分区删除（默认关闭，见 log.partition_drop_enabled）。
+	"log_partition_drop",
 }
 
 // InitWorker 初始化 worker 角色指标基线。

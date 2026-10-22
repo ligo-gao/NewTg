@@ -5,7 +5,7 @@
 #
 # 断言项（plan Task 11 Step 1）：
 #   a. gateway/worker/migrate 三服务 RUN_MODE 正确，且全配置无 NEWTG_ROLE；
-#   b. 四个必需密钥 + 备份密钥全部带 `${VAR:?...}` fail-fast 守卫；
+#   b. 全部数据面口令（含 newtg_retention）带 `${VAR:?...}` fail-fast 守卫；
 #   c. postgres 镜像为 postgres:16-alpine（GC-4，禁止 15）；
 #   d. backend 网络 internal: true；
 #   e. gateway 副本数 == 2、worker == 1；
@@ -13,8 +13,11 @@
 #   g. gateway/migrate/worker 的 stop_grace_period 均为 35s（终审修复回归守卫）；
 #   h. R-23：worker 挂非 internal 的 egress 网，postgres/redis 不挂。
 #   i. R-25/R-59/R-60：日志库仅 usage_logs 授 newtg_app 五列 UPDATE
-#      (status,cost,refunded,error_class,error_message)；audit_logs 保持 append-only；
+#      (status,cost,refunded,error_class,error_message)；audit_logs 对 app 保持
+#      append-only，对 newtg_retention 只授 ip 列级 UPDATE（W10-N11）；
 #      R-56/R-61：日志库迁移预建 12 个月分区并清除旧授权（运行期 worker 无 DDL 权限）。
+#   j. W10-N10/N11（R-W10-01）：DB_RETENTION_DSN 只给 worker 且角色为
+#      newtg_retention（不得复用 app 凭据）。
 #
 # 渲染所需口令在脚本内以哑值兜底（shell 环境优先于 deploy/.env），因此本脚本
 # 不依赖、也不创建 deploy/.env，可直接在 CI 中运行。
@@ -44,10 +47,11 @@ done
 : "${POSTGRES_APP_PASSWORD:=check-compose-dummy}"
 : "${POSTGRES_MIGRATE_PASSWORD:=check-compose-dummy}"
 : "${POSTGRES_BACKUP_PASSWORD:=check-compose-dummy}"
+: "${POSTGRES_RETENTION_PASSWORD:=check-compose-dummy}"
 : "${SESSION_SECRET:=check-compose-dummy}"
 : "${CREDENTIAL_ENCRYPTION_KEY:=check-compose-dummy}"
 export POSTGRES_PASSWORD REDIS_PASSWORD POSTGRES_APP_PASSWORD \
-  POSTGRES_MIGRATE_PASSWORD POSTGRES_BACKUP_PASSWORD \
+  POSTGRES_MIGRATE_PASSWORD POSTGRES_BACKUP_PASSWORD POSTGRES_RETENTION_PASSWORD \
   SESSION_SECRET CREDENTIAL_ENCRYPTION_KEY
 
 command -v docker >/dev/null 2>&1 || die "docker 不可用"
@@ -96,7 +100,8 @@ fi
 
 # --- b. 密钥 fail-fast 守卫 ----------------------------------------------
 for v in POSTGRES_PASSWORD REDIS_PASSWORD POSTGRES_APP_PASSWORD \
-         POSTGRES_MIGRATE_PASSWORD POSTGRES_BACKUP_PASSWORD; do
+         POSTGRES_MIGRATE_PASSWORD POSTGRES_BACKUP_PASSWORD \
+         POSTGRES_RETENTION_PASSWORD; do
   if grep -Fq "${v}:?set ${v} in deploy/.env" "$compose"; then
     ok "${v} 带 :? 守卫"
   else
@@ -245,19 +250,44 @@ for key in DATABASE_URL DB_LOGS_DSN; do
   fi
 done
 
+# W10-N10/N11（R-W10-01）：保留主体只授 worker，且不得复用 app 凭据。
+ret_val="$(q '.services.worker.environment.DB_RETENTION_DSN // ""')"
+if [[ "$ret_val" == postgres://newtg_retention:* ]]; then
+  ok "services.worker DB_RETENTION_DSN 使用 newtg_retention"
+else
+  bad "services.worker DB_RETENTION_DSN 未使用 newtg_retention（禁止复用 app DSN）"
+fi
+if [ -z "$(q '.services.gateway.environment.DB_RETENTION_DSN // ""')" ]; then
+  ok "services.gateway 不含 DB_RETENTION_DSN（保留任务只在 worker）"
+else
+  bad "services.gateway 不应持有 DB_RETENTION_DSN"
+fi
+
 # --- i. 日志库 UPDATE 例外与分区预建（R-25/R-56/R-59/R-60/R-61） ---------
 # usage_logs 是唯一需要 newtg_app UPDATE 的日志表，且只授五列；audit_logs
-# 必须 append-only。运行期 worker（newtg_app）没有 DDL 权限，分区由迁移预建。
+# 对 **app** 必须 append-only；保留主体（newtg_retention）只允许 ip 一列的
+# UPDATE（W10-N11 的 90 天字段级擦除），表级 UPDATE 同样禁止。
+# 运行期 worker（newtg_app）没有 DDL 权限，分区由迁移预建。
 init_sql="$root/deploy/postgres-init/20-databases.sql"
 if grep -Fq 'GRANT UPDATE (status, cost, refunded, error_class, error_message) ON usage_logs TO newtg_app' "$init_sql"; then
   ok "20-databases.sql 为 usage_logs 授予 newtg_app 五列 UPDATE（R-60）"
 else
   bad "20-databases.sql 缺少 usage_logs 的五列 UPDATE 授权（R-60）"
 fi
-if grep -Eq 'GRANT[[:space:]]+UPDATE[^;]*ON[[:space:]]+audit_logs' "$init_sql"; then
-  bad "audit_logs 不得授予 UPDATE（保持 append-only）"
+if grep -Eq 'GRANT[[:space:]]+UPDATE[^;]*ON[[:space:]]+audit_logs[^;]*TO[[:space:]]+newtg_app' "$init_sql"; then
+  bad "audit_logs 不得向 newtg_app 授予任何 UPDATE（保持 append-only）"
 else
-  ok "audit_logs 未授予 UPDATE（append-only）"
+  ok "audit_logs 未向 newtg_app 授予 UPDATE（append-only）"
+fi
+if grep -Fq 'GRANT UPDATE (ip) ON audit_logs TO newtg_retention' "$init_sql"; then
+  ok "audit_logs 仅向 newtg_retention 授予 ip 列级 UPDATE（W10-N11）"
+else
+  bad "缺少 audit_logs 的 ip 列级 UPDATE 授权（newtg_retention / W10-N11）"
+fi
+if grep -Eq 'GRANT[[:space:]]+UPDATE[[:space:]]+ON[[:space:]]+audit_logs[^;]*TO[[:space:]]+newtg_retention' "$init_sql"; then
+  bad "audit_logs 不得向 newtg_retention 授予表级 UPDATE（只允许 ip 列）"
+else
+  ok "audit_logs 未向 newtg_retention 授予表级 UPDATE"
 fi
 # initdb 早于建表，新库的实际授权与 12 个月分区预建由日志库迁移执行。
 if grep -Fq 'GRANT UPDATE (status, cost, refunded, error_class, error_message) ON usage_logs TO newtg_app' "$root"/backend/migrations-logs/*.up.sql 2>/dev/null; then

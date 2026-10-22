@@ -25,15 +25,10 @@ const (
 	defaultPartitionInterval = 24 * time.Hour
 )
 
-// ensureUsagePartitionsFn 是 usage_logs 月分区维护的接缝（R-12）。
-//
-// 默认直连 Task 6 的 EnsureUsagePartitions（同包，分区按「当月 + 下月」
-// 预建、幂等）。保留变量而非直接调用，是为了让循环的单测可以注入 fake，
-// 不依赖真实日志库与 DDL 权限。
-//
-// 失败语义：T6 的权限/锁失败返回 error，worker 只记录并下一轮重试；
-// 分区维护失败不代表本轮扫描失败，两者互不阻断。
-var ensureUsagePartitionsFn = EnsureUsagePartitions
+// ensureUsagePartitionsFn 曾是分区维护的默认接缝；W10-N10 起 lookahead 由
+// 装配层解析并绑定到 RunWorkerLoop（见 WorkerDeps.PartitionLookaheadMonths），
+// 单测仍可通过 WorkerDeps.EnsurePartitions 注入 fake。保留注释说明变更，
+// 不再保留无参可绑定的包级变量（否则容易误用默认值绕过配置）。
 
 // AbandonedLister 列出满足「开始超窗口且心跳超 TTL」的可回收请求
 // （含 R-88 回补令牌额度所需的 user_id/token_id）。
@@ -78,6 +73,11 @@ type WorkerDeps struct {
 	ScanInterval          time.Duration
 	PartitionInterval     time.Duration
 
+	// PartitionLookaheadMonths 是分区预建的 lookahead（W10-N10 / R-W10-04）：
+	// 当月 + 下 N 个月。0 表示只保证当月；负值按 0 处理。装配层从
+	// `log.partition_lookahead_months`（默认 3）解析后传入。
+	PartitionLookaheadMonths int
+
 	// EnsurePartitions 覆盖分区维护函数（测试注入）；nil 用包级接缝。
 	EnsurePartitions func(ctx context.Context, logsDB *sql.DB, now time.Time) error
 }
@@ -117,7 +117,12 @@ func RunWorkerLoop(ctx context.Context, deps WorkerDeps) error {
 	}
 	ensurePartitions := deps.EnsurePartitions
 	if ensurePartitions == nil {
-		ensurePartitions = ensureUsagePartitionsFn
+		// lookahead 在装配期解析（设置中心快照），这里只绑定生效值；
+		// 分区预建始终走 app 日志库，与保留删除的 retention DSN 分离。
+		lookahead := deps.PartitionLookaheadMonths
+		ensurePartitions = func(ctx context.Context, logsDB *sql.DB, now time.Time) error {
+			return EnsureUsagePartitionsWithLookahead(ctx, logsDB, now, lookahead)
+		}
 	}
 
 	// 已取消的上下文不再启动任何扫描（停机竞态下不产生新的 DB/Redis 负载）。
