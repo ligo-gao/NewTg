@@ -168,6 +168,11 @@ func TestAuditActionCategories(t *testing.T) {
 		ActionSystemInitialized:            "operation",
 		// RBAC 拒绝并入既有 security 类（security-09 §2.7 设计 B），不新增类别。
 		ActionAuthzDenied: "security",
+		// W11：渠道写审计与凭据揭示都是管理配置/运维动作，归 operation。
+		ActionChannelCreate:            "operation",
+		ActionChannelUpdate:            "operation",
+		ActionChannelDelete:            "operation",
+		ActionChannelCredentialsReveal: "operation",
 	}
 	for action, want := range cases {
 		got, ok := Category(action)

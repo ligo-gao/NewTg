@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -371,5 +372,148 @@ func TestRedisReauthLimiterHealsMissingTTL(t *testing.T) {
 	mr.FastForward(ReauthLockDuration + time.Second)
 	if err := limiter.Check(ctx, 31); err != nil {
 		t.Fatalf("窗口过期后 Check = %v，期望 nil（不得永久锁定）", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// W11：AuthorizeOnce（security-03 §2.10 步进认证）
+// ---------------------------------------------------------------------------
+
+// TestAuthorizeOncePasswordOnlyDoesNotOpenWindow：未启用 MFA 的账号只接受
+// password；成功后**不得**写 reauth:<userID> 窗口键（步进认证只授权本次请求）。
+func TestAuthorizeOncePasswordOnlyDoesNotOpenWindow(t *testing.T) {
+	source := &fakeReauthSource{materials: map[int64]*ReauthMaterial{
+		41: {PasswordHash: reauthTestPasswordHash},
+	}}
+	gate, mr := newReauthTestGate(t, source, nil)
+	ctx := context.Background()
+
+	// 空因子不能沿用任何窗口（与 Authorize 的关键差异）。
+	if err := gate.AuthorizeOnce(ctx, 41, ReauthFactor{}); !errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("空因子 err = %v，期望 ErrReauthRequired", err)
+	}
+	if err := gate.AuthorizeOnce(ctx, 41, ReauthFactor{Password: "wrong"}); !errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("错误密码 err = %v，期望 ErrReauthRequired", err)
+	}
+	if mr.Exists("reauth:41") {
+		t.Fatal("失败的步进认证不得写入窗口键")
+	}
+	if err := gate.AuthorizeOnce(ctx, 41, ReauthFactor{Password: reauthTestPassword}); err != nil {
+		t.Fatalf("正确密码 err = %v，期望 nil", err)
+	}
+	if mr.Exists("reauth:41") {
+		t.Fatal("AuthorizeOnce 成功后不得写再认证窗口（只授权本次请求）")
+	}
+	// 再次空因子仍然拒绝：证明没有可复用的免认证窗口。
+	if err := gate.AuthorizeOnce(ctx, 41, ReauthFactor{}); !errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("成功后空因子 err = %v，期望 ErrReauthRequired（无窗口）", err)
+	}
+}
+
+// TestAuthorizeOnceTOTPShape：已启用 MFA 时只接受 totp_code；给密码/同时给
+// 两种因子都是 *ReauthFactorShapeError（422 字段级），且不计数失败锁定。
+func TestAuthorizeOnceTOTPShape(t *testing.T) {
+	const secret = "JBSWY3DPEHPK3PXP"
+	source := &fakeReauthSource{materials: map[int64]*ReauthMaterial{
+		42: {PasswordHash: reauthTestPasswordHash, TOTPEnabled: true, TOTPSecret: secret},
+	}}
+	gate, mr := newReauthTestGate(t, source, func(s, code string, _ time.Time) bool {
+		return s == secret && code == "123456"
+	})
+	ctx := context.Background()
+
+	for _, factor := range []ReauthFactor{
+		{Password: reauthTestPassword},
+		{Password: reauthTestPassword, TOTPCode: "123456"},
+	} {
+		err := gate.AuthorizeOnce(ctx, 42, factor)
+		var shape *ReauthFactorShapeError
+		if !errors.As(err, &shape) || shape.Required != "totp_code" {
+			t.Fatalf("factor=%+v err = %v，期望 Required=totp_code 的 shape 错误", factor, err)
+		}
+	}
+	// 形态错误不计数：三次形态错误后仍能正常通过。
+	for i := 0; i < 3; i++ {
+		_ = gate.AuthorizeOnce(ctx, 42, ReauthFactor{Password: reauthTestPassword})
+	}
+	if err := gate.AuthorizeOnce(ctx, 42, ReauthFactor{TOTPCode: "123456"}); err != nil {
+		t.Fatalf("正确 TOTP err = %v，期望 nil（形态错误不得触发锁定）", err)
+	}
+	if mr.Exists("reauth:42") {
+		t.Fatal("TOTP 步进认证成功后不得写再认证窗口")
+	}
+	// 错误 TOTP 是真正的因子失败 → ErrReauthRequired。
+	if err := gate.AuthorizeOnce(ctx, 42, ReauthFactor{TOTPCode: "000000"}); !errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("错误 TOTP err = %v，期望 ErrReauthRequired", err)
+	}
+}
+
+// TestAuthorizeOncePasswordAccountRejectsTOTP：未启用 MFA 时给 totp_code 是
+// 形态错误（Required=password），不能退化成密码校验。
+func TestAuthorizeOncePasswordAccountRejectsTOTP(t *testing.T) {
+	source := &fakeReauthSource{materials: map[int64]*ReauthMaterial{
+		43: {PasswordHash: reauthTestPasswordHash},
+	}}
+	gate, _ := newReauthTestGate(t, source, nil)
+
+	var shape *ReauthFactorShapeError
+	err := gate.AuthorizeOnce(context.Background(), 43, ReauthFactor{TOTPCode: "123456"})
+	if !errors.As(err, &shape) || shape.Required != "password" {
+		t.Fatalf("err = %v，期望 Required=password 的 shape 错误", err)
+	}
+}
+
+// TestAuthorizeOnceFailureLockShared：连续 5 次错误因子后锁定，与 Authorize
+// 共用同一 reauth_fail 桶。
+func TestAuthorizeOnceFailureLockShared(t *testing.T) {
+	source := &fakeReauthSource{materials: map[int64]*ReauthMaterial{
+		44: {PasswordHash: reauthTestPasswordHash},
+	}}
+	gate, _ := newReauthTestGate(t, source, nil)
+	ctx := context.Background()
+
+	for i := 0; i < ReauthMaxFailures; i++ {
+		if err := gate.AuthorizeOnce(ctx, 44, ReauthFactor{Password: "wrong"}); !errors.Is(err, ErrReauthRequired) {
+			t.Fatalf("第 %d 次错误 err = %v，期望 ErrReauthRequired", i+1, err)
+		}
+	}
+	var locked *ReauthLockedError
+	if err := gate.AuthorizeOnce(ctx, 44, ReauthFactor{Password: reauthTestPassword}); !errors.As(err, &locked) {
+		t.Fatalf("锁定后 err = %v，期望 *ReauthLockedError（即使因子正确）", err)
+	}
+}
+
+// TestAuthorizeOnceTOTPWithoutVerifierFailsClosed：已启用 MFA 但未注入校验器
+// 时必须拒绝，绝不能把「无法验证 TOTP」当成通过。
+func TestAuthorizeOnceTOTPWithoutVerifierFailsClosed(t *testing.T) {
+	source := &fakeReauthSource{materials: map[int64]*ReauthMaterial{
+		45: {PasswordHash: reauthTestPasswordHash, TOTPEnabled: true, TOTPSecret: "JBSWY3DPEHPK3PXP"},
+	}}
+	gate, _ := newReauthTestGate(t, source, nil)
+
+	if err := gate.AuthorizeOnce(context.Background(), 45, ReauthFactor{TOTPCode: "123456"}); !errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("未注入 TOTP 校验器 err = %v，期望 ErrReauthRequired（fail-closed）", err)
+	}
+}
+
+// TestAuthorizeOnceDoesNotTrimPassword 是 M-7 复核的回归：登录与 Authorize
+// 都按原样比较口令，步进认证若 trim 会让首尾带空格的合法口令永远无法通过。
+func TestAuthorizeOnceDoesNotTrimPassword(t *testing.T) {
+	const spaced = "  spaced password  "
+	hash, err := HashPassword(spaced)
+	if err != nil {
+		t.Fatalf("HashPassword: %v", err)
+	}
+	source := &fakeReauthSource{materials: map[int64]*ReauthMaterial{
+		46: {PasswordHash: hash},
+	}}
+	gate, _ := newReauthTestGate(t, source, nil)
+	ctx := context.Background()
+
+	if err := gate.AuthorizeOnce(ctx, 46, ReauthFactor{Password: spaced}); err != nil {
+		t.Fatalf("原样口令 err = %v，期望 nil（不得 trim 口令）", err)
+	}
+	if err := gate.AuthorizeOnce(ctx, 46, ReauthFactor{Password: strings.TrimSpace(spaced)}); !errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("trim 后口令 err = %v，期望 ErrReauthRequired（空格是口令的一部分）", err)
 	}
 }

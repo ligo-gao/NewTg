@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,6 +56,29 @@ var ErrReauthLocked = errors.New("auth: reauthentication temporarily locked")
 type ReauthLockedError struct {
 	RetryAfter time.Duration
 }
+
+// ErrReauthFactorShape 表示提交的因子形态与账号当前 MFA 状态不匹配：
+// 已启用 TOTP 却只给密码、未启用却只给 TOTP，或两种因子同时提供。
+//
+// 与 ErrReauthRequired 的区分是刻意的：形态错误是**调用方对账号 MFA 状态
+// 的误判**（请求参数错误，security-03 §2.10 要求 422 字段级错误），不是
+// 一次失败的因子猜测，因此不执行解密、也不计入失败锁定——否则不了解账号
+// 状态的合法管理员会在改正参数之前被锁 15 分钟。
+var ErrReauthFactorShape = errors.New("auth: reauth factor does not match account mfa state")
+
+// ReauthFactorShapeError 携带账号实际要求的因子字段名（password /
+// totp_code），HTTP 层据此把 422 定位到正确字段。
+type ReauthFactorShapeError struct {
+	// Required 是本次请求应当提交的唯一因子字段。
+	Required string
+}
+
+func (e *ReauthFactorShapeError) Error() string {
+	return fmt.Sprintf("auth: reauth factor %q is required by the account mfa state", e.Required)
+}
+
+// Unwrap 让 errors.Is(err, ErrReauthFactorShape) 成立。
+func (e *ReauthFactorShapeError) Unwrap() error { return ErrReauthFactorShape }
 
 func (e *ReauthLockedError) Error() string {
 	return fmt.Sprintf("auth: reauthentication locked for %s", e.RetryAfter)
@@ -296,6 +320,97 @@ func (m *ReauthGate) Authorize(ctx context.Context, userID int64, factor ReauthF
 	// 只有全部因子通过后才记录窗口；失败不会留下任何可被复用的状态。
 	if err := m.rdb.Set(ctx, reauthKey(userID), "1", ReauthWindow).Err(); err != nil {
 		return fmt.Errorf("auth: record reauth window: %w", err)
+	}
+	return nil
+}
+
+// AuthorizeOnce 校验一次**仅本次请求有效**的步进认证因子，不写再认证窗口。
+//
+// 与 Authorize 的语义差异来自 security-03 §2.10 的「步进认证只授权本次
+// 请求」：
+//   - 必须现场提交因子，绝不沿用 5 分钟窗口（空因子直接拒绝）；
+//   - 因子形态由账号当前 MFA 状态决定：已启用 TOTP 时只接受 totp_code，
+//     未启用时只接受 password；形态不匹配返回 *ReauthFactorShapeError；
+//   - 成功后**不写** reauth:<userID>，不延长/提升会话，不产生后续免认证
+//     窗口（渠道凭据揭示的冻结口径）。
+//
+// 失败锁定复用同一 reauth_fail:<userID> 桶（与 Authorize 的其他敏感操作
+// 共用阈值与时长），但形态错误不计数：它不是因子猜测，而是调用方对账号
+// MFA 状态的误判，计数会让合法管理员在改正参数前被锁 15 分钟。
+//
+// 返回值约定：因子失败 == ErrReauthRequired；形态不符 ==
+// *ReauthFactorShapeError（errors.Is ErrReauthFactorShape）；锁定 ==
+// *ReauthLockedError；基础设施故障 == 其他 error（调用方映射 503）。
+func (m *ReauthGate) AuthorizeOnce(ctx context.Context, userID int64, factor ReauthFactor) error {
+	if m == nil || m.rdb == nil || m.users == nil {
+		return errors.New("auth: reauth gate is not configured")
+	}
+
+	// 口令**不 trim**：登录/Authorize 都按原样比较；若这里 trim，首尾带空格的
+	// 合法口令可以登录却永远无法通过步进认证（M-7 复核）。TOTP 由校验器自行
+	// trim（auth.VerifyTOTP 的内部口径），这里保持同样宽松。
+	password := factor.Password
+	totpCode := strings.TrimSpace(factor.TOTPCode)
+	if password == "" && totpCode == "" {
+		// 没有「沿用窗口」分支：步进认证不能依赖先前的成功。
+		return ErrReauthRequired
+	}
+
+	// 锁定检查在读取用户材料/KDF 之前，与 Authorize 同口径。
+	if m.limiter != nil {
+		if err := m.limiter.Check(ctx, userID); err != nil {
+			return err
+		}
+	}
+	fail := func() error {
+		if m.limiter != nil {
+			if err := m.limiter.Record(ctx, userID, false); err != nil {
+				return err
+			}
+		}
+		return ErrReauthRequired
+	}
+
+	material, err := m.users.ReauthMaterial(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("auth: load reauth material: %w", err)
+	}
+	if material == nil {
+		return fail()
+	}
+
+	if material.TOTPEnabled {
+		// 已启用 MFA：唯一合法因子是 totp_code。同时提供密码也是形态错误
+		// （设计明确「恰好一个」；密码在这里没有校验意义）。
+		if totpCode == "" || password != "" {
+			return &ReauthFactorShapeError{Required: "totp_code"}
+		}
+		if m.verifyTOTP == nil {
+			// 未注入校验器的已启用 MFA 账号一律拒绝（fail-closed）。
+			return fail()
+		}
+		if !m.verifyTOTP(material.TOTPSecret, totpCode, m.now()) {
+			return fail()
+		}
+	} else {
+		if password == "" || totpCode != "" {
+			return &ReauthFactorShapeError{Required: "password"}
+		}
+		if material.PasswordHash == "" {
+			// OAuth-only 账号没有口令：执行等价 KDF 后拒绝，不制造时序差异。
+			_ = VerifyPassword(dummyReauthHash(), password)
+			return fail()
+		}
+		if !VerifyPassword(material.PasswordHash, password) {
+			return fail()
+		}
+	}
+
+	// 成功清零失败计数；**不写**窗口键（只授权本次请求）。
+	if m.limiter != nil {
+		if err := m.limiter.Record(ctx, userID, true); err != nil {
+			return err
+		}
 	}
 	return nil
 }

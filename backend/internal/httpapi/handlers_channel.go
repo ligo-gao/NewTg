@@ -23,6 +23,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"newtg/gateway/internal/api/dto"
+	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/channelhealth"
 	"newtg/gateway/internal/contract"
@@ -42,6 +43,11 @@ import (
 //	PATCH  /api/channels/batch            channels:manage        {action, ids}
 //	POST   /api/channels/batch-delete     channels:manage_sensitive + Idempotency-Key
 //	POST   /api/channels/{id}/test        channels:manage
+//	POST   /api/channels/{id}/credentials/reveal
+//	                                      channels:manage_sensitive + 步进认证 + 限流
+//
+// 凭据揭示是「常规接口永不返回明文」的唯一例外（security-03 §2.10）：
+// 只读、只授权本次请求（不写再认证窗口）、响应 no-store、审计只记元数据。
 //
 // 端点形状按 R-P5（modules-06 的 REST 形态，不是计划草案的 colon action）。
 // 安全不变量（GC-6/GC-8）：响应只走白名单字段；base_url 与凭据明文永不出现；
@@ -502,6 +508,17 @@ type channelTestResponse struct {
 	ErrorClass string `json:"error_class,omitempty"`
 }
 
+// revealCredentialsRequest 是凭据揭示的请求体（security-03 §2.10）。
+//
+// Password / TOTPCode 用 *string 而不是 string：设计冻结「恰好一个」因子，
+// 缺省、显式 null 与空串都必须能与「提交了非空因子」区分开；用零值会
+// 把「没给」和「给了空串」折叠成同一种请求，从而无法给出 422 字段级错误。
+type revealCredentialsRequest struct {
+	Reason   string  `json:"reason"`
+	Password *string `json:"password"`
+	TOTPCode *string `json:"totp_code"`
+}
+
 // ---------- Handler ----------
 
 // ChannelHandlerOptions 是 phase 8B wiring 的注入点。
@@ -519,6 +536,17 @@ type ChannelHandlerOptions struct {
 	// Plugins 是任务插件注册表（渠道绑定校验）。nil 时任何 60/61 绑定都
 	// 视为未注册（fail-closed）；生产装配必须注入。
 	Plugins TaskPluginCatalog
+	// Redis 是凭据揭示的管理员限流桶（reveal 桶：10 次/小时/管理员）。nil 时揭示
+	// 端点一律 503（fail-closed）：限流是敏感操作的强制控制，不能因为漏装配
+	// 而静默变成「无限次揭示」。
+	Redis *redis.Client
+	// Reauth 是凭据揭示的步进认证门（security-03 §2.10）。nil 时揭示端点
+	// 一律 503（fail-closed），绝不退化成「仅权限」——权限与步进认证是两个
+	// 独立门，缺一不可。
+	Reauth *auth.ReauthGate
+	// Audit 记录渠道写操作与凭据揭示（O-1 缺口 + security-03 §2.10）。nil 时
+	// 跳过（仅未装配日志库的测试）；生产必须接线。
+	Audit *audit.Logger
 	// Logger 记录幂等 finalize 失败等不可返回给客户端的内部错误；
 	// nil 时使用 slog.Default()（不得静默丢弃错误）。
 	Logger *slog.Logger
@@ -534,6 +562,9 @@ type ChannelHandler struct {
 	config        ConfigReader
 	plugins       TaskPluginCatalog
 	idem          IdempotencyStore
+	rdb           *redis.Client
+	reauth        *auth.ReauthGate
+	audit         *audit.Logger
 	log           *slog.Logger
 }
 
@@ -563,6 +594,9 @@ func NewChannelHandler(channels ChannelStore, access UserAccessStore, sealer *Se
 		config:        opts.Config,
 		plugins:       opts.Plugins,
 		idem:          idem,
+		rdb:           opts.Redis,
+		reauth:        opts.Reauth,
+		audit:         opts.Audit,
 		log:           logger,
 	}
 }
@@ -578,6 +612,8 @@ func (h *ChannelHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/channels/{id}", h.handleUpdate)
 	mux.HandleFunc("DELETE /api/channels/{id}", h.handleDelete)
 	mux.HandleFunc("POST /api/channels/{id}/test", h.handleTest)
+	// 凭据揭示是只读受控例外（security-03 §2.10）；路径按 G7-R13 资源命名。
+	mux.HandleFunc("POST /api/channels/{id}/credentials/reveal", h.handleRevealCredentials)
 }
 
 // ---------- 列表 / 详情 ----------
@@ -675,6 +711,13 @@ func (h *ChannelHandler) createChannel(r *http.Request) (int, []byte, bool) {
 	if err != nil {
 		return errorResponse(storeErrorResponse(err))
 	}
+	// O-1：渠道写操作必须留审计。detail 只含 id/name 与「凭据已写入」布尔，
+	// 绝不记录凭据值、密文或 base_url（审计保留 12 个月，不能成为密钥副本）。
+	h.writeChannelAuditEvent(r, audit.ActionChannelCreate, http.StatusCreated, "success", map[string]any{
+		"channel_id":          created.ID,
+		"name":                created.Name,
+		"credentials_written": len(created.Credentials) > 0,
+	})
 	resp, err := h.detailResponse(created)
 	if err != nil {
 		return errorResponse(internalAPIError())
@@ -883,6 +926,12 @@ func (h *ChannelHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, storeErrorResponse(err))
 		return
 	}
+	// O-1：写审计只记「哪些字段被改」的字段名与凭据是否轮换，不记任何值。
+	h.writeChannelAuditEvent(r, audit.ActionChannelUpdate, http.StatusOK, "success", map[string]any{
+		"channel_id":          updated.ID,
+		"fields":              changedChannelFields(&req),
+		"credentials_written": patch.Credentials != nil,
+	})
 	resp, err := h.detailResponse(updated)
 	if err != nil {
 		writeAPIError(w, internalAPIError())
@@ -1182,6 +1231,38 @@ func (h *ChannelHandler) buildPatch(ctx context.Context, v *validator, existing 
 	return patch, nil
 }
 
+// changedChannelFields 返回 PATCH 载荷中出现过的字段名（审计用）。
+//
+// 刻意**排除 credentials**：凭据值（及其密文/掩码/长度）永不进入审计，
+// 轮换事实由调用侧的 credentials_written 布尔单独表达。字段名本身不是
+// 秘密，但把 "credentials" 写进 fields 会让审计消费方误以为能据此检索
+// 凭据变更——布尔更准确。
+func changedChannelFields(req *updateChannelRequest) []string {
+	fields := make([]string, 0, 16)
+	add := func(present bool, name string) {
+		if present {
+			fields = append(fields, name)
+		}
+	}
+	add(req.Name != nil, "name")
+	add(req.Type != nil, "type")
+	add(req.BaseURL != nil, "base_url")
+	add(req.SupportedModels != nil, "supported_models")
+	add(req.GroupTags != nil, "group_tags")
+	add(req.ModelMapping != nil, "model_mapping")
+	add(req.Weight != nil, "weight")
+	add(req.Priority != nil, "priority")
+	add(req.RateLimit != nil, "rate_limit")
+	add(req.Status != nil, "status")
+	add(req.AutoBan != nil, "auto_ban")
+	add(req.TestModel != nil, "test_model")
+	add(req.Remark != nil, "remark")
+	add(req.Tag != nil, "tag")
+	add(req.TaskPluginKey != nil, "task_plugin_key")
+	add(req.TaskExtendPluginKeys != nil, "task_extend_plugin_keys")
+	return fields
+}
+
 // jsonRawEqual 语义比较两份 JSON 文档（键顺序与空白不敏感），用于判断
 // PATCH 是否真的修改了 model_mapping。nil 与 `{}` 都解码为 nil
 // map[string]any，视为相同——store 会把缺失的映射规范化为 `{}`。
@@ -1402,6 +1483,10 @@ func (h *ChannelHandler) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, storeErrorResponse(err))
 		return
 	}
+	// O-1：删除必须可追溯；channel_id 是唯一必要的标识（行已不存在，不能再查）。
+	h.writeChannelAuditEvent(r, audit.ActionChannelDelete, http.StatusNoContent, "success", map[string]any{
+		"channel_id": id,
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1575,6 +1660,313 @@ func (h *ChannelHandler) reportProbeResult(ctx context.Context, ch *store.Channe
 		return
 	}
 	h.probeReporter.ReportProbeFailure(ctx, ch.ID, ch.AutoBan, result)
+}
+
+// ---------- 凭据揭示（受控例外） ----------
+
+// handleRevealCredentials 实现 POST /api/channels/{id}/credentials/reveal
+// （security-03 §2.10；modules-06 F-06-03）。
+//
+// 顺序是安全语义的一部分：
+//  1. channels:manage_sensitive —— 权限不足在步进认证之前判定，且不解析
+//     请求体（错误体不可能含调用方输入）；
+//  2. id 形态 + 管理员维限流（reveal 桶，Redis 故障 fail-closed）；
+//  3. 请求体形状与 reason（1–200 字符）；
+//  4. 渠道存在性（404；设计允许泄露「是否存在」，但不泄露任何凭据信息）；
+//  5. 步进认证（恰好一个因子且匹配账号 MFA 状态；**只授权本次请求**）；
+//  6. 审计成功事件（**fail-closed**：审计写不进去就不返回明文）；
+//  7. 解密并一次性返回，响应 no-store + Pragma no-cache，明文不写日志。
+//
+// 失败尝试一律 best-effort 审计（失败响应本就不含明文）；只有成功响应把
+// 审计当作硬前置：没有审计记录的揭示不能被放行（I-1 复核）。detail 只含
+// 元数据：channel_id / reason / revealed_fields / failure，**永不含明文、
+// 片段、掩码、长度或哈希**（审计保留 12 个月，不能成为密钥副本）。
+func (h *ChannelHandler) handleRevealCredentials(w http.ResponseWriter, r *http.Request) {
+	// 1) 权限门先于一切。这里不复用 authorize：需要在 403 时补一条 best-effort
+	//    拒绝审计（M-1 复核），而 authorize 只写响应不返回原因。401（无身份/
+	//    身份失效）没有可归责的真实管理员，不写审计；存储故障 500。
+	switch err := CheckPermission(r.Context(), h.access, PermChannelsManageSensitive); {
+	case err == nil:
+		// 通过。
+	case errors.Is(err, ErrNoPrincipal), errors.Is(err, ErrUserDeleted):
+		writeUnauthorized(w)
+		return
+	case errors.Is(err, ErrAccessStore):
+		// 不把 DB 故障伪装成 403（与 authorize 同口径）。
+		writeProblem(w, http.StatusInternalServerError, problemTypeInternal, "Internal Server Error")
+		return
+	default:
+		_ = h.auditReveal(r, http.StatusForbidden, "failed", map[string]any{"failure": "forbidden"})
+		writeForbidden(w)
+		return
+	}
+	actor := actorID(r)
+
+	// 2) id 形态：非法与不存在同形（404），避免成为路径枚举信道。
+	id, ok := channelIDFromRequest(r)
+	if !ok {
+		h.auditReveal(r, http.StatusNotFound, "failed", map[string]any{"failure": "invalid_channel_id"})
+		writeAPIError(w, channelNotFoundError())
+		return
+	}
+
+	// 3) 限流必须在 KDF/解密之前：超限请求不消耗昂贵资源。Redis 不可用时
+	//    fail-closed（503）：限流是敏感操作的强制控制，不能静默降级为无限次。
+	if h.rdb == nil {
+		h.log.Error("channel credential reveal has no rate limit store configured")
+		h.auditReveal(r, http.StatusServiceUnavailable, "failed",
+			map[string]any{"channel_id": id, "failure": "rate_limit_unavailable"})
+		h.writeRevealUnavailable(w)
+		return
+	}
+	over, retryAfter, err := allowRequestRate(r.Context(), h.rdb,
+		ChannelRevealRateLimitKey(actor), ChannelRevealRateLimit, ChannelRevealRateWindow)
+	if err != nil {
+		h.log.Error("channel credential reveal rate limit check failed", "error", err)
+		h.auditReveal(r, http.StatusServiceUnavailable, "failed",
+			map[string]any{"channel_id": id, "failure": "rate_limit_unavailable"})
+		h.writeRevealUnavailable(w)
+		return
+	}
+	if over {
+		h.auditReveal(r, http.StatusTooManyRequests, "failed",
+			map[string]any{"channel_id": id, "failure": "rate_limited"})
+		writeRateLimited(w, retryAfter, "Too many credential reveal attempts")
+		return
+	}
+
+	// 4) 请求体：字段白名单 + 尾随数据拒绝（decodeChannelJSON）。
+	var req revealCredentialsRequest
+	if err := decodeChannelJSON(r, &req); err != nil {
+		if field, unknown := unknownJSONField(err); unknown {
+			h.auditReveal(r, http.StatusForbidden, "failed",
+				map[string]any{"channel_id": id, "failure": "field_not_writable"})
+			writeFieldNotWritableProblem(w, field)
+			return
+		}
+		h.auditReveal(r, http.StatusBadRequest, "failed",
+			map[string]any{"channel_id": id, "failure": "invalid_body"})
+		writeAPIError(w, invalidRequestError("request body is not valid JSON"))
+		return
+	}
+
+	// reason 是运营说明，不是凭据；仍按普通文本转义入库（audit writer 负责）。
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" || utf8.RuneCountInString(reason) > 200 {
+		h.auditReveal(r, http.StatusUnprocessableEntity, "failed",
+			map[string]any{"channel_id": id, "failure": "reason_invalid"})
+		writeAPIError(w, validationError("reason",
+			"reason is required and must be 1-200 characters"))
+		return
+	}
+
+	password := ""
+	if req.Password != nil {
+		// 口令不 trim：与登录/Authorize 的原样比较一致，否则首尾带空格
+		// 的合法口令能登录却永远无法步进认证（M-7 复核）。
+		password = *req.Password
+	}
+	totpCode := ""
+	if req.TOTPCode != nil {
+		totpCode = strings.TrimSpace(*req.TOTPCode)
+	}
+	// 设计冻结「恰好一个」因子：同时提供或都缺失都是 422 字段级错误，
+	// **不执行解密**。形态是否匹配账号 MFA 状态由步进门判定（422）。
+	if (password == "") == (totpCode == "") {
+		h.auditReveal(r, http.StatusUnprocessableEntity, "failed",
+			map[string]any{"channel_id": id, "reason": reason, "failure": "factor_shape"})
+		writeAPIError(w, &apiError{
+			Status: http.StatusUnprocessableEntity,
+			Type:   problemTypeValidationFailed,
+			Title:  "Validation failed",
+			Fields: []fieldError{
+				{Field: "password", Message: "exactly one of password or totp_code is required"},
+				{Field: "totp_code", Message: "exactly one of password or totp_code is required"},
+			},
+		})
+		return
+	}
+
+	// 5) 渠道存在性：先读渠道再步进认证，不存在时 404 且不消耗 KDF。
+	ch, err := h.channels.Get(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrChannelNotFound) {
+			h.auditReveal(r, http.StatusNotFound, "failed",
+				map[string]any{"channel_id": id, "reason": reason, "failure": "channel_not_found"})
+			writeAPIError(w, channelNotFoundError())
+			return
+		}
+		h.log.Error("load channel for credential reveal failed", "channel_id", id, "error", err)
+		h.auditReveal(r, http.StatusInternalServerError, "failed",
+			map[string]any{"channel_id": id, "reason": reason, "failure": "channel_load_failed"})
+		writeAPIError(w, internalAPIError())
+		return
+	}
+
+	// 6) 步进认证：独立于 RBAC 的第二道门，缺失时 fail-closed。
+	if h.reauth == nil {
+		h.log.Error("channel credential reveal has no reauth gate configured")
+		h.auditReveal(r, http.StatusServiceUnavailable, "failed",
+			map[string]any{"channel_id": id, "reason": reason, "failure": "step_up_unavailable"})
+		h.writeRevealUnavailable(w)
+		return
+	}
+	err = h.reauth.AuthorizeOnce(r.Context(), actor, auth.ReauthFactor{
+		Password: password,
+		TOTPCode: totpCode,
+	})
+	switch {
+	case err == nil:
+		// 通过：继续解密。注意 AuthorizeOnce 不写再认证窗口。
+	case errors.Is(err, auth.ErrReauthFactorShape):
+		var shape *auth.ReauthFactorShapeError
+		field := "password"
+		if errors.As(err, &shape) && shape.Required != "" {
+			field = shape.Required
+		}
+		h.auditReveal(r, http.StatusUnprocessableEntity, "failed", map[string]any{
+			"channel_id": id, "reason": reason, "failure": "factor_shape",
+		})
+		writeAPIError(w, &apiError{
+			Status: http.StatusUnprocessableEntity,
+			Type:   problemTypeValidationFailed,
+			Title:  "Validation failed",
+			Fields: []fieldError{{Field: field,
+				Message: "the submitted factor does not match the account MFA state"}},
+		})
+		return
+	case errors.Is(err, auth.ErrReauthLocked):
+		h.auditReveal(r, http.StatusTooManyRequests, "failed",
+			map[string]any{"channel_id": id, "reason": reason, "failure": "step_up_locked"})
+		writeReauthFailure(w, err)
+		return
+	case errors.Is(err, auth.ErrReauthRequired):
+		h.auditReveal(r, http.StatusForbidden, "failed",
+			map[string]any{"channel_id": id, "reason": reason, "failure": "step_up_failed"})
+		writeReauthFailure(w, err)
+		return
+	default:
+		h.log.Error("channel credential reveal step-up failed", "channel_id", id, "error", err)
+		h.auditReveal(r, http.StatusServiceUnavailable, "failed",
+			map[string]any{"channel_id": id, "reason": reason, "failure": "step_up_unavailable"})
+		writeReauthFailure(w, err)
+		return
+	}
+
+	// 7) 解密。空密文/损坏密文/非法 JSON 都是服务端数据完整性问题：
+	//    统一 500，绝不回显密文、错误详情或任何凭据形态。
+	if len(ch.Credentials) == 0 {
+		h.auditReveal(r, http.StatusInternalServerError, "failed",
+			map[string]any{"channel_id": id, "reason": reason, "failure": "credentials_missing"})
+		writeAPIError(w, internalAPIError())
+		return
+	}
+	plaintext, err := h.sealer.Open(ch.Credentials)
+	if err != nil {
+		h.auditReveal(r, http.StatusInternalServerError, "failed",
+			map[string]any{"channel_id": id, "reason": reason, "failure": "decrypt_failed"})
+		writeAPIError(w, internalAPIError())
+		return
+	}
+	var creds ChannelCredentials
+	if err := json.Unmarshal(plaintext, &creds); err != nil {
+		h.auditReveal(r, http.StatusInternalServerError, "failed",
+			map[string]any{"channel_id": id, "reason": reason, "failure": "decode_failed"})
+		writeAPIError(w, internalAPIError())
+		return
+	}
+
+	// 6) 成功审计是硬前置（I-1 复核）：审计写不进去就不返回明文。失败响应
+	//    本就不含明文，因此只有这条路径 fail-closed。未装配审计器同样拒绝。
+	if h.audit == nil {
+		h.log.Error("channel credential reveal has no audit logger configured")
+		h.writeRevealNoStoreUnavailable(w)
+		return
+	}
+	// 审计只记字段名（api_key/deployment/api_version），不记值。
+	if err := h.auditReveal(r, http.StatusOK, "success", map[string]any{
+		"channel_id":      id,
+		"reason":          reason,
+		"revealed_fields": revealedCredentialFields(creds),
+	}); err != nil {
+		h.log.Error("channel credential reveal audit write failed; refusing to return plaintext",
+			"channel_id", id, "error", err)
+		h.writeRevealNoStoreUnavailable(w)
+		return
+	}
+
+	// 7) 唯一的明文出口：一次响应 + no-store。响应体就是凭据对象本身
+	// （与详情接口的 credentials_masked 同一字段形状），不夹带渠道其他配置。
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	writeChannelJSON(w, http.StatusOK, creds)
+}
+
+// auditReveal 写凭据揭示审计（best-effort 调用方可忽略返回）。detail 由
+// 调用方构造；本函数不接触明文，调用方也绝不能把凭据值放进 detail。
+//
+// 成功路径必须检查返回值：审计写失败时不得返回明文（I-1）。
+func (h *ChannelHandler) auditReveal(r *http.Request, status int, result string, detail map[string]any) error {
+	return h.writeChannelAuditEvent(r, audit.ActionChannelCredentialsReveal, status, result, detail)
+}
+
+// writeChannelAuditEvent 是渠道管理面审计的统一出口，返回写入错误供调用方
+// 决定 fail 策略（揭示成功路径 fail-closed；其余 best-effort）。
+//
+// best-effort 语义来自 audit_util：日志库独立于业务库，写入失败不回滚业务，
+// 但有界超时 + 记录告警，避免静默丢失（GC-6：错误文本不带请求内容）。
+func (h *ChannelHandler) writeChannelAuditEvent(r *http.Request, action string, status int, result string, detail map[string]any) error {
+	if h.audit == nil {
+		return nil
+	}
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		h.log.Warn("marshal channel audit detail failed", "action", action, "error", err)
+		return err
+	}
+	event := audit.Event{
+		Action:     action,
+		Actor:      actorID(r),
+		Result:     result,
+		IP:         clientIP(r),
+		UserAgent:  r.UserAgent(),
+		Method:     r.Method,
+		Route:      r.Pattern,
+		StatusCode: status,
+		Detail:     raw,
+	}
+	if err := writeAuditEvent(r.Context(), h.audit, event); err != nil {
+		h.log.Warn("channel audit write failed", "action", action, "error", err)
+		return err
+	}
+	return nil
+}
+
+// revealedCredentialFields 返回本次揭示涉及的字段名（只用于审计）。
+func revealedCredentialFields(creds ChannelCredentials) []string {
+	fields := []string{"api_key"}
+	if creds.Deployment != "" {
+		fields = append(fields, "deployment")
+	}
+	if creds.APIVersion != "" {
+		fields = append(fields, "api_version")
+	}
+	return fields
+}
+
+// writeRevealUnavailable 是揭示端点的基础设施故障出口（fail-closed）。
+func (h *ChannelHandler) writeRevealUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "5")
+	writeProblem(w, http.StatusServiceUnavailable, authProblemServiceUnavailable,
+		"Credential reveal is temporarily unavailable")
+}
+
+// writeRevealNoStoreUnavailable 是「解密已完成但审计写不进去」的出口：
+// 仍按 503 fail-closed，并显式 no-store，避免 5xx 响应被任何中间层缓存。
+func (h *ChannelHandler) writeRevealNoStoreUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	h.writeRevealUnavailable(w)
 }
 
 // ---------- 列表筛选解析 ----------
