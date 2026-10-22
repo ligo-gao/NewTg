@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -181,13 +182,20 @@ type w13dBillingCase struct {
 
 func newW13dBillingCase(t *testing.T, demo bool, upstreamStatus int) *w13dBillingCase {
 	t.Helper()
+	return newW13dBillingCaseWithPrice(t, demo, upstreamStatus, 100)
+}
+
+// newW13dBillingCaseWithPrice 允许选择模型价格：price=0 构造 FreeModel 场景
+// （per_request 模式 prompt_price=0 → PriceData.FreeModel=true）。
+func newW13dBillingCaseWithPrice(t *testing.T, demo bool, upstreamStatus int, price int64) *w13dBillingCase {
+	t.Helper()
 	mainDB, logsDB, gormDB := m2TestDBs(t)
 	rdb := m2TestRedis(t)
 	suffix := m2Suffix()
 	group := "w13dfix_" + suffix
 	model := "w13dfix-model-" + suffix
 	m2SeedGroup(t, mainDB, group, 100, 1)
-	m2SeedModel(t, mainDB, model, 100)
+	m2SeedModel(t, mainDB, model, price)
 	userID := m2SeedUser(t, mainDB, group, 1_000_000)
 	m2CleanupUsageLogs(t, logsDB, userID)
 	_, plain := m2SeedToken(t, mainDB, userID, group, `[]`, false, nil, nil)
@@ -245,6 +253,27 @@ func w13dHoldRows(t *testing.T, db *sql.DB, userID int64) int {
 	return n
 }
 
+// w13dRequestMaxTokens 发送带 max_tokens 的中继请求。免费模型预扣只有在
+// max_tokens > 0 时才会产生真实 hold，因此验证「演示豁免先于免费模型分支」
+// 必须让估算携带上界（m2Request 的默认体没有 max_tokens，hold 恒为 0）。
+func w13dRequestMaxTokens(t *testing.T, handler *RelayHandler, plain, model, remoteAddr string,
+	maxTokens int,
+) *httptest.ResponseRecorder {
+	t.Helper()
+	body := `{"model":"` + model + `","max_tokens":` + strconv.Itoa(maxTokens) +
+		`,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+plain)
+	if remoteAddr == "" {
+		remoteAddr = "203.0.113.9:1234"
+	}
+	req.RemoteAddr = remoteAddr
+	w := httptest.NewRecorder()
+	handler.Handler().ServeHTTP(w, req)
+	return w
+}
+
 func TestIntegrationW13dFixDemoBilling(t *testing.T) {
 	t.Run("demo unlimited token is not billed", func(t *testing.T) {
 		c := newW13dBillingCase(t, true, http.StatusOK)
@@ -257,6 +286,14 @@ func TestIntegrationW13dFixDemoBilling(t *testing.T) {
 		}
 		if rows := m2UsageRows(t, c.logsDB, c.userID); len(rows) != 20 {
 			t.Fatalf("usage_logs = %d，期望 20（演示站仍要照常记日志）", len(rows))
+		} else {
+			// 设计承诺：演示豁免只免「用户账单」，usage_logs 仍按真实成本落库
+			// （运维可看成本）。cost 必须 > 0，否则日志面无法反映真实上游消耗。
+			for i, row := range rows {
+				if row.cost <= 0 {
+					t.Fatalf("第 %d 行 usage_logs.cost = %d，期望 > 0（真实成本必须落库）", i+1, row.cost)
+				}
+			}
 		}
 		if got := m2Balance(t, c.mainDB, c.userID); got != 1_000_000 {
 			t.Fatalf("演示模式 + unlimited 令牌余额 = %d，期望不变 1000000", got)
@@ -266,6 +303,35 @@ func TestIntegrationW13dFixDemoBilling(t *testing.T) {
 		}
 		if got := w13dHoldRows(t, c.mainDB, c.userID); got != 0 {
 			t.Fatalf("悬挂 hold 行 = %d，期望 0", got)
+		}
+		if got := c.upstream.count(); got != 20 {
+			t.Fatalf("上游调用 = %d，期望 20", got)
+		}
+	})
+
+	t.Run("demo free model with max_tokens holds nothing", func(t *testing.T) {
+		// 必修 1 回归：零价模型（FreeModel）会走 max_tokens 上界预扣，hold>0 时
+		// preConsumeFreeModelLocked 会真实冻结钱包。演示豁免必须先于该分支，
+		// 否则本用例会看到 hold/钱包流水（余额虽在结算时退回，但流水已产生）。
+		c := newW13dBillingCaseWithPrice(t, true, http.StatusOK, 0)
+		const ip = "203.0.113.114"
+		for i := 0; i < 20; i++ {
+			w := w13dRequestMaxTokens(t, c.handler, c.plain, c.model, ip+":1", 256)
+			if w.Code != http.StatusOK {
+				t.Fatalf("第 %d 次 = %d，期望 200；body=%s", i+1, w.Code, w.Body.String())
+			}
+		}
+		if rows := m2UsageRows(t, c.logsDB, c.userID); len(rows) != 20 {
+			t.Fatalf("usage_logs = %d，期望 20（免费模型演示请求仍要记日志）", len(rows))
+		}
+		if got := m2Balance(t, c.mainDB, c.userID); got != 1_000_000 {
+			t.Fatalf("零价模型演示请求余额 = %d，期望不变 1000000（豁免必须在预扣之前）", got)
+		}
+		if got := m2WalletRows(t, c.mainDB, c.userID); got != 0 {
+			t.Fatalf("零价模型演示请求钱包流水 = %d 行，期望 0（不得走免费模型 max_tokens 预扣）", got)
+		}
+		if got := w13dHoldRows(t, c.mainDB, c.userID); got != 0 {
+			t.Fatalf("零价模型演示请求悬挂 hold = %d，期望 0", got)
 		}
 		if got := c.upstream.count(); got != 20 {
 			t.Fatalf("上游调用 = %d，期望 20", got)

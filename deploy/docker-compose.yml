@@ -30,6 +30,12 @@ x-app-env: &app-env
   PERF_METRICS_ENABLED: "${PERF_METRICS_ENABLED:-true}"
   PERF_METRICS_FLUSH_INTERVAL: "${PERF_METRICS_FLUSH_INTERVAL:-5m}"
   PERF_METRICS_RETENTION_DAYS: "${PERF_METRICS_RETENTION_DAYS:-400}"
+  # 演示模式部署侧覆盖（控制端 W13 裁决 I2）：true/1 强制开启，false/0 强制
+  # 关闭，空 = 跟随站点设置 site.demo.enabled。必须放在共享 env 里：gateway
+  # 的守卫/额度/计费与 worker 的兜底结算要读到**同一个**有效值；只给一个角色
+  # 注入会造成「gateway 免单、worker 补扣」的跨进程分裂。空值不构成覆盖
+  # （config.parseDemoEnabled 把空串视为未设置）。
+  NEWTG_DEMO_ENABLED: "${NEWTG_DEMO_ENABLED:-}"
 
 services:
   # 唯一对外入口：反向代理 + 轮询负载均衡 + 对副本做 /readyz 主动健康检查。

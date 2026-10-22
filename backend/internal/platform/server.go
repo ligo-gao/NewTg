@@ -537,8 +537,8 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	feedPublisher := billing.NewRedisFeedPublisher(rr.client)
 	// I2：worker 也会结算任务/兜底退款，必须与 gateway 共用同一个演示模式
 	// 有效值（NEWTG_DEMO_ENABLED 覆盖），否则 gateway 免单、worker 补扣。
-	engine := billing.NewEngine(gormDB, sqlLogs, rr.client,
-		config.WithDemoOverride(center, cfg.DemoEnabled), source, registry,
+	// 与 gateway 同一构造点：任何直接 billing.NewEngine(center) 都会绕过覆盖。
+	engine := newDemoAwareBillingEngine(gormDB, sqlLogs, rr.client, center, cfg.DemoEnabled, source, registry,
 		newUsageLogDBLogger(sqlLogs, feedPublisher, center, rr.client, log))
 	// S4a：与 gateway 同一装配口径。worker 复用引擎做兜底恢复，
 	// 未装配会让订阅偏好退化为纯钱包行为。

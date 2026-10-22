@@ -140,9 +140,22 @@ func opCtx() (context.Context, context.CancelFunc) {
 
 // demoExempt 判定本会话是否命中 §3.17.2 的「演示账号不计入账单」口径。
 //
-// 条件必须同时成立：部署有效演示模式 + 令牌 unlimited_quota。两个条件缺一
-// 不可——只认设置会把普通用户的 unlimited 令牌也免单（扩大豁免面），只认
-// 令牌会在非演示站免单（改变既有语义）。
+// 存在两条互斥的身份路径，二者都只在**部署有效演示模式**下成立：
+//   - 令牌身份（tokenID > 0）：令牌必须 unlimited_quota=true。两个条件缺一
+//     不可——只认设置会把普通用户的 unlimited 令牌也免单（扩大豁免面），只认
+//     令牌会在非演示站免单（改变既有语义）。
+//   - 会话身份（tokenID == 0，即 /pg Playground）：同样免单（控制端 W13 裁决）。
+//     /pg 复用 handleChatCompletions，但没有令牌，若只豁免令牌路径，演示
+//     访客经 Playground 会真实扣演示账号余额或得到 402，留下设计未声明的
+//     资损面。演示模式的写面已 deny-by-default、注册被拒，/pg 与 /v1/* 同属
+//     「试用中继」，成本兜底是 §3.17.2 的两个日计数器；本函数只免除计费，
+//     额度计数仍在 checkRelayRateLimit 里照常执行。
+//
+// 边界（不得放宽）：会话身份必须同时满足 rc.UsingGroup 非空这一**既有标记**。
+// BuildRelayContext 对会话路径把 UsingGroup 留空，唯一会为会话身份回源并写入
+// 分组的地方是 applyPlaygroundSession（/pg 的 chat 路径）。若只判断
+// tokenID == 0，未来任何无令牌的会话平面（如任务重建会话）都会被静默免单；
+// 因此豁免面严格限定为「演示模式 + /pg 会话身份」，不是「演示模式下所有请求」。
 //
 // 优先使用鉴权层投影（rc.TokenUnlimitedQuota，零额外查询）；任务/恢复路径
 // 重建的会话没有投影时回落一次 DB 查询（仅演示模式）。
@@ -151,11 +164,18 @@ func (s *Session) demoExempt(ctx context.Context) bool {
 		return s.demoExemptValue
 	}
 	exempt := false
-	if s.engine != nil && platformconfig.DemoEnabled(s.engine.cfg) && s.tokenID > 0 {
-		if s.rc != nil && s.rc.TokenUnlimitedQuota {
+	if s.engine != nil && platformconfig.DemoEnabled(s.engine.cfg) {
+		switch {
+		case s.tokenID > 0:
+			if s.rc != nil && s.rc.TokenUnlimitedQuota {
+				exempt = true
+			} else {
+				exempt = s.engine.demoExemptToken(ctx, s.tokenID)
+			}
+		case s.rc != nil && s.rc.UsingGroup != "":
+			// tokenID == 0 + UsingGroup 非空 = applyPlaygroundSession 写入的
+			// /pg 会话身份（见上方边界说明）。
 			exempt = true
-		} else {
-			exempt = s.engine.demoExemptToken(ctx, s.tokenID)
 		}
 	}
 	s.demoExemptSet, s.demoExemptValue = true, exempt
@@ -265,6 +285,22 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) (err error) {
 		return err
 	}
 
+	// §3.17.2 的计费口径（控制端裁决 I1）必须在**所有**资金分支之前短路，
+	// 包括下面的免费模型 max_tokens 预扣：后者在 hold > 0 时会调用
+	// ApplyDeltaWithToken 真实冻结钱包（见 preConsumeFreeModelLocked）。若把
+	// 这段判定放在免费模型分支之后，零价模型 + max_tokens 的演示请求仍会
+	// 产生 hold/钱包流水，违背「演示账号不计入任何用户账单」。
+	//
+	// 这是演示账号专属口径，不是 unlimited_quota 的通用语义：非演示模式下
+	// unlimited 令牌仍会扣 users.balance（令牌余额门另由 tokenUsable 判定）。
+	if s.demoExempt(ctx) {
+		// Trusted 只用于让既有的 Reserve 早返回；真正的资金跳过在本函数
+		// 的提前返回 + Reserve/ChargeIncrement 的同类判定里。
+		s.trusted = true
+		succeeded = true
+		return nil
+	}
+
 	// PriceData.FreeModel 是模型级零价事实，无需再求值/估算：直接进入
 	// F-08-12 的 max_tokens 预扣策略（同时避免零价模型上残留的表达式配置
 	// 让请求因求值错误而失败）。
@@ -293,20 +329,6 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) (err error) {
 		return fmt.Errorf("%w: negative estimated quota %d", ErrInvalidConfig, base)
 	}
 	s.estimatedQuota = base
-
-	// §3.17.2 的计费口径（控制端裁决 I1）：演示站中继请求照常写 usage_logs
-	// （运维可看成本），但不计入任何用户账单。因此这里在**任何资金动作之前**
-	// 短路：不写 hold、不扣令牌额度、不消耗订阅，也不产生钱包流水。
-	//
-	// 这是演示账号专属口径，不是 unlimited_quota 的通用语义：非演示模式下
-	// unlimited 令牌仍会扣 users.balance（令牌余额门另由 tokenUsable 判定）。
-	if s.demoExempt(ctx) {
-		// Trusted 只用于让既有的 Reserve 早返回；真正的资金跳过在本函数
-		// 的提前返回 + Reserve/ChargeIncrement 的同类判定里。
-		s.trusted = true
-		succeeded = true
-		return nil
-	}
 
 	// F-08-12 免费模型预扣策略：零价模型不做「按估算价预扣」（估算价就是 0），
 	// 而是预扣 max_tokens 上界，防止恶意 max_tokens 放大造成上游滥用。

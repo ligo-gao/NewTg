@@ -21,6 +21,7 @@ package httpapi
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,6 +32,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
@@ -39,6 +41,7 @@ import (
 	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/ratelimit"
 	"newtg/gateway/internal/store"
 )
 
@@ -80,6 +83,7 @@ func openPlaygroundIntegrationDBs(t *testing.T) (*sql.DB, *sql.DB, *gorm.DB) {
 type playgroundIntegrationEnv struct {
 	mux       *http.ServeMux
 	sessions  *auth.SessionManager
+	rdb       *redis.Client
 	mainDB    *sql.DB
 	logsDB    *sql.DB
 	userID    int64
@@ -91,6 +95,16 @@ type playgroundIntegrationEnv struct {
 
 // setupPlaygroundIntegration 创建用户/令牌/渠道/定价并装配真实依赖。
 func setupPlaygroundIntegration(t *testing.T, balance, remainQuota int64) *playgroundIntegrationEnv {
+	t.Helper()
+	return setupPlaygroundIntegrationWithConfig(t, balance, remainQuota, nil, false)
+}
+
+// setupPlaygroundIntegrationWithConfig 允许注入计费配置与准入限流器，
+// 供演示模式（site.demo.* + NEWTG_DEMO_ENABLED 覆盖）的 /pg 计费用例使用。
+// cfg 为 nil 时沿用 relayBillingTestConfig（非演示、无限流）。
+func setupPlaygroundIntegrationWithConfig(t *testing.T, balance, remainQuota int64,
+	cfg m2BillingConfig, withLimiter bool,
+) *playgroundIntegrationEnv {
 	t.Helper()
 	mainDB, logsDB, gormDB := openPlaygroundIntegrationDBs(t)
 	rdb := relayBillingTestRedis(t)
@@ -158,7 +172,11 @@ func setupPlaygroundIntegration(t *testing.T, balance, remainQuota int64) *playg
 	if err != nil {
 		t.Fatalf("pricing source: %v", err)
 	}
-	engine := billing.NewEngine(gormDB, logsDB, rdb, relayBillingTestConfig(), source,
+	var engineCfg billing.ConfigReader = relayBillingTestConfig()
+	if cfg != nil {
+		engineCfg = cfg
+	}
+	engine := billing.NewEngine(gormDB, logsDB, rdb, engineCfg, source,
 		billing.NewRegistry(rdb), billing.NewDBLogger(logsDB))
 
 	sealer := NewSecretSealer(relaySealerMaster)
@@ -181,6 +199,12 @@ func setupPlaygroundIntegration(t *testing.T, balance, remainQuota int64) *playg
 		models: []string{model},
 	}
 
+	// 只有显式注入配置时才覆盖 handler 的读取面：非演示用例保持 Config=nil
+	// 的原装配形状（cfg 是 map 类型，nil map 赋值给接口会得到非 nil 接口）。
+	var handlerConfig ConfigReader
+	if cfg != nil {
+		handlerConfig = cfg
+	}
 	handler := NewRelayHandler(RelayHandlerOptions{
 		Channels:       channels,
 		Tokens:         store.NewTokenRepo(mainDB),
@@ -190,6 +214,8 @@ func setupPlaygroundIntegration(t *testing.T, balance, remainQuota int64) *playg
 		Billing:        engine.NewSession,
 		ModelStatus:    store.NewPricingRepo(mainDB),
 		UserGroups:     store.NewUserGroupsRepo(mainDB),
+		Config:         handlerConfig,
+		RateLimiter:    limiterFor(withLimiter, rdb),
 		TrustedProxies: "",
 	})
 	sessions := auth.NewSessionManager(rdb, []byte(testSessionSecret))
@@ -208,9 +234,18 @@ func setupPlaygroundIntegration(t *testing.T, balance, remainQuota int64) *playg
 	t.Cleanup(func() { _ = sessions.Revoke(context.Background(), sid) })
 
 	return &playgroundIntegrationEnv{
-		mux: mux, sessions: sessions, mainDB: mainDB, logsDB: logsDB,
+		mux: mux, sessions: sessions, rdb: rdb, mainDB: mainDB, logsDB: logsDB,
 		userID: userID, tokenID: tokenID, channelID: channelID, sid: sid, csrf: csrf,
 	}
+}
+
+// limiterFor 按需构造真实 Redis 限流器：/pg 演示额度用例需要它，
+// 其它既有用例保持「无 limiter」的装配形状。
+func limiterFor(with bool, rdb *redis.Client) RelayRateLimiter {
+	if !with {
+		return nil
+	}
+	return ratelimit.New(rdb)
 }
 
 func (e *playgroundIntegrationEnv) post(t *testing.T, model string) *httptest.ResponseRecorder {
@@ -341,6 +376,83 @@ func TestIntegrationPlaygroundModelUnavailable403(t *testing.T) {
 	}
 	if got := env.usageLogs(t); len(got) != 0 {
 		t.Fatalf("usage_logs rows = %d, want 0", len(got))
+	}
+}
+
+// TestIntegrationPlaygroundDemoSessionIsExemptButQuotaStillApplies 固定 W13
+// 控制端裁决的 /pg 计费口径：演示模式下，会话身份（无令牌）与 /v1/* 一样
+// 享受「只记日志、不动钱」的豁免；但 §3.17.2 的两层日额度仍照常计数
+// （第 21 次 429），成本兜底不因免单而消失。
+func TestIntegrationPlaygroundDemoSessionIsExemptButQuotaStillApplies(t *testing.T) {
+	cfg := m2BillingConfig{
+		keyDemoEnabled:                json.RawMessage("true"),
+		keyDemoRelayPerIPDaily:        json.RawMessage("20"),
+		keyDemoRelayGlobalDaily:       json.RawMessage("2000"),
+		billing.ConfigPreConsumeRatio: json.RawMessage("1.0"),
+		billing.ConfigTrustQuotaUSD:   json.RawMessage("0"),
+		// 只验证演示额度：关闭 B10/B11/B12，避免先到者拒掩盖 21 次的边界。
+		ratelimit.KeyUserModelRPM:  json.RawMessage("0"),
+		ratelimit.KeyTokenRPM:      json.RawMessage("0"),
+		ratelimit.KeyUserGlobalRPM: json.RawMessage("0"),
+	}
+	env := setupPlaygroundIntegrationWithConfig(t, 1000, 500, cfg, true)
+	model := modelNameForUser(t, env.mainDB, env.userID)
+
+	// 演示额度键按站点日期分段，同一 IP 在同一天跨用例/重跑会累加；
+	// 先清空本进程可见的键，保证 20/21 边界可复现。
+	clearDemoKeys := func() {
+		ctx := context.Background()
+		keys, _ := env.rdb.Keys(ctx, "demo:relay:*").Result()
+		if len(keys) > 0 {
+			_ = env.rdb.Del(ctx, keys...).Err()
+		}
+	}
+	clearDemoKeys()
+	t.Cleanup(clearDemoKeys)
+
+	for i := 0; i < 20; i++ {
+		w := env.post(t, model)
+		if w.Code != http.StatusOK {
+			t.Fatalf("演示 /pg 第 %d 次 = %d，期望 200；body=%s", i+1, w.Code, w.Body.String())
+		}
+	}
+	logs := env.usageLogs(t)
+	if len(logs) != 20 {
+		t.Fatalf("usage_logs = %d，期望 20（豁免只免资金，日志照写）", len(logs))
+	}
+	for i, row := range logs {
+		if row.tokenID.Valid {
+			t.Fatalf("第 %d 行 token_id = %d，期望 NULL（会话身份）", i+1, row.tokenID.Int64)
+		}
+		if row.cost <= 0 {
+			t.Fatalf("第 %d 行 cost = %d，期望 > 0（真实成本落库）", i+1, row.cost)
+		}
+	}
+	if got := env.balance(t); got != 1000 {
+		t.Fatalf("演示 /pg 余额 = %d，期望不变 1000（会话身份也要免单）", got)
+	}
+	var walletRows int
+	if err := env.mainDB.QueryRow(`SELECT count(*) FROM wallet_transactions WHERE user_id = $1`,
+		env.userID).Scan(&walletRows); err != nil {
+		t.Fatalf("count wallet rows: %v", err)
+	}
+	if walletRows != 0 {
+		t.Fatalf("演示 /pg 钱包流水 = %d 行，期望 0（不得预扣/冻结）", walletRows)
+	}
+
+	// 第 21 次：额度耗尽 → 429，且不新增日志/资金动作。豁免不改变额度口径。
+	w := env.post(t, model)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("演示 /pg 第 21 次 = %d，期望 429（额度仍然生效）；body=%s", w.Code, w.Body.String())
+	}
+	if code := decodeRelayError(t, w.Body.Bytes()).Error.Code; code != demoRelayQuotaExceededCode {
+		t.Fatalf("第 21 次 code = %q，期望 %s", code, demoRelayQuotaExceededCode)
+	}
+	if got := len(env.usageLogs(t)); got != 20 {
+		t.Fatalf("被拒请求写入 usage_logs：行数 = %d，期望 20", got)
+	}
+	if got := env.balance(t); got != 1000 {
+		t.Fatalf("被拒请求改变余额：%d，期望 1000", got)
 	}
 }
 

@@ -432,6 +432,28 @@ func TestDemoRelayQuotaRedisFailureIs503(t *testing.T) {
 	}
 }
 
+// TestDemoRelayQuotaNilLimiterIs503 锁定检查顺序：演示额度必须先于
+// 「limiter == nil 跳过限流」执行。若顺序颠倒，缺 Redis 的降级装配会让
+// 演示站变成无限量；这里的 503 是 fail-closed 的期望形状。
+func TestDemoRelayQuotaNilLimiterIs503(t *testing.T) {
+	rc := &contract.RelayContext{RequestID: "req-demo-nil-limiter", UsingGroup: "default"}
+	principal := &auth.Principal{UserID: 42}
+
+	rej := checkRelayRateLimit(context.Background(), nil,
+		demoQuotaConfig(true, 20, 2000), rc, principal, "203.0.113.99")
+	if rej == nil || rej.Status != http.StatusServiceUnavailable ||
+		rej.Code != demoRelayQuotaUnavailableCode {
+		t.Fatalf("演示模式 + nil limiter 的 rejection = %+v，期望 503 %s",
+			rej, demoRelayQuotaUnavailableCode)
+	}
+
+	// 非演示模式保持既有语义：nil limiter = 未装配，跳过限流（不误报 503）。
+	if got := checkRelayRateLimit(context.Background(), nil,
+		demoQuotaConfig(false, 20, 2000), rc, principal, "203.0.113.99"); got != nil {
+		t.Fatalf("非演示 + nil limiter 应跳过限流，实际被拒：%+v", got)
+	}
+}
+
 // TestDemoRelayQuotaRedisFailureNonDemoUnchanged：非演示模式仍走既有
 // B10–B12 的 500 fail-closed 口径，不受本任务影响。
 func TestDemoRelayQuotaRedisFailureNonDemoUnchanged(t *testing.T) {

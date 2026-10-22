@@ -109,6 +109,27 @@ for v in POSTGRES_PASSWORD REDIS_PASSWORD POSTGRES_APP_PASSWORD \
   fi
 done
 
+# --- b2. 演示模式覆盖进共享 env（控制端 W13 裁决 I2） ---------------------
+# NEWTG_DEMO_ENABLED 必须出现在 x-app-env（gateway 与 worker 同时继承）。
+# 只注入一个角色会造成跨进程不一致：gateway 免单、worker 按设置补扣。
+if [ "$(count_of 'NEWTG_DEMO_ENABLED: "${NEWTG_DEMO_ENABLED:-}"' "$compose")" = "1" ]; then
+  ok "x-app-env 以空值默认声明 NEWTG_DEMO_ENABLED（空=跟随站点设置）"
+else
+  bad "x-app-env 必须且只能声明一次 NEWTG_DEMO_ENABLED: \${NEWTG_DEMO_ENABLED:-}（空=跟随站点设置）"
+fi
+for svc in gateway worker; do
+  if [ "$(q ".services.${svc}.environment // {} | has(\"NEWTG_DEMO_ENABLED\")")" = "true" ]; then
+    ok "services.$svc 继承 NEWTG_DEMO_ENABLED"
+  else
+    bad "services.$svc 未继承 NEWTG_DEMO_ENABLED（演示模式覆盖必须对两个角色同时生效）"
+  fi
+done
+if grep -q '^NEWTG_DEMO_ENABLED=' "$root/deploy/.env.example"; then
+  ok "deploy/.env.example 登记 NEWTG_DEMO_ENABLED"
+else
+  bad "deploy/.env.example 缺少 NEWTG_DEMO_ENABLED（运维无从发现该开关）"
+fi
+
 # --- c. postgres:16-alpine ------------------------------------------------
 pg_image="$(q '.services.postgres.image // ""')"
 if [ "$pg_image" = "postgres:16-alpine" ]; then

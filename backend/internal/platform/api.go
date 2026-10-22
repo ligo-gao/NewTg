@@ -151,6 +151,24 @@ func newRelayRateLimiter(rdb *redis.Client) (httpapi.RelayRateLimiter, error) {
 //   - configcenter.Load：配置快照必须先于任何 handler 读取；
 //   - configcenter.Subscribe：≤1s 的跨副本配置生效路径；
 //   - tokenstore.Subscribe：GC-11 的令牌缓存第二失效通道（强制）。
+//
+// newDemoAwareBillingEngine 构造 role 计费引擎，并注入**带演示覆盖**的配置面
+// （控制端 W13 裁决 I2）。
+//
+// 为什么必须是唯一构造点：gateway 与 worker 都要按同一有效值判定演示豁免
+// （gateway 免单、worker 兜底退款/补扣）。任何一处直接把 `center` 传给
+// billing.NewEngine，就会在 NEWTG_DEMO_ENABLED 覆盖设置时出现「守卫按 env
+// 生效、引擎按设置计费」的跨进程分裂，而且这类回归不会让行为测试必然变红。
+// 因此包装动作集中在这里，装配测试用 Engine.EffectiveConfig 直接断言。
+func newDemoAwareBillingEngine(
+	gormDB *gorm.DB, logsDB *sql.DB, rdb *redis.Client,
+	center config.ConfigGetter, demoOverride *bool,
+	source pricing.Source, registry billing.Registry, saturator billing.Saturator,
+) *billing.Engine {
+	return billing.NewEngine(gormDB, logsDB, rdb,
+		config.WithDemoOverride(center, demoOverride), source, registry, saturator)
+}
+
 func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	rdb *redis.Client, log *slog.Logger) (*gatewayAssembly, error) {
 
@@ -178,7 +196,9 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	// 读取面包装一次后同时交给**守卫、中继额度与计费引擎**，三处读到的
 	// 是同一个有效值，不会出现「守卫关了、额度还在扣」的分裂。
 	// 未设置 env 时 WithDemoOverride 原样返回 center（行为不变）。
-	demoConfig := config.WithDemoOverride(center, cfg.DemoEnabled)
+	//
+	// 包装点唯一：引擎由 newDemoAwareBillingEngine 构造，守卫/额度/中继的
+	// 读取面从引擎的有效配置面派生，避免两处各自包装后再次漂移。
 	// I2 的 MJ 结算守卫需要计费引擎，因此推迟到引擎构造之后（见下方
 	// engine.ValidateSubscriptionLeaseConfig 之后的 mjSettlerGuard）。
 	// 计费进程级装配（N2/N5）：定价源构造写入进程级 QPU（admin API 的
@@ -200,8 +220,11 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	// 回退」；默认关闭，行为与既有同步路径完全一致。live_feed 投递无论在
 	// 哪种模式下都保持「只有真正插入新行才投递」。
 	feedPublisher := billing.NewRedisFeedPublisher(rdb)
-	engine := billing.NewEngine(gormDB, logsDB, rdb, demoConfig, source,
+	engine := newDemoAwareBillingEngine(gormDB, logsDB, rdb, center, cfg.DemoEnabled, source,
 		billing.NewRegistry(rdb), newUsageLogDBLogger(logsDB, feedPublisher, center, rdb, log))
+	// 其余读取面（守卫、中继额度、管理面 RouterConfig）派生自引擎的有效
+	// 配置面，确保三处与计费看到同一个 NEWTG_DEMO_ENABLED 有效值。
+	demoConfig := engine.EffectiveConfig()
 	// S4a：订阅是请求路径的资金来源之一，必须装配到引擎；未装配时引擎
 	// 会保持纯钱包行为（订阅偏好被忽略）。
 	engine.SetSubscriptionFunding(billing.NewStoreSubscriptionFunding(

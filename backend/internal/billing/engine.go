@@ -295,6 +295,20 @@ func (e *Engine) SetSubscriptionFunding(f SubscriptionFundingSource) {
 	e.subscriptionFunding = f
 }
 
+// EffectiveConfig 返回构造时注入的配置读取面。
+//
+// 它只服务于装配可观测性（控制端 W13 裁决 I2）：platform 装配测试必须能
+// 断言计费引擎拿到的是 WithDemoOverride 包装后的**有效值面**，而不是原始
+// 配置中心——否则「引擎直接使用 center」的回归会让 gateway/worker 与守卫、
+// 额度读到不同的演示开关，而行为测试未必覆盖到。业务代码不得用它读取
+// 配置：所有计费键都必须走 configBool/configInt64 等带默认值与校验的路径。
+func (e *Engine) EffectiveConfig() ConfigReader {
+	if e == nil {
+		return nil
+	}
+	return e.cfg
+}
+
 // NewSession 为一次请求绑定一个计费会话（relay 每请求调用工厂）。
 func (e *Engine) NewSession(rc *contract.RelayContext) contract.BillingSession {
 	s := &Session{engine: e, rc: rc}
