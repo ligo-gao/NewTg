@@ -645,9 +645,13 @@ type statusResponse struct {
 	Billing                        map[string]any `json:"billing"`
 	Pay                            map[string]any `json:"pay"`
 	PasswordLoginEncryptionEnabled bool           `json:"password_login_encryption_enabled"`
-	SystemInitialized              bool           `json:"system_initialized"`
-	Languages                      []string       `json:"languages"`
-	DefaultLanguage                string         `json:"default_language"`
+	// CheckinEnabled 是派生字段（不是设置键）：modules-08 §1.4.1 禁止下发
+	// checkin.*，但用户侧签到入口需要知道功能是否开启（R-W15-02 A）。
+	// 只暴露布尔，不泄露奖励区间。
+	CheckinEnabled    bool     `json:"checkin_enabled"`
+	SystemInitialized bool     `json:"system_initialized"`
+	Languages         []string `json:"languages"`
+	DefaultLanguage   string   `json:"default_language"`
 	// 派生 / 常量字段（modules-08 §1.4.1 末行）：不写入 system_settings。
 	// usd_exchange_rate 的常量真源是 billing-02 §4.1（7.1 = 71/10）。
 	USDExchangeRate     float64 `json:"usd_exchange_rate"`
@@ -796,12 +800,15 @@ func (h *authHandlers) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Billing:                        settings.DomainValues(public, "billing"),
 		Pay:                            settings.DomainValues(public, "pay"),
 		PasswordLoginEncryptionEnabled: h.boolConfig("auth.login_password_encryption.enabled", false),
-		SystemInitialized:              initialized,
-		Languages:                      langs,
-		DefaultLanguage:                "en",
-		USDExchangeRate:                usdExchangeRate,
-		CreditDisplaySymbol:            publicString(public, "billing.currency_symbol", "¥"),
-		UsableGroups:                   h.statusUsableGroups(r),
+		// 派生布尔：签到开关不进公开键全集（modules-08 §1.4.1），但入口
+		// 显隐必须由服务端真值驱动，而不是前端拿 403 猜。
+		CheckinEnabled:      h.boolConfig("checkin.enabled", false),
+		SystemInitialized:   initialized,
+		Languages:           langs,
+		DefaultLanguage:     "en",
+		USDExchangeRate:     usdExchangeRate,
+		CreditDisplaySymbol: publicString(public, "billing.currency_symbol", "¥"),
+		UsableGroups:        h.statusUsableGroups(r),
 	})
 }
 

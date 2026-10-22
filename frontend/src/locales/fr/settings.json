@@ -95,7 +95,8 @@
     "notify_smtp": "SMTP",
     "rl_health": "Santé des canaux",
     "notify_webhook": "Notifications Webhook",
-    "pay_epay": "Epay"
+    "pay_epay": "Epay",
+    "checkin": "Pointage quotidien"
   },
   "section_description": {
     "site": "Affiché sur chaque page et utilisé comme base pour les liens de rappel",
@@ -111,7 +112,8 @@
     "notify_smtp": "Requis pour la vérification d'e-mail et les notifications par e-mail",
     "rl_health": "Une réponse peut retirer un canal de la rotation dès la première correspondance",
     "notify_webhook": "Poussez les événements de solde, de paiement, d'annonce et d'inscription vers un point de terminaison HTTPS",
-    "pay_epay": "Caisse Epay générique (signée MD5, passerelles type ZPay)"
+    "pay_epay": "Caisse Epay générique (signée MD5, passerelles type ZPay)",
+    "checkin": "Récompensez les membres pour un pointage quotidien ; désactivé par défaut"
   },
   "field": {
     "site": {
@@ -269,6 +271,11 @@
       "auto_enable_enabled": "Rétablissement automatique",
       "test_interval_minutes": "Intervalle de vérification (minutes)",
       "test_concurrency": "Concurrence des vérifications"
+    },
+    "checkin": {
+      "enabled": "Activer le pointage quotidien",
+      "min_quota": "Crédits minimum par pointage",
+      "max_quota": "Crédits maximum par pointage"
     }
   },
   "hint": {
@@ -367,6 +374,10 @@
       "auto_enable_enabled": "Seule la vérification périodique peut rétablir les canaux désactivés automatiquement ; les canaux désactivés manuellement ne sont jamais rétablis.",
       "test_interval_minutes": "1 à 1440 minutes.",
       "test_concurrency": "1 à 50 vérifications simultanées."
+    },
+    "checkin": {
+      "min_quota": "0 arrête les récompenses : le pointage est enregistré sans crédits ni ligne de registre. Le maximum est ignoré.",
+      "max_quota": "Doit être supérieur ou égal au minimum."
     }
   },
   "option": {

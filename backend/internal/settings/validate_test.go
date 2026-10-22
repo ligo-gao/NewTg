@@ -128,3 +128,56 @@ func TestResponseTimeThresholdUpperBound(t *testing.T) {
 		}
 	}
 }
+
+// TestCheckinSectionValidation 覆盖 W15-C 的签到配置冻结口径：
+// 三键默认关闭/停发、min ≤ max、min=0 合法（停发奖励路径）。
+func TestCheckinSectionValidation(t *testing.T) {
+	for _, key := range []string{
+		"checkin.enabled", "checkin.min_quota", "checkin.max_quota",
+	} {
+		setting, ok := Lookup(key)
+		if !ok {
+			t.Fatalf("%s 未注册", key)
+		}
+		if setting.Section != "checkin" {
+			t.Fatalf("%s section = %q, want checkin", key, setting.Section)
+		}
+		// modules-08 §1.4.1 明确排除 checkin.*：公开下发的只有派生布尔。
+		if setting.Public {
+			t.Fatalf("%s 不得进入公开下发全集", key)
+		}
+	}
+
+	enabled, _ := Lookup("checkin.enabled")
+	if value, _ := DefaultValue(enabled).(bool); value {
+		t.Fatal("checkin.enabled 默认必须为 false（默认关闭）")
+	}
+	minQuota, _ := Lookup("checkin.min_quota")
+	if value, _ := DefaultValue(minQuota).(int64); value != 0 {
+		t.Fatalf("checkin.min_quota 默认 = %d, want 0", value)
+	}
+	maxQuota, _ := Lookup("checkin.max_quota")
+	if value, _ := DefaultValue(maxQuota).(int64); value != 0 {
+		t.Fatalf("checkin.max_quota 默认 = %d, want 0", value)
+	}
+
+	cases := []struct {
+		name    string
+		values  map[string]any
+		wantErr bool
+	}{
+		{"min equals max", map[string]any{"checkin.min_quota": int64(10), "checkin.max_quota": int64(10)}, false},
+		{"min zero stops rewards", map[string]any{"checkin.min_quota": int64(0), "checkin.max_quota": int64(100)}, false},
+		{"min below max", map[string]any{"checkin.min_quota": int64(1), "checkin.max_quota": int64(100)}, false},
+		{"min above max", map[string]any{"checkin.min_quota": int64(101), "checkin.max_quota": int64(100)}, true},
+	}
+	for _, tc := range cases {
+		err := validateCheckinSection(tc.values, nil)
+		if tc.wantErr && err == nil {
+			t.Fatalf("%s: 期望拒绝", tc.name)
+		}
+		if !tc.wantErr && err != nil {
+			t.Fatalf("%s: 不应拒绝: %v", tc.name, err)
+		}
+	}
+}

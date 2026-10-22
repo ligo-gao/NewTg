@@ -381,6 +381,11 @@ paths:
     $ref: './paths/user.yaml#/paths/~1api~1wallet~1transactions'
   /api/wallet/transactions/{id}:
     $ref: './paths/user.yaml#/paths/~1api~1wallet~1transactions~1{id}'
+  # W15-C：每日签到（modules-01 §3.19 / modules-03 F-03-12）。
+  /api/checkin:
+    $ref: './paths/user.yaml#/paths/~1api~1checkin'
+  /api/checkin/calendar:
+    $ref: './paths/user.yaml#/paths/~1api~1checkin~1calendar'
 
   # 在线充值（M5 Task 3；用户端点 + 公网回调）。
   /api/topup/config:

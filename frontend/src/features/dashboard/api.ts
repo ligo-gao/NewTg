@@ -20,6 +20,8 @@ export type UsageStatsByModelItem =
 export type UsageStatsTimeseriesItem =
   components['schemas']['UsageStatsTimeseriesItem']
 export type UsageStatsRates = components['schemas']['UsageStatsRates']
+export type CheckinResult = components['schemas']['CheckinResult']
+export type CheckinCalendar = components['schemas']['CheckinCalendar']
 
 export interface UsageStatsQuery {
   range: UsageRange
@@ -104,4 +106,25 @@ export async function fetchUsageRates(
   return requireData(
     await apiClient.GET('/api/usage-stats/rates', { params: { query } }),
   )
+}
+
+/**
+ * Daily check-in (modules-01 §3.19 F-01-30 / modules-03 F-03-12).
+ *
+ * The server owns the natural-day boundary (site timezone) and the reward
+ * draw; the client only submits the optional Turnstile token. No user id or
+ * amount is ever sent — the contract has no such fields.
+ */
+export async function fetchCheckinCalendar(): Promise<CheckinCalendar> {
+  return requireData(await apiClient.GET('/api/checkin/calendar'))
+}
+
+export async function submitCheckin(
+  turnstileToken?: string,
+): Promise<CheckinResult> {
+  const body: { turnstile_token?: string } = {}
+  if (turnstileToken !== undefined && turnstileToken !== '') {
+    body.turnstile_token = turnstileToken
+  }
+  return requireData(await apiClient.POST('/api/checkin', { body }))
 }

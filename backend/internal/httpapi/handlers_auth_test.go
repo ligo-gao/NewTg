@@ -1815,3 +1815,37 @@ func TestAuthLoginRateLimitedAuditBounded(t *testing.T) {
 		t.Fatalf("rate_limited 审计 = %d 条，期望 1（SETNX 每窗口限一条）", rateLimited)
 	}
 }
+
+// TestStatusCheckinEnabledDerivedField 覆盖 W15-C 复核 Finding G：
+// `/api/status` 只下发派生布尔 checkin_enabled；checkin.* 设置键
+// （尤其奖励区间）不得进入公开响应（modules-08 §1.4.1）。
+func TestStatusCheckinEnabledDerivedField(t *testing.T) {
+	defaultEnv := newAuthTestEnv(t, nil, authTestOptions{})
+	rr := defaultEnv.request(http.MethodGet, "/api/status", nil, nil)
+	var got statusResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("status JSON 非法: %v", err)
+	}
+	if got.CheckinEnabled {
+		t.Fatal("checkin_enabled 默认必须为 false")
+	}
+
+	enabledEnv := newAuthTestEnv(t, mapConfig{
+		"checkin.enabled":   configBool(true),
+		"checkin.min_quota": configInt(10),
+		"checkin.max_quota": configInt(20),
+	}, authTestOptions{})
+	rr = enabledEnv.request(http.MethodGet, "/api/status", nil, nil)
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("status JSON 非法: %v", err)
+	}
+	if !got.CheckinEnabled {
+		t.Fatal("checkin.enabled=true 时派生字段必须为 true")
+	}
+	body := rr.Body.String()
+	for _, forbidden := range []string{"checkin.min_quota", "checkin.max_quota", `"min_quota"`, `"max_quota"`} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("公开状态泄露签到设置 %q: %s", forbidden, body)
+		}
+	}
+}

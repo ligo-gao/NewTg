@@ -231,6 +231,26 @@
         "no_data": "データなし"
       },
       "admin_required": "管理者権限が必要です"
+    },
+    "checkin": {
+      "title": "毎日チェックイン",
+      "description": "1日1回チェックインして、ランダムなクレジットを獲得しましょう。",
+      "button": "チェックイン",
+      "checked_button": "本日チェックイン済み",
+      "submitting": "チェックイン中…",
+      "success": "チェックインしました。{amount} クレジットを獲得しました",
+      "already": "本日はすでにチェックイン済みです",
+      "streak": "{days} 日連続",
+      "streak_label": "連続日数",
+      "month_total_label": "今月の合計",
+      "total_earned_label": "累計獲得",
+      "empty": "今月のチェックインはまだありません",
+      "error": "チェックインカレンダーを読み込めませんでした。",
+      "offline": "オフラインのようです。接続を確認して再試行してください。",
+      "action_error": "チェックインに失敗しました。もう一度お試しください。",
+      "calendar_aria": "{month} のチェックインカレンダー",
+      "day_awarded": "{date}: {amount} クレジット",
+      "today_award": "本日の報酬: {amount} クレジット"
     }
   },
   "toast.success": "成功",

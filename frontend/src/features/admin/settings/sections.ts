@@ -327,6 +327,28 @@ const BILLING: SectionConfig = {
   ],
 }
 
+// Daily check-in (modules-08 §3.8; W15-C). Disabled by default; min_quota=0
+// is a legitimate "record only" mode and is explained in the hint rather than
+// rejected, because the design freezes that combination as valid.
+const CHECKIN: SectionConfig = {
+  id: 'checkin',
+  titleKey: 'settings.section.checkin',
+  descriptionKey: 'settings.section_description.checkin',
+  fields: [
+    toggle('checkin.enabled', label('checkin.enabled')),
+    number('checkin.min_quota', label('checkin.min_quota'), {
+      min: 0,
+      max: 1_000_000_000_000,
+      hintKey: hint('checkin.min_quota'),
+    }),
+    number('checkin.max_quota', label('checkin.max_quota'), {
+      min: 0,
+      max: 1_000_000_000_000,
+      hintKey: hint('checkin.max_quota'),
+    }),
+  ],
+}
+
 const PAY: SectionConfig = {
   id: 'pay',
   titleKey: 'settings.section.pay',
@@ -650,7 +672,7 @@ export const SETTINGS_TABS_CONFIG: readonly TabConfig[] = [
     id: 'billing',
     labelKey: 'settings.tab.billing',
     descriptionKey: 'settings.tab_description.billing',
-    sections: [BILLING],
+    sections: [BILLING, CHECKIN],
   },
   {
     id: 'payment',

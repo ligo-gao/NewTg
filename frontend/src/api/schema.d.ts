@@ -3720,6 +3720,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/checkin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 每日签到并领取随机积分
+         * @description 每个自然日只能签到一次（站点时区）。签到记录、余额变更与
+         *     `checkin_bonus` 流水在同一事务内完成；并发双击由
+         *     `checkins (user_id, checkin_date)` 唯一约束收敛为恰好一次成功。
+         *     已签到返回 409 `already_checked_in`（零写入）。
+         *     `checkin.min_quota = 0` 时只记签到、不发额度、不写账本行。
+         *     钱包余额会越过安全整数上界时整体回滚并返回 409
+         *     `wallet_limit_exceeded`，不做部分入账。
+         *     人机校验接入点 `checkin`（第 5 点），位于限流之后；独立限流桶
+         *     10 次/分钟/用户。
+         */
+        post: operations["checkIn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/checkin/calendar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 本人签到月历与统计
+         * @description 返回指定自然月（默认站点时区的当前月）的签到日、连续签到天数、
+         *     本月累计与累计获得。只读本人数据；站点关闭签到同样返回 403
+         *     `checkin_disabled`（入口由 `/api/status` 的 `checkin_enabled`
+         *     驱动，正常不会请求）。
+         */
+        get: operations["getCheckinCalendar"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/topup/config": {
         parameters: {
             query?: never;
@@ -5191,6 +5242,13 @@ export interface components {
              *     （reason=encryption_required，对外响应与口令错误不可区分）。
              */
             password_login_encryption_enabled: boolean;
+            /**
+             * @description 每日签到总开关的**派生**布尔（来源设置键 `checkin.enabled`，但
+             *     `checkin.*` 本身不进公开下发全集）。false 时控制台不渲染签到卡，
+             *     POST /api/checkin 与 GET /api/checkin/calendar 返回 403
+             *     `checkin_disabled`。奖励区间永不下发。
+             */
+            checkin_enabled: boolean;
             /** @description canonical 7 语（modules-01 F-01-19）；顺序即下拉框顺序。 */
             languages: components["schemas"]["Language"][];
             default_language: components["schemas"]["Language"];
@@ -8898,6 +8956,70 @@ export interface components {
              *     subscription_purchase 流水的 id；没有则 null（R-M3-06）。
              */
             corrects_transaction_id: number | null;
+        };
+        /**
+         * @description 可选请求体：Turnstile 令牌也可通过 `?turnstile_token=` 查询参数提交
+         *     （两者同时出现时以查询参数为准，与其它认证端点同口径）。签到本身
+         *     不接受任何用户标识或金额参数。
+         */
+        CheckinRequest: {
+            turnstile_token?: string;
+        };
+        CheckinResult: {
+            /**
+             * Format: date
+             * @description 本次签到对应的自然日（站点时区，YYYY-MM-DD）
+             */
+            date: string;
+            /**
+             * Format: int64
+             * @description 本次发放积分；同日重放不会重新抽取
+             */
+            awarded: number;
+            /**
+             * Format: int32
+             * @description 截至今天的连续签到天数（不断签）
+             */
+            streak: number;
+            /**
+             * Format: int64
+             * @description 本月累计获得积分
+             */
+            month_total: number;
+            /**
+             * Format: int64
+             * @description 累计获得积分
+             */
+            total_earned: number;
+            /**
+             * Format: int64
+             * @description 入账后的钱包余额快照
+             */
+            balance_after: number;
+            /** @description 成功响应恒为 true */
+            checked_in_today: boolean;
+        };
+        CheckinCalendar: {
+            month: string;
+            /**
+             * Format: date
+             * @description 站点时区下的今天
+             */
+            today: string;
+            /** @description 本月已签到的日期（未签到的日期不出现，前端按网格补齐） */
+            days: {
+                /** Format: date */
+                date: string;
+                /** Format: int64 */
+                awarded: number;
+            }[];
+            /** Format: int32 */
+            streak: number;
+            /** Format: int64 */
+            month_total: number;
+            /** Format: int64 */
+            total_earned: number;
+            checked_in_today: boolean;
         };
         /** @description 公开的渠道配置；secret 永不出现。 */
         TopupProviderConfig: {
@@ -16439,6 +16561,94 @@ export interface operations {
             401: components["responses"]["Error401"];
             404: components["responses"]["Error404"];
             429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    checkIn: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CheckinRequest"];
+            };
+        };
+        responses: {
+            /** @description 签到成功（awarded 落在 [min_quota, max_quota] 闭区间） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckinResult"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            /** @description 签到未启用（`checkin_disabled`）或人机校验失败 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description 当日已签到（`already_checked_in`）或钱包上界（`wallet_limit_exceeded`） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    getCheckinCalendar: {
+        parameters: {
+            query?: {
+                /** @description 自然月，`YYYY-MM`；空值取站点时区的当前月。 */
+                month?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckinCalendar"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            /** @description 签到未启用（`checkin_disabled`） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             500: components["responses"]["Error500"];
         };
     };

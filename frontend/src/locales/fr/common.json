@@ -231,6 +231,26 @@
         "no_data": "Aucune donnée"
       },
       "admin_required": "Autorisation administrateur requise"
+    },
+    "checkin": {
+      "title": "Pointage quotidien",
+      "description": "Pointez une fois par jour pour gagner des crédits aléatoires.",
+      "button": "Pointer",
+      "checked_button": "Déjà pointé aujourd'hui",
+      "submitting": "Pointage…",
+      "success": "Pointage effectué. Vous avez gagné {amount} crédits",
+      "already": "Vous avez déjà pointé aujourd'hui",
+      "streak": "{days} jours consécutifs",
+      "streak_label": "Série en cours",
+      "month_total_label": "Ce mois-ci",
+      "total_earned_label": "Total gagné",
+      "empty": "Aucun pointage ce mois-ci",
+      "error": "Impossible de charger votre calendrier de pointage.",
+      "offline": "Vous semblez hors ligne. Vérifiez votre connexion et réessayez.",
+      "action_error": "Le pointage a échoué. Veuillez réessayer.",
+      "calendar_aria": "Calendrier de pointage de {month}",
+      "day_awarded": "{date} : {amount} crédits",
+      "today_award": "Récompense du jour : {amount} crédits"
     }
   },
   "toast.success": "Succès",

@@ -74,6 +74,7 @@ func createBillingTestUser(t *testing.T, db *sql.DB, balance int64) int64 {
 		t.Fatalf("create test user: %v", err)
 	}
 	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM checkins WHERE user_id = $1`, id)
 		_, _ = db.Exec(`DELETE FROM wallet_transactions WHERE user_id = $1`, id)
 		_, _ = db.Exec(`DELETE FROM users WHERE id = $1`, id)
 	})

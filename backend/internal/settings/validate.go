@@ -633,6 +633,7 @@ type sectionValidator func(values map[string]any, secretConfigured map[string]bo
 var sectionValidators = map[string]sectionValidator{
 	"auth":              validateAuthSection,
 	"auth.turnstile":    validateTurnstileSection,
+	"checkin":           validateCheckinSection,
 	"pay":               validatePaySection,
 	"pay.stripe":        validateStripeSection,
 	"pay.alipay":        validateAlipaySection,
@@ -664,6 +665,28 @@ func validateTurnstileSection(values map[string]any, secretConfigured map[string
 	}
 	if !secretConfigured["auth.turnstile.secret_key"] {
 		return invalid("auth.turnstile.secret_key", "required when Turnstile is enabled")
+	}
+	return nil
+}
+
+// validateCheckinSection 强制签到额度区间 `min ≤ max`（modules-08 §3.8 /
+// modules-03 F-03-12）。设计把非法组合定义为**保存期拒绝且零写入**，
+// 而不是读取期静默交换——静默交换会让管理员看到的预览值与实际发放不符。
+//
+// min=0 合法：停发奖励、只记签到；max 在该组合下不参与发放，但仍要求
+// min ≤ max，避免「先保存一个矛盾区间、日后把 min 调大」时突然发放。
+func validateCheckinSection(values map[string]any, _ map[string]bool) error {
+	minQuota, ok := values["checkin.min_quota"].(int64)
+	if !ok {
+		return nil
+	}
+	maxQuota, ok := values["checkin.max_quota"].(int64)
+	if !ok {
+		return nil
+	}
+	if minQuota > maxQuota {
+		return invalid("checkin.min_quota",
+			"min_quota must not exceed max_quota")
 	}
 	return nil
 }
