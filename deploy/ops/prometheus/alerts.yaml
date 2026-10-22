@@ -1,0 +1,521 @@
+# NewTG Prometheus 告警规则（M7 上线准备）
+#
+# 用法（二选一）：
+#   1. 直接由 Prometheus 加载：
+#        rule_files:
+#          - /etc/prometheus/rules/newtg-alerts.yaml
+#   2. Prometheus Operator：把 `groups:` 包进
+#        apiVersion: monitoring.coreos.com/v1
+#        kind: PrometheusRule
+#        metadata: { name: newtg-alerts, namespace: <monitoring ns> }
+#        spec: { groups: [...] }
+#      不要同时加载两种形态，避免同名规则重复。
+#
+# 阈值纪律（platform-05 §6.1 / §9 U2）：
+#   - 标注「来源：platform-05 §6.1 A<n>」的规则，阈值逐字引用设计；
+#   - 标注「待实测」的阈值是 M7 压测前的【假设】初值，必须用
+#     `deploy/ops/loadtest/loadtest.py` 的稳态分布校准后回写设计文档；
+#   - 指标名以 `platform-05` §3.2 为唯一真源。当前实现尚未暴露的指标在规则
+#     注释中显式标注「指标待落地」，规则加载后不会触发（没有时间序列）。
+#   - 每条规则都带 `runbook` 注解，指向 `deploy/ops/runbooks/`。
+#
+# 去重与抑制（platform-05 §6.2）：
+#   - 同一 (alertname, labels) 由 Alertmanager 滑动窗口去重；
+#   - `newtg_dependency_up{postgres}=0` 时抑制派生告警（A3/A5/A14–A16 等），
+#     在 Alertmanager 的 inhibit_rules 中配置：
+#       source_matchers: [alertname="NewTGDependencyDown"]
+#       target_matchers: [severity=~"warning|critical"]
+#       equal: [service]
+#
+# 规则文件只定义规则，不定义 receiver；通道复用 N8 业务 Webhook +
+# Alertmanager 路由（platform-05 §6.3 / 业主裁决 U-05-1）。
+
+groups:
+  - name: newtg-availability
+    interval: 30s
+    rules:
+      # A20（platform-05 §6.1）：抓取失败即实例失联。
+      # job 名按实际 scrape_configs 调整；此处匹配包含 newtg 的 job。
+      - alert: NewTGServiceDown
+        expr: up{job=~".*newtg.*"} == 0
+        for: 2m
+        labels:
+          severity: warning
+          category: availability
+          source: platform-05-A20
+        annotations:
+          summary: "NewTG 实例失联：{{ $labels.instance }}"
+          description: "Prometheus 连续 2m 抓取 {{ $labels.job }} / {{ $labels.instance }} 失败。先看容器/ Pod 是否存活，再看 /healthz 与 /readyz。"
+          threshold_source: "platform-05 §6.1 A20：up==0 持续 2m（设计值）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      # 补充规则（无 A 编号）：面向入口的 5xx 比率。阈值 0.01 为【假设】初值，
+      # 需用压测稳态 5xx 分布校准（platform-06 §6.2 R1/R2）。
+      - alert: NewTGHTTP5xxRateHigh
+        expr: |
+          (
+            sum(rate(newtg_http_requests_total{status_class="5xx"}[5m]))
+            /
+            clamp_min(sum(rate(newtg_http_requests_total[5m])), 1e-9)
+          ) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+          category: availability
+          source: newtg-ops-initial
+        annotations:
+          summary: "NewTG 入口 5xx 比率 > 1%"
+          description: "5xx 比率连续 5m 超过 1%。先区分版本问题与依赖问题：查 NewTGDependencyDown / NewTGDBPoolSaturated / NewTGRedisDown。"
+          threshold_source: "待实测：0.01 为 M7 前【假设】初值，按 platform-06 §6.2 用稳态 p99×1.5 校准"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+  - name: newtg-relay
+    interval: 30s
+    rules:
+      # A3：中继整体错误率 > 0.05 持续 5m。
+      - alert: NewTGRelayErrorRateHigh
+        expr: |
+          (
+            sum(rate(newtg_relay_errors_total[5m]))
+            /
+            clamp_min(sum(rate(newtg_relay_requests_total[5m])), 1e-9)
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          category: relay
+          source: platform-05-A3
+        annotations:
+          summary: "NewTG 中继错误率 > 5%"
+          description: "按 error_class 拆分归因；若以上游 429/5xx 为主，先查渠道而非版本。灰度期间触发时按 runbook 暂停晋级。"
+          threshold_source: "platform-05 §6.1 A3：>0.05 持续 5m（设计值，待 M7 实测校准）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      # A1：单渠道错误率 > 0.5 持续 5m。
+      - alert: NewTGChannelErrorRateHigh
+        expr: |
+          max by (channel_id) (
+            sum by (channel_id) (rate(newtg_channel_requests_total{result="error"}[5m]))
+            /
+            clamp_min(sum by (channel_id) (rate(newtg_channel_requests_total[5m])), 1e-9)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: critical
+          category: relay
+          source: platform-05-A1
+        annotations:
+          summary: "渠道 {{ $labels.channel_id }} 错误率 > 50%"
+          description: "单渠道大面积失败。先查渠道密钥/额度/上游状态；跨渠道同时出现才考虑回滚版本。"
+          threshold_source: "platform-05 §6.1 A1：>0.5 持续 5m（设计值，待 M7 实测校准）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      # A2：任何一次渠道自动禁用。
+      - alert: NewTGChannelAutoDisabled
+        expr: increase(newtg_channel_auto_disabled_total[5m]) > 0
+        labels:
+          severity: warning
+          category: relay
+          source: platform-05-A2
+        annotations:
+          summary: "渠道被自动禁用：{{ $labels.channel_type }} / {{ $labels.reason }}"
+          description: "渠道自动禁用通常是上游鉴权/限流/5xx 的早期信号。检查渠道测试结果与凭据，不要直接回滚网关版本。"
+          threshold_source: "platform-05 §6.1 A2：increase>0（任何一次，设计值）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      # A4：TTFT p95 > 5s 持续 10m。
+      - alert: NewTGTTFTP95High
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(newtg_relay_first_token_seconds_bucket[10m]))
+          ) > 5
+        for: 10m
+        labels:
+          severity: warning
+          category: relay
+          source: platform-05-A4
+        annotations:
+          summary: "NewTG 流式 TTFT p95 > 5s"
+          description: "先与同窗上游耗时对比（platform-06 §4.3 附加量口径）；上游慢不属于网关容量问题。"
+          threshold_source: "platform-05 §6.1 A4：p95>5s 持续 10m（设计值，待 M7 实测校准）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      # 补充规则（无 A 编号）：入口 p95。阈值 2s 为【假设】初值。
+      - alert: NewTGHTTPP95High
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(newtg_http_request_duration_seconds_bucket[5m]))
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+          category: latency
+          source: newtg-ops-initial
+        annotations:
+          summary: "NewTG 入口 p95 延迟 > 2s"
+          description: "结合 newtg_db_pool_wait_total / newtg_redis_command_duration_seconds 判断是依赖饱和还是上游慢。"
+          threshold_source: "待实测：2s 为 M7 前【假设】初值，按 platform-06 J1/J2 与稳态分布校准"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+  - name: newtg-billing
+    interval: 30s
+    rules:
+      # A5：有中继流量但结算速率为 0 —— 计费管道断了（资损红线）。
+      - alert: NewTGBillingPipelineStalled
+        expr: |
+          sum(rate(newtg_billing_settle_credits_total[10m])) == 0
+          and
+          sum(rate(newtg_relay_requests_total[10m])) > 0
+        for: 10m
+        labels:
+          severity: critical
+          category: billing
+          source: platform-05-A5
+        annotations:
+          summary: "计费管道停摆：有中继请求但 10m 无结算"
+          description: "立即按回滚 runbook 处置（资损红线）。检查结算写库错误、worker 租约、日志库可用性。"
+          threshold_source: "platform-05 §6.1 A5：rate(settle)==0 且 relay QPS>0 达 10m（设计值）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      # A6：任何钳制事件（quota saturation）。
+      - alert: NewTGQuotaClamp
+        expr: increase(newtg_billing_quota_clamp_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          category: billing
+          source: platform-05-A6
+        annotations:
+          summary: "发生额度钳制事件：op={{ $labels.op }} kind={{ $labels.kind }}"
+          description: "钳制代表额度计算饱和，通常是定价/上限配置错误。暂停灰度晋级并核对最近定价变更；连续出现按资损红线处理。"
+          threshold_source: "platform-05 §6.1 A6：increase>0（任何一次，设计值）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      # A7：402 额度不足突增。设计口径是「10 分钟速率 > 基线 ×5」；
+      # 基线依赖真实流量，在 M7 校准前用绝对增量 20 作为【假设】初值。
+      - alert: NewTGBalanceLowSpike
+        expr: sum(increase(newtg_billing_insufficient_quota_total[10m])) > 20
+        for: 1m
+        labels:
+          severity: info
+          category: billing
+          source: platform-05-A7
+        annotations:
+          summary: "402 额度不足请求突增（10m 增量 > 20）"
+          description: "可能是批量用户余额耗尽，也可能是攻击/滥用。结合 newtg_billing_insufficient_quota_total 按 model 标签定位。"
+          threshold_source: "platform-05 §6.1 A7：速率 > 基线×5（基线待 M7 实测）；当前 10m 增量 20 为【假设】初值"
+          runbook: "deploy/ops/runbooks/go-live-checklist.md"
+
+      # A8：预扣残留兜底退款 > 10 次/小时。
+      - alert: NewTGWorkerAbandonedRefunds
+        expr: sum(increase(newtg_worker_abandoned_refund_total[1h])) > 10
+        for: 1m
+        labels:
+          severity: warning
+          category: billing
+          source: platform-05-A8
+        annotations:
+          summary: "预扣残留兜底退款 > 10 次/小时"
+          description: "通常意味着 gateway 频繁崩溃或长请求租约心跳丢失。对照 newtg_worker_abandoned_oldest_age_seconds 与实例重启记录。"
+          threshold_source: "platform-05 §6.1 A8：>10 次/小时（设计值，源自 billing-06 §5）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      # A9：最老未结算 hold 年龄 > 15m —— settlement_pending / 预扣悬挂积压。
+      # 这是当前实现可用的「结算积压」代理指标（settlement_pending 的
+      # tasks.private_data 标记没有 Prometheus 序列）。
+      - alert: NewTGSettlementPendingBacklog
+        expr: newtg_worker_abandoned_oldest_age_seconds > 900
+        for: 5m
+        labels:
+          severity: warning
+          category: billing
+          source: platform-05-A9
+        annotations:
+          summary: "结算积压：最老未结算 hold 年龄 > 15m"
+          description: "settlement_pending / 预扣悬挂积压。检查 worker 兜底扫描是否运行、request_registry 在飞行、结算写库是否报错。"
+          threshold_source: "platform-05 §6.1 A9：>900s（设计值，源自 billing-06 §5.2 的 10m 窗口 + 5m 周期）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      # platform-05 §3.2.4 #23：当前预留积分。指标待落地（implementation
+      # 尚未暴露该 Gauge），规则先行，指标出现后自动生效。
+      - alert: NewTGBillingReservedCreditsStuck
+        expr: newtg_billing_reserved_credits > 0
+        for: 15m
+        labels:
+          severity: warning
+          category: billing
+          source: platform-05-3.2.4-23
+        annotations:
+          summary: "在飞预扣积分 15m 未回落"
+          description: "可能预扣悬挂。当前实现尚未暴露 newtg_billing_reserved_credits，本规则在指标落地后生效；临时用 NewTGSettlementPendingBacklog 兜底。"
+          threshold_source: "platform-05 §3.2.4 #23；阈值 >0 持续 15m 为【假设】初值，待实测"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+  - name: newtg-worker
+    interval: 30s
+    rules:
+      # A10：关键任务失败。task_type 取当前实现的 Observer 取值
+      # （log_flush / preconsume_reconcile / rankings_snapshot / email /
+      # retention / log_partition_drop）。
+      - alert: NewTGWorkerTaskFailed
+        expr: |
+          increase(
+            newtg_worker_task_runs_total{
+              status="failed",
+              task_type=~"preconsume_reconcile|log_flush|rankings_snapshot|email|retention|log_partition_drop"
+            }[15m]
+          ) > 0
+        for: 1m
+        labels:
+          severity: warning
+          category: worker
+          source: platform-05-A10
+        annotations:
+          summary: "worker 关键任务失败：{{ $labels.task_type }}"
+          description: "查看 worker 日志与 worker_task_runs.error（固定分类，不含原始错误文本）。失败可能影响结算/日志落库/通知。"
+          threshold_source: "platform-05 §6.1 A10：increase>0 持续 15m（关键任务集为设计值）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      # A11：任务停摆（未失败但也不再成功）。按任务周期拆分，避免把
+      # 日任务误判为停摆。
+      - alert: NewTGWorkerLogFlushStalled
+        expr: time() - newtg_worker_task_last_success_timestamp_seconds{task_type="log_flush"} > 300
+        for: 5m
+        labels:
+          severity: warning
+          category: worker
+          source: platform-05-A11
+        annotations:
+          summary: "usage_logs 落库任务 5m 未成功"
+          description: "log_flush 每 5s 运行；5m 无成功通常意味着 Redis Stream 消费/日志库写入卡住。同时看 newtg_worker_usage_logs_stream_lag。"
+          threshold_source: "platform-05 §6.1 A11：3×周期；log_flush 周期 5s，取 5m 为【假设】容错初值"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      - alert: NewTGWorkerReconcileStalled
+        expr: time() - newtg_worker_task_last_success_timestamp_seconds{task_type="preconsume_reconcile"} > 900
+        for: 5m
+        labels:
+          severity: warning
+          category: worker
+          source: platform-05-A11
+        annotations:
+          summary: "预扣兜底扫描 15m 未成功"
+          description: "preconsume_reconcile 周期 5m；15m 无成功即 3×周期。与 NewTGSettlementPendingBacklog 联合判断。"
+          threshold_source: "platform-05 §6.1 A11：3×周期（周期 5m，来源 billing-06 §5.2）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      - alert: NewTGWorkerSnapshotStalled
+        expr: time() - newtg_worker_task_last_success_timestamp_seconds{task_type="rankings_snapshot"} > 1800
+        for: 5m
+        labels:
+          severity: warning
+          category: worker
+          source: platform-05-A11
+        annotations:
+          summary: "排行榜快照 30m 未成功"
+          description: "rankings_snapshot 周期 5m；30m 无成功即 6×周期。影响公开页数据新鲜度。"
+          threshold_source: "platform-05 §6.1 A11：3×周期（周期 5m，来源 billing-06 §8）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      - alert: NewTGWorkerDailyTaskStalled
+        expr: |
+          time() - max by (task_type) (
+            newtg_worker_task_last_success_timestamp_seconds{task_type=~"retention|log_partition_drop"}
+          ) > 259200
+        for: 30m
+        labels:
+          severity: warning
+          category: worker
+          source: platform-05-A11
+        annotations:
+          summary: "worker 日任务 72h 未成功：{{ $labels.task_type }}"
+          description: "retention / log_partition_drop 为 24h 周期；72h 无成功即 3×周期。检查调度器与租约。"
+          threshold_source: "platform-05 §6.1 A11：3×周期（周期 24h）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      - alert: NewTGWorkerNeverSucceeded
+        expr: absent(newtg_worker_task_last_success_timestamp_seconds{task_type="log_flush"})
+        for: 10m
+        labels:
+          severity: warning
+          category: worker
+          source: platform-05-A11
+        annotations:
+          summary: "worker 关键任务从未成功（log_flush 无时间序列）"
+          description: "worker 可能未启动、不健康，或 Redis/日志库不可用。先查 worker /readyz 与容器日志。"
+          threshold_source: "platform-05 §6.1 A11 的推导：从未成功即无 last_success 序列（设计注释）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      # A12：租约过期。指标待落地（platform-05 §3.2.5 #27）；规则先行。
+      - alert: NewTGWorkerLeaseExpired
+        expr: increase(newtg_worker_task_lease_expired_total[15m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          category: worker
+          source: platform-05-A12
+        annotations:
+          summary: "worker 任务租约过期（{{ $labels.task_type }}）"
+          description: "worker 不稳定或被抢占。指标待落地；当前可用 worker_task_runs 的 failed/running 状态间接判断。"
+          threshold_source: "platform-05 §6.1 A12：increase>0 持续 15m（设计值）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      # A13：Redis Stream 积压 > 10000 持续 5m。
+      - alert: NewTGUsageLogStreamLag
+        expr: newtg_worker_usage_logs_stream_lag > 10000
+        for: 5m
+        labels:
+          severity: warning
+          category: worker
+          source: platform-05-A13
+        annotations:
+          summary: "usage_logs Redis Stream 积压 > 10000"
+          description: "日志批处理背压：usage_logs 落库延迟。检查 worker log_flush、日志库连接池与分区是否存在。"
+          threshold_source: "platform-05 §6.1 A13：>10000 持续 5m（设计值，源自 billing-06 §6.1）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+  - name: newtg-notify
+    interval: 30s
+    rules:
+      # Webhook 投递失败。platform-05 §3.2.5 #36 定义
+      # newtg_worker_webhook_failures_total{kind}，当前实现尚未暴露该指标；
+      # 规则先行，指标落地后自动生效。
+      - alert: NewTGWebhookDeliveryFailures
+        expr: increase(newtg_worker_webhook_failures_total[15m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          category: notify
+          source: platform-05-3.2.5-36
+        annotations:
+          summary: "Webhook 投递失败（kind={{ $labels.kind }}）"
+          description: "检查 notification_deliveries 中 channel='webhook' 的 failed/last_error；连续失败 >50 会触发 notify:webhook:paused。指标待落地。"
+          threshold_source: "platform-05 §3.2.5 #36：失败计数（连续 >50 自动暂停，billing-06 §9.7）；阈值待实测"
+          runbook: "deploy/ops/runbooks/go-live-checklist.md"
+
+      # 通知发送失败（含邮件）。platform-05 §3.2.5 #35；指标待落地。
+      - alert: NewTGNotificationFailures
+        expr: increase(newtg_worker_notifications_total{result="failed"}[15m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          category: notify
+          source: platform-05-3.2.5-35
+        annotations:
+          summary: "通知发送失败（channel={{ $labels.channel }}）"
+          description: "检查 SMTP / Webhook 端点与退信抑制。指标待落地；临时可查 notification_deliveries.status='failed'。"
+          threshold_source: "platform-05 §3.2.5 #35；阈值待实测"
+          runbook: "deploy/ops/runbooks/go-live-checklist.md"
+
+  - name: newtg-database
+    interval: 30s
+    rules:
+      # A14：连接池 in_use/open > 0.9 持续 5m。db 标签区分 main/logs。
+      - alert: NewTGDBPoolSaturated
+        expr: |
+          max by (db) (
+            newtg_db_pool_connections{state="in_use"}
+            /
+            clamp_min(newtg_db_pool_connections{state="open"}, 1)
+          ) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          category: database
+          source: platform-05-A14
+        annotations:
+          summary: "数据库连接池利用率 > 90%（db={{ $labels.db }}）"
+          description: "连接池接近耗尽。检查长事务/慢查询与 DB_MAX_OPEN_CONNS；日志库耗尽会拖垮 usage_logs 落库。"
+          threshold_source: "platform-05 §6.1 A14：in_use/open > 0.9 持续 5m（设计值，待 M7 实测校准）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      # A15：池等待速率 > 0。
+      - alert: NewTGDBPoolWaits
+        expr: rate(newtg_db_pool_wait_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          category: database
+          source: platform-05-A15
+        annotations:
+          summary: "数据库连接池出现等待（db={{ $labels.db }}）"
+          description: "池容量不足或查询变慢。对应 DB_MAX_OPEN_CONNS 调优；不要盲目提高上限而不看 PG max_connections。"
+          threshold_source: "platform-05 §6.1 A15：rate>0 持续 5m（设计值）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      # A16：DB 错误速率 > 0（写失败 → 资损风险）。指标待落地
+      # （platform-05 §3.2.6 #40）；规则先行。
+      - alert: NewTGDBErrors
+        expr: rate(newtg_db_errors_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          category: database
+          source: platform-05-A16
+        annotations:
+          summary: "数据库错误速率 > 0（operation={{ $labels.operation }}）"
+          description: "写失败可能造成资损。立即按回滚 runbook 处置；指标待落地，当前用错误日志与 NewTGBillingPipelineStalled 兜底。"
+          threshold_source: "platform-05 §6.1 A16：rate>0（设计值）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      # A19：迁移 dirty。
+      - alert: NewTGMigrationDirty
+        expr: newtg_migration_version{dirty="true"} == 1
+        for: 0m
+        labels:
+          severity: critical
+          category: database
+          source: platform-05-A19
+        annotations:
+          summary: "数据库迁移处于 dirty 状态"
+          description: "停发布并按 platform-04 §7 处置；不得直接回滚代码。迁移版本与 /readyz R3 同源。"
+          threshold_source: "platform-05 §6.1 A19：dirty==1（任何时刻，设计值）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+  - name: newtg-dependency
+    interval: 30s
+    rules:
+      # A17：Redis 不可用。
+      - alert: NewTGRedisDown
+        expr: newtg_redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: dependency
+          source: platform-05-A17
+        annotations:
+          summary: "Redis 不可用"
+          description: "会话/限流/缓存/Stream 受影响。检查 redis 容器与网络；依赖故障本身不是版本问题，但会阻断灰度晋级。"
+          threshold_source: "platform-05 §6.1 A17：==0 持续 1m（设计值）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      # A18：依赖不可用（postgres / redis）。与 /readyz R1/R2 同源。
+      - alert: NewTGDependencyDown
+        expr: newtg_dependency_up == 0
+        for: 2m
+        labels:
+          severity: critical
+          category: dependency
+          source: platform-05-A18
+        annotations:
+          summary: "依赖不可用：{{ $labels.dependency }}"
+          description: "与 /readyz 判定同源。postgres=0 时抑制派生的错误率/池告警，避免告警风暴。"
+          threshold_source: "platform-05 §6.1 A18：==0 持续 2m（设计值）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+      # A21：配置广播失败（配置未全副本生效）。指标待落地
+      # （platform-05 §3.2.8 #48）；规则先行。
+      - alert: NewTGConfigReloadFailed
+        expr: increase(newtg_config_reload_total{result="failed"}[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          category: config
+          source: platform-05-A21
+        annotations:
+          summary: "配置热更新广播失败"
+          description: "配置可能未全副本生效。检查 Redis pub/sub 与 configcenter；灰度窗口内禁止非兼容配置变更。"
+          threshold_source: "platform-05 §6.1 A21：increase>0 持续 10m（设计值）"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
