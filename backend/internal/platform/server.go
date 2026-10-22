@@ -105,9 +105,15 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	// I-2：自动禁用 reporter 的停机顺序固定为「先 cancel + Wait，再关
 	// 主库/日志库」。幂等（cancel/Wait 均可重复调用），四条资源清理路径
 	// 都调用它，避免停机排空写撞上已关闭的连接池。
+	//
+	// G-M6C-13：同一入口顺带停模型性能采集器（强制 flush 到日志库）。两者
+	// 都写日志库，必须一起早于 logsDB.Close。
 	stopReporter := func() {
 		if assembly != nil && assembly.AttemptFailureReporterStop != nil {
 			assembly.AttemptFailureReporterStop()
+		}
+		if assembly != nil && assembly.PerfMetricsStop != nil {
+			assembly.PerfMetricsStop()
 		}
 	}
 
@@ -544,7 +550,8 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	// 有效值（NEWTG_DEMO_ENABLED 覆盖），否则 gateway 免单、worker 补扣。
 	// 与 gateway 同一构造点：任何直接 billing.NewEngine(center) 都会绕过覆盖。
 	engine := newDemoAwareBillingEngine(gormDB, sqlLogs, rr.client, center, cfg.DemoEnabled, source, registry,
-		newUsageLogDBLogger(sqlLogs, feedPublisher, center, rr.client, log))
+		// worker 只做兜底退款（fact=nil，不进入性能采样），不挂采集器。
+		newUsageLogDBLogger(sqlLogs, feedPublisher, center, rr.client, log, nil))
 	// S4a：与 gateway 同一装配口径。worker 复用引擎做兜底恢复，
 	// 未装配会让订阅偏好退化为纯钱包行为。
 	engine.SetSubscriptionFunding(billing.NewStoreSubscriptionFunding(

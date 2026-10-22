@@ -41,6 +41,7 @@ import (
 	"newtg/gateway/internal/deploy/ionet"
 	"newtg/gateway/internal/mj"
 	"newtg/gateway/internal/notify"
+	"newtg/gateway/internal/perfmetrics"
 	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/settings"
@@ -177,6 +178,13 @@ type GatewayDeps struct {
 	// 同一个 engine.NewSession；nil 时任务路径退回 billingseam.NewStub
 	// （纯内存单测），生产装配必须传入。
 	Billing func(*contract.RelayContext) contract.BillingSession
+	// PerfMetricsSource 是 F-05-08 模型性能看板的查询接缝（platform-05
+	// §3.5）。生产由 platform 在 PERF_METRICS_ENABLED=true 时注入采集器；
+	// false/未装配时为 nil，端点走显式闸门。
+	PerfMetricsSource perfmetrics.Source
+	// PerfMetricsFlushInterval 是采集刷写周期（PERF_METRICS_FLUSH_INTERVAL），
+	// 供看板 3× 停摆判定。
+	PerfMetricsFlushInterval time.Duration
 }
 
 // BuildGatewayRouter 组装全部 M1 端点。返回的 Router 已包含：
@@ -470,6 +478,9 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		// 订阅购买与充值共用同一个支付服务实例。
 		SubscriptionPurchase: deps.SubscriptionPurchase,
 		NotifyService:        notifyService,
+		// F-05-08：采集管道未启用时 source 为 nil，端点走闸门。
+		PerfMetricsSource:        deps.PerfMetricsSource,
+		PerfMetricsFlushInterval: deps.PerfMetricsFlushInterval,
 	})
 	if err != nil {
 		return nil, err

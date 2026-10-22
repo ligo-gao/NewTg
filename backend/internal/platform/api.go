@@ -30,6 +30,7 @@ import (
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/httpapi"
 	"newtg/gateway/internal/notify"
+	"newtg/gateway/internal/perfmetrics"
 	"newtg/gateway/internal/ratelimit"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
@@ -78,6 +79,10 @@ type gatewayAssembly struct {
 	// 排空队列。runGateway 必须在关闭主库/日志库**之前**调用，否则停机窗口
 	// 的排空写会撞上已关闭的连接池（I-2）。
 	AttemptFailureReporterStop func()
+	// PerfMetricsStop 取消模型性能采集器的周期任务并执行一次强制 flush
+	// （G-M6C-13）。与 reporter 同理，必须在关闭日志库之前调用；nil 表示
+	// PERF_METRICS_ENABLED=false（禁用时零开销，不构造采集器）。
+	PerfMetricsStop func()
 	// EmailSender 是事务性邮件适配器（W13-EMAIL）：同一实例同时实现验证码、
 	// 密码重置与通知测试三个 handler 接缝。装配测试据此断言生产路径确实
 	// 注入，而不是让端点退化到 503。
@@ -146,6 +151,28 @@ func newRelayRateLimiter(rdb *redis.Client) (httpapi.RelayRateLimiter, error) {
 		return nil, errors.New("gateway: relay rate limiter construction returned nil")
 	}
 	return limiter, nil
+}
+
+// newPerfMetricsCollector 消费 PERF_METRICS_ENABLED / PERF_METRICS_FLUSH_INTERVAL
+// （G-M6C-13）。
+//
+// 关闭时返回 (nil, nil)：不构造采集器、不注入 DBLogger 钩子、不启动
+// goroutine，中继热路径只剩一次 nil 判断——这是「禁用时零开销」的实现。
+// 启用时使用日志库作为指标落点（见 store.ModelPerfRepo 的说明）。
+func newPerfMetricsCollector(cfg *config.Config, logsDB *sql.DB, log *slog.Logger) (*perfmetrics.Collector, error) {
+	if cfg == nil || !cfg.PerfMetricsEnabled {
+		return nil, nil
+	}
+	collector, err := perfmetrics.NewCollector(perfmetrics.Config{
+		Store:         store.NewModelPerfRepo(logsDB),
+		FlushInterval: cfg.PerfMetricsFlushInterval,
+		Node:          cfg.NodeName,
+		Logger:        log,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gateway: perf metrics collector: %w", err)
+	}
+	return collector, nil
 }
 
 // newGatewayAPI 构造 /api/* 的完整路由。db/logsDB/rdb 必须已通过
@@ -224,8 +251,21 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	// 回退」；默认关闭，行为与既有同步路径完全一致。live_feed 投递无论在
 	// 哪种模式下都保持「只有真正插入新行才投递」。
 	feedPublisher := billing.NewRedisFeedPublisher(rdb)
+	// G-M6C-13：模型性能采集器（禁用时 nil）。在 DBLogger 构造前创建，
+	// 使每个请求的最终结算行能同步采样；周期刷写 goroutine 在装配末尾启动，
+	// 避免装配失败时留下后台任务。
+	perfCollector, err := newPerfMetricsCollector(cfg, logsDB, log)
+	if err != nil {
+		return nil, err
+	}
+	var perfRecorder billing.PerfMetricsRecorder
+	var perfSource perfmetrics.Source
+	if perfCollector != nil {
+		perfRecorder = perfCollector
+		perfSource = perfCollector
+	}
 	engine := newDemoAwareBillingEngine(gormDB, logsDB, rdb, center, cfg.DemoEnabled, source,
-		billing.NewRegistry(rdb), newUsageLogDBLogger(logsDB, feedPublisher, center, rdb, log))
+		billing.NewRegistry(rdb), newUsageLogDBLogger(logsDB, feedPublisher, center, rdb, log, perfRecorder))
 	// 其余读取面（守卫、中继额度、管理面 RouterConfig）派生自引擎的有效
 	// 配置面，确保三处与计费看到同一个 NEWTG_DEMO_ENABLED 有效值。
 	demoConfig := engine.EffectiveConfig()
@@ -504,6 +544,10 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		// 任务提交与中继共用同一个计费引擎会话工厂（M6d Task 6a）：
 		// 预扣/退款/结算语义只能有一套实现。
 		Billing: engine.NewSession,
+		// F-05-08：采集管道未启用时 source 为 nil，/api/model-perf 走闸门。
+		// 周期即使禁用也传入，避免 handler 回落到与部署配置不一致的默认值。
+		PerfMetricsSource:        perfSource,
+		PerfMetricsFlushInterval: cfg.PerfMetricsFlushInterval,
 		// W7/M5-b：准入限流器复用同一个 Redis 客户端（跨副本共享计数），
 		// 装配一次、由中继面与任务提交面共同持有（R-M5-04/07）。
 		RateLimiter: rateLimiter,
@@ -524,6 +568,15 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	reporterCtx, reporterCancel := context.WithCancel(ctx)
 	attemptReporter.Start(reporterCtx)
 
+	// G-M6C-13：采集器的周期刷写随 gateway ctx 退出；Stop 会取消循环并做
+	// 一次强制 flush（含当前分钟）。runGateway 在关闭日志库之前调用
+	// PerfMetricsStop，保证停机排空写不会撞上已关闭的连接池。
+	perfStop := func() {}
+	if perfCollector != nil {
+		perfCollector.Start(ctx)
+		perfStop = perfCollector.Stop
+	}
+
 	return &gatewayAssembly{
 		Handler:                router,
 		Billing:                engine.NewSession,
@@ -536,6 +589,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		RateLimiter:            rateLimiter,
 		AttemptFailureReporter: attemptReporter,
 		EmailSender:            transactionalEmail,
+		PerfMetricsStop:        perfStop,
 		AttemptFailureReporterStop: func() {
 			reporterCancel()
 			attemptReporter.Wait()
