@@ -209,7 +209,7 @@ func (s *Scheduler) claimAndStart(ctx context.Context, task Task, pending *Run) 
 	}
 
 	now := s.now().UTC()
-	generation, ok, err := s.store.ClaimLock(ctx, task.Name, s.nodeID, s.leaseTTL, now)
+	generation, ok, err := s.store.ClaimLock(ctx, task.Name, s.nodeID, s.leaseTTL)
 	if err != nil {
 		s.log.Warn("worker: claim DB lease failed", "task_type", task.Name, "error", err)
 		s.releaseLease(ctx, task.Name, 0)
@@ -301,7 +301,7 @@ func (s *Scheduler) execute(parent context.Context, task Task, runID, generation
 					cancel()
 					return
 				}
-				if ok, err := s.store.RenewLock(ctx, task.Name, s.nodeID, generation, s.leaseTTL, s.now().UTC()); err != nil {
+				if ok, err := s.store.RenewLock(ctx, task.Name, s.nodeID, generation, s.leaseTTL); err != nil {
 					s.log.Warn("worker: DB lease renew failed", "task_type", task.Name, "run_id", runID, "error", err)
 				} else if !ok {
 					s.log.Warn("worker: DB lease was taken over; cancelling task",
@@ -342,10 +342,15 @@ func (s *Scheduler) execute(parent context.Context, task Task, runID, generation
 }
 
 // invoke 执行任务函数并把错误映射成固定分类。
-func (s *Scheduler) invoke(ctx context.Context, task Task) (result Result, err error, class string) {
+func (s *Scheduler) invoke(ctx context.Context, task Task) (Result, error, string) {
+	return executeTask(ctx, task)
+}
+
+// executeTask 是 invoke 的纯逻辑部分（不依赖 Scheduler 状态），便于单测
+// 锁定「错误 → 固定分类」的映射；panic 也必须落为固定分类而不是向上传播。
+func executeTask(ctx context.Context, task Task) (result Result, err error, class string) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			s.log.Error("worker: task panicked", "task_type", task.Name, "panic", recovered)
 			result = nil
 			err = errors.New(ErrClassPanic)
 			class = ErrClassPanic
@@ -354,6 +359,9 @@ func (s *Scheduler) invoke(ctx context.Context, task Task) (result Result, err e
 	result, err = task.Run(ctx)
 	if err == nil {
 		return result, nil, ""
+	}
+	if BlockedCodeOf(err) != "" {
+		return result, err, ErrClassBlocked
 	}
 	switch {
 	case errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
@@ -370,7 +378,7 @@ func (s *Scheduler) CleanupExpired(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
-	count, err := s.store.ExpireRunningRuns(ctx, s.now().UTC())
+	count, err := s.store.ExpireRunningRuns(ctx)
 	if err != nil {
 		s.log.Warn("worker: expire running runs failed", "error", err)
 		return
@@ -385,7 +393,7 @@ func (s *Scheduler) releaseLease(ctx context.Context, taskType string, generatio
 		s.log.Warn("worker: redis lease release failed", "task_type", taskType, "error", err)
 	}
 	if generation > 0 {
-		if err := s.store.ReleaseLock(ctx, taskType, s.nodeID, generation, s.now().UTC()); err != nil {
+		if err := s.store.ReleaseLock(ctx, taskType, s.nodeID, generation); err != nil {
 			s.log.Warn("worker: DB lease release failed", "task_type", taskType, "error", err)
 		}
 	}

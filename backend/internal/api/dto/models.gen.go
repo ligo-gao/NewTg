@@ -8241,7 +8241,8 @@ type SystemTaskPage struct {
 
 // SystemTaskRun defines model for SystemTaskRun.
 type SystemTaskRun struct {
-	// Error 固定失败分类（timeout / task lease expired / execution_error / cancelled），不含原始错误文本。
+	// Error 固定失败分类（timeout / task lease expired / execution_error /
+	// cancelled / panic / blocked），不含原始错误文本或上游响应体。
 	Error      *string    `json:"error,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 	Id         int64      `json:"id"`

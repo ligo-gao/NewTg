@@ -26,7 +26,10 @@ const (
 	ErrClassExecution    = "execution_error"
 	ErrClassCancelled    = "cancelled"
 	ErrClassPanic        = "panic"
-	ErrClassInternal     = "internal_error"
+	// ErrClassBlocked 是运行时谓词阻断（如 log_partition_drop_disabled）。
+	// 它只可能出现在「触发时开关已关、执行前又被关」的竞态窗口，或手动
+	// 通过其他入口执行；正常 409 根本不会入队。
+	ErrClassBlocked = "blocked"
 )
 
 // TaskState 是 worker_tasks 行与最近一次运行/当前租约的合并投影。
@@ -120,13 +123,14 @@ type Store interface {
 	ListRuns(ctx context.Context, taskType string, limit, offset int) ([]Run, int, error)
 	EarliestPendingRun(ctx context.Context, taskType string) (*Run, error)
 
-	ClaimLock(ctx context.Context, taskType, holder string, ttl time.Duration, now time.Time) (int64, bool, error)
-	RenewLock(ctx context.Context, taskType, holder string, generation int64, ttl time.Duration, now time.Time) (bool, error)
-	ReleaseLock(ctx context.Context, taskType, holder string, generation int64, now time.Time) error
+	ClaimLock(ctx context.Context, taskType, holder string, ttl time.Duration) (int64, bool, error)
+	RenewLock(ctx context.Context, taskType, holder string, generation int64, ttl time.Duration) (bool, error)
+	ReleaseLock(ctx context.Context, taskType, holder string, generation int64) error
 	GetLock(ctx context.Context, taskType string) (TaskState, bool, error)
+	LeaseActive(ctx context.Context, taskType string) (bool, error)
 
 	UpdateTaskAfterRun(ctx context.Context, taskType string, startedAt time.Time, status string, nextDueAt *time.Time) error
-	ExpireRunningRuns(ctx context.Context, now time.Time) (int64, error)
+	ExpireRunningRuns(ctx context.Context) (int64, error)
 	DeleteRunsBefore(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
@@ -144,23 +148,25 @@ type CreateRunInput struct {
 
 // SQLStore 是 Store 的 PostgreSQL 实现。
 type SQLStore struct {
-	db  *sql.DB
-	now func() time.Time
+	db *sql.DB
 }
 
-// NewSQLStore 构造仓储。db 必填；now 仅测试注入。
+// NewSQLStore 构造仓储。
+//
+// 【时间口径：租约一律用数据库 now()】billing-06 §2.3.1 要求 CAS 的 `now()`
+// 由仓储层生成，而不是调用方进程时钟。多副本部署下各节点时钟可能相差数秒；
+// 若用进程时钟比较 `lease_expires_at`，快时钟节点会在租约尚未到期时提前
+// 抢占（同一任务双执行）。统一用 `now()` 后，比较双方（租约写入与判定）
+// 都来自同一台 PG，跨副本时钟差不再影响互斥正确性。
+//
+// 本仓库只落 PostgreSQL（platform-04 / G7-R38），因此不需要为 SQLite/MySQL
+// 准备进程时钟分支；若未来引入其他方言，必须先在此提供等价的服务端 now 并
+// 用集成测试锁定「两个不同时钟的实例不能提前抢租约」。
 func NewSQLStore(db *sql.DB) (*SQLStore, error) {
 	if db == nil {
 		return nil, errors.New("worker: database handle is required")
 	}
-	return &SQLStore{db: db, now: time.Now}, nil
-}
-
-func (s *SQLStore) clock() time.Time {
-	if s.now != nil {
-		return s.now().UTC()
-	}
-	return time.Now().UTC()
+	return &SQLStore{db: db}, nil
 }
 
 // EnsureTaskRows 把注册表同步到 worker_tasks：缺行则建，已有行只刷新周期。
@@ -421,12 +427,13 @@ func (s *SQLStore) EarliestPendingRun(ctx context.Context, taskType string) (*Ru
 
 // ClaimLock 是 §2.3.1 的 CAS 认领：租约已过期或持有者是自己时抢占成功。
 // 返回新的 generation；第二返回值为 false 表示被其他持有者占用。
-func (s *SQLStore) ClaimLock(ctx context.Context, taskType, holder string, ttl time.Duration, now time.Time) (int64, bool, error) {
+func (s *SQLStore) ClaimLock(ctx context.Context, taskType, holder string, ttl time.Duration) (int64, bool, error) {
 	var generation int64
+	// 租约窗口与到期比较都由数据库 now() 生成（见 NewSQLStore 的时间口径）。
 	err := s.db.QueryRowContext(ctx, `
 		INSERT INTO worker_task_locks
 			(task_type, holder_id, lease_expires_at, heartbeat_at, generation, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, 1, now(), now())
+		VALUES ($1, $2, now() + make_interval(secs => $3), now(), 1, now(), now())
 		ON CONFLICT (task_type) DO UPDATE
 		   SET holder_id = EXCLUDED.holder_id,
 		       lease_expires_at = EXCLUDED.lease_expires_at,
@@ -434,10 +441,10 @@ func (s *SQLStore) ClaimLock(ctx context.Context, taskType, holder string, ttl t
 		       generation = worker_task_locks.generation + 1,
 		       updated_at = now()
 		 WHERE worker_task_locks.lease_expires_at IS NULL
-		    OR worker_task_locks.lease_expires_at < $4
+		    OR worker_task_locks.lease_expires_at < now()
 		    OR worker_task_locks.holder_id = $2
 		RETURNING generation`,
-		taskType, holder, now.Add(ttl), now).Scan(&generation)
+		taskType, holder, ttl.Seconds()).Scan(&generation)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, false, nil
 	}
@@ -448,12 +455,13 @@ func (s *SQLStore) ClaimLock(ctx context.Context, taskType, holder string, ttl t
 }
 
 // RenewLock 续约：必须同时匹配 holder 与 generation，且租约尚未过期。
-func (s *SQLStore) RenewLock(ctx context.Context, taskType, holder string, generation int64, ttl time.Duration, now time.Time) (bool, error) {
+func (s *SQLStore) RenewLock(ctx context.Context, taskType, holder string, generation int64, ttl time.Duration) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE worker_task_locks
-		   SET lease_expires_at = $4, heartbeat_at = $5, updated_at = now()
+		   SET lease_expires_at = now() + make_interval(secs => $4),
+		       heartbeat_at = now(), updated_at = now()
 		 WHERE task_type = $1 AND holder_id = $2 AND generation = $3
-		   AND lease_expires_at > $5`, taskType, holder, generation, now.Add(ttl), now)
+		   AND lease_expires_at > now()`, taskType, holder, generation, ttl.Seconds())
 	if err != nil {
 		return false, fmt.Errorf("worker: renew lock %q: %w", taskType, err)
 	}
@@ -465,12 +473,12 @@ func (s *SQLStore) RenewLock(ctx context.Context, taskType, holder string, gener
 }
 
 // ReleaseLock 释放：把到期时间置为 now（§2.3.1），下一周期可立即认领。
-func (s *SQLStore) ReleaseLock(ctx context.Context, taskType, holder string, generation int64, now time.Time) error {
+func (s *SQLStore) ReleaseLock(ctx context.Context, taskType, holder string, generation int64) error {
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE worker_task_locks
-		   SET lease_expires_at = $4, updated_at = now()
+		   SET lease_expires_at = now(), updated_at = now()
 		 WHERE task_type = $1 AND holder_id = $2 AND generation = $3`,
-		taskType, holder, generation, now); err != nil {
+		taskType, holder, generation); err != nil {
 		return fmt.Errorf("worker: release lock %q: %w", taskType, err)
 	}
 	return nil
@@ -505,6 +513,22 @@ func (s *SQLStore) GetLock(ctx context.Context, taskType string) (TaskState, boo
 	return state, true, nil
 }
 
+// LeaseActive 用数据库 now() 判定租约是否仍有效（管理面 409 的回退判据）。
+//
+// 不用调用方进程时钟：跨副本时钟快几秒会把「已释放」看成「仍在运行」，
+// 反之会漏判。Redis 键存在时优先用 Redis（服务层负责），本方法只在 Redis
+// 不可用/过期窗口内兜底。
+func (s *SQLStore) LeaseActive(ctx context.Context, taskType string) (bool, error) {
+	var active bool
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM worker_task_locks
+			 WHERE task_type = $1 AND lease_expires_at > now())`, taskType).Scan(&active); err != nil {
+		return false, fmt.Errorf("worker: lease active %q: %w", taskType, err)
+	}
+	return active, nil
+}
+
 // UpdateTaskAfterRun 更新调度目录的 last_run_at / last_status / next_due_at。
 func (s *SQLStore) UpdateTaskAfterRun(ctx context.Context, taskType string, startedAt time.Time, status string, nextDueAt *time.Time) error {
 	if _, err := s.db.ExecContext(ctx, `
@@ -524,16 +548,17 @@ func (s *SQLStore) UpdateTaskAfterRun(ctx context.Context, taskType string, star
 //
 // 这是崩溃/强杀后的收敛点：执行者来不及写终态，只有过期租约能证明它已
 // 不再持有执行权。固定错误文案与设计 §2.3.1 一致。
-func (s *SQLStore) ExpireRunningRuns(ctx context.Context, now time.Time) (int64, error) {
+func (s *SQLStore) ExpireRunningRuns(ctx context.Context) (int64, error) {
+	// 过期判定与 finished_at 都取数据库 now()，与 ClaimLock/RenewLock 同一时钟。
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE worker_task_runs r
-		   SET status = 'failed', finished_at = $1, error = $2, updated_at = now()
+		   SET status = 'failed', finished_at = now(), error = $1, updated_at = now()
 		 WHERE r.status = 'running'
 		   AND EXISTS (
 		       SELECT 1 FROM worker_task_locks l
 		        WHERE l.task_type = r.task_type
-		          AND (l.lease_expires_at IS NULL OR l.lease_expires_at < $1))`,
-		now, ErrClassLeaseExpired)
+		          AND (l.lease_expires_at IS NULL OR l.lease_expires_at < now()))`,
+		ErrClassLeaseExpired)
 	if err != nil {
 		return 0, fmt.Errorf("worker: expire running runs: %w", err)
 	}

@@ -17,6 +17,28 @@ var (
 	ErrTaskDisabled         = errors.New("worker: task is disabled")
 )
 
+// TaskBlockedError 表示任务被运行时谓词阻断（不是运营停用）。Code 是冻结的
+// 管理面错误码（如 log_partition_drop_disabled），handler 直接映射 409。
+type TaskBlockedError struct {
+	Code string
+}
+
+func (e *TaskBlockedError) Error() string {
+	if e == nil || e.Code == "" {
+		return "worker: task is blocked"
+	}
+	return "worker: task is blocked: " + e.Code
+}
+
+// BlockedCodeOf 返回 TaskBlockedError 的固定码；其他错误返回空串。
+func BlockedCodeOf(err error) string {
+	var blocked *TaskBlockedError
+	if errors.As(err, &blocked) && blocked != nil {
+		return blocked.Code
+	}
+	return ""
+}
+
 // WakeupChannel 是「管理员触发后立即唤醒调度 pass」的 Redis 频道。
 //
 // 网关进程与 worker 进程分离，进程内 channel 无法跨副本；用 pub/sub 让
@@ -38,7 +60,6 @@ type ServiceConfig struct {
 	Store    Store
 	Lease    Lease
 	Logger   *slog.Logger
-	Now      func() time.Time
 	// Wakeup 可选：手动触发成功后发布唤醒信号（nil 时只靠周期 pass）。
 	Wakeup func(ctx context.Context, taskType string) error
 }
@@ -49,7 +70,6 @@ type Service struct {
 	store    Store
 	lease    Lease
 	log      *slog.Logger
-	now      func() time.Time
 	wakeup   func(ctx context.Context, taskType string) error
 }
 
@@ -65,10 +85,6 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	now := cfg.Now
-	if now == nil {
-		now = time.Now
-	}
 	lease := cfg.Lease
 	if lease == nil {
 		lease = nopLease{}
@@ -78,7 +94,6 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 		store:    cfg.Store,
 		lease:    lease,
 		log:      logger,
-		now:      now,
 		wakeup:   cfg.Wakeup,
 	}, nil
 }
@@ -164,6 +179,15 @@ func (s *Service) Trigger(ctx context.Context, name string) (TriggerResult, erro
 	if !task.ManualTriggerAllowed {
 		return TriggerResult{}, ErrTaskManualNotAllowed
 	}
+	// 运行时谓词（如 log.partition_drop_enabled）为假时，触发必须当场 409：
+	// 入队一条永远不会执行的 pending 行会让管理员误以为任务已排期。
+	if task.Enabled != nil && !task.Enabled() {
+		code := task.BlockedCode
+		if code == "" {
+			code = "task_disabled"
+		}
+		return TriggerResult{}, &TaskBlockedError{Code: code}
+	}
 	state, hasState, err := s.store.GetTaskState(ctx, name)
 	if err != nil {
 		return TriggerResult{}, err
@@ -171,7 +195,7 @@ func (s *Service) Trigger(ctx context.Context, name string) (TriggerResult, erro
 	if hasState && !state.Enabled {
 		return TriggerResult{}, ErrTaskDisabled
 	}
-	running, err := s.isRunning(ctx, name, state, hasState)
+	running, err := s.isRunning(ctx, name)
 	if err != nil {
 		return TriggerResult{}, err
 	}
@@ -225,7 +249,7 @@ func (s *Service) summary(ctx context.Context, task Task, state TaskState, hasSt
 			summary.HolderID = truncateHolder(state.HolderID)
 		}
 	}
-	running, err := s.isRunning(ctx, task.Name, state, hasState)
+	running, err := s.isRunning(ctx, task.Name)
 	if err != nil {
 		return TaskSummary{}, err
 	}
@@ -238,9 +262,10 @@ func (s *Service) summary(ctx context.Context, task Task, state TaskState, hasSt
 	return summary, nil
 }
 
-// isRunning 以 Redis 租约为第一判据，DB 租约到期时间作 Redis 不可用时的
-// 回退。Redis 故障不能把「正在运行」误判成「空闲」，否则 409 会失效。
-func (s *Service) isRunning(ctx context.Context, name string, state TaskState, hasState bool) (bool, error) {
+// isRunning 以 Redis 租约为第一判据，DB `lease_expires_at > now()` 作
+// Redis 不可用/过期窗口内的回退。两处都不使用进程时钟：跨副本时钟快几秒
+// 会把已释放的租约误判成「仍在运行」，让合法触发持续 409。
+func (s *Service) isRunning(ctx context.Context, name string) (bool, error) {
 	active, err := s.lease.Active(ctx, name)
 	if err == nil && active {
 		return true, nil
@@ -248,10 +273,12 @@ func (s *Service) isRunning(ctx context.Context, name string, state TaskState, h
 	if err != nil {
 		s.log.Warn("worker: lease probe failed; falling back to DB lease", "task_type", name, "error", err)
 	}
-	if hasState && state.LeaseExpiresAt != nil && s.now().Before(*state.LeaseExpiresAt) {
-		return true, nil
+	dbActive, dbErr := s.store.LeaseActive(ctx, name)
+	if dbErr != nil {
+		s.log.Warn("worker: DB lease probe failed", "task_type", name, "error", dbErr)
+		return false, nil
 	}
-	return false, nil
+	return dbActive, nil
 }
 
 func normalizePage(page, pageSize int) (int, int) {

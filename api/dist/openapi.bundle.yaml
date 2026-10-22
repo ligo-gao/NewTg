@@ -5476,7 +5476,9 @@ paths:
         服务端只写一条 `pending` 运行行并唤醒调度器，由调度 pass 按正常租约
         认领执行——**不旁路执行**。非白名单 403 `task_not_manual`；未知任务
         404 `task_not_found`；已在运行/已入队 409 `task_already_running`；
-        任务停用 409 `task_disabled`。`Idempotency-Key` 必带，24h 内同键重放
+        任务停用 409 `task_disabled`；运行时开关关闭（当前仅
+        `log_cleanup` 的 `log.partition_drop_enabled`）409
+        `log_partition_drop_disabled`，零 DROP、零入队，审计 outcome=blocked。`Idempotency-Key` 必带，24h 内同键重放
         返回首次 202，不产生第二条运行。每次触发（含失败）写
         `system.task.trigger` 审计。
       security:
@@ -16532,7 +16534,9 @@ components:
           nullable: true
         error:
           type: string
-          description: 固定失败分类（timeout / task lease expired / execution_error / cancelled），不含原始错误文本。
+          description: |
+            固定失败分类（timeout / task lease expired / execution_error /
+            cancelled / panic / blocked），不含原始错误文本或上游响应体。
         result:
           type: object
           additionalProperties: true

@@ -3366,7 +3366,9 @@ schemas:
         nullable: true
       error:
         type: string
-        description: 固定失败分类（timeout / task lease expired / execution_error / cancelled），不含原始错误文本。
+        description: |
+          固定失败分类（timeout / task lease expired / execution_error /
+          cancelled / panic / blocked），不含原始错误文本或上游响应体。
       result:
         type: object
         additionalProperties: true

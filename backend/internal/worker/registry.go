@@ -53,7 +53,12 @@ type Task struct {
 	Concurrency ConcurrencyPolicy
 	// Enabled 是运行时谓词（§2.6）。nil 视为启用；返回 false 时该 pass
 	// 跳过且**不建 run 行、不推进 last_run_at**（空闲不建行）。
+	// 手动触发同样受它约束：谓词为假时返回 409（BlockedCode），而不是入队
+	// 一条永远不会执行的 pending 行。
 	Enabled func() bool
+	// BlockedCode 是谓词为假时暴露给管理面的固定错误码（如
+	// log_partition_drop_disabled）。空值回退 task_disabled。
+	BlockedCode string
 	// Run 是一次执行。nil 表示该任务由既有循环独占执行，调度器与手动触发
 	// 都不可用（避免出现「触发成功但永远不执行」的 pending 行）。
 	Run func(ctx context.Context) (Result, error)
@@ -135,6 +140,24 @@ func (r *Registry) Get(name string) (Task, bool) {
 	}
 	task, ok := r.tasks[name]
 	return task, ok
+}
+
+// SetEnabled 给已注册任务绑定运行时谓词与固定阻断码。
+//
+// 生产用它表达「开关关闭时手动触发必须 409」：仅靠 worker_tasks.enabled
+// 是调度目录的运营意图，无法表达 log.partition_drop_enabled 这类运行时配置。
+func (r *Registry) SetEnabled(name string, enabled func() bool, blockedCode string) error {
+	if r == nil {
+		return errors.New("worker: registry is nil")
+	}
+	task, ok := r.tasks[name]
+	if !ok {
+		return fmt.Errorf("worker: cannot configure unregistered task %q", name)
+	}
+	task.Enabled = enabled
+	task.BlockedCode = blockedCode
+	r.tasks[name] = task
+	return nil
 }
 
 // BindRun 给已注册任务绑定执行函数（生产在 platform.runWorker 中调用）。

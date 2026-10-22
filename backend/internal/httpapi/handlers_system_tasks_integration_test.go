@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -228,5 +229,124 @@ func TestSystemTasksIntegration(t *testing.T) {
 	}
 	if leaked != 0 {
 		t.Fatal("审计 detail 不得包含节点标识")
+	}
+}
+
+// TestLogCleanupTriggerHonoursPartitionDropSwitch 锁定控制端裁决：
+// 开关关闭 → 409 log_partition_drop_disabled、零执行、审计 outcome=blocked；
+// 开关打开 → 202，调度 pass 执行一次（测试用 fake Run，不接触 retention DSN）。
+func TestLogCleanupTriggerHonoursPartitionDropSwitch(t *testing.T) {
+	db, logs := systemTaskIntegrationDBs(t)
+	addr := os.Getenv("NEWTG_TEST_REDIS_ADDR")
+	if addr == "" {
+		t.Skip("NEWTG_TEST_REDIS_ADDR 未设置，跳过集成测试")
+	}
+	rdb := redis.NewClient(&redis.Options{Addr: addr})
+	t.Cleanup(func() { _ = rdb.Close() })
+	ctx := context.Background()
+
+	for _, table := range []string{"worker_task_runs", "worker_task_locks", "worker_tasks"} {
+		if _, err := db.ExecContext(ctx, "DELETE FROM "+table); err != nil {
+			t.Fatalf("clear %s: %v", table, err)
+		}
+	}
+	if _, err := logs.ExecContext(ctx, `DELETE FROM audit_logs WHERE detail->>'event' = 'system.task.trigger'`); err != nil {
+		t.Fatalf("clear audit: %v", err)
+	}
+	t.Cleanup(func() {
+		for _, table := range []string{"worker_task_runs", "worker_task_locks", "worker_tasks"} {
+			_, _ = db.Exec("DELETE FROM " + table)
+		}
+		_, _ = logs.Exec(`DELETE FROM audit_logs WHERE detail->>'event' = 'system.task.trigger'`)
+	})
+
+	var enabled int32
+	var executions int32
+	task := worker.Task{
+		Name:                 "log_cleanup",
+		Interval:             0,
+		Timeout:              time.Second,
+		ManualTriggerAllowed: true,
+		BlockedCode:          "log_partition_drop_disabled",
+		Enabled:              func() bool { return atomic.LoadInt32(&enabled) == 1 },
+		Run: func(context.Context) (worker.Result, error) {
+			atomic.AddInt32(&executions, 1)
+			return worker.Result{"dropped_partitions": 0}, nil
+		},
+	}
+	registry, err := worker.NewRegistry(task)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	store, _ := worker.NewSQLStore(db)
+	if err := store.EnsureTaskRows(ctx, registry.Tasks()); err != nil {
+		t.Fatalf("ensure rows: %v", err)
+	}
+	service, err := worker.NewService(worker.ServiceConfig{
+		Registry: registry, Store: store, Lease: worker.NewRedisLease(rdb), Logger: testLogger(),
+	})
+	if err != nil {
+		t.Fatalf("service: %v", err)
+	}
+	mux := http.NewServeMux()
+	NewSystemTaskHandlers(SystemTaskHandlerConfig{
+		Service: service, Authz: rbac.NewAuthzMiddleware(), Audit: audit.New(logs),
+		Idem: NewRedisIdempotencyStore(rdb), Logger: testLogger(),
+	}).Register(mux)
+
+	// 关：409 + 固定错误码 + 零执行。
+	blocked := httptest.NewRecorder()
+	mux.ServeHTTP(blocked, settingsRequest(http.MethodPost,
+		"/api/system/tasks/log_cleanup:trigger", "", systemTaskAdmin(),
+		map[string]string{"Idempotency-Key": fmt.Sprintf("drop-off-%d", time.Now().UnixNano())}))
+	if blocked.Code != http.StatusConflict {
+		t.Fatalf("开关关闭触发 = %d，期望 409（body=%s）", blocked.Code, blocked.Body.String())
+	}
+	var problem map[string]any
+	if err := json.Unmarshal(blocked.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if problem["type"] != "https://newtg.dev/problems/log_partition_drop_disabled" {
+		t.Fatalf("problem type = %v", problem["type"])
+	}
+	if _, total, err := store.ListRuns(ctx, "log_cleanup", 5, 0); err != nil || total != 0 {
+		t.Fatalf("开关关闭不得产生运行行: total=%d err=%v", total, err)
+	}
+	if got := atomic.LoadInt32(&executions); got != 0 {
+		t.Fatalf("开关关闭仍执行了 %d 次", got)
+	}
+	var blockedAudit int
+	if err := logs.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs
+		WHERE detail->>'event' = 'system.task.trigger' AND detail->>'outcome' = 'blocked'`).Scan(&blockedAudit); err != nil {
+		t.Fatalf("query blocked audit: %v", err)
+	}
+	if blockedAudit != 1 {
+		t.Fatalf("blocked 审计 = %d，期望 1", blockedAudit)
+	}
+
+	// 开：202 + 调度执行一次。
+	atomic.StoreInt32(&enabled, 1)
+	accepted := httptest.NewRecorder()
+	mux.ServeHTTP(accepted, settingsRequest(http.MethodPost,
+		"/api/system/tasks/log_cleanup:trigger", "", systemTaskAdmin(),
+		map[string]string{"Idempotency-Key": fmt.Sprintf("drop-on-%d", time.Now().UnixNano())}))
+	if accepted.Code != http.StatusAccepted {
+		t.Fatalf("开关打开触发 = %d，期望 202（body=%s）", accepted.Code, accepted.Body.String())
+	}
+	scheduler, err := worker.NewScheduler(worker.SchedulerConfig{
+		Registry: registry, Store: store, Lease: worker.NewRedisLease(rdb),
+		NodeID: "integration-node", Logger: testLogger(), PassInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("scheduler: %v", err)
+	}
+	scheduler.Pass(ctx)
+	scheduler.Wait()
+	if got := atomic.LoadInt32(&executions); got != 1 {
+		t.Fatalf("开关打开执行次数 = %d，期望 1", got)
+	}
+	runs, total, err := store.ListRuns(ctx, "log_cleanup", 5, 0)
+	if err != nil || total != 1 || runs[0].Status != worker.RunSucceeded {
+		t.Fatalf("运行记录 = %+v total=%d err=%v", runs, total, err)
 	}
 }

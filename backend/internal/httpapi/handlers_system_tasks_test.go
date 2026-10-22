@@ -159,6 +159,7 @@ func TestSystemTaskTriggerWhitelistAndConflicts(t *testing.T) {
 		{"already-running", worker.ErrTaskAlreadyRunning, http.StatusConflict, "already_running"},
 		{"disabled", worker.ErrTaskDisabled, http.StatusConflict, "disabled"},
 		{"unknown", worker.ErrTaskNotFound, http.StatusNotFound, "not_found"},
+		{"blocked", &worker.TaskBlockedError{Code: "log_partition_drop_disabled"}, http.StatusConflict, "blocked"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

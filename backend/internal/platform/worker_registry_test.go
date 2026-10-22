@@ -78,3 +78,49 @@ func TestRegistryBindRunRejectsUnregisteredTask(t *testing.T) {
 		t.Fatal("绑定未注册任务必须失败")
 	}
 }
+
+// TestLogCleanupRespectsPartitionDropSwitch 锁定控制端裁决：
+// 开关关闭时手动清理零 DROP，并返回固定码 log_partition_drop_disabled；
+// 谓词同时挂到注册表，Service.Trigger 会在入队前 409。
+func TestLogCleanupRespectsPartitionDropSwitch(t *testing.T) {
+	registry, err := worker.DefaultRegistry()
+	if err != nil {
+		t.Fatalf("DefaultRegistry: %v", err)
+	}
+	// 不触 DB：开关关闭分支在打开任何连接之前返回。
+	deps := workerTaskDeps{
+		Settings: logRetentionSettings{PartitionDropEnabled: false},
+	}
+	if err := bindWorkerTaskRuns(registry, deps); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	task, ok := registry.Get("log_cleanup")
+	if !ok {
+		t.Fatal("log_cleanup 未注册")
+	}
+	if task.Enabled == nil || task.Enabled() {
+		t.Fatal("log_cleanup 应挂上 partition_drop_enabled 谓词且当前为关闭")
+	}
+	_, runErr := task.Run(context.Background())
+	if got := worker.BlockedCodeOf(runErr); got != "log_partition_drop_disabled" {
+		t.Fatalf("Run 错误码 = %q，期望 log_partition_drop_disabled（err=%v）", got, runErr)
+	}
+
+	// 开：缺 retention DSN 时 fail-closed 为 skipped，而不是借应用身份 DROP。
+	registry, _ = worker.DefaultRegistry()
+	deps.Settings.PartitionDropEnabled = true
+	if err := bindWorkerTaskRuns(registry, deps); err != nil {
+		t.Fatalf("bind enabled: %v", err)
+	}
+	task, _ = registry.Get("log_cleanup")
+	if task.Enabled == nil || !task.Enabled() {
+		t.Fatal("开关打开后谓词应为真")
+	}
+	result, runErr := task.Run(context.Background())
+	if runErr != nil {
+		t.Fatalf("开关打开但缺 retention DSN 应 fail-closed 跳过，err=%v", runErr)
+	}
+	if result["skipped"] == nil {
+		t.Fatalf("期望 skipped 结果，实际 %+v", result)
+	}
+}

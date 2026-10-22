@@ -222,12 +222,16 @@ func (h *SystemTaskHandlers) handleTrigger(w http.ResponseWriter, r *http.Reques
 	} else if err := h.idem.Release(ctx, key, claim.Token); err != nil {
 		h.log.Error("system tasks: idempotency release failed", "error", err)
 	}
+	// 202 与列表/详情同口径；全局中间件虽会对 /api/* 注入 no-store，这里
+	// 显式声明，避免将来中间件调整时触发响应被缓存。
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSONBytes(w, status, body)
 }
 
 // performTrigger 是无幂等层（idem=nil 或存储故障）的直接路径。
 func (h *SystemTaskHandlers) performTrigger(w http.ResponseWriter, r *http.Request, name string) {
 	status, body := h.triggerResponse(r, name)
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSONBytes(w, status, body)
 }
 
@@ -261,6 +265,14 @@ func (h *SystemTaskHandlers) triggerResponse(r *http.Request, name string) (int,
 		return http.StatusConflict, taskProblem(http.StatusConflict, problemTypeTaskDisabled,
 			"Task is disabled", "enable the task before triggering it")
 	default:
+		// 运行时谓词阻断（如 log.partition_drop_enabled=false）：409 + 固定
+		// 错误码，零 DROP、零 pending 行，审计 outcome=blocked。
+		if code := worker.BlockedCodeOf(err); code != "" {
+			h.auditTrigger(r, name, nil, "blocked", "failed", http.StatusConflict)
+			return http.StatusConflict, taskProblem(http.StatusConflict,
+				"https://newtg.dev/problems/"+code, "Task is blocked",
+				"task is blocked by runtime configuration: "+code)
+		}
 		// 入队失败（DB/Redis）：记录固定分类，不回显内部错误文本。
 		h.log.Error("system tasks: trigger failed", "task_type", name, "error", err)
 		h.auditTrigger(r, name, nil, "enqueue_failed", "failed", http.StatusInternalServerError)

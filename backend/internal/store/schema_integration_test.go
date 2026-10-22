@@ -221,7 +221,7 @@ var wantIdentityPKTables = []string{
 	"worker_task_runs",
 }
 
-// identityPKExceptions：9 张「自然键/非 identity 例外」表的 PK（均非 identity）：
+// identityPKExceptions：13 张「自然键/非 identity 例外」表的 PK（均非 identity）：
 // system_settings."key" text 自然键（platform-01 §4）、request_registry.request_id
 // uuid 自然键（§18 / platform-04 V9）、rankings_timeseries 与 rankings_entities 的
 // 自然唯一键（§16/§17）、task_plugins."key" text 自然键（M6d B-11，主表以
@@ -230,11 +230,12 @@ var wantIdentityPKTables = []string{
 //
 // 另有两张以 run_id（FK → rankings_snapshot_runs.id，V5）领头的复合自然键表
 // （runIDLedNaturalPKs），以及 uuid 代理主键表（uuidPKTables：id uuid
-// DEFAULT gen_random_uuid()，属「代理主键但非 identity」）。合起来：40 表
-// （M0 16 + M1 6 + M6c 2 + M6d 4 + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 + T4 2）
-// = 23 张单列 id identity + 10 张自然键例外 + 4 张 uuid 代理键
+// DEFAULT gen_random_uuid()，属「代理主键但非 identity」）。合起来：46 表
+// （M0 16 + M1 6 + M6c 2 + M6d 4 + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 + T4 2
+// + S1 1 + S4 1 + MJ-d 1 + W17-2 3）
+// = 25 张单列 id identity + 13 张自然键例外 + 5 张 uuid 代理键
 // + 2 张 run_id 领头自然键 + 1 张自定义列名 identity（fact_id）；
-// **非 identity PK 的表恰 16 张**，由 TestMainSchemaNonIdentityPKSet 断言。
+// **非 identity PK 的表恰 20 张**，由 TestMainSchemaNonIdentityPKSet 断言。
 var identityPKExceptions = map[string][]string{
 	"system_settings":     {"key"},
 	"rankings_timeseries": {"model", "granularity", "bucket_start"},
@@ -824,11 +825,11 @@ func pkColumns(t *testing.T, db *sql.DB, table string) []pkCol {
 	return out
 }
 
-// TestMainSchemaIdentityPK：（e）identity PK + 例外清单恰 11 项 + uuid 代理键 5 项
+// TestMainSchemaIdentityPK：（e）identity PK + 例外清单恰 13 项 + uuid 代理键 5 项
 // + run_id 领头复合自然键 2 项 + 自定义列名 identity 1 项。
 func TestMainSchemaIdentityPK(t *testing.T) {
-	if len(identityPKExceptions) != 11 {
-		t.Fatalf("自然键例外清单须恰 11 项（另有 5 张 uuid 代理键 + 2 张 run_id 领头的复合自然键 + 1 张自定义列名 identity），实际 %d 项", len(identityPKExceptions))
+	if len(identityPKExceptions) != 13 {
+		t.Fatalf("自然键例外清单须恰 13 项（另有 5 张 uuid 代理键 + 2 张 run_id 领头的复合自然键 + 1 张自定义列名 identity），实际 %d 项", len(identityPKExceptions))
 	}
 	db := openTestDB(t)
 
@@ -952,8 +953,8 @@ func TestMainSchemaIdentityPK(t *testing.T) {
 	}
 }
 
-// TestMainSchemaNonIdentityPKSet：非 identity PK 的表恰 18 张 =
-// 11 张自然键例外（identityPKExceptions）+ 5 张 uuid 代理键（uuidPKTables）
+// TestMainSchemaNonIdentityPKSet：非 identity PK 的表恰 20 张 =
+// 13 张自然键例外（identityPKExceptions）+ 5 张 uuid 代理键（uuidPKTables）
 // + 2 张 run_id 领头的复合自然键（runIDLedNaturalPKs）；其余均为 identity
 // 单列代理主键（其中 deployment_cost_facts 的列名是 fact_id）。
 func TestMainSchemaNonIdentityPKSet(t *testing.T) {
@@ -968,8 +969,8 @@ func TestMainSchemaNonIdentityPKSet(t *testing.T) {
 	for table := range runIDLedNaturalPKs {
 		wantNonIdentity[table] = true
 	}
-	if len(wantNonIdentity) != 18 {
-		t.Fatalf("非 identity PK 表须恰 18 张（11 自然键 + 5 uuid 代理键 + 2 run_id 领头），实际 %d 张", len(wantNonIdentity))
+	if len(wantNonIdentity) != 20 {
+		t.Fatalf("非 identity PK 表须恰 20 张（13 自然键 + 5 uuid 代理键 + 2 run_id 领头），实际 %d 张", len(wantNonIdentity))
 	}
 
 	var gotNonIdentity, gotIdentity []string

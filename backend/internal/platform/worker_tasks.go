@@ -169,6 +169,11 @@ func bindWorkerTaskRuns(registry *worker.Registry, deps workerTaskDeps) error {
 			return worker.Result{"lookahead_months": deps.Settings.PartitionLookaheadMonths}, nil
 		},
 		"log_cleanup": func(ctx context.Context) (worker.Result, error) {
+			// 冻结裁决：手动清理必须尊重 log.partition_drop_enabled。开关关闭
+			// 时零 DROP（触发层已返回 409；这里是「触发后开关被关」的竞态兜底）。
+			if !deps.Settings.PartitionDropEnabled {
+				return nil, &worker.TaskBlockedError{Code: "log_partition_drop_disabled"}
+			}
 			// 维护角色连接池按需打开：只有管理员手动触发时才需要 DROP 权限。
 			// 缺 DB_RETENTION_DSN 时 fail-closed（不借用应用身份去删分区）。
 			retentionDB, err := openRetentionDB(ctx, deps.Cfg)
@@ -207,6 +212,14 @@ func bindWorkerTaskRuns(registry *worker.Registry, deps workerTaskDeps) error {
 		if err := registry.BindRun(name, run); err != nil {
 			return fmt.Errorf("worker task bind %q: %w", name, err)
 		}
+	}
+	// 手动 log_cleanup 不能绕过 log.partition_drop_enabled（控制端裁决）：
+	// 谓词为假时触发 409 log_partition_drop_disabled，且 Scheduler 的 pass
+	// 也会跳过（不会留下 pending 行）。
+	if err := registry.SetEnabled("log_cleanup",
+		func() bool { return deps.Settings.PartitionDropEnabled },
+		"log_partition_drop_disabled"); err != nil {
+		return fmt.Errorf("worker task enable predicate: %w", err)
 	}
 	return nil
 }

@@ -423,3 +423,56 @@ func TestWorkerTaskIdlePredicateCreatesNoRow(t *testing.T) {
 		t.Fatalf("谓词为假时不得推进 last_run_at: %v", state.LastRunAt)
 	}
 }
+
+// TestWorkerTaskLeaseUsesDatabaseClock 锁定「租约时间由仓储层 now() 生成」：
+// 租约窗口与到期比较必须来自同一台 PG，调用方进程时钟不参与。否则跨副本
+// 时钟快几秒的节点会在租约尚未到期时提前抢占（同任务双执行）。
+func TestWorkerTaskLeaseUsesDatabaseClock(t *testing.T) {
+	db := workerTestDB(t)
+	ctx := context.Background()
+	name := uniqueWorkerTaskName("dbclock")
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM worker_task_runs WHERE task_type = $1`, name)
+		_, _ = db.Exec(`DELETE FROM worker_task_locks WHERE task_type = $1`, name)
+		_, _ = db.Exec(`DELETE FROM worker_tasks WHERE task_type = $1`, name)
+	})
+	store, err := worker.NewSQLStore(db)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	registry, _ := worker.NewRegistry(worker.Task{Name: name, Interval: time.Hour})
+	if err := store.EnsureTaskRows(ctx, registry.Tasks()); err != nil {
+		t.Fatalf("ensure rows: %v", err)
+	}
+
+	const ttl = 60 * time.Second
+	generation, ok, err := store.ClaimLock(ctx, name, "node-a", ttl)
+	if err != nil || !ok {
+		t.Fatalf("claim = %v/%v/%v", generation, ok, err)
+	}
+
+	var lease, heartbeat, dbNow time.Time
+	if err := db.QueryRowContext(ctx, `
+		SELECT lease_expires_at, heartbeat_at, now()
+		  FROM worker_task_locks WHERE task_type = $1`, name).Scan(&lease, &heartbeat, &dbNow); err != nil {
+		t.Fatalf("read lock: %v", err)
+	}
+	if lease.Sub(heartbeat) < ttl-time.Second || lease.Sub(heartbeat) > ttl+time.Second {
+		t.Fatalf("租约窗口 = %v，期望约 %v（必须由 DB now() + ttl 生成）", lease.Sub(heartbeat), ttl)
+	}
+	if heartbeat.Sub(dbNow).Abs() > 5*time.Second {
+		t.Fatalf("heartbeat 与 DB now() 相差 %v，说明写入了进程时钟", heartbeat.Sub(dbNow))
+	}
+	if !lease.After(dbNow) {
+		t.Fatalf("租约未到期却被判定为过期: lease=%v dbNow=%v", lease, dbNow)
+	}
+
+	// 租约有效期内另一节点不得抢占（CAS 用的是 DB 时间）。
+	if _, ok, err := store.ClaimLock(ctx, name, "node-b", ttl); err != nil || ok {
+		t.Fatalf("有效租约被抢占: ok=%v err=%v", ok, err)
+	}
+	active, err := store.LeaseActive(ctx, name)
+	if err != nil || !active {
+		t.Fatalf("LeaseActive = %v/%v，期望 true", active, err)
+	}
+}
