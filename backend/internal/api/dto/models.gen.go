@@ -1944,6 +1944,48 @@ func (e RelayErrorErrorType) Valid() bool {
 	}
 }
 
+// Defines values for ResponsesObjectObject.
+const (
+	Response ResponsesObjectObject = "response"
+)
+
+// Valid indicates whether the value is a known member of the ResponsesObjectObject enum.
+func (e ResponsesObjectObject) Valid() bool {
+	switch e {
+	case Response:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ResponsesObjectStatus.
+const (
+	ResponsesObjectStatusCompleted  ResponsesObjectStatus = "completed"
+	ResponsesObjectStatusFailed     ResponsesObjectStatus = "failed"
+	ResponsesObjectStatusInProgress ResponsesObjectStatus = "in_progress"
+	ResponsesObjectStatusIncomplete ResponsesObjectStatus = "incomplete"
+	ResponsesObjectStatusQueued     ResponsesObjectStatus = "queued"
+)
+
+// Valid indicates whether the value is a known member of the ResponsesObjectStatus enum.
+func (e ResponsesObjectStatus) Valid() bool {
+	switch e {
+	case ResponsesObjectStatusCompleted:
+		return true
+	case ResponsesObjectStatusFailed:
+		return true
+	case ResponsesObjectStatusInProgress:
+		return true
+	case ResponsesObjectStatusIncomplete:
+		return true
+	case ResponsesObjectStatusQueued:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SettingsItemDangerDirection.
 const (
 	SettingsItemDangerDirectionAny   SettingsItemDangerDirection = "any"
@@ -8098,6 +8140,32 @@ type ResetTokenKeyResponse struct {
 	KeyMasked string `json:"key_masked"`
 }
 
+// ResponsesObject Responses 对象。`output` 元素本波不做 IR 建模（插件渲染项或产物投影项），
+// 因此按开放对象声明；`usage` 仅在终态（completed/failed/incomplete）出现。
+type ResponsesObject struct {
+	CreatedAt int64 `json:"created_at"`
+
+	// Id `resp_` 前缀；与任务 `task_` id 共享同一段随机量
+	Id     string                   `json:"id"`
+	Model  *string                  `json:"model,omitempty"`
+	Object ResponsesObjectObject    `json:"object"`
+	Output []map[string]interface{} `json:"output"`
+	Status ResponsesObjectStatus    `json:"status"`
+
+	// Usage 只在终态出现；input_tokens ← prompt_tokens、output_tokens ← completion_tokens
+	Usage *struct {
+		InputTokens  *int `json:"input_tokens,omitempty"`
+		OutputTokens *int `json:"output_tokens,omitempty"`
+		TotalTokens  *int `json:"total_tokens,omitempty"`
+	} `json:"usage,omitempty"`
+}
+
+// ResponsesObjectObject defines model for ResponsesObject.Object.
+type ResponsesObjectObject string
+
+// ResponsesObjectStatus defines model for ResponsesObject.Status.
+type ResponsesObjectStatus string
+
 // SelfSettings GET /api/self 与 PUT /api/self/setting 的响应。updated_at 是下一次写入
 // 必须携带的乐观锁令牌——同一行的资料变更也会推进它。
 type SelfSettings struct {
@@ -9777,6 +9845,18 @@ type Error503 = Problem
 // RelayError429 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
 // ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
 type RelayError429 = RelayError
+
+// RelayError501 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type RelayError501 = RelayError
+
+// ResponsesCreateOK Responses 对象。`output` 元素本波不做 IR 建模（插件渲染项或产物投影项），
+// 因此按开放对象声明；`usage` 仅在终态（completed/failed/incomplete）出现。
+type ResponsesCreateOK = ResponsesObject
+
+// ResponsesGetOK Responses 对象。`output` 元素本波不做 IR 建模（插件渲染项或产物投影项），
+// 因此按开放对象声明；`usage` 仅在终态（completed/failed/incomplete）出现。
+type ResponsesGetOK = ResponsesObject
 
 // MJTaskList defines model for MJTaskList.
 type MJTaskList = MJTaskListRequest

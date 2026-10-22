@@ -187,15 +187,18 @@ func (e *responsesEnv) postResponses(t *testing.T, body string) *httptest.Respon
 	return rec
 }
 
-// TestResponsesPluginHitSkipsGenericPreConsume 是 brief Step 1：
+// TestResponsesPluginHitSkipsGenericPreConsume 是 brief Step 1（W18-C 裁决更新）：
 // 插件声明 POST /v1/responses 时，请求必须走任务插件提交（任务行 +1、任务
 // 计费发生一次），并且**不得**进入通用中继——通用中继的预扣次数必须为 0。
+//
+// 出口形状按 R-W18-07 更新为 Responses 对象（不再是 202 task 形状）：这是
+// 裁决变更，不是删除回归；task 形状的断言移到了 /v1/tasks 的既有用例。
 func TestResponsesPluginHitSkipsGenericPreConsume(t *testing.T) {
 	env := newResponsesEnv(t, newResponsesPluginManager(t))
 
 	rec := env.postResponses(t, `{"model":"video-model","input":"hello","seconds":5}`)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202 (task submit); body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (Responses object); body=%s", rec.Code, rec.Body.String())
 	}
 
 	if env.store.inserted != 1 {
@@ -223,19 +226,29 @@ func TestResponsesPluginHitSkipsGenericPreConsume(t *testing.T) {
 		t.Fatalf("generic relay upstream calls = %d, want 0; calls=%v", n, env.transport.paths())
 	}
 
-	var resp taskSubmitResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode submit response: %v", err)
+	var resp struct {
+		ID     string `json:"id"`
+		Object string `json:"object"`
+		Output []any  `json:"output"`
 	}
-	if resp.PublicTaskID == "" {
-		t.Fatalf("public_task_id must not be empty: %s", rec.Body.String())
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode Responses object: %v", err)
+	}
+	if resp.Object != "response" {
+		t.Fatalf("object = %q, want response; body=%s", resp.Object, rec.Body.String())
+	}
+	if !strings.HasPrefix(resp.ID, "resp_") {
+		t.Fatalf("id = %q, want resp_ prefix", resp.ID)
+	}
+	if resp.Output == nil {
+		t.Fatalf("output must be a JSON array; body=%s", rec.Body.String())
 	}
 }
 
-// TestResponsesFallbackFailsClosedWithoutBilling 是 R-13 的验收：插件未命中时
-// 通用回退必须 fail-closed（501 problem+json），且在**任何计费/上游调用之前**
-// 拒绝。假上游在 /chat/completions 返回 chat 对象，若旧实现（尽力转发）回归，
-// 本用例会以 200 + 非零计费/上游调用失败。
+// TestResponsesFallbackFailsClosedWithoutBilling 是 R-13 + W18-C 错误口径的
+// 验收：插件未命中时通用回退必须 fail-closed（501），且在**任何计费/上游
+// 调用之前**拒绝。错误信封是 /v1 的 OpenAI 形状（R-W18-04：同一端点的成功
+// 与失败不能是两套协议），而不是 problem+json。
 func TestResponsesFallbackFailsClosedWithoutBilling(t *testing.T) {
 	for _, body := range []string{
 		`{"model":"gpt-test","input":"hello"}`,
@@ -250,22 +263,24 @@ func TestResponsesFallbackFailsClosedWithoutBilling(t *testing.T) {
 			if rec.Code != http.StatusNotImplemented {
 				t.Fatalf("status = %d, want 501 (fail-closed); body=%s", rec.Code, rec.Body.String())
 			}
-			if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
-				t.Fatalf("Content-Type = %q, want application/problem+json", ct)
+			if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+				t.Fatalf("Content-Type = %q, want application/json (/v1 信封)", ct)
 			}
-			var problem struct {
-				Type   string `json:"type"`
-				Title  string `json:"title"`
-				Status int    `json:"status"`
+			var envelope struct {
+				Error struct {
+					Message string `json:"message"`
+					Code    string `json:"code"`
+				} `json:"error"`
 			}
-			if err := json.Unmarshal(rec.Body.Bytes(), &problem); err != nil {
-				t.Fatalf("decode problem: %v; body=%s", err, rec.Body.String())
+			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+				t.Fatalf("decode error envelope: %v; body=%s", err, rec.Body.String())
 			}
-			if problem.Type != problemTypeEndpointNotSupported || problem.Status != http.StatusNotImplemented {
-				t.Fatalf("problem = %+v, want type=%s status=501", problem, problemTypeEndpointNotSupported)
+			if envelope.Error.Code != "endpoint_not_supported" {
+				t.Fatalf("code = %q, want endpoint_not_supported; body=%s",
+					envelope.Error.Code, rec.Body.String())
 			}
-			if !strings.Contains(problem.Title, "plugin task channel") {
-				t.Fatalf("title = %q, want it to point at plugin task channels", problem.Title)
+			if !strings.Contains(envelope.Error.Message, "protocols.openai_responses") {
+				t.Fatalf("message = %q, want it to point at the plugin protocol", envelope.Error.Message)
 			}
 			if rec.Header().Get("X-Request-ID") == "" {
 				t.Fatal("X-Request-ID must be set on the fail-closed response")

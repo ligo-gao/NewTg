@@ -213,18 +213,14 @@ func TestRegistryBraceParamShapeConflict(t *testing.T) {
 	}
 }
 
-// TestBuiltinRouteShapesCoverResponsesFamily 冻结 R-10 的维护契约（T2/T3）：
-// `/v1/responses` 族的三个内建形状都必须在保留集里，否则插件可以声明一条
-// 内建 ServeMux 会永远抢走的路由（注册成功但不可达）。
-//
-// 例外集只对「处理器先查 RouteIndex」的形状开放：T2 的创建与 T3 的产物检索
-// 都先 Match 插件索引；compact 是 fail-closed 的独立计费口径，不查索引，
-// 必须继续按内建保留拒绝（否则插件声明会被静默吞掉）。
+// TestBuiltinRouteShapesCoverResponsesFamily 冻结 R-10 的维护契约（T2/T3/W18-C）：
+// `/v1/responses` 族中**已提供**的两个内建形状必须在保留集里；本波明确不提供
+// 的 `GET /v1/responses`（WS）与 `POST /v1/responses/compact` 必须在
+// unprovidedRouteShapes 里（R-W18-12），既不能注册 handler，也不能被插件抢占。
 func TestBuiltinRouteShapesCoverResponsesFamily(t *testing.T) {
 	for _, shape := range []string{
 		"POST /v1/responses",
 		"GET /v1/responses/{}",
-		"POST /v1/responses/compact",
 	} {
 		if _, ok := builtinRouteShapes[shape]; !ok {
 			t.Fatalf("%s 必须登记在 builtinRouteShapes（R-10 维护契约）", shape)
@@ -235,8 +231,18 @@ func TestBuiltinRouteShapesCoverResponsesFamily(t *testing.T) {
 			t.Fatalf("%s 的处理器先查 RouteIndex，必须对插件开放", shape)
 		}
 	}
-	if _, ok := pluginDispatchedBuiltinShapes["POST /v1/responses/compact"]; ok {
-		t.Fatal("POST /v1/responses/compact 不查 RouteIndex，不得对插件开放")
+	// R-W18-12：本波不提供的形状既不进 builtinRouteShapes（没有 handler），
+	// 也不进例外集（插件永远不可达），但必须被 unprovidedRouteShapes 拒绝。
+	for _, shape := range []string{"GET /v1/responses", "POST /v1/responses/compact"} {
+		if _, ok := unprovidedRouteShapes[shape]; !ok {
+			t.Fatalf("%s 是本波不提供的形状，必须登记在 unprovidedRouteShapes", shape)
+		}
+		if _, ok := builtinRouteShapes[shape]; ok {
+			t.Fatalf("%s 没有 handler，不得登记为内建路由", shape)
+		}
+		if _, ok := pluginDispatchedBuiltinShapes[shape]; ok {
+			t.Fatalf("%s 不得对插件开放", shape)
+		}
 	}
 }
 
@@ -342,11 +348,13 @@ func TestRegistryRejectsBuiltinRouteConflict(t *testing.T) {
 		{"POST", "/v1/images/generations"},
 		{"POST", "/v1/engines/:model/embeddings"},
 		{"GET", "/v1/realtime"},
-		// T2 / R-10：Responses 族中**没有**插件优先分发面的形状。
+		// T2 / R-10 / R-W18-12：Responses 族中**没有**插件优先分发面或本波
+		// 明确不提供的形状。
 		// （`POST /v1/responses` 与 `GET /v1/responses/{id}` 例外：处理器先查
 		// RouteIndex，见 TestRegistryAllowsPluginDispatchedResponsesRoute 与
 		// TestBuiltinRouteShapesCoverResponsesFamily。）
 		{"POST", "/v1/responses/compact"},
+		{"GET", "/v1/responses"},
 		// T4 / R-10：Videos 与 Batches 是纯内建形状（处理器不查 RouteIndex）。
 		{"POST", "/v1/videos"},
 		{"GET", "/v1/videos/{video_id}"},

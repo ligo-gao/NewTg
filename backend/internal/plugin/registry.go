@@ -543,17 +543,18 @@ func compileOverride(key string, version ActiveVersion, timeout time.Duration) (
 // 却找不到任何错误。
 //
 // 维护契约（R-10）：任何任务在 /v1 面新增或删除内建路由（T2 的
-// `POST /v1/responses`、T3 的 `GET /v1/responses/{id}` 与 compact、T4 的
-// `/v1/videos`、`/v1/batches` 等），**必须**同步增删本集合；参数段统一写成
-// `{}`，由 routeShape 的同一套段归一化与插件路由比较。集合只是「内建形状
+// `POST /v1/responses`、T3 的 `GET /v1/responses/{id}`、T4 的 `/v1/videos`、
+// `/v1/batches` 等），**必须**同步增删本集合；参数段统一写成 `{}`，由
+// routeShape 的同一套段归一化与插件路由比较。集合只是「内建形状
 // 登记表」：是否拒绝插件声明还要看 pluginDispatchedBuiltinShapes（处理器
 // 是否先查 RouteIndex）与 builtinReservedRouteFamilies（通配族）。
+// 明确不提供的形状（`GET /v1/responses`、`POST /v1/responses/compact`）
+// 见 unprovidedRouteShapes，不进本集合。
 //
 // 当前条目与本仓库的注册点一一对应：
 //   - relay_endpoints.go：chat/completions、messages（W7/M1 的 Anthropic 原生入口，
 //     处理器不查 RouteIndex，故只进保留集）、models、responses（T2 的创建、
-//     T3 的 compact）、GET responses 回放（T3 的产物检索，处理器在
-//     handlers_tasks.go 注册）；
+//     GET /v1/responses 回放由 handlers_tasks.go 注册）；
 //   - handlers_tasks.go：tasks/{key} 及其产物族；
 //   - handlers_multimodal.go：images/embeddings/rerank/audio/engines/models 通配/realtime。
 var builtinRouteShapes = map[string]struct{}{
@@ -562,7 +563,6 @@ var builtinRouteShapes = map[string]struct{}{
 	"POST /v1/messages":                     {},
 	"POST /v1/responses":                    {},
 	"GET /v1/responses/{}":                  {},
-	"POST /v1/responses/compact":            {},
 	"POST /v1/tasks/{}":                     {},
 	"GET /v1/tasks/{}":                      {},
 	"GET /v1/tasks/{}/artifacts":            {},
@@ -593,15 +593,28 @@ var builtinRouteShapes = map[string]struct{}{
 //
 // 为什么需要这个例外：`POST /v1/responses` 与 `GET /v1/responses/{id}` 的内建
 // 处理器都先 Match 插件索引——命中即转任务插件（提交 / 查询），只有在未命中时
-// 才走内建分支（前者 501 fail-closed，后者任务产物回放）。这类内建路由对插件
+// 才走内建分支（前者 fail-closed，后者任务产物回放）。这类内建路由对插件
 // **可达**，不能按「ServeMux 更具体模式会吞掉」的理由拒绝，否则 P-01 冻结的
 // 插件分支永远注册不进来（整插件 route_conflict 失败）。
 // 其余内建形状仍按保留集拒绝：它们没有插件优先的分发面，放行只会造成
-// 静默不可达（`POST /v1/responses/compact` 即属此类：它是 fail-closed 的
-// 独立计费口径，不查插件索引）。
+// 静默不可达。
 var pluginDispatchedBuiltinShapes = map[string]struct{}{
 	"POST /v1/responses":   {},
 	"GET /v1/responses/{}": {},
+}
+
+// unprovidedRouteShapes 是本波**明确不提供**的端点形状（R-W18-12）。
+//
+// 为什么不为它们注册 handler：`GET /v1/responses`（WebSocket）与
+// `POST /v1/responses/compact` 在无状态集群/无独立计费口径下没有可交付语义。
+// 设计冻结口径是「不提供 → 404」，而不是 501 半死桩。这里同时禁止插件抢占：
+// 否则插件会得到一条「可注册、但语义未定义」的宿主端点，形成另一种半死桩。
+//
+// 它们不进 builtinRouteShapes：那张表对应真实注册的内建路由（R-10 维护契约），
+// 这两条没有 handler，只是保留形状。
+var unprovidedRouteShapes = map[string]struct{}{
+	"GET /v1/responses":          {},
+	"POST /v1/responses/compact": {},
 }
 
 // builtinReservedRouteFamilies 是内建 ServeMux 通配族的保留集合（R-11/R-12/R-14）。
@@ -644,6 +657,16 @@ func builtinReservedFamilyFor(path string) string {
 // registerRoutes 把插件路由加入全局索引（形状表 + 可匹配索引）；冲突时返回
 // 结构化错误。
 //
+// 路由来源有两类（R-W18-07）：
+//   - **协议派生**：`meta.protocols.openai_responses.supports` 含 create 时，
+//     宿主自动绑定 `POST /v1/responses`（relay-06 §3.8「接管宿主协议，不注册
+//     URL」）。插件**不需要**在 routes[] 里重复声明；
+//   - **插件自有 URL**：`meta.routes[]` 的 submit/query/dynamic 路由。
+//
+// 协议派生路由优先登记；routes[] 里与之同形状的声明被静默跳过（视为冗余
+// 重复，而不是冲突）：协议是宿主端点的权威声明面，把它们判成「同插件重复」
+// 只会让一份本可工作的 manifest 在升级后突然 compile_failed。
+//
 // 冲突判定 = 方法 + 归一化路径形状（relay-06 §2.2）：`:id`、`*id`、`{id}`
 // 形状相同，视为同一路由。先到先得（key 升序），后到插件整插件失败——
 // 路由歧义没有安全的运行时消解方式。冲突必须在**注册期**解决而不是让
@@ -653,21 +676,76 @@ func builtinReservedFamilyFor(path string) string {
 // 两个索引同批提交、同批回滚：routes 用于诊断/形状去重，routeIndex 供 HTTP
 // 面分发；漏回滚任意一个都会让「已判定失败」的插件仍然可达或仍显示占用。
 //
-// 三类内建保留（判定顺序：前缀 → 形状）：
+// 内建保留（判定顺序：协议→前缀→形状）：
+//   - 本波不提供的形状（R-W18-12）：拒绝，避免另一种半死桩；
 //   - 通配族（R-11/R-12/R-14）：族根及其下任意声明都不可达，一律拒绝；
 //   - ServeMux 独占形状（R-10）：插件永远收不到，拒绝；
 //   - 处理器先查 RouteIndex 的形状（P-01）：插件可达，只参与插件间去重。
 func registerRoutes(index map[string]string, routeIndex *RouteIndex, plugin *CompiledPlugin) Issues {
 	var issues Issues
-	seen := make(map[string]struct{}, len(plugin.Manifest().Routes))
-	for idx, route := range plugin.Manifest().Routes {
+	manifest := plugin.Manifest()
+	declared := protocolRoutes(manifest)
+	seen := make(map[string]struct{}, len(declared)+len(manifest.Routes))
+
+	// 协议派生路由的 field path 指向 protocols 声明，而不是 routes[] 的下标：
+	// 错误信息必须能让作者知道「是协议声明导致的问题」。
+	type routeEntry struct {
+		route Route
+		path  string
+	}
+	entries := make([]routeEntry, 0, len(declared)+len(manifest.Routes))
+	for _, route := range declared {
+		entries = append(entries, routeEntry{route: route,
+			path: "meta.protocols." + route.Protocol + ".supports"})
+	}
+	protocolShapes := make(map[string]struct{}, len(declared))
+	for _, route := range declared {
+		protocolShapes[routeShape(route)] = struct{}{}
+	}
+	for idx, route := range manifest.Routes {
 		shape := routeShape(route)
+		// M1（W18-C 复核）：声明了 protocols.openai_responses 的插件，routes[]
+		// 不得绕过 supports 的能力收窄。宿主端点形状只有在 supports 明确包含
+		// 对应操作时才允许出现；否则整插件 compile_failed。
+		//
+		// 没有协议声明的历史插件保持原 routes[] 语义（向后兼容）：它没有能力
+		// 声明可以被「覆盖」，由 HTTP 面按路径统一渲染 Responses 形状。
+		if manifest.Responses != nil {
+			if operation := responsesHostOperation(shape); operation != "" {
+				if !manifestSupportsResponsesOperation(manifest, operation) {
+					issues = append(issues, issuef(plugin.Key, routeFieldPath(idx), "", "protocol_capability_mismatch",
+						"routes[] 声明 %s 需要 protocols.openai_responses.supports 含 %q", shape, operation))
+					continue
+				}
+				// create 已由协议派生路由接管：routes[] 的重复声明视为冗余。
+				if operation == ResponsesOpCreate {
+					continue
+				}
+				// retrieve 的宿主端点没有派生路由（见 protocolRoutes 注释），
+				// 插件显式 query 路由在这里保留；它已被上面的 supports 校验收窄。
+			}
+		}
+		// 协议已接管的宿主端点：routes[] 里的重复声明不报错（见函数注释）。
+		if _, ok := protocolShapes[shape]; ok {
+			continue
+		}
+		entries = append(entries, routeEntry{route: route, path: routeFieldPath(idx)})
+	}
+
+	for _, entry := range entries {
+		route := entry.route
+		shape := routeShape(route)
+		if _, unprovided := unprovidedRouteShapes[shape]; unprovided {
+			issues = append(issues, issuef(plugin.Key, entry.path, "", "route_conflict",
+				"路由 %s 本波不提供（返回 404；不得声明）", shape))
+			continue
+		}
 		// R-11/R-12/R-14：内建通配族按「族根 + 其下任意深度」保留（任意方法）。
 		// 必须在形状比较之前判定——精确声明 `/v1/models/gpt-4o` 的形状并不等于
 		// `/v1/models/{}`，只靠 map 比较会放行一条永远不可达的路由；族根
 		// `/v1/models` 还会被 ServeMux 307 到 `/v1/models/` 交给多模态处理器。
 		if family := builtinReservedFamilyFor(route.Path); family != "" {
-			issues = append(issues, issuef(plugin.Key, routeFieldPath(idx), "", "route_conflict",
+			issues = append(issues, issuef(plugin.Key, entry.path, "", "route_conflict",
 				"路由 %s 落在内建保留族 %s 下（内建模式优先，插件路由将不可达）", shape, family))
 			continue
 		}
@@ -675,18 +753,18 @@ func registerRoutes(index map[string]string, routeIndex *RouteIndex, plugin *Com
 			// P-01 例外：处理器先查 RouteIndex 的内建形状对插件可达（见
 			// pluginDispatchedBuiltinShapes），不得按「不可达」拒绝。
 			if _, dispatched := pluginDispatchedBuiltinShapes[shape]; !dispatched {
-				issues = append(issues, issuef(plugin.Key, routeFieldPath(idx), "", "route_conflict",
+				issues = append(issues, issuef(plugin.Key, entry.path, "", "route_conflict",
 					"路由 %s 与内建路由冲突（内建模式优先，插件路由将不可达）", shape))
 				continue
 			}
 		}
 		if owner, dup := index[shape]; dup {
-			issues = append(issues, issuef(plugin.Key, routeFieldPath(idx), "", "route_conflict",
+			issues = append(issues, issuef(plugin.Key, entry.path, "", "route_conflict",
 				"路由 %s 已被插件 %q 注册", shape, owner))
 			continue
 		}
 		if _, dup := seen[shape]; dup {
-			issues = append(issues, issuef(plugin.Key, routeFieldPath(idx), "", "route_conflict",
+			issues = append(issues, issuef(plugin.Key, entry.path, "", "route_conflict",
 				"同插件内路由 %s 重复", shape))
 			continue
 		}
@@ -706,6 +784,51 @@ func registerRoutes(index map[string]string, routeIndex *RouteIndex, plugin *Com
 		return issues
 	}
 	return nil
+}
+
+// responsesHostOperation 返回宿主 Responses 形状对应的协议操作。
+//
+// 只认规范化形状（参数段已统一为 `{}`），与 RouteIndex/routeShape 同一口径。
+func responsesHostOperation(shape string) string {
+	switch shape {
+	case "POST /v1/responses":
+		return ResponsesOpCreate
+	case "GET /v1/responses/{}":
+		return ResponsesOpRetrieve
+	}
+	return ""
+}
+
+// manifestSupportsResponsesOperation 判定 manifest 是否显式声明了某个
+// Responses 操作。routes[] 的宿主端点声明必须通过这一闸门（M1）。
+func manifestSupportsResponsesOperation(m *Manifest, operation string) bool {
+	return m != nil && m.Responses != nil && m.Responses.SupportsOperation(operation)
+}
+
+// protocolRoutes 把 meta.protocols 翻译成宿主端点绑定（R-W18-07）。
+//
+// 当前只有 openai_responses 的 create 需要派生路由：
+//   - create  → POST /v1/responses（本文件的调度分支会执行 decodeRequest 与
+//     renderFinal/renderEvents，返回 Responses 对象而不是 task 202）；
+//   - retrieve → GET /v1/responses/{id}。它由 handlers 的 supports 判定直接
+//     收窄，不写进 RouteIndex：内建回放处理器本来就服务「任一声明协议且
+//     产物可检索」的插件任务，若再为每个 retrieve 插件登记同形状路由，
+//     第二个插件会因路由冲突整插件失败——这是注册期冲突语义不该外溢到
+//     协议声明面的场景。
+func protocolRoutes(m *Manifest) []Route {
+	if m == nil || m.Responses == nil {
+		return nil
+	}
+	var routes []Route
+	if m.Responses.SupportsOperation(ResponsesOpCreate) {
+		routes = append(routes, Route{
+			Method:   "POST",
+			Path:     "/v1/responses",
+			Kind:     RouteKindResponses,
+			Protocol: "openai_responses",
+		})
+	}
+	return routes
 }
 
 // routeShape 归一化「方法 + 路径形状」。

@@ -43,8 +43,8 @@ import (
 //
 //	POST /v1/chat/completions   非流式走 relay.Route；流式走 ExecuteAttempts + SSE 桥接
 //	GET  /v1/models             启用渠道 supported_models 去重并集
-//	POST /v1/responses          插件原生路由优先，未命中返回 501（T2 / P-01 / R-13）
-//	POST /v1/responses/compact  fail-closed 501（T3 / P-03：中继无法表达压缩语义）
+//	POST /v1/responses          插件协议/原生路由优先，未命中返回 501（T2 / P-01 / R-W18-07）
+//	POST /v1/responses/compact  本波不提供（R-W18-12）：不注册 → 404
 //	POST /v1/messages           Anthropic 原生入口（W7/M1）：Anthropic 上游逐字节
 //	                            透传；OpenAI/Gemini 上游经 IR → Anthropic 编码
 //	                            （W18-B · R-W18-03）；三类之外的上游 501
@@ -402,10 +402,9 @@ func (h *RelayHandler) Register(mux *http.ServeMux) {
 	// 精确模式注册（不是 /v1/ 子树），与 T1 的兜底不重叠：ServeMux 让精确模式
 	// 胜出，兜底只接收没有其它路由认领的 /v1 请求。
 	mux.Handle("POST /v1/responses", authMiddleware(http.HandlerFunc(h.handleResponses)))
-	// T3 / P-03：Responses 压缩端点。独立计费口径、不产生任务行；中继的 IR
-	// 没有压缩语义（见 handleResponsesCompact 的 why），因此 fail-closed 501。
-	// 精确模式：不会与 GET /v1/responses/{id}（handlers_tasks.go 注册）冲突。
-	mux.Handle("POST /v1/responses/compact", authMiddleware(http.HandlerFunc(h.handleResponsesCompact)))
+	// R-W18-12：`POST /v1/responses/compact` 本波不提供，**刻意不注册**。
+	// 不注册的路径会落到 /v1 兜底并返回 404；保留 501 半死桩会让客户端误以为
+	// 「改天就能用」，也违反设计「不提供 = 404」的诚实失败口径。
 	// W7/M1：Anthropic Messages 原生入口。与 chat 共用同一个 RelayAuth 中间件
 	// 与同一个计费接缝（h.billing）；鉴权载体 x-api-key 的归一化已在
 	// relay_auth.go / relay.credentialFromRequest 中按路径固化。
@@ -462,6 +461,15 @@ func (h *RelayHandler) nativeRouteFallback(authMiddleware func(http.Handler) htt
 				return
 			}
 		}
+		// R-W18-12：明确不提供的 Responses 形状必须 404，而不是被下面的
+		// 405 探测变成「方法不允许」。GET /v1/responses（WebSocket）与
+		// POST /v1/responses/compact 在本波没有 handler，路径存在（POST
+		// /v1/responses 已注册）会让探测返回 405——那会把「没提供」误报成
+		// 「换个方法就行」，因此在这里先收敛为 404。
+		if responsesEndpointUnprovided(r.Method, r.URL.Path) {
+			writeRelayError(w, http.StatusNotFound, requestID, "invalid_request_error", "unknown endpoint")
+			return
+		}
 		// R-W18-04：405/404 也属于端点响应，必须按路径选择信封——
 		// GET /v1/messages、POST /v1/messages/unknown 属于 Claude 面。
 		writeErr := writeRelayErrorForRequest(r)
@@ -473,6 +481,30 @@ func (h *RelayHandler) nativeRouteFallback(authMiddleware func(http.Handler) htt
 		}
 		writeErr(w, http.StatusNotFound, requestID, "invalid_request_error", "unknown endpoint")
 	})
+}
+
+// responsesEndpointUnprovided 判定是否为 R-W18-12 明确不提供的端点。
+//
+//   - `GET /v1/responses`：WebSocket 升级，本波不做（无状态集群下需要连接
+//     粘滞与排空语义），不注册路由 → 404；
+//   - `POST /v1/responses/compact`：独立计费口径的压缩端点，本波不做 →
+//     不注册路由 → 404（501 半死桩已删除）。
+//
+// 只有 GET /v1/responses 收敛为 404：其它方法（PUT/DELETE…）走既有 405
+// 探测（POST /v1/responses 已注册，Allow 必须如实列出 POST）。compact 的
+// 路径不存在，任何方法都应 404。
+//
+// 只匹配精确路径（尾斜杠归一）；`/v1/responses/{id}` 属于已提供的检索面，
+// 不得被这条规则误伤。
+func responsesEndpointUnprovided(method, path string) bool {
+	normalized := strings.TrimSuffix(path, "/")
+	switch normalized {
+	case "/v1/responses/compact":
+		return true
+	case "/v1/responses":
+		return strings.EqualFold(method, http.MethodGet)
+	}
+	return false
 }
 
 // nativeProbeMethods 是方法不匹配探测的候选集合。
@@ -835,12 +867,14 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 
 // ---------- POST /v1/responses ----------
 
-// handleResponses 是 OpenAI Responses 创建端点（T2 / P-01 / R-13）。
+// handleResponses 是 OpenAI Responses 创建端点（T2 / P-01 / R-W18-07）。
 //
 // 分发语义（冻结）：
-//  1. 插件原生路由优先：命中 manifest routes[]（方法 + 路径精确匹配）即转
-//     任务插件提交（复用 handleSubmit：渠道选择 → 预扣 → 提交 → 落库）；
-//  2. 未命中一律 fail-closed（501 problem+json）：通用中继**不**承接 Responses。
+//  1. 插件绑定优先：命中 protocols.openai_responses.supports=create 派生
+//     的路由，或 manifest routes[]（方法 + 路径精确匹配）即转任务插件提交；
+//     创建出口按 Responses 对象/SSE 渲染（handlers_responses.go）；
+//  2. 未命中一律 fail-closed（501，OpenAI 错误信封）：通用中继**不**承接
+//     Responses。
 //
 // 为什么插件命中后必须 return：任务提交路径已在 handleSubmit 内部完成一次
 // PreConsume。若继续进入通用管线，同一请求会产生第二次预扣（两个计费会话、
@@ -853,6 +887,10 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 // 输入无关的 usage 被结算——「静默给错答案」比明确报错更糟，且会产生真实
 // 扣费。因此这里在**任何计费/上游调用之前**拒绝，零副作用。
 //
+// 错误形状（W18-C 裁决）：create/retrieve 的错误统一用 /v1 的 OpenAI 信封
+// （writeRelayError），不再使用 problem+json——同一端点的成功与失败不能是
+// 两套协议。501 仍是「端点形态不支持」的状态码，只是信封换了。
+//
 // 鉴权已由 Register 的 RelayAuth 中间件完成（与 /v1/chat/completions、
 // /v1/tasks 同一条链）：未认证请求先得到 401，不会看到本分支的 501。
 func (h *RelayHandler) handleResponses(w http.ResponseWriter, r *http.Request) {
@@ -860,6 +898,8 @@ func (h *RelayHandler) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	// R-03：复用 T1 的只读路由索引，不另建匹配逻辑。每次请求都取当前快照，
 	// 让已停用的插件路由立即失效；索引未命中才进入 fail-closed 分支。
+	// 协议派生绑定已由 plugin.registerRoutes 写进同一索引（R-W18-07），
+	// 因此这里不需要再读 manifest.protocols。
 	if h.nativeRoutes != nil {
 		if match, ok := h.nativeRoutes.NativeRoutes().Match(r.Method, r.URL.Path); ok {
 			h.nativeRoutes.DispatchNativeRoute(w, r, match)
@@ -867,51 +907,14 @@ func (h *RelayHandler) handleResponses(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// R-13：Responses 的通用回退已撤销（见上方 why 注释）。请求体刻意不读：
-	// 不做任何解析/校验/计费，直接给出可操作的错误。
-	//
-	// 形状选择：这里用 RFC 7807 problem+json（与 /api 面同一套 writeProblemDetail，
-	// 类型沿用 https://newtg.dev/problems/ 命名空间），而不是 /v1 常规的 OpenAI
-	// 信封——R-13 明确要求 problem+json 且不得另起第二套类型命名。该项是对
-	// relay-01 §3.6「/v1 永远 application/json」的有意例外，登记在修复报告中。
-	if requestID != "" {
-		w.Header().Set("X-Request-ID", requestID)
-	}
-	writeProblemDetail(w, http.StatusNotImplemented, problemTypeEndpointNotSupported,
-		"Responses endpoint requires a plugin task channel",
-		"the generic relay cannot execute /v1/responses; declare the route in an installed task plugin's routes[]")
+	// R-13：Responses 的通用回退已撤销。请求体刻意不读：不做任何解析/校验/
+	// 计费，直接给出可操作的错误。
+	writeRelayError(w, http.StatusNotImplemented, requestID, "endpoint_not_supported",
+		"the generic relay cannot execute /v1/responses; declare protocols.openai_responses in an installed task plugin")
 }
 
-// handleResponsesCompact 是 OpenAI Responses 压缩端点（T3 / P-03）。
-//
-// 冻结语义：compact 有**独立计费口径**（G7-R51：用量形态与普通 Responses 不同，
-// 复用会错价）、**不产生任务行**，且输出是一个压缩后的 Responses 对象。
-//
-// 为什么 fail-closed 501（与 R-13 同口径）：通用中继的 IR/适配器只有 chat 与
-// （T2b 之后的）Responses 创建两种形态，没有「压缩请求 → 压缩结果」这条语义。
-// 任何看似可用的替代都会给出错误答案：
-//   - 转成 chat 形态 → 客户端拿到 chat.completion，语义与压缩结果无关，却按
-//     真实 usage 结算（「不得返回 chat 形态」是 P-03 的明文禁令）；
-//   - 原样转发到上游 /v1/responses/compact → 中继没有该请求的归一化与计费
-//     口径，等于绕过定价。
-//
-// 因此本分支在**任何计费/上游调用之前**拒绝：请求体刻意不读，零副作用
-// （与 handleResponses 的 fail-closed 分支同一理由，见其 why 注释）。
-//
-// 登记：compact 的真实实现（独立计费表达式 + 上游压缩转发）不在本任务范围，
-// 已在 T3 报告中登记为后续项。
-func (h *RelayHandler) handleResponsesCompact(w http.ResponseWriter, r *http.Request) {
-	requestID := newRelayRequestID()
-	if requestID != "" {
-		w.Header().Set("X-Request-ID", requestID)
-	}
-	writeProblemDetail(w, http.StatusNotImplemented, problemTypeEndpointNotSupported,
-		"Responses compaction is not supported by the generic relay",
-		"the generic relay cannot express Responses compaction; this endpoint performs no billing and no upstream call")
-}
-
-// problemTypeEndpointNotSupported 是 R-13 冻结的 problem type URI（P-03 的
-// compact fail-closed 复用同一个类型：两者都是「中继无法表达该端点形态」）。
+// problemTypeEndpointNotSupported 是「中继无法表达该端点形态」的 problem
+// type URI（目前仅 /v1/messages 的异构上游方向门禁使用）。
 //
 // 沿用仓库既有的 `https://newtg.dev/problems/` 命名空间（与
 // handlers_public_pricing.go 的 not-implemented 同源），不另造第二套命名；

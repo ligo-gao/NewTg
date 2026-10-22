@@ -116,8 +116,9 @@ responses:
   # /v1/messages 族（含 count_tokens）是 Anthropic 原生协议面：Claude 客户端按
   # `{"type":"error","error":{"type","message"}}` 解析错误。普通 400/401/402/
   # 403/404/413/429/5xx 一律使用这些组件，**不得**复用上面的 problem+json
-  # Error400/401/... —— 后者只属于管理面与「端点形态不支持」的 501
-  # （Error501 仍是 problem+json 的唯一中继例外）。
+  # Error400/401/...；problem+json 仅保留给「端点形态不支持」的 501（如
+  # /v1/messages 方向不支持、count_tokens 方向不支持），而 /v1/responses 的
+  # 501 是 RelayError501（OpenAI 信封）。
   #
   # 每个响应都带 X-Request-ID；message 末尾也追加 `(requestId: <id>)`。
   # ---------------------------------------------------------------------------
@@ -228,3 +229,39 @@ responses:
       application/json:
         schema:
           $ref: '../schemas/relay.yaml#/schemas/ClaudeError'
+  # —— W18-C（Responses 原生协议面）——
+  #
+  # 真源是 backend/internal/tasks/responses.go 的 BuildResponsesObject。
+  # relay paths 不得内联协议 schema（layout 规则 §9.3），所以成功/错误形状
+  # 统一登记在这里，路径侧只放 $ref。
+  ResponsesCreateOK:
+    description: |
+      Responses 对象（非流式）或 SSE 事件流（`stream: true`）。
+      SSE 最小事件集：response.created / response.output_text.delta /
+      response.completed / response.failed；created 恒为首帧、终止事件恒为末帧，
+      终止事件携带 response.usage。任务非终态时以 response.in_progress 收尾。
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/ResponsesObject'
+      text/event-stream:
+        schema:
+          type: string
+        description: |
+          每帧 `event: <type>` + `data: <json>`。未知事件类型按 raw 透传。
+  ResponsesGetOK:
+    description: |
+      Responses 对象。非终态 status=queued/in_progress/incomplete 且 output=[]；
+      终态含产物投影 output[] 与 usage。身份字段与 create 使用同一套投影。
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/ResponsesObject'
+  RelayError501:
+    description: |
+      /v1 中继面 501（端点形态不支持）。错误体是 OpenAI 兼容信封
+      （`{error:{message,type,code}}`），不是 RFC 7807 problem+json。
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/RelayError'
