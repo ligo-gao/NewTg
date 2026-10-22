@@ -7,6 +7,11 @@
 // 为什么内置插件必须编入二进制：内置插件是构建期产物，启动时加载失败属于
 // 不可恢复错误（relay-06 §2.1 要求「失败即 panic」，由调用方使用
 // plugin.MustNewManager 实现）。从磁盘读内置插件会让部署缺失目录时静默降级。
+//
+// 目录分两层：
+//   - tasks/<key>/plugin.js：可直接注册的工厂源；
+//   - tasks/pending/<key>/plugin.js：等待厂商 API 契约的占位源。它们参与
+//     compile/validate 测试，但不进入工厂注册表，也不应出现在渠道绑定选项。
 package plugins
 
 import (
@@ -21,15 +26,28 @@ import (
 //go:embed tasks/*/plugin.js
 var taskPluginFS embed.FS
 
+//go:embed tasks/pending/*/plugin.js
+var pendingTaskPluginFS embed.FS
+
 // TaskPluginSources 返回 `tasks/<key>/plugin.js` 的源文本表（key → source）。
 //
 // key 取目录名（不是 manifest 内的 key）：运行时会强制二者一致（不一致
 // 视为构建期错误），这样目录布局就是 plugin key 的唯一事实源，避免
 // 「文件名一个 key、meta 里另一个 key」的静默歧义。
 func TaskPluginSources() (map[string]string, error) {
-	entries, err := fs.ReadDir(taskPluginFS, "tasks")
+	return readSources(taskPluginFS, "tasks")
+}
+
+// PendingTaskPluginSources 返回等待厂商契约的占位源（key → source）。
+// 它们只供 compile/validate 测试与内容任务追踪，不进入运行时注册表。
+func PendingTaskPluginSources() (map[string]string, error) {
+	return readSources(pendingTaskPluginFS, "tasks/pending")
+}
+
+func readSources(fsys fs.FS, dir string) (map[string]string, error) {
+	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {
-		return nil, fmt.Errorf("plugins: 读取内置任务插件目录: %w", err)
+		return nil, fmt.Errorf("plugins: 读取内置任务插件目录 %s: %w", dir, err)
 	}
 	out := make(map[string]string, len(entries))
 	for _, entry := range entries {
@@ -37,8 +55,8 @@ func TaskPluginSources() (map[string]string, error) {
 			continue
 		}
 		name := entry.Name()
-		file := path.Join("tasks", name, "plugin.js")
-		source, err := taskPluginFS.ReadFile(file)
+		file := path.Join(dir, name, "plugin.js")
+		source, err := fs.ReadFile(fsys, file)
 		if err != nil {
 			return nil, fmt.Errorf("plugins: 读取内置插件 %q: %w", name, err)
 		}
@@ -63,3 +81,17 @@ func TaskPluginKeys() ([]string, error) {
 
 // SourceKey 从目录名推导 key；保留为函数以便未来支持嵌套目录时只改一处。
 func SourceKey(dir string) string { return strings.TrimSpace(dir) }
+
+// PendingTaskPluginKeys 返回 pending 目录的 key 升序列表（诊断与测试用）。
+func PendingTaskPluginKeys() ([]string, error) {
+	sources, err := PendingTaskPluginSources()
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(sources))
+	for key := range sources {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys, nil
+}

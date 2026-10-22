@@ -662,19 +662,28 @@ func TestTaskPluginOptionsPermissionAndContent(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode options: %v", err)
 	}
-	// 只列注册表中有可执行层的 key：sample（factory）与 uploaded-x（active 上传），
-	// bad-plugin 编译失败 → not_registered/compile_failed，不出现。
-	if resp.Total != 2 || len(resp.Items) != 2 {
-		t.Fatalf("options = %+v，期望 2 项", resp)
+	// 只列工厂源中可执行的 key：sample、sora（契约完整的唯一内置实现）
+	// 与 uploaded-x（active 上传）；9 个 pending 占位源不在工厂注册表，
+	// 也不应出现在渠道绑定选项里。
+	if resp.Total != len(resp.Items) {
+		t.Fatalf("total 与 items 不一致: %+v", resp)
 	}
-	if resp.Items[0].Key != "sample" || resp.Items[1].Key != "uploaded-x" {
+	if len(resp.Items) != 3 {
+		t.Fatalf("options = %+v，期望 3 项（sample/sora/uploaded-x）", resp)
+	}
+	if resp.Items[0].Key != "sample" || resp.Items[1].Key != "sora" || resp.Items[2].Key != "uploaded-x" {
 		t.Fatalf("未按 key 升序：%+v", resp.Items)
 	}
-	if resp.Items[0].ChannelCount != 3 || resp.Items[1].ChannelCount != 1 {
+	if resp.Items[0].ChannelCount != 3 || resp.Items[1].ChannelCount != 0 || resp.Items[2].ChannelCount != 1 {
 		t.Fatalf("channel_count 不符：%+v", resp.Items)
 	}
-	if resp.Items[0].Name == "" {
-		t.Fatal("选项缺少 name")
+	for _, item := range resp.Items {
+		if item.Name == "" {
+			t.Fatalf("选项 %s 缺少 name", item.Key)
+		}
+		if item.Key == "kling" || item.Key == "alibaba" {
+			t.Fatalf("pending 占位源不应出现在绑定选项: %s", item.Key)
+		}
 	}
 }
 

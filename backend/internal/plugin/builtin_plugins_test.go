@@ -152,6 +152,35 @@ func perTaskHooks() []string {
 	return []string{"buildSubmitRequest", "parseSubmitResponse", "buildQueryRequest", "parseTaskResult"}
 }
 
+// builtinSourceMaps 读取工厂源与 pending 源。分区是产品语义：
+// active 会进入运行时注册表并出现在渠道绑定选项；pending 只用于校验与
+// 内容任务追踪，不能被执行或绑定。
+func builtinSourceMaps(t *testing.T) (active, pending map[string]string) {
+	t.Helper()
+	active, err := plugins.TaskPluginSources()
+	if err != nil {
+		t.Fatalf("读取工厂插件源: %v", err)
+	}
+	pending, err = plugins.PendingTaskPluginSources()
+	if err != nil {
+		t.Fatalf("读取 pending 插件源: %v", err)
+	}
+	return active, pending
+}
+
+func allBuiltinSources(t *testing.T) map[string]string {
+	t.Helper()
+	active, pending := builtinSourceMaps(t)
+	all := make(map[string]string, len(active)+len(pending))
+	for key, source := range active {
+		all[key] = source
+	}
+	for key, source := range pending {
+		all[key] = source
+	}
+	return all
+}
+
 // TestBuiltinTaskPluginsExistAndCompile 覆盖 AC-F-01 的前半：
 // 10 个 key 的源存在，manifest 字段/渠道类型/用量单位符合设计，且能通过
 // Compile（含 T1–T10 / D1–D7）——不因缺厂商契约而跳过加载期校验。
@@ -159,9 +188,13 @@ func TestBuiltinTaskPluginsExistAndCompile(t *testing.T) {
 	if len(builtinPluginSpecs) != 10 {
 		t.Fatalf("内置插件期望 10 个 key，实际 %d", len(builtinPluginSpecs))
 	}
-	sources, err := plugins.TaskPluginSources()
-	if err != nil {
-		t.Fatalf("读取内置插件源: %v", err)
+	sources := allBuiltinSources(t)
+	active, pending := builtinSourceMaps(t)
+	if !slices.Equal(sortedKeys(active), []string{"sample", "sora"}) {
+		t.Fatalf("工厂源应仅为 sample+sora，实际 %v", sortedKeys(active))
+	}
+	if len(pending) != 9 {
+		t.Fatalf("pending 源应为 9 个占位插件，实际 %d: %v", len(pending), sortedKeys(pending))
 	}
 	for _, spec := range builtinPluginSpecs {
 		spec := spec
@@ -220,10 +253,7 @@ func TestBuiltinTaskPluginsExistAndCompile(t *testing.T) {
 //   - 不包含任何伪装的出站 URL（example.invalid / http(s)://）；
 //   - 每个生命周期钩子都显式抛 unsupported，而不是返回空描述符或假响应。
 func TestBuiltinPluginImplementationStatusIsHonest(t *testing.T) {
-	sources, err := plugins.TaskPluginSources()
-	if err != nil {
-		t.Fatalf("读取内置插件源: %v", err)
-	}
+	sources := allBuiltinSources(t)
 	registered := 0
 	for _, spec := range builtinPluginSpecs {
 		spec := spec
@@ -282,11 +312,8 @@ func TestBuiltinPluginImplementationStatusIsHonest(t *testing.T) {
 // 只有 builtinStatus=registered 的 key 在 Manager 快照中可执行；占位源即使
 // 因可编译而获得 registered 徽章，也必须继续自述 not_registered 且钩子不可用。
 func TestBuiltinRegisteredKeysAreRunnable(t *testing.T) {
-	sources, err := plugins.TaskPluginSources()
-	if err != nil {
-		t.Fatalf("读取内置插件源: %v", err)
-	}
-	manager := MustNewManager(sources, nil, Options{MasterEnabled: true})
+	active, pending := builtinSourceMaps(t)
+	manager := MustNewManager(active, nil, Options{MasterEnabled: true})
 	if err := manager.Reload(context.Background()); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
@@ -298,19 +325,13 @@ func TestBuiltinRegisteredKeysAreRunnable(t *testing.T) {
 			}
 			continue
 		}
-		// 占位源是合法 JavaScript，注册表会给出 registered；该徽章只证明
-		// “源可编译并已装”，不证明厂商契约已实现。这里以 builtinStatus +
-		// 钩子失败证明它没有被当作真实实现。
-		if entry.Plugin == nil {
-			t.Fatalf("%s 占位源也应可编译（否则内置加载失败）: %+v", spec.key, entry)
+		// 占位源留在 pending，不进入工厂注册表，因此也不应出现在
+		// /api/task_plugin_options 的渠道绑定选项里。
+		if _, ok := pending[spec.key]; !ok {
+			t.Fatalf("%s 应在 pending 源中", spec.key)
 		}
-		raw, err := entry.Plugin.Call(context.Background(), "builtinStatus")
-		if err != nil {
-			t.Fatalf("%s builtinStatus: %v", spec.key, err)
-		}
-		status, _ := raw.(map[string]any)
-		if builtinString(status["status"]) != string(StatusNotRegistered) {
-			t.Fatalf("%s 占位源自述状态必须为 not_registered: %v", spec.key, status)
+		if entry.Plugin != nil || entry.Status == StatusRegistered {
+			t.Fatalf("%s 是占位源，不得进入工厂注册表: %+v", spec.key, entry)
 		}
 	}
 }
@@ -319,11 +340,8 @@ func TestBuiltinRegisteredKeysAreRunnable(t *testing.T) {
 // 变换行为：URL 由渠道 baseUrl 派生（不硬编码厂商域名），请求/响应/状态/
 // 产物/用量均落在 relay-06 §3.8 冻结的 OpenAI Videos 形状内。
 func TestBuiltinSoraHooksUseFrozenOpenAIVideosContract(t *testing.T) {
-	sources, err := plugins.TaskPluginSources()
-	if err != nil {
-		t.Fatalf("读取内置插件源: %v", err)
-	}
-	compiled := mustCompile(t, sources["sora"], CompileOptions{ExpectedKey: "sora", Layer: LayerFactory})
+	active, _ := builtinSourceMaps(t)
+	compiled := mustCompile(t, active["sora"], CompileOptions{ExpectedKey: "sora", Layer: LayerFactory})
 	if _, ok := compiled.Manifest().Protocols["openai_video"]; !ok {
 		t.Fatal("sora 必须声明 openai_video，/v1/videos 才会把请求交给它（R-15）")
 	}
