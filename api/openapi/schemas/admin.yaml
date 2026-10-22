@@ -2019,6 +2019,20 @@ schemas:
         type: string
         description: 插件单文件源码；服务端计算 sha256 并编译校验。
 
+  ImportTaskPluginRequest:
+    type: object
+    additionalProperties: false
+    required: [url]
+    properties:
+      url:
+        type: string
+        format: uri
+        description: 插件源 URL；仅接受绝对 https，禁止 userinfo/私网字面量。
+      sha256:
+        type: string
+        pattern: '^[0-9a-f]{64}$'
+        description: 可选的包体 sha256（64 位小写十六进制）；提供时下载后先比对，不符零写入。
+
   UploadTaskPluginResponse:
     type: object
     additionalProperties: false

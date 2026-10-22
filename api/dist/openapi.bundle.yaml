@@ -7478,6 +7478,63 @@ paths:
           $ref: '#/components/responses/Error422'
         '500':
           $ref: '#/components/responses/Error500'
+  /api/plugin/task:import:
+    post:
+      tags:
+        - admin
+      operationId: importTaskPlugin
+      x-required-permission: settings:manage
+      summary: 从 https URL 导入插件源（默认不激活）
+      description: |
+        body `{url, sha256?}`。仅接受绝对 https URL；出站走 `sec.ssrf.*`
+        统一守卫（S2），**不跟随重定向**，包体上限沿用
+        `plugin.upload.max_bytes`（默认 2 MiB）。提供 `sha256` 时先比对再
+        入库，不符返回 422 `plugin_hash_mismatch` 且零写入（S3）。
+
+        入库与上传共用同一编译/校验关口（S1）：失败 422
+        `plugin_compile_failed`；成功 201（同 (key,version) 同 hash 幂等
+        200），`source=upload`、`active=false`。必须携带 Idempotency-Key。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportTaskPluginRequest'
+      responses:
+        '200':
+          description: 幂等命中已有版本（不激活）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadTaskPluginResponse'
+        '201':
+          description: 新版本已入库（不自动激活）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadTaskPluginResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '502':
+          $ref: '#/components/responses/Error502'
   /api/plugin/task/runtime/status:
     get:
       tags:
@@ -18904,6 +18961,20 @@ components:
           $ref: '#/components/schemas/TaskPlugin'
         version:
           $ref: '#/components/schemas/TaskPluginVersion'
+    ImportTaskPluginRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - url
+      properties:
+        url:
+          type: string
+          format: uri
+          description: 插件源 URL；仅接受绝对 https，禁止 userinfo/私网字面量。
+        sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          description: 可选的包体 sha256（64 位小写十六进制）；提供时下载后先比对，不符零写入。
     PluginRuntimePlugin:
       type: object
       additionalProperties: false

@@ -52,8 +52,8 @@ describe('upload tab (F-08-30)', () => {
     expect(await screen.findByText('The file exceeds the 2 MiB limit.')).toBeTruthy()
 
     expect(requests).toBe(0)
-    // URL 导入端点未实现：界面不渲染该入口。
-    expect(screen.queryByText(/from URL|From URL|Import from URL/i)).toBeNull()
+    // F-08-30：URL 导入入口必须渲染（与文件上传共用同一编译/入库关口）。
+    expect(screen.getByTestId('plugin-import-from-url')).toBeTruthy()
   })
 
   it('shows a copyable compile-error panel and never offers a bypass', async () => {
@@ -159,5 +159,81 @@ describe('upload tab (F-08-30)', () => {
     fireEvent.keyDown(dropzone, { key: 'Enter' })
     await waitFor(() => expect(click).toHaveBeenCalledTimes(1))
     click.mockRestore()
+  })
+
+  it('imports from URL with an optional sha256 and keeps the preview', async () => {
+    let body: unknown = null
+    let idempotencyKey: string | null = null
+    server.use(
+      http.post(`${ORIGIN}/api/plugin/task:import`, async ({ request }) => {
+        body = await request.json()
+        idempotencyKey = request.headers.get('Idempotency-Key')
+        return HttpResponse.json(
+          {
+            created: true,
+            plugin: {
+              key: 'mj', name: 'MJ', icon: null, source: 'upload', builtin: false,
+              enabled: true, active_version: null, description: null,
+              runtime_status: 'registered', bound_channels: 0, updated_at: UPDATED_AT,
+            },
+            version: {
+              id: 'v1', key: 'mj', version: '0.9.1', api_version: 'v1',
+              source_hash: 'b'.repeat(64), icon: null, enabled: true, active: false,
+              uploaded_by: 1, created_at: UPDATED_AT,
+            },
+          },
+          { status: 201 },
+        )
+      }),
+    )
+
+    await renderTab()
+    await userEvent.type(
+      screen.getByLabelText('Plugin source URL'),
+      'https://market.example/mj.js',
+    )
+    await userEvent.type(screen.getByLabelText('SHA-256 (optional)'), 'a'.repeat(64))
+    await userEvent.click(screen.getByRole('button', { name: 'Import from URL' }))
+
+    const preview = await screen.findByTestId('plugin-upload-preview')
+    expect(preview.textContent).toContain('mj')
+    expect(body).toMatchObject({
+      url: 'https://market.example/mj.js',
+      sha256: 'a'.repeat(64),
+    })
+    expect(idempotencyKey).not.toBeNull()
+  })
+
+  it('prechecks the URL scheme and renders a server rejection', async () => {
+    let requests = 0
+    server.use(
+      http.post(`${ORIGIN}/api/plugin/task:import`, () => {
+        requests += 1
+        return HttpResponse.json(
+          {
+            type: 'https://newtg.dev/problems/plugin_source_url_rejected',
+            title: 'Marketplace URL rejected',
+            status: 422,
+            detail: 'redirects are not allowed',
+          },
+          { status: 422, headers: { 'Content-Type': 'application/problem+json' } },
+        )
+      }),
+    )
+
+    await renderTab()
+    const urlField = screen.getByLabelText('Plugin source URL')
+    await userEvent.type(urlField, 'http://market.example/mj.js')
+    await userEvent.click(screen.getByRole('button', { name: 'Import from URL' }))
+    expect(await screen.findByText('Enter an https URL.')).toBeTruthy()
+    expect(requests).toBe(0)
+
+    await userEvent.clear(urlField)
+    await userEvent.type(urlField, 'https://market.example/mj.js')
+    await userEvent.click(screen.getByRole('button', { name: 'Import from URL' }))
+    expect(await screen.findByTestId('plugin-import-error')).toBeTruthy()
+    expect(
+      screen.getByText(/The URL was rejected\. Use a public https address/),
+    ).toBeTruthy()
   })
 })

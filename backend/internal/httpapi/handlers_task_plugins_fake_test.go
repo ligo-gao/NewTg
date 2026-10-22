@@ -26,6 +26,7 @@ type fakeTaskPluginStore struct {
 
 	uploadCalls int
 	listErr     error
+	replaceErr  error
 }
 
 func newFakeTaskPluginStore() *fakeTaskPluginStore {
@@ -255,6 +256,9 @@ func (f *fakeTaskPluginStore) GetMarketSource(_ context.Context, id string) (*st
 func (f *fakeTaskPluginStore) ReplaceMarketSources(_ context.Context, inputs []store.MarketSourceInput) ([]store.PluginMarketplaceSource, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.replaceErr != nil {
+		return nil, f.replaceErr
+	}
 	next := make([]store.PluginMarketplaceSource, 0, len(inputs))
 	for _, in := range inputs {
 		id := in.ID

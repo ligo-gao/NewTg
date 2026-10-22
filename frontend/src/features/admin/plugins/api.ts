@@ -302,6 +302,31 @@ export async function uploadTaskPlugin(
   return data
 }
 
+/**
+ * 从 https URL 导入插件源（F-08-30「从 URL 导入」）。
+ *
+ * 服务端走 SSRF 守卫、不跟随重定向、包体上限 2 MiB，并复用上传的编译
+ * 校验关口；`sha256` 可选，提供时服务端会先比对再入库。响应形状与上传
+ * 相同（source=upload、默认不激活），错误保留 422 的 issues。
+ */
+export async function importTaskPlugin(
+  url: string,
+  sha256: string,
+  idempotencyKey: string,
+  signal?: AbortSignal,
+): Promise<UploadTaskPluginResponse> {
+  const body: { url: string; sha256?: string } = { url }
+  const trimmed = sha256.trim()
+  if (trimmed !== '') body.sha256 = trimmed
+  const data = (await postJson(
+    '/api/plugin/task:import',
+    body,
+    idempotencyKey,
+    signal,
+  )) as UploadTaskPluginResponse
+  return data
+}
+
 export interface DryRunInput {
   key: string
   version: string | undefined

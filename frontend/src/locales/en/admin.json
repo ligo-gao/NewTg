@@ -688,7 +688,19 @@
       "compile_failed_title": "Plugin failed to compile. Nothing was saved: {error}",
       "version_conflict": "This version already exists with different content. Bump the version and try again.",
       "preview_title": "Installed version",
-      "not_activated": "The version was installed but is not activated. Activate it from the change history when you are ready."
+      "not_activated": "The version was installed but is not activated. Activate it from the change history when you are ready.",
+      "import_title": "Import from URL",
+      "import_url_label": "Plugin source URL",
+      "import_sha256_label": "SHA-256 (optional)",
+      "import_sha256_placeholder": "64 hexadecimal characters",
+      "import_hint": "Only https is accepted. Redirects are not followed and the source must be at most 2 MiB.",
+      "import_submit": "Import from URL",
+      "importing": "Importing…",
+      "import_invalid_url": "Enter an https URL.",
+      "import_invalid_sha256": "SHA-256 must be 64 hexadecimal characters.",
+      "import_error_url_rejected": "The URL was rejected. Use a public https address; redirects and private networks are not allowed.",
+      "import_error_hash_mismatch": "Checksum mismatch: the downloaded source does not match the SHA-256 you provided. Nothing was saved.",
+      "import_error_unreachable": "The source could not be downloaded. Check the URL and try again."
     },
     "marketplace": {
       "source_filter": "Source",

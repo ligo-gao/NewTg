@@ -688,7 +688,19 @@
       "compile_failed_title": "插件编译失败，未保存任何内容：{error}",
       "version_conflict": "该版本已存在且内容不同，请修改版本号后重试。",
       "preview_title": "已安装版本",
-      "not_activated": "版本已安装但未激活；需要时可在变更历史中激活。"
+      "not_activated": "版本已安装但未激活；需要时可在变更历史中激活。",
+      "import_title": "从 URL 导入",
+      "import_url_label": "插件源 URL",
+      "import_sha256_label": "SHA-256（可选）",
+      "import_sha256_placeholder": "64 位十六进制字符",
+      "import_hint": "仅接受 https；不跟随重定向，源文件不超过 2 MiB。",
+      "import_submit": "从 URL 导入",
+      "importing": "导入中…",
+      "import_invalid_url": "请输入 https URL。",
+      "import_invalid_sha256": "SHA-256 必须是 64 位十六进制字符。",
+      "import_error_url_rejected": "URL 被拒绝。请使用公网 https 地址；不允许重定向与私网地址。",
+      "import_error_hash_mismatch": "校验失败：下载内容与填写的 SHA-256 不一致，未保存任何内容。",
+      "import_error_unreachable": "无法下载插件源。请检查 URL 后重试。"
     },
     "marketplace": {
       "source_filter": "来源",

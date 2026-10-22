@@ -251,14 +251,10 @@ func (c *Client) FetchIndex(ctx context.Context, rawURL string) (*Index, error) 
 // 校验在返回任何字节之前完成：hash 不符返回 ErrHashMismatch，调用方因此
 // 不可能在失败时拿到「可入库」的内容（S3 零写入）。
 func (c *Client) FetchSource(ctx context.Context, rawURL, expectedHash string) ([]byte, error) {
-	u, err := ValidateURL(rawURL)
-	if err != nil {
-		return nil, err
-	}
 	if !isSHA256Hex(expectedHash) {
 		return nil, fmt.Errorf("%w: source_hash must be 64 lowercase hex characters", ErrInvalidIndex)
 	}
-	body, err := c.get(ctx, u, c.maxSource())
+	body, err := c.FetchSourceBytes(ctx, rawURL, c.maxSource())
 	if err != nil {
 		return nil, err
 	}
@@ -269,6 +265,25 @@ func (c *Client) FetchSource(ctx context.Context, rawURL, expectedHash string) (
 	}
 	return body, nil
 }
+
+// FetchSourceBytes 下载插件包体但不校验 hash（URL 导入的 sha256 是可选字段）。
+//
+// 调用方负责在入库前计算并比对 hash；其余出站语义与 FetchSource 完全一致：
+// 仅 https、SSRF 统一守卫、不跟随重定向、limit 字节上限。limit <= 0 时使用
+// 客户端的 MaxSourceBytes（默认 2 MiB）。
+func (c *Client) FetchSourceBytes(ctx context.Context, rawURL string, limit int64) ([]byte, error) {
+	u, err := ValidateURL(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = c.maxSource()
+	}
+	return c.get(ctx, u, limit)
+}
+
+// IsSHA256Hex 报告字符串是否为 64 位小写十六进制 sha256（URL 导入的可选校验值）。
+func IsSHA256Hex(value string) bool { return isSHA256Hex(value) }
 
 func (c *Client) get(ctx context.Context, u *url.URL, limit int64) ([]byte, error) {
 	// 注入 HTTP 的用例由用例自己控制拨号（TLS/随机端口），这里只保留

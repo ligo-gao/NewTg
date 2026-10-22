@@ -3422,6 +3422,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/plugin/task:import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 从 https URL 导入插件源（默认不激活）
+         * @description body `{url, sha256?}`。仅接受绝对 https URL；出站走 `sec.ssrf.*`
+         *     统一守卫（S2），**不跟随重定向**，包体上限沿用
+         *     `plugin.upload.max_bytes`（默认 2 MiB）。提供 `sha256` 时先比对再
+         *     入库，不符返回 422 `plugin_hash_mismatch` 且零写入（S3）。
+         *
+         *     入库与上传共用同一编译/校验关口（S1）：失败 422
+         *     `plugin_compile_failed`；成功 201（同 (key,version) 同 hash 幂等
+         *     200），`source=upload`、`active=false`。必须携带 Idempotency-Key。
+         */
+        post: operations["importTaskPlugin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/plugin/task/runtime/status": {
         parameters: {
             query?: never;
@@ -8924,6 +8951,15 @@ export interface components {
             created: boolean;
             plugin: components["schemas"]["TaskPlugin"];
             version: components["schemas"]["TaskPluginVersion"];
+        };
+        ImportTaskPluginRequest: {
+            /**
+             * Format: uri
+             * @description 插件源 URL；仅接受绝对 https，禁止 userinfo/私网字面量。
+             */
+            url: string;
+            /** @description 可选的包体 sha256（64 位小写十六进制）；提供时下载后先比对，不符零写入。 */
+            sha256?: string;
         };
         PluginRuntimePlugin: {
             key: string;
@@ -16628,6 +16664,48 @@ export interface operations {
             409: components["responses"]["Error409"];
             422: components["responses"]["Error422"];
             500: components["responses"]["Error500"];
+        };
+    };
+    importTaskPlugin: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportTaskPluginRequest"];
+            };
+        };
+        responses: {
+            /** @description 幂等命中已有版本（不激活） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadTaskPluginResponse"];
+                };
+            };
+            /** @description 新版本已入库（不自动激活） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadTaskPluginResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+            502: components["responses"]["Error502"];
         };
     };
     getTaskPluginRuntimeStatus: {

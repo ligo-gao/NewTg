@@ -3,10 +3,11 @@ import { useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
 
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
-import { FormAlert } from '@/shared/ui/form'
+import { FormAlert, TextField } from '@/shared/ui/form'
 
 import {
   createIdempotencyKey,
+  importTaskPlugin,
   uploadTaskPlugin,
   type UploadTaskPluginResponse,
 } from './api'
@@ -54,7 +55,9 @@ export interface UploadTabProps {
  * 所以这里没有「先校验再安装」的第二跳：「确认安装」即校验 + 安装的同一步。
  * 编译失败只展示错误面板，不提供任何「仍然安装」入口。
  *
- * 「从 URL 导入」入口**不渲染**：该端点未实现（已在 t8 报告登记）。
+ * 「从 URL 导入」是同一关口的另一种取源方式（F-08-30）：前端只做 https /
+ * 可选 sha256 形状预检，出站守卫、重定向拒绝、体积上限与服务端编译校验
+ * 全部由后端完成。
  */
 export function UploadTab({ canManage, online }: UploadTabProps) {
   const { t } = useI18n()
@@ -71,12 +74,18 @@ export function UploadTab({ canManage, online }: UploadTabProps) {
   } | null>(null)
   const [result, setResult] = useState<UploadTaskPluginResponse | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  // URL 导入（与文件上传共用结果/错误展示，避免两套预览卡）。
+  const [importURL, setImportURL] = useState('')
+  const [importSHA256, setImportSHA256] = useState('')
+  const [importError, setImportError] = useState<string | null>(null)
+  const [importing, setImporting] = useState(false)
 
   function reset(): void {
     setSource(null)
     setSubmitError(null)
     setResult(null)
     setPrecheckError(null)
+    setImportError(null)
     intentRef.current = null
     if (inputRef.current !== null) inputRef.current.value = ''
   }
@@ -133,6 +142,53 @@ export function UploadTab({ canManage, online }: UploadTabProps) {
     }
   }
 
+  async function submitImport(): Promise<void> {
+    const url = importURL.trim()
+    const sha256 = importSHA256.trim()
+    setImportError(null)
+    setSubmitError(null)
+    setResult(null)
+    if (!/^https:\/\//i.test(url)) {
+      setImportError(t('admin.task_plugins.upload.import_invalid_url'))
+      return
+    }
+    if (sha256 !== '' && !/^[0-9a-f]{64}$/i.test(sha256)) {
+      setImportError(t('admin.task_plugins.upload.import_invalid_sha256'))
+      return
+    }
+    setImporting(true)
+    try {
+      const response = await importTaskPlugin(url, sha256, createIdempotencyKey())
+      setResult(response)
+      setImportURL('')
+      setImportSHA256('')
+      void queryClient.invalidateQueries({ queryKey: ['plugin-list'] })
+      void queryClient.invalidateQueries({ queryKey: ['plugin-runtime'] })
+    } catch (error) {
+      const slug = problemSlug(error)
+      // 出站类错误给可操作文案；其它（含编译失败）沿用服务端 message/issues。
+      const localized =
+        slug === 'plugin_source_url_rejected'
+          ? t('admin.task_plugins.upload.import_error_url_rejected')
+          : slug === 'plugin_hash_mismatch'
+            ? t('admin.task_plugins.upload.import_error_hash_mismatch')
+            : slug === 'plugin_market_unreachable'
+              ? t('admin.task_plugins.upload.import_error_unreachable')
+              : null
+      if (localized !== null) {
+        setImportError(localized)
+      } else {
+        setSubmitError({
+          slug,
+          message: errorMessage(error),
+          issues: issueMessages(error),
+        })
+      }
+    } finally {
+      setImporting(false)
+    }
+  }
+
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
     if (event.key !== 'Enter' && event.key !== ' ') return
     event.preventDefault()
@@ -146,6 +202,8 @@ export function UploadTab({ canManage, online }: UploadTabProps) {
 
   const compileFailed = submitError?.slug === 'plugin_compile_failed'
   const disabled = !canManage || !online || submitting || source === null
+  const importDisabled =
+    !canManage || !online || importing || importURL.trim() === ''
 
   return (
     <div className="space-y-3">
@@ -225,6 +283,50 @@ export function UploadTab({ canManage, online }: UploadTabProps) {
             {t('admin.task_plugins.common.offline')}
           </p>
         ) : null}
+      </SectionCard>
+
+      <SectionCard
+        testId="plugin-import-from-url"
+        title={t('admin.task_plugins.upload.import_title')}
+      >
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <TextField
+            type="url"
+            label={t('admin.task_plugins.upload.import_url_label')}
+            placeholder="https://"
+            value={importURL}
+            disabled={!canManage || importing}
+            data-testid="plugin-import-url"
+            onChange={(event) => setImportURL(event.target.value)}
+          />
+          <TextField
+            label={t('admin.task_plugins.upload.import_sha256_label')}
+            placeholder={t('admin.task_plugins.upload.import_sha256_placeholder')}
+            value={importSHA256}
+            disabled={!canManage || importing}
+            data-testid="plugin-import-sha256"
+            onChange={(event) => setImportSHA256(event.target.value)}
+          />
+        </div>
+        <p className="mt-2 text-xs text-ink-3">
+          {t('admin.task_plugins.upload.import_hint')}
+        </p>
+        {importError !== null ? (
+          <div className="mt-3" data-testid="plugin-import-error">
+            <FormAlert>{importError}</FormAlert>
+          </div>
+        ) : null}
+        <div className="mt-3 flex justify-end">
+          <Button
+            disabled={importDisabled}
+            title={!online ? t('admin.task_plugins.common.offline') : undefined}
+            onClick={() => void submitImport()}
+          >
+            {importing
+              ? t('admin.task_plugins.upload.importing')
+              : t('admin.task_plugins.upload.import_submit')}
+          </Button>
+        </div>
       </SectionCard>
 
       {submitError !== null ? (

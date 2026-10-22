@@ -446,6 +446,9 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 	// 任务插件管理端点（M6d Task 5）：与其余管理面共用受保护链。
 	if cfg.TaskPluginHandlers != nil {
 		cfg.TaskPluginHandlers.Register(rt.protected)
+		// URL 导入是独立 handler 文件（G-M6D-10）；在 Register 之外挂载，
+		// 避免与 runtime status 的共享段互相影响。
+		cfg.TaskPluginHandlers.RegisterTaskPluginImport(rt.protected)
 	}
 
 	// 性能管理端点（modules-08 §3.19 / F-08-48～50；D3a）。三个对象都是
