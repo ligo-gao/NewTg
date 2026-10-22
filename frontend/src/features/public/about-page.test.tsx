@@ -33,10 +33,10 @@ function publicStatus(languages: string[]) {
 const SEVEN_LANGUAGES = ['en', 'zh-CN', 'zh-TW', 'fr', 'ru', 'ja', 'vi']
 
 describe('AboutPage (F-09-07)', () => {
-  it('renders the tagline, tech stack and open-source attribution table', async () => {
+  it('renders the tagline and tech stack without an open-source attribution table', async () => {
     server.use(http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(publicStatus(SEVEN_LANGUAGES))))
 
-    const { getByRole, getByText, getAllByText, getAllByRole } = await renderWithProviders(<AboutPage />, [
+    const { getByRole, getByText, queryByText } = await renderWithProviders(<AboutPage />, [
       'public',
     ])
 
@@ -44,22 +44,8 @@ describe('AboutPage (F-09-07)', () => {
     expect(getByText('A commercial AI API gateway built for developers.')).toBeTruthy()
     expect(getByText('Tech stack')).toBeTruthy()
     expect(getByText('Backend')).toBeTruthy()
-    // PostgreSQL appears in both the tech-stack list and the attribution table.
-    expect(getAllByText('PostgreSQL').length).toBeGreaterThan(0)
-
-    const table = getByRole('table')
-    expect(table.textContent).toContain('Go')
-    expect(table.textContent).toContain('MIT')
-    expect(table.textContent).toContain('Component')
-    expect(table.textContent).toContain('License')
-
-    // 外链必须带 target/rel，且可访问名称说明会在新标签打开（UI 设计 §7）。
-    const attributionLinks = getAllByRole('link', { name: /Opens in a new tab/ })
-    expect(attributionLinks.length).toBeGreaterThan(0)
-    for (const link of attributionLinks) {
-      expect(link.getAttribute('target')).toBe('_blank')
-      expect(link.getAttribute('rel')).toBe('noopener noreferrer')
-    }
+    expect(getByText('PostgreSQL · Redis')).toBeTruthy()
+    expect(queryByText('Open-source attributions')).toBeNull()
   })
 
   it('uses the real language count from /api/status and never invents other statistics', async () => {
@@ -95,12 +81,12 @@ describe('AboutPage (F-09-07)', () => {
     expect(links[0]?.getAttribute('href')).toBe('https://docs.example.com')
   })
 
-  it('shows the empty attribution note when the credits list is empty', async () => {
+  it('does not render an attribution section', async () => {
     server.use(http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(publicStatus(SEVEN_LANGUAGES))))
 
-    const { getByText } = await renderWithProviders(<AboutPage credits={[]} />, ['public'])
+    const { queryByText } = await renderWithProviders(<AboutPage />, ['public'])
 
-    expect(getByText('No attributions listed')).toBeTruthy()
+    expect(queryByText('No attributions listed')).toBeNull()
   })
 
   it('falls back to static content when /api/status fails, without an inline error', async () => {
@@ -113,7 +99,7 @@ describe('AboutPage (F-09-07)', () => {
     const { getByText, queryByText } = await renderWithProviders(<AboutPage />, ['public'])
 
     expect(getByText('Tech stack')).toBeTruthy()
-    expect(getByText('Open-source attributions')).toBeTruthy()
+    expect(queryByText('Open-source attributions')).toBeNull()
     await waitFor(() => {
       expect(queryByText('Interface languages')).toBeNull()
     })

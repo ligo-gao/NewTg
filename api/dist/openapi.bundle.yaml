@@ -11864,11 +11864,6 @@ components:
         rankings_min_samples:
           type: integer
           format: int64
-        oss_credits:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
         seo:
           type: object
           properties:

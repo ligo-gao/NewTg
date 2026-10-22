@@ -895,13 +895,13 @@ describe('SettingsShell contract', () => {
   })
 
   it('renders an empty generic list as JSON, not as a lines control (P2)', async () => {
-    // `[].every(...)` is true, so an empty `site.oss_credits` used to pick the
-    // lines control and render an empty textarea. The registry type is a list
-    // of objects; the generic control must preserve the array shape.
+    // `[].every(...)` is true, so an empty list used to pick the lines control
+    // and render an empty textarea. The registry type is a list of objects; the
+    // generic control must preserve the array shape.
     const stores = {
       site: {
         updated_at: '2026-10-19T10:00:00Z',
-        items: [item('site.oss_credits', [], { type: 'list', default: [] })],
+        items: [item('demo.empty_list', [], { type: 'list', default: [] })],
       } satisfies SectionState,
       nav: structuredClone(NAV_STATE),
     }
@@ -914,7 +914,7 @@ describe('SettingsShell contract', () => {
       ['common', 'settings'],
     )
 
-    const control = (await screen.findByLabelText('site.oss_credits')) as HTMLTextAreaElement
+    const control = (await screen.findByLabelText('demo.empty_list')) as HTMLTextAreaElement
     expect(control.tagName).toBe('TEXTAREA')
     expect(control.value).toBe('[]')
   })

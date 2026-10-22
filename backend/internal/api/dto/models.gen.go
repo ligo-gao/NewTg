@@ -7591,10 +7591,9 @@ type PublicSite struct {
 	HomeCustomEnabled *bool `json:"home_custom_enabled,omitempty"`
 
 	// HomeCustomHtml 仅当 home_custom_enabled=true 时存在。
-	HomeCustomHtml     *string                   `json:"home_custom_html,omitempty"`
-	LogoUrl            *string                   `json:"logo_url,omitempty"`
-	OssCredits         *[]map[string]interface{} `json:"oss_credits,omitempty"`
-	RankingsMinSamples *int64                    `json:"rankings_min_samples,omitempty"`
+	HomeCustomHtml     *string `json:"home_custom_html,omitempty"`
+	LogoUrl            *string `json:"logo_url,omitempty"`
+	RankingsMinSamples *int64  `json:"rankings_min_samples,omitempty"`
 	Seo                *struct {
 		Description *string `json:"description,omitempty"`
 		OgImageUrl  *string `json:"og_image_url,omitempty"`

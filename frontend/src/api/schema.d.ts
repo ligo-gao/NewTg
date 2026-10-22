@@ -5728,9 +5728,6 @@ export interface components {
             status_page_url?: string;
             /** Format: int64 */
             rankings_min_samples?: number;
-            oss_credits?: {
-                [key: string]: unknown;
-            }[];
             seo?: {
                 description?: string;
                 og_image_url?: string;

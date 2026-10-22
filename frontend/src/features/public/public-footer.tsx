@@ -95,12 +95,11 @@ export function PublicFooter() {
         ]
       : []),
     {
-      key: 'opensource',
-      label: t('public.footer.opensource'),
-      href: '/about#opensource',
+      key: 'terms',
+      label: t('public.footer.terms'),
+      href: '/legal/terms',
       external: false,
     },
-    { key: 'terms', label: t('public.footer.terms'), href: '/legal/terms', external: false },
     {
       key: 'privacy',
       label: t('public.footer.privacy'),

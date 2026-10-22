@@ -217,7 +217,7 @@ func TestRegistryGoldenSets(t *testing.T) {
 	wantPublic := []string{
 		"site.title", "site.logo_url", "site.server_address", "site.timezone",
 		"site.footer_html", "site.about_html", "site.filing_no", "site.docs_url",
-		"site.status_page_url", "site.rankings_min_samples", "site.oss_credits",
+		"site.status_page_url", "site.rankings_min_samples",
 		"site.seo.description", "site.seo.og_image_url", "site.home_custom_enabled",
 		"site.home_custom_html", "site.home_blocks", "site.demo.enabled",
 		"nav.home.enabled", "nav.home.require_auth", "nav.console.enabled",

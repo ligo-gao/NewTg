@@ -546,31 +546,6 @@ func positiveFiniteNumber(v any) error {
 	return nil
 }
 
-func validateOSSCredit(v any) error {
-	obj, ok := v.(map[string]any)
-	if !ok {
-		return errors.New("expected object")
-	}
-	allowed := map[string]struct{}{"name": {}, "url": {}, "license": {}}
-	for key := range obj {
-		if _, ok := allowed[key]; !ok {
-			return fmt.Errorf("unexpected field %q", key)
-		}
-	}
-	name, _ := obj["name"].(string)
-	if strings.TrimSpace(name) == "" || utf8.RuneCountInString(name) > 64 {
-		return errors.New("name is required and must be at most 64 characters")
-	}
-	if rawURL, ok := obj["url"].(string); !ok || validateAbsoluteHTTPURL(rawURL) != nil {
-		return errors.New("url must be an absolute http(s) URL")
-	}
-	license, _ := obj["license"].(string)
-	if utf8.RuneCountInString(license) > 32 {
-		return errors.New("license must be at most 32 characters")
-	}
-	return nil
-}
-
 func boolObjectKeys(keys ...string) func(any) error {
 	allowed := make(map[string]struct{}, len(keys))
 	for _, key := range keys {

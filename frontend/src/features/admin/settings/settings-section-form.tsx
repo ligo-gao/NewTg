@@ -85,10 +85,10 @@ function genericField(item: SettingsItem): FieldConfig {
     : numberType(item.type)
       ? 'number'
       // An empty list is not evidence of a line-based control: `[].every(...)`
-      // is vacuously true and previously rendered `site.oss_credits: []` as a
-      // lines textarea (which loses the array-of-objects shape). Only a
-      // non-empty all-string list can pick `lines`/`tags`; everything else
-      // (including an empty list) uses the JSON control.
+      // is vacuously true and previously rendered an empty list as a lines
+      // textarea (which loses the array-of-objects shape). Only a non-empty
+      // all-string list can pick `lines`/`tags`; everything else (including an
+      // empty list) uses the JSON control.
       : Array.isArray(item.default) &&
           item.default.length > 0 &&
           item.default.every((entry) => typeof entry === 'string')

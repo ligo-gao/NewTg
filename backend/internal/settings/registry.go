@@ -311,8 +311,6 @@ func buildRegistry() []Setting {
 		// 仅 worker 清理时消费，不需要下发给公开面，故不标 public。
 		def("site.rankings_keep_runs", "site", TypeInt, int64(10),
 			minInt(1), maxInt(100)),
-		def("site.oss_credits", "site", TypeList, []any{}, public(),
-			element(validateOSSCredit)),
 		def("site.seo.description", "site", TypeString, "", public(), maxLen(160)),
 		def("site.seo.og_image_url", "site", TypeString, "", public(), maxLen(512),
 			validate(absoluteHTTPURL)),
