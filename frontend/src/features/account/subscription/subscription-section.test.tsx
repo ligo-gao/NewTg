@@ -2,9 +2,14 @@ import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
 import { screen, waitFor, within } from '@testing-library/react'
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
+
+import {
+  acknowledgeCompliance,
+  clearComplianceAcknowledgement,
+} from '@/features/account/compliance/compliance-session'
 
 import { SubscriptionSection } from './subscription-section'
 
@@ -27,6 +32,9 @@ beforeAll(() => {
   Object.defineProperty(navigator, 'onLine', { configurable: true, value: true })
   server.listen({ onUnhandledRequest: 'error' })
 })
+// The gate is covered on its own; purchase cases start acknowledged so they
+// keep exercising the purchase flow rather than the consent step.
+beforeEach(() => acknowledgeCompliance())
 afterEach(() => server.resetHandlers())
 afterAll(() => server.close())
 
@@ -199,6 +207,48 @@ describe('SubscriptionSection', () => {
     expect(await screen.findByText('Could not load subscription plans.')).toBeTruthy()
     await userEvent.setup().click(screen.getByRole('button', { name: 'Retry' }))
     expect(await screen.findByText('Basic')).toBeTruthy()
+  })
+
+  it('requires the compliance gate before creating a purchase order', async () => {
+    clearComplianceAcknowledgement()
+    let posts = 0
+    useBaseHandlers({})
+    server.use(
+      http.post(`${ORIGIN}/api/subscription/purchase`, () => {
+        posts += 1
+        return HttpResponse.json(
+          {
+            order: {
+              id: 12,
+              provider: 'alipay',
+              amount: 5000,
+              currency: 'CNY',
+              status: 'pending',
+              credited_credits: 0,
+              created_at: '2026-10-20T10:00:00Z',
+            },
+            qr_code: 'https://qr.alipay.com/gated',
+          },
+          { status: 201 },
+        )
+      }),
+    )
+    await renderWithProviders(<SubscriptionSection />, ['common', 'account'])
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: 'Subscribe Basic' }))
+    await user.click(screen.getByRole('button', { name: 'Confirm' }))
+
+    const gate = await screen.findByRole('alertdialog')
+    expect(posts).toBe(0)
+    await user.click(
+      within(gate).getByRole('checkbox', { name: /I have read and agree/i }),
+    )
+    await user.click(
+      within(gate).getByRole('button', { name: 'Agree & Continue' }),
+    )
+
+    await waitFor(() => expect(posts).toBe(1))
   })
 
   it('purchases with Alipay and shows the QR checkout', async () => {

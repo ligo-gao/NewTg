@@ -69,6 +69,19 @@
     "name_vi": "Tiếng Việt",
     "saved_locally": "Langue modifiée sur cet appareil uniquement. La préférence serveur n'a pas pu être enregistrée."
   },
+  "compliance": {
+    "title": "Avant de payer",
+    "description": "Veuillez lire ces points avant d'effectuer un paiement ou un abonnement.",
+    "payment_point": "Le montant affiché avant le paiement est celui débité par le fournisseur de paiement.",
+    "refund_point": "Les remboursements suivent la politique de remboursement ; un paiement effectué n'est pas automatiquement réversible.",
+    "terms_point": "Vous acceptez les Conditions d'utilisation :",
+    "privacy_point": "Vos données sont traitées conformément à la Politique de confidentialité :",
+    "terms_link": "Conditions d'utilisation",
+    "privacy_link": "Politique de confidentialité",
+    "acknowledge": "J'ai lu et j'accepte les Conditions d'utilisation et la Politique de confidentialité, et je comprends les règles de paiement et de remboursement.",
+    "cancel": "Annuler",
+    "continue": "Accepter et continuer"
+  },
   "topup": {
     "title": "Recharger",
     "balance_title": "Solde disponible",

@@ -2,9 +2,14 @@ import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
 import { screen, waitFor, within } from '@testing-library/react'
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
+
+import {
+  acknowledgeCompliance,
+  clearComplianceAcknowledgement,
+} from '@/features/account/compliance/compliance-session'
 
 import { SubscriptionSection } from './subscription-section'
 
@@ -25,6 +30,9 @@ beforeAll(() => {
   Object.defineProperty(navigator, 'onLine', { configurable: true, value: true })
   server.listen({ onUnhandledRequest: 'error' })
 })
+// The compliance gate has its own test file; renewal/change cases start from
+// an acknowledged tab session so they keep exercising the payment flow.
+beforeEach(() => acknowledgeCompliance())
 afterEach(() => {
   server.resetHandlers()
   Object.defineProperty(window.navigator, 'onLine', {
@@ -220,6 +228,35 @@ async function openChangeTo(target: RegExp) {
 }
 
 describe('renewal', () => {
+  it('requires the compliance gate before creating a renewal order', async () => {
+    clearComplianceAcknowledgement()
+    let posts = 0
+    useBaseHandlers()
+    server.use(
+      http.post(`${ORIGIN}/api/subscriptions/5/renew`, () => {
+        posts += 1
+        return HttpResponse.json(
+          { order: order(), qr_code: 'https://qr.alipay.com/gated-renew' },
+          { status: 201 },
+        )
+      }),
+    )
+    await renderSection()
+    const user = await openRenew()
+
+    await user.click(screen.getByRole('button', { name: 'Renew' }))
+    const gate = await screen.findByRole('alertdialog')
+    expect(posts).toBe(0)
+    await user.click(
+      within(gate).getByRole('checkbox', { name: /I have read and agree/i }),
+    )
+    await user.click(
+      within(gate).getByRole('button', { name: 'Agree & Continue' }),
+    )
+
+    await waitFor(() => expect(posts).toBe(1))
+  })
+
   it('renews through Alipay and opens the shared checkout', async () => {
     let body: unknown
     let path: string | null = null
