@@ -461,13 +461,16 @@ func (h *RelayHandler) nativeRouteFallback(authMiddleware func(http.Handler) htt
 				return
 			}
 		}
+		// R-W18-04：405/404 也属于端点响应，必须按路径选择信封——
+		// GET /v1/messages、POST /v1/messages/unknown 属于 Claude 面。
+		writeErr := writeRelayErrorForRequest(r)
 		if allowed := methodMismatchAllowed(mux, r); len(allowed) > 0 {
 			w.Header().Set("Allow", strings.Join(allowed, ", "))
-			writeRelayError(w, http.StatusMethodNotAllowed, requestID, "method_not_allowed",
+			writeErr(w, http.StatusMethodNotAllowed, requestID, "method_not_allowed",
 				"method not allowed for this endpoint")
 			return
 		}
-		writeRelayError(w, http.StatusNotFound, requestID, "invalid_request_error", "unknown endpoint")
+		writeErr(w, http.StatusNotFound, requestID, "invalid_request_error", "unknown endpoint")
 	})
 }
 
@@ -1127,13 +1130,16 @@ func (h *RelayHandler) handleMessagesCountTokens(w http.ResponseWriter, r *http.
 		writeErr(w, http.StatusBadRequest, requestID, "invalid_request", "failed to read request body")
 		return
 	}
-	// count_tokens 只需要 model 做选路；其余字段（messages/system/tools）原样
-	// 透传给上游，因为精确计数必须基于客户端真实内容（IR 重编码可能丢失
-	// 尚未建模的块，反而让计数偏离）。
-	var probe struct {
-		Model string `json:"model"`
+	// count_tokens 与 messages 共用同一份 Anthropic IR 解析：敏感词过滤和
+	// 模型选路都基于客户端真实内容。解析失败按 messages 的既有 400 处理
+	// （fail-closed）——绝不能因为「只是计数」就把无法解析的 body 直接送上游。
+	// 其余未建模字段仍保留在 parsed.Raw 里，由 BuildCountTokensRequest 原样透传。
+	parsed, err := ir.ParseAnthropicRequest(body)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, requestID, "invalid_request", "invalid Anthropic request body")
+		return
 	}
-	if err := json.Unmarshal(body, &probe); err != nil || strings.TrimSpace(probe.Model) == "" {
+	if strings.TrimSpace(parsed.Model) == "" {
 		writeErr(w, http.StatusBadRequest, requestID, "invalid_request", "model is required")
 		return
 	}
@@ -1149,21 +1155,35 @@ func (h *RelayHandler) handleMessagesCountTokens(w http.ResponseWriter, r *http.
 		writeErr(w, status, requestID, code, message)
 		return
 	}
-	relay.WithRequest(rc, &contract.Request{
-		Model:     probe.Model,
-		RawFormat: ir.FormatAnthropicMessages,
-	}, ir.FormatAnthropicMessages, r.URL.Path)
+	relay.WithRequest(rc, parsed, ir.FormatAnthropicMessages, r.URL.Path)
+
+	// F-08-18：与 /v1/messages 同一时点与同一口径（IR 之后、任何上游调用
+	// 之前）。count_tokens 原始 body 会被原样送到上游，若不在这里过滤，敏感词
+	// 配置就存在一条绕过路径：messages 400 而 count_tokens 仍把命中文本发给
+	// 上游。命中 → Claude 形 400 + 零上游 + 零计费。
+	if h.rejectSensitiveContent(parsed, w, requestID, rc.UserID, writeErr) {
+		return
+	}
+
+	// 演示站额度（P3-2 裁决）：count_tokens 虽零计费，但仍是一次真实上游调用。
+	// 演示模式下计入 site.demo.relay_quota.* 两层日额度（超限沿用 429/403），
+	// 但**不**调用 checkRelayRateLimit——因此不消耗 B10/B11/B12 任何桶。
+	// 演示额度使用的是独立的 demo:relay:* 键，与中继准入桶物理隔离。
+	if rejection := checkDemoRelayQuota(r.Context(), h.rateLimiter, h.config, rc.RequestID, clientIP(r)); rejection != nil {
+		writeRelayRateLimitErrorWith(w, rc.RequestID, rejection, writeErr)
+		return
+	}
 
 	// 与 messages 同口径的入口准入：pin 权限、令牌模型白名单、停用模型。
 	// 这些检查都不产生计费或上游调用，失败路径仍零副作用。
 	pinID, hasPin := relay.ParseChannelPin(r)
-	if !hasPin && !tokenModelAllowed(principal.ModelLimits, probe.Model) {
+	if !hasPin && !tokenModelAllowed(principal.ModelLimits, parsed.Model) {
 		writeErr(w, http.StatusForbidden, requestID, "distributor_token_model_forbidden",
 			"this token is not allowed to access the requested model")
 		return
 	}
 	if h.modelStatus != nil {
-		status, found, statusErr := h.modelStatus.ModelPricingStatus(r.Context(), probe.Model)
+		status, found, statusErr := h.modelStatus.ModelPricingStatus(r.Context(), parsed.Model)
 		if statusErr != nil {
 			writeErr(w, http.StatusInternalServerError, requestID, "database_error",
 				"failed to check model availability")

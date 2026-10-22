@@ -494,3 +494,170 @@ func TestCountTokensModelMapping(t *testing.T) {
 		t.Fatalf("未建模字段被丢失：system=%v", gotBody["system"])
 	}
 }
+
+// TestCountTokensSensitiveContent 锁定 P2-1 的修复：
+// count_tokens 的原始 body 会送上游，必须与 /v1/messages 同口径先做敏感词检查。
+// 命中 → Claude 形 400 + 零上游 + 零计费；未命中/关闭敏感词 → 正常放行。
+func TestCountTokensSensitiveContent(t *testing.T) {
+	body := func(text string) string {
+		return `{"model":"claude-test","system":"` + text + `","messages":[{"role":"user","content":"` + text + `"}]}`
+	}
+
+	t.Run("hit blocks before upstream", func(t *testing.T) {
+		env, counter := messagesTestEnv(t, contract.ChannelTypeAnthropic, func(http.ResponseWriter, *http.Request) {
+			t.Error("sensitive hit must not reach upstream")
+		})
+		env.handler.config = sensitiveSettings(t, true, map[string]bool{"prompt": true}, []string{"BadWord"}, "block")
+
+		w := env.do(t, http.MethodPost, "/v1/messages/count_tokens", body("hi BADWORD"), messagesHeaders())
+		assertClaudeError(t, w, http.StatusBadRequest, "invalid_request_error")
+		if strings.Contains(strings.ToLower(w.Body.String()), "badword") {
+			t.Fatalf("错误响应回显了命中词：%s", w.Body.String())
+		}
+		if counter.count() != 0 || env.billing.preConsumeCalls() != 0 {
+			t.Fatalf("命中必须零副作用：upstream=%d pre=%d", counter.count(), env.billing.preConsumeCalls())
+		}
+	})
+
+	t.Run("miss forwards", func(t *testing.T) {
+		env, counter := messagesTestEnv(t, contract.ChannelTypeAnthropic, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, countTokensResponseBody)
+		})
+		env.handler.config = sensitiveSettings(t, true, map[string]bool{"prompt": true}, []string{"BadWord"}, "block")
+
+		w := env.do(t, http.MethodPost, "/v1/messages/count_tokens", body("hello there"), messagesHeaders())
+		if w.Code != http.StatusOK || counter.count() != 1 {
+			t.Fatalf("未命中应放行：status=%d upstream=%d body=%s", w.Code, counter.count(), w.Body.String())
+		}
+	})
+
+	t.Run("disabled allows", func(t *testing.T) {
+		env, counter := messagesTestEnv(t, contract.ChannelTypeAnthropic, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, countTokensResponseBody)
+		})
+		env.handler.config = sensitiveSettings(t, false, map[string]bool{"prompt": true}, []string{"BadWord"}, "block")
+
+		w := env.do(t, http.MethodPost, "/v1/messages/count_tokens", body("hi BADWORD"), messagesHeaders())
+		if w.Code != http.StatusOK || counter.count() != 1 {
+			t.Fatalf("关闭敏感词应放行：status=%d upstream=%d body=%s", w.Code, counter.count(), w.Body.String())
+		}
+	})
+}
+
+// TestMessagesFallbackErrorsUseClaudeEnvelope 锁定 P3-1：/v1/ 兜底的 405/404
+// 也必须按路径选择信封；其它路径保持 OpenAI 形。
+func TestMessagesFallbackErrorsUseClaudeEnvelope(t *testing.T) {
+	env, counter := messagesTestEnv(t, contract.ChannelTypeAnthropic, func(http.ResponseWriter, *http.Request) {
+		t.Error("routing errors must not reach upstream")
+	})
+
+	w := env.do(t, http.MethodGet, "/v1/messages", "", nil)
+	assertClaudeError(t, w, http.StatusMethodNotAllowed, "invalid_request_error")
+	if w.Header().Get("Allow") == "" {
+		t.Fatal("405 必须保留 Allow 头")
+	}
+
+	w = env.do(t, http.MethodGet, "/v1/messages/count_tokens", "", nil)
+	assertClaudeError(t, w, http.StatusMethodNotAllowed, "invalid_request_error")
+
+	w = env.do(t, http.MethodPost, "/v1/messages/unknown", `{}`, messagesHeaders())
+	assertClaudeError(t, w, http.StatusNotFound, "not_found_error")
+
+	// 对照：非 messages 路径的兜底仍是 OpenAI 形。
+	w = env.do(t, http.MethodPost, "/v1/unknown", `{}`, messagesHeaders())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), `"type":"error"`) {
+		t.Fatalf("非 messages 路径不得使用 Claude 形：%s", w.Body.String())
+	}
+	envelope := decodeRelayError(t, w.Body.Bytes())
+	if envelope.Error.Type != relayErrorType {
+		t.Fatalf("type = %q, want %q", envelope.Error.Type, relayErrorType)
+	}
+	if counter.count() != 0 {
+		t.Fatalf("routing errors must not reach upstream: %d", counter.count())
+	}
+}
+
+// TestCountTokensDemoQuota 锁定 P3-2 裁决：演示模式下 count_tokens 计入
+// site.demo.relay_quota.* 两层日额度，但不消耗 B10/B11/B12。
+func TestCountTokensDemoQuota(t *testing.T) {
+	countTokensUpstream := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, countTokensResponseBody)
+	}
+	body := `{"model":"` + messagesTestModel + `","messages":[{"role":"user","content":"hi"}]}`
+	do := func(t *testing.T, env *rateLimitTestEnv) *httptest.ResponseRecorder {
+		t.Helper()
+		return env.do(t, http.MethodPost, "/v1/messages/count_tokens", body,
+			map[string]string{"x-api-key": relayTestToken})
+	}
+	assertNoRelayBuckets := func(t *testing.T, env *rateLimitTestEnv) {
+		t.Helper()
+		for _, key := range []string{
+			ratelimit.TokenKey(relayTestTokenID),
+			ratelimit.UserKey(relayTestUserID),
+			ratelimit.UserGlobalKey(relayTestUserID),
+		} {
+			if value, ok := redisValue(t, env.mr, key); ok {
+				t.Fatalf("B10/B11/B12 键 %q 存在（值 %q），count_tokens 不得消耗中继准入桶", key, value)
+			}
+		}
+	}
+
+	t.Run("demo quota exhausted returns 429", func(t *testing.T) {
+		env := newRateLimitTestEnv(t, rateLimitEnvOptions{
+			config:      demoQuotaConfig(true, 1, 100),
+			channelType: contract.ChannelTypeAnthropic,
+			model:       messagesTestModel,
+			upstream:    countTokensUpstream,
+		})
+		if w := do(t, env); w.Code != http.StatusOK {
+			t.Fatalf("第 1 次 = %d，期望 200；body=%s", w.Code, w.Body.String())
+		}
+		w := do(t, env)
+		assertClaudeError(t, w, http.StatusTooManyRequests, "rate_limit_error")
+		if w.Header().Get("Retry-After") == "" {
+			t.Fatal("演示额度 429 必须带 Retry-After")
+		}
+		if env.upstream.count() != 1 {
+			t.Fatalf("上游调用 = %d，期望 1（超限请求不得触达上游）", env.upstream.count())
+		}
+		assertNoRelayBuckets(t, env)
+	})
+
+	t.Run("demo disabled zero limit returns 403", func(t *testing.T) {
+		env := newRateLimitTestEnv(t, rateLimitEnvOptions{
+			config:      demoQuotaConfig(true, 0, 100),
+			channelType: contract.ChannelTypeAnthropic,
+			model:       messagesTestModel,
+			upstream:    countTokensUpstream,
+		})
+		w := do(t, env)
+		assertClaudeError(t, w, http.StatusForbidden, "permission_error")
+		if env.upstream.count() != 0 {
+			t.Fatalf("配置级关闭时上游调用 = %d，期望 0", env.upstream.count())
+		}
+	})
+
+	t.Run("non-demo does not consume relay buckets", func(t *testing.T) {
+		env := newRateLimitTestEnv(t, rateLimitEnvOptions{
+			config:      mapConfig{},
+			channelType: contract.ChannelTypeAnthropic,
+			model:       messagesTestModel,
+			upstream:    countTokensUpstream,
+		})
+		for i := 0; i < 2; i++ {
+			if w := do(t, env); w.Code != http.StatusOK {
+				t.Fatalf("第 %d 次 = %d，期望 200；body=%s", i+1, w.Code, w.Body.String())
+			}
+		}
+		if env.upstream.count() != 2 {
+			t.Fatalf("上游调用 = %d，期望 2", env.upstream.count())
+		}
+		assertNoRelayBuckets(t, env)
+	})
+}

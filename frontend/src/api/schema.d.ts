@@ -4044,7 +4044,10 @@ export interface paths {
          *     `tools` 等），响应严格为 `{"input_tokens": N}`。
          *
          *     鉴权与 `/v1/messages` 相同（`Authorization` 或 `x-api-key`）。
-         *     本端点**零计费**：不预扣、不结算、不写 usage_logs，也不计入准入限流桶。
+         *     本端点**零计费**：不预扣、不结算、不写 usage_logs，也不计入准入限流桶
+         *     （B10/B11/B12）。与 `/v1/messages` 同口径先做敏感词过滤；演示站开启时
+         *     仍计入 `site.demo.relay_quota.*` 两层日额度（超限 429/403），因为它是
+         *     一次真实上游调用。
          *     只有 Anthropic 协议族渠道能返回精确计数；其它上游返回 501
          *     `application/problem+json`（`count_tokens_unsupported`），不做本地估算。
          */

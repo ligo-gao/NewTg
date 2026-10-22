@@ -118,7 +118,6 @@ func rejectSensitiveTexts(w http.ResponseWriter, requestID string, userID int64,
 	return true
 }
 
-// writeSensitiveBlocked 输出 F-08-18 的固定 400 响应。
 // writeSensitiveBlocked 输出 F-08-18 的固定 400 响应（OpenAI 形出口）。
 func writeSensitiveBlocked(w http.ResponseWriter, requestID string) {
 	writeSensitiveBlockedWith(w, requestID, writeRelayError)
