@@ -7,12 +7,15 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { renderWithProviders } from '@/test-support/providers'
 import { ToastViewport, useToastStore } from '@/shared/ui/toast'
+import enSettings from '@/locales/en/settings.json'
 
 import type { SettingsItem, SettingsSectionResponse } from './api'
 import { SettingsShell } from './settings-shell'
 import type { SettingsTab } from './sections'
 
 const ORIGIN = 'http://localhost:3000'
+/** Canonical spelling lives in the dictionary (no CJK literals in TS source). */
+const EXPECTED_CONFIRMATION = enSettings.payment_compliance.expected_text
 
 const server = setupServer()
 
@@ -174,6 +177,14 @@ function installSettingsHandlers(
 ): RequestLog[] {
   server.use(
     http.get(`${ORIGIN}/api/me`, () => HttpResponse.json(ME_ADMIN)),
+    // 支付 Tab 的合规确认读面：默认已确认，使既有支付用例继续聚焦表单。
+    // 专门的遮罩用例在下方覆盖 confirmed=false 与确认写入。
+    http.get(`${ORIGIN}/api/settings/payment-compliance`, () =>
+      HttpResponse.json({
+        confirmed: true,
+        confirmed_at: '2026-10-19T09:00:00Z',
+      }),
+    ),
     http.get(`${ORIGIN}/api/settings`, ({ request }) => {
       const section = new URL(request.url).searchParams.get('section') ?? ''
       const state = stores[section]
@@ -238,6 +249,28 @@ async function renderShell(tab: SettingsTab = 'site') {
     ['common', 'settings'],
   )
   return requests
+}
+
+/** Payment-tab stores used by the compliance-gate cases. */
+function paymentStores() {
+  return {
+    site: structuredClone(SITE_STATE),
+    nav: structuredClone(NAV_STATE),
+    pay: structuredClone(PAY_STATE),
+    'pay.stripe': structuredClone(PAY_STRIPE_STATE),
+    'pay.alipay': structuredClone(PAY_ALIPAY_STATE),
+    'pay.epay': structuredClone(PAY_EPAY_STATE),
+  }
+}
+
+async function renderPaymentShell() {
+  await renderWithProviders(
+    <>
+      <Harness initial="payment" />
+      <ToastViewport />
+    </>,
+    ['common', 'settings'],
+  )
 }
 
 beforeEach(() => {
@@ -422,6 +455,93 @@ describe('SettingsShell contract', () => {
     await waitFor(() => expect(requests).toHaveLength(1))
     expect(requests[0]?.body?.values).toEqual({ 'site.footer_html': 'hello' })
     expect(screen.queryByText('This field is required.')).toBeNull()
+  })
+
+  it('blocks the payment tab until the exact compliance text is entered', async () => {
+    const user = userEvent.setup()
+    let confirmation: string | undefined
+    installSettingsHandlers(paymentStores())
+    server.use(
+      http.get(`${ORIGIN}/api/settings/payment-compliance`, () =>
+        HttpResponse.json({ confirmed: false, confirmed_at: null }),
+      ),
+      http.post(`${ORIGIN}/api/settings/payment-compliance`, async ({ request }) => {
+        const body = (await request.json()) as { confirmation?: string }
+        confirmation = body.confirmation
+        return HttpResponse.json({
+          confirmed: true,
+          confirmed_at: '2026-10-19T09:30:00Z',
+        })
+      }),
+    )
+    await renderPaymentShell()
+
+    const gate = await screen.findByRole('alertdialog')
+    expect(
+      within(gate).getByText('Payment configuration compliance'),
+    ).toBeTruthy()
+    // The protected sections must not mount before confirmation.
+    expect(screen.queryByTestId('settings-section-pay')).toBeNull()
+    expect(screen.queryByTestId('settings-section-pay.stripe')).toBeNull()
+
+    const confirmButton = within(gate).getByRole('button', { name: 'Confirm' })
+    expect((confirmButton as HTMLButtonElement).disabled).toBe(true)
+    const input = within(gate).getByLabelText('Confirmation text')
+    await user.type(input, 'not the phrase')
+    expect((confirmButton as HTMLButtonElement).disabled).toBe(true)
+
+    await user.clear(input)
+    await user.type(input, EXPECTED_CONFIRMATION)
+    await waitFor(() =>
+      expect((confirmButton as HTMLButtonElement).disabled).toBe(false),
+    )
+    await user.click(confirmButton)
+
+    await waitFor(() => expect(confirmation).toBe(EXPECTED_CONFIRMATION))
+    // Confirmed: the gate unmounts and the sections load normally.
+    expect(await screen.findByTestId('settings-section-pay')).toBeTruthy()
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(screen.getByText('Compliance confirmed')).toBeTruthy()
+  })
+
+  it('leaves the payment tab when the compliance gate is cancelled', async () => {
+    const user = userEvent.setup()
+    installSettingsHandlers(paymentStores())
+    server.use(
+      http.get(`${ORIGIN}/api/settings/payment-compliance`, () =>
+        HttpResponse.json({ confirmed: false, confirmed_at: null }),
+      ),
+    )
+    await renderPaymentShell()
+
+    const gate = await screen.findByRole('alertdialog')
+    await user.click(within(gate).getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('tab', { name: 'Site' }).getAttribute('aria-selected'),
+      ).toBe('true'),
+    )
+    expect(screen.queryByTestId('settings-section-pay')).toBeNull()
+  })
+
+  it('does not render payment sections when the compliance status read fails', async () => {
+    installSettingsHandlers(paymentStores())
+    server.use(
+      http.get(`${ORIGIN}/api/settings/payment-compliance`, () =>
+        HttpResponse.json(
+          { type: 'about:blank', title: 'boom' },
+          { status: 500 },
+        ),
+      ),
+    )
+    await renderPaymentShell()
+
+    expect(
+      await screen.findByText('Could not read the payment compliance status.'),
+    ).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+    expect(screen.queryByTestId('settings-section-pay')).toBeNull()
   })
 
   it('keeps raw text for number lists until save (F3)', async () => {

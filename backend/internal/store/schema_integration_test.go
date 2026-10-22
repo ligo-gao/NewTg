@@ -43,12 +43,14 @@ import (
 // 自动续费状态，表数 41→42、subscriptions 23→26。
 // W8/MJ-d 追加任务提交幂等键表 task_submit_idempotency（初版 11 列；
 // 复核 I2 增加 claim_token 后 12 列），表数 42→43。
+// G-M6C-19 给 users 追加 payment_compliance_confirmed_at（modules-08 §3.4），
+// users 26→27。
 //
 //	subscription_plans 17 列、subscriptions 26 列（含 R-D5-03 的 5 个快照列
 //	与 S4 的 3 个自动续费状态列）、
 //	subscription_pre_consume_records 5 列（R-D5-02 的 subscription_id）。
 var wantColumns = map[string]int{
-	"users":            26,
+	"users":            27,
 	"api_tokens":       15,
 	"user_groups":      9,
 	"system_settings":  5,

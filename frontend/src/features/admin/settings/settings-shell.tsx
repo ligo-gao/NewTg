@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { NotifyEntryCard } from '@/features/admin/notifications/notify-entry-card'
 import { meQueryOptions } from '@/lib/session'
@@ -7,7 +7,14 @@ import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
 import { Dialog } from '@/shared/ui/base/dialog'
 import { FormAlert } from '@/shared/ui/form'
+import { StatusBadge } from '@/shared/ui/status-badge'
 
+import {
+  fetchPaymentCompliance,
+  PAYMENT_COMPLIANCE_QUERY_KEY,
+  type PaymentComplianceStatus,
+} from './api'
+import { PaymentComplianceGate } from './payment-compliance-gate'
 import {
   SETTINGS_TABS,
   SETTINGS_TABS_CONFIG,
@@ -30,12 +37,34 @@ export interface SettingsShellProps {
  */
 export function SettingsShell({ tab, onTabChange }: SettingsShellProps) {
   const { t } = useI18n()
+  const queryClient = useQueryClient()
   const meQuery = useQuery(meQueryOptions())
 
   const canManage =
     meQuery.data?.permissions.some(
       (permission) => permission === '*' || permission === 'settings:manage',
     ) ?? false
+
+  // modules-08 §3.4：支付设置整体受合规确认保护。读面只在能管理设置且有
+  // 权访问支付页时发起；未确认时绝不挂载任何支付 section（关闭遮罩也不能
+  // 看到配置）。identity 未定时同样不挂载，避免权限判定前的空窗。
+  const isPaymentTab = tab === 'payment'
+  const complianceQuery = useQuery({
+    queryKey: PAYMENT_COMPLIANCE_QUERY_KEY,
+    queryFn: ({ signal }) => fetchPaymentCompliance(signal),
+    enabled: isPaymentTab && canManage,
+    retry: false,
+    staleTime: 30_000,
+  })
+  const paymentNeedsGate =
+    isPaymentTab &&
+    canManage &&
+    complianceQuery.isSuccess &&
+    complianceQuery.data.confirmed !== true
+  const paymentBlocked =
+    isPaymentTab &&
+    (meQuery.isPending ||
+      (canManage && (complianceQuery.isPending || complianceQuery.isError || paymentNeedsGate)))
 
   const [dirtySections, setDirtySections] = useState<ReadonlySet<string>>(new Set())
   const [pendingTab, setPendingTab] = useState<SettingsTab | null>(null)
@@ -179,15 +208,62 @@ export function SettingsShell({ tab, onTabChange }: SettingsShellProps) {
         aria-labelledby={`settings-tab-${tab}`}
         className="flex flex-col gap-4"
       >
-        <p className="text-sm text-ink-2">{t(activeTab.descriptionKey)}</p>
-        {sections.map((section) => (
-          <SettingsSectionForm
-            key={section.id}
-            config={section}
-            readOnly={!canManage}
-            onDirtyChange={handleDirtyChange}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-ink-2">{t(activeTab.descriptionKey)}</p>
+          {isPaymentTab && canManage && complianceQuery.data?.confirmed ? (
+            <StatusBadge variant="success">
+              {t('settings.payment_compliance.confirmed_badge')}
+            </StatusBadge>
+          ) : null}
+        </div>
+        {paymentBlocked ? (
+          paymentNeedsGate ? (
+            <p role="status" className="text-sm text-ink-2">
+              {t('settings.payment_compliance.blocked_hint')}
+            </p>
+          ) : complianceQuery.isError ? (
+            <div className="flex items-center gap-3">
+              <FormAlert tone="danger">
+                {t('settings.payment_compliance.status_error')}
+              </FormAlert>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  void complianceQuery.refetch()
+                }}
+              >
+                {t('settings.shell.retry')}
+              </Button>
+            </div>
+          ) : (
+            <p role="status" className="text-sm text-ink-2">
+              {t('settings.payment_compliance.status_loading')}
+            </p>
+          )
+        ) : (
+          sections.map((section) => (
+            <SettingsSectionForm
+              key={section.id}
+              config={section}
+              readOnly={!canManage}
+              onDirtyChange={handleDirtyChange}
+            />
+          ))
+        )}
+        {/*
+         * 支付 Tab 首次进入的合规确认（modules-08 §3.4）。取消/关闭由
+         * onCancel 切到非支付 Tab，因此未确认时 section 永远不会挂载。
+         */}
+        {paymentNeedsGate ? (
+          <PaymentComplianceGate
+            open
+            expectedText={t('settings.payment_compliance.expected_text')}
+            onCancel={() => onTabChange('site')}
+            onConfirmed={(status: PaymentComplianceStatus) => {
+              queryClient.setQueryData(PAYMENT_COMPLIANCE_QUERY_KEY, status)
+            }}
           />
-        ))}
+        ) : null}
         {/*
          * 通知渠道内的「通知模板」入口卡（UI §6.9）：只做导航与覆盖概况，
          * 不是 settings section，因此不参与 section 级保存/脏标记。

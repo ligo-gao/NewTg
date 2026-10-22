@@ -557,6 +557,10 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			// 保证「测试通过」意味着真实投递的签名/目标配置可用。
 			Webhook: notify.NewWebhookSender(deps.Config, deps.Sealer),
 			Redis:   deps.Redis,
+			// modules-08 §3.4：支付设置 Tab 的首次进入合规确认。持久化载体
+			// 是 users.payment_compliance_confirmed_at（per-admin），审计面
+			// 仍由 audit_logs 承担 who/when。
+			Compliance: store.NewPaymentComplianceRepo(deps.DB),
 		})
 		if err != nil {
 			return nil, err

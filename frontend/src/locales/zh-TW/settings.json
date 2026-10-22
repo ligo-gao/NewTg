@@ -63,6 +63,22 @@
     "cross_webhook_url": "啟用 Webhook 時必須填寫端點 URL。",
     "cross_webhook_secret": "啟用 Webhook 時必須設定簽章密鑰。"
   },
+  "payment_compliance": {
+    "title": "支付設定合規確認",
+    "description": "開啟支付設定前，請確認您的合規責任。",
+    "responsibility": "您負責本站支付閘道的設定：妥善保管金鑰、遵守支付管道條款與當地法規，並透過管道處理退款與爭議。",
+    "input_label": "確認文字",
+    "instruction": "請輸入「{text}」以繼續",
+    "expected_text": "我已了解支付合规责任",
+    "cancel": "取消",
+    "confirm": "確認",
+    "confirming": "確認中…",
+    "error_mismatch": "文字不符，請輸入完全一致的短語後重試。",
+    "status_loading": "正在檢查支付合規確認狀態…",
+    "status_error": "無法讀取支付合規確認狀態。",
+    "blocked_hint": "完成合規確認前，支付設定保持隱藏。",
+    "confirmed_badge": "已完成合規確認"
+  },
   "tab": {
     "site": "網站",
     "auth": "驗證",

@@ -24,25 +24,28 @@ type User struct {
 	EmailVerifiedAt *time.Time `gorm:"column:email_verified_at"`
 	// PasswordHash 可为 NULL：OAuth 即时注册用户没有口令，只能走 OAuth
 	// 或之后自行设密码（platform-01 §1 / R-01-11），故用指针区分「无口令」。
-	PasswordHash            *string   `gorm:"column:password_hash"`
-	Role                    string    `gorm:"column:role"`
-	Status                  string    `gorm:"column:status"`
-	Balance                 int64     `gorm:"column:balance"`
-	Group                   string    `gorm:"column:group"` // SQL 标识符引用由 dialector 负责，tag 只写列名（platform-04 §3.7 V8）
-	AdminPermissions        []byte    `gorm:"column:admin_permissions"`
-	TOTPSecretEnc           []byte    `gorm:"column:totp_secret"` // DB 列名 totp_secret；内容是 AES-256-GCM 密文（§1）
-	TOTPEnabled             bool      `gorm:"column:totp_enabled"`
-	BackupCodes             []byte    `gorm:"column:backup_codes"` // jsonb 哈希数组，不存明文（§1）
-	Language                string    `gorm:"column:language"`
-	AvatarURL               *string   `gorm:"column:avatar_url"`
-	Aff                     *string   `gorm:"column:aff"`
-	Remark                  *string   `gorm:"column:remark"`
-	NotificationPreferences []byte    `gorm:"column:notification_preferences"`
-	SidebarModules          []byte    `gorm:"column:sidebar_modules"` // jsonb 稀疏覆盖（§1 / B-16）
-	RecordIPLog             bool      `gorm:"column:record_ip_log"`
-	MustChangePassword      bool      `gorm:"column:must_change_password"` // R-02：临时口令强制改密
-	CreatedAt               time.Time `gorm:"column:created_at"`
-	UpdatedAt               time.Time `gorm:"column:updated_at"`
+	PasswordHash            *string `gorm:"column:password_hash"`
+	Role                    string  `gorm:"column:role"`
+	Status                  string  `gorm:"column:status"`
+	Balance                 int64   `gorm:"column:balance"`
+	Group                   string  `gorm:"column:group"` // SQL 标识符引用由 dialector 负责，tag 只写列名（platform-04 §3.7 V8）
+	AdminPermissions        []byte  `gorm:"column:admin_permissions"`
+	TOTPSecretEnc           []byte  `gorm:"column:totp_secret"` // DB 列名 totp_secret；内容是 AES-256-GCM 密文（§1）
+	TOTPEnabled             bool    `gorm:"column:totp_enabled"`
+	BackupCodes             []byte  `gorm:"column:backup_codes"` // jsonb 哈希数组，不存明文（§1）
+	Language                string  `gorm:"column:language"`
+	AvatarURL               *string `gorm:"column:avatar_url"`
+	Aff                     *string `gorm:"column:aff"`
+	Remark                  *string `gorm:"column:remark"`
+	NotificationPreferences []byte  `gorm:"column:notification_preferences"`
+	SidebarModules          []byte  `gorm:"column:sidebar_modules"` // jsonb 稀疏覆盖（§1 / B-16）
+	RecordIPLog             bool    `gorm:"column:record_ip_log"`
+	MustChangePassword      bool    `gorm:"column:must_change_password"` // R-02：临时口令强制改密
+	// PaymentComplianceConfirmedAt 是管理员首次确认支付设置合规责任的时刻
+	// （modules-08 §3.4）。NULL=未确认；审计日志仍是 who/when 的权威面。
+	PaymentComplianceConfirmedAt *time.Time `gorm:"column:payment_compliance_confirmed_at"`
+	CreatedAt                    time.Time  `gorm:"column:created_at"`
+	UpdatedAt                    time.Time  `gorm:"column:updated_at"`
 }
 
 // TableName 返回 GORM 表名。

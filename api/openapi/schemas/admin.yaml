@@ -3464,6 +3464,33 @@ schemas:
         additionalProperties: true
         description: 本次实际写入的键与归一化后的值。
 
+  # 支付设置 Tab 的合规确认（modules-08 §3.4）。确认状态按管理员持久化；
+  # 首次时刻由 users.payment_compliance_confirmed_at 承载。
+  PaymentComplianceStatus:
+    type: object
+    additionalProperties: false
+    required: [confirmed, confirmed_at]
+    properties:
+      confirmed:
+        type: boolean
+        description: 该管理员是否已确认支付设置合规责任。
+      confirmed_at:
+        type: string
+        format: date-time
+        nullable: true
+        description: 首次确认时刻；`confirmed=false` 时为 null。
+
+  PaymentComplianceConfirmRequest:
+    type: object
+    additionalProperties: false
+    required: [confirmation]
+    properties:
+      confirmation:
+        type: string
+        description: |
+          精确确认文本，必须逐字符等于「我已了解支付合规责任」。
+          前后空白、标点或其它语言均返回 400（服务端校验，零写入）。
+
   # ---------------------------------------------------------------------------
   # W17-2 系统任务（billing-06 §13.4.1 / §13.5.1）。字段与 worker.TaskSummary /
   # worker.Run 逐一对账；扩展字段（description/concurrency/last_duration_ms）

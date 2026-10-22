@@ -28,12 +28,23 @@ import (
 	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/settings"
+	"newtg/gateway/internal/store"
 )
 
 // SettingsService 是设置服务的测试接缝（生产为 *settings.Service）。
 type SettingsService interface {
 	Get(ctx context.Context, section string) (settings.SectionView, error)
 	Put(ctx context.Context, in settings.UpdateInput) (settings.UpdateResult, error)
+}
+
+// PaymentComplianceStore 是支付设置合规确认的持久化接缝
+// （生产为 *store.PaymentComplianceRepo）。
+//
+// Status 返回首次确认时刻与是否已确认；Confirm 幂等写入并返回首次时刻与
+// 本次是否新写入。nil 接缝表示未装配（单测装配），此时不挂载两个端点。
+type PaymentComplianceStore interface {
+	Status(ctx context.Context, userID int64) (time.Time, bool, error)
+	Confirm(ctx context.Context, userID int64) (time.Time, bool, error)
 }
 
 // SettingsHandlerConfig 是设置端点的装配输入。
@@ -49,6 +60,9 @@ type SettingsHandlerConfig struct {
 	Webhook WebhookTester
 	// Redis 是测试 Webhook 的管理员限流桶；nil 时 fail-open（只读探测口径）。
 	Redis *redis.Client
+	// Compliance 是支付设置合规确认的持久化接缝；nil 时不挂载
+	// /api/settings/payment-compliance（纯设置单测装配）。
+	Compliance PaymentComplianceStore
 }
 
 // WebhookTester 是测试发送的最小能力集（生产为 *notify.WebhookSender）。
@@ -74,6 +88,7 @@ type SettingsHandlers struct {
 	log             *slog.Logger
 	webhook         WebhookTester
 	rdb             *redis.Client
+	compliance      PaymentComplianceStore
 }
 
 var settingsUpdateAction = rbac.AuthzAction{ResourceKind: "settings", ActionName: "update"}
@@ -90,6 +105,12 @@ var settingsTestWebhookAction = rbac.AuthzAction{ResourceKind: "settings", Actio
 // settingsResumeWebhookAction 是恢复 Webhook 推送的写策略键。端点没有请求体，
 // 与 test_webhook 一样登记空字段集（RBAC 对未登记写动作失败关闭）。
 var settingsResumeWebhookAction = rbac.AuthzAction{ResourceKind: "settings", ActionName: "resume_webhook"}
+
+// settingsPaymentComplianceAction 是支付设置合规确认的写策略键。请求体只有
+// 精确文本 `confirmation`；文本比对在服务端完成，不能只信前端的禁用态。
+var settingsPaymentComplianceAction = rbac.AuthzAction{
+	ResourceKind: "settings", ActionName: "payment_compliance_confirm",
+}
 
 // NewSettingsHandlers 构造设置端点。
 func NewSettingsHandlers(cfg SettingsHandlerConfig) (*SettingsHandlers, error) {
@@ -120,10 +141,14 @@ func NewSettingsHandlers(cfg SettingsHandlerConfig) (*SettingsHandlers, error) {
 	}
 	authz.SetWritePolicy(settingsTestWebhookAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{}})
 	authz.SetWritePolicy(settingsResumeWebhookAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{}})
+	// 合规确认只接受一个字段；文本值本身在 handler 里做精确比对。
+	authz.SetWritePolicy(settingsPaymentComplianceAction, &rbac.FieldPolicy{
+		Fields: map[string]*rbac.FieldPolicy{"confirmation": nil},
+	})
 	return &SettingsHandlers{
 		service: cfg.Service, authz: authz, authzConfigured: cfg.Authz != nil,
 		audit: cfg.Audit, idem: idem, log: log,
-		webhook: cfg.Webhook, rdb: cfg.Redis,
+		webhook: cfg.Webhook, rdb: cfg.Redis, compliance: cfg.Compliance,
 	}, nil
 }
 
@@ -150,6 +175,21 @@ func (h *SettingsHandlers) Register(mux *http.ServeMux) {
 	// 它改变的是出站投递状态，不是普通设置值，但仍属于设置管理面。
 	mux.Handle("POST /api/settings/notify-webhook:resume",
 		h.authz.Handler(rbac.PermSettingsManage, settingsResumeWebhookAction)(http.HandlerFunc(h.handleResumeWebhook)))
+	// 支付设置合规确认（modules-08 §3.4）。GET 是读面（已确认的管理员不再
+	// 提示），POST 是写面（首次确认并写审计）。两者都要求 settings:manage：
+	// 能看支付配置的人必须已经确认，不能靠前端隐藏绕过。
+	if h.compliance != nil {
+		getCompliance := http.Handler(http.HandlerFunc(h.handleGetPaymentCompliance))
+		if h.authzConfigured {
+			getCompliance = h.authz.Handler(rbac.PermSettingsManage, settingsReadAction)(getCompliance)
+		} else {
+			getCompliance = requireAdminRole(getCompliance)
+		}
+		mux.Handle("GET /api/settings/payment-compliance", getCompliance)
+		mux.Handle("POST /api/settings/payment-compliance",
+			h.authz.Handler(rbac.PermSettingsManage, settingsPaymentComplianceAction)(
+				http.HandlerFunc(h.handleConfirmPaymentCompliance)))
+	}
 }
 
 func (h *SettingsHandlers) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -280,6 +320,110 @@ func (h *SettingsHandlers) writeUpdateAudit(r *http.Request, section string, act
 		After:      after,
 	}
 	_ = writeAuditEvent(r.Context(), h.audit, event)
+}
+
+// paymentComplianceConfirmationText 是 modules-08 §3.4 冻结的精确确认文本。
+// 服务端必须逐字符比对：前端按钮禁用只是可用性提示，不能作为授权证据。
+const paymentComplianceConfirmationText = "我已了解支付合规责任"
+
+type paymentComplianceRequest struct {
+	Confirmation string `json:"confirmation"`
+}
+
+type paymentComplianceResponse struct {
+	Confirmed   bool       `json:"confirmed"`
+	ConfirmedAt *time.Time `json:"confirmed_at"`
+}
+
+func (h *SettingsHandlers) handleGetPaymentCompliance(w http.ResponseWriter, r *http.Request) {
+	principal, ok := auth.PrincipalFrom(r.Context())
+	if !ok || principal == nil || principal.UserID == 0 {
+		writeUnauthorized(w)
+		return
+	}
+	at, confirmed, err := h.compliance.Status(r.Context(), principal.UserID)
+	if err != nil {
+		h.writePaymentComplianceError(w, err)
+		return
+	}
+	var confirmedAt *time.Time
+	if confirmed {
+		value := at
+		confirmedAt = &value
+	}
+	writeJSON(w, http.StatusOK, paymentComplianceResponse{
+		Confirmed:   confirmed,
+		ConfirmedAt: confirmedAt,
+	})
+}
+
+func (h *SettingsHandlers) handleConfirmPaymentCompliance(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxAuthBodyBytes))
+	if err != nil {
+		writeProblemDetail(w, http.StatusBadRequest, authProblemBadRequest,
+			"Invalid request", "unable to read request body")
+		return
+	}
+	var req paymentComplianceRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeProblemDetail(w, http.StatusBadRequest, authProblemBadRequest,
+			"Invalid request", "invalid JSON body")
+		return
+	}
+	// 精确文本，不做 trim/大小写归一：设计冻结的是「输入指定文本」。
+	if req.Confirmation != paymentComplianceConfirmationText {
+		writeJSONBytes(w, http.StatusBadRequest, settingsProblemWithFields(
+			http.StatusBadRequest, "Invalid confirmation",
+			"confirmation text does not match", "confirmation"))
+		return
+	}
+
+	principal, ok := auth.PrincipalFrom(r.Context())
+	if !ok || principal == nil || principal.UserID == 0 {
+		writeUnauthorized(w)
+		return
+	}
+	at, newly, err := h.compliance.Confirm(r.Context(), principal.UserID)
+	if err != nil {
+		h.writePaymentComplianceError(w, err)
+		return
+	}
+
+	// 只有首次写入才记审计：重复确认是幂等重放，不制造第二份同意记录。
+	if newly {
+		detail, _ := json.Marshal(map[string]any{
+			"event":        "payment_compliance_confirmed",
+			"confirmed_at": at.Format(time.RFC3339),
+		})
+		_ = writeAuditEvent(r.Context(), h.audit, audit.Event{
+			Action:     audit.ActionSettingsPaymentComplianceConfirmed,
+			Actor:      principal.UserID,
+			Method:     http.MethodPost,
+			Route:      "/api/settings/payment-compliance",
+			StatusCode: http.StatusOK,
+			IP:         clientIP(r),
+			UserAgent:  r.UserAgent(),
+			Detail:     detail,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, paymentComplianceResponse{
+		Confirmed:   true,
+		ConfirmedAt: &at,
+	})
+}
+
+// writePaymentComplianceError 把仓库错误映射为稳定响应。用户不存在只可能是
+// 并发删除/脏会话；用 404 而不是 500 表达「确认目标已不存在」。
+func (h *SettingsHandlers) writePaymentComplianceError(w http.ResponseWriter, err error) {
+	if errors.Is(err, store.ErrPaymentComplianceUserNotFound) {
+		writeProblemDetail(w, http.StatusNotFound, "https://newtg.dev/problems/not_found",
+			"Not Found", "user not found")
+		return
+	}
+	h.log.Error("settings: payment compliance failed", "err", err)
+	writeProblemDetail(w, http.StatusInternalServerError, authProblemInternal,
+		"Internal Server Error", "")
 }
 
 // settingsErrorFields 把服务层错误映射成状态码与文案。
