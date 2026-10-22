@@ -277,11 +277,11 @@ func TestThreeFailedFlushesMarkStalled(t *testing.T) {
 	if got := c.FailureStreak(); got != 3 {
 		t.Fatalf("failure streak = %d, want 3", got)
 	}
-	// 读面必须立即暴露停摆：零 updatedAt 让 handler 进入闸门。
-	if _, updated, err := c.ModelPerfBuckets(context.Background(), start, clock.Now(), "1m", ""); err != nil {
-		t.Fatalf("ModelPerfBuckets: %v", err)
-	} else if !updated.IsZero() {
-		t.Fatalf("3× failure must expose zero updatedAt, got %v", updated)
+	// 读面必须立即暴露停摆：返回 ReasonPipelineStalled，让 handler 进入闸门。
+	_, _, queryErr := c.ModelPerfBuckets(context.Background(), start, clock.Now(), "1m", "")
+	var unavailable *UnavailableError
+	if !errors.As(queryErr, &unavailable) || unavailable.Reason != ReasonPipelineStalled {
+		t.Fatalf("3× failure query error = %v, want reason %q", queryErr, ReasonPipelineStalled)
 	}
 	// 恢复后一次成功 flush 必须清除停摆标记。
 	clock.Advance(time.Minute)
@@ -388,5 +388,70 @@ func TestModelPerfBucketsUsesLastDataTime(t *testing.T) {
 	}
 	if !updated.Equal(clock.Now()) {
 		t.Fatalf("updatedAt = %v, want last data flush %v", updated, clock.Now())
+	}
+}
+
+type fakeRetentionStore struct {
+	*memStore
+	mu    sync.Mutex
+	calls int
+	opts  RetentionOptions
+}
+
+func (f *fakeRetentionStore) RunRetention(_ context.Context, opts RetentionOptions) (RetentionResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.opts = opts
+	return RetentionResult{Locked: true}, nil
+}
+
+func (f *fakeRetentionStore) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func TestMaybeRunRetentionHonorsInterval(t *testing.T) {
+	start := time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC)
+	clock := newFakeClock(start)
+	store := &fakeRetentionStore{memStore: newMemStore()}
+	c, err := NewCollector(Config{
+		Store:             store,
+		FlushInterval:     time.Minute,
+		RetentionInterval: time.Hour,
+		Now:               clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("NewCollector: %v", err)
+	}
+	// 构造时 lastRetention=start：30 分钟内不应触发。
+	clock.Advance(30 * time.Minute)
+	c.maybeRunRetention(context.Background(), clock.Now())
+	if got := store.callCount(); got != 0 {
+		t.Fatalf("retention calls = %d, want 0 before interval", got)
+	}
+	clock.Advance(31 * time.Minute)
+	c.maybeRunRetention(context.Background(), clock.Now())
+	if got := store.callCount(); got != 1 {
+		t.Fatalf("retention calls = %d, want 1 after interval", got)
+	}
+	if store.opts.MinuteRetention != MinuteRetention {
+		t.Fatalf("minute retention = %v, want %v", store.opts.MinuteRetention, MinuteRetention)
+	}
+}
+
+func TestUnavailableSourceCarriesReason(t *testing.T) {
+	source := NewUnavailableSource(ReasonDSNMissing)
+	_, _, err := source.ModelPerfBuckets(context.Background(), time.Now(), time.Now(), "1m", "")
+	var unavailable *UnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("error = %v, want UnavailableError", err)
+	}
+	if unavailable.Reason != ReasonDSNMissing {
+		t.Fatalf("reason = %q, want %q", unavailable.Reason, ReasonDSNMissing)
+	}
+	if NewUnavailableSource("").reason != ReasonStorageUnavailable {
+		t.Fatalf("empty reason must fall back to storage unavailable")
 	}
 }

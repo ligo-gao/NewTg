@@ -13,6 +13,7 @@ package httpapi
 // comparison（24h 成功率并列值），绝不是看板数据源。
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"sort"
@@ -145,6 +146,10 @@ type modelPerfPipeline struct {
 	// Stale 表示管道最近 3×刷写周期内没有更新（停摆 → 闸门）。与 enabled
 	// 同时为 false 时前端只显示「不可用」，不显示任何历史数字。
 	Stale bool `json:"stale"`
+	// Reason 是稳定、脱敏的不可用原因码（collection_disabled /
+	// metrics_dsn_missing / metrics_storage_unavailable /
+	// metrics_query_failed / pipeline_stalled / no_data）。正常返回时省略。
+	Reason string `json:"reason,omitempty"`
 }
 
 type modelPerfComparison struct {
@@ -480,26 +485,29 @@ func (h *UsageLogHandlers) handleModelPerf(w http.ResponseWriter, r *http.Reques
 	}
 	window := modelPerfWindow{Range: rangeName, Start: start, End: end, Granularity: granularity}
 
-	writeGate := func(stale bool, updatedAt *time.Time) {
+	writeGate := func(reason string, stale bool, updatedAt *time.Time) {
 		writeJSON(w, http.StatusOK, modelPerfResponse{
 			Window:    window,
 			Buckets:   []modelPerfBucketPoint{},
 			Summary:   modelPerfSummary{},
 			Incidents: []modelPerfIncident{},
 			Models:    []modelPerfModelRow{},
-			Pipeline:  modelPerfPipeline{Enabled: false, UpdatedAt: updatedAt, Stale: stale},
+			Pipeline: modelPerfPipeline{
+				Enabled: false, UpdatedAt: updatedAt, Stale: stale, Reason: reason,
+			},
 		})
 	}
 
 	if h.perf == nil {
-		// 采集管道未装配：显式闸门，绝不回落 usage_logs。
-		writeGate(true, nil)
+		// 采集管道未装配（PERF_METRICS_ENABLED=false）：显式闸门，绝不回落
+		// usage_logs；reason 让前端区分「配置关闭」与「存储不可用」。
+		writeGate(perfmetrics.ReasonDisabled, true, nil)
 		return
 	}
 	buckets, updatedAt, err := h.perf.ModelPerfBuckets(r.Context(), start, end, granularity, model)
 	if err != nil {
 		h.log.Warn("model perf: metrics query failed", "error", err)
-		writeGate(true, nil)
+		writeGate(modelPerfUnavailableReason(err), true, nil)
 		return
 	}
 	var updatedPtr *time.Time
@@ -508,8 +516,13 @@ func (h *UsageLogHandlers) handleModelPerf(w http.ResponseWriter, r *http.Reques
 		updatedPtr = &utc
 	}
 	// 停摆判定：最近 3×刷写周期内无任何桶更新（platform-05 §3.5.5 条件 3）。
-	if updatedAt.IsZero() || h.now().Sub(updatedAt.UTC()) > 3*h.perfFlush {
-		writeGate(true, updatedPtr)
+	// 从未产生过数据与「有数据但停摆」用不同 reason 区分。
+	if updatedAt.IsZero() {
+		writeGate(perfmetrics.ReasonNoData, true, updatedPtr)
+		return
+	}
+	if h.now().Sub(updatedAt.UTC()) > 3*h.perfFlush {
+		writeGate(perfmetrics.ReasonPipelineStalled, true, updatedPtr)
 		return
 	}
 
@@ -614,6 +627,20 @@ func (h *UsageLogHandlers) handleModelPerf(w http.ResponseWriter, r *http.Reques
 	}
 	response.Comparison = h.modelPerfComparison(r, start, end, rangeName, granularity, model, overall)
 	writeJSON(w, http.StatusOK, response)
+}
+
+// modelPerfUnavailableReason 把指标库错误收敛为稳定、脱敏的 reason 码。
+// UnavailableError 携带明确原因（DSN 缺失/存储不可用）；其余查询错误统一
+// 记为 metrics_query_failed，绝不把底层错误原文放进响应。
+func modelPerfUnavailableReason(err error) string {
+	var unavailable *perfmetrics.UnavailableError
+	if errors.As(err, &unavailable) {
+		if unavailable.Reason != "" {
+			return unavailable.Reason
+		}
+		return perfmetrics.ReasonStorageUnavailable
+	}
+	return perfmetrics.ReasonQueryFailed
 }
 
 // modelPerfIncidentOngoing 报告最后一段事故是否「仍在进行」：最后一段的

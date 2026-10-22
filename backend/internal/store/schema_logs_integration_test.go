@@ -26,12 +26,10 @@ import (
 //	NEWTG_TEST_DB_DSN=postgres://newtg:newtg@localhost:55432/newtg_test?sslmode=disable \
 //	  go test -tags=integration ./internal/store/ -run TestLogsSchema -v
 
-// logsWantColumns 日志库逐表列数（platform-01 §5 = 14、§12 = 25；
-// model_perf_buckets = 32，见 G-M6C-13 迁移）。
+// logsWantColumns 日志库逐表列数（platform-01 §5 = 14、§12 = 25）。
 var logsWantColumns = map[string]int{
-	"usage_logs":         25,
-	"audit_logs":         14,
-	"model_perf_buckets": 32,
+	"usage_logs": 25,
+	"audit_logs": 14,
 }
 
 // logsPartitionLookaheadMonths 是日志迁移预建的分区窗口（R-56：当月 + 下 11
@@ -99,8 +97,7 @@ func openLogsTestDB(t *testing.T) *sql.DB {
 func TestLogsSchema(t *testing.T) {
 	db := openLogsTestDB(t)
 
-	// (a) 恰三张逻辑表（分区子表不算独立表），usage_logs 为分区表（relkind='p'）。
-	// model_perf_buckets 是 G-M6C-13 的模型性能采集落点（观测面，非计费真源）。
+	// (a) 恰两张逻辑表（分区子表不算独立表），usage_logs 为分区表（relkind='p'）。
 	t.Run("tables", func(t *testing.T) {
 		rows, err := db.Query(`SELECT c.relname
 			FROM pg_class c
@@ -124,7 +121,7 @@ func TestLogsSchema(t *testing.T) {
 		if err := rows.Err(); err != nil {
 			t.Fatalf("rows: %v", err)
 		}
-		want := []string{"audit_logs", "model_perf_buckets", "usage_logs"}
+		want := []string{"audit_logs", "usage_logs"}
 		if fmt.Sprint(got) != fmt.Sprint(want) {
 			t.Fatalf("日志库表集合 = %v，want %v", got, want)
 		}

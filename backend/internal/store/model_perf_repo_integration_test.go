@@ -14,69 +14,62 @@ import (
 	"newtg/gateway/internal/perfmetrics"
 )
 
-// G-M6C-13 模型性能存储集成测试。与既有集成测试同一口径：
+// G-M6C-13 独立指标库存储/保留集成测试。与既有集成测试同一口径：
 //
-//	NEWTG_TEST_LOGS_DSN='postgres://newtg:newtg@localhost:55432/newtg_logs?sslmode=disable' \
+//	NEWTG_TEST_METRICS_DSN='postgres://newtg:newtg@localhost:55432/newtg_metrics?sslmode=disable' \
 //	go test -tags=integration ./internal/store/ -run TestModelPerf -p 1 -v
 //
-// 未设置 DSN 时 Skip。测试只使用 node='test-%' 的行并在 Cleanup 删除。
+// 未设置 DSN 时 Skip。测试库必须是**独立指标库**（不是 newtg_logs / newtg）；
+// 用例进入时 TRUNCATE 两张指标表，互不影响。
 
-const modelPerfMigrationUp = "../../migrations-logs/20261024110000_model_perf_buckets.up.sql"
-const modelPerfMigrationDown = "../../migrations-logs/20261024110000_model_perf_buckets.down.sql"
+const (
+	modelPerfMigrationUp   = "../../migrations-metrics/20261024110000_model_perf_buckets.up.sql"
+	modelPerfMigrationDown = "../../migrations-metrics/20261024110000_model_perf_buckets.down.sql"
+)
 
-func openModelPerfTestDB(t *testing.T) *sql.DB {
+func openMetricsTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	dsn := os.Getenv("NEWTG_TEST_LOGS_DSN")
+	dsn := os.Getenv("NEWTG_TEST_METRICS_DSN")
 	if dsn == "" {
-		t.Skip("NEWTG_TEST_LOGS_DSN 未设置，跳过模型性能存储集成测试")
+		t.Skip("NEWTG_TEST_METRICS_DSN 未设置，跳过模型性能指标库集成测试")
 	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		t.Fatalf("open logs db: %v", err)
+		t.Fatalf("open metrics db: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
-		t.Fatalf("ping logs db: %v", err)
+		t.Fatalf("ping metrics db: %v", err)
 	}
-	ensureModelPerfTable(t, db)
-	// 同包测试串行执行：进入每个用例前清掉上次失败留下的 test-% 行，避免
-	// 绝对快照测试读到脏数据。
-	if _, err := db.Exec(`DELETE FROM model_perf_buckets WHERE node LIKE 'test-%'`); err != nil {
+	ensureModelPerfTables(t, db)
+	// 独立指标库只服务本包用例；串行执行（-p 1）下每次进入清空。
+	if _, err := db.Exec(`TRUNCATE model_perf_buckets, model_perf_hourly_buckets`); err != nil {
 		_ = db.Close()
-		t.Fatalf("clear model_perf_buckets: %v", err)
+		t.Fatalf("truncate model perf tables: %v", err)
 	}
-	t.Cleanup(func() {
-		if _, err := db.Exec(`DELETE FROM model_perf_buckets WHERE node LIKE 'test-%'`); err != nil {
-			t.Logf("cleanup model_perf_buckets: %v", err)
-		}
-		_ = db.Close()
-	})
+	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 
-func ensureModelPerfTable(t *testing.T, db *sql.DB) {
+func ensureModelPerfTables(t *testing.T, db *sql.DB) {
 	t.Helper()
-	var exists bool
-	if err := db.QueryRow(`SELECT to_regclass('public.model_perf_buckets') IS NOT NULL`).Scan(&exists); err != nil {
-		t.Fatalf("check model_perf_buckets: %v", err)
-	}
-	if exists {
-		return
-	}
 	raw, err := os.ReadFile(modelPerfMigrationUp)
 	if err != nil {
-		t.Fatalf("read migration up: %v", err)
+		t.Fatalf("read metrics migration up: %v", err)
 	}
+	// 迁移 SQL 全部 IF NOT EXISTS，重复执行是幂等 no-op；角色守卫允许在
+	// 没有 newtg_app/newtg_backup 的测试库里执行。
 	if _, err := db.Exec(string(raw)); err != nil {
-		t.Fatalf("apply model perf migration: %v", err)
+		t.Fatalf("apply metrics migration: %v", err)
 	}
 }
 
 func modelPerfTestSnapshot(start time.Time, model, node, epoch string, seq uint64,
 	success, failed, refused int64) perfmetrics.Snapshot {
 
+	total := success + failed + refused
 	return perfmetrics.Snapshot{
 		BucketStart:    start.UTC(),
 		Model:          model,
@@ -86,14 +79,14 @@ func modelPerfTestSnapshot(start time.Time, model, node, epoch string, seq uint6
 		Success:        success,
 		Error:          failed,
 		Refused:        refused,
-		LatencyCount:   success + failed + refused,
-		LatencySumMS:   100 * float64(success+failed+refused),
-		LatencyBuckets: [perfmetrics.HistogramBuckets]int64{0, success + failed + refused},
+		LatencyCount:   total,
+		LatencySumMS:   100 * float64(total),
+		LatencyBuckets: [perfmetrics.HistogramBuckets]int64{0, total},
 	}
 }
 
 func TestModelPerfRepoUpsertIsAbsoluteSnapshot(t *testing.T) {
-	db := openModelPerfTestDB(t)
+	db := openMetricsTestDB(t)
 	repo := NewModelPerfRepo(db)
 	ctx := context.Background()
 	start := time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC)
@@ -145,7 +138,7 @@ func TestModelPerfRepoUpsertIsAbsoluteSnapshot(t *testing.T) {
 }
 
 func TestModelPerfRepoSumsNodesAndEpochs(t *testing.T) {
-	db := openModelPerfTestDB(t)
+	db := openMetricsTestDB(t)
 	repo := NewModelPerfRepo(db)
 	ctx := context.Background()
 	start := time.Date(2026, 10, 22, 11, 0, 0, 0, time.UTC)
@@ -174,10 +167,12 @@ func TestModelPerfRepoSumsNodesAndEpochs(t *testing.T) {
 }
 
 func TestModelPerfRepoHourRollupKeepsMinuteJudgement(t *testing.T) {
-	db := openModelPerfTestDB(t)
+	db := openMetricsTestDB(t)
 	repo := NewModelPerfRepo(db)
 	ctx := context.Background()
-	hour := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	// 用「当前时刻向前 2 小时」构造窗口，确保落在分钟表保留的 7 天内，
+	// 1h 查询走分钟行在线 rollup 分支。
+	hour := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Hour)
 	epoch := "44444444-4444-4444-8444-444444444444"
 	snaps := []perfmetrics.Snapshot{
 		// 5 个样本全成功 -> 该分钟可用。
@@ -207,8 +202,75 @@ func TestModelPerfRepoHourRollupKeepsMinuteJudgement(t *testing.T) {
 	}
 }
 
+func TestModelPerfRepoReadsMaterializedHourlyTable(t *testing.T) {
+	db := openMetricsTestDB(t)
+	repo := NewModelPerfRepo(db)
+	ctx := context.Background()
+	// 10 天前已在保留期之外（>7d），1h 查询必须读小时表而不是分钟表。
+	hour := time.Now().UTC().Add(-10 * 24 * time.Hour).Truncate(time.Hour)
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO model_perf_hourly_buckets (
+			bucket_start, model, success, error, refused, latency_count, latency_sum_ms,
+			lat_b1, ttft_count, ttft_b0, completion_tokens, generation_seconds,
+			observed_seconds, up_seconds)
+		VALUES ($1, 'hour-old', 5, 0, 0, 5, 500, 5, 5, 5, 100, 2, 60, 60)`, hour); err != nil {
+		t.Fatalf("insert hourly row: %v", err)
+	}
+	buckets, updated, err := repo.ModelPerfBuckets(ctx, hour, hour.Add(time.Hour), "1h", "hour-old")
+	if err != nil {
+		t.Fatalf("query hourly table: %v", err)
+	}
+	if len(buckets) != 1 {
+		t.Fatalf("buckets = %d, want 1", len(buckets))
+	}
+	got := buckets[0]
+	if !got.Start.Equal(hour) || got.Success != 5 || got.LatencyCount != 5 ||
+		got.LatencyBuckets[1] != 5 || got.TTFTCount != 5 || got.CompletionTokens != 100 {
+		t.Fatalf("hourly bucket = %+v", got)
+	}
+	if got.ObservedSeconds != 60 || got.UpSeconds != 60 {
+		t.Fatalf("hourly availability = (%v,%v), want (60,60)", got.ObservedSeconds, got.UpSeconds)
+	}
+	if updated.IsZero() {
+		t.Fatalf("updatedAt must be non-zero")
+	}
+}
+
+func TestModelPerfRepoHourQueryMergesOldHoursAndRecentMinutes(t *testing.T) {
+	db := openMetricsTestDB(t)
+	repo := NewModelPerfRepo(db)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	oldHour := now.Add(-10 * 24 * time.Hour).Truncate(time.Hour)
+	recentHour := now.Add(-time.Hour).Truncate(time.Hour)
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO model_perf_hourly_buckets (bucket_start, model, success, observed_seconds, up_seconds)
+		VALUES ($1, 'merge-model', 3, 60, 60)`, oldHour); err != nil {
+		t.Fatalf("insert old hour: %v", err)
+	}
+	epoch := "77777777-7777-4777-8777-777777777777"
+	if err := repo.UpsertBuckets(ctx, []perfmetrics.Snapshot{
+		modelPerfTestSnapshot(recentHour, "merge-model", "test-merge", epoch, 1, 4, 0, 0),
+	}); err != nil {
+		t.Fatalf("insert recent minute: %v", err)
+	}
+	buckets, _, err := repo.ModelPerfBuckets(ctx, oldHour, now, "1h", "merge-model")
+	if err != nil {
+		t.Fatalf("query merged hours: %v", err)
+	}
+	if len(buckets) != 2 {
+		t.Fatalf("buckets = %d, want 2 (old hour + recent minute rollup): %+v", len(buckets), buckets)
+	}
+	if !buckets[0].Start.Equal(oldHour) || buckets[0].Success != 3 {
+		t.Fatalf("first bucket = %+v, want old hour success=3", buckets[0])
+	}
+	if !buckets[1].Start.Equal(recentHour) || buckets[1].Success != 4 {
+		t.Fatalf("second bucket = %+v, want recent hour success=4", buckets[1])
+	}
+}
+
 func TestModelPerfRepoModelFilterAndInvalidGranularity(t *testing.T) {
-	db := openModelPerfTestDB(t)
+	db := openMetricsTestDB(t)
 	repo := NewModelPerfRepo(db)
 	ctx := context.Background()
 	start := time.Date(2026, 10, 22, 13, 0, 0, 0, time.UTC)
@@ -240,12 +302,135 @@ func TestModelPerfRepoNilDB(t *testing.T) {
 	if _, _, err := repo.ModelPerfBuckets(context.Background(), time.Now(), time.Now(), "1m", ""); err == nil {
 		t.Fatalf("nil db query must fail")
 	}
+	if _, err := repo.RunRetention(context.Background(), perfmetrics.RetentionOptions{}); err == nil {
+		t.Fatalf("nil db retention must fail")
+	}
 }
 
-// TestModelPerfMigrationUpDown 在事务内验证迁移 SQL 可上可下，结束时回滚，
-// 不影响其他用例建好的表。
-func TestModelPerfMigrationUpDown(t *testing.T) {
-	db := openModelPerfTestDB(t)
+// TestModelPerfRetentionMaterializesAndCleans 验证：
+//   - 分钟→小时物化（先判定分钟可用性再累加）；
+//   - 7 天前的分钟行删除（但先物化，不丢 8 天前的数据）；
+//   - 超过 PERF_METRICS_RETENTION_DAYS 的小时行删除。
+func TestModelPerfRetentionMaterializesAndCleans(t *testing.T) {
+	db := openMetricsTestDB(t)
+	repo := NewModelPerfRepo(db)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	epoch := "66666666-6666-4666-8666-666666666666"
+
+	oldHour := now.Add(-8 * 24 * time.Hour).Truncate(time.Hour)
+	recentHour := now.Add(-time.Hour).Truncate(time.Hour)
+	snaps := []perfmetrics.Snapshot{
+		modelPerfTestSnapshot(oldHour, "ret-model", "test-ret", epoch, 1, 5, 0, 0),
+		modelPerfTestSnapshot(oldHour.Add(time.Minute), "ret-model", "test-ret", epoch, 1, 5, 0, 0),
+		modelPerfTestSnapshot(recentHour, "ret-model", "test-ret", epoch, 1, 1, 0, 0),
+	}
+	if err := repo.UpsertBuckets(ctx, snaps); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	// 一条超过 400 天的小时行必须被清理。
+	expiredHour := now.Add(-401 * 24 * time.Hour).Truncate(time.Hour)
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO model_perf_hourly_buckets (bucket_start, model, success, observed_seconds, up_seconds)
+		VALUES ($1, 'ret-model', 1, 60, 60)`, expiredHour); err != nil {
+		t.Fatalf("insert expired hour: %v", err)
+	}
+
+	result, err := repo.RunRetention(ctx, perfmetrics.RetentionOptions{
+		Now:             now,
+		MinuteRetention: 7 * 24 * time.Hour,
+		HourRetention:   400 * 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("RunRetention: %v", err)
+	}
+	if !result.Locked {
+		t.Fatalf("retention did not acquire the advisory lock")
+	}
+	if result.MinutesDeleted < 2 {
+		t.Fatalf("minutes deleted = %d, want >=2", result.MinutesDeleted)
+	}
+	if result.HoursDeleted < 1 {
+		t.Fatalf("hours deleted = %d, want >=1", result.HoursDeleted)
+	}
+
+	// 8 天前的分钟行已删除，但对应小时行已物化（success=10，观测/可用 120s）。
+	var minutes int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM model_perf_buckets WHERE bucket_start < $1`, now.Add(-7*24*time.Hour)).
+		Scan(&minutes); err != nil {
+		t.Fatalf("count old minutes: %v", err)
+	}
+	if minutes != 0 {
+		t.Fatalf("old minutes = %d, want 0", minutes)
+	}
+	var success int64
+	var observed, up float64
+	if err := db.QueryRowContext(ctx, `
+		SELECT success, observed_seconds, up_seconds FROM model_perf_hourly_buckets
+		WHERE bucket_start = $1 AND model = 'ret-model'`, oldHour).
+		Scan(&success, &observed, &up); err != nil {
+		t.Fatalf("read materialized hour: %v", err)
+	}
+	if success != 10 || observed != 120 || up != 120 {
+		t.Fatalf("materialized hour = (%d,%v,%v), want (10,120,120)", success, observed, up)
+	}
+
+	// 7 天内的分钟行保留。
+	var recentMinutes int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM model_perf_buckets WHERE bucket_start = $1 AND model = 'ret-model'`, recentHour).
+		Scan(&recentMinutes); err != nil {
+		t.Fatalf("count recent minutes: %v", err)
+	}
+	if recentMinutes != 1 {
+		t.Fatalf("recent minutes = %d, want 1", recentMinutes)
+	}
+
+	// 超过 400 天的小时行已删除。
+	var expiredRows int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM model_perf_hourly_buckets WHERE bucket_start = $1 AND model = 'ret-model'`, expiredHour).
+		Scan(&expiredRows); err != nil {
+		t.Fatalf("count expired hours: %v", err)
+	}
+	if expiredRows != 0 {
+		t.Fatalf("expired hours = %d, want 0", expiredRows)
+	}
+}
+
+func TestModelPerfRetentionSkipsWhenLocked(t *testing.T) {
+	db := openMetricsTestDB(t)
+	repo := NewModelPerfRepo(db)
+	ctx := context.Background()
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("conn: %v", err)
+	}
+	defer conn.Close()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin lock tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, modelPerfRetentionLockKey); err != nil {
+		t.Fatalf("acquire advisory lock: %v", err)
+	}
+
+	result, err := repo.RunRetention(ctx, perfmetrics.RetentionOptions{Now: time.Now()})
+	if err != nil {
+		t.Fatalf("RunRetention while locked: %v", err)
+	}
+	if result.Locked {
+		t.Fatalf("second replica must skip retention when the lock is held")
+	}
+}
+
+// TestModelPerfMetricsMigrationIdempotent 在事务内验证指标库迁移可上可下，
+// 且重复执行 up 是幂等的；结束时回滚，不影响其他用例。
+func TestModelPerfMetricsMigrationIdempotent(t *testing.T) {
+	db := openMetricsTestDB(t)
 	upSQL, err := os.ReadFile(modelPerfMigrationUp)
 	if err != nil {
 		t.Fatalf("read up: %v", err)
@@ -262,14 +447,31 @@ func TestModelPerfMigrationUpDown(t *testing.T) {
 	if _, err := tx.Exec(string(downSQL)); err != nil {
 		t.Fatalf("down: %v", err)
 	}
-	if _, err := tx.Exec(string(upSQL)); err != nil {
-		t.Fatalf("up: %v", err)
+	for i := 0; i < 2; i++ {
+		if _, err := tx.Exec(string(upSQL)); err != nil {
+			t.Fatalf("up #%d: %v", i+1, err)
+		}
 	}
-	var indexExists bool
-	if err := tx.QueryRow(`SELECT to_regclass('public.model_perf_buckets_window_idx') IS NOT NULL`).Scan(&indexExists); err != nil {
-		t.Fatalf("index check: %v", err)
+	for _, index := range []string{"model_perf_buckets_window_idx", "model_perf_hourly_buckets_window_idx"} {
+		var exists bool
+		if err := tx.QueryRow(`SELECT to_regclass($1) IS NOT NULL`, "public."+index).Scan(&exists); err != nil {
+			t.Fatalf("index check %s: %v", index, err)
+		}
+		if !exists {
+			t.Fatalf("%s missing after up migration", index)
+		}
 	}
-	if !indexExists {
-		t.Fatalf("model_perf_buckets_window_idx missing after up migration")
+	for table, want := range map[string]int{
+		"model_perf_buckets":        32,
+		"model_perf_hourly_buckets": 31,
+	} {
+		var got int
+		if err := tx.QueryRow(`SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = $1`, table).Scan(&got); err != nil {
+			t.Fatalf("column count %s: %v", table, err)
+		}
+		if got != want {
+			t.Fatalf("%s columns = %d, want %d", table, got, want)
+		}
 	}
 }

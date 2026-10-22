@@ -12,12 +12,12 @@ import (
 	"newtg/gateway/internal/perfmetrics"
 )
 
-// G-M6C-13 采集器 + PostgreSQL 仓储的端到端集成测试：
+// G-M6C-13 采集器 + 独立指标库仓储的端到端集成测试：
 // 批量 flush、停机 flush、3× 停摆、并发与错误路径。
 //
 // 运行：
 //
-//	NEWTG_TEST_LOGS_DSN='postgres://newtg:newtg@localhost:55432/newtg_logs?sslmode=disable' \
+//	NEWTG_TEST_METRICS_DSN='postgres://newtg:newtg@localhost:55432/newtg_metrics?sslmode=disable' \
 //	go test -tags=integration ./internal/store/ -run TestCollectorIntegration -p 1 -v
 
 type collectorClock struct {
@@ -65,7 +65,7 @@ func observeAt(c *perfmetrics.Collector, at time.Time, completion int64) {
 }
 
 func TestCollectorIntegrationBatchFlushAndQuery(t *testing.T) {
-	db := openModelPerfTestDB(t)
+	db := openMetricsTestDB(t)
 	repo := NewModelPerfRepo(db)
 	clock := &collectorClock{t: time.Date(2026, 10, 22, 10, 1, 10, 0, time.UTC)}
 	c := newIntegrationCollector(t, repo, clock, time.Hour)
@@ -94,7 +94,7 @@ func TestCollectorIntegrationBatchFlushAndQuery(t *testing.T) {
 }
 
 func TestCollectorIntegrationShutdownFlush(t *testing.T) {
-	db := openModelPerfTestDB(t)
+	db := openMetricsTestDB(t)
 	repo := NewModelPerfRepo(db)
 	clock := &collectorClock{t: time.Date(2026, 10, 22, 11, 0, 30, 0, time.UTC)}
 	c := newIntegrationCollector(t, repo, clock, time.Hour)
@@ -135,7 +135,7 @@ func (f *flakyStore) ModelPerfBuckets(ctx context.Context, start, end time.Time,
 }
 
 func TestCollectorIntegrationThreeFailuresStallThenRecover(t *testing.T) {
-	db := openModelPerfTestDB(t)
+	db := openMetricsTestDB(t)
 	repo := NewModelPerfRepo(db)
 	store := &flakyStore{inner: repo, fails: 3}
 	clock := &collectorClock{t: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
@@ -170,7 +170,7 @@ func TestCollectorIntegrationThreeFailuresStallThenRecover(t *testing.T) {
 }
 
 func TestCollectorIntegrationErrorPathRetainsSnapshot(t *testing.T) {
-	db := openModelPerfTestDB(t)
+	db := openMetricsTestDB(t)
 	repo := NewModelPerfRepo(db)
 	clock := &collectorClock{t: time.Date(2026, 10, 22, 13, 0, 10, 0, time.UTC)}
 	c := newIntegrationCollector(t, repo, clock, time.Minute)
@@ -191,7 +191,7 @@ func TestCollectorIntegrationErrorPathRetainsSnapshot(t *testing.T) {
 }
 
 func TestCollectorIntegrationConcurrent(t *testing.T) {
-	db := openModelPerfTestDB(t)
+	db := openMetricsTestDB(t)
 	repo := NewModelPerfRepo(db)
 	clock := &collectorClock{t: time.Date(2026, 10, 22, 14, 0, 30, 0, time.UTC)}
 	c := newIntegrationCollector(t, repo, clock, time.Hour)

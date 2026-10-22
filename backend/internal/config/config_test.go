@@ -21,6 +21,8 @@ func setRequired(t *testing.T) {
 	t.Setenv("SESSION_SECRET", "test-session-secret")
 	t.Setenv("CREDENTIAL_ENCRYPTION_KEY", "test-encryption-key")
 	t.Setenv("DB_LOGS_DSN", "postgres://app:secret@db:5432/newtg_logs?sslmode=disable")
+	// 可选指标库 DSN：默认用例显式清空，避免宿主环境变量影响断言。
+	t.Setenv("PERF_METRICS_DSN", "")
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -111,8 +113,24 @@ func TestLoadDefaults(t *testing.T) {
 	if c.PerfMetricsRetentionDays != 400 {
 		t.Errorf("PerfMetricsRetentionDays = %d, want 400", c.PerfMetricsRetentionDays)
 	}
+	if c.PerfMetricsDSN != "" {
+		t.Errorf("PerfMetricsDSN = %q, want empty (optional)", c.PerfMetricsDSN)
+	}
 	if c.TLSDMinVersion != "1.2" {
 		t.Errorf("TLSDMinVersion = %q, want 1.2", c.TLSDMinVersion)
+	}
+}
+
+func TestLoadPerfMetricsDSN(t *testing.T) {
+	setRequired(t)
+	t.Setenv("PERF_METRICS_DSN", "postgres://metrics:secret@metrics:5432/newtg_metrics?sslmode=disable")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load() unexpected error: %v", err)
+	}
+	if c.PerfMetricsDSN != "postgres://metrics:secret@metrics:5432/newtg_metrics?sslmode=disable" {
+		t.Errorf("PerfMetricsDSN = %q", c.PerfMetricsDSN)
 	}
 }
 

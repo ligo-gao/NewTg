@@ -27,6 +27,12 @@ const (
 	// shutdownFlushTimeout 是停机最终 flush 的上限。必须小于 HTTP 优雅停机
 	// 窗口，避免关库被 flush 拖死。
 	shutdownFlushTimeout = 5 * time.Second
+	// defaultRetentionInterval 是分钟→小时物化与过期清理的周期。
+	defaultRetentionInterval = time.Hour
+	// defaultHourRetention 对应 PERF_METRICS_RETENTION_DAYS 默认 400 天。
+	defaultHourRetention = 400 * 24 * time.Hour
+	// retentionTimeout 是单次保留清理的上限。
+	retentionTimeout = 2 * time.Minute
 	// maxModelLen 与 usage_logs.model 的 varchar(128) 对齐。
 	maxModelLen = 128
 )
@@ -47,6 +53,13 @@ type Config struct {
 	Node string
 	// LateWindow 是迟到重算窗口；零值取 1 小时。
 	LateWindow time.Duration
+	// RetentionInterval 是保留清理周期；零值取 1 小时。
+	RetentionInterval time.Duration
+	// MinuteRetention 是分钟桶保留期；零值取固定的 7 天。
+	MinuteRetention time.Duration
+	// HourRetention 是小时桶保留期（PERF_METRICS_RETENTION_DAYS）；零值取
+	// 400 天。只在 Store 同时实现 RetentionStore 时生效。
+	HourRetention time.Duration
 	// Logger 用于失败/丢弃告警；nil 回退 slog.Default。
 	Logger *slog.Logger
 	// Now 是时钟接缝（测试注入固定时间）；零值使用 time.Now。
@@ -144,7 +157,9 @@ type Collector struct {
 	dropped  uint64
 	lastData time.Time // 最近一次「确实写入了桶」的成功 flush
 	lastOK   time.Time // 最近一次成功 flush（可无数据）
-	failures int       // 连续失败周期数：3 次即判定停摆
+	// lastRetention 是最近一次保留清理尝试；只由周期任务推进。
+	lastRetention time.Time
+	failures      int // 连续失败周期数：3 次即判定停摆
 
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
@@ -163,6 +178,15 @@ func NewCollector(cfg Config) (*Collector, error) {
 	if cfg.LateWindow <= 0 {
 		cfg.LateWindow = defaultLateWindow
 	}
+	if cfg.RetentionInterval <= 0 {
+		cfg.RetentionInterval = defaultRetentionInterval
+	}
+	if cfg.MinuteRetention <= 0 {
+		cfg.MinuteRetention = MinuteRetention
+	}
+	if cfg.HourRetention <= 0 {
+		cfg.HourRetention = defaultHourRetention
+	}
 	if cfg.Node == "" {
 		cfg.Node = "unknown"
 	}
@@ -176,13 +200,14 @@ func NewCollector(cfg Config) (*Collector, error) {
 	}
 	started := now().UTC()
 	return &Collector{
-		cfg:     cfg,
-		log:     logger,
-		now:     now,
-		epoch:   newEpoch(),
-		buckets: make(map[bucketKey]*entry),
-		started: started,
-		lastOK:  started,
+		cfg:           cfg,
+		log:           logger,
+		now:           now,
+		epoch:         newEpoch(),
+		buckets:       make(map[bucketKey]*entry),
+		started:       started,
+		lastOK:        started,
+		lastRetention: started,
 	}, nil
 }
 
@@ -370,9 +395,55 @@ func (c *Collector) Start(parent context.Context) {
 				flushCtx, cancel := context.WithTimeout(ctx, flushTimeout)
 				_ = c.Flush(flushCtx, false)
 				cancel()
+				// 保留清理与周期刷写解耦：即使 flush 失败，也按自己的节奏
+				// 尝试物化/清理（指标库暂时不可用时只记告警）。
+				c.maybeRunRetention(ctx, c.now().UTC())
 			}
 		}
 	}()
+}
+
+// maybeRunRetention 按 RetentionInterval 触发一次指标库保留清理。
+//
+// 生产 Store（store.ModelPerfRepo）同时实现 RetentionStore：先物化分钟→小时，
+// 再删除超过 7 天的分钟行与超过 PERF_METRICS_RETENTION_DAYS 的小时行。若未来
+// 换成自带 retention 的指标库产品，实现方不必实现 RetentionStore，本方法
+// 会自动跳过。失败只告警并在下一周期重试，绝不影响中继/计费。
+func (c *Collector) maybeRunRetention(parent context.Context, now time.Time) {
+	if c == nil {
+		return
+	}
+	store, ok := c.cfg.Store.(RetentionStore)
+	if !ok {
+		return
+	}
+	c.mu.Lock()
+	if now.Sub(c.lastRetention) < c.cfg.RetentionInterval {
+		c.mu.Unlock()
+		return
+	}
+	c.lastRetention = now
+	c.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(parent, retentionTimeout)
+	defer cancel()
+	result, err := store.RunRetention(ctx, RetentionOptions{
+		Now:             now,
+		MinuteRetention: c.cfg.MinuteRetention,
+		HourRetention:   c.cfg.HourRetention,
+	})
+	if err != nil {
+		c.log.Warn("perfmetrics: retention failed; will retry next interval", "error", err)
+		return
+	}
+	if result.Locked {
+		// 另一个副本正在清理：正常现象，不刷 Info 日志。
+		return
+	}
+	c.log.Info("perfmetrics: retention completed",
+		"hours_materialized", result.HoursMaterialized,
+		"minutes_deleted", result.MinutesDeleted,
+		"hours_deleted", result.HoursDeleted)
 }
 
 // Stop 取消周期任务并执行一次强制 flush（包含当前分钟），用于停机排空。
@@ -406,9 +477,10 @@ func (c *Collector) Stop() {
 // 最近一次有数据 flush」的较大值：前者覆盖重启后已有数据/其它副本的写入，
 // 后者覆盖刚写入但查询窗口尚未包含的边界情况。
 //
-// 连续 3 个周期 flush 失败时返回零 updatedAt，让 /api/model-perf 立即进入
-// 停摆闸门（而不是再等满 3×周期的时间阈值）。无数据导致的时间陈旧由
-// httpapi 的 `now-updatedAt > 3×interval` 判定；updatedAt 本身保持旧值。
+// 连续 3 个周期 flush 失败时返回 ReasonPipelineStalled 的 UnavailableError，
+// 让 /api/model-perf 立即进入停摆闸门（而不是再等满 3×周期的时间阈值）。
+// 无数据导致的时间陈旧由 httpapi 的 `now-updatedAt > 3×interval` 判定；
+// updatedAt 本身保持旧值。
 func (c *Collector) ModelPerfBuckets(ctx context.Context, start, end time.Time, granularity, model string) ([]Bucket, time.Time, error) {
 	if c == nil {
 		return nil, time.Time{}, ErrDisabled
@@ -422,7 +494,7 @@ func (c *Collector) ModelPerfBuckets(ctx context.Context, start, end time.Time, 
 		// 不得让陈旧数字看起来仍然新鲜。多副本场景下先看共享存储是否仍
 		// 有新鲜写入（别的副本可能正常），避免单副本故障误伤全局看板。
 		if stored.IsZero() || c.now().UTC().Sub(stored) > 3*c.cfg.FlushInterval {
-			return buckets, time.Time{}, nil
+			return nil, time.Time{}, &UnavailableError{Reason: ReasonPipelineStalled}
 		}
 	}
 	if last := c.LastDataAt(); last.After(stored) {

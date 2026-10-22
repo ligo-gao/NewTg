@@ -7,6 +7,10 @@
 // usage_logs / wallet_transactions。成功率分母是完成时三态
 // (success + error + refused)，refunded 不在采样口径内。
 //
+// 【存储】生产 Store 是 PERF_METRICS_DSN 指向的**独立 PostgreSQL 指标库**
+// （M7 指标库产品确定前的过渡实现），不落主库、也不落日志库；M7 产品替换时
+// 只需实现 Store/RetentionStore 接缝。
+//
 // 【为什么定义在这里而不是 httpapi】采集端（billing）与存储端（store）都
 // 需要同一套桶边界/状态枚举；把领域类型放在叶子包，httpapi 用别名引用，
 // 避免三处各复制一份桶边界后悄悄漂移。
@@ -114,10 +118,93 @@ type Snapshot struct {
 }
 
 // Store 是采集管道的持久化接缝：既是写入端（UpsertBuckets），也是读端
-// （ModelPerfBuckets）。生产实现是 store.ModelPerfRepo。
+// （ModelPerfBuckets）。生产实现是 store.ModelPerfRepo（M7 可替换为
+// VictoriaMetrics / ClickHouse / Mimir 的实现）。
 type Store interface {
 	UpsertBuckets(ctx context.Context, snapshots []Snapshot) error
 	ModelPerfBuckets(ctx context.Context, start, end time.Time, granularity, model string) ([]Bucket, time.Time, error)
+}
+
+// 读面不可用原因。它们是**稳定、脱敏**的机器可读码，直接放进
+// /api/model-perf 的 pipeline.reason；绝不携带 DSN/口令/内部错误原文。
+const (
+	// ReasonDisabled 表示 PERF_METRICS_ENABLED=false（部署配置关闭）。
+	ReasonDisabled = "collection_disabled"
+	// ReasonDSNMissing 表示启用采集但未配置 PERF_METRICS_DSN。
+	ReasonDSNMissing = "metrics_dsn_missing"
+	// ReasonStorageUnavailable 表示指标库连接/查询不可用。
+	ReasonStorageUnavailable = "metrics_storage_unavailable"
+	// ReasonQueryFailed 表示指标库查询失败（非连接类）。
+	ReasonQueryFailed = "metrics_query_failed"
+	// ReasonPipelineStalled 表示连续 3 个周期无桶更新或刷写失败。
+	ReasonPipelineStalled = "pipeline_stalled"
+	// ReasonNoData 表示采集管道已启用但尚未产生任何桶（例如刚启用）。
+	ReasonNoData = "no_data"
+)
+
+// UnavailableError 是「指标库不可用」的脱敏错误。Reason 是上表中的稳定码；
+// Error() 不拼接底层错误，避免把 DSN/主机信息带进响应或日志摘要。
+type UnavailableError struct {
+	Reason string
+}
+
+func (e *UnavailableError) Error() string {
+	if e == nil || e.Reason == "" {
+		return "perfmetrics: metrics storage unavailable"
+	}
+	return "perfmetrics: metrics storage unavailable: " + e.Reason
+}
+
+// UnavailableSource 是 fail-closed 的查询接缝：启用采集但 DSN 缺失/连不上时
+// 注入它，让 /api/model-perf 明确返回不可用原因，而不是伪造数字或回退到
+// 日志库/usage_logs。
+type UnavailableSource struct {
+	reason string
+}
+
+// NewUnavailableSource 构造不可用 source；reason 为空时回落到
+// ReasonStorageUnavailable。
+func NewUnavailableSource(reason string) *UnavailableSource {
+	if reason == "" {
+		reason = ReasonStorageUnavailable
+	}
+	return &UnavailableSource{reason: reason}
+}
+
+// ModelPerfBuckets 恒返回 UnavailableError；不读取任何业务库。
+func (s *UnavailableSource) ModelPerfBuckets(context.Context, time.Time, time.Time, string, string) ([]Bucket, time.Time, error) {
+	reason := ReasonStorageUnavailable
+	if s != nil && s.reason != "" {
+		reason = s.reason
+	}
+	return nil, time.Time{}, &UnavailableError{Reason: reason}
+}
+
+// MinuteRetention 是分钟桶的固定保留期（platform-05 §3.5.4）。小时桶保留期
+// 由 PERF_METRICS_RETENTION_DAYS（30–400，默认 400）配置。
+const MinuteRetention = 7 * 24 * time.Hour
+
+// RetentionOptions 是一次指标库保留清理的输入（Now 供测试注入）。
+type RetentionOptions struct {
+	Now             time.Time
+	MinuteRetention time.Duration
+	HourRetention   time.Duration
+}
+
+// RetentionResult 是一次保留清理的结果（Locked=false 表示本副本未拿到
+// 跨进程咨询锁，已跳过）。
+type RetentionResult struct {
+	HoursMaterialized int64
+	MinutesDeleted    int64
+	HoursDeleted      int64
+	Locked            bool
+}
+
+// RetentionStore 是可选接缝：生产 PostgreSQL 指标库实现分钟→小时物化与
+// 过期清理；若未来替换为自带 retention 的产品（VictoriaMetrics 等），
+// 实现方可以只实现 Store，Collector 会自动跳过本接缝。
+type RetentionStore interface {
+	RunRetention(ctx context.Context, opts RetentionOptions) (RetentionResult, error)
 }
 
 // Observation 是中继完成点的一次采样。
