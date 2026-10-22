@@ -80,13 +80,21 @@ func sensitiveConfigFor(cache *sensitive.Cache, reader ConfigReader) sensitive.C
 	return cache.Load(reader)
 }
 
-// sensitiveEntriesHit 扫描同一作用面的多段文本，任一命中即 true。
+// sensitiveEntriesHit 扫描 prompt 面的多段文本，任一命中即 true。
 func sensitiveEntriesHit(cfg sensitive.Config, texts []string) bool {
+	return sensitiveEntriesHitSurface(cfg, sensitive.SurfacePrompt, texts)
+}
+
+// sensitiveEntriesHitSurface 扫描指定作用面的多段文本，任一命中即 true。
+//
+// 多模态/透明输入只有 prompt 面；任务/视频/批次的 opaque JSON 在 S1 裁决
+// 里需要 system 面兜底，因此把作用面参数化而不是复制一份循环。
+func sensitiveEntriesHitSurface(cfg sensitive.Config, surface sensitive.Surface, texts []string) bool {
 	if !cfg.Active() {
 		return false
 	}
 	for _, text := range texts {
-		if cfg.CheckText(sensitive.SurfacePrompt, text) {
+		if cfg.CheckText(surface, text) {
 			return true
 		}
 	}
@@ -169,6 +177,65 @@ func taskBodySensitiveTexts(body map[string]any) []string {
 	return texts
 }
 
+// taskBodyMessageSensitiveTexts 只收集 messages 子树里的白名单文本。
+//
+// 为什么单独提取：S1 裁决要求 opaque 插件 JSON 在
+// `scope.prompt=false && scope.system=true` 时仍扫描 messages[].content。
+// 插件 JSON 里的消息没有可区分的角色语义（既可能是用户提示，也可能是
+// 系统指令），无法安全地判定作用面，因此按安全向归入 system 面兜底；
+// 其它白名单字段（prompt/input/query/...）仍是透明输入，保持 prompt 面。
+func taskBodyMessageSensitiveTexts(body map[string]any) []string {
+	var texts []string
+	collectMessageSensitiveTexts(body, &texts)
+	return texts
+}
+
+// collectMessageSensitiveTexts 在任意层级寻找 messages 键，找到后交给
+// collectSensitiveTexts 按既有白名单/二进制跳过规则收集文本。
+//
+// 只把 messages 键作为入口，不会递归扫描任意字符串叶子；二进制子树
+// （base64/图片/音频）在进入前整棵跳过，避免 S1 兜底变成新的误伤面。
+func collectMessageSensitiveTexts(value any, out *[]string) {
+	switch typed := value.(type) {
+	case []any:
+		for _, item := range typed {
+			collectMessageSensitiveTexts(item, out)
+		}
+	case map[string]any:
+		for key, child := range typed {
+			lower := strings.ToLower(key)
+			if _, binary := sensitiveBinaryFieldNames[lower]; binary {
+				continue
+			}
+			if lower == "messages" {
+				collectSensitiveTexts(child, out)
+				continue
+			}
+			collectMessageSensitiveTexts(child, out)
+		}
+	}
+}
+
+// taskBodySensitiveSurface 返回任务/视频/批次 body 的命中作用面。
+//
+// 常规按 prompt 面处理（S1 裁决一）。prompt 面关闭、system 面开启时，
+// messages[].content 仍要扫描（S1 裁决二，安全向兜底），命中记为 system。
+// 返回的 Surface 只用于日志，不改变拒绝/放行语义。
+func taskBodySensitiveSurface(cfg sensitive.Config, body map[string]any) (sensitive.Surface, bool) {
+	if !cfg.Active() {
+		return "", false
+	}
+	if cfg.Scope.Prompt &&
+		sensitiveEntriesHitSurface(cfg, sensitive.SurfacePrompt, taskBodySensitiveTexts(body)) {
+		return sensitive.SurfacePrompt, true
+	}
+	if !cfg.Scope.Prompt && cfg.Scope.System &&
+		sensitiveEntriesHitSurface(cfg, sensitive.SurfaceSystem, taskBodyMessageSensitiveTexts(body)) {
+		return sensitive.SurfaceSystem, true
+	}
+	return "", false
+}
+
 // ---------- 多模态入口 ----------
 
 // multimodalSensitiveTexts 按端点提取入口校验已接受的请求体中的用户文本。
@@ -201,6 +268,8 @@ func multimodalSensitiveTexts(endpoint contract.Endpoint, path, contentType stri
 	if err := json.Unmarshal(body, &payload); err != nil {
 		// 入口校验已经成功，解析失败只可能来自扫描器与校验器的形状分歧；
 		// 不因扫描器自身失败改变请求语义（校验器仍负责拒绝坏请求）。
+		// 此分支仅在校验器与扫描器解析口径漂移时可达，语义为放行，
+		// 登记为已知假设（M4）。
 		return nil
 	}
 	var texts []string
@@ -208,9 +277,12 @@ func multimodalSensitiveTexts(endpoint contract.Endpoint, path, contentType stri
 	return texts
 }
 
-// geminiEmbeddingSensitiveTexts 提取 Gemini 语义嵌入的 parts[].text。
-// `content.parts` 与 `requests[].content.parts` 不在通用白名单的层级里
-// （parts 不是文本字段名），因此需要专用提取。
+// geminiEmbeddingSensitiveTexts 提取 Gemini 语义嵌入的用户文本。
+//
+// 覆盖（M3 裁决）：`content.parts[].text`、`requests[].content.parts[].text`、
+// `contents[].parts[].text` 与顶层 `input`。前三个不在通用白名单的层级里
+// （parts 不是文本字段名），因此需要专用提取；`input` 是 M3 复核发现的
+// 原样出站通道（Gemini 原生路径的 body 不经通用白名单），必须在此补扫。
 func geminiEmbeddingSensitiveTexts(body []byte) []string {
 	type part struct {
 		Text string `json:"text"`
@@ -219,12 +291,16 @@ func geminiEmbeddingSensitiveTexts(body []byte) []string {
 		Parts []part `json:"parts"`
 	}
 	var payload struct {
-		Content  content `json:"content"`
+		Content  content   `json:"content"`
+		Contents []content `json:"contents"`
 		Requests []struct {
 			Content content `json:"content"`
 		} `json:"requests"`
+		Input json.RawMessage `json:"input"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
+		// 此分支仅在校验器与扫描器解析口径漂移时可达，语义为放行，
+		// 登记为已知假设（M4）：入口校验已先成功解析过同一 body。
 		return nil
 	}
 	var texts []string
@@ -239,7 +315,57 @@ func geminiEmbeddingSensitiveTexts(body []byte) []string {
 	for _, request := range payload.Requests {
 		appendParts(request.Content.Parts)
 	}
-	return texts
+	for _, item := range payload.Contents {
+		appendParts(item.Parts)
+	}
+	return append(texts, geminiInputTexts(payload.Input)...)
+}
+
+// geminiInputTexts 提取 Gemini 原生路径顶层 input 的三种契约形态：
+// string、[]string、[]{text|content}。
+//
+// 刻意不递归扫描任意字符串叶子（M3 裁决）：input 里同样可能出现
+// image/base64 载体，全量扫描会把二进制随机字节误判成命中。无法识别的
+// 形态返回空（fail-open），与上面的解析失败分支同一语义。
+func geminiInputTexts(raw json.RawMessage) []string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(trimmed, &text); err == nil {
+		if text != "" {
+			return []string{text}
+		}
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal(trimmed, &list); err == nil {
+		texts := make([]string, 0, len(list))
+		for _, item := range list {
+			if item != "" {
+				texts = append(texts, item)
+			}
+		}
+		return texts
+	}
+	var objects []struct {
+		Text    string `json:"text"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(trimmed, &objects); err == nil {
+		texts := make([]string, 0, 2*len(objects))
+		for _, item := range objects {
+			if item.Text != "" {
+				texts = append(texts, item.Text)
+			}
+			if item.Content != "" {
+				texts = append(texts, item.Content)
+			}
+		}
+		return texts
+	}
+	return nil
 }
 
 // multipartSensitiveTexts 只读取白名单文本字段；文件 part 与其它字段丢弃。
@@ -307,10 +433,16 @@ func (h *MultimodalHandler) rejectSensitiveMultimodal(w http.ResponseWriter, req
 func (h *TasksHandler) rejectSensitiveTaskBody(w http.ResponseWriter, requestID string,
 	userID int64, body map[string]any) bool {
 	cfg := sensitiveConfigFor(h.sensitive, h.config)
-	if !cfg.Active() {
+	surface, hit := taskBodySensitiveSurface(cfg, body)
+	if !hit {
 		return false
 	}
-	return rejectSensitiveTexts(w, requestID, userID, nil, cfg, taskBodySensitiveTexts(body))
+	logSensitiveHitEvent(nil, cfg.Action, surface, requestID, userID)
+	if cfg.Action != sensitive.ActionBlock {
+		return false
+	}
+	writeSensitiveBlocked(w, requestID)
+	return true
 }
 
 // rejectSensitiveBatchRows 在父批次落库与任何逐行提交之前检查全部行。
@@ -326,11 +458,13 @@ func (h *TasksHandler) rejectSensitiveBatchRows(w http.ResponseWriter, requestID
 		return false
 	}
 	for _, item := range items {
-		if sensitiveEntriesHit(cfg, taskBodySensitiveTexts(item.Body)) {
-			logSensitiveHitEvent(nil, cfg.Action, sensitive.SurfacePrompt, requestID, userID)
-			writeSensitiveBlocked(w, requestID)
-			return true
+		surface, hit := taskBodySensitiveSurface(cfg, item.Body)
+		if !hit {
+			continue
 		}
+		logSensitiveHitEvent(nil, cfg.Action, surface, requestID, userID)
+		writeSensitiveBlocked(w, requestID)
+		return true
 	}
 	return false
 }
