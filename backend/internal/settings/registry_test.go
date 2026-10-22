@@ -271,6 +271,9 @@ func TestRegistryGoldenSets(t *testing.T) {
 		"site.demo.relay_quota.global_daily:any",
 		"site.demo.relay_quota.per_ip_daily:any",
 		"site.home_custom_html:on",
+		// G-M6C-20：功能级内网豁免会放宽本功能的出站地址限制，按开启型
+		// 危险项登记（不改变全局 SSRF 策略，但风险方向是「打开」）。
+		"site.update_check.allow_private_address:on",
 	}
 	if strings.Join(dangerous, ",") != strings.Join(wantDangerous, ",") {
 		t.Fatalf("危险键集合 = %v\n期望 = %v", dangerous, wantDangerous)

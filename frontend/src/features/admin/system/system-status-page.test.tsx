@@ -20,6 +20,19 @@ beforeEach(() => {
     http.get(`${ORIGIN}/api/system/tasks`, () =>
       HttpResponse.json({ items: [], total: 0, page: 1, page_size: 20 }),
     ),
+    // G-M6C-20：更新检查卡按需取数，默认未启用（不触发出站）。
+    http.get(`${ORIGIN}/api/system/update-check`, () =>
+      HttpResponse.json({
+        enabled: false,
+        source_configured: false,
+        channel: 'stable',
+        current_version: '1.4.2',
+        state: 'disabled',
+        cached: false,
+        cache_state: 'miss',
+        min_check_interval_seconds: 60,
+      }),
+    ),
   )
 })
 afterEach(() => server.resetHandlers())
@@ -55,6 +68,20 @@ describe('SystemStatusPage', () => {
           uptime: 90_061,
           instances: [],
           dependencies: { db: 'ok', redis: { status: 'ok' }, worker: 'down' },
+          mfa: {
+            available: true,
+            totp_enabled_users: 1,
+            total_users: 100,
+            mfa_coverage_pct: 1.0,
+            totp_enabled_admins: 1,
+            total_admins: 2,
+            admin_mfa_coverage_pct: 50.0,
+          },
+          polling: {
+            interval_seconds: 10,
+            heartbeat_interval_seconds: 30,
+            update_check_background_polling: false,
+          },
         }),
       ),
     )
@@ -68,6 +95,16 @@ describe('SystemStatusPage', () => {
     expect(screen.getByText('gateway-1')).toBeTruthy()
     expect(screen.getByText('worker-1')).toBeTruthy()
     expect(screen.getByText('stale')).toBeTruthy()
+    // G-M6C-20：轮询状态与 MFA 概况。
+    expect(screen.getByTestId('system-status-polling')).toBeTruthy()
+    expect(screen.getByText('Instance heartbeat interval')).toBeTruthy()
+    expect(screen.getByTestId('system-status-mfa')).toBeTruthy()
+    expect(screen.getByText('1 of 100 enabled')).toBeTruthy()
+    expect(screen.getByText('1 of 2 enabled')).toBeTruthy()
+    expect(screen.getByText('99 user(s) have not enabled two-factor authentication.')).toBeTruthy()
+    // 更新检查卡存在，默认未启用。
+    expect(screen.getByTestId('system-status-update')).toBeTruthy()
+    expect(await screen.findByText('Update check is off.')).toBeTruthy()
   })
 
   it('shows the empty instance state', async () => {
@@ -88,7 +125,7 @@ describe('SystemStatusPage', () => {
     await renderWithProviders(<SystemStatusPage />, ['common', 'settings'])
 
     expect(await screen.findByText('No instance heartbeats. Check your deployment.')).toBeTruthy()
-    expect(screen.getByText('30s')).toBeTruthy()
+    expect(screen.getAllByText('30s').length).toBeGreaterThan(0)
   })
 
   it('shows the error state and retries', async () => {

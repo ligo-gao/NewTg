@@ -87,7 +87,13 @@ const MaxResponseTimeThresholdSeconds = 86400
 
 // Sections 的返回顺序固定，便于前端与测试稳定比对。
 var sectionOrder = []string{
-	"site", "nav", "auth", "auth.turnstile", "billing", "billing_setting",
+	"site",
+	// site.update_check：版本信息与更新检查（modules-08 §3.15 F-08-42）。
+	// 独立 section 而不是并入 site：更新源是部署级配置，独立 section 让
+	// 通用设置页按「更新检查」整体读写，也避免 site 表单一次提交几十个键。
+	"site.update_check",
+	"update",
+	"nav", "auth", "auth.turnstile", "billing", "billing_setting",
 	// W15-C：每日签到（modules-01 §3.19 流程侧 / modules-03 F-03-12 入账侧，
 	// C-44/N-MAP-1 闭）。三键独立 section 但都**不进公开下发全集**：
 	// modules-08 §1.4.1 明确排除 checkin.*；用户侧入口由
@@ -325,6 +331,33 @@ func buildRegistry() []Setting {
 			dangerousAny(), minInt(0), maxInt(1000000)),
 		def("site.demo.relay_quota.global_daily", "site", TypeInt, int64(2000),
 			dangerousAny(), minInt(0), maxInt(1000000)),
+
+		// ==== site.update_check（modules-08 §3.15 F-08-42）====
+		//
+		// 版本信息与更新检查。四键服务「服务端代取版本清单」：
+		//   enabled           默认 false（出厂零出站；Q3）
+		//   source_url        默认空串 = 不检查（本任务口径：默认关闭/出厂无源；
+		//                     清空同样表示不检查，绝不回落到内置源）
+		//   allow_private_address 功能级内网豁免（默认 false，dangerous）
+		//   interval_seconds  缓存 TTL，范围 300–86400（Q5）
+		//
+		// 全部非公开：更新源与开关属于部署配置，不进 /api/status 匿名面。
+		// 更新源可能包含内网拓扑或查询串；更新检查端点（handlers_system_update.go）
+		// 的响应一律只回「是否已配置」，不回显地址。管理面的设置读接口仍
+		// 会返回该值（管理员要能编辑），但不进公开下发。
+		def("site.update_check.enabled", "site.update_check", TypeBool, false),
+		def("site.update_check.source_url", "site.update_check", TypeString, "", maxLen(1024),
+			validate(validateAbsoluteHTTPURL)),
+		def("site.update_check.allow_private_address", "site.update_check", TypeBool,
+			false, dangerousOn()),
+		def("site.update_check.interval_seconds", "site.update_check", TypeInt,
+			int64(3600), minInt(300), maxInt(86400)),
+
+		// ==== update（modules-08 §3.15 Q8）====
+		//
+		// 站点级发布通道：stable 永不提示预发布，beta 可见稳定版与预发布版。
+		// 过滤发生在读取缓存时（缓存的是清单本体）——切通道立即生效，不清缓存。
+		def("update.channel", "update", TypeEnum, "stable", enum("stable", "beta")),
 
 		// ==== nav（F-08-03）====
 		def("nav.home.enabled", "nav", TypeBool, true, public()),

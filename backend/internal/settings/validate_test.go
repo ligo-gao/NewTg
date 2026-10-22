@@ -181,3 +181,78 @@ func TestCheckinSectionValidation(t *testing.T) {
 		}
 	}
 }
+
+// TestUpdateCheckSectionValidation 锁定 modules-08 §3.15 F-08-42 的保存期约束：
+// 空源合法（= 不检查）；默认只允许 https；只有显式开启功能级内网豁免时
+// 才允许 http；userinfo 与 fragment 一律拒绝。
+func TestUpdateCheckSectionValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		values  map[string]any
+		wantErr bool
+	}{
+		{"empty source", map[string]any{
+			"site.update_check.source_url": "",
+		}, false},
+		{"https", map[string]any{
+			"site.update_check.source_url": "https://example.com/updates/latest.json",
+		}, false},
+		{"http without exemption", map[string]any{
+			"site.update_check.source_url":            "http://10.0.0.5/latest.json",
+			"site.update_check.allow_private_address": false,
+		}, true},
+		{"http with exemption", map[string]any{
+			"site.update_check.source_url":            "http://10.0.0.5/latest.json",
+			"site.update_check.allow_private_address": true,
+		}, false},
+		{"relative source", map[string]any{
+			"site.update_check.source_url": "/latest.json",
+		}, true},
+		{"javascript scheme", map[string]any{
+			"site.update_check.source_url": "javascript:alert(1)",
+		}, true},
+		{"userinfo", map[string]any{
+			"site.update_check.source_url": "https://user:pass@example.com/latest.json",
+		}, true},
+		{"fragment", map[string]any{
+			"site.update_check.source_url": "https://example.com/latest.json#frag",
+		}, true},
+	}
+	for _, tc := range cases {
+		err := validateUpdateCheckSection(tc.values, nil)
+		if tc.wantErr && err == nil {
+			t.Fatalf("%s: 期望拒绝", tc.name)
+		}
+		if !tc.wantErr && err != nil {
+			t.Fatalf("%s: 不应拒绝: %v", tc.name, err)
+		}
+	}
+}
+
+// TestUpdateCheckRegistryDefaults 锁定默认关闭/出厂无源与键的类型。
+func TestUpdateCheckRegistryDefaults(t *testing.T) {
+	enabled, ok := Lookup("site.update_check.enabled")
+	if !ok || enabled.Type != TypeBool || DefaultValue(enabled) != false {
+		t.Fatalf("site.update_check.enabled = %+v", enabled)
+	}
+	source, ok := Lookup("site.update_check.source_url")
+	if !ok || source.Type != TypeString || DefaultValue(source) != "" {
+		t.Fatalf("source_url 默认必须为空（出厂无源）: %+v", source)
+	}
+	allowPrivate, ok := Lookup("site.update_check.allow_private_address")
+	if !ok || !allowPrivate.Dangerous || allowPrivate.DangerDirection != DangerDirectionOn {
+		t.Fatalf("allow_private_address 必须是开启型危险项: %+v", allowPrivate)
+	}
+	interval, ok := Lookup("site.update_check.interval_seconds")
+	if !ok || interval.Type != TypeInt || DefaultValue(interval) != int64(3600) ||
+		*interval.MinInt != 300 || *interval.MaxInt != 86400 {
+		t.Fatalf("interval_seconds = %+v", interval)
+	}
+	channel, ok := Lookup("update.channel")
+	if !ok || channel.Type != TypeEnum || DefaultValue(channel) != "stable" {
+		t.Fatalf("update.channel = %+v", channel)
+	}
+	if section, ok := Section("update"); !ok || len(section) != 1 {
+		t.Fatalf("update section = %+v", section)
+	}
+}
