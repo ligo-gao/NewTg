@@ -237,6 +237,54 @@ func (e ChannelStatus) Valid() bool {
 	}
 }
 
+// Defines values for ClaudeErrorErrorType.
+const (
+	ApiError            ClaudeErrorErrorType = "api_error"
+	AuthenticationError ClaudeErrorErrorType = "authentication_error"
+	InvalidRequestError ClaudeErrorErrorType = "invalid_request_error"
+	NotFoundError       ClaudeErrorErrorType = "not_found_error"
+	PermissionError     ClaudeErrorErrorType = "permission_error"
+	RateLimitError      ClaudeErrorErrorType = "rate_limit_error"
+	RequestTooLarge     ClaudeErrorErrorType = "request_too_large"
+)
+
+// Valid indicates whether the value is a known member of the ClaudeErrorErrorType enum.
+func (e ClaudeErrorErrorType) Valid() bool {
+	switch e {
+	case ApiError:
+		return true
+	case AuthenticationError:
+		return true
+	case InvalidRequestError:
+		return true
+	case NotFoundError:
+		return true
+	case PermissionError:
+		return true
+	case RateLimitError:
+		return true
+	case RequestTooLarge:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClaudeErrorType.
+const (
+	ClaudeErrorTypeError ClaudeErrorType = "error"
+)
+
+// Valid indicates whether the value is a known member of the ClaudeErrorType enum.
+func (e ClaudeErrorType) Valid() bool {
+	switch e {
+	case ClaudeErrorTypeError:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for CreateOrderRequestCurrency.
 const (
 	CreateOrderRequestCurrencyCNY CreateOrderRequestCurrency = "CNY"
@@ -4733,6 +4781,33 @@ type ChannelList struct {
 	// Total 满足条件的总条数
 	Total int `json:"total"`
 }
+
+// ClaudeError Anthropic Claude 形错误信封。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type ClaudeError struct {
+	Error struct {
+		// Message 固定文案（不包含上游 URL/凭据/SQL 等内部信息）
+		Message string `json:"message"`
+
+		// Type 错误类型映射（R-W18-04）：400/422/402 → `invalid_request_error`；
+		// 401 → `authentication_error`；403 → `permission_error`；
+		// 404 → `not_found_error`；413 → `request_too_large`；
+		// 429 → `rate_limit_error`；5xx → `api_error`。
+		Type ClaudeErrorErrorType `json:"type"`
+	} `json:"error"`
+
+	// Type 顶层判别字段，固定为 `error`
+	Type ClaudeErrorType `json:"type"`
+}
+
+// ClaudeErrorErrorType 错误类型映射（R-W18-04）：400/422/402 → `invalid_request_error`；
+// 401 → `authentication_error`；403 → `permission_error`；
+// 404 → `not_found_error`；413 → `request_too_large`；
+// 429 → `rate_limit_error`；5xx → `api_error`。
+type ClaudeErrorErrorType string
+
+// ClaudeErrorType 顶层判别字段，固定为 `error`
+type ClaudeErrorType string
 
 // CompleteOrderRequest defines model for CompleteOrderRequest.
 type CompleteOrderRequest struct {
@@ -9249,6 +9324,46 @@ type UpdatedAtQuery = time.Time
 
 // VideoID defines model for VideoID.
 type VideoID = string
+
+// ClaudeError400 Anthropic Claude 形错误信封。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type ClaudeError400 = ClaudeError
+
+// ClaudeError401 Anthropic Claude 形错误信封。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type ClaudeError401 = ClaudeError
+
+// ClaudeError402 Anthropic Claude 形错误信封。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type ClaudeError402 = ClaudeError
+
+// ClaudeError403 Anthropic Claude 形错误信封。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type ClaudeError403 = ClaudeError
+
+// ClaudeError404 Anthropic Claude 形错误信封。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type ClaudeError404 = ClaudeError
+
+// ClaudeError413 Anthropic Claude 形错误信封。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type ClaudeError413 = ClaudeError
+
+// ClaudeError429 Anthropic Claude 形错误信封。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type ClaudeError429 = ClaudeError
+
+// ClaudeError500 Anthropic Claude 形错误信封。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type ClaudeError500 = ClaudeError
+
+// ClaudeError502 Anthropic Claude 形错误信封。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type ClaudeError502 = ClaudeError
+
+// ClaudeError503 Anthropic Claude 形错误信封。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type ClaudeError503 = ClaudeError
 
 // Error400 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Error400 = Problem

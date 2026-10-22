@@ -847,9 +847,9 @@ func TestDemoRelayQuotaCoversMessages(t *testing.T) {
 	if second.Header().Get("Retry-After") == "" {
 		t.Fatal("Retry-After 缺失")
 	}
-	if code := decodeRelayError(t, second.Body.Bytes()).Error.Code; code != demoRelayQuotaExceededCode {
-		t.Fatalf("code = %q，期望 %s", code, demoRelayQuotaExceededCode)
-	}
+	// R-W18-04：/v1/messages 的 429 用 Claude 形（rate_limit_error），
+	// Retry-After 与状态码语义保持不变。
+	assertClaudeError(t, second, http.StatusTooManyRequests, "rate_limit_error")
 	if counter.count() != 1 || env.billing.preConsumeCount() != 1 {
 		t.Fatalf("被拒请求产生副作用：upstream %d / preconsume %d，期望仍为 1/1",
 			counter.count(), env.billing.preConsumeCount())

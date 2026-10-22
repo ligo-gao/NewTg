@@ -482,3 +482,50 @@ func TestWithFieldWriters(t *testing.T) {
 		t.Errorf("AppendDiagnostic 未按追加语义写入: %+v", rc.Diagnostics)
 	}
 }
+
+// TestBuildRelayContextFiltersAnthropicBeta 锁定 R-W18-05 的契约载体：
+// HTTP 边界只把**白名单内**的 anthropic-beta 写入显式字段；多个同名头与
+// 单头逗号分隔等价；零值表示不发送。WithRequest 再从 RelayContext 单向复制
+// 到 Request，归一化层不重新解析请求头。
+func TestBuildRelayContextFiltersAnthropicBeta(t *testing.T) {
+	tokenID := int64(9)
+	principal := &auth.Principal{UserID: 42, Role: "user", TokenID: &tokenID}
+	store := &stubTokenStore{metas: map[string]*auth.TokenMeta{
+		auth.HashTokenKey(testNKT): testMeta(),
+	}}
+
+	t.Run("allowlisted values survive", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-x"}`))
+		req.Header.Set("Authorization", "Bearer "+testNKT)
+		req.Header.Add("anthropic-beta", "interleaved-thinking-2025-05-14")
+		req.Header.Add("anthropic-beta", "not-a-real-beta, context-1m-2025-08-07")
+
+		rc, err := BuildRelayContext(context.Background(), principal, req, store)
+		if err != nil {
+			t.Fatalf("BuildRelayContext: %v", err)
+		}
+		want := "interleaved-thinking-2025-05-14, context-1m-2025-08-07"
+		if rc.AnthropicBeta != want {
+			t.Fatalf("AnthropicBeta = %q, want %q", rc.AnthropicBeta, want)
+		}
+		parsed := &contract.Request{Model: "claude-x"}
+		WithRequest(rc, parsed, FormatClaude, "/v1/messages")
+		if parsed.AnthropicBeta != want {
+			t.Fatalf("Request.AnthropicBeta = %q, want %q", parsed.AnthropicBeta, want)
+		}
+	})
+
+	t.Run("unknown values are dropped to empty", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-x"}`))
+		req.Header.Set("Authorization", "Bearer "+testNKT)
+		req.Header.Set("anthropic-beta", "totally-unknown")
+
+		rc, err := BuildRelayContext(context.Background(), principal, req, store)
+		if err != nil {
+			t.Fatalf("BuildRelayContext: %v", err)
+		}
+		if rc.AnthropicBeta != "" {
+			t.Fatalf("AnthropicBeta = %q，未知值必须丢弃为空", rc.AnthropicBeta)
+		}
+	})
+}

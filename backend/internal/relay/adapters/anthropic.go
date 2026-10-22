@@ -35,10 +35,79 @@ const (
 	moonshotAnthropicPrefix = "/anthropic"
 	// anthropicMessagesPath 是 Messages API 路径。
 	anthropicMessagesPath = "/v1/messages"
+	// anthropicCountTokensPath 是 Messages 的零计费计数端点（R-W18-06）。
+	// 与 messages 同基址同鉴权，只是路径后缀不同。
+	anthropicCountTokensPath = "/v1/messages/count_tokens"
 	// anthropicVersion 是 Anthropic 要求的协议版本头。
 	// 2023-06-01 是当前 Messages API 的稳定版本；不随请求变化。
 	anthropicVersion = "2023-06-01"
 )
+
+// anthropicBetaAllowlist 是**允许转发**给上游的 `anthropic-beta` 值集合
+// （R-W18-05 冻结裁决）。
+//
+// 为什么是白名单而不是透传：`anthropic-beta` 是开放集合，客户端可以放置任意
+// 字符串。无条件转发等于让调用方决定「网关向上游声明什么能力」——既可能触发
+// 网关尚未理解的上游行为（例如改变响应形状），也让上游把网关当成任意 beta
+// 的透传代理。白名单只放行网关已核实的、形状固定的稳定 beta 值；未列出的值
+// 静默丢弃（请求仍按无 beta 处理，由上游按常规语义响应或 4xx，绝不报错——
+// 报错会泄露白名单内容）。
+//
+// 运营化说明：本集合是代码内固定值（新增/删除需发版）。之所以不挂
+// settings 注册表：注册表要求同时回写 docs/system-config-mapping.md 与
+// modules-08 §1.4.1（registry.go 的 buildRegistry 注释），本任务不修改设计
+// 文档；后续运营化时应新增 `relay.anthropic_beta_allowlist`（TypeList），
+// 以「代码默认 ∪ 配置追加」合并，而不是替换默认集合。
+//
+// 取值均为 Anthropic 公开文档中的 beta 标识；不含 Authorization / Cookie /
+// hop-by-hop 头——本表只作用于 `anthropic-beta` 这一个头。
+var anthropicBetaAllowlist = map[string]struct{}{
+	"messages-2023-12-15":                    {},
+	"prompt-caching-2024-07-31":              {},
+	"computer-use-2024-10-22":                {},
+	"computer-use-2025-01-24":                {},
+	"token-counting-2024-11-01":              {},
+	"max-tokens-3-5-sonnet-2024-07-15":       {},
+	"output-128k-2025-02-19":                 {},
+	"interleaved-thinking-2025-05-14":        {},
+	"extended-cache-ttl-2025-04-11":          {},
+	"fine-grained-tool-streaming-2025-05-14": {},
+	"context-1m-2025-08-07":                  {},
+	"mcp-client-2025-04-04":                  {},
+	"code-execution-2025-05-22":              {},
+	"files-api-2025-04-14":                   {},
+}
+
+// FilterAnthropicBeta 对客户端 `anthropic-beta` 原始值做白名单过滤。
+//
+// 输入是 HTTP 边界收集到的原始串（可能来自多个同名头，调用方用逗号拼接；
+// 也可能一个头里带逗号分隔的多个值）。输出是保序去重后的逗号分隔串；
+// 全部值被丢弃时返回空串，适配器据此**不发送**该头（空头不等于「无 beta」）。
+//
+// 只做精确匹配：beta 标识是版本化的不透明字面量，前缀/大小写归一化会把
+// 未核实的新值悄悄放行。
+func FilterAnthropicBeta(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	seen := make(map[string]struct{}, 4)
+	kept := make([]string, 0, 4)
+	for _, part := range strings.Split(raw, ",") {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			continue
+		}
+		if _, ok := anthropicBetaAllowlist[value]; !ok {
+			continue
+		}
+		if _, dup := seen[value]; dup {
+			continue
+		}
+		seen[value] = struct{}{}
+		kept = append(kept, value)
+	}
+	return strings.Join(kept, ", ")
+}
 
 // anthropicTypeSpec 是 Anthropic 原生族逐渠道类型的默认基址与路径前缀。
 // 未列出的类型显式拒绝，绝不回落到 Anthropic 官方基址（凭据错向风险）。
@@ -167,17 +236,118 @@ func (a *Anthropic) BuildRequest(rc *contract.RelayContext, req *contract.Reques
 	// Anthropic 的不是 Bearer：凭据必须放 x-api-key（relay-02 §8.2）。
 	httpReq.Header.Set("x-api-key", rc.Credential)
 	httpReq.Header.Set("anthropic-version", anthropicVersion)
+	// R-W18-05：客户端 beta 头按白名单转发。值已在 HTTP 边界过滤一次；
+	// 这里再过滤一次是防御性冗余（契约字段可能被其它内部调用方直接填写）。
+	// 仅在结果非空时设置头：空头与「没有 beta」在上游语义上不同。
+	if beta := FilterAnthropicBeta(req.AnthropicBeta); beta != "" {
+		httpReq.Header.Set("anthropic-beta", beta)
+	}
 	return httpReq, nil
 }
 
+// BuildCountTokensRequest 构造上游 `/v1/messages/count_tokens` 请求（R-W18-06）。
+//
+// 本方法不属于冻结的 contract.Adapter 接口：count_tokens 是 Anthropic 协议族
+// 专有的零计费端点，用 httpapi 侧的窄接口断言比扩充冻结契约更小。body 是
+// 客户端原始请求体（已由 handler 读取），这里只做模型映射改写——其余字段
+// 原样透传，因为精确计数必须基于客户端真实的 messages/system/tools 内容。
+func (a *Anthropic) BuildCountTokensRequest(rc *contract.RelayContext, body []byte) (*http.Request, error) {
+	if rc == nil || len(body) == 0 {
+		return nil, classifiedf(contract.ErrParamInvalid, "adapters: empty count_tokens body")
+	}
+	channelType := rc.ChannelType
+	if channelType == contract.ChannelTypeUnknown {
+		channelType = a.channelType
+	}
+	spec, ok := anthropicTypeSpecs[channelType]
+	if !ok {
+		return nil, classifiedf(contract.ErrChannelConfig, "adapters: channel type %q has no Anthropic base URL", channelType)
+	}
+	if rc.Credential == "" {
+		return nil, classifiedf(contract.ErrChannelConfig, "adapters: channel %d has no credential", rc.ChannelID)
+	}
+	baseURL := strings.TrimSpace(rc.APIBase)
+	if baseURL == "" {
+		baseURL = spec.baseURL
+	}
+	if baseURL == "" {
+		return nil, classifiedf(contract.ErrChannelConfig, "adapters: channel type %q requires a base URL", channelType)
+	}
+
+	payload := body
+	if rc.UpstreamModel != "" {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(body, &fields); err != nil {
+			return nil, classifiedf(contract.ErrParamInvalid, "adapters: invalid count_tokens body")
+		}
+		modelJSON, err := json.Marshal(rc.UpstreamModel)
+		if err != nil {
+			return nil, classifiedf(contract.ErrParamInvalid, "adapters: invalid upstream model")
+		}
+		fields["model"] = modelJSON
+		payload, err = json.Marshal(fields)
+		if err != nil {
+			return nil, classifiedf(contract.ErrParamInvalid, "adapters: invalid count_tokens body")
+		}
+	}
+
+	fullURL, err := joinAnthropicURLPath(baseURL, spec.pathPrefix, anthropicCountTokensPath)
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := http.NewRequest(http.MethodPost, fullURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, classifiedf(contract.ErrChannelConfig, "adapters: construct upstream request failed")
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("x-api-key", rc.Credential)
+	httpReq.Header.Set("anthropic-version", anthropicVersion)
+	if beta := FilterAnthropicBeta(rc.AnthropicBeta); beta != "" {
+		httpReq.Header.Set("anthropic-beta", beta)
+	}
+	return httpReq, nil
+}
+
+// ParseCountTokensResponse 解析上游 count_tokens 响应（R-W18-06）。
+//
+// 只接受 Anthropic 的精确形状 `{"input_tokens": N}`：缺字段/负数/非 JSON 一律
+// 按上游服务问题（ErrUpstreamServer）拒绝。绝不在这里做本地估算——裁决明确
+// 「不引入本地 tokenizer」，估算值冒充精确值会让客户端的上下文预算判断失真。
+func (a *Anthropic) ParseCountTokensResponse(resp *http.Response) (int64, error) {
+	if resp == nil {
+		return 0, classifiedf(contract.ErrUpstreamServer, "adapters: nil count_tokens response")
+	}
+	body, err := readUpstreamBody(resp.Body, maxResponseBodyBytes)
+	if err != nil {
+		return 0, err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		class := a.ClassifyError(resp.StatusCode, body)
+		return 0, classifiedf(class, "adapters: upstream returned status %d", resp.StatusCode)
+	}
+	var parsed struct {
+		InputTokens *int64 `json:"input_tokens"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil || parsed.InputTokens == nil || *parsed.InputTokens < 0 {
+		return 0, classifiedf(contract.ErrUpstreamServer, "adapters: invalid count_tokens response")
+	}
+	return *parsed.InputTokens, nil
+}
+
 // joinAnthropicURL 拼接 base_url + [类型前缀] + /v1/messages。
+func joinAnthropicURL(baseURL, typePrefix string) (string, error) {
+	return joinAnthropicURLPath(baseURL, typePrefix, anthropicMessagesPath)
+}
+
+// joinAnthropicURLPath 拼接 base_url + [类型前缀] + apiPath。
 //
 // 去重规则：
 //   - base_url 已以 /v1 结尾时不再重复 /v1（避免 /v1/v1/messages）；
 //   - base_url 已含类型前缀（如 moonshot 的 /anthropic）时不再重复。
 //
 // 解析失败不返回底层文本（可能回显 base_url，GC-6）。
-func joinAnthropicURL(baseURL, typePrefix string) (string, error) {
+func joinAnthropicURLPath(baseURL, typePrefix, apiPath string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", classifiedf(contract.ErrChannelConfig, "adapters: invalid API base URL")
@@ -189,7 +359,7 @@ func joinAnthropicURL(baseURL, typePrefix string) (string, error) {
 	if prefix != "" && (strings.HasSuffix(basePath, prefix) || strings.Contains(basePath, prefix+"/")) {
 		prefix = ""
 	}
-	path := prefix + anthropicMessagesPath
+	path := prefix + apiPath
 	if strings.HasSuffix(basePath, "/v1") && strings.HasPrefix(path, "/v1/") {
 		path = strings.TrimPrefix(path, "/v1")
 	}

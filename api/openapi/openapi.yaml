@@ -410,6 +410,9 @@ paths:
   # 协议族上游 fail-closed 501（R-59）。
   /v1/messages:
     $ref: './paths/relay.yaml#/paths/~1v1~1messages'
+  # Anthropic 零计费 token 计数（R-W18-06）：只有 Anthropic 协议族上游可精确回答。
+  /v1/messages/count_tokens:
+    $ref: './paths/relay.yaml#/paths/~1v1~1messages~1count_tokens'
   # Responses 创建（T2 / P-01：插件优先，未命中返回 501，不回落通用中继）。
   /v1/responses:
     $ref: './paths/relay.yaml#/paths/~1v1~1responses'
@@ -555,6 +558,9 @@ components:
     # 中继协议面的错误信封（真源 writeRelayError）；只被 RelayError429 使用。
     RelayError:
       $ref: './schemas/relay.yaml#/schemas/RelayError'
+    # Claude 形错误信封（真源 writeClaudeError）；被 ClaudeError4xx/5xx 使用。
+    ClaudeError:
+      $ref: './schemas/relay.yaml#/schemas/ClaudeError'
 
   responses:
     Error400:
@@ -583,3 +589,25 @@ components:
       $ref: './components/responses.yaml#/responses/Error502'
     Error503:
       $ref: './components/responses.yaml#/responses/Error503'
+    # Claude 形错误（R-W18-04）：/v1/messages 族专用；普通 4xx/5xx 不得
+    # 复用上面的 problem+json 组件。
+    ClaudeError400:
+      $ref: './components/responses.yaml#/responses/ClaudeError400'
+    ClaudeError401:
+      $ref: './components/responses.yaml#/responses/ClaudeError401'
+    ClaudeError402:
+      $ref: './components/responses.yaml#/responses/ClaudeError402'
+    ClaudeError403:
+      $ref: './components/responses.yaml#/responses/ClaudeError403'
+    ClaudeError404:
+      $ref: './components/responses.yaml#/responses/ClaudeError404'
+    ClaudeError413:
+      $ref: './components/responses.yaml#/responses/ClaudeError413'
+    ClaudeError429:
+      $ref: './components/responses.yaml#/responses/ClaudeError429'
+    ClaudeError500:
+      $ref: './components/responses.yaml#/responses/ClaudeError500'
+    ClaudeError502:
+      $ref: './components/responses.yaml#/responses/ClaudeError502'
+    ClaudeError503:
+      $ref: './components/responses.yaml#/responses/ClaudeError503'

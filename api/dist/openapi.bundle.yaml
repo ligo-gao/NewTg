@@ -8767,31 +8767,68 @@ paths:
         '200':
           description: Anthropic message 对象或原生 SSE 事件流（schema 见上游公开规范）
         '400':
-          $ref: '#/components/responses/Error400'
+          $ref: '#/components/responses/ClaudeError400'
         '401':
-          $ref: '#/components/responses/Error401'
+          $ref: '#/components/responses/ClaudeError401'
         '402':
-          $ref: '#/components/responses/Error402'
+          $ref: '#/components/responses/ClaudeError402'
         '403':
-          description: 令牌模型白名单不允许该模型，或用户已被封禁
+          $ref: '#/components/responses/ClaudeError403'
         '404':
-          description: 模型已停用（`model_pricing.status=2`）
+          $ref: '#/components/responses/ClaudeError404'
         '413':
-          description: 请求体超过 32 MiB 上限
+          $ref: '#/components/responses/ClaudeError413'
         '429':
-          $ref: '#/components/responses/RelayError429'
+          $ref: '#/components/responses/ClaudeError429'
         '500':
-          $ref: '#/components/responses/Error500'
-          description: |
-            服务端内部错误。限流器故障时按 fail-closed 返回
-            `code=rate_limit_check_failed`（500，不设 `Retry-After`）：无法判断
-            是否超限就不放行，客户端不应把它当作可重试的限流。
+          $ref: '#/components/responses/ClaudeError500'
         '501':
           $ref: '#/components/responses/Error501'
         '502':
-          description: 上游协议与端点不匹配、上游流不可用或适配器不支持流式
+          $ref: '#/components/responses/ClaudeError502'
         '503':
-          description: 该模型没有可用渠道
+          $ref: '#/components/responses/ClaudeError503'
+  /v1/messages/count_tokens:
+    post:
+      tags:
+        - relay
+      operationId: countMessageTokens
+      x-relay-format: claude
+      summary: Anthropic Messages token 计数（零计费）
+      description: |
+        请求体沿用 Anthropic Messages 形状（`model` / `messages` / `system` /
+        `tools` 等），响应严格为 `{"input_tokens": N}`。
+
+        鉴权与 `/v1/messages` 相同（`Authorization` 或 `x-api-key`）。
+        本端点**零计费**：不预扣、不结算、不写 usage_logs，也不计入准入限流桶。
+        只有 Anthropic 协议族渠道能返回精确计数；其它上游返回 501
+        `application/problem+json`（`count_tokens_unsupported`），不做本地估算。
+      security:
+        - bearerToken: []
+      externalDocs:
+        description: Anthropic token counting API reference
+        url: https://docs.anthropic.com/en/api/messages-count-tokens
+      responses:
+        '200':
+          description: '`{"input_tokens": N}`（精确计数，来自上游）'
+        '400':
+          $ref: '#/components/responses/ClaudeError400'
+        '401':
+          $ref: '#/components/responses/ClaudeError401'
+        '403':
+          $ref: '#/components/responses/ClaudeError403'
+        '404':
+          $ref: '#/components/responses/ClaudeError404'
+        '413':
+          $ref: '#/components/responses/ClaudeError413'
+        '500':
+          $ref: '#/components/responses/ClaudeError500'
+        '501':
+          $ref: '#/components/responses/Error501'
+        '502':
+          $ref: '#/components/responses/ClaudeError502'
+        '503':
+          $ref: '#/components/responses/ClaudeError503'
   /v1/responses:
     post:
       tags:
@@ -11075,6 +11112,44 @@ components:
               description: |
                 机器可读 code。限流为 `rate_limit_exceeded`，限流器故障为
                 `rate_limit_check_failed`；令牌/会话类错误为空串（不提供存在性信息）。
+    ClaudeError:
+      type: object
+      description: |
+        Anthropic Claude 形错误信封。`message` 末尾会追加
+        ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+      required:
+        - type
+        - error
+      properties:
+        type:
+          type: string
+          enum:
+            - error
+          description: 顶层判别字段，固定为 `error`
+        error:
+          type: object
+          required:
+            - type
+            - message
+          properties:
+            type:
+              type: string
+              enum:
+                - invalid_request_error
+                - authentication_error
+                - permission_error
+                - not_found_error
+                - request_too_large
+                - rate_limit_error
+                - api_error
+              description: |
+                错误类型映射（R-W18-04）：400/422/402 → `invalid_request_error`；
+                401 → `authentication_error`；403 → `permission_error`；
+                404 → `not_found_error`；413 → `request_too_large`；
+                429 → `rate_limit_error`；5xx → `api_error`。
+            message:
+              type: string
+              description: 固定文案（不包含上游 URL/凭据/SQL 等内部信息）
     Language:
       type: string
       enum:
@@ -19681,6 +19756,123 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
+    ClaudeError400:
+      description: 请求不符合 Anthropic Messages 契约（Claude 形错误信封）
+      headers:
+        X-Request-ID:
+          description: '请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`'
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ClaudeError'
+    ClaudeError401:
+      description: 未认证或令牌失效（Claude 形 `authentication_error`）
+      headers:
+        X-Request-ID:
+          description: '请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`'
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ClaudeError'
+    ClaudeError402:
+      description: 额度/余额不足（Claude 形 `invalid_request_error`，状态码保持 402）
+      headers:
+        X-Request-ID:
+          description: '请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`'
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ClaudeError'
+    ClaudeError403:
+      description: 已认证但无权使用该模型/渠道（Claude 形 `permission_error`）
+      headers:
+        X-Request-ID:
+          description: '请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`'
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ClaudeError'
+    ClaudeError404:
+      description: 模型/渠道不存在或已停用（Claude 形 `not_found_error`）
+      headers:
+        X-Request-ID:
+          description: '请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`'
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ClaudeError'
+    ClaudeError413:
+      description: 请求体超过上限（Claude 形 `request_too_large`）
+      headers:
+        X-Request-ID:
+          description: '请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`'
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ClaudeError'
+    ClaudeError429:
+      description: |
+        触发中继准入限流（Claude 形 `rate_limit_error`）。`Retry-After` 为建议
+        重试的整数秒数；message 文案中的秒数与之一致。
+      headers:
+        Retry-After:
+          description: 建议重试等待秒数（向上取整）
+          schema:
+            type: integer
+            minimum: 0
+        X-Request-ID:
+          description: '请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`'
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ClaudeError'
+    ClaudeError500:
+      description: 服务端内部错误（Claude 形 `api_error`）
+      headers:
+        X-Request-ID:
+          description: '请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`'
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ClaudeError'
+    ClaudeError502:
+      description: 上游请求失败或响应不可用（Claude 形 `api_error`）
+      headers:
+        X-Request-ID:
+          description: '请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`'
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ClaudeError'
+    ClaudeError503:
+      description: 服务不可用（Claude 形 `api_error`）
+      headers:
+        X-Request-ID:
+          description: '请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`'
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ClaudeError'
     Error410:
       description: 资源已过期（兑换码虚拟过期态）
       content:

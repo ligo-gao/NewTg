@@ -159,9 +159,9 @@ func TestSensitiveBlockMessagesZeroBillingZeroUpstream(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), `"code":"content_blocked"`) {
-		t.Fatalf("body = %s, want content_blocked", w.Body.String())
-	}
+	// R-W18-04：/v1/messages 的错误是 Claude 形（无 code 字段），固定文案
+	// 与 chat 共用 sensitiveBlockedMessage，且不得回显命中词。
+	assertClaudeError(t, w, http.StatusBadRequest, "invalid_request_error")
 	if strings.Contains(strings.ToLower(w.Body.String()), "badword") {
 		t.Fatalf("错误响应回显了命中词：%s", w.Body.String())
 	}

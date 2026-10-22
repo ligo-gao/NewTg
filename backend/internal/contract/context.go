@@ -43,6 +43,15 @@ type RelayContext struct {
 	RawFormat   RelayFormat
 	RequestPath string
 
+	// AnthropicBeta 是客户端 `anthropic-beta` 头经白名单过滤后的值（R-W18-05）。
+	//
+	// 契约载体（受控变更）：适配器必须从**显式字段**读取该头，不得从
+	// context 值或全局变量偷塞——否则「哪些客户端头被转发」无法在类型层面审计。
+	// 零值 "" 表示不发送该头；非空值由 relay.BuildRelayContext 在 HTTP 边界
+	// 完成白名单过滤（adapters.FilterAnthropicBeta），适配器只做最后一道
+	// 防御性过滤。该值不得进入日志/审计（与凭据同级纪律）。
+	AnthropicBeta string
+
 	// —— 路由组（写入方：路由层；执行层只读）——
 	AttemptPlan  *AttemptPlan
 	AttemptIndex int
