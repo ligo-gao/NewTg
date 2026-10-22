@@ -333,7 +333,7 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 			// 与 chat 同一套 R-63/R-64 语义：多模态端点同样可能携带 auto 令牌。
 			MaxAutoGroups:   h.maxAutoGroups,
 			GroupConfigured: h.groupConfigured,
-			// M4-a：多模态非 realtime 端点也经 ExecuteAttempts，失败渠道必须
+			// M4-a：多模态端点也经 ExecuteAttempts，失败渠道必须
 			// 进入同一条自动禁用上报路径（调研 §5.1 的实际可达路径）。
 			OnAttemptFailure: h.reportAttemptFailure,
 		})
@@ -397,6 +397,14 @@ func (h *RelayHandler) Register(mux *http.ServeMux) {
 	authMiddleware := h.AuthMiddleware()
 	mux.Handle("POST /v1/chat/completions", authMiddleware(http.HandlerFunc(h.handleChatCompletions)))
 	mux.Handle("GET /v1/models", authMiddleware(http.HandlerFunc(h.handleModels)))
+	// R-W18-13：模型列表/检索按协议头分流（relay-04 §10.1）。
+	// 检索路径用 `{model...}` 通配：模型名允许包含 `/`（如
+	// `Qwen/Qwen2.5-72B`、`meta-llama/Llama-3-70B`），单段 `{model}` 会让
+	// 这类合法模型名落到 405。`/v1beta/models` 同理。
+	mux.Handle("GET /v1/models/{model...}", authMiddleware(http.HandlerFunc(h.handleModel)))
+	mux.Handle("GET /v1beta/models", authMiddleware(http.HandlerFunc(h.handleBetaModels)))
+	mux.Handle("GET /v1beta/models/{model...}", authMiddleware(http.HandlerFunc(h.handleBetaModel)))
+	mux.Handle("GET /v1beta/openai/models", authMiddleware(http.HandlerFunc(h.handleOpenAIModels)))
 	// T2 / P-01：OpenAI Responses 创建端点——插件原生路由优先，未命中返回
 	// 501（R-13；Responses 透传/转码另立 T2b，通用中继不承接）。
 	// 精确模式注册（不是 /v1/ 子树），与 T1 的兜底不重叠：ServeMux 让精确模式
@@ -434,10 +442,38 @@ func (h *RelayHandler) Register(mux *http.ServeMux) {
 	// 接收「没有其它路由认领」的 /v1 请求。它不是通用中继回退：命中插件路由
 	// 走任务数据面，未命中一律 404 OpenAI 信封（P-05），绝不进入 chat 管线。
 	mux.Handle(nativeRouteFallbackPattern, h.nativeRouteFallback(authMiddleware, mux))
+
+	// R-W18-13：`/v1beta/*` 的未匹配方法/未知路径同样回 OpenAI 信封。
+	//
+	// 不注册这条兜底时，`PUT /v1beta/models/x` 会落到 Go ServeMux 的默认
+	// 405（text/plain "Method Not Allowed"），与同一路径其它错误
+	// （application/json + {error:{...}}）形状分裂。兜底只做路由求解，
+	// 不鉴权、不分发，因此不会扩大可达面。
+	mux.Handle(betaRouteFallbackPattern, h.betaRouteFallback(mux))
 }
 
 // nativeRouteFallbackPattern 是原生路由兜底的 ServeMux 模式。
 const nativeRouteFallbackPattern = "/v1/"
+
+// betaRouteFallbackPattern 是 Gemini 兼容路径的兜底模式（R-W18-13）。
+const betaRouteFallbackPattern = "/v1beta/"
+
+// betaRouteFallback 把 /v1beta/* 的 404/405 统一成 /v1 的 OpenAI 错误信封。
+//
+// 405 语义与 nativeRouteFallback 相同：子树模式匹配所有方法，ServeMux 自己
+// 不会再产生 405，必须用路由表探测补回（探测不执行 handler）。
+func (h *RelayHandler) betaRouteFallback(mux *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := newRelayRequestID()
+		if allowed := methodMismatchAllowed(mux, r); len(allowed) > 0 {
+			w.Header().Set("Allow", strings.Join(allowed, ", "))
+			writeRelayError(w, http.StatusMethodNotAllowed, requestID, "method_not_allowed",
+				"method not allowed for this endpoint")
+			return
+		}
+		writeRelayError(w, http.StatusNotFound, requestID, "invalid_request_error", "unknown endpoint")
+	})
+}
 
 // nativeRouteFallback 构建 /v1/ 兜底 handler。
 //
@@ -446,8 +482,9 @@ const nativeRouteFallbackPattern = "/v1/"
 // 就是 404，能力探测面不应因为加了兜底而变成 401/404 二值 oracle。
 //
 // 405 语义必须由这里补回：Go 的 ServeMux 只有在「路径匹配某个模式但方法不
-// 匹配」时才返回 405，而 `/v1/` 匹配所有方法，若不显式探测，POST /v1/realtime
-// 会从 405 退化成 404。探测只查路由表（mux.Handler），不执行任何 handler。
+// 匹配」时才返回 405，而 `/v1/` 匹配所有方法，若不显式探测，GET /v1/models
+// 这类 GET-only 路径的其它方法会从 405 退化成 404。探测只查路由表
+// （mux.Handler），不执行任何 handler。
 func (h *RelayHandler) nativeRouteFallback(authMiddleware func(http.Handler) http.Handler, mux *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestID := newRelayRequestID()
@@ -533,7 +570,7 @@ func methodMismatchAllowed(mux *http.ServeMux, r *http.Request) []string {
 		*probe = *r
 		probe.Method = method
 		_, pattern := mux.Handler(probe)
-		if pattern == "" || pattern == nativeRouteFallbackPattern {
+		if pattern == "" || pattern == nativeRouteFallbackPattern || pattern == betaRouteFallbackPattern {
 			continue
 		}
 		allowed = append(allowed, method)
@@ -559,7 +596,7 @@ func (h *RelayHandler) Handler() http.Handler {
 //
 // 挂载面按 relay-01 §1.5 收敛为**对话族**：只注册 `POST /pg/chat/completions`
 // 与 `GET /pg/models`，其余 `/pg/*`（含 /v1 的多模态族 images/edits/
-// embeddings/rerank/audio/engines/v1beta/realtime）一律 404 OpenAI 信封。
+// embeddings/rerank/audio/engines/v1beta）一律 404 OpenAI 信封。
 // 不把多模态族一并暴露的理由：设计只承诺对话族，且 OpenAPI 只登记这两条；
 // 多挂的路径既无契约也无 UI 消费方，等于把未评审的计费面开给浏览器会话。
 //
@@ -3111,35 +3148,238 @@ func relayStreamOutcome(contentSent int) contract.ResponseOutcome {
 	return contract.OutcomeFailed
 }
 
-// ---------- GET /v1/models ----------
+// ---------- GET /v1/models 族 ----------
+//
+// 模型列表/检索按请求头分流（relay-04 §10.1）：同一份启用模型清单要能以
+// OpenAI / Anthropic / Gemini 三种 SDK 期望的形状返回，否则「一个 key 接
+// 三家 SDK」在这些辅助端点上就断了。非计费端点（R-W18-10），不消耗限流桶。
+//
+// 错误信封固定为 OpenAI 形：R-W18-04 只给 `/v1/messages` 留 Claude 形
+// （W18-A 面），模型列表不因请求头改变错误形状，避免同一路径出现两套
+// 客户端解析分支。
+
+// modelListShape 是模型列表的三种对外形状。
+type modelListShape int
+
+const (
+	modelShapeOpenAI modelListShape = iota
+	modelShapeAnthropic
+	modelShapeGemini
+)
+
+// modelListShapeFor 按请求头/查询参数选择列表形状（relay-04 §10.1）：
+//   - `x-api-key` + `anthropic-version` → Anthropic；
+//   - `x-goog-api-key` 或 `?key=` → Gemini（`?key=` 是 Gemini 兼容载体）；
+//   - 否则 OpenAI。
+func modelListShapeFor(r *http.Request) modelListShape {
+	if strings.TrimSpace(r.Header.Get("x-api-key")) != "" &&
+		strings.TrimSpace(r.Header.Get("anthropic-version")) != "" {
+		return modelShapeAnthropic
+	}
+	if strings.TrimSpace(r.Header.Get("x-goog-api-key")) != "" {
+		return modelShapeGemini
+	}
+	if r.URL != nil && strings.TrimSpace(r.URL.Query().Get("key")) != "" {
+		return modelShapeGemini
+	}
+	return modelShapeOpenAI
+}
+
+// modelShapeForRetrieval 是 `GET /v1/models/{model...}` 的分流：Anthropic 头 →
+// Anthropic，否则 OpenAI（relay-04 §10.1 只给这两支，不含 Gemini）。
+func modelShapeForRetrieval(r *http.Request) modelListShape {
+	if strings.TrimSpace(r.Header.Get("x-api-key")) != "" &&
+		strings.TrimSpace(r.Header.Get("anthropic-version")) != "" {
+		return modelShapeAnthropic
+	}
+	return modelShapeOpenAI
+}
+
+type openAIModelObject struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	OwnedBy string `json:"owned_by"`
+}
+
+type anthropicModelObject struct {
+	Type        string `json:"type"`
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	CreatedAt   string `json:"created_at"`
+}
+
+type geminiModelObject struct {
+	Name                       string   `json:"name"`
+	DisplayName                string   `json:"displayName"`
+	SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
+}
+
+// modelFallbackCreatedAt 是 Anthropic 模型对象的 created_at 占位值。
+//
+// 网关只聚合渠道配置里的模型名，没有「模型创建时间」这一事实。Anthropic
+// 的 Models API 形状要求该字段存在；用固定 epoch 而不是 time.Now()，保证
+// 同一份配置在任意副本/任意时刻返回相同字节（便于缓存与漂移测试）。
+const modelFallbackCreatedAt = "1970-01-01T00:00:00Z"
 
 func (h *RelayHandler) handleModels(w http.ResponseWriter, r *http.Request) {
+	switch modelListShapeFor(r) {
+	case modelShapeAnthropic:
+		h.writeAnthropicModels(w, r)
+	case modelShapeGemini:
+		h.writeGeminiModels(w, r)
+	default:
+		h.writeOpenAIModels(w, r)
+	}
+}
+
+// handleOpenAIModels 固定 OpenAI 形状（`/v1beta/openai/models`，relay-04 §10.1）。
+func (h *RelayHandler) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
+	h.writeOpenAIModels(w, r)
+}
+
+// handleModel 是 `GET /v1/models/{model...}`：Anthropic 头 → Anthropic 形状，
+// 否则 OpenAI 形状。
+func (h *RelayHandler) handleModel(w http.ResponseWriter, r *http.Request) {
+	model := r.PathValue("model")
+	models, requestID, ok := h.loadEnabledModels(w, r)
+	if !ok {
+		return
+	}
+	if !containsModel(models, model) {
+		writeRelayError(w, http.StatusNotFound, requestID, "model_not_found",
+			"the requested model is not available")
+		return
+	}
+	if modelShapeForRetrieval(r) == modelShapeAnthropic {
+		writeJSONResponse(w, requestID, anthropicModelObject{
+			Type:        "model",
+			ID:          model,
+			DisplayName: model,
+			CreatedAt:   modelFallbackCreatedAt,
+		})
+		return
+	}
+	writeJSONResponse(w, requestID, openAIModelObject{ID: model, Object: "model", OwnedBy: "newtg"})
+}
+
+// handleBetaModels 是 `GET /v1beta/models`：Gemini 形状（relay-04 §10.1）。
+func (h *RelayHandler) handleBetaModels(w http.ResponseWriter, r *http.Request) {
+	h.writeGeminiModels(w, r)
+}
+
+// handleBetaModel 是 `GET /v1beta/models/{model...}`：Gemini 形状。
+func (h *RelayHandler) handleBetaModel(w http.ResponseWriter, r *http.Request) {
+	model := r.PathValue("model")
+	models, requestID, ok := h.loadEnabledModels(w, r)
+	if !ok {
+		return
+	}
+	if !containsModel(models, model) {
+		writeRelayError(w, http.StatusNotFound, requestID, "model_not_found",
+			"the requested model is not available")
+		return
+	}
+	writeJSONResponse(w, requestID, geminiModelFor(model))
+}
+
+func (h *RelayHandler) writeOpenAIModels(w http.ResponseWriter, r *http.Request) {
+	models, requestID, ok := h.loadEnabledModels(w, r)
+	if !ok {
+		return
+	}
+	payload := struct {
+		Object string              `json:"object"`
+		Data   []openAIModelObject `json:"data"`
+	}{Object: "list", Data: make([]openAIModelObject, 0, len(models))}
+	for _, m := range models {
+		payload.Data = append(payload.Data, openAIModelObject{ID: m, Object: "model", OwnedBy: "newtg"})
+	}
+	writeJSONResponse(w, requestID, payload)
+}
+
+func (h *RelayHandler) writeAnthropicModels(w http.ResponseWriter, r *http.Request) {
+	models, requestID, ok := h.loadEnabledModels(w, r)
+	if !ok {
+		return
+	}
+	payload := struct {
+		Data    []anthropicModelObject `json:"data"`
+		HasMore bool                   `json:"has_more"`
+		FirstID *string                `json:"first_id"`
+		LastID  *string                `json:"last_id"`
+	}{Data: make([]anthropicModelObject, 0, len(models))}
+	for _, m := range models {
+		payload.Data = append(payload.Data, anthropicModelObject{
+			Type:        "model",
+			ID:          m,
+			DisplayName: m,
+			CreatedAt:   modelFallbackCreatedAt,
+		})
+	}
+	if len(models) > 0 {
+		first, last := models[0], models[len(models)-1]
+		payload.FirstID, payload.LastID = &first, &last
+	}
+	writeJSONResponse(w, requestID, payload)
+}
+
+func (h *RelayHandler) writeGeminiModels(w http.ResponseWriter, r *http.Request) {
+	models, requestID, ok := h.loadEnabledModels(w, r)
+	if !ok {
+		return
+	}
+	payload := struct {
+		Models []geminiModelObject `json:"models"`
+	}{Models: make([]geminiModelObject, 0, len(models))}
+	for _, m := range models {
+		payload.Models = append(payload.Models, geminiModelFor(m))
+	}
+	writeJSONResponse(w, requestID, payload)
+}
+
+// geminiModelFor 把网关模型名投影为 Gemini Models API 对象。
+//
+// Gemini 的 `name` 必须是 `models/<id>` 形式。`supportedGenerationMethods`
+// 只声明网关**确实会转发**的动作：`POST /v1beta/models/{model}:embedContent`
+// 与 `:batchEmbedContents`（后者不是 SDK 的 generation method，不列入）。
+// 声明 `generateContent`/`streamGenerateContent` 会让 SDK 去调用一条本网关
+// 未注册的路径——那是能力谎报（R-W18-11 的反面）。
+func geminiModelFor(model string) geminiModelObject {
+	return geminiModelObject{
+		Name:                       "models/" + model,
+		DisplayName:                model,
+		SupportedGenerationMethods: []string{"embedContent"},
+	}
+}
+
+func (h *RelayHandler) loadEnabledModels(w http.ResponseWriter, r *http.Request) ([]string, string, bool) {
 	requestID := newRelayRequestID()
 	models, err := h.channels.EnabledModels(r.Context())
 	if err != nil {
 		// GC-6：存储错误可能含 SQL/DSN，只回固定文案。
 		writeRelayError(w, http.StatusInternalServerError, requestID, "database_error",
 			"failed to load model list")
-		return
+		return nil, requestID, false
 	}
-	type modelObject struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		OwnedBy string `json:"owned_by"`
-	}
-	payload := struct {
-		Object string        `json:"object"`
-		Data   []modelObject `json:"data"`
-	}{Object: "list", Data: make([]modelObject, 0, len(models))}
-	for _, m := range models {
-		payload.Data = append(payload.Data, modelObject{ID: m, Object: "model", OwnedBy: "newtg"})
-	}
+	return models, requestID, true
+}
+
+func writeJSONResponse(w http.ResponseWriter, requestID string, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	if requestID != "" {
 		w.Header().Set("X-Request-ID", requestID)
 	}
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func containsModel(models []string, model string) bool {
+	for _, candidate := range models {
+		if candidate == model {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------- 错误映射 ----------

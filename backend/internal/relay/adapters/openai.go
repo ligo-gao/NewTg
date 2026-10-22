@@ -123,6 +123,66 @@ func NewOpenAI() *OpenAI {
 // Type 返回实例绑定的渠道类型。
 func (o *OpenAI) Type() contract.ChannelType { return o.channelType }
 
+// openAIMultimodalEndpoints 是 OpenAI 兼容族**实际有上游实现**的多模态端点表
+// （R-W18-11 单源裁决）。
+//
+// 为什么必须逐渠道类型列出、而不是「所有 AKOpenAI 渠道共享同一组」：能否
+// 承接某个多模态端点取决于上游 API 形状，而不取决于复用同一个 Go 适配器。
+// deepseek/mistral 等只提供 chat 的渠道若被标成支持 embeddings，路由层会放行
+// 一个必然失败（甚至发出错误形状）的请求。relay-04 §1.4/§2.4/§3.4/§4.6 把
+// 它们明确标为「声明缺省 → ErrEndpointUnsupported」。
+//
+// 本表是**能力的唯一真源**：dispatcher 只校验 Caps().Endpoints（R-W18-11），
+// 不再维护第二份端点×渠道白名单。新增渠道支持 = 在此加一行，并确认该渠道
+// 确有对应端点；没有实现的渠道不得只加名字（否则就是发出空/错体的半死路径）。
+//
+// moderations 只声明给 OpenAI 渠道：审核端点没有跨厂商的公开等价形态，
+// 其余 OpenAI 兼容渠道无法验证（不能靠「OpenAI 兼容」假设）。
+var openAIMultimodalEndpoints = map[contract.ChannelType]contract.Set[contract.Endpoint]{
+	contract.ChannelTypeOpenAI: {
+		contract.EndpointEmbeddings:      {},
+		contract.EndpointRerank:          {},
+		contract.EndpointAudioSpeech:     {},
+		contract.EndpointAudioTranscribe: {},
+		contract.EndpointAudioTranslate:  {},
+		contract.EndpointImageGenerate:   {},
+		contract.EndpointImageEdit:       {},
+		contract.EndpointModerations:     {},
+	},
+	// ali：嵌入/重排/图像（Baile 系列经 openai_image 宿主协议承载）。
+	contract.ChannelTypeAli: {
+		contract.EndpointEmbeddings:    {},
+		contract.EndpointRerank:        {},
+		contract.EndpointImageGenerate: {},
+		contract.EndpointImageEdit:     {},
+	},
+	// siliconflow：委托 OpenAI 的嵌入/重排/音频三端点。
+	contract.ChannelTypeSiliconFlow: {
+		contract.EndpointEmbeddings:      {},
+		contract.EndpointRerank:          {},
+		contract.EndpointAudioSpeech:     {},
+		contract.EndpointAudioTranscribe: {},
+		contract.EndpointAudioTranslate:  {},
+	},
+	// volcengine：只有嵌入与语音合成（转写/翻译明确不支持，relay-04 §3.4）。
+	contract.ChannelTypeVolcEngine: {
+		contract.EndpointEmbeddings:  {},
+		contract.EndpointAudioSpeech: {},
+	},
+	contract.ChannelTypeZhipuV4: {
+		contract.EndpointEmbeddings: {},
+	},
+	// xinference：只声明重排（其响应形态见 relay-04 §2.3）。
+	contract.ChannelTypeXinference: {
+		contract.EndpointRerank: {},
+	},
+	// xai：图像生成/编辑经 OpenAI 图像 Handler 复用。
+	contract.ChannelTypeXai: {
+		contract.EndpointImageGenerate: {},
+		contract.EndpointImageEdit:     {},
+	},
+}
+
 // Caps 返回 OpenAI 兼容族的基础能力声明（relay-02 §5 行 1，brief 冻结值）。
 //
 // DefaultBaseURL 按实例绑定的 ChannelType 取逐类型默认值（§5/§7.1）：
@@ -140,11 +200,19 @@ func (o *OpenAI) Caps() contract.Capabilities {
 	if defaultBase == "" {
 		mode = contract.BaseURLRequired
 	}
+	// R-W18-11 能力单一真源：多模态端点声明在 Caps().Endpoints，dispatcher
+	// 只做包含判定，不再维护第二份端点×渠道白名单。未列出的渠道类型
+	// （deepseek/mistral/azure/…）即明确不支持，路由层在 BuildRequest 前
+	// 以 ErrEndpointUnsupported 拒绝（relay-04 §0.3 / AC-1）。
+	endpoints := contract.Set[contract.Endpoint]{
+		contract.EndpointChat:   {},
+		contract.EndpointModels: {},
+	}
+	for endpoint := range openAIMultimodalEndpoints[o.channelType] {
+		endpoints[endpoint] = struct{}{}
+	}
 	return contract.Capabilities{
-		Endpoints: contract.Set[contract.Endpoint]{
-			contract.EndpointChat:   {},
-			contract.EndpointModels: {},
-		},
+		Endpoints:      endpoints,
 		Stream:         true, // SvO：支持 SSE，且显式请求用量
 		StreamUsage:    true, // 下发 stream_options.include_usage
 		ModelList:      true, // GET /v1/models

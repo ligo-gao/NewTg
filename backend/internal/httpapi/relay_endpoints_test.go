@@ -989,6 +989,227 @@ func TestRelayModelsList(t *testing.T) {
 	}
 }
 
+// TestRelayModelsShapeSplitByHeaders 冻结 R-W18-13 / relay-04 §10.1 的头分流：
+// 同一份启用模型清单按客户端协议头返回 OpenAI / Anthropic / Gemini 三种形状。
+func TestRelayModelsShapeSplitByHeaders(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("model list must be served from the channel repo, not upstream")
+	}))
+	defer upstream.Close()
+	channels := &fakeRelayChannelStore{models: []string{"alpha", "beta"}}
+	env := newRelayTestEnv(t, upstream, channels)
+
+	t.Run("openai-default", func(t *testing.T) {
+		w := env.doAuthed(t, http.MethodGet, "/v1/models", "")
+		var payload struct {
+			Object string `json:"object"`
+			Data   []struct {
+				ID     string `json:"id"`
+				Object string `json:"object"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode: %v; body=%s", err, w.Body.String())
+		}
+		if w.Code != http.StatusOK || payload.Object != "list" || len(payload.Data) != 2 ||
+			payload.Data[0].ID != "alpha" || payload.Data[0].Object != "model" {
+			t.Fatalf("openai shape = %d %+v", w.Code, payload)
+		}
+	})
+
+	t.Run("anthropic-headers", func(t *testing.T) {
+		w := env.do(t, http.MethodGet, "/v1/models", "", map[string]string{
+			"x-api-key":         relayTestToken,
+			"anthropic-version": "2023-06-01",
+		})
+		var payload struct {
+			Data []struct {
+				Type        string `json:"type"`
+				ID          string `json:"id"`
+				DisplayName string `json:"display_name"`
+				CreatedAt   string `json:"created_at"`
+			} `json:"data"`
+			HasMore bool    `json:"has_more"`
+			FirstID *string `json:"first_id"`
+			LastID  *string `json:"last_id"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode: %v; body=%s", err, w.Body.String())
+		}
+		if w.Code != http.StatusOK || len(payload.Data) != 2 || payload.Data[0].Type != "model" ||
+			payload.Data[0].DisplayName != "alpha" || payload.Data[0].CreatedAt == "" ||
+			payload.HasMore || payload.FirstID == nil || *payload.FirstID != "alpha" ||
+			payload.LastID == nil || *payload.LastID != "beta" {
+			t.Fatalf("anthropic shape = %d %+v", w.Code, payload)
+		}
+	})
+
+	t.Run("anthropic-headers-win-over-gemini", func(t *testing.T) {
+		// P3：同时携带 Claude 与 Gemini 兼容头时，Anthropic 优先（relay-04
+		// §10.1 的判定顺序：x-api-key+anthropic-version 先于 x-goog-api-key）。
+		w := env.do(t, http.MethodGet, "/v1/models", "", map[string]string{
+			"x-api-key":         relayTestToken,
+			"anthropic-version": "2023-06-01",
+			"x-goog-api-key":    relayTestToken,
+		})
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"display_name":"alpha"`) {
+			t.Fatalf("status = %d; body=%s, want Anthropic shape", w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), `"models":[`) {
+			t.Fatalf("body = %s, must not be Gemini shape when Anthropic headers are present", w.Body.String())
+		}
+	})
+
+	t.Run("gemini-header", func(t *testing.T) {
+		w := env.do(t, http.MethodGet, "/v1/models", "", map[string]string{"x-goog-api-key": relayTestToken})
+		var payload struct {
+			Models []struct {
+				Name                       string   `json:"name"`
+				DisplayName                string   `json:"displayName"`
+				SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
+			} `json:"models"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode: %v; body=%s", err, w.Body.String())
+		}
+		if w.Code != http.StatusOK || len(payload.Models) != 2 ||
+			payload.Models[0].Name != "models/alpha" || payload.Models[0].DisplayName != "alpha" ||
+			len(payload.Models[0].SupportedGenerationMethods) != 1 ||
+			payload.Models[0].SupportedGenerationMethods[0] != "embedContent" {
+			t.Fatalf("gemini shape = %d %+v", w.Code, payload)
+		}
+	})
+
+	t.Run("v1beta-models-gemini", func(t *testing.T) {
+		w := env.doAuthed(t, http.MethodGet, "/v1beta/models", "")
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"name":"models/alpha"`) {
+			t.Fatalf("v1beta list = %d %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("v1beta-openai-models-stays-openai", func(t *testing.T) {
+		// 该路径设计固定 OpenAI 形状，即使携带 Gemini 载体也不得改成 models[]。
+		w := env.do(t, http.MethodGet, "/v1beta/openai/models?key="+relayTestToken, "", nil)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"id":"alpha"`) {
+			t.Fatalf("v1beta/openai/models = %d %s", w.Code, w.Body.String())
+		}
+	})
+}
+
+// TestRelayModelRetrieval 覆盖 GET /v1/models/{model} 与 /v1beta/models/{model}：
+// 存在 → 对应协议形状；不存在 → 404 OpenAI 信封。
+func TestRelayModelRetrieval(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("model retrieval must not hit upstream")
+	}))
+	defer upstream.Close()
+	channels := &fakeRelayChannelStore{models: []string{"alpha", "Qwen/Qwen2.5-72B"}}
+	env := newRelayTestEnv(t, upstream, channels)
+
+	t.Run("openai-found", func(t *testing.T) {
+		w := env.doAuthed(t, http.MethodGet, "/v1/models/alpha", "")
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"id":"alpha"`) ||
+			!strings.Contains(w.Body.String(), `"object":"model"`) {
+			t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	// P2-2：模型名允许包含 `/`（厂商前缀）；单段路由会把这类请求变成 405。
+	t.Run("openai-found-slash-model", func(t *testing.T) {
+		w := env.doAuthed(t, http.MethodGet, "/v1/models/Qwen/Qwen2.5-72B", "")
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"id":"Qwen/Qwen2.5-72B"`) {
+			t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("openai-missing-slash-model", func(t *testing.T) {
+		w := env.doAuthed(t, http.MethodGet, "/v1/models/Qwen/does-not-exist", "")
+		if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), `"code":"model_not_found"`) {
+			t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("openai-missing", func(t *testing.T) {
+		w := env.doAuthed(t, http.MethodGet, "/v1/models/does-not-exist", "")
+		if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), `"code":"model_not_found"`) {
+			t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("anthropic-found", func(t *testing.T) {
+		w := env.do(t, http.MethodGet, "/v1/models/alpha", "", map[string]string{
+			"x-api-key":         relayTestToken,
+			"anthropic-version": "2023-06-01",
+		})
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"type":"model"`) ||
+			!strings.Contains(w.Body.String(), `"display_name":"alpha"`) {
+			t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("v1beta-found", func(t *testing.T) {
+		w := env.doAuthed(t, http.MethodGet, "/v1beta/models/alpha", "")
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"name":"models/alpha"`) {
+			t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("v1beta-found-slash-model", func(t *testing.T) {
+		w := env.doAuthed(t, http.MethodGet, "/v1beta/models/Qwen/Qwen2.5-72B", "")
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"name":"models/Qwen/Qwen2.5-72B"`) {
+			t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("v1beta-missing", func(t *testing.T) {
+		w := env.doAuthed(t, http.MethodGet, "/v1beta/models/does-not-exist", "")
+		if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), `"code":"model_not_found"`) {
+			t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("unauthorized", func(t *testing.T) {
+		for _, path := range []string{"/v1/models/alpha", "/v1beta/models", "/v1beta/models/alpha", "/v1beta/openai/models"} {
+			w := env.do(t, http.MethodGet, path, "", nil)
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("%s status = %d, want 401; body=%s", path, w.Code, w.Body.String())
+			}
+		}
+	})
+}
+
+// TestBetaFallbackUsesRelayEnvelope 覆盖 P2-2/P3：`/v1beta/*` 的未匹配方法
+// 与未知路径都必须回 OpenAI JSON 信封，而不是 Go ServeMux 的 text/plain 405。
+func TestBetaFallbackUsesRelayEnvelope(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("fallback must not hit upstream")
+	}))
+	defer upstream.Close()
+	env := newRelayTestEnv(t, upstream, &fakeRelayChannelStore{models: []string{"alpha"}})
+
+	t.Run("method-not-allowed", func(t *testing.T) {
+		w := env.doAuthed(t, http.MethodPut, "/v1beta/models/alpha", "")
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status = %d, want 405; body=%s", w.Code, w.Body.String())
+		}
+		if allow := w.Header().Get("Allow"); !strings.Contains(allow, http.MethodGet) {
+			t.Fatalf("Allow = %q, want GET", allow)
+		}
+		body := assertOpenAIErrorEnvelope(t, w, "method_not_allowed")
+		if body.Message == "" || !strings.Contains(body.Message, "requestId:") {
+			t.Fatalf("message = %q, want requestId suffix", body.Message)
+		}
+	})
+
+	t.Run("unknown-path", func(t *testing.T) {
+		w := env.doAuthed(t, http.MethodGet, "/v1beta/unknown", "")
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404; body=%s", w.Code, w.Body.String())
+		}
+		assertOpenAIErrorEnvelope(t, w, "invalid_request_error")
+	})
+}
+
 // ---------- (f) 客户端断开：失败退款且只终结一次 ----------
 
 func TestRelayStreamingClientDisconnectRefundsOnce(t *testing.T) {
@@ -1890,6 +2111,9 @@ func TestRelayTrustedProxyPolicyForAllowIPs(t *testing.T) {
 
 // TestRelayModelsAcceptsQueryKey 覆盖 finding 12（relay-01 §3.1）：/v1/models
 // 支持 ?key=<token> 兼容载体（鉴权中间件会把它归一化进 Authorization）。
+//
+// R-W18-13：`?key=` 同时是 Gemini 兼容载体，因此响应形状按 relay-04 §10.1
+// 分流为 Gemini（`models[]`），而不是 OpenAI 的 `data[]`。
 func TestRelayModelsAcceptsQueryKey(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("model list must not hit upstream")
@@ -1902,12 +2126,13 @@ func TestRelayModelsAcceptsQueryKey(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200（?key= 载体）; body=%s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), `"id":"alpha"`) {
-		t.Fatalf("body = %s, want model list", w.Body.String())
+	if !strings.Contains(w.Body.String(), `"name":"models/alpha"`) {
+		t.Fatalf("body = %s, want Gemini model list", w.Body.String())
 	}
 }
 
-// TestRelayModelsAcceptsXGoogAPIKey 覆盖 finding 12：x-goog-api-key 兼容载体。
+// TestRelayModelsAcceptsXGoogAPIKey 覆盖 finding 12：x-goog-api-key 兼容载体，
+// 响应形状为 Gemini（relay-04 §10.1）。
 func TestRelayModelsAcceptsXGoogAPIKey(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("model list must not hit upstream")
@@ -1920,6 +2145,9 @@ func TestRelayModelsAcceptsXGoogAPIKey(t *testing.T) {
 		map[string]string{"x-goog-api-key": relayTestToken})
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200（x-goog-api-key 载体）; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"name":"models/alpha"`) {
+		t.Fatalf("body = %s, want Gemini model list", w.Body.String())
 	}
 }
 

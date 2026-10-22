@@ -117,9 +117,9 @@ func (a *endpointAdapter) Type() contract.ChannelType { return a.channelType }
 
 func (a *endpointAdapter) Caps() contract.Capabilities {
 	caps := a.base.Caps()
-	// 端点能力是**请求级事实**：M4 的多模态端点由本包按 channel kind 矩阵
-	// 提供，不复用基础适配器只声明 chat 的 Endpoints（避免把「支持」误判为
-	// 「不支持」）。渠道选择仍由 dispatcher 的 supports 判定把关。
+	// 请求级适配器只服务一个端点，因此对外能力收窄为本轮端点。是否能走到
+	// 这里由 dispatcher.supports 按**渠道适配器的** Caps().Endpoints 判定
+	// （R-W18-11 单一真源）；本方法不承担渠道能力声明。
 	caps.Endpoints = contract.Set[contract.Endpoint]{a.plan.endpoint: {}}
 	if a.plan.stream {
 		caps.Stream = true
@@ -502,6 +502,8 @@ func endpointPath(endpoint contract.Endpoint) string {
 		return "/v1/images/edits"
 	case contract.EndpointEmbeddings:
 		return "/v1/embeddings"
+	case contract.EndpointModerations:
+		return "/v1/moderations"
 	case contract.EndpointRerank:
 		return "/v1/rerank"
 	case contract.EndpointAudioSpeech:

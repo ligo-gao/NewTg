@@ -556,7 +556,7 @@ func compileOverride(key string, version ActiveVersion, timeout time.Duration) (
 //     处理器不查 RouteIndex，故只进保留集）、models、responses（T2 的创建、
 //     GET /v1/responses 回放由 handlers_tasks.go 注册）；
 //   - handlers_tasks.go：tasks/{key} 及其产物族；
-//   - handlers_multimodal.go：images/embeddings/rerank/audio/engines/models 通配/realtime。
+//   - handlers_multimodal.go：images/embeddings/rerank/moderations/audio/engines/models 通配。
 var builtinRouteShapes = map[string]struct{}{
 	"POST /v1/chat/completions":             {},
 	"GET /v1/models":                        {},
@@ -579,13 +579,19 @@ var builtinRouteShapes = map[string]struct{}{
 	"POST /v1/images/edits":          {},
 	"POST /v1/embeddings":            {},
 	"POST /v1/rerank":                {},
+	"POST /v1/moderations":           {}, // R-W18-14：审核端点
 	"POST /v1/audio/speech":          {},
 	"POST /v1/audio/transcriptions":  {},
 	"POST /v1/audio/translations":    {},
 	"POST /v1/engines/{}/embeddings": {},
 	"POST /v1/models/{}":             {}, // ServeMux 通配 /v1/models/{path...}
 	"POST /v1beta/models/{}":         {}, // ServeMux 通配 /v1beta/models/{path...}
-	"GET /v1/realtime":               {},
+	// R-W18-13：模型列表按请求头分流的精确 GET 路由（含 Gemini 兼容面）。
+	// 它们不查 RouteIndex，插件声明必然不可达，必须进保留集。
+	"GET /v1/models/{}":         {},
+	"GET /v1beta/models":        {},
+	"GET /v1beta/models/{}":     {},
+	"GET /v1beta/openai/models": {},
 }
 
 // pluginDispatchedBuiltinShapes 是 builtinRouteShapes 中「处理器显式先查
@@ -633,7 +639,17 @@ var unprovidedRouteShapes = map[string]struct{}{
 // 只允许插件声明 `/v1/` 路径，所以今天插件无法占用 `/mj`；把族根登记进保留
 // 集是纵深防御：将来 R-09 放开非 `/v1` 前缀时，仍不能在 `/mj` 下声明一条
 // 永远收不到请求的插件路由（R-MJ-08）。
-var builtinReservedRouteFamilies = []string{"/v1/models", "/v1beta/models", "/mj"}
+//
+// R-W18-01：`/v1/files`、`/v1/fine-tunes`、`/v1/images/variations`、`/v1/edits`
+// 是设计**明确不提供**的端点（relay-07 §4/§5、relay-04 §10.4，决议 H）。
+// AC-8 要求它们「任何方法都 404 且不经鉴权/限流/分发链」——如果允许插件在
+// routes[] 里声明这些路径，兜底会命中并经过 RelayAuth，把 404 变成「令牌
+// 有效时 200、无效时 401」的能力探测面。登记为保留族后，插件声明在注册期
+// 即整插件失败，请求永远落到 /v1/ 兜底的 404。
+var builtinReservedRouteFamilies = []string{
+	"/v1/models", "/v1beta/models", "/mj",
+	"/v1/files", "/v1/fine-tunes", "/v1/images/variations", "/v1/edits",
+}
 
 // builtinReservedFamilyFor 返回 route.Path 所属的内建保留族（无则空串）。
 //

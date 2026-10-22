@@ -39,6 +39,80 @@ func TestAdminSpecKeepsDocumentedNotFoundResponses(t *testing.T) {
 	}
 }
 
+// TestRelayErrorResponsesUseOpenAIEnvelope 是 R-W18-13 的错误信封守卫：
+// /v1 与 /pg 的 400/401/402/403/404/500/503 必须引用 OpenAI 信封组件
+// （RelayError*），不得回落到 /api 的 RFC 7807 组件；problem+json 在 /v1
+// 只允许用于 501。`/v1/messages` 的 Claude 形信封归 W18-A，跳过。
+func TestRelayErrorResponsesUseOpenAIEnvelope(t *testing.T) {
+	raw, err := os.ReadFile("../../../../api/openapi/paths/relay.yaml")
+	if err != nil {
+		t.Fatalf("read relay.yaml: %v", err)
+	}
+	spec := string(raw)
+	forbidden := []string{
+		"#/responses/Error400'",
+		"#/responses/Error401'",
+		"#/responses/Error402'",
+		"#/responses/Error403'",
+		"#/responses/Error404'",
+		"#/responses/Error500'",
+		"#/responses/Error503'",
+	}
+	for _, path := range relayPathKeys(spec) {
+		if !strings.HasPrefix(path, "/v1/") && !strings.HasPrefix(path, "/pg/") {
+			continue
+		}
+		if path == "/v1/messages" {
+			continue
+		}
+		block, ok := pathBlock(spec, path)
+		if !ok {
+			continue
+		}
+		for _, method := range []string{"get", "post", "put", "patch", "delete"} {
+			op, ok := operation(block, method)
+			if !ok {
+				continue
+			}
+			for _, forbiddenRef := range forbidden {
+				if strings.Contains(op, forbiddenRef) {
+					t.Errorf("%s %s: must use RelayError* for 4xx/5xx, found %s", strings.ToUpper(method), path, forbiddenRef)
+				}
+			}
+			if strings.Contains(op, "'501':") {
+				// 501 是「端点形态不支持」的唯一 problem+json 例外；但
+				// /v1/responses 是 OpenAI 协议面（W18-C），501 也必须用
+				// OpenAI 信封 RelayError501，不能回落到 problem+json。
+				want := "#/responses/Error501'"
+				if path == "/v1/responses" {
+					want = "#/responses/RelayError501'"
+				}
+				if !strings.Contains(op, want) {
+					t.Errorf("%s %s: 501 must reference %s", strings.ToUpper(method), path, want)
+				}
+			}
+		}
+	}
+}
+
+// relayPathKeys 返回 relay.yaml 中所有 2 空格缩进的路径键（`  /x/y:`）。
+func relayPathKeys(spec string) []string {
+	var out []string
+	for _, line := range strings.Split(spec, "\n") {
+		if !strings.HasPrefix(line, "  /") {
+			continue
+		}
+		if len(line)-len(strings.TrimLeft(line, " ")) != 2 {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if strings.HasSuffix(trimmed, ":") {
+			out = append(out, strings.TrimSuffix(trimmed, ":"))
+		}
+	}
+	return out
+}
+
 // TestRelayRateLimitContractUsesRelayEnvelope 是 W7/M5-c 的限流契约守卫。
 //
 // 为什么直接扫源文件：drift 检查只能证明「源与生成物一致」，不能证明「源本身

@@ -1668,21 +1668,6 @@ func (e PricingStatus) Valid() bool {
 	}
 }
 
-// Defines values for Problem402Currency.
-const (
-	Credits Problem402Currency = "credits"
-)
-
-// Valid indicates whether the value is a known member of the Problem402Currency enum.
-func (e Problem402Currency) Valid() bool {
-	switch e {
-	case Credits:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for PublicAnnouncementCategory.
 const (
 	PublicAnnouncementCategoryMaintenance PublicAnnouncementCategory = "maintenance"
@@ -7054,38 +7039,6 @@ type Problem struct {
 	AdditionalProperties map[string]interface{} `json:"-"`
 }
 
-// Problem402 额度/余额不足（Problem 的 402 扩展；计费 §6.2、relay §4.4）
-type Problem402 struct {
-	// Balance 当前可用余额（credits 最小单位）
-	Balance  *int                `json:"balance,omitempty"`
-	Currency *Problem402Currency `json:"currency,omitempty"`
-
-	// Detail 针对本次问题的说明
-	Detail *string `json:"detail,omitempty"`
-
-	// Instance 问题实例 URI（通常为请求路径）
-	Instance *string `json:"instance,omitempty"`
-
-	// Required 本次请求所需额度
-	Required *int `json:"required,omitempty"`
-
-	// Status HTTP 状态码（与响应状态行一致）
-	Status int `json:"status"`
-
-	// Title 简短的人类可读摘要
-	Title string `json:"title"`
-
-	// TopupUrl 充值页地址
-	TopupUrl *string `json:"topup_url,omitempty"`
-
-	// Type 问题类型 URI（稳定机器可读标识）
-	Type                 string                 `json:"type"`
-	AdditionalProperties map[string]interface{} `json:"-"`
-}
-
-// Problem402Currency defines model for Problem402.Currency.
-type Problem402Currency string
-
 // PublicAnnouncement defines model for PublicAnnouncement.
 type PublicAnnouncement struct {
 	Category PublicAnnouncementCategory `json:"category"`
@@ -9809,9 +9762,6 @@ type Error400 = Problem
 // Error401 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Error401 = Problem
 
-// Error402 额度/余额不足（Problem 的 402 扩展；计费 §6.2、relay §4.4）
-type Error402 = Problem402
-
 // Error403 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Error403 = Problem
 
@@ -9842,13 +9792,37 @@ type Error502 = Problem
 // Error503 RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Error503 = Problem
 
+// RelayError400 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type RelayError400 = RelayError
+
+// RelayError401 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type RelayError401 = RelayError
+
+// RelayError402 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type RelayError402 = RelayError
+
+// RelayError404 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type RelayError404 = RelayError
+
 // RelayError429 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
 // ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
 type RelayError429 = RelayError
 
+// RelayError500 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type RelayError500 = RelayError
+
 // RelayError501 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
 // ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
 type RelayError501 = RelayError
+
+// RelayError503 中继错误信封（OpenAI 兼容）。`message` 末尾会追加
+// ` (requestId: <id>)`，同一个 id 同时出现在 `X-Request-ID` 头中。
+type RelayError503 = RelayError
 
 // ResponsesCreateOK Responses 对象。`output` 元素本波不做 IR 建模（插件渲染项或产物投影项），
 // 因此按开放对象声明；`usage` 仅在终态（completed/failed/incomplete）出现。
@@ -12292,188 +12266,6 @@ func (a Problem) MarshalJSON() ([]byte, error) {
 	object["title"], err = json.Marshal(a.Title)
 	if err != nil {
 		return nil, fmt.Errorf("error marshaling 'title': %w", err)
-	}
-
-	object["type"], err = json.Marshal(a.Type)
-	if err != nil {
-		return nil, fmt.Errorf("error marshaling 'type': %w", err)
-	}
-
-	for fieldName, field := range a.AdditionalProperties {
-		object[fieldName], err = json.Marshal(field)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
-		}
-	}
-	return json.Marshal(object)
-}
-
-// Getter for additional properties for Problem402. Returns the specified
-// element and whether it was found
-func (a Problem402) Get(fieldName string) (value interface{}, found bool) {
-	if a.AdditionalProperties != nil {
-		value, found = a.AdditionalProperties[fieldName]
-	}
-	return
-}
-
-// Setter for additional properties for Problem402
-func (a *Problem402) Set(fieldName string, value interface{}) {
-	if a.AdditionalProperties == nil {
-		a.AdditionalProperties = make(map[string]interface{})
-	}
-	a.AdditionalProperties[fieldName] = value
-}
-
-// Override default JSON handling for Problem402 to handle AdditionalProperties
-func (a *Problem402) UnmarshalJSON(b []byte) error {
-	object := make(map[string]json.RawMessage)
-	err := json.Unmarshal(b, &object)
-	if err != nil {
-		return err
-	}
-
-	if raw, found := object["balance"]; found {
-		err = json.Unmarshal(raw, &a.Balance)
-		if err != nil {
-			return fmt.Errorf("error reading 'balance': %w", err)
-		}
-		delete(object, "balance")
-	}
-
-	if raw, found := object["currency"]; found {
-		err = json.Unmarshal(raw, &a.Currency)
-		if err != nil {
-			return fmt.Errorf("error reading 'currency': %w", err)
-		}
-		delete(object, "currency")
-	}
-
-	if raw, found := object["detail"]; found {
-		err = json.Unmarshal(raw, &a.Detail)
-		if err != nil {
-			return fmt.Errorf("error reading 'detail': %w", err)
-		}
-		delete(object, "detail")
-	}
-
-	if raw, found := object["instance"]; found {
-		err = json.Unmarshal(raw, &a.Instance)
-		if err != nil {
-			return fmt.Errorf("error reading 'instance': %w", err)
-		}
-		delete(object, "instance")
-	}
-
-	if raw, found := object["required"]; found {
-		err = json.Unmarshal(raw, &a.Required)
-		if err != nil {
-			return fmt.Errorf("error reading 'required': %w", err)
-		}
-		delete(object, "required")
-	}
-
-	if raw, found := object["status"]; found {
-		err = json.Unmarshal(raw, &a.Status)
-		if err != nil {
-			return fmt.Errorf("error reading 'status': %w", err)
-		}
-		delete(object, "status")
-	}
-
-	if raw, found := object["title"]; found {
-		err = json.Unmarshal(raw, &a.Title)
-		if err != nil {
-			return fmt.Errorf("error reading 'title': %w", err)
-		}
-		delete(object, "title")
-	}
-
-	if raw, found := object["topup_url"]; found {
-		err = json.Unmarshal(raw, &a.TopupUrl)
-		if err != nil {
-			return fmt.Errorf("error reading 'topup_url': %w", err)
-		}
-		delete(object, "topup_url")
-	}
-
-	if raw, found := object["type"]; found {
-		err = json.Unmarshal(raw, &a.Type)
-		if err != nil {
-			return fmt.Errorf("error reading 'type': %w", err)
-		}
-		delete(object, "type")
-	}
-
-	if len(object) != 0 {
-		a.AdditionalProperties = make(map[string]interface{})
-		for fieldName, fieldBuf := range object {
-			var fieldVal interface{}
-			err := json.Unmarshal(fieldBuf, &fieldVal)
-			if err != nil {
-				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
-			}
-			a.AdditionalProperties[fieldName] = fieldVal
-		}
-	}
-	return nil
-}
-
-// Override default JSON handling for Problem402 to handle AdditionalProperties
-func (a Problem402) MarshalJSON() ([]byte, error) {
-	var err error
-	object := make(map[string]json.RawMessage)
-
-	if a.Balance != nil {
-		object["balance"], err = json.Marshal(a.Balance)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'balance': %w", err)
-		}
-	}
-
-	if a.Currency != nil {
-		object["currency"], err = json.Marshal(a.Currency)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'currency': %w", err)
-		}
-	}
-
-	if a.Detail != nil {
-		object["detail"], err = json.Marshal(a.Detail)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'detail': %w", err)
-		}
-	}
-
-	if a.Instance != nil {
-		object["instance"], err = json.Marshal(a.Instance)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'instance': %w", err)
-		}
-	}
-
-	if a.Required != nil {
-		object["required"], err = json.Marshal(a.Required)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'required': %w", err)
-		}
-	}
-
-	object["status"], err = json.Marshal(a.Status)
-	if err != nil {
-		return nil, fmt.Errorf("error marshaling 'status': %w", err)
-	}
-
-	object["title"], err = json.Marshal(a.Title)
-	if err != nil {
-		return nil, fmt.Errorf("error marshaling 'title': %w", err)
-	}
-
-	if a.TopupUrl != nil {
-		object["topup_url"], err = json.Marshal(a.TopupUrl)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'topup_url': %w", err)
-		}
 	}
 
 	object["type"], err = json.Marshal(a.Type)

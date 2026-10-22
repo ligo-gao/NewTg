@@ -85,6 +85,92 @@ responses:
       application/json:
         schema:
           $ref: '../schemas/relay.yaml#/schemas/RelayError'
+
+  # R-W18-13：/v1（与 /pg）中继面的 4xx/5xx 一律是 OpenAI 兼容错误信封
+  # （relay-01 §3.6、relay_auth.go 的 writeRelayError）。
+  #
+  # 为什么不能复用上面的 Error400/401/402/500：那些组件声明的是 RFC 7807
+  # （只属于 /api/*）的形状，与 /v1 实现返回的 `{error:{...}}` 不一致，会让
+  # 文档与实现长期漂移（G-DOM-86）。RFC 7807 在 /v1 只保留给「端点形态
+  # 不支持」的 fail-closed 501（Error501）；/v1/messages 的 Claude 形信封
+  # 由 W18-A 单独登记，本任务不动它的 schema。
+  RelayError400:
+    description: 请求不符合契约（参数/请求体校验失败，OpenAI 错误信封）
+    headers:
+      X-Request-ID:
+        description: "请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`"
+        schema:
+          type: string
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/RelayError'
+  RelayError401:
+    description: 未认证或令牌失效（OpenAI 错误信封；code 为空串）
+    headers:
+      X-Request-ID:
+        description: "请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`"
+        schema:
+          type: string
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/RelayError'
+  RelayError402:
+    description: 额度/余额不足（OpenAI 错误信封）
+    headers:
+      X-Request-ID:
+        description: "请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`"
+        schema:
+          type: string
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/RelayError'
+  RelayError403:
+    description: 已认证但无权访问（OpenAI 错误信封）
+    headers:
+      X-Request-ID:
+        description: "请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`"
+        schema:
+          type: string
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/RelayError'
+  RelayError404:
+    description: 资源/模型不存在（OpenAI 错误信封）
+    headers:
+      X-Request-ID:
+        description: "请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`"
+        schema:
+          type: string
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/RelayError'
+  RelayError500:
+    description: 服务端内部错误（OpenAI 错误信封）
+    headers:
+      X-Request-ID:
+        description: "请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`"
+        schema:
+          type: string
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/RelayError'
+  RelayError503:
+    description: 服务暂不可用（部署未就绪/依赖不可用；OpenAI 错误信封）
+    headers:
+      X-Request-ID:
+        description: "请求 ID；响应体 `message` 末尾也附带 `(requestId: <id>)`"
+        schema:
+          type: string
+    content:
+      application/json:
+        schema:
+          $ref: '../schemas/relay.yaml#/schemas/RelayError'
   Error500:
     description: 服务端内部错误
     content:

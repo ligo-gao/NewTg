@@ -56,6 +56,11 @@ func (g *Gemini) Caps() contract.Capabilities {
 			contract.EndpointChat:            {},
 			contract.EndpointGenerateContent: {},
 			contract.EndpointModels:          {},
+			// R-W18-11：Gemini 的嵌入走专用 DTO/Handler（`:embedContent` /
+			// `:batchEmbedContents`，relay-04 §1.4），属于本渠道的真实能力。
+			// 多模态 dispatcher 仅在 Gemini 语义路径上消费该声明；普通
+			// `/v1/embeddings` 仍因入口形态不符被拒绝。
+			contract.EndpointEmbeddings: {},
 		},
 		Stream:                true,
 		StreamUsage:           false,

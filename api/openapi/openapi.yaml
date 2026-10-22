@@ -447,6 +447,41 @@ paths:
   /pg/models:
     $ref: './paths/relay.yaml#/paths/~1pg~1models'
 
+  # 多模态端点族（M4 + W18-D；relay-04 §0.1）。R-W18-13 要求全部已注册端点
+  # 可被生成物看见（孤儿 path 不会进入 bundle/DTO/schema.d.ts）。
+  /v1/embeddings:
+    $ref: './paths/relay.yaml#/paths/~1v1~1embeddings'
+  /v1/engines/{model}/embeddings:
+    $ref: './paths/relay.yaml#/paths/~1v1~1engines~1{model}~1embeddings'
+  /v1/rerank:
+    $ref: './paths/relay.yaml#/paths/~1v1~1rerank'
+  /v1/moderations:
+    $ref: './paths/relay.yaml#/paths/~1v1~1moderations'
+  /v1/audio/speech:
+    $ref: './paths/relay.yaml#/paths/~1v1~1audio~1speech'
+  /v1/audio/transcriptions:
+    $ref: './paths/relay.yaml#/paths/~1v1~1audio~1transcriptions'
+  /v1/audio/translations:
+    $ref: './paths/relay.yaml#/paths/~1v1~1audio~1translations'
+  /v1/images/generations:
+    $ref: './paths/relay.yaml#/paths/~1v1~1images~1generations'
+  /v1/images/edits:
+    $ref: './paths/relay.yaml#/paths/~1v1~1images~1edits'
+
+  # 模型列表/检索（R-W18-13 / relay-04 §10.1）。同一路径模板承载
+  # GET（检索）与 POST（Gemini 语义嵌入通配），避免 OpenAPI 出现
+  # `/v1/models/{model}` 与 `/v1/models/{path}` 两个等价模板。
+  /v1/models:
+    $ref: './paths/relay.yaml#/paths/~1v1~1models'
+  /v1/models/{model}:
+    $ref: './paths/relay.yaml#/paths/~1v1~1models~1{model}'
+  /v1beta/models:
+    $ref: './paths/relay.yaml#/paths/~1v1beta~1models'
+  /v1beta/models/{model}:
+    $ref: './paths/relay.yaml#/paths/~1v1beta~1models~1{model}'
+  /v1beta/openai/models:
+    $ref: './paths/relay.yaml#/paths/~1v1beta~1openai~1models'
+
   # 用量日志 / 统计 / 审计只读端点（M6 Task 2 / modules-05）。
   /api/logs/by-key:
     $ref: './paths/user.yaml#/paths/~1api~1logs~1by-key'
