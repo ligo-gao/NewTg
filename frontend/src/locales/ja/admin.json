@@ -688,7 +688,19 @@
       "compile_failed_title": "プラグインのコンパイルに失敗しました。何も保存されていません：{error}",
       "version_conflict": "同じバージョンが異なる内容で存在します。バージョン番号を変更して再試行してください。",
       "preview_title": "インストールされたバージョン",
-      "not_activated": "バージョンはインストールされましたが未有効化です。必要に応じて変更履歴から有効化してください。"
+      "not_activated": "バージョンはインストールされましたが未有効化です。必要に応じて変更履歴から有効化してください。",
+      "import_title": "URL からインポート",
+      "import_url_label": "プラグインソースの URL",
+      "import_sha256_label": "SHA-256（任意）",
+      "import_sha256_placeholder": "64 桁の十六進数",
+      "import_hint": "https のみ受け付けます。リダイレクトは追従せず、ソースは 2 MiB 以下である必要があります。",
+      "import_submit": "URL からインポート",
+      "importing": "インポート中…",
+      "import_invalid_url": "https の URL を入力してください。",
+      "import_invalid_sha256": "SHA-256 は 64 桁の十六進数である必要があります。",
+      "import_error_url_rejected": "URL が拒否されました。公開 https アドレスを使用してください。リダイレクトとプライベートネットワークは許可されません。",
+      "import_error_hash_mismatch": "検証に失敗しました。ダウンロードしたソースが指定の SHA-256 と一致しないため、何も保存されていません。",
+      "import_error_unreachable": "ソースをダウンロードできませんでした。URL を確認して再試行してください。"
     },
     "marketplace": {
       "source_filter": "ソース",

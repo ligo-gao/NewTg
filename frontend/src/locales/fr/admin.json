@@ -688,7 +688,19 @@
       "compile_failed_title": "Échec de compilation du plugin. Rien n'a été enregistré : {error}",
       "version_conflict": "Cette version existe déjà avec un contenu différent. Changez le numéro de version et réessayez.",
       "preview_title": "Version installée",
-      "not_activated": "La version est installée mais non activée. Activez-la depuis l'historique des modifications lorsque vous êtes prêt."
+      "not_activated": "La version est installée mais non activée. Activez-la depuis l'historique des modifications lorsque vous êtes prêt.",
+      "import_title": "Importer depuis une URL",
+      "import_url_label": "URL de la source du plugin",
+      "import_sha256_label": "SHA-256 (facultatif)",
+      "import_sha256_placeholder": "64 caractères hexadécimaux",
+      "import_hint": "Seul https est accepté. Les redirections ne sont pas suivies et la source ne doit pas dépasser 2 Mio.",
+      "import_submit": "Importer depuis une URL",
+      "importing": "Importation…",
+      "import_invalid_url": "Saisissez une URL https.",
+      "import_invalid_sha256": "Le SHA-256 doit contenir 64 caractères hexadécimaux.",
+      "import_error_url_rejected": "URL rejetée. Utilisez une adresse https publique ; les redirections et les réseaux privés sont interdits.",
+      "import_error_hash_mismatch": "Échec de la vérification : la source téléchargée ne correspond pas au SHA-256 fourni. Rien n'a été enregistré.",
+      "import_error_unreachable": "Impossible de télécharger la source. Vérifiez l'URL et réessayez."
     },
     "marketplace": {
       "source_filter": "Source",

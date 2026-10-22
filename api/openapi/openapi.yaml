@@ -355,6 +355,8 @@ paths:
     $ref: './paths/admin.yaml#/paths/~1api~1task_plugin_options'
   /api/plugin/task:
     $ref: './paths/admin.yaml#/paths/~1api~1plugin~1task'
+  /api/plugin/task:import:
+    $ref: './paths/admin.yaml#/paths/~1api~1plugin~1task:import'
   /api/plugin/task/runtime/status:
     $ref: './paths/admin.yaml#/paths/~1api~1plugin~1task~1runtime~1status'
   /api/plugin/task/marketplace:

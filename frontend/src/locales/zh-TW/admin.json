@@ -688,7 +688,19 @@
       "compile_failed_title": "外掛編譯失敗，未儲存任何內容：{error}",
       "version_conflict": "此版本已存在且內容不同，請修改版本號後重試。",
       "preview_title": "已安裝版本",
-      "not_activated": "版本已安裝但未啟用；需要時可在變更歷史中啟用。"
+      "not_activated": "版本已安裝但未啟用；需要時可在變更歷史中啟用。",
+      "import_title": "從 URL 匯入",
+      "import_url_label": "外掛來源 URL",
+      "import_sha256_label": "SHA-256（選填）",
+      "import_sha256_placeholder": "64 位十六進位字元",
+      "import_hint": "僅接受 https；不跟隨重新導向，來源檔不超過 2 MiB。",
+      "import_submit": "從 URL 匯入",
+      "importing": "匯入中…",
+      "import_invalid_url": "請輸入 https URL。",
+      "import_invalid_sha256": "SHA-256 必須是 64 位十六進位字元。",
+      "import_error_url_rejected": "URL 被拒絕。請使用公網 https 位址；不允許重新導向與私網位址。",
+      "import_error_hash_mismatch": "校驗失敗：下載內容與填寫的 SHA-256 不一致，未儲存任何內容。",
+      "import_error_unreachable": "無法下載外掛來源。請檢查 URL 後重試。"
     },
     "marketplace": {
       "source_filter": "來源",

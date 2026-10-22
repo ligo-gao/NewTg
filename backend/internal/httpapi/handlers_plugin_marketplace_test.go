@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"newtg/gateway/internal/plugin/market"
@@ -24,6 +25,7 @@ type marketTestServer struct {
 	indexJSON  string
 	sourceJS   string
 	sourceHash string
+	indexHits  int64
 }
 
 func newMarketTestServer(t *testing.T, key, version, source string, indexHashOverride string) *marketTestServer {
@@ -48,9 +50,11 @@ func newMarketTestServer(t *testing.T, key, version, source string, indexHashOve
 	if err != nil {
 		t.Fatalf("marshal index: %v", err)
 	}
+	result := &marketTestServer{indexJSON: string(raw), sourceJS: source, sourceHash: hash}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/index.json":
+			atomic.AddInt64(&result.indexHits, 1)
 			_, _ = w.Write(raw)
 		case "/plugin.js":
 			_, _ = w.Write([]byte(source))
@@ -59,9 +63,8 @@ func newMarketTestServer(t *testing.T, key, version, source string, indexHashOve
 		}
 	}))
 	t.Cleanup(server.Close)
-	return &marketTestServer{
-		server: server, indexJSON: string(raw), sourceJS: source, sourceHash: hash,
-	}
+	result.server = server
+	return result
 }
 
 func (m *marketTestServer) client(t *testing.T) *market.Client {
@@ -267,6 +270,125 @@ func TestMarketplaceSourcesDuplicateURLRejected(t *testing.T) {
 	}
 	if len(env.store.sources) != 0 {
 		t.Fatal("重复 URL 不得落库")
+	}
+}
+
+func TestMarketplaceIndexCachesForFiveMinutes(t *testing.T) {
+	source := sourceForKey(t, "market-one")
+	marketServer := newMarketTestServer(t, "market-one", "1.0.0", source, "")
+	env := newPluginTestEnvWithMarket(t, nil, marketServer.client(t))
+	seedMarketSource(env, "s1", "https://market.example/index.json")
+
+	get := func(refresh bool) {
+		t.Helper()
+		target := "/api/plugin/task/marketplace"
+		if refresh {
+			target += "?refresh=1"
+		}
+		rr := httptest.NewRecorder()
+		env.mux.ServeHTTP(rr, settingsRequest(http.MethodGet, target, "", pluginAdmin(), nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d（body=%s）", target, rr.Code, rr.Body.String())
+		}
+	}
+
+	// 首次无缓存；第二次命中 5 分钟缓存，不得再次出站。
+	get(false)
+	if hits := atomic.LoadInt64(&marketServer.indexHits); hits != 1 {
+		t.Fatalf("首次聚合出站次数 = %d，期望 1", hits)
+	}
+	get(false)
+	if hits := atomic.LoadInt64(&marketServer.indexHits); hits != 1 {
+		t.Fatalf("缓存命中仍出站：hits=%d", hits)
+	}
+	// refresh=1 是显式绕过缓存。
+	get(true)
+	if hits := atomic.LoadInt64(&marketServer.indexHits); hits != 2 {
+		t.Fatalf("refresh=1 应重新出站：hits=%d", hits)
+	}
+}
+
+func TestMarketplaceIndexMarksMultiSourceConflict(t *testing.T) {
+	const version = "1.0.0"
+	indexFor := func(hash string) []byte {
+		raw, err := json.Marshal(map[string]any{
+			"schema_version": 1,
+			"plugins": []map[string]any{{
+				"key": "market-one", "name": "Market one", "description": "conflict",
+				"icon_url": "",
+				"versions": []map[string]any{{
+					"version": version, "api_version": "v1",
+					"source_url":  "https://market.example/" + hash[:8] + ".js",
+					"source_hash": hash,
+				}},
+			}},
+		})
+		if err != nil {
+			t.Fatalf("marshal index: %v", err)
+		}
+		return raw
+	}
+	hashA := sha256HexForTest("source-a")
+	hashB := sha256HexForTest("source-b")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/a/index.json":
+			_, _ = w.Write(indexFor(hashA))
+		case "/b/index.json":
+			_, _ = w.Write(indexFor(hashB))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	env := newPluginTestEnvWithMarket(t, nil, marketClientForServer(t, server))
+	seedMarketSource(env, "s1", "https://market.example/a/index.json")
+	seedMarketSource(env, "s2", "https://market.example/b/index.json")
+
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodGet,
+		"/api/plugin/task/marketplace?refresh=1", "", pluginAdmin(), nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("聚合 = %d（body=%s）", rr.Code, rr.Body.String())
+	}
+	var view struct {
+		Plugins []struct {
+			Key       string   `json:"key"`
+			Conflicts []string `json:"conflicts"`
+			Versions  []struct {
+				Version  string `json:"version"`
+				Conflict bool   `json:"conflict"`
+			} `json:"versions"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(view.Plugins) != 1 || len(view.Plugins[0].Versions) != 1 {
+		t.Fatalf("同 key/version 应聚合为一条：%+v", view)
+	}
+	if !view.Plugins[0].Versions[0].Conflict {
+		t.Fatal("多源同 key/version 异 hash 必须标记 conflict（不得静默覆盖）")
+	}
+	if len(view.Plugins[0].Conflicts) != 1 || view.Plugins[0].Conflicts[0] != version {
+		t.Fatalf("conflicts = %v，期望 [%s]", view.Plugins[0].Conflicts, version)
+	}
+}
+
+func TestMarketplaceSourcesConcurrentConflictIs409(t *testing.T) {
+	env := newPluginTestEnv(t, nil)
+	// 并发 PUT 同一 URL 的极端情况：仓储把 UNIQUE(url) 翻译成
+	// ErrMarketSourceURLConflict，handler 必须返回 409 而不是 500。
+	env.store.replaceErr = store.ErrMarketSourceURLConflict
+
+	rr := httptest.NewRecorder()
+	env.mux.ServeHTTP(rr, settingsRequest(http.MethodPut, "/api/plugin/task/marketplace/sources",
+		`{"sources":[{"name":"Main","url":"https://market.example/index.json","enabled":true}]}`,
+		pluginAdmin(), nil))
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "plugin_market_source_conflict") {
+		t.Fatalf("并发冲突 = %d（body=%s），期望 409 plugin_market_source_conflict",
+			rr.Code, rr.Body.String())
 	}
 }
 

@@ -1385,20 +1385,28 @@ func (h *ChannelHandler) buildPatch(ctx context.Context, v *validator, existing 
 		validateModelMappingCoverage(v, effectiveMapping, models)
 	}
 
-	// 任务插件绑定（M6d Task 7a）：校验**合并后的有效状态**，与 model_mapping
-	// 的 PATCH 口径一致——只改 remark 时也要能发现既有的跨类型误配。
-	// raw 字段区分「缺省」（保持原值）与 `null`（清空）。
+	// 任务插件绑定（M6d Task 7a）：只在本请求**真正改变绑定**（或改变渠道
+	// 类型）时校验并写回两列。
+	//
+	// 存量兼容（G-M6D-24）：迁移前已存在的 type 61 行可能 task_plugin_key
+	// 为空、type 60 行可能多绑为空。若沿用「校验合并后有效状态」的写法，
+	// 任何无关 PATCH（如只改 remark）都会被要求补齐绑定，控制台永远无法
+	// 保存。绑定插件日后从注册表消失时同理：只有真正换绑的请求才应 400。
+	//
+	// raw 字段区分「缺省」（保持原值）与 `null`（清空）。控制台全量回传
+	// 表单时常见「原值重发」，这不构成修改，不应触发注册表存在性校验。
 	effectiveKey := existing.TaskPluginKey
 	effectiveExtend := decodeStringSlice(existing.TaskExtendPluginKeys)
 	bindingChanged := false
+	bindingParseFailed := false
 	if req.TaskPluginKey != nil {
-		bindingChanged = true
 		if isJSONNull(req.TaskPluginKey) {
 			effectiveKey = nil
 		} else {
 			var raw string
 			if err := json.Unmarshal(req.TaskPluginKey, &raw); err != nil {
 				v.add("task_plugin_key", "task_plugin_key must be a string or null")
+				bindingParseFailed = true
 			} else {
 				trimmed := strings.TrimSpace(raw)
 				if trimmed == "" {
@@ -1408,31 +1416,40 @@ func (h *ChannelHandler) buildPatch(ctx context.Context, v *validator, existing 
 				}
 			}
 		}
+		bindingChanged = !samePluginKey(existing.TaskPluginKey, effectiveKey)
 	}
 	if req.TaskExtendPluginKeys != nil {
-		bindingChanged = true
 		if isJSONNull(req.TaskExtendPluginKeys) {
 			effectiveExtend = nil
 		} else {
 			var raw []string
 			if err := json.Unmarshal(req.TaskExtendPluginKeys, &raw); err != nil {
 				v.add("task_extend_plugin_keys", "task_extend_plugin_keys must be an array of strings or null")
+				bindingParseFailed = true
 			} else {
 				effectiveExtend = raw
 			}
 		}
+		if !samePluginKeyList(decodeStringSlice(existing.TaskExtendPluginKeys), effectiveExtend) {
+			bindingChanged = true
+		}
+	}
+	if bindingParseFailed {
+		// 形状错误已进入字段错误；不再调用注册表（避免把 400 变成 500）。
+		return patch, nil
+	}
+	// 类型变化必须重写两列：从 61/60 切到普通类型时，旧的绑定值即使
+	// 未在请求中出现也要被规范化清空，避免留下跨类型的悬空绑定。
+	if !bindingChanged && !typeChanged {
+		return patch, nil
 	}
 	pluginKey, extendKeys, bindErr := h.validatePluginBinding(ctx, ct, effectiveKey, effectiveExtend)
 	if bindErr != nil {
 		return store.ChannelPatch{}, bindErr
 	}
-	// 类型变化也必须重写两列：从 61/60 切到普通类型时，旧的绑定值即使
-	// 未在请求中出现也要被规范化清空，避免留下跨类型的悬空绑定。
-	if bindingChanged || typeChanged {
-		patch.TaskPluginKeySet = true
-		patch.TaskPluginKey = pluginKey
-		patch.TaskExtendPluginKeys = extendKeys
-	}
+	patch.TaskPluginKeySet = true
+	patch.TaskPluginKey = pluginKey
+	patch.TaskExtendPluginKeys = extendKeys
 
 	return patch, nil
 }
@@ -1520,6 +1537,45 @@ func validateModelMappingCoverage(v *validator, mapping []byte, models []string)
 // taskPluginKeyRe 与 task_plugins.key / R-M6D-01 的 DB CHECK 同源
 // （^[a-z0-9][a-z0-9-]{0,29}$）：key 会进入 URL 段、路由索引与前端选择器。
 var taskPluginKeyRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,29}$`)
+
+// normalizePluginKey 把「未绑定」统一成空串，并去掉历史行可能残留的空白，
+// 用于判断 PATCH 是否真的改了绑定（G-M6D-24）。
+func normalizePluginKey(key *string) string {
+	if key == nil {
+		return ""
+	}
+	return strings.TrimSpace(*key)
+}
+
+func samePluginKey(a, b *string) bool {
+	return normalizePluginKey(a) == normalizePluginKey(b)
+}
+
+// normalizePluginKeyList 与 validatePluginBinding 的规范化口径一致：
+// 去空白、丢空项、按首次出现去重。用于「原值重发」不触发校验/写回。
+func normalizePluginKeyList(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(items))
+	out := make([]string, 0, len(items))
+	for _, raw := range items {
+		item := strings.TrimSpace(raw)
+		if item == "" {
+			continue
+		}
+		if _, dup := seen[item]; dup {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
+}
+
+func samePluginKeyList(a, b []string) bool {
+	return slices.Equal(normalizePluginKeyList(a), normalizePluginKeyList(b))
+}
 
 // validatePluginBinding 校验并规范化渠道的任务插件绑定（relay-06 §1.3）。
 //

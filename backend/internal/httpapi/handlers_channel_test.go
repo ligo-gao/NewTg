@@ -2464,10 +2464,9 @@ func TestChannelPluginBindingUpdateMatrix(t *testing.T) {
 	})
 }
 
-// TestChannelPluginBindingLegacyType60Patch 锁定复核发现的存量行行为：
-// 迁移前已存在的类型 60 渠道没有多绑配置，任何 PATCH 都会按「有效状态」
-// 判定并返回 400，错误必须明确指向 task_extend_plugin_keys（而不是泛化
-// 「请求非法」），让控制台能给出可操作提示。
+// TestChannelPluginBindingLegacyType60Patch 锁定存量行兼容（G-M6D-24）：
+// 迁移前已存在的类型 60 渠道没有多绑配置，无关字段 PATCH（如 remark）
+// 不得被强制补齐 task_extend_plugin_keys。只有真正修改绑定字段时才校验。
 func TestChannelPluginBindingLegacyType60Patch(t *testing.T) {
 	env := newChannelTestEnv(t, ChannelHandlerOptions{Plugins: pluginBindingCatalog()})
 	seed := seedChannel(t, env, func(ch *store.Channel) {
@@ -2480,11 +2479,91 @@ func TestChannelPluginBindingLegacyType60Patch(t *testing.T) {
 		"expected_version": seed.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		"remark":           "legacy row",
 	}), channelAdminPrincipal(PermChannelsManage))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("存量类型 60 行 PATCH = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	resp := decodeJSONResponse[ChannelResponse](t, rr)
+	if len(resp.TaskExtendPluginKeys) != 0 {
+		t.Fatalf("无关 PATCH 不得补写多绑：%v", resp.TaskExtendPluginKeys)
+	}
+
+	// 真正修改绑定字段时仍要按当前矩阵校验：换成未注册 key 必须 400。
+	rr = serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/"+fmt.Sprintf("%d", seed.ID), map[string]any{
+		"expected_version":        resp.Version,
+		"task_extend_plugin_keys": []string{"unknown-plugin"},
+	}), channelAdminPrincipal(PermChannelsManage, PermChannelsManageSensitive))
 	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("存量类型 60 行 PATCH = %d，期望 400（body=%s）", rr.Code, rr.Body.String())
+		t.Fatalf("换绑到未注册 key = %d，期望 400（body=%s）", rr.Code, rr.Body.String())
 	}
 	if !strings.Contains(rr.Body.String(), "task_extend_plugin_keys") ||
-		!strings.Contains(rr.Body.String(), "at least one plugin key") {
+		!strings.Contains(rr.Body.String(), "not a registered task plugin") {
+		t.Fatalf("错误语义不清晰：%s", rr.Body.String())
+	}
+}
+
+// TestChannelPluginBindingLegacyType61Patch 锁定类型 61 存量行（key 为空）
+// 的无关 PATCH 不被强制补齐；真正换绑时仍校验注册表。
+func TestChannelPluginBindingLegacyType61Patch(t *testing.T) {
+	env := newChannelTestEnv(t, ChannelHandlerOptions{Plugins: pluginBindingCatalog()})
+	seed := seedChannel(t, env, func(ch *store.Channel) {
+		ch.Type = "task_plugin"
+		baseURL := "https://upstream.example.com"
+		ch.BaseURL = &baseURL
+		ch.TaskPluginKey = nil
+		ch.TaskExtendPluginKeys = []byte(`[]`)
+	})
+	rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/"+fmt.Sprintf("%d", seed.ID), map[string]any{
+		"expected_version": seed.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		"remark":           "legacy row",
+	}), channelAdminPrincipal(PermChannelsManage))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("存量类型 61 行 PATCH = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	resp := decodeJSONResponse[ChannelResponse](t, rr)
+	if resp.TaskPluginKey != nil {
+		t.Fatalf("无关 PATCH 不得补写 key：%v", resp.TaskPluginKey)
+	}
+
+	rr = serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/"+fmt.Sprintf("%d", seed.ID), map[string]any{
+		"expected_version": resp.Version,
+		"task_plugin_key":  "sora",
+	}), channelAdminPrincipal(PermChannelsManage, PermChannelsManageSensitive))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("显式补绑 = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+}
+
+// TestChannelPluginBindingUnregisteredUnchangedIsAccepted 锁定「插件从注册表
+// 消失」场景：原值重发或无关 PATCH 不应 400；真正换绑到未注册 key 才拒绝。
+func TestChannelPluginBindingUnregisteredUnchangedIsAccepted(t *testing.T) {
+	env := newChannelTestEnv(t, ChannelHandlerOptions{Plugins: pluginBindingCatalog()})
+	seed := seedChannel(t, env, func(ch *store.Channel) {
+		ch.Type = "task_plugin"
+		baseURL := "https://upstream.example.com"
+		ch.BaseURL = &baseURL
+		ch.TaskPluginKey = stringPointer("retired")
+		ch.TaskExtendPluginKeys = []byte(`[]`)
+	})
+	// 控制台全量回传原值 + 修改 remark：不构成换绑。
+	rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/"+fmt.Sprintf("%d", seed.ID), map[string]any{
+		"expected_version": seed.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		"remark":           "kept",
+		"task_plugin_key":  "retired",
+	}), channelAdminPrincipal(PermChannelsManage, PermChannelsManageSensitive))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("原值重发 = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	resp := decodeJSONResponse[ChannelResponse](t, rr)
+
+	// 真正换绑到未注册 key 时仍 400。
+	rr = serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/"+fmt.Sprintf("%d", seed.ID), map[string]any{
+		"expected_version": resp.Version,
+		"task_plugin_key":  "unknown-plugin",
+	}), channelAdminPrincipal(PermChannelsManage, PermChannelsManageSensitive))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("换绑到未注册 key = %d，期望 400（body=%s）", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "not a registered task plugin") {
 		t.Fatalf("错误语义不清晰：%s", rr.Body.String())
 	}
 }

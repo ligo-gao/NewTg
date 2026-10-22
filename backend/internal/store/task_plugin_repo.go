@@ -739,6 +739,11 @@ func (r *TaskPluginRepo) ReplaceMarketSources(ctx context.Context, inputs []Mark
 			if _, err := tx.ExecContext(ctx, `UPDATE plugin_marketplace_sources
 				SET name = $2, url = $3, enabled = $4 WHERE id = $1`,
 				item.target.ID, item.input.Name, item.input.URL, item.input.Enabled); err != nil {
+				if isUniqueViolation(err) {
+					// 并发 PUT 把两行换成同一 URL 时，DB 的 UNIQUE(url) 是最后一道
+					// 兜底；必须翻译成可读的 409，而不是把 23505 暴露成 500。
+					return nil, fmt.Errorf("%w: %s", ErrMarketSourceURLConflict, item.input.URL)
+				}
 				return nil, fmt.Errorf("store: update marketplace source %q: %w", item.target.ID, err)
 			}
 			continue
@@ -746,6 +751,11 @@ func (r *TaskPluginRepo) ReplaceMarketSources(ctx context.Context, inputs []Mark
 		var id string
 		if err := tx.QueryRowContext(ctx, `INSERT INTO plugin_marketplace_sources (name, url, enabled)
 			VALUES ($1, $2, $3) RETURNING id`, item.input.Name, item.input.URL, item.input.Enabled).Scan(&id); err != nil {
+			if isUniqueViolation(err) {
+				// 两个并发 PUT 都判定「新增」时，后提交者会撞 UNIQUE(url)。
+				// 与同请求内重复 URL 同一稳定错误，保持 409 语义。
+				return nil, fmt.Errorf("%w: %s", ErrMarketSourceURLConflict, item.input.URL)
+			}
 			return nil, fmt.Errorf("store: insert marketplace source %q: %w", item.input.URL, err)
 		}
 	}

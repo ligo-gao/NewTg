@@ -287,6 +287,52 @@ func TestMarketSourcesReplacePreservesCheckState(t *testing.T) {
 	}
 }
 
+func TestMarketSourcesReplaceConcurrentSameURLIsStableConflict(t *testing.T) {
+	cleanPluginTables(t)
+	db := openTestDB(t)
+	repo := NewTaskPluginRepo(db)
+	ctx := context.Background()
+	const url = "https://race.example/index.json"
+
+	// 两个并发 PUT 都判定「新增」时会撞 UNIQUE(url)；仓储必须把它翻译成
+	// ErrMarketSourceURLConflict（handler → 409），绝不能把 23505 暴露成 500。
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			<-start
+			_, err := repo.ReplaceMarketSources(ctx, []MarketSourceInput{
+				{Name: "race", URL: url, Enabled: true},
+			})
+			results <- err
+		}()
+	}
+	close(start)
+
+	succeeded := 0
+	for i := 0; i < 2; i++ {
+		err := <-results
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrMarketSourceURLConflict):
+			// 期望的稳定错误。
+		default:
+			t.Fatalf("并发替换错误 = %v，期望 nil 或 ErrMarketSourceURLConflict", err)
+		}
+	}
+	if succeeded == 0 {
+		t.Fatal("并发替换至少应有一个请求成功")
+	}
+	sources, err := repo.ListMarketSources(ctx)
+	if err != nil {
+		t.Fatalf("ListMarketSources: %v", err)
+	}
+	if len(sources) != 1 || sources[0].URL != url {
+		t.Fatalf("并发后应只有一行：%+v", sources)
+	}
+}
+
 func TestTaskPluginBuiltinUpsertAndMetadataListing(t *testing.T) {
 	cleanPluginTables(t)
 	db := openTestDB(t)

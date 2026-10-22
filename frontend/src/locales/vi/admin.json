@@ -688,7 +688,19 @@
       "compile_failed_title": "Plugin biên dịch thất bại. Không có gì được lưu: {error}",
       "version_conflict": "Phiên bản này đã tồn tại với nội dung khác. Hãy đổi số phiên bản và thử lại.",
       "preview_title": "Phiên bản đã cài",
-      "not_activated": "Phiên bản đã được cài nhưng chưa kích hoạt. Hãy kích hoạt trong lịch sử thay đổi khi sẵn sàng."
+      "not_activated": "Phiên bản đã được cài nhưng chưa kích hoạt. Hãy kích hoạt trong lịch sử thay đổi khi sẵn sàng.",
+      "import_title": "Nhập từ URL",
+      "import_url_label": "URL nguồn plugin",
+      "import_sha256_label": "SHA-256 (không bắt buộc)",
+      "import_sha256_placeholder": "64 ký tự thập lục phân",
+      "import_hint": "Chỉ chấp nhận https. Không theo chuyển hướng và nguồn không được vượt quá 2 MiB.",
+      "import_submit": "Nhập từ URL",
+      "importing": "Đang nhập…",
+      "import_invalid_url": "Hãy nhập URL https.",
+      "import_invalid_sha256": "SHA-256 phải gồm 64 ký tự thập lục phân.",
+      "import_error_url_rejected": "URL bị từ chối. Hãy dùng địa chỉ https công khai; không cho phép chuyển hướng và mạng riêng.",
+      "import_error_hash_mismatch": "Kiểm tra thất bại: nguồn tải về không khớp SHA-256 đã nhập. Không có gì được lưu.",
+      "import_error_unreachable": "Không thể tải nguồn. Hãy kiểm tra URL và thử lại."
     },
     "marketplace": {
       "source_filter": "Nguồn",

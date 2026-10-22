@@ -736,22 +736,29 @@ func (h *TaskPluginHandlers) writeMarketError(w http.ResponseWriter, err error) 
 // hash 不符必须是 422 plugin_hash_mismatch（S3 的验收点）；URL/重定向拒绝
 // 是 422 plugin_source_url_rejected；索引结构问题 422；网络/HTTP 状态 502。
 func (h *TaskPluginHandlers) writeMarketFetchError(w http.ResponseWriter, err error) {
+	status, problemType, title, detail := marketFetchProblem(err)
+	writePluginProblem(w, status, problemType, title, detail, nil)
+}
+
+// marketFetchProblem 是出站失败 → (HTTP 状态, problem type, title, detail)
+// 的唯一映射。URL 导入与市场安装共用，避免两处分类漂移。
+func marketFetchProblem(err error) (int, string, string, string) {
 	switch {
 	case errors.Is(err, market.ErrHashMismatch):
-		writePluginProblem(w, http.StatusUnprocessableEntity, pluginProblemHashMismatch,
-			"Plugin hash mismatch", "the downloaded source does not match the index source_hash", nil)
+		return http.StatusUnprocessableEntity, pluginProblemHashMismatch,
+			"Plugin hash mismatch", "the downloaded source does not match the index source_hash"
 	case errors.Is(err, market.ErrNonHTTPS), errors.Is(err, market.ErrUnsafeURL), errors.Is(err, market.ErrRedirect):
-		writePluginProblem(w, http.StatusUnprocessableEntity, pluginProblemURLRejected,
-			"Marketplace URL rejected", marketErrorSummary(err), nil)
+		return http.StatusUnprocessableEntity, pluginProblemURLRejected,
+			"Marketplace URL rejected", marketErrorSummary(err)
 	case errors.Is(err, market.ErrInvalidIndex):
-		writePluginProblem(w, http.StatusUnprocessableEntity, pluginProblemMarketInvalid,
-			"Invalid marketplace index", marketErrorSummary(err), nil)
+		return http.StatusUnprocessableEntity, pluginProblemMarketInvalid,
+			"Invalid marketplace index", marketErrorSummary(err)
 	case errors.Is(err, market.ErrTooLarge):
-		writePluginProblem(w, http.StatusUnprocessableEntity, pluginProblemMarketInvalid,
-			"Marketplace response too large", marketErrorSummary(err), nil)
+		return http.StatusUnprocessableEntity, pluginProblemMarketInvalid,
+			"Marketplace response too large", marketErrorSummary(err)
 	default:
-		writePluginProblem(w, http.StatusBadGateway, pluginProblemMarketUnreach,
-			"Marketplace source unreachable", marketErrorSummary(err), nil)
+		return http.StatusBadGateway, pluginProblemMarketUnreach,
+			"Marketplace source unreachable", marketErrorSummary(err)
 	}
 }
 

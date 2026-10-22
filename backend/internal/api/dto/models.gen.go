@@ -5667,6 +5667,15 @@ type HomeStats struct {
 	Upstreams int64 `json:"upstreams"`
 }
 
+// ImportTaskPluginRequest defines model for ImportTaskPluginRequest.
+type ImportTaskPluginRequest struct {
+	// Sha256 可选的包体 sha256（64 位小写十六进制）；提供时下载后先比对，不符零写入。
+	Sha256 *string `json:"sha256,omitempty"`
+
+	// Url 插件源 URL；仅接受绝对 https，禁止 userinfo/私网字面量。
+	Url string `json:"url"`
+}
+
 // InstanceList defines model for InstanceList.
 type InstanceList struct {
 	// CurrentInstanceId 处理本次请求的实例标识；即使它没有心跳也会出现在 items 中。
@@ -10561,6 +10570,11 @@ type GetTaskPluginSourceTextParams struct {
 	Version *string `form:"version,omitempty" json:"version,omitempty"`
 }
 
+// ImportTaskPluginParams defines parameters for ImportTaskPlugin.
+type ImportTaskPluginParams struct {
+	IdempotencyKey string `json:"Idempotency-Key"`
+}
+
 // GetPublicPricingParams defines parameters for GetPublicPricing.
 type GetPublicPricingParams struct {
 	// P 页码（1 基）；非法或越界回退首屏/最后一页。
@@ -11579,6 +11593,9 @@ type SetTaskPluginStatusJSONRequestBody = PluginStatusRequest
 
 // DeleteTaskPluginVersionJSONRequestBody defines body for DeleteTaskPluginVersion for application/json ContentType.
 type DeleteTaskPluginVersionJSONRequestBody = PluginVersionDeleteRequest
+
+// ImportTaskPluginJSONRequestBody defines body for ImportTaskPlugin for application/json ContentType.
+type ImportTaskPluginJSONRequestBody = ImportTaskPluginRequest
 
 // CreateRedemptionCodesJSONRequestBody defines body for CreateRedemptionCodes for application/json ContentType.
 type CreateRedemptionCodesJSONRequestBody = RedemptionCodeCreateRequest
