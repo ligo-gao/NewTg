@@ -500,14 +500,19 @@ func TestTaskPluginDryRunZeroSideEffectsAndOutboundRejection(t *testing.T) {
 		t.Fatal("dryrun 不得写库")
 	}
 
+	// M6d-03：allow_outbound=true 不再返回 dryrun_outbound_unavailable；
+	// 本 payload 没有 baseUrl，产生的相对 URL 会被出站守卫拒绝（422）。
 	rr = httptest.NewRecorder()
 	env.mux.ServeHTTP(rr, settingsRequest(http.MethodPost, "/api/plugin/task/sample/dryrun",
 		`{"endpoint":"submit","payload":{},"allow_outbound":true}`, pluginAdmin(), nil))
 	if rr.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("allow_outbound=true = %d，期望 422（body=%s）", rr.Code, rr.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), "dryrun_outbound_unavailable") {
-		t.Fatalf("错误码应为 dryrun_outbound_unavailable：%s", rr.Body.String())
+	if strings.Contains(rr.Body.String(), "dryrun_outbound_unavailable") {
+		t.Fatalf("dryrun_outbound_unavailable 必须已删除：%s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "dryrun_outbound_rejected") {
+		t.Fatalf("非法出站目标应返回结构化拒绝：%s", rr.Body.String())
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"newtg/gateway/internal/contract"
@@ -805,7 +806,13 @@ func buildQueryContext(task *Task, channel *ChannelTarget, apiKey string) map[st
 	}
 	authHeader, auth := "", ""
 	if apiKey != "" {
-		authHeader, auth = "Authorization", "Bearer "+apiKey
+		// 与提交面同口径：authHeader/auth 都是完整头值。
+		authHeader = "Bearer " + apiKey
+		auth = authHeader
+	}
+	kind := "vendor"
+	if strings.TrimSpace(channel.Type) == "60" {
+		kind = "new_api"
 	}
 	return map[string]any{
 		"model":         model,
@@ -814,7 +821,11 @@ func buildQueryContext(task *Task, channel *ChannelTarget, apiKey string) map[st
 		"apiKey":        apiKey,
 		"authHeader":    authHeader,
 		"auth":          auth,
+		"upstream":      map[string]any{"kind": kind},
 		"taskId":        task.UpstreamTaskID,
+		"publicTaskId":  task.PublicTaskID,
+		"action":        task.Action,
+		"data":          task.Data,
 	}
 }
 

@@ -206,10 +206,37 @@ func TestCapabilitiesValidation(t *testing.T) {
 	ok := fixture{
 		Capabilities:        `["submit-sse-delta@1"]`,
 		SubmitResponseTypes: `["json", "sse"]`,
+		Exports: map[string]string{
+			"parseSubmitEventDelta": `function () { return { changes: [], state: null, done: true }; }`,
+		},
 	}.Source()
 	if _, err := Compile(t.Context(), ok, CompileOptions{}); err != nil {
 		t.Fatalf("合规能力声明应通过: %v", err)
 	}
+
+	// 声明能力但未导出增量钩子 → 加载期拒绝（不能静默回退快照语义）。
+	issues = compileIssues(t, fixture{
+		Capabilities:        `["submit-sse-delta@1"]`,
+		SubmitResponseTypes: `["json", "sse"]`,
+	}.Source(), CompileOptions{})
+	requireRule(t, issues, "hook_missing")
+
+	// 导出增量钩子但没声明能力 → capability_missing。
+	issues = compileIssues(t, fixture{
+		SubmitResponseTypes: `["json", "sse"]`,
+		Exports: map[string]string{
+			"parseSubmitEventDelta": `function () { return { changes: [], state: null, done: true }; }`,
+		},
+	}.Source(), CompileOptions{})
+	requireRule(t, issues, "capability_missing")
+
+	// 快照钩子要求 submitResponseTypes 含 sse。
+	issues = compileIssues(t, fixture{
+		Exports: map[string]string{
+			"parseSubmitEvent": `function () { return { state: null, done: true }; }`,
+		},
+	}.Source(), CompileOptions{})
+	requireRule(t, issues, "capability_mismatch")
 }
 
 func TestRouteKindHookRules(t *testing.T) {

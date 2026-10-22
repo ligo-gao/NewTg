@@ -187,8 +187,8 @@ var knownAuthorKeys = map[string]struct{}{"name": {}, "url": {}}
 
 // supportedCapabilities 是宿主已实现的版本化能力（relay-06 §3.5）。
 //
-// `json-clone@1` 由本任务的最小 utils 提供；`submit-sse-delta@1` 只做声明
-// 校验（要求 submitResponseTypes 含 sse），运行期钩子由后续 SSE 任务接线。
+// `json-clone@1` 由 runtime_utils 提供；`submit-sse-delta@1` 的加载期声明
+// 校验在 validate.go，运行期宿主托管的增量累积在 internal/tasks/submit.go。
 var supportedCapabilities = map[string]struct{}{
 	"json-clone@1":       {},
 	"submit-sse-delta@1": {},

@@ -182,6 +182,16 @@ type ContentInput struct {
 	APIKey         string
 	Method         string // GET / HEAD
 	AllowPrivate   bool   // 仅测试
+
+	// 以下字段是 buildContentRequest 的只读上下文扩展（relay-06 §3.2/§10.5）。
+	// 调用方未提供时注入安全的零值（空对象 / vendor）。
+	Data            map[string]any
+	State           any
+	Artifacts       map[string]any
+	ProducerVersion string
+	UpstreamKind    string
+	// ClientRequestHeaders 是客户端对 content 端点的请求头投影（只读）。
+	ClientRequestHeaders map[string]string
 }
 
 // FetchContent 执行插件的 buildContentRequest 并流式出站。
@@ -224,17 +234,50 @@ func buildContentContext(in ContentInput) map[string]any {
 	if in.Plugin != nil {
 		switch in.Plugin.Manifest().Auth.Type {
 		case "api_key":
-			authHeader, auth = "Authorization", "Bearer "+in.APIKey
+			// authHeader 是完整头值（插件直接放进 Authorization）；auth 保留
+			// 同一凭据串以兼容既有插件的 ctx.auth 用法。
+			authHeader = "Bearer " + in.APIKey
+			auth = authHeader
 		}
 	}
+	kind := in.UpstreamKind
+	if kind == "" {
+		if strings.TrimSpace(in.Channel.Type) == "60" {
+			kind = "new_api"
+		} else {
+			kind = "vendor"
+		}
+	}
+	data := in.Data
+	if data == nil {
+		data = map[string]any{}
+	}
+	artifacts := in.Artifacts
+	if artifacts == nil {
+		artifacts = map[string]any{}
+	}
+	method := strings.ToUpper(strings.TrimSpace(in.Method))
+	if method == "" {
+		method = http.MethodGet
+	}
 	return map[string]any{
-		"model":         in.Model,
-		"upstreamModel": in.UpstreamModel,
-		"baseUrl":       in.BaseURL,
-		"apiKey":        in.APIKey,
-		"authHeader":    authHeader,
-		"auth":          auth,
-		"taskId":        in.UpstreamTaskID,
-		"artifactKey":   in.ArtifactKey,
+		"model":           in.Model,
+		"upstreamModel":   in.UpstreamModel,
+		"baseUrl":         in.BaseURL,
+		"apiKey":          in.APIKey,
+		"authHeader":      authHeader,
+		"auth":            auth,
+		"upstream":        map[string]any{"kind": kind},
+		"taskId":          in.UpstreamTaskID,
+		"upstreamTaskId":  in.UpstreamTaskID,
+		"artifactKey":     in.ArtifactKey,
+		"data":            data,
+		"state":           in.State,
+		"artifacts":       artifacts,
+		"producerVersion": in.ProducerVersion,
+		"clientRequest": map[string]any{
+			"method":  method,
+			"headers": copyStringMap(in.ClientRequestHeaders),
+		},
 	}
 }

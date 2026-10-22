@@ -348,7 +348,12 @@ func TestDecodeRequestDescriptor(t *testing.T) {
 	if desc.Method != "POST" || desc.Headers["X-Test"] != "1" || len(desc.Body) == 0 {
 		t.Fatalf("unexpected descriptor: %#v", desc)
 	}
-	if _, err := DecodeRequestDescriptor(map[string]any{"url": "https://x", "responseType": "sse"}); !errors.Is(err, ErrUnsupportedResponseType) {
-		t.Fatalf("sse must be rejected in T6a, got %v", err)
+	// M6d-02：宿主现在实现 submit-sse-delta@1 的运行期读取，描述符层面
+	// 接受 sse；是否允许由提交路径按 manifest.submitResponseTypes 再判。
+	if _, err := DecodeRequestDescriptor(map[string]any{"url": "https://x", "responseType": "sse"}); err != nil {
+		t.Fatalf("sse must be accepted since M6d-02, got %v", err)
+	}
+	if _, err := DecodeRequestDescriptor(map[string]any{"url": "https://x", "responseType": "xml"}); !errors.Is(err, ErrUnsupportedResponseType) {
+		t.Fatalf("unknown responseType must be rejected, got %v", err)
 	}
 }

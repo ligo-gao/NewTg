@@ -12,6 +12,7 @@ import (
 	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/config"
 	"newtg/gateway/internal/configcenter"
+	"newtg/gateway/internal/egress"
 	"newtg/gateway/internal/httpapi"
 	"newtg/gateway/internal/mj"
 	"newtg/gateway/internal/plugin"
@@ -62,6 +63,10 @@ type settingReader interface {
 func startTaskPoller(parent context.Context, cfg *config.Config, db *sql.DB,
 	center *configcenter.Center, engine *billing.Engine, rdb *redis.Client,
 	log *slog.Logger) (func(), error) {
+
+	// worker 侧同样装配统一出站策略：轮询/查询与产物取回不经过 gateway
+	// 进程，若只在 gateway 装配，后台轮询会退回「仅主机白名单」的旧检查。
+	tasks.SetOutboundPolicy(egress.PolicyFromConfig(center))
 
 	sources, err := plugins.TaskPluginSources()
 	if err != nil {

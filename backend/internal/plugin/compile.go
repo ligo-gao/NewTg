@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"runtime"
 	"time"
 
 	"github.com/grafana/sobek"
@@ -17,6 +18,36 @@ import (
 // 否则一个 `while(true){}` 就能永久占住请求 goroutine。宿主函数无法被抢占，
 // 所以中断只能靠 `Runtime.Interrupt` 从计时器 goroutine 注入（见 runWithTimeout）。
 const DefaultTimeout = 5 * time.Second
+
+// Sobek 资源上限（relay-06 §5 / G-M6D-13）。
+//
+// Sobek 目前**没有**公开的内存/分配上限 API（只有 SetMaxCallStackSize 与
+// Interrupt）。因此资源守卫分三层：
+//  1. 源大小上限：编译前拒绝超大源（词法扫描与编译本身也要内存）；
+//  2. 调用栈上限：SetMaxCallStackSize 把无限递归变成 StackOverflowError；
+//  3. 分配守卫：5s 中断不覆盖「短时间分配巨量对象」——runWithTimeout 的
+//     看门狗按 TotalAlloc 增量轮询，超限即 Interrupt。
+//
+// 依赖版本冻结：go.mod 里的 github.com/grafana/sobek 是伪版本（无上游 tag），
+// 升级前必须复核 Interrupt 的并发语义、SetMaxCallStackSize 的边界与是否
+// 新增了内存/分配上限 API；在该 API 出现前，本文件的 TotalAlloc 看门狗是
+// 唯一的分配上界，不可删除。
+const (
+	// maxPluginSourceBytes 是单个插件源上限（内置插件远小于此值）。
+	maxPluginSourceBytes = 4 << 20
+	// defaultPluginMemoryLimit 是单次调用可累计分配的上限。
+	// 选 128 MiB：足够大型 JSON 变换，又能在分配炸弹拖垮进程前中断。
+	//
+	// 注意：Go 不提供 per-goroutine 分配统计，看门狗只能读进程级 TotalAlloc。
+	// 因此它是「粗粒度熔断」而非精确配额：高并发下多个合法调用叠加也可能
+	// 触发较早中断。阈值刻意留大；若 Sobek 未来提供分配回调，应替换为
+	// 引擎级上限。
+	defaultPluginMemoryLimit = 128 << 20
+	// memoryPollInterval 是分配看门狗的采样间隔。
+	memoryPollInterval = 5 * time.Millisecond
+	// maxCallStackDepth 是 JS 函数调用深度上限（Sobek 默认是 MaxInt32）。
+	maxCallStackDepth = 1024
+)
 
 // exportGlobal 是冻结的导出入口名（t3-brief 冻结约定 1）。
 //
@@ -56,6 +87,8 @@ type CompiledPlugin struct {
 	hooks    map[string]struct{}
 	warnings Issues
 	timeout  time.Duration
+	// memoryLimit 是单次调用累计分配上限（TotalAlloc 增量）。
+	memoryLimit int64
 }
 
 // Manifest 返回只读元数据。
@@ -90,6 +123,9 @@ func (p *CompiledPlugin) HasHook(name string) bool {
 type CompileOptions struct {
 	// Timeout 覆盖单次执行上限；0 走 DefaultTimeout。
 	Timeout time.Duration
+	// MemoryLimit 覆盖单次调用累计分配上限；0 走 defaultPluginMemoryLimit。
+	// 仅供测试装配更小的上界；生产不暴露成设置项（设计未冻结配置键）。
+	MemoryLimit int64
 	// ExpectedKey 非空时强制 manifest.key 与来源 key（目录名 / DB 行 key）一致。
 	ExpectedKey string
 	// Layer 标记来源层，仅用于状态展示。
@@ -107,8 +143,16 @@ func Compile(ctx context.Context, source string, opts CompileOptions) (*Compiled
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
+	memoryLimit := opts.MemoryLimit
+	if memoryLimit <= 0 {
+		memoryLimit = defaultPluginMemoryLimit
+	}
 	key := opts.ExpectedKey
 
+	if len(source) > maxPluginSourceBytes {
+		return nil, Issues{issuef(key, "source", "", "source_too_large",
+			"插件源 %d 字节超过上限 %d（编译与词法扫描自身需要内存）", len(source), maxPluginSourceBytes)}
+	}
 	if name, line, ok := findForbiddenIdentifier(source); ok {
 		return nil, Issues{issuef(key, "source", "", "sandbox_forbidden",
 			"第 %d 行: 插件源禁止使用 %q（无 fetch/require/import/文件/异步）", line, name)}
@@ -121,7 +165,7 @@ func Compile(ctx context.Context, source string, opts CompileOptions) (*Compiled
 
 	// 执行与导出解析合并为一次：顶层的运行期异常、缺失导出对象与元数据
 	// 提取都发生在同一个全新 Runtime 中，避免插件顶层逻辑被执行两次。
-	plugin, issues := compileExport(ctx, key, source, program, timeout, opts.Layer)
+	plugin, issues := compileExport(ctx, key, source, program, timeout, memoryLimit, opts.Layer)
 	if issues.HasErrors() {
 		return nil, issues
 	}
@@ -132,13 +176,13 @@ func Compile(ctx context.Context, source string, opts CompileOptions) (*Compiled
 //
 // 一次执行同时承担「顶层运行期错误」与「导出对象提取」：插件顶层逻辑
 // 只执行一次，避免任何顶层副作用被执行两遍。
-func compileExport(ctx context.Context, key, source string, program *sobek.Program, timeout time.Duration, layer Layer) (*CompiledPlugin, Issues) {
+func compileExport(ctx context.Context, key, source string, program *sobek.Program, timeout time.Duration, memoryLimit int64, layer Layer) (*CompiledPlugin, Issues) {
 	var (
 		metaRaw map[string]any
 		hooks   = map[string]struct{}{}
 	)
 
-	_, err := runWithTimeout(ctx, timeout, func(rt *sobek.Runtime) (any, error) {
+	_, err := runWithTimeout(ctx, timeout, memoryLimit, func(rt *sobek.Runtime) (any, error) {
 		installHostUtils(rt)
 		if _, err := rt.RunProgram(program); err != nil {
 			return nil, err
@@ -199,6 +243,8 @@ func compileExport(ctx context.Context, key, source string, program *sobek.Progr
 		hooks:    hooks,
 		warnings: warnings,
 		timeout:  timeout,
+
+		memoryLimit: memoryLimit,
 	}, nil
 }
 
@@ -226,13 +272,22 @@ func hashSource(source string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// errMemoryLimit 是分配看门狗注入的中断哨兵。
+var errMemoryLimit = errors.New("plugin: 分配超过上限")
+
 // runWithTimeout 在给定 Runtime 上执行 fn，并用 Interrupt 施加上限。
 //
 // 为什么必须用 Interrupt 而不是只靠 context：钩子是同步 Go→JS 调用，
 // 无法从外部抢占；Sobek 的 Interrupt 是唯一能中断长循环的机制。
 // 计时器在独立 goroutine 触发 Interrupt 是 Sobek 明确支持的用法。
-func runWithTimeout(ctx context.Context, timeout time.Duration, fn func(*sobek.Runtime) (any, error)) (result any, err error) {
+//
+// 分配守卫：5s 中断只覆盖「长时间运行」，一个在 100ms 内分配数百 MiB 的
+// 循环仍会拖垮进程。Sobek 没有分配回调，因此用 TotalAlloc 增量采样作为
+// 上界：TotalAlloc 是累计分配量，不受 GC 回收影响，能稳定捕获分配炸弹。
+func runWithTimeout(ctx context.Context, timeout time.Duration, memoryLimit int64, fn func(*sobek.Runtime) (any, error)) (result any, err error) {
 	rt := sobek.New()
+	// 调用栈上限把无限递归变成可恢复的错误，而不是 Go 栈溢出 panic。
+	rt.SetMaxCallStackSize(maxCallStackDepth)
 	defer func() {
 		if panicked := recover(); panicked != nil {
 			// fail-closed：JS 引擎的 panic（含栈溢出）统一转成错误，
@@ -249,7 +304,35 @@ func runWithTimeout(ctx context.Context, timeout time.Duration, fn func(*sobek.R
 	})
 	defer stop()
 
+	if memoryLimit > 0 {
+		stopWatch := make(chan struct{})
+		defer close(stopWatch)
+		baseline := allocatedBytes()
+		go func() {
+			ticker := time.NewTicker(memoryPollInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stopWatch:
+					return
+				case <-ticker.C:
+					if allocatedBytes()-baseline > uint64(memoryLimit) {
+						rt.Interrupt(errMemoryLimit)
+						return
+					}
+				}
+			}
+		}()
+	}
+
 	return fn(rt)
+}
+
+// allocatedBytes 返回进程累计分配字节数（TotalAlloc）。
+func allocatedBytes() uint64 {
+	var stats runtime.MemStats
+	runtime.ReadMemStats(&stats)
+	return stats.TotalAlloc
 }
 
 // runtimeRule 把运行期错误映射到规则名。
@@ -257,6 +340,8 @@ func runtimeRule(err error) string {
 	switch {
 	case errors.Is(err, errTimeout), errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		return "timeout"
+	case errors.Is(err, errMemoryLimit):
+		return "memory_limit"
 	default:
 		return "runtime_error"
 	}
@@ -266,8 +351,11 @@ func runtimeRule(err error) string {
 func describeRuntimeError(err error) string {
 	var interrupted *sobek.InterruptedError
 	if errors.As(err, &interrupted) {
-		if errors.Is(err, errTimeout) {
+		switch {
+		case errors.Is(err, errTimeout):
 			return "执行超过时限，已中断"
+		case errors.Is(err, errMemoryLimit):
+			return "执行分配超过内存上限，已中断"
 		}
 		return "执行被中断: " + interrupted.Error()
 	}
@@ -456,7 +544,7 @@ func (p *CompiledPlugin) Call(ctx context.Context, hook string, args ...any) (an
 	if !p.HasHook(hook) {
 		return nil, Issues{issuef(p.Key, "hooks."+hook, "", "hook_missing", "插件未导出 %s", hook)}
 	}
-	value, err := runWithTimeout(ctx, p.timeout, func(rt *sobek.Runtime) (any, error) {
+	value, err := runWithTimeout(ctx, p.timeout, p.memoryLimit, func(rt *sobek.Runtime) (any, error) {
 		installHostUtils(rt)
 		if _, err := rt.RunProgram(p.program); err != nil {
 			return nil, err
