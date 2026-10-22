@@ -15,6 +15,7 @@ package httpapi
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,6 +29,55 @@ import (
 	"newtg/gateway/internal/sensitive"
 	"newtg/gateway/internal/tasks"
 )
+
+// ---------- 命中日志断言 ----------
+
+// captureSensitiveLogs 把 slog.Default 临时指向缓冲。
+//
+// logSensitiveHitEvent 在 logger=nil 时走 slog.Default（与任务面既有的
+// slog.Warn 一致），因此任务/视频/批次的命中日志只能从默认 logger 观察。
+// t.Cleanup 保证恢复，避免污染同包其它用例。
+func captureSensitiveLogs(t *testing.T) *strings.Builder {
+	t.Helper()
+	var buf strings.Builder
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return &buf
+}
+
+// sensitiveHitLogLines 只返回 security.sensitive_word_hit 事件行。
+//
+// 每行同时包含 msg 与 event 两份事件名，因此按 `event=` 字段计数，
+// 不用 strings.Count 以免每条日志被算两次。
+func sensitiveHitLogLines(output string) []string {
+	var lines []string
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(line, "event=security.sensitive_word_hit") {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// assertSensitiveHitLog 断言命中日志字段齐全且不含原文/命中词
+// （F-08-18「不落明文命中词」）。
+func assertSensitiveHitLog(t *testing.T, line, action, surface, plaintext string) {
+	t.Helper()
+	for _, field := range []string{
+		"action=" + action,
+		"surface=" + surface,
+		"request_id=",
+		"user_id=",
+	} {
+		if !strings.Contains(line, field) {
+			t.Fatalf("命中日志缺少字段 %q：%s", field, line)
+		}
+	}
+	if strings.Contains(strings.ToLower(line), strings.ToLower(plaintext)) {
+		t.Fatalf("命中日志泄露原文/命中词：%s", line)
+	}
+}
 
 // ---------- 多模态 ----------
 
@@ -81,6 +131,22 @@ func sensitiveMultimodalCases(t *testing.T, text string) []struct {
 		{"embeddings-gemini", multimodalRequest{
 			path: "/v1/models/gemini-embed:embedContent", contentType: "application/json",
 			body: []byte(fmt.Sprintf(`{"content":{"parts":[{"text":%q}]}}`, text))}},
+		// M2：Gemini 原生 /v1beta 路径与 /v1/models 同实现，但路由/校验分支
+		// 不同，必须有独立用例防止只覆盖其中一条。
+		{"embeddings-gemini-v1beta", multimodalRequest{
+			path: "/v1beta/models/gemini-embed:embedContent", contentType: "application/json",
+			body: []byte(fmt.Sprintf(`{"content":{"parts":[{"text":%q}]}}`, text))}},
+		// M1：报告曾把 requests[].content.parts[].text（:batchEmbedContents）
+		// 声明为「单测+集成」，此前并无用例；这里补上真实覆盖。
+		{"embeddings-gemini-batch", multimodalRequest{
+			path: "/v1beta/models/gemini-embed:batchEmbedContents", contentType: "application/json",
+			body: []byte(fmt.Sprintf(
+				`{"requests":[{"content":{"parts":[{"text":"clean"}]}},{"content":{"parts":[{"text":%q}]}}]}`, text))}},
+		// M3：Gemini 原生 body 原样出站，顶层 input 此前不扫描；
+		// 复核给出的绕过样例就是 {"input":"BadWord"}。
+		{"embeddings-gemini-input", multimodalRequest{
+			path: "/v1beta/models/gemini-embed:embedContent", contentType: "application/json",
+			body: []byte(fmt.Sprintf(`{"input":%q}`, text))}},
 		{"embeddings-engines", multimodalRequest{
 			path: "/v1/engines/text-embedding-004/embeddings", contentType: "application/json",
 			body: []byte(fmt.Sprintf(`{"input":%q}`, text))}},
@@ -311,6 +377,7 @@ func TestSensitiveTaskSubmitBlockZeroSideEffects(t *testing.T) {
 }
 
 func TestSensitiveTaskSubmitLogPassesThrough(t *testing.T) {
+	logs := captureSensitiveLogs(t)
 	upstream, hits := newCountingUpstream(t)
 	sealer := NewSecretSealer("task-handler-test-key")
 	store := &fakeTaskStore{}
@@ -332,6 +399,11 @@ func TestSensitiveTaskSubmitLogPassesThrough(t *testing.T) {
 		t.Fatalf("log 模式应保留原行为：rows=%d upstream=%d preconsume=%d",
 			store.inserted, hits.Load(), perConsumeCount(billing))
 	}
+	lines := sensitiveHitLogLines(logs.String())
+	if len(lines) != 1 {
+		t.Fatalf("log 模式命中日志 = %d 条，want 1：%s", len(lines), logs.String())
+	}
+	assertSensitiveHitLog(t, lines[0], "log", "prompt", "BadWord")
 }
 
 func TestSensitiveTaskSubmitIgnoresNonTextFields(t *testing.T) {
@@ -400,6 +472,108 @@ func TestSensitiveVideosSubmitIgnoresNonTextFields(t *testing.T) {
 	if store.inserted != 1 {
 		t.Fatalf("任务落库 = %d，want 1", store.inserted)
 	}
+}
+
+// TestSensitiveVideosSubmitLogPassesThrough 覆盖 I2 的 videos log 态：
+// 命中 → 200 放行、上游 1 次、恰好 1 条命中日志。
+func TestSensitiveVideosSubmitLogPassesThrough(t *testing.T) {
+	logs := captureSensitiveLogs(t)
+	upstream, hits := newCountingUpstream(t)
+	sealer := NewSecretSealer("task-handler-test-key")
+	store := &fakeTaskStore{}
+	channels := &fakeTaskChannels{target: &tasks.ChannelTarget{
+		ID: 9, BaseURL: upstream.URL, Credentials: sealedCredential(t, sealer, "sk"),
+	}}
+	manager := newVideoManager(t, map[string]string{"vid": videoPluginSource("vid", "vid-model", false)})
+	mux := sensitiveTaskMuxEnv(t, store, channels, manager, nil,
+		sensitiveSettings(t, true, map[string]bool{"prompt": true}, []string{"BadWord"}, "log"))
+
+	rec := postVideo(t, mux, `{"model":"vid-model","prompt":"BadWord video","seconds":5}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("log 模式应放行：status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if store.inserted != 1 || hits.Load() != 1 {
+		t.Fatalf("log 模式原行为：rows=%d upstream=%d", store.inserted, hits.Load())
+	}
+	lines := sensitiveHitLogLines(logs.String())
+	if len(lines) != 1 {
+		t.Fatalf("命中日志 = %d 条，want 1：%s", len(lines), logs.String())
+	}
+	assertSensitiveHitLog(t, lines[0], "log", "prompt", "BadWord")
+}
+
+// TestSensitiveTaskEntriesDisabledPassThrough 覆盖 I2 的关闭态：
+// enabled=false 时命中文本仍放行、上游照常调用、不产生命中日志。
+func TestSensitiveTaskEntriesDisabledPassThrough(t *testing.T) {
+	t.Run("tasks", func(t *testing.T) {
+		logs := captureSensitiveLogs(t)
+		upstream, hits := newCountingUpstream(t)
+		sealer := NewSecretSealer("task-handler-test-key")
+		store := &fakeTaskStore{}
+		channels := &fakeTaskChannels{target: &tasks.ChannelTarget{
+			ID: 1, BaseURL: upstream.URL, Credentials: sealedCredential(t, sealer, "sk"),
+		}}
+		billing := newTaskBillingRecorder()
+		mux := sensitiveTaskMuxEnv(t, store, channels, sampleTaskManager(t),
+			func(*contract.RelayContext) contract.BillingSession { return billing },
+			sensitiveSettings(t, false, map[string]bool{"prompt": true}, []string{"BadWord"}, "block"))
+
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, newTaskSubmitHTTPReq(
+			`{"model":"sample-model","prompt":"hello BadWord","seconds":5}`))
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("关闭态应放行：status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if store.inserted != 1 || hits.Load() != 1 || perConsumeCount(billing) != 1 {
+			t.Fatalf("关闭态原行为：rows=%d upstream=%d preconsume=%d",
+				store.inserted, hits.Load(), perConsumeCount(billing))
+		}
+		if lines := sensitiveHitLogLines(logs.String()); len(lines) != 0 {
+			t.Fatalf("关闭态不得记录命中日志：%v", lines)
+		}
+	})
+
+	t.Run("videos", func(t *testing.T) {
+		logs := captureSensitiveLogs(t)
+		upstream, hits := newCountingUpstream(t)
+		sealer := NewSecretSealer("task-handler-test-key")
+		store := &fakeTaskStore{}
+		channels := &fakeTaskChannels{target: &tasks.ChannelTarget{
+			ID: 9, BaseURL: upstream.URL, Credentials: sealedCredential(t, sealer, "sk"),
+		}}
+		manager := newVideoManager(t, map[string]string{"vid": videoPluginSource("vid", "vid-model", false)})
+		mux := sensitiveTaskMuxEnv(t, store, channels, manager, nil,
+			sensitiveSettings(t, false, map[string]bool{"prompt": true}, []string{"BadWord"}, "block"))
+
+		rec := postVideo(t, mux, `{"model":"vid-model","prompt":"BadWord video","seconds":5}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("关闭态应放行：status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if store.inserted != 1 || hits.Load() != 1 {
+			t.Fatalf("关闭态原行为：rows=%d upstream=%d", store.inserted, hits.Load())
+		}
+		if lines := sensitiveHitLogLines(logs.String()); len(lines) != 0 {
+			t.Fatalf("关闭态不得记录命中日志：%v", lines)
+		}
+	})
+
+	t.Run("batches", func(t *testing.T) {
+		logs := captureSensitiveLogs(t)
+		env, mux := newSensitiveBatchEnv(t, sensitiveSettings(t,
+			false, map[string]bool{"prompt": true}, []string{"BadWord"}, "block"))
+
+		rec := postBatch(t, mux, batchBodyWithPrompts("clean", "BadWord in row two"))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("关闭态应放行：status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if env.store.inserted != 1 || env.store.fakeTaskStore.inserted != 2 || env.hits() != 2 {
+			t.Fatalf("关闭态原行为：batch=%d tasks=%d upstream=%d",
+				env.store.inserted, env.store.fakeTaskStore.inserted, env.hits())
+		}
+		if lines := sensitiveHitLogLines(logs.String()); len(lines) != 0 {
+			t.Fatalf("关闭态不得记录命中日志：%v", lines)
+		}
+	})
 }
 
 func newSensitiveBatchEnv(t *testing.T, cfg ConfigReader) (*batchTestEnv, *http.ServeMux) {
@@ -492,6 +666,140 @@ func TestSensitiveBatchesIgnoreNonTextRowFields(t *testing.T) {
 	}
 }
 
+// TestSensitiveBatchesBlockScansRowsBeforeInsert 是 I1 的整批拒绝证据：
+// 3 行里 2 行命中 → 400、零计费/零任务行/零上游。
+//
+// 父行（batch 级）字段只有 endpoint/completion_window，不含命中词；命中只
+// 能来自 requests[].body。父行预扫在第一个命中行短路（S2 裁决：任一行命中
+// 即整批 400，与 validateBatchItems 的整批参数错误口径一致），所以 block
+// 模式只产生 1 条预扫日志；「逐行各一条」由下面的 log 模式用例独立锁定。
+func TestSensitiveBatchesBlockScansRowsBeforeInsert(t *testing.T) {
+	logs := captureSensitiveLogs(t)
+	env, mux := newSensitiveBatchEnv(t, sensitiveSettings(t,
+		true, map[string]bool{"prompt": true}, []string{"BadWord"}, "block"))
+
+	rec := postBatch(t, mux, batchBodyWithPrompts("clean", "BadWord in row two", "BadWord in row three"))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "content_blocked") ||
+		strings.Contains(strings.ToLower(rec.Body.String()), "badword") {
+		t.Fatalf("错误体必须固定且不回显命中词：%s", rec.Body.String())
+	}
+	if env.store.inserted != 0 || env.store.fakeTaskStore.inserted != 0 {
+		t.Fatalf("block 必须零写库：batch=%d tasks=%d",
+			env.store.inserted, env.store.fakeTaskStore.inserted)
+	}
+	if calls := env.billing.snapshot(); len(calls) != 0 {
+		t.Fatalf("PreConsume/结算调用 = %v，want 空", calls)
+	}
+	if env.hits() != 0 {
+		t.Fatalf("上游命中 = %d，want 0", env.hits())
+	}
+	lines := sensitiveHitLogLines(logs.String())
+	if len(lines) != 1 {
+		t.Fatalf("block 预扫日志 = %d 条，want 1（父行预扫短路）：%s", len(lines), logs.String())
+	}
+	assertSensitiveHitLog(t, lines[0], "block", "prompt", "BadWord")
+}
+
+// TestSensitiveBatchesLogScansEachRowIndependently 是变异 D 的判别用例。
+//
+// 变异 D（去掉 handleSubmit 的逐行敏感词检查，只留父行预扫）在 block 模式
+// 下不可观测：父行预扫会先短路整批。log 模式下父行预扫主动跳过
+// （action=log），命中只能由每行 handleSubmit 的逐行检查记录——去掉它，
+// 这里的命中日志会从 2 条降到 0 条，用例转红。
+func TestSensitiveBatchesLogScansEachRowIndependently(t *testing.T) {
+	logs := captureSensitiveLogs(t)
+	env, mux := newSensitiveBatchEnv(t, sensitiveSettings(t,
+		true, map[string]bool{"prompt": true}, []string{"BadWord"}, "log"))
+
+	// 父行（batch 级）字段不含命中词，只有 requests[].body 内含命中词：
+	// 命中只能来自逐行扫描。
+	rec := postBatch(t, mux, batchBodyWithPrompts("clean", "BadWord in row two", "BadWord in row three"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("log 模式应整批提交：status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if env.store.inserted != 1 || env.store.fakeTaskStore.inserted != 3 || env.hits() != 3 {
+		t.Fatalf("log 模式行列数：batch=%d tasks=%d upstream=%d，want 1/3/3",
+			env.store.inserted, env.store.fakeTaskStore.inserted, env.hits())
+	}
+	lines := sensitiveHitLogLines(logs.String())
+	if len(lines) != 2 {
+		t.Fatalf("逐行命中日志 = %d 条，want 2（2 个命中行各一条）：%s",
+			len(lines), logs.String())
+	}
+	for _, line := range lines {
+		assertSensitiveHitLog(t, line, "log", "prompt", "BadWord")
+	}
+}
+
+// TestSensitiveOpaqueMessagesScanUnderSystemOnly 锁定 S1 裁决二：
+// 任务/视频/批次这类 opaque 插件 JSON 无法区分 messages 的角色，因此
+// scope.prompt=false && scope.system=true 时仍按安全向扫描 messages[].content；
+// 而 embeddings 这类透明输入保持 prompt 面，同一 scope 下放行。
+func TestSensitiveOpaqueMessagesScanUnderSystemOnly(t *testing.T) {
+	systemOnly := sensitiveSettings(t, true,
+		map[string]bool{"prompt": false, "system": true}, []string{"BadWord"}, "block")
+
+	t.Run("tasks", func(t *testing.T) {
+		logs := captureSensitiveLogs(t)
+		upstream, hits := newCountingUpstream(t)
+		sealer := NewSecretSealer("task-handler-test-key")
+		store := &fakeTaskStore{}
+		channels := &fakeTaskChannels{target: &tasks.ChannelTarget{
+			ID: 1, BaseURL: upstream.URL, Credentials: sealedCredential(t, sealer, "sk"),
+		}}
+		billing := newTaskBillingRecorder()
+		mux := sensitiveTaskMuxEnv(t, store, channels, sampleTaskManager(t),
+			func(*contract.RelayContext) contract.BillingSession { return billing }, systemOnly)
+
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, newTaskSubmitHTTPReq(
+			`{"model":"sample-model","seconds":5,"messages":[{"role":"user","content":"hello BadWord"}]}`))
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "content_blocked") {
+			t.Fatalf("system-only 应扫描 messages：status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if store.inserted != 0 || hits.Load() != 0 || perConsumeCount(billing) != 0 {
+			t.Fatalf("system-only block 必须零副作用：rows=%d upstream=%d preconsume=%d",
+				store.inserted, hits.Load(), perConsumeCount(billing))
+		}
+		lines := sensitiveHitLogLines(logs.String())
+		if len(lines) != 1 {
+			t.Fatalf("命中日志 = %d 条，want 1：%s", len(lines), logs.String())
+		}
+		assertSensitiveHitLog(t, lines[0], "block", "system", "BadWord")
+	})
+
+	t.Run("batches", func(t *testing.T) {
+		env, mux := newSensitiveBatchEnv(t, systemOnly)
+		body := `{"endpoint":"/v1/videos","completion_window":"24h","requests":[
+		  {"custom_id":"r1","method":"POST","url":"/v1/videos","body":{"model":"vid-model","seconds":5,"messages":[{"role":"user","content":"BadWord"}]}}
+		]}`
+		rec := postBatch(t, mux, body)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "content_blocked") {
+			t.Fatalf("system-only 批次应扫描 messages：status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if env.store.inserted != 0 || env.store.fakeTaskStore.inserted != 0 || env.hits() != 0 {
+			t.Fatalf("system-only block 必须零副作用：batch=%d tasks=%d upstream=%d",
+				env.store.inserted, env.store.fakeTaskStore.inserted, env.hits())
+		}
+	})
+
+	t.Run("transparent-embeddings-stay-prompt", func(t *testing.T) {
+		dispatcher := &captureMultimodalDispatcher{}
+		handler := newSensitiveMultimodalHandler(t, dispatcher, systemOnly)
+		resp := doMultimodal(t, handler, multimodalRequest{
+			path: "/v1/embeddings", contentType: "application/json",
+			body: []byte(`{"model":"gpt-test","input":"BadWord"}`),
+		}, true)
+		if resp.Code != http.StatusOK || dispatcher.calls != 1 {
+			t.Fatalf("透明输入只属于 prompt 面：status=%d calls=%d body=%s",
+				resp.Code, dispatcher.calls, resp.Body.String())
+		}
+	})
+}
+
 // TestSensitiveTaskBodyFieldWhitelist 直接锁定递归白名单：messages[].content
 // 与 input 对象里的 text 要扫描；role/model/image_url/parameters 不扫描。
 func TestSensitiveTaskBodyFieldWhitelist(t *testing.T) {
@@ -544,6 +852,66 @@ func TestSensitiveMultimodalExtractionCoversDocuments(t *testing.T) {
 	body = []byte(`{"query":"clean","documents":[{"id":"x","text":"badword"}]}`)
 	if !sensitiveEntriesHit(cfg, multimodalSensitiveTexts(contract.EndpointRerank, "/v1/rerank", "application/json", body)) {
 		t.Fatal("documents[].text 必须进入匹配")
+	}
+}
+
+// TestSensitiveGeminiInputShapesAreScanned 锁定 M3 扩展的扫描面：
+// 顶层 input 的 string / []string / []{text|content} 与 contents[].parts[].text
+// 都要命中；未知形态与非文本载荷不扫描（保持白名单语义）。
+func TestSensitiveGeminiInputShapesAreScanned(t *testing.T) {
+	cfg := sensitive.NewConfig(true, sensitive.Scope{Prompt: true},
+		[]string{"badword"}, sensitive.ActionBlock)
+	path := "/v1beta/models/gemini-embed:embedContent"
+	cases := []string{
+		`{"input":"badword"}`,
+		`{"input":["clean","badword"]}`,
+		`{"input":[{"text":"badword"}]}`,
+		`{"input":[{"content":"badword"}]}`,
+		`{"contents":[{"parts":[{"text":"badword"}]}]}`,
+	}
+	for _, body := range cases {
+		if !sensitiveEntriesHit(cfg,
+			multimodalSensitiveTexts(contract.EndpointEmbeddings, path, "application/json", []byte(body))) {
+			t.Fatalf("%s 必须进入匹配", body)
+		}
+	}
+	// 不递归任意字符串叶子：未知形态与非文本载荷保持放行。
+	for _, body := range []string{
+		`{"input":123}`,
+		`{"input":{"image":"badword.png"}}`,
+		`{"unknown":{"text":"badword"}}`,
+	} {
+		if sensitiveEntriesHit(cfg,
+			multimodalSensitiveTexts(contract.EndpointEmbeddings, path, "application/json", []byte(body))) {
+			t.Fatalf("%s 不应进入匹配（M3 不递归扫描任意字符串叶子）", body)
+		}
+	}
+}
+
+// TestSensitiveMultimodalExtractionFailOpenDoesNotPanic 锁定 M4：
+// 扫描器二次解析失败是 fail-open（入口校验已先成功解析，此分支只在
+// 校验器与扫描器口径漂移时可达），不得 panic 或改变拒绝语义。
+func TestSensitiveMultimodalExtractionFailOpenDoesNotPanic(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		body string
+	}{
+		{"general-invalid-json", "/v1/embeddings", `{not json`},
+		{"gemini-invalid-json", "/v1/models/gemini-embed:embedContent", `{not json`},
+		{"gemini-structure-mismatch", "/v1/models/gemini-embed:embedContent",
+			`{"content":{"parts":"oops"}}`},
+		{"gemini-input-unrecognised-shape", "/v1beta/models/gemini-embed:embedContent",
+			`{"input":123}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			texts := multimodalSensitiveTexts(contract.EndpointEmbeddings, tc.path,
+				"application/json", []byte(tc.body))
+			if len(texts) != 0 {
+				t.Fatalf("解析失败应返回空文本（放行），得到 %v", texts)
+			}
+		})
 	}
 }
 
