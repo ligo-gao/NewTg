@@ -37,14 +37,17 @@ func TestIntegrationMetricsProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open main db: %v", err)
 	}
-	defer mainDB.Close()
+	// Close 必须走 t.Cleanup 而不是 defer：恢复 schema_migrations 的 cleanup
+	// 注册得比本行晚，LIFO 下会先执行恢复；若用 defer Close，连接池会在
+	// 恢复之前关闭。
+	t.Cleanup(func() { _ = mainDB.Close() })
 	logsDB, err := sql.Open("pgx", logsDSN)
 	if err != nil {
 		t.Fatalf("open logs db: %v", err)
 	}
-	defer logsDB.Close()
+	t.Cleanup(func() { _ = logsDB.Close() })
 	rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
-	defer rdb.Close()
+	t.Cleanup(func() { _ = rdb.Close() })
 	rdb.AddHook(redisMetricsHook{})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -59,6 +62,28 @@ func TestIntegrationMetricsProbe(t *testing.T) {
 		)`); err != nil {
 		t.Fatalf("create schema_migrations: %v", err)
 	}
+
+	// 复核发现的基础设施缺陷：原实现 DELETE+INSERT fixture 且不还原，同一
+	// 隔离库的第二次运行会读到伪造版本 20261021000001（/readyz 报
+	// migration=fail），集成门禁不可重跑。这里先快照真实迁移行，cleanup
+	// 时原样恢复（含 dirty 位），使本用例对同一库可重复执行。
+	originalMigrations := snapshotSchemaMigrations(t, ctx, mainDB)
+	t.Cleanup(func() {
+		restoreCtx, cancelRestore := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelRestore()
+		if _, err := mainDB.ExecContext(restoreCtx, `DELETE FROM schema_migrations`); err != nil {
+			t.Logf("restore schema_migrations delete: %v", err)
+			return
+		}
+		for _, row := range originalMigrations {
+			if _, err := mainDB.ExecContext(restoreCtx,
+				`INSERT INTO schema_migrations (version, dirty) VALUES ($1, $2)`,
+				row.version, row.dirty); err != nil {
+				t.Logf("restore schema_migrations row %d: %v", row.version, err)
+			}
+		}
+	})
+
 	if _, err := mainDB.ExecContext(ctx, `DELETE FROM schema_migrations`); err != nil {
 		t.Fatalf("clear schema_migrations: %v", err)
 	}
@@ -88,6 +113,34 @@ func TestIntegrationMetricsProbe(t *testing.T) {
 	if findFamily(t, "newtg_redis_command_duration_seconds") == nil {
 		t.Fatal("newtg_redis_command_duration_seconds missing after PING")
 	}
+}
+
+// schemaMigrationRow 是 schema_migrations 的一行快照（版本 + dirty）。
+type schemaMigrationRow struct {
+	version int64
+	dirty   bool
+}
+
+// snapshotSchemaMigrations 读取真实迁移状态，供用例结束原样恢复。
+func snapshotSchemaMigrations(t *testing.T, ctx context.Context, db *sql.DB) []schemaMigrationRow {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `SELECT version, dirty FROM schema_migrations ORDER BY version`)
+	if err != nil {
+		t.Fatalf("snapshot schema_migrations: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []schemaMigrationRow
+	for rows.Next() {
+		var row schemaMigrationRow
+		if err := rows.Scan(&row.version, &row.dirty); err != nil {
+			t.Fatalf("scan schema_migrations: %v", err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("snapshot schema_migrations rows: %v", err)
+	}
+	return out
 }
 
 func waitForGauge(t *testing.T, name string, labels map[string]string, wantAtLeast float64) {

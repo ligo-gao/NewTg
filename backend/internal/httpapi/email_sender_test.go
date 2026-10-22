@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,7 +37,12 @@ import (
 type fakeSMTPServer struct {
 	ln   net.Listener
 	msgs chan string
-	wg   sync.WaitGroup
+	// rejectRCPT 非空时对 RCPT TO 返回该行。用于复现上游回显（如
+	// `550 5.1.1 <victim@example.com>: ...`），验证错误链与日志不泄露地址。
+	rejectRCPT string
+	// conns 统计 TCP 连接数：未配置时不仅要「没有邮件」，还不得发起连接。
+	conns atomic.Int64
+	wg    sync.WaitGroup
 }
 
 func newFakeSMTPServer(t *testing.T) *fakeSMTPServer {
@@ -64,6 +70,7 @@ func (s *fakeSMTPServer) serve() {
 		if err != nil {
 			return
 		}
+		s.conns.Add(1)
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
@@ -92,7 +99,14 @@ func (s *fakeSMTPServer) handle(conn net.Conn) {
 		case strings.HasPrefix(command, "EHLO"), strings.HasPrefix(command, "HELO"):
 			_, _ = writer.WriteString("250-fake\r\n250 OK\r\n")
 			_ = writer.Flush()
-		case strings.HasPrefix(command, "MAIL FROM"), strings.HasPrefix(command, "RCPT TO"):
+		case strings.HasPrefix(command, "MAIL FROM"):
+			write("250 OK")
+		case strings.HasPrefix(command, "RCPT TO"):
+			if s.rejectRCPT != "" {
+				// 550 的文本故意包含收件地址：生产 SMTP 常见回显。
+				write(s.rejectRCPT)
+				continue
+			}
 			write("250 OK")
 		case command == "DATA":
 			write("354 End data with <CR><LF>.<CR><LF>")
@@ -139,6 +153,9 @@ func (s *fakeSMTPServer) assertSilent(t *testing.T) {
 	case msg := <-s.msgs:
 		t.Fatalf("未配置 SMTP 时不应有任何投递，实际收到：%q", msg)
 	case <-time.After(100 * time.Millisecond):
+	}
+	if n := s.conns.Load(); n != 0 {
+		t.Fatalf("未配置 SMTP 时不应建立任何连接，实际 %d 次", n)
 	}
 }
 
@@ -245,7 +262,39 @@ type emailEndpointEnv struct {
 	repo     *pwdTestRepo
 	rdb      *redis.Client
 	sessions *auth.SessionManager
-	logs     *bytes.Buffer
+	logs     *syncBuffer
+}
+
+// syncBuffer 是可并发读写的日志接收器。密码重置邮件在 worker goroutine
+// 里异步投递并记日志，测试读取必须加锁（-race 下否则是数据竞争）。
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// waitForLog 等待日志出现 marker（异步 worker 用）。
+func waitForLog(t *testing.T, logs *syncBuffer, marker string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(logs.String(), marker) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("3s 内日志未出现 %q：%q", marker, logs.String())
 }
 
 // newEmailEndpointEnv 按生产形态装配 Router：EmailSender 是事务性邮件适配器，
@@ -261,7 +310,7 @@ func newEmailEndpointEnv(t *testing.T, mailer SMTPMailer, config mapConfig) *ema
 
 	repo := newPwdTestRepo()
 	sessions := auth.NewSessionManager(rdb, []byte(testSessionSecret))
-	logs := &bytes.Buffer{}
+	logs := &syncBuffer{}
 	router, err := NewRouter(RouterConfig{
 		Redis:         rdb,
 		Sessions:      sessions,
@@ -446,5 +495,181 @@ func TestNotificationTestEndpointFailsClosedWithoutSMTP(t *testing.T) {
 		rec := env.authedRequest(http.MethodPost, "/api/notification-preferences/test",
 			map[string]any{"channel": "email"}, sid, csrf)
 		assertProblemType(t, rec, "email_unavailable")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 复核修复（W13-EMAIL with-fixes）：I-1 / M-1 … M-5
+// ---------------------------------------------------------------------------
+
+// TestTransactionalEmailSenderUnconfiguredSendsNothing（M-2）：未配置时三个
+// 接缝都必须返回固定错误，且底层 SMTP 收到 0 次连接——不是「连接后失败」。
+func TestTransactionalEmailSenderUnconfiguredSendsNothing(t *testing.T) {
+	server := newFakeSMTPServer(t)
+	cfg := smtpConfigFor(t, server)
+	// 删掉发件地址：host 仍指向 fake，但 Configured 必须为 false。
+	delete(cfg, "notify.smtp.from_email")
+	sender := NewTransactionalEmailSender(notify.NewSMTPSender(cfg, nil))
+	ctx := context.Background()
+
+	if sender.Configured(ctx) {
+		t.Fatal("缺 from_email 时 Configured 必须为 false")
+	}
+	if err := sender.SendEmailCode(ctx, "user@example.com", "register", "123456"); !errors.Is(err, ErrEmailUnavailable) {
+		t.Fatalf("SendEmailCode err = %v，期望 ErrEmailUnavailable", err)
+	}
+	if err := sender.SendPasswordReset(ctx, "user@example.com", "https://x/reset?token=t"); !errors.Is(err, ErrEmailUnavailable) {
+		t.Fatalf("SendPasswordReset err = %v，期望 ErrEmailUnavailable", err)
+	}
+	if err := sender.SendTestNotification(ctx, "email", "admin@example.com"); !errors.Is(err, ErrEmailUnavailable) {
+		t.Fatalf("SendTestNotification err = %v，期望 ErrEmailUnavailable", err)
+	}
+	server.assertSilent(t)
+}
+
+// TestEmailDeliveryConfiguredFailsClosedWithoutProbe（M-5）：未实现
+// Configured 的发送器不得被当作可用（旧实现 fail-open 返回 true）。
+func TestEmailDeliveryConfiguredFailsClosedWithoutProbe(t *testing.T) {
+	type bareSender struct{}
+	if emailDeliveryConfigured(context.Background(), bareSender{}) {
+		t.Fatal("未实现 Configured 的发送器必须按未配置处理（fail-closed）")
+	}
+	if emailDeliveryConfigured(context.Background(), nil) {
+		t.Fatal("nil 发送器必须按未配置处理")
+	}
+	if !emailDeliveryConfigured(context.Background(), NewTransactionalEmailSender(configuredMailer(t, newFakeSMTPServer(t)))) {
+		t.Fatal("已配置的 TransactionalEmailSender 必须判定为可用")
+	}
+}
+
+// TestEmailCodeFailClosedIssuesNoCode（M-1）：fail-closed 必须发生在
+// codes.issue 之前，否则 Redis 里会留下一个用户永远收不到的验证码。
+func TestEmailCodeFailClosedIssuesNoCode(t *testing.T) {
+	env := newEmailEndpointEnv(t, unconfiguredMailer(), nil)
+	const email = "user@example.com"
+
+	rec := env.post("/api/auth/email-code",
+		map[string]any{"email": email, "purpose": "register"})
+	assertProblemType(t, rec, "email_unavailable")
+
+	if n, err := env.rdb.Exists(context.Background(), "email_code:register:"+email).Result(); err != nil || n != 0 {
+		t.Fatalf("未配置时不得生成验证码：exists=%d err=%v", n, err)
+	}
+}
+
+// TestEmailCodeFailsClosedBeforeCooldownAndQuota（M-4）：邮件可用性检查在
+// 冷却键与 IP 桶之前；未配置期间不得消耗 60s 冷却/配额。
+func TestEmailCodeFailsClosedBeforeCooldownAndQuota(t *testing.T) {
+	env := newEmailEndpointEnv(t, unconfiguredMailer(), nil)
+	const email = "user@example.com"
+	ctx := context.Background()
+
+	rec := env.post("/api/auth/email-code",
+		map[string]any{"email": email, "purpose": "register"})
+	assertProblemType(t, rec, "email_unavailable")
+
+	if n, err := env.rdb.Exists(ctx, "email_code:cooldown:"+sha256Hex(email)).Result(); err != nil || n != 0 {
+		t.Fatalf("未配置时不得写冷却键：exists=%d err=%v", n, err)
+	}
+	keys, err := env.rdb.Keys(ctx, "email_code:ip:*").Result()
+	if err != nil {
+		t.Fatalf("list ip keys: %v", err)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("未配置时不得消耗 IP 桶，实际键：%v", keys)
+	}
+}
+
+// TestNotificationTestChannelUnavailableBeforeQuota（M-3）：本部署不支持的
+// 渠道在配额 INCR 之前就 503，且分类是 channel_unavailable（不是 email_unavailable）；
+// nil 发信器只影响 email 渠道。
+func TestNotificationTestChannelUnavailableBeforeQuota(t *testing.T) {
+	env := newAccountTestEnv(t)
+	user := env.addUser("alice", "alice@example.com", false)
+	sid, csrf := env.sessionWithCSRF(user.ID)
+	ctx := context.Background()
+	quotaKey := notificationTestKeyPrefix + strconv.FormatInt(user.ID, 10)
+
+	env.handler.sender = NewTransactionalEmailSender(unconfiguredMailer())
+	for channel, target := range map[string]string{
+		"webhook": "https://example.com/hook",
+		"bark":    "https://example.com/bark",
+		"gotify":  "https://example.com/gotify",
+	} {
+		rec := env.authedRequest(http.MethodPost, "/api/notification-preferences/test",
+			map[string]any{"channel": channel, "target": target}, sid, csrf)
+		assertProblemType(t, rec, "notification_channel_unavailable")
+		if n, err := env.rdb.Exists(ctx, quotaKey).Result(); err != nil || n != 0 {
+			t.Fatalf("%s 不应消耗配额：exists=%d err=%v", channel, n, err)
+		}
+	}
+
+	// nil 发信器：非 email 渠道仍是自己的分类，email 才是 email_unavailable。
+	env.handler.sender = nil
+	rec := env.authedRequest(http.MethodPost, "/api/notification-preferences/test",
+		map[string]any{"channel": "webhook", "target": "https://example.com/hook"}, sid, csrf)
+	assertProblemType(t, rec, "notification_channel_unavailable")
+	rec = env.authedRequest(http.MethodPost, "/api/notification-preferences/test",
+		map[string]any{"channel": "email"}, sid, csrf)
+	assertProblemType(t, rec, "email_unavailable")
+
+	if n, err := env.rdb.Exists(ctx, quotaKey).Result(); err != nil || n != 0 {
+		t.Fatalf("不可用渠道不得消耗配额：exists=%d err=%v", n, err)
+	}
+}
+
+// TestEmailDeliveryErrorsDoNotLeakRecipient（I-1）：SMTP RCPT 回显含收件
+// 地址时，email-code / password-reset / notification-test 的日志与响应体
+// 都不得出现该地址或任何 `@`。
+func TestEmailDeliveryErrorsDoNotLeakRecipient(t *testing.T) {
+	const victim = "victim@example.com"
+
+	// --- email-code + password-reset ---
+	server := newFakeSMTPServer(t)
+	server.rejectRCPT = "550 5.1.1 <" + victim + ">: Recipient address rejected"
+	env := newEmailEndpointEnv(t, configuredMailer(t, server), nil)
+	env.repo.add(UserRecord{Username: "victim", Email: victim, PasswordHash: "x"})
+
+	rec := env.post("/api/auth/email-code",
+		map[string]any{"email": victim, "purpose": "register"})
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("email-code = %d, want 502（body=%q）", rec.Code, rec.Body.String())
+	}
+	assertNoRecipientLeak(t, "email-code response", rec.Body.String())
+	waitForLog(t, env.logs, "send email code failed")
+	assertNoRecipientLeak(t, "email-code log", env.logs.String())
+
+	// 密码重置异步投递；worker 只记固定分类 + 计数。
+	rec = env.post("/api/auth/password-reset/request", map[string]any{"email": victim})
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("password-reset = %d, want 204（body=%q）", rec.Code, rec.Body.String())
+	}
+	waitForLog(t, env.logs, "password reset email delivery failed")
+	assertNoRecipientLeak(t, "password-reset log", env.logs.String())
+
+	// --- notification-test ---
+	acct := newAccountTestEnv(t)
+	user := acct.addUser("victim", victim, false)
+	sid, csrf := acct.sessionWithCSRF(user.ID)
+	logBuf := &syncBuffer{}
+	acct.handler.log = slog.New(slog.NewTextHandler(logBuf, nil))
+	acct.handler.sender = NewTransactionalEmailSender(configuredMailer(t, server))
+
+	rec = acct.authedRequest(http.MethodPost, "/api/notification-preferences/test",
+		map[string]any{"channel": "email", "target": victim}, sid, csrf)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("notification-test = %d, want 502（body=%q）", rec.Code, rec.Body.String())
+	}
+	assertNoRecipientLeak(t, "notification-test response", rec.Body.String())
+	assertNoRecipientLeak(t, "notification-test log", logBuf.String())
+}
+
+func assertNoRecipientLeak(t *testing.T, where, text string) {
+	t.Helper()
+	if strings.Contains(text, "victim@example.com") {
+		t.Fatalf("%s 泄露收件地址：%q", where, text)
+	}
+	if strings.Contains(text, "@") {
+		t.Fatalf("%s 出现任意 @（不得回显地址）：%q", where, text)
 	}
 }

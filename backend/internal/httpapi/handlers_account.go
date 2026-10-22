@@ -69,6 +69,11 @@ const (
 // 与 writeProblem 共用全库 https://newtg.dev/problems/<slug> 约定。
 const problemTypeNotificationTestFailed = "https://newtg.dev/problems/notification_test_failed"
 
+// problemTypeNotificationChannelUnavailable 是「本部署没有该渠道测试出口」
+// 的固定分类（M-3 裁决）：webhook/bark/gotify 与 SMTP 配置无关，绝不能
+// 复用 email_unavailable，否则客户端会把渠道缺失误判为邮件配置问题。
+const problemTypeNotificationChannelUnavailable = "https://newtg.dev/problems/notification_channel_unavailable"
+
 // 账号存储错误哨兵。单测注入内存假实现，生产由 SQLAccountRepo 返回。
 var (
 	// ErrAccountNotFound 表示 users 行不存在（并发删除/残留会话）。
@@ -875,13 +880,21 @@ func (h *AccountHandlers) handleTestNotification(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// 发送器未配置时直接 503，不消耗用户的测试配额。
-	// W13-EMAIL：nil 仍是未配置；email 渠道还要按配置中心快照判断 SMTP 是否
-	// 可投递（生产注入的适配器可能非 nil 但 host/from_email 为空）。
-	if h.sender == nil || (channel == "email" && !emailDeliveryConfigured(r.Context(), h.sender)) {
-		h.log.Error("notification test requested but email delivery is not configured",
+	// M-3 裁决：可用性检查必须先于 3 次/分钟配额 INCR——对本部署不支持的
+	// 渠道、以及 email 渠道 SMTP 未配置，都不得消耗配额。
+	// 两类不可用的分类彼此独立：h.sender == nil 只影响 email 渠道；非 email
+	// 渠道的 503 必须是 channel_unavailable，不能被误报为 email_unavailable
+	// （否则客户端会把「渠道未实现」误导成「去配 SMTP」）。
+	if !notificationTestAvailable(r.Context(), h.sender, channel) {
+		if channel == "email" {
+			h.log.Error("notification test requested but email delivery is not configured",
+				"channel", channel, "user_id", p.UserID)
+			writeEmailUnavailable(w)
+			return
+		}
+		h.log.Error("notification test requested but channel is not available",
 			"channel", channel, "user_id", p.UserID)
-		writeEmailUnavailable(w)
+		writeNotificationChannelUnavailable(w)
 		return
 	}
 
@@ -903,14 +916,16 @@ func (h *AccountHandlers) handleTestNotification(w http.ResponseWriter, r *http.
 
 	if err := h.sender.SendTestNotification(r.Context(), channel, target); err != nil {
 		// 渠道错误（如 Webhook 404）返回给本人用于行内提示；不回显内部堆栈。
-		h.log.Warn("send test notification failed", "channel", channel, "user_id", p.UserID, "error", err)
+		// I-1：只记录固定分类，绝不记录 err 原文（SMTP 回显可能含收件地址）。
+		h.log.Warn("send test notification failed", "channel", channel,
+			"user_id", p.UserID, "error_class", emailErrorClass(err))
 		switch {
 		case errors.Is(err, ErrEmailUnavailable):
 			// SMTP 在检查与发送之间被清空：固定 fail-closed 出口。
 			writeEmailUnavailable(w)
 		case errors.Is(err, ErrNotificationChannelUnavailable):
 			// 本部署只装配 SMTP（email）；其它渠道没有测试出口。
-			h.writeUnavailable(w, "Notification channel is not available", err)
+			writeNotificationChannelUnavailable(w)
 		default:
 			writeProblem(w, http.StatusBadGateway, problemTypeNotificationTestFailed,
 				"Test notification delivery failed")

@@ -857,6 +857,18 @@ func (h *authHandlers) handleEmailCode(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// M-4 裁决：发信通道不可用（未配置 SMTP / nil 发信器）必须在**冷却键与
+	// IP 桶之前** fail-closed，与 password-reset 的顺序一致。该检查只读配置
+	// 快照、不查用户，不构成枚举风险；放在限流之后会让未配置期间的请求白白
+	// 消耗 60s 冷却与 IP 配额，管理员配好 SMTP 后用户仍被旧桶挡住。
+	// 旧口径「nil 时只生成不下发、端点 204」会把一个用户永远收不到的码算作
+	// 成功，同样废止。
+	if !emailDeliveryConfigured(ctx, h.sender) {
+		h.log.Error("email delivery is not configured", "purpose", req.Purpose)
+		writeEmailUnavailable(w)
+		return
+	}
+
 	// 同邮箱 1 次/60s（modules-08 F-08-16）。冷却键对邮箱做哈希，避免把 PII
 	// 写进 Redis 键；先占用冷却键：即使后续 IP 桶拒绝或 SMTP 失败，也保持
 	// 60s 冷却，防止重试风暴。
@@ -894,15 +906,6 @@ func (h *authHandlers) handleEmailCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// W13-EMAIL：发信通道不可用（未配置 SMTP / nil 发信器）必须在生成
-	// 验证码之前 fail-closed。旧口径「nil 时只生成不下发、端点 204」会把
-	// 一个用户永远收不到的码算作成功。
-	if !emailDeliveryConfigured(ctx, h.sender) {
-		h.log.Error("email delivery is not configured", "purpose", req.Purpose)
-		writeEmailUnavailable(w)
-		return
-	}
-
 	code, err := h.codes.issue(ctx, email, req.Purpose)
 	if err != nil {
 		h.log.Error("issue email code failed", "error", err)
@@ -912,7 +915,10 @@ func (h *authHandlers) handleEmailCode(w http.ResponseWriter, r *http.Request) {
 	if err := h.sender.SendEmailCode(ctx, email, req.Purpose, code); err != nil {
 		// 明文码只交给发送器；失败即作废，避免留下一个用户永远收不到的有效码。
 		_ = h.codes.discard(ctx, email, req.Purpose)
-		h.log.Error("send email code failed", "purpose", req.Purpose, "error", err)
+		// I-1：只记固定分类，绝不记录 err 原文——SMTP 的 RCPT 回显可能包含
+		// 收件地址（`550 5.1.1 <victim@example.com>`），地址是 PII。
+		h.log.Error("send email code failed", "purpose", req.Purpose,
+			"error_class", emailErrorClass(err))
 		if errors.Is(err, ErrEmailUnavailable) {
 			// 检查与发送之间配置被清空：仍按未配置处理（503），不假装可重试。
 			writeEmailUnavailable(w)
