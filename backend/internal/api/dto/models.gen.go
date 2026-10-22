@@ -4734,6 +4734,55 @@ type ChannelList struct {
 	Total int `json:"total"`
 }
 
+// CheckinCalendar defines model for CheckinCalendar.
+type CheckinCalendar struct {
+	CheckedInToday bool `json:"checked_in_today"`
+
+	// Days 本月已签到的日期（未签到的日期不出现，前端按网格补齐）
+	Days []struct {
+		Awarded int64              `json:"awarded"`
+		Date    openapi_types.Date `json:"date"`
+	} `json:"days"`
+	Month      string `json:"month"`
+	MonthTotal int64  `json:"month_total"`
+	Streak     int32  `json:"streak"`
+
+	// Today 站点时区下的今天
+	Today       openapi_types.Date `json:"today"`
+	TotalEarned int64              `json:"total_earned"`
+}
+
+// CheckinRequest 可选请求体：Turnstile 令牌也可通过 `?turnstile_token=` 查询参数提交
+// （两者同时出现时以查询参数为准，与其它认证端点同口径）。签到本身
+// 不接受任何用户标识或金额参数。
+type CheckinRequest struct {
+	TurnstileToken *string `json:"turnstile_token,omitempty"`
+}
+
+// CheckinResult defines model for CheckinResult.
+type CheckinResult struct {
+	// Awarded 本次发放积分；同日重放不会重新抽取
+	Awarded int64 `json:"awarded"`
+
+	// BalanceAfter 入账后的钱包余额快照
+	BalanceAfter int64 `json:"balance_after"`
+
+	// CheckedInToday 成功响应恒为 true
+	CheckedInToday bool `json:"checked_in_today"`
+
+	// Date 本次签到对应的自然日（站点时区，YYYY-MM-DD）
+	Date openapi_types.Date `json:"date"`
+
+	// MonthTotal 本月累计获得积分
+	MonthTotal int64 `json:"month_total"`
+
+	// Streak 截至今天的连续签到天数（不断签）
+	Streak int32 `json:"streak"`
+
+	// TotalEarned 累计获得积分
+	TotalEarned int64 `json:"total_earned"`
+}
+
 // CompleteOrderRequest defines model for CompleteOrderRequest.
 type CompleteOrderRequest struct {
 	// ManualReason 人工完成原因（按 Unicode 字符计数）
@@ -7281,6 +7330,12 @@ type PublicStatus struct {
 	// Billing billing 域的公开键（§1.4.1）。
 	Billing PublicBilling `json:"billing"`
 
+	// CheckinEnabled 每日签到总开关的**派生**布尔（来源设置键 `checkin.enabled`，但
+	// `checkin.*` 本身不进公开下发全集）。false 时控制台不渲染签到卡，
+	// POST /api/checkin 与 GET /api/checkin/calendar 返回 403
+	// `checkin_disabled`。奖励区间永不下发。
+	CheckinEnabled bool `json:"checkin_enabled"`
+
 	// CreditDisplaySymbol 等于 billing.currency_symbol（展示用积分符号）。
 	CreditDisplaySymbol string `json:"credit_display_symbol"`
 
@@ -9442,6 +9497,19 @@ type RevealChannelCredentialsParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// CheckInParams defines parameters for CheckIn.
+type CheckInParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// GetCheckinCalendarParams defines parameters for GetCheckinCalendar.
+type GetCheckinCalendarParams struct {
+	// Month 自然月，`YYYY-MM`；空值取站点时区的当前月。
+	Month *string `form:"month,omitempty" json:"month,omitempty"`
+}
+
 // ListDeploymentsParams defines parameters for ListDeployments.
 type ListDeploymentsParams struct {
 	Status   *string `form:"status,omitempty" json:"status,omitempty"`
@@ -10840,6 +10908,9 @@ type UpdateBillingPreferenceJSONRequestBody = BillingPreferenceUpdateRequest
 
 // RevealChannelCredentialsJSONRequestBody defines body for RevealChannelCredentials for application/json ContentType.
 type RevealChannelCredentialsJSONRequestBody = ChannelCredentialsRevealRequest
+
+// CheckInJSONRequestBody defines body for CheckIn for application/json ContentType.
+type CheckInJSONRequestBody = CheckinRequest
 
 // CreateDeploymentJSONRequestBody defines body for CreateDeployment for application/json ContentType.
 type CreateDeploymentJSONRequestBody = CreateDeploymentRequest

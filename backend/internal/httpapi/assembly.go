@@ -33,6 +33,7 @@ import (
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/contract"
@@ -133,6 +134,12 @@ type GatewayDeps struct {
 	// WalletHandlers 是 M5 Task 6 补齐的 /api/wallet/summary（modules-03
 	// §F-03-01）。非 nil 时挂到受保护子树，只读取当前会话用户自己的余额。
 	WalletHandlers *WalletHandlers
+
+	// CheckinService 是每日签到服务（W15-C / modules-03 F-03-12）。非 nil 时
+	// 挂载 POST /api/checkin 与 GET /api/checkin/calendar；nil 时不挂载
+	// （纯 Repo 单测没有 checkins 表）。服务本身由 platform 用主库 GORM
+	// 句柄构造，保证签到行与账本同事务。
+	CheckinService *billing.CheckinService
 
 	// Turnstile siteverify 测试接缝（生产留零值）。
 	TurnstileVerifyURL  string
@@ -498,6 +505,21 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 
 	if deps.WalletHandlers != nil {
 		deps.WalletHandlers.RegisterWalletRoutes(rt.protected, nil)
+	}
+
+	// W15-C：每日签到。handler 复用 NewRouter 已经构造的 Turnstile gate
+	// 实例（第 5 个接入点），保证与登录/注册同一份配置快照与重放守卫。
+	if deps.CheckinService != nil {
+		checkinHandlers, err := NewCheckinHandlers(CheckinHandlerConfig{
+			Service:   deps.CheckinService,
+			Redis:     deps.Redis,
+			Turnstile: rt.handlers.turnstile,
+			Logger:    deps.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		checkinHandlers.RegisterCheckinRoutes(rt.protected, nil)
 	}
 
 	// 系统设置读写（FE-08 基础设施）与系统状态。两者都依赖主库；纯 Repo 单测

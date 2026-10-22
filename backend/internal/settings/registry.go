@@ -88,6 +88,11 @@ const MaxResponseTimeThresholdSeconds = 86400
 // Sections 的返回顺序固定，便于前端与测试稳定比对。
 var sectionOrder = []string{
 	"site", "nav", "auth", "auth.turnstile", "billing", "billing_setting",
+	// W15-C：每日签到（modules-01 §3.19 流程侧 / modules-03 F-03-12 入账侧，
+	// C-44/N-MAP-1 闭）。三键独立 section 但都**不进公开下发全集**：
+	// modules-08 §1.4.1 明确排除 checkin.*；用户侧入口由
+	// `GET /api/status` 的派生字段 checkin_enabled 驱动，而不是直接下发设置键。
+	"checkin",
 	"pay", "pay.stripe", "pay.alipay", "pay.epay", "pay.creem", "pay.waffo", "pay.waffo_pancake",
 	"rl", "rl.health", "sec", "notify.smtp", "notify.webhook",
 	// W10-N10/N11：日志分区维护、审计保留与 W10-N2 的日志批处理开关。
@@ -396,6 +401,28 @@ func buildRegistry() []Setting {
 		// 误写成「事实上的永不过期」。
 		def("billing.subscription_inflight_lease_ttl_seconds", "billing", TypeInt, int64(120),
 			minInt(120), maxInt(86400)),
+
+		// ==== checkin（modules-08 §3.8 签到奖励设置面；C-44/N-MAP-1 闭）====
+		//
+		// 三键与 docs/system-config-mapping.md §4.7 #32–#34 逐字一致。
+		// 默认值全部关闭/停发：签到是运营可选项，上线即发钱会让所有既有
+		// 部署在升级后立刻产生未授权支出。
+		//
+		// 不标 public：modules-08 §1.4.1 明确把 checkin.* 排除在公开下发
+		// 全集之外（额度区间属于运营信息）。用户侧入口改由 `/api/status`
+		// 的派生布尔 `checkin_enabled` 驱动。
+		//
+		// 不标 dangerous：签到开关与额度不触碰安全边界（对照 auth/pay
+		// 的危险项口径）；设计字段表也标注为「—」。
+		//
+		// min=0 是合法组合（只记签到、不发额度、不写账本行，modules-03
+		// F-03-12）；max 在此组合下保留但不生效。min ≤ max 由 section
+		// 校验在保存期强制，而不是在读取期猜测。
+		def("checkin.enabled", "checkin", TypeBool, false),
+		def("checkin.min_quota", "checkin", TypeInt, int64(0),
+			minInt(0), maxInt(1000000000000)),
+		def("checkin.max_quota", "checkin", TypeInt, int64(0),
+			minInt(0), maxInt(1000000000000)),
 
 		// ==== billing_setting（T5 任务计价表达式，R-06 设置契约扩展）====
 		//

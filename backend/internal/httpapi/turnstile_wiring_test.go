@@ -193,6 +193,9 @@ func TestTurnstileRunsAfterPasswordResetRateLimit(t *testing.T) {
 // TestTurnstileUnknownEndpointFailsClosed 覆盖 C3：未知接入点必须写 403
 // problem，而不是返回 false 让 handler 落成空 200。正确装配下不可达，
 // 本测试钉死纵深防御行为。
+//
+// 样例端点用 "future" 而不是 "checkin"：W15-C 起 checkin 是第 5 个**已接线**
+// 接入点，继续用它当「未知」样例会让测试误报。
 func TestTurnstileUnknownEndpointFailsClosed(t *testing.T) {
 	gates := newTurnstileGates(func() auth.TurnstileSettings {
 		return auth.TurnstileSettings{Enabled: true, SiteKey: "k", SecretKey: "s"}
@@ -200,7 +203,7 @@ func TestTurnstileUnknownEndpointFailsClosed(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/checkin", nil)
-	if gates.check("checkin", rr, req, "") {
+	if gates.check("future", rr, req, "") {
 		t.Fatal("未知接入点不得放行")
 	}
 	if rr.Code != http.StatusForbidden {

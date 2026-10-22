@@ -12,15 +12,12 @@ package httpapi
 // 或重放 Body；auth.TurnstileMiddleware 会优先从查询参数取 turnstile_token，
 // 语义（一次性、接入点绑定、remoteip、fail-closed）与中间件完全一致。
 //
-// 已存在的 4 个接入点在这里接线：
+// 已存在的 5 个接入点在这里接线：
 //   - auth.TurnstileEndpointLogin          → POST /api/auth/login
 //   - auth.TurnstileEndpointRegister       → POST /api/auth/register
 //   - auth.TurnstileEndpointVerification   → POST /api/auth/email-code
 //   - auth.TurnstileEndpointResetPassword  → POST /api/auth/password-reset/request
-//
-// 第 5 个接入点 auth.TurnstileEndpointCheckin（POST /api/checkin）在 M1 尚未
-// 实现：checkin 端点与入账逻辑属 modules-03 F-03-12，等该端点落地后按同一
-// 模式在 handler 内速率桶之后接入即可。
+//   - auth.TurnstileEndpointCheckin        → POST /api/checkin（W15-C）
 
 import (
 	"log/slog"
@@ -43,7 +40,7 @@ type turnstileGate struct {
 	middleware func(http.Handler) http.Handler
 }
 
-// newTurnstileGates 为四个已存在的接入点构造 gate。rdb 为 nil 时开启态会
+// newTurnstileGates 为五个已存在的接入点构造 gate。rdb 为 nil 时开启态会
 // fail-closed（auth.TurnstileMiddleware 的重放守卫拒绝），与中间件契约一致。
 func newTurnstileGates(settings func() auth.TurnstileSettings, rdb *redis.Client,
 	verifyURL string, client *http.Client, log *slog.Logger) *turnstileGates {
@@ -53,6 +50,7 @@ func newTurnstileGates(settings func() auth.TurnstileSettings, rdb *redis.Client
 		auth.TurnstileEndpointRegister,
 		auth.TurnstileEndpointVerification,
 		auth.TurnstileEndpointResetPassword,
+		auth.TurnstileEndpointCheckin,
 	}
 	gates := &turnstileGates{byEndpoint: make(map[string]*turnstileGate, len(endpoints)), log: log}
 	for _, endpoint := range endpoints {
@@ -84,7 +82,7 @@ func (g *turnstileGates) check(endpoint string, w http.ResponseWriter,
 	gate := g.byEndpoint[endpoint]
 	if gate == nil {
 		// 未知接入点属于装配/调用错误：绝不能静默放行（否则新增接入点会
-		// 以为已受保护）。正确装配下本分支不可达（四个接入点都在
+		// 以为已受保护）。正确装配下本分支不可达（五个接入点都在
 		// newTurnstileGates 里构造），这里是纵深防御：显式写 fail-closed
 		// problem，而不是返回 false 让 handler 返回空 200。
 		logger := g.log

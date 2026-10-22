@@ -7,7 +7,7 @@ schemas:
   PublicStatus:
     type: object
     additionalProperties: false
-    required: [system_initialized, auth, password_login_encryption_enabled, languages, default_language, site, nav, billing, pay, usd_exchange_rate, credit_display_symbol, usable_groups]
+    required: [system_initialized, auth, password_login_encryption_enabled, checkin_enabled, languages, default_language, site, nav, billing, pay, usd_exchange_rate, credit_display_symbol, usable_groups]
     description: |
       公开站点状态（GET /api/status）。响应 Cache-Control: no-store——站点开关
       变更必须立即反映到登录/注册页，禁止任何中间层缓存。
@@ -48,6 +48,13 @@ schemas:
           与 GET /api/auth/login/encryption-key 的 enabled 字段同一开关。
           true 时登录只接受 password_encrypted，出现明文 password 一律拒绝
           （reason=encryption_required，对外响应与口令错误不可区分）。
+      checkin_enabled:
+        type: boolean
+        description: |
+          每日签到总开关的**派生**布尔（来源设置键 `checkin.enabled`，但
+          `checkin.*` 本身不进公开下发全集）。false 时控制台不渲染签到卡，
+          POST /api/checkin 与 GET /api/checkin/calendar 返回 403
+          `checkin_disabled`。奖励区间永不下发。
       languages:
         type: array
         minItems: 7

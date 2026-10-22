@@ -321,6 +321,22 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		return nil, fmt.Errorf("gateway: redemption handlers: %w", err)
 	}
 
+	// W15-C 每日签到（modules-01 §3.19 / modules-03 F-03-12）：签到记录与
+	// checkin_bonus 入场必须同事务，因此服务持有主库 GORM 句柄。「今天」按
+	// 站点时区判定，复用 httpapi 里 demo 额度的同一解析（非法时区告警回落
+	// UTC，I-19）。
+	checkinService, err := billing.NewCheckinService(billing.CheckinServiceConfig{
+		DB:     gormDB,
+		Config: center,
+		Logger: log,
+		Location: func() *time.Location {
+			return httpapi.CheckinSiteLocation(center, log)
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gateway: checkin service: %w", err)
+	}
+
 	// B1b：Webhook 业务事件生产者（payment_success / user_signup）。
 	// 订阅过滤与 N8 worker 共用同一 WebhookSender（读取 notify.webhook.events
 	// 快照）；投递行写主库，由 worker 进程按 1/5/25 分钟重试。生产者在
@@ -471,6 +487,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		TopupHandlers:           topupHandler,
 		SubscriptionPurchase:    topupHandler.Service(),
 		WalletHandlers:          walletHandler,
+		CheckinService:          checkinService,
 		// R-63：定价写成功后立即清空 30s 缓存；未接线时新价最迟 30s 才生效。
 		PricingOnChange: pricingChanged,
 		// 设置写成功后的广播必须复用同一个配置中心实例：其它副本的

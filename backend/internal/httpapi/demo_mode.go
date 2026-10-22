@@ -326,6 +326,17 @@ func demoQuotaWindow(now time.Time, loc *time.Location) (string, time.Duration) 
 // 合法 IANA 名称时回落 UTC。注意非法名称**不会**再回落注册表默认：设置
 // 已经给出一个（错的）值，再猜一个默认时区只会让「当日键」静默漂移。
 func demoQuotaLocation(config ConfigReader) *time.Location {
+	return siteLocation(config, nil)
+}
+
+// CheckinSiteLocation 是 W15-C 签到「自然日」判定复用的站点时区解析
+// （导出版本，附带非法时区告警）。与 demoQuotaLocation 共用同一实现，
+// 避免两处对「今天」得出不同答案（I-19）。
+func CheckinSiteLocation(config ConfigReader, log *slog.Logger) *time.Location {
+	return siteLocation(config, log)
+}
+
+func siteLocation(config ConfigReader, log *slog.Logger) *time.Location {
 	name := ""
 	if config != nil {
 		if raw, ok := config.Get("site.timezone"); ok {
@@ -342,10 +353,15 @@ func demoQuotaLocation(config ConfigReader) *time.Location {
 			}
 		}
 	}
-	if loc, err := time.LoadLocation(name); err == nil {
-		return loc
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		if log != nil {
+			log.Warn("site.timezone is not a valid IANA name; falling back to UTC",
+				"timezone", name, "error", err)
+		}
+		return time.UTC
 	}
-	return time.UTC
+	return loc
 }
 
 // demoIPHash 返回 IP 的 SHA-256 十六进制（Redis 键里不落明文地址）。
