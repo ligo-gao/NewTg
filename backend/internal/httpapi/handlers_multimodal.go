@@ -257,7 +257,7 @@ func (h *MultimodalHandler) serve(w http.ResponseWriter, r *http.Request, endpoi
 	// （M5 简报的冻结口径「realtime 501 不计」）。把它计入会先消耗配额再得到
 	// 一个必然失败的响应；升级真正落地时由该端点自己决定连接级语义。
 	if endpoint != contract.EndpointRealtime {
-		if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal); rejection != nil {
+		if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal, clientIP(r)); rejection != nil {
 			writeRelayRateLimitError(w, rc.RequestID, rejection)
 			return
 		}

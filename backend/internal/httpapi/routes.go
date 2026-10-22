@@ -270,7 +270,12 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 	// 全局 X-Request-ID 在最外层：公开/管理全部 /api/* 响应（含 401/404/500）
 	// 都带同一个 id；no-store 紧随其后，二者都不依赖具体 handler。中继 /v1
 	// 不走本 Router，由 RelayContext 自行生成，互不冲突（R-PUB-10）。
-	rt.handler = RequestIDMiddleware(noStoreAPI(rt.mux))
+	//
+	// 演示站只读守卫放在 mux 之前、SessionAuth 链之外（modules-08 §3.17 Q1）：
+	// 它必须覆盖公开端点（register/email-code 等）与受保护子树在内的**全部**
+	// /api/* 写方法；放在链内会漏掉公开端点，放在 handler 内会漏掉未来新增
+	// 路由。关闭时原样透传。
+	rt.handler = RequestIDMiddleware(noStoreAPI(DemoReadOnlyGuard(cfg.Config)(rt.mux)))
 
 	// 登录加密公钥端点是公开的（登录前取公钥），精确模式优先于 /api/ 子树。
 	if cfg.LoginEncryption != nil {

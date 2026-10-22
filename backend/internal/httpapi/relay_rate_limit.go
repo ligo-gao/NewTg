@@ -51,6 +51,11 @@ type relayRateLimitRejection struct {
 
 // checkRelayRateLimit 按冻结顺序求值三个桶，任一超限立即返回拒绝。
 //
+// 演示站开启时，先消耗 §3.17.2 的两层日额度（G7-R48）：
+//   - 每 IP 每日 N + 全站每日 M；任一层耗尽即 429（不是 403）；
+//   - 两个上限任一为 0 ⇒ 中继整体关闭（403，配置级 fail-closed）；
+//   - Redis 故障 ⇒ 503，绝不放开为无限量。
+//
 // 顺序（security-07 §2.2.2；R-M5-05 短路）：B11 per-token → B10 per-user
 // （含 group_overrides，取 rc.UsingGroup）→ B12 per-user global。短路是有意的：
 // 已被拒绝的请求不再自增后续桶，Redis 往返也最少；对客户端可见行为无影响。
@@ -62,14 +67,26 @@ type relayRateLimitRejection struct {
 //   - 管理员不豁免（R-M5-13）：本函数不看 Role，任何身份都走同一套桶；
 //   - 后端故障 fail-closed（R-M5-10）：任一桶返回 error → 500
 //     rate_limit_check_failed，绝不降级放行（放行的代价是上游配额与真实资金）。
+//
+// clientIP 由各入口用 clientip 的唯一取值路径解析（TRUSTED_PROXIES 生效），
+// 演示站额度用它构造 per-IP 键；非演示模式下该参数不参与任何判定。
 func checkRelayRateLimit(
 	ctx context.Context,
 	limiter RelayRateLimiter,
 	config ConfigReader,
 	rc *contract.RelayContext,
 	principal *auth.Principal,
+	clientIP string,
 ) *relayRateLimitRejection {
-	if limiter == nil || principal == nil || rc == nil {
+	if principal == nil || rc == nil {
+		return nil
+	}
+	// 演示站额度在 B10/B11/B12 之前：它保护的是「演示站能否被真实调用」，
+	// 与按用户/令牌的滥用桶正交。两者可叠加（先到者拒），互不覆盖。
+	if rejection := checkDemoRelayQuota(ctx, limiter, config, rc.RequestID, clientIP); rejection != nil {
+		return rejection
+	}
+	if limiter == nil {
 		return nil
 	}
 	// 每次请求解析阈值：配置中心保证 ≤1s 生效（security-07 §2.2.3 第 3 条），

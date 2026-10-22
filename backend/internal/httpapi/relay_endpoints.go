@@ -772,7 +772,7 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 	// 解析之后（/pg 的 UsingGroup 此时才可用），pin/白名单/routeDeps/PreConsume
 	// 与上游之前。被拒绝的请求因此零预扣、零 usage_logs、零上游调用；流式与
 	// 非流式在分流前只计一次（不按 SSE 帧计）。
-	if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal); rejection != nil {
+	if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal, clientIP(r)); rejection != nil {
 		writeRelayRateLimitError(w, rc.RequestID, rejection)
 		return
 	}
@@ -1010,7 +1010,7 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// W7/M5-b 准入限流（R-M5-04）：敏感词过滤之后、pin/白名单/停用检查/预扣
 	// 之前。原生入口没有 /pg 分支，因此不存在 TokenID==nil 的会话路径
 	// （B11 恒参与）。
-	if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal); rejection != nil {
+	if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal, clientIP(r)); rejection != nil {
 		writeRelayRateLimitError(w, rc.RequestID, rejection)
 		return
 	}
