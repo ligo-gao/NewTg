@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -499,6 +501,297 @@ func TestIntegrationUsageLogStreamLagMetric(t *testing.T) {
 	}
 	if value != 3 {
 		t.Fatalf("stream lag = %v, want 3", value)
+	}
+}
+
+// TestIntegrationUsageLogStreamNormalizesCompactUUID 覆盖 C1：生产侧 request_id
+// 可能是 32 位无横线 hex，消费边界必须统一成 PG 的标准形态，否则跨批去重与
+// 跨批退款收敛全部失配（会插第二行）。
+func TestIntegrationUsageLogStreamNormalizesCompactUUID(t *testing.T) {
+	rdb := openLogStreamRedis(t)
+	db := openLogStreamLogsDB(t)
+	resetUsageLogStream(t, rdb)
+	c := newTestLogStreamConsumer(t, rdb, db, "w10n2-compact")
+
+	now := time.Now().UTC()
+	canonical := newTestUUID(t)
+	compact := strings.ReplaceAll(canonical, "-", "")
+	cleanupUsageLogRequest(t, db, canonical)
+
+	success := logStreamEvent(t, compact, UsageLogStatusSuccess, 100, 0, now)
+	if err := c.consume(context.Background(), []redis.XMessage{
+		logStreamMessage(t, "1-0", success),
+	}); err != nil {
+		t.Fatalf("consume success: %v", err)
+	}
+	if n := countUsageLogRows(t, db, canonical); n != 1 {
+		t.Fatalf("rows after first success = %d, want 1", n)
+	}
+
+	// 删掉幂等键，强制走 DB 存在性检查：形态不一致时这里会重复插入。
+	if err := rdb.Del(context.Background(), dedupKey(canonical, UsageLogStatusSuccess)).Err(); err != nil {
+		t.Fatalf("delete dedup key: %v", err)
+	}
+	if err := c.consume(context.Background(), []redis.XMessage{
+		logStreamMessage(t, "2-0", success),
+	}); err != nil {
+		t.Fatalf("consume redelivery: %v", err)
+	}
+	if n := countUsageLogRows(t, db, canonical); n != 1 {
+		t.Fatalf("rows after compact-id redelivery = %d, want 1", n)
+	}
+
+	// success → refund：必须收敛已有行，而不是插第二行。
+	refund := logStreamEvent(t, compact, UsageLogStatusRefunded, 0, 60, now.Add(time.Second))
+	if err := c.consume(context.Background(), []redis.XMessage{
+		logStreamMessage(t, "3-0", refund),
+	}); err != nil {
+		t.Fatalf("consume refund: %v", err)
+	}
+	assertUsageLogRefunded(t, db, canonical, 60)
+	if n := countUsageLogRows(t, db, canonical); n != 1 {
+		t.Fatalf("rows after refund = %d, want 1", n)
+	}
+
+	// 旧 success 重投不得回退。
+	if err := c.consume(context.Background(), []redis.XMessage{
+		logStreamMessage(t, "4-0", success),
+	}); err != nil {
+		t.Fatalf("consume late success: %v", err)
+	}
+	assertUsageLogRefunded(t, db, canonical, 60)
+
+	// refund → success：同样不得插第二行或回退。
+	canonical2 := newTestUUID(t)
+	compact2 := strings.ReplaceAll(canonical2, "-", "")
+	cleanupUsageLogRequest(t, db, canonical2)
+	if err := c.consume(context.Background(), []redis.XMessage{
+		logStreamMessage(t, "5-0",
+			logStreamEvent(t, compact2, UsageLogStatusRefunded, 0, 30, now)),
+	}); err != nil {
+		t.Fatalf("consume refund-first: %v", err)
+	}
+	if err := c.consume(context.Background(), []redis.XMessage{
+		logStreamMessage(t, "6-0",
+			logStreamEvent(t, compact2, UsageLogStatusSuccess, 90, 0, now.Add(time.Second))),
+	}); err != nil {
+		t.Fatalf("consume late success 2: %v", err)
+	}
+	assertUsageLogRefunded(t, db, canonical2, 30)
+	if n := countUsageLogRows(t, db, canonical2); n != 1 {
+		t.Fatalf("rows after refund-first = %d, want 1", n)
+	}
+}
+
+// TestIntegrationUsageLogStreamPoisonsInvalidRequestID 覆盖 I2：非法 request_id
+// 不能被留在 pending 永久阻塞整条流。
+func TestIntegrationUsageLogStreamPoisonsInvalidRequestID(t *testing.T) {
+	rdb := openLogStreamRedis(t)
+	db := openLogStreamLogsDB(t)
+	resetUsageLogStream(t, rdb)
+	c := newTestLogStreamConsumer(t, rdb, db, "w10n2-poison")
+
+	payload, err := json.Marshal(UsageLogEvent{RequestID: "not-a-uuid", Status: UsageLogStatusSuccess})
+	if err != nil {
+		t.Fatalf("marshal poison: %v", err)
+	}
+	if err := rdb.XAdd(context.Background(), &redis.XAddArgs{
+		Stream: UsageLogStreamKey, Values: []any{"event", string(payload)},
+	}).Err(); err != nil {
+		t.Fatalf("xadd poison: %v", err)
+	}
+
+	msgs, err := c.readOnce(context.Background())
+	if err != nil {
+		t.Fatalf("read poison: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("read = %d, want 1", len(msgs))
+	}
+	if err := c.consume(context.Background(), msgs); err != nil {
+		t.Fatalf("consume poison: %v", err)
+	}
+	if pending := pendingCount(t, rdb); pending != 0 {
+		t.Fatalf("poison message left pending = %d, want 0 (must be acked)", pending)
+	}
+
+	// 后续正常消息必须仍能被处理（流没有被毒消息卡住）。
+	rid := newTestUUID(t)
+	cleanupUsageLogRequest(t, db, rid)
+	if err := NewRedisUsageLogQueue(rdb).Enqueue(context.Background(),
+		logStreamEvent(t, rid, UsageLogStatusSuccess, 5, 0, time.Now().UTC())); err != nil {
+		t.Fatalf("enqueue valid: %v", err)
+	}
+	msgs, err = c.readOnce(context.Background())
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("read valid = %d (%v), want 1", len(msgs), err)
+	}
+	if err := c.consume(context.Background(), msgs); err != nil {
+		t.Fatalf("consume valid: %v", err)
+	}
+	if n := countUsageLogRows(t, db, rid); n != 1 {
+		t.Fatalf("valid row after poison = %d, want 1", n)
+	}
+}
+
+// TestIntegrationUsageLogStreamRetryAfterInsertFailureLands 覆盖 I1：INSERT 失败
+// 时不得提前写幂等键；重投后必须真正落库。
+func TestIntegrationUsageLogStreamRetryAfterInsertFailureLands(t *testing.T) {
+	rdb := openLogStreamRedis(t)
+	db := openLogStreamLogsDB(t)
+	brokenDB := dbWithoutUsageLogs(t)
+	resetUsageLogStream(t, rdb)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- RunUsageLogStreamLoop(ctx, UsageLogStreamDeps{
+			Redis:     rdb,
+			LogsDB:    brokenDB,
+			Consumer:  "w10n2-retry-failing",
+			ClaimIdle: 100 * time.Millisecond,
+			Block:     50 * time.Millisecond,
+		})
+	}()
+
+	rid := newTestUUID(t)
+	cleanupUsageLogRequest(t, db, rid)
+	event := logStreamEvent(t, rid, UsageLogStatusSuccess, 10, 0, time.Now().UTC())
+	if err := NewRedisUsageLogQueue(rdb).Enqueue(context.Background(), event); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	// 等失败轮次发生：消息 pending，且幂等键**不得**存在（提前置键会让重投被跳过）。
+	time.Sleep(400 * time.Millisecond)
+	if pending := pendingCount(t, rdb); pending == 0 {
+		t.Fatal("no pending entries after insert failure")
+	}
+	if got := rdb.Exists(context.Background(), dedupKey(rid, UsageLogStatusSuccess)).Val(); got != 0 {
+		t.Fatal("dedup key written before the insert committed; a later retry would be skipped and the log lost")
+	}
+	cancel()
+	<-done
+
+	// 幸存消费者领取 pending 并真正落库。
+	time.Sleep(300 * time.Millisecond)
+	heir := newTestLogStreamConsumer(t, rdb, db, "w10n2-retry-heir")
+	msgs, err := heir.readOnce(context.Background())
+	if err != nil {
+		t.Fatalf("heir read: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("heir claimed %d messages, want 1", len(msgs))
+	}
+	if err := heir.consume(context.Background(), msgs); err != nil {
+		t.Fatalf("heir consume: %v", err)
+	}
+	if n := countUsageLogRows(t, db, rid); n != 1 {
+		t.Fatalf("rows after redelivery = %d, want 1", n)
+	}
+	if pending := pendingCount(t, rdb); pending != 0 {
+		t.Fatalf("pending after ack = %d, want 0", pending)
+	}
+}
+
+// captureLogHandler 记录 slog 记录（积压告警断言）。
+type captureLogHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *captureLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *captureLogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+
+func (h *captureLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *captureLogHandler) WithGroup(string) slog.Handler { return h }
+
+func (h *captureLogHandler) messages() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]string, 0, len(h.records))
+	for _, r := range h.records {
+		out = append(out, r.Message)
+	}
+	return out
+}
+
+// TestIntegrationUsageLogStreamLagIncludesPending 验证 lag 口径包含 pending。
+func TestIntegrationUsageLogStreamLagIncludesPending(t *testing.T) {
+	rdb := openLogStreamRedis(t)
+	db := openLogStreamLogsDB(t)
+	resetUsageLogStream(t, rdb)
+	c := newTestLogStreamConsumer(t, rdb, db, "w10n2-lag-pending")
+
+	queue := NewRedisUsageLogQueue(rdb)
+	for i := 0; i < 2; i++ {
+		rid := newTestUUID(t)
+		cleanupUsageLogRequest(t, db, rid)
+		if err := queue.Enqueue(context.Background(),
+			logStreamEvent(t, rid, UsageLogStatusSuccess, 1, 0, time.Now().UTC())); err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+	}
+	// 投递但不 ack → Pending=2，Lag=0。
+	msgs, err := c.readOnce(context.Background())
+	if err != nil || len(msgs) != 2 {
+		t.Fatalf("read = %d (%v), want 2", len(msgs), err)
+	}
+	c.reportLag(context.Background())
+	value, ok := gatherGauge(t, "newtg_worker_usage_logs_stream_lag")
+	if !ok {
+		t.Fatal("lag metric missing")
+	}
+	if value != 2 {
+		t.Fatalf("lag = %v, want 2 (pending counts toward the backlog)", value)
+	}
+	_ = c.consume(context.Background(), msgs) // 清理 pending，避免影响后续用例
+}
+
+// TestIntegrationUsageLogStreamLagWarnsAboveThreshold 验证超阈值会告警。
+func TestIntegrationUsageLogStreamLagWarnsAboveThreshold(t *testing.T) {
+	rdb := openLogStreamRedis(t)
+	db := openLogStreamLogsDB(t)
+	resetUsageLogStream(t, rdb)
+
+	handler := &captureLogHandler{}
+	c, err := newUsageLogConsumer(UsageLogStreamDeps{
+		Redis:    rdb,
+		LogsDB:   db,
+		Consumer: "w10n2-lag-warn",
+		Logger:   slog.New(handler),
+	})
+	if err != nil {
+		t.Fatalf("new consumer: %v", err)
+	}
+	if err := c.ensureGroup(context.Background()); err != nil {
+		t.Fatalf("ensure group: %v", err)
+	}
+	c.lagThreshold = 0 // 任何积压都应告警（测试接缝）
+
+	rid := newTestUUID(t)
+	cleanupUsageLogRequest(t, db, rid)
+	if err := NewRedisUsageLogQueue(rdb).Enqueue(context.Background(),
+		logStreamEvent(t, rid, UsageLogStatusSuccess, 1, 0, time.Now().UTC())); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	c.reportLag(context.Background())
+
+	found := false
+	for _, message := range handler.messages() {
+		if strings.Contains(message, "backlog exceeds the alert threshold") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no backlog warning recorded: %v", handler.messages())
 	}
 }
 

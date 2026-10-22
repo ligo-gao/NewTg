@@ -377,6 +377,16 @@ func (l *DBLogger) enqueueUsageLog(ctx context.Context, row usageLogRow,
 	if rc != nil {
 		upstream = feedUpstreamFamily(rc.ChannelType)
 	}
+	// C1：事件只携带规范化后的 request_id。无法规范化的 ID 不入队——
+	// 回退同步路径后 `$1::uuid` 会以与既有行为一致的方式失败（不结算），
+	// 而不是把一条永远无法落库的消息塞进 Stream。
+	requestID, err := normalizeUsageLogRequestID(row.requestID)
+	if err != nil {
+		l.logger().Warn("billing: usage log request_id is not a valid UUID; not enqueueing",
+			"request_id", row.requestID, "error", err)
+		return err
+	}
+	row.requestID = requestID
 	event := eventFromUsageLogRow(row, now(), feedEligible, upstream)
 
 	enqueueCtx, cancel := context.WithTimeout(ctx, usageLogEnqueueTimeout)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -222,6 +223,126 @@ func TestDedupKeySeparatesStatuses(t *testing.T) {
 	}
 	if success != UsageLogDedupKeyPrefix+"rid-1:1" {
 		t.Fatalf("dedup key = %q", success)
+	}
+}
+
+// blockingQueue 模拟 Redis 不可达：Enqueue 一直阻塞到上下文超时。
+type blockingQueue struct{}
+
+func (blockingQueue) Enqueue(ctx context.Context, _ UsageLogEvent) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestNormalizeUsageLogRequestID 覆盖生产 ID 的形态差异（C1）。
+func TestNormalizeUsageLogRequestID(t *testing.T) {
+	const canonical = "0b6f5f3e-5f4e-4d3c-8b2a-1f0e9d8c7b6a"
+	compact := strings.ReplaceAll(canonical, "-", "")
+	for _, raw := range []string{
+		canonical,
+		compact,
+		strings.ToUpper(compact),
+		"{" + compact + "}",
+		"  " + canonical + "  ",
+	} {
+		got, err := normalizeUsageLogRequestID(raw)
+		if err != nil {
+			t.Fatalf("normalize(%q): %v", raw, err)
+		}
+		if got != canonical {
+			t.Fatalf("normalize(%q) = %q, want %q", raw, got, canonical)
+		}
+	}
+	for _, raw := range []string{"", "not-a-uuid", compact[:31], compact + "0", "zz" + compact[2:]} {
+		if _, err := normalizeUsageLogRequestID(raw); err == nil {
+			t.Fatalf("normalize(%q) = nil error, want invalid", raw)
+		}
+	}
+}
+
+// TestSaturateEnqueueNormalizesCompactID 验证事件只携带标准形态的 request_id。
+func TestSaturateEnqueueNormalizesCompactID(t *testing.T) {
+	db, err := sql.Open("pgx", "postgres://invalid:invalid@127.0.0.1:1/none?sslmode=disable")
+	if err != nil {
+		t.Fatalf("open placeholder db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	compact := strings.ReplaceAll(testRelayContext().RequestID, "-", "")
+	rc := testRelayContext()
+	rc.RequestID = compact
+	queue := &captureQueue{}
+	logger := NewDBLogger(db).WithBatchQueue(queue, nil)
+	if err := logger.Saturate(context.Background(), testUsageFact(), rc,
+		SettlementOutcome{Cost: 1, Status: UsageLogStatusSuccess}); err != nil {
+		t.Fatalf("Saturate: %v", err)
+	}
+	if len(queue.events) != 1 {
+		t.Fatalf("events = %d", len(queue.events))
+	}
+	if got := queue.events[0].RequestID; got != testRelayContext().RequestID {
+		t.Fatalf("event request_id = %q, want canonical %q", got, testRelayContext().RequestID)
+	}
+}
+
+// TestSaturateEnqueueRefundHasNoFeed 验证退款事件同流但不会进入 live_feed。
+func TestSaturateEnqueueRefundHasNoFeed(t *testing.T) {
+	db, err := sql.Open("pgx", "postgres://invalid:invalid@127.0.0.1:1/none?sslmode=disable")
+	if err != nil {
+		t.Fatalf("open placeholder db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	queue := &captureQueue{}
+	logger := NewDBLogger(db).WithBatchQueue(queue, nil)
+	// fact=nil：worker 的崩溃退款占位，没有可展示的用量。
+	if err := logger.Saturate(context.Background(), nil, testRelayContext(),
+		SettlementOutcome{Refunded: 50, Status: UsageLogStatusRefunded}); err != nil {
+		t.Fatalf("Saturate refund: %v", err)
+	}
+	if len(queue.events) != 1 {
+		t.Fatalf("events = %d", len(queue.events))
+	}
+	if queue.events[0].Status != UsageLogStatusRefunded {
+		t.Fatalf("status = %d, want refunded", queue.events[0].Status)
+	}
+	if queue.events[0].FeedEligible {
+		t.Fatal("refund placeholder must not be feed-eligible")
+	}
+}
+
+// TestEnqueueUsageLogTimesOut 验证 XADD 有独立短超时（不让 Redis 故障拖住结算）。
+func TestEnqueueUsageLogTimesOut(t *testing.T) {
+	row, err := buildUsageLogRow(testUsageFact(), testRelayContext(),
+		SettlementOutcome{Cost: 1, Status: UsageLogStatusSuccess})
+	if err != nil {
+		t.Fatalf("buildUsageLogRow: %v", err)
+	}
+	logger := NewDBLogger(nil).WithBatchQueue(blockingQueue{}, nil)
+	start := time.Now()
+	err = logger.enqueueUsageLog(context.Background(), row, true, testRelayContext())
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("enqueueUsageLog = nil, want timeout error")
+	}
+	if elapsed < usageLogEnqueueTimeout-100*time.Millisecond {
+		t.Fatalf("enqueue returned after %v, want ~%v timeout", elapsed, usageLogEnqueueTimeout)
+	}
+	if elapsed > usageLogEnqueueTimeout+2*time.Second {
+		t.Fatalf("enqueue took %v, timeout did not bound it", elapsed)
+	}
+}
+
+// TestStreamLagTotal 验证 Pending 与 Lag 叠加，且 Lag=-1 不污染结果。
+func TestStreamLagTotal(t *testing.T) {
+	if got := streamLagTotal(5, 7); got != 12 {
+		t.Fatalf("total = %d, want 12", got)
+	}
+	if got := streamLagTotal(5, -1); got != 5 {
+		t.Fatalf("total with lag=-1 = %d, want 5", got)
+	}
+	if got := streamLagTotal(0, 0); got != 0 {
+		t.Fatalf("total = %d, want 0", got)
 	}
 }
 

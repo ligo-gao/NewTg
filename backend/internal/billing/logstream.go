@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -230,6 +231,41 @@ func (e UsageLogEvent) usageLogRow() usageLogRow {
 	}
 }
 
+// errInvalidUsageLogRequestID 表示事件里的 request_id 不是可接受的 UUID 形态。//
+// 【C1】生产侧的 request_id 可能是 32 位无横线 hex，而 PG 的
+// `request_id::text` 输出是带横线的小写标准形态。若各处理环节用不同形态做
+// map 键，跨批去重与退款收敛会全部失配（success 后再来 refund 会插第二行）。
+// 消费边界必须先把 request_id 规范化成唯一形态，所有 map/SQL 只用这个形态。
+var errInvalidUsageLogRequestID = errors.New("billing: usage log request_id is not a valid UUID")
+
+// errUsageLogStreamAck 区分「INSERT 失败」与「INSERT 已提交但 ack 失败」。
+// 两者的重投语义相同（不丢日志），但运维告警文案必须不同：后者不是写库故障。
+var errUsageLogStreamAck = errors.New("billing: acknowledge usage log stream entries")
+
+// normalizeUsageLogRequestID 把 UUID 的各种合法输入形态规范化为
+// PG `uuid::text` 的标准形态：小写、带横线、无花括号。
+//
+// 接受：32 位 hex（生产 ID 的实际形态）、标准 36 位形态、大写、`{...}`。
+// 拒绝其它一切输入（消费侧按毒消息处理，生产侧回退同步写入以保持
+// 「无法落库就不结算」的既有语义）。
+func normalizeUsageLogRequestID(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if len(s) >= 2 && s[0] == '{' && s[len(s)-1] == '}' {
+		s = s[1 : len(s)-1]
+	}
+	s = strings.ReplaceAll(s, "-", "")
+	if len(s) != 32 {
+		return "", errInvalidUsageLogRequestID
+	}
+	rawBytes, err := hex.DecodeString(s)
+	if err != nil {
+		return "", errInvalidUsageLogRequestID
+	}
+	s = strings.ToLower(hex.EncodeToString(rawBytes))
+	return fmt.Sprintf("%s-%s-%s-%s-%s",
+		s[0:8], s[8:12], s[12:16], s[16:20], s[20:32]), nil
+}
+
 // dedupKey 返回一条非退款事件的幂等键。
 //
 // **refunded 不参与键空间**：退款金额可能被后续更大的退款更新（GREATEST），
@@ -307,6 +343,8 @@ type usageLogConsumer struct {
 	batchSize int64
 	block     time.Duration
 	dedupTTL  time.Duration
+	// lagThreshold 是积压告警阈值（测试接缝；零值使用冻结常量）。
+	lagThreshold int64
 	// processTimeout 是单批处理上限（零值使用冻结常量）。
 	processTimeout time.Duration
 }
@@ -377,6 +415,7 @@ func newUsageLogConsumer(deps UsageLogStreamDeps) (*usageLogConsumer, error) {
 		batchSize:      batchSize,
 		block:          block,
 		dedupTTL:       dedupTTL,
+		lagThreshold:   UsageLogStreamLagThreshold,
 		processTimeout: usageLogStreamProcessTimeout,
 	}, nil
 }
@@ -433,8 +472,14 @@ func RunUsageLogStreamLoop(ctx context.Context, deps UsageLogStreamDeps) error {
 		}
 		if err := c.consume(ctx, messages); err != nil {
 			// 不 ack：消息留在 pending，由 XAUTOCLAIM 在 60s 后重投。
-			c.log.Error("usage log stream: batch insert failed; messages stay pending",
-				"error", err, "count", len(messages), "consumer", c.consumer)
+			if errors.Is(err, errUsageLogStreamAck) {
+				// INSERT 已提交、只是 ack 失败：重投会被去重/存在性检查收敛。
+				c.log.Error("usage log stream: ack failed after commit; entries may be redelivered",
+					"error", err, "count", len(messages), "consumer", c.consumer)
+			} else {
+				c.log.Error("usage log stream: batch insert failed; messages stay pending",
+					"error", err, "count", len(messages), "consumer", c.consumer)
+			}
 			c.reportLag(ctx)
 			sleepWithContext(ctx, usageLogStreamErrorBackoff)
 			continue
@@ -529,22 +574,25 @@ func (c *usageLogConsumer) consume(ctx context.Context, messages []redis.XMessag
 	// 提交成功后才置幂等键；键写失败只影响性能，不影响正确性（DB 兜底）。
 	c.markDeduped(processCtx, events)
 
-	// live_feed 只在**真正插入新行**后投递，与同步路径 DBLogger.Saturate 的
-	// 语义一致：幂等命中与退款收敛都不是一次新的公开调用。
-	c.publishFeed(result.inserted)
-
 	ids := make([]string, 0, len(messages))
 	for _, msg := range messages {
 		// 解析失败的消息也 ack：坏消息无法通过重投变好，留在 pending 会
-		// 永久卡住整条流（head-of-line block）。它已经被单独 Error 记录。
+		// 永久卡住整条流（head-of-line block）。它已经被单独记录。
 		ids = append(ids, msg.ID)
 	}
 	if len(ids) > 0 {
 		if err := c.redis.XAck(processCtx, UsageLogStreamKey, UsageLogStreamGroup, ids...).Err(); err != nil {
-			// ack 失败：消息会在 60s 后重投；DB 已提交，靠去重/存在性检查收敛。
-			return fmt.Errorf("ack usage log events: %w", err)
+			// ack 失败：INSERT 已提交，消息可能被重投；去重键与 DB 存在性
+			// 检查会把重投收敛成幂等命中，不会产生第二行。
+			return fmt.Errorf("%w: %v", errUsageLogStreamAck, err)
 		}
 	}
+
+	// Minor-1：live_feed 放在 XACK 之后。投递是展示面副作用，Redis 半故障
+	// 时不应在 ack 之前阻塞消费循环（最坏每批多等 2s × 条目数）。
+	// 只有**真正插入新行**才投递，与同步路径语义一致：幂等命中与退款收敛
+	// 都不是一次新的公开调用。
+	c.publishFeed(result.inserted)
 
 	metrics.ObserveWorkerTask("log_flush", "succeeded", time.Since(start))
 	return nil
@@ -581,10 +629,22 @@ func (c *usageLogConsumer) parseMessages(messages []redis.XMessage) []UsageLogEv
 			continue
 		}
 		if strings.TrimSpace(event.RequestID) == "" {
-			c.log.Error("usage log stream: event missing request_id; acknowledging",
+			c.log.Warn("usage log stream: event missing request_id; acknowledging as poison",
 				"message_id", msg.ID)
 			continue
 		}
+		// C1：统一规范化后再进入去重/落库。DB 的 request_id::text 是标准
+		// 小写带横线形态；生产 ID 可能是 32 位无横线 hex，不统一就会让
+		// 跨批去重和退款收敛全部失配。
+		normalized, err := normalizeUsageLogRequestID(event.RequestID)
+		if err != nil {
+			// I2：非法 request_id 永远无法通过 `$1::uuid`，留在 pending 会
+			// 每轮重试并永久阻塞整条流（head-of-line block）。按毒消息 ack。
+			c.log.Warn("usage log stream: event request_id is not a valid UUID; acknowledging as poison",
+				"message_id", msg.ID, "request_id", event.RequestID)
+			continue
+		}
+		event.RequestID = normalized
 		events = append(events, event)
 	}
 	return events
@@ -712,8 +772,10 @@ func (c *usageLogConsumer) publishFeed(events []UsageLogEvent) {
 
 // reportLag 上报 Stream 积压（未投递 + pending 未 ack）。
 //
-// XINFO GROUPS 的 Lag 在无法判定时为 -1；此时只用 Pending 兜底，绝不把 -1
-// 当成「负积压」上报（A13 会对负数误判为正常）。
+// 【Minor-5 已知运维缺口】worker 完全缺位时本循环不运行，指标不会被更新，
+// 看板会保留最后一次值（甚至看起来正常）。告警规则必须叠加 `absent()` 或
+// `time() - newtg_worker_task_last_success_seconds{task_type="log_flush"}`，
+// 不能只依赖 lag 数值本身。
 func (c *usageLogConsumer) reportLag(ctx context.Context) {
 	groups, err := c.redis.XInfoGroups(ctx, UsageLogStreamKey).Result()
 	if err != nil {
@@ -723,18 +785,27 @@ func (c *usageLogConsumer) reportLag(ctx context.Context) {
 		if g.Name != UsageLogStreamGroup {
 			continue
 		}
-		lag := g.Pending
-		if g.Lag > 0 {
-			lag += g.Lag
-		}
+		lag := streamLagTotal(g.Pending, g.Lag)
 		metrics.SetWorkerStreamLag(float64(lag))
-		if lag > UsageLogStreamLagThreshold {
+		if lag > c.lagThreshold {
 			c.log.Warn("usage log stream backlog exceeds the alert threshold",
-				"lag", lag, "threshold", UsageLogStreamLagThreshold,
+				"lag", lag, "threshold", c.lagThreshold,
 				"consumer", c.consumer)
 		}
 		return
 	}
+}
+
+// streamLagTotal 合并「未投递给消费组」与「已投递未 ack」两类积压。
+//
+// XINFO GROUPS 的 Lag 在无法判定时为 -1（例如 stream 被裁剪过）：此时只用
+// Pending 兜底，绝不把 -1 当成「负积压」上报（A13 会把负数误判为正常）。
+func streamLagTotal(pending, lag int64) int64 {
+	total := pending
+	if lag > 0 {
+		total += lag
+	}
+	return total
 }
 
 func sleepWithContext(ctx context.Context, d time.Duration) {
@@ -950,6 +1021,11 @@ func insertUsageLogBatch(ctx context.Context, tx *sql.Tx, events []UsageLogEvent
 //
 // 与 writeUsageLog 的 UPDATE 保持逐字段一致：refunded 金额 GREATEST 只增
 // 不减，error_* 仅在本次提供时覆盖。**绝不**允许 refunded → success。
+//
+// 【Minor-2】`cost` 与同步路径一致使用本次事件的 cost 无条件覆盖，因此
+// 「只增不减」只对 `refunded` 金额成立：一条更早的退款事件重投时可能把
+// cost 改成更小的值。这与同步 `Saturate` 的行为一致（不是批处理引入的
+// 新语义），已登记为待统一项。
 func convergeUsageLogToRefunded(ctx context.Context, tx *sql.Tx, ev UsageLogEvent) error {
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE usage_logs
