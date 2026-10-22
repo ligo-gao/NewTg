@@ -61,9 +61,10 @@ const (
 	SetupRateLimit  = 10
 	SetupRateWindow = time.Minute
 
-	// B14：渠道凭据揭示（security-03 §2.10 / modules-06 F-06-03）。设计冻结
-	// 「按管理员 10 次/小时」，维度是**管理员**而不是 IP（同一管理员换 IP
-	// 不应刷新配额）。超限 429 + Retry-After，计数只在服务端维护。
+	// reveal 桶（渠道凭据揭示；security-03 §2.10 / modules-06 F-06-03）。
+	// 设计冻结「按管理员 10 次/小时」，维度是**管理员**而不是 IP（同一管理员
+	// 换 IP 不应刷新配额）。超限 429 + Retry-After，计数只在服务端维护。
+	// 注意：不占用 security-07 的 Bxx 编号——B14 已被其他面使用（M-4 复核）。
 	ChannelRevealRateMark   = "CR"
 	ChannelRevealRateLimit  = 10
 	ChannelRevealRateWindow = time.Hour
@@ -91,12 +92,11 @@ func PublicReadRateLimitKey(ip, path string) string {
 	return RateLimitKeyPrefix + PublicReadRateMark + ":" + ip + ":" + path
 }
 
-// ChannelRevealRateLimitKey 构造 B14 桶键：rateLimit:v2:user:CR:<userID>。
+// ChannelRevealRateLimitKey 构造 reveal 桶键：rateLimit:v2:user:CR:<userID>。
 //
-// 冻结前缀 RateLimitKeyPrefix 是 IP 维命名空间；凭据揭示按**管理员**计数
-// （security-03 §2.10），因此显式使用 user 维段而不是把 userID 塞进 ip 段——
-// 键必须自描述，运维直读 Redis 时不能把用户 id 误读成地址。这是对冻结键形
-// 的扩展，与 B1/B8 的第二维扩展同一处理方式。
+// 沿用 security-07 §2.2.2 的**用户维冻结形状**（与 B12 的
+// rateLimit:v2:user:GR:<userID> 同族），仅把 mark 换成 CR；不把 userID 塞进
+// IP 段——键必须自描述，运维直读 Redis 时不能把用户 id 误读成地址。
 func ChannelRevealRateLimitKey(userID int64) string {
 	return "rateLimit:v2:user:" + ChannelRevealRateMark + ":" + strconv.FormatInt(userID, 10)
 }

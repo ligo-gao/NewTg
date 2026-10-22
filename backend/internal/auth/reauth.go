@@ -346,7 +346,10 @@ func (m *ReauthGate) AuthorizeOnce(ctx context.Context, userID int64, factor Rea
 		return errors.New("auth: reauth gate is not configured")
 	}
 
-	password := strings.TrimSpace(factor.Password)
+	// 口令**不 trim**：登录/Authorize 都按原样比较；若这里 trim，首尾带空格的
+	// 合法口令可以登录却永远无法通过步进认证（M-7 复核）。TOTP 由校验器自行
+	// trim（auth.VerifyTOTP 的内部口径），这里保持同样宽松。
+	password := factor.Password
 	totpCode := strings.TrimSpace(factor.TOTPCode)
 	if password == "" && totpCode == "" {
 		// 没有「沿用窗口」分支：步进认证不能依赖先前的成功。

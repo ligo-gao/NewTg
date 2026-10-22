@@ -10,6 +10,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -32,27 +33,50 @@ const (
 	revealTOTPAdminID = int64(3)
 	revealTOTPSecret  = "JBSWY3DPEHPK3PXP"
 	revealTOTPCode    = "123456"
+	// M-7：首尾空格是口令的一部分；篡改 trim 语义的回归哨兵。
+	revealSpacedAdminID  = int64(4)
+	revealSpacedPassword = "  spaced secret  "
 )
 
-var revealPasswordHash = func() string {
-	h, err := auth.HashPassword(revealPassword)
-	if err != nil {
-		panic(err)
-	}
-	return h
-}()
+var (
+	revealPasswordHash = func() string {
+		h, err := auth.HashPassword(revealPassword)
+		if err != nil {
+			panic(err)
+		}
+		return h
+	}()
+	revealSpacedPasswordHash = func() string {
+		h, err := auth.HashPassword(revealSpacedPassword)
+		if err != nil {
+			panic(err)
+		}
+		return h
+	}()
+)
 
 // revealAuditExec 捕获审计 INSERT 的实参（列序与 audit.Logger 冻结契约一致）。
 type revealAuditExec struct {
 	mu    sync.Mutex
 	calls [][]any
+	// err 非空时模拟日志库故障（I-1：成功揭示必须 fail-closed）。
+	err error
 }
 
 func (e *revealAuditExec) ExecContext(_ context.Context, _ string, args ...any) (sql.Result, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.err != nil {
+		return nil, e.err
+	}
 	e.calls = append(e.calls, append([]any(nil), args...))
 	return revealAuditResult(1), nil
+}
+
+func (e *revealAuditExec) setErr(err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.err = err
 }
 
 func (e *revealAuditExec) snapshot() [][]any {
@@ -106,6 +130,9 @@ func newRevealTestEnv(t *testing.T) *revealTestEnv {
 			TOTPEnabled:  true,
 			TOTPSecret:   revealTOTPSecret,
 		},
+		revealSpacedAdminID: {
+			PasswordHash: revealSpacedPasswordHash,
+		},
 	}}
 	// 校验器是注入接缝：只接受固定码，生产装配用 auth.VerifyTOTP。
 	gate := auth.NewReauthGate(rdb, source, func(secret, code string, _ time.Time) bool {
@@ -123,9 +150,16 @@ func newRevealTestEnv(t *testing.T) *revealTestEnv {
 
 func (e *revealTestEnv) reveal(t *testing.T, rawID string, body any, p *auth.Principal) *httptest.ResponseRecorder {
 	t.Helper()
+	return revealRequest(t, e.mux, rawID, body, p)
+}
+
+// revealRequest 让没有完整 revealTestEnv 的用例（例如缺 Redis/Reauth 的
+// fail-closed 装配）复用同一请求形态。
+func revealRequest(t *testing.T, mux *http.ServeMux, rawID string, body any, p *auth.Principal) *httptest.ResponseRecorder {
+	t.Helper()
 	req := jsonReq(t, http.MethodPost,
 		"/api/channels/"+rawID+"/credentials/reveal", body)
-	return serveWithPrincipal(t, e.mux, req, p)
+	return serveWithPrincipal(t, mux, req, p)
 }
 
 // revealAuditRows 返回指定动作的审计行（detail 已解码）。
@@ -185,6 +219,168 @@ func TestChannelRevealRequiresManageSensitive(t *testing.T) {
 		t.Fatalf("无 manage_sensitive 状态码 = %d，期望 403（body=%s）", rr.Code, rr.Body.String())
 	}
 	assertNoPlaintextAnywhere(t, "sk-reveal-secret-1234", rr, env.auditEx.snapshot())
+
+	// M-1：403 必须有 best-effort 拒绝审计（本 handler 不经过 authz deny 中间件）。
+	rows := env.revealAuditRows(t, audit.ActionChannelCredentialsReveal)
+	if len(rows) != 1 || rows[0]["_result"] != "failed" || rows[0]["failure"] != "forbidden" {
+		t.Fatalf("403 审计 = %v，期望 1 条 failed/forbidden", rows)
+	}
+	if rows[0]["_actor"] != int64(testAdminID) {
+		t.Fatalf("403 审计 actor = %v，期望真实管理员 %d", rows[0]["_actor"], testAdminID)
+	}
+
+	// 路由挂载断言：无身份访问该路径必须是 401（未挂载会是 404）。
+	noAuth := env.reveal(t, "1", map[string]any{"reason": "x", "password": revealPassword}, nil)
+	if noAuth.Code != http.StatusUnauthorized {
+		t.Fatalf("无身份状态码 = %d，期望 401（路由未挂载会是 404）", noAuth.Code)
+	}
+}
+
+// TestChannelRevealAuditFailureFailsClosed 是 I-1 的验收：解密成功但审计
+// 写不进去时不得返回明文（503 + no-store）。
+func TestChannelRevealAuditFailureFailsClosed(t *testing.T) {
+	env := newRevealTestEnv(t)
+	seedRevealChannel(t, env)
+	env.auditEx.setErr(errors.New("logs db down"))
+
+	rr := env.reveal(t, "1", map[string]any{
+		"reason": "audit outage", "password": revealPassword,
+	}, channelAdminPrincipal("*"))
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("状态码 = %d，期望 503（body=%s）", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("503 Cache-Control = %q，期望 no-store", got)
+	}
+	if strings.Contains(rr.Body.String(), "sk-reveal-secret-1234") {
+		t.Fatalf("审计失败响应泄露凭据明文：%s", rr.Body.String())
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/problem+json") {
+		t.Fatalf("Content-Type = %q，期望 problem+json", ct)
+	}
+}
+
+// TestChannelRevealInfrastructureFailClosed：限流存储/步进认证门缺失时必须
+// 503，绝不能退化成无审计或无步进的揭示。
+func TestChannelRevealInfrastructureFailClosed(t *testing.T) {
+	t.Run("redis_nil", func(t *testing.T) {
+		env := newChannelTestEnv(t, ChannelHandlerOptions{
+			Idempotency: NewMemoryIdempotencyStore(),
+			Audit:       audit.New(&revealAuditExec{}),
+		})
+		seedChannel(t, env, nil)
+		rr := revealRequest(t, env.mux, "1", map[string]any{
+			"reason": "x", "password": revealPassword,
+		}, channelAdminPrincipal("*"))
+		if rr.Code != http.StatusServiceUnavailable {
+			t.Fatalf("Redis nil 状态码 = %d，期望 503（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("redis_failure", func(t *testing.T) {
+		env := newRevealTestEnv(t)
+		seedRevealChannel(t, env)
+		env.mr.Close()
+		rr := env.reveal(t, "1", map[string]any{
+			"reason": "x", "password": revealPassword,
+		}, channelAdminPrincipal("*"))
+		if rr.Code != http.StatusServiceUnavailable {
+			t.Fatalf("Redis 故障状态码 = %d，期望 503（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("reauth_nil", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+		t.Cleanup(func() { _ = rdb.Close() })
+		env := newChannelTestEnv(t, ChannelHandlerOptions{
+			Idempotency: NewMemoryIdempotencyStore(),
+			Redis:       rdb,
+			Audit:       audit.New(&revealAuditExec{}),
+		})
+		seedChannel(t, env, nil)
+		rr := revealRequest(t, env.mux, "1", map[string]any{
+			"reason": "x", "password": revealPassword,
+		}, channelAdminPrincipal("*"))
+		if rr.Code != http.StatusServiceUnavailable {
+			t.Fatalf("Reauth nil 状态码 = %d，期望 503（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
+}
+
+// TestChannelRevealReasonTooLong：reason 上限 200 字符（第 201 个字符 422）。
+func TestChannelRevealReasonTooLong(t *testing.T) {
+	env := newRevealTestEnv(t)
+	seedRevealChannel(t, env)
+
+	rr := env.reveal(t, "1", map[string]any{
+		"reason": strings.Repeat("a", 201), "password": revealPassword,
+	}, channelAdminPrincipal("*"))
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("201 字符 reason 状态码 = %d，期望 422（body=%s）", rr.Code, rr.Body.String())
+	}
+}
+
+// TestChannelRevealStepUpLockAfterFiveFailures：失败锁定复用既有 reauth_fail
+// 桶；第 5 次失败后即使因子正确也 429（与登录同口径）。
+func TestChannelRevealStepUpLockAfterFiveFailures(t *testing.T) {
+	env := newRevealTestEnv(t)
+	seedRevealChannel(t, env)
+	p := channelAdminPrincipal("*")
+
+	for i := 0; i < auth.ReauthMaxFailures; i++ {
+		rr := env.reveal(t, "1", map[string]any{"reason": "x", "password": "wrong"}, p)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("第 %d 次失败状态码 = %d，期望 403", i+1, rr.Code)
+		}
+	}
+	rr := env.reveal(t, "1", map[string]any{"reason": "x", "password": revealPassword}, p)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("锁定后状态码 = %d，期望 429（body=%s）", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("Retry-After") == "" {
+		t.Fatal("锁定 429 必须带 Retry-After")
+	}
+}
+
+// TestChannelRevealRateLimitIsPerAdmin：reveal 桶是管理员维，耗尽一个管理员
+// 的配额不影响另一个管理员。
+func TestChannelRevealRateLimitIsPerAdmin(t *testing.T) {
+	env := newRevealTestEnv(t)
+	seedRevealChannel(t, env)
+	first := channelAdminPrincipal("*")
+
+	for i := 0; i < ChannelRevealRateLimit; i++ {
+		if rr := env.reveal(t, "1", map[string]any{"reason": "x", "password": revealPassword}, first); rr.Code != http.StatusOK {
+			t.Fatalf("管理员 A 第 %d 次状态码 = %d，期望 200", i+1, rr.Code)
+		}
+	}
+	second := &auth.Principal{UserID: revealTOTPAdminID, Role: "admin", Permissions: []string{"*"}}
+	rr := env.reveal(t, "1", map[string]any{"reason": "x", "totp_code": revealTOTPCode}, second)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("管理员 B 状态码 = %d，期望 200（限流必须按管理员隔离，body=%s）", rr.Code, rr.Body.String())
+	}
+}
+
+// TestChannelRevealPasswordWhitespaceIsSignificant 是 M-7 的端到端哨兵：
+// 口令首尾空格必须原样参与比较（与登录一致）。
+func TestChannelRevealPasswordWhitespaceIsSignificant(t *testing.T) {
+	env := newRevealTestEnv(t)
+	seedRevealChannel(t, env)
+	p := &auth.Principal{UserID: revealSpacedAdminID, Role: "admin", Permissions: []string{"*"}}
+
+	trimmed := env.reveal(t, "1", map[string]any{
+		"reason": "x", "password": strings.TrimSpace(revealSpacedPassword),
+	}, p)
+	if trimmed.Code != http.StatusForbidden {
+		t.Fatalf("trim 后口令状态码 = %d，期望 403（空格是口令的一部分）", trimmed.Code)
+	}
+	exact := env.reveal(t, "1", map[string]any{
+		"reason": "x", "password": revealSpacedPassword,
+	}, p)
+	if exact.Code != http.StatusOK {
+		t.Fatalf("原样口令状态码 = %d，期望 200（body=%s）", exact.Code, exact.Body.String())
+	}
 }
 
 func TestChannelRevealRequiresStepUp(t *testing.T) {

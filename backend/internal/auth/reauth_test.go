@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -492,5 +493,27 @@ func TestAuthorizeOnceTOTPWithoutVerifierFailsClosed(t *testing.T) {
 
 	if err := gate.AuthorizeOnce(context.Background(), 45, ReauthFactor{TOTPCode: "123456"}); !errors.Is(err, ErrReauthRequired) {
 		t.Fatalf("未注入 TOTP 校验器 err = %v，期望 ErrReauthRequired（fail-closed）", err)
+	}
+}
+
+// TestAuthorizeOnceDoesNotTrimPassword 是 M-7 复核的回归：登录与 Authorize
+// 都按原样比较口令，步进认证若 trim 会让首尾带空格的合法口令永远无法通过。
+func TestAuthorizeOnceDoesNotTrimPassword(t *testing.T) {
+	const spaced = "  spaced password  "
+	hash, err := HashPassword(spaced)
+	if err != nil {
+		t.Fatalf("HashPassword: %v", err)
+	}
+	source := &fakeReauthSource{materials: map[int64]*ReauthMaterial{
+		46: {PasswordHash: hash},
+	}}
+	gate, _ := newReauthTestGate(t, source, nil)
+	ctx := context.Background()
+
+	if err := gate.AuthorizeOnce(ctx, 46, ReauthFactor{Password: spaced}); err != nil {
+		t.Fatalf("原样口令 err = %v，期望 nil（不得 trim 口令）", err)
+	}
+	if err := gate.AuthorizeOnce(ctx, 46, ReauthFactor{Password: strings.TrimSpace(spaced)}); !errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("trim 后口令 err = %v，期望 ErrReauthRequired（空格是口令的一部分）", err)
 	}
 }

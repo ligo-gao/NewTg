@@ -536,7 +536,7 @@ type ChannelHandlerOptions struct {
 	// Plugins 是任务插件注册表（渠道绑定校验）。nil 时任何 60/61 绑定都
 	// 视为未注册（fail-closed）；生产装配必须注入。
 	Plugins TaskPluginCatalog
-	// Redis 是凭据揭示的管理员限流桶（B14：10 次/小时/管理员）。nil 时揭示
+	// Redis 是凭据揭示的管理员限流桶（reveal 桶：10 次/小时/管理员）。nil 时揭示
 	// 端点一律 503（fail-closed）：限流是敏感操作的强制控制，不能因为漏装配
 	// 而静默变成「无限次揭示」。
 	Redis *redis.Client
@@ -1670,18 +1670,34 @@ func (h *ChannelHandler) reportProbeResult(ctx context.Context, ch *store.Channe
 // 顺序是安全语义的一部分：
 //  1. channels:manage_sensitive —— 权限不足在步进认证之前判定，且不解析
 //     请求体（错误体不可能含调用方输入）；
-//  2. id 形态 + 管理员维限流（B14，Redis 故障 fail-closed）；
+//  2. id 形态 + 管理员维限流（reveal 桶，Redis 故障 fail-closed）；
 //  3. 请求体形状与 reason（1–200 字符）；
 //  4. 渠道存在性（404；设计允许泄露「是否存在」，但不泄露任何凭据信息）；
 //  5. 步进认证（恰好一个因子且匹配账号 MFA 状态；**只授权本次请求**）；
-//  6. 解密并一次性返回，响应 no-store + Pragma no-cache，明文不写日志。
+//  6. 审计成功事件（**fail-closed**：审计写不进去就不返回明文）；
+//  7. 解密并一次性返回，响应 no-store + Pragma no-cache，明文不写日志。
 //
-// 从第 2 步起每一次尝试都写审计（成功与失败），detail 只含元数据：
-// channel_id / reason / revealed_fields / failure，**永不含明文、片段、
-// 掩码、长度或哈希**（审计保留 12 个月，不能成为密钥副本）。
+// 失败尝试一律 best-effort 审计（失败响应本就不含明文）；只有成功响应把
+// 审计当作硬前置：没有审计记录的揭示不能被放行（I-1 复核）。detail 只含
+// 元数据：channel_id / reason / revealed_fields / failure，**永不含明文、
+// 片段、掩码、长度或哈希**（审计保留 12 个月，不能成为密钥副本）。
 func (h *ChannelHandler) handleRevealCredentials(w http.ResponseWriter, r *http.Request) {
-	// 1) 权限门先于一切。authorize 已把无身份/无权限映射为 401/403。
-	if !h.authorize(w, r, PermChannelsManageSensitive) {
+	// 1) 权限门先于一切。这里不复用 authorize：需要在 403 时补一条 best-effort
+	//    拒绝审计（M-1 复核），而 authorize 只写响应不返回原因。401（无身份/
+	//    身份失效）没有可归责的真实管理员，不写审计；存储故障 500。
+	switch err := CheckPermission(r.Context(), h.access, PermChannelsManageSensitive); {
+	case err == nil:
+		// 通过。
+	case errors.Is(err, ErrNoPrincipal), errors.Is(err, ErrUserDeleted):
+		writeUnauthorized(w)
+		return
+	case errors.Is(err, ErrAccessStore):
+		// 不把 DB 故障伪装成 403（与 authorize 同口径）。
+		writeProblem(w, http.StatusInternalServerError, problemTypeInternal, "Internal Server Error")
+		return
+	default:
+		_ = h.auditReveal(r, http.StatusForbidden, "failed", map[string]any{"failure": "forbidden"})
+		writeForbidden(w)
 		return
 	}
 	actor := actorID(r)
@@ -1746,7 +1762,9 @@ func (h *ChannelHandler) handleRevealCredentials(w http.ResponseWriter, r *http.
 
 	password := ""
 	if req.Password != nil {
-		password = strings.TrimSpace(*req.Password)
+		// 口令不 trim：与登录/Authorize 的原样比较一致，否则首尾带空格
+		// 的合法口令能登录却永远无法步进认证（M-7 复核）。
+		password = *req.Password
 	}
 	totpCode := ""
 	if req.TOTPCode != nil {
@@ -1807,7 +1825,7 @@ func (h *ChannelHandler) handleRevealCredentials(w http.ResponseWriter, r *http.
 			field = shape.Required
 		}
 		h.auditReveal(r, http.StatusUnprocessableEntity, "failed", map[string]any{
-			"channel_id": id, "reason": reason, "failure": "factor_shape", "required_factor": field,
+			"channel_id": id, "reason": reason, "failure": "factor_shape",
 		})
 		writeAPIError(w, &apiError{
 			Status: http.StatusUnprocessableEntity,
@@ -1858,38 +1876,53 @@ func (h *ChannelHandler) handleRevealCredentials(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// 6) 成功审计是硬前置（I-1 复核）：审计写不进去就不返回明文。失败响应
+	//    本就不含明文，因此只有这条路径 fail-closed。未装配审计器同样拒绝。
+	if h.audit == nil {
+		h.log.Error("channel credential reveal has no audit logger configured")
+		h.writeRevealNoStoreUnavailable(w)
+		return
+	}
 	// 审计只记字段名（api_key/deployment/api_version），不记值。
-	h.auditReveal(r, http.StatusOK, "success", map[string]any{
+	if err := h.auditReveal(r, http.StatusOK, "success", map[string]any{
 		"channel_id":      id,
 		"reason":          reason,
 		"revealed_fields": revealedCredentialFields(creds),
-	})
+	}); err != nil {
+		h.log.Error("channel credential reveal audit write failed; refusing to return plaintext",
+			"channel_id", id, "error", err)
+		h.writeRevealNoStoreUnavailable(w)
+		return
+	}
 
-	// 唯一的明文出口：一次响应 + no-store。响应体就是凭据对象本身
+	// 7) 唯一的明文出口：一次响应 + no-store。响应体就是凭据对象本身
 	// （与详情接口的 credentials_masked 同一字段形状），不夹带渠道其他配置。
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
 	writeChannelJSON(w, http.StatusOK, creds)
 }
 
-// auditReveal 写凭据揭示审计（best-effort）。detail 由调用方构造；本函数
-// 不接触明文，调用方也绝不能把凭据值放进 detail。
-func (h *ChannelHandler) auditReveal(r *http.Request, status int, result string, detail map[string]any) {
-	h.writeChannelAuditEvent(r, audit.ActionChannelCredentialsReveal, status, result, detail)
+// auditReveal 写凭据揭示审计（best-effort 调用方可忽略返回）。detail 由
+// 调用方构造；本函数不接触明文，调用方也绝不能把凭据值放进 detail。
+//
+// 成功路径必须检查返回值：审计写失败时不得返回明文（I-1）。
+func (h *ChannelHandler) auditReveal(r *http.Request, status int, result string, detail map[string]any) error {
+	return h.writeChannelAuditEvent(r, audit.ActionChannelCredentialsReveal, status, result, detail)
 }
 
-// writeChannelAuditEvent 是渠道管理面审计的统一出口。
+// writeChannelAuditEvent 是渠道管理面审计的统一出口，返回写入错误供调用方
+// 决定 fail 策略（揭示成功路径 fail-closed；其余 best-effort）。
 //
 // best-effort 语义来自 audit_util：日志库独立于业务库，写入失败不回滚业务，
 // 但有界超时 + 记录告警，避免静默丢失（GC-6：错误文本不带请求内容）。
-func (h *ChannelHandler) writeChannelAuditEvent(r *http.Request, action string, status int, result string, detail map[string]any) {
+func (h *ChannelHandler) writeChannelAuditEvent(r *http.Request, action string, status int, result string, detail map[string]any) error {
 	if h.audit == nil {
-		return
+		return nil
 	}
 	raw, err := json.Marshal(detail)
 	if err != nil {
 		h.log.Warn("marshal channel audit detail failed", "action", action, "error", err)
-		return
+		return err
 	}
 	event := audit.Event{
 		Action:     action,
@@ -1904,7 +1937,9 @@ func (h *ChannelHandler) writeChannelAuditEvent(r *http.Request, action string, 
 	}
 	if err := writeAuditEvent(r.Context(), h.audit, event); err != nil {
 		h.log.Warn("channel audit write failed", "action", action, "error", err)
+		return err
 	}
+	return nil
 }
 
 // revealedCredentialFields 返回本次揭示涉及的字段名（只用于审计）。
@@ -1924,6 +1959,14 @@ func (h *ChannelHandler) writeRevealUnavailable(w http.ResponseWriter) {
 	w.Header().Set("Retry-After", "5")
 	writeProblem(w, http.StatusServiceUnavailable, authProblemServiceUnavailable,
 		"Credential reveal is temporarily unavailable")
+}
+
+// writeRevealNoStoreUnavailable 是「解密已完成但审计写不进去」的出口：
+// 仍按 503 fail-closed，并显式 no-store，避免 5xx 响应被任何中间层缓存。
+func (h *ChannelHandler) writeRevealNoStoreUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	h.writeRevealUnavailable(w)
 }
 
 // ---------- 列表筛选解析 ----------
