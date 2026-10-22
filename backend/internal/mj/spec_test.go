@@ -3,6 +3,8 @@ package mj
 import (
 	"strings"
 	"testing"
+
+	"newtg/gateway/internal/tasks"
 )
 
 func ptr[T any](v T) *T { return &v }
@@ -455,5 +457,17 @@ func TestParseIdempotencyKey(t *testing.T) {
 	if _, _, err := ParseIdempotencyKey("abc\n123"); err == nil ||
 		err.Description != DescriptionInvalidIdempotency {
 		t.Fatalf("控制字符应返回 invalid_idempotency_key，got %#v", err)
+	}
+}
+
+// TestIdempotencyKeyBoundMatchesTaskStore 钉死 HTTP 与存储的幂等键上界一致
+// （复核 I1）：129–1024 字节是 HTTP 允许的合法键，DB 不得更窄。
+func TestIdempotencyKeyBoundMatchesTaskStore(t *testing.T) {
+	if MaxIdempotencyKey != tasks.MaxSubmitIdempotencyKey {
+		t.Fatalf("HTTP 幂等键上界 %d ≠ 存储上界 %d（两套上界会把合法键变成 500）",
+			MaxIdempotencyKey, tasks.MaxSubmitIdempotencyKey)
+	}
+	if MaxIdempotencyKey != 1<<10 {
+		t.Fatalf("MaxIdempotencyKey = %d，冻结值 1KiB", MaxIdempotencyKey)
 	}
 }

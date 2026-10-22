@@ -304,23 +304,6 @@ func (e *Engine) NewSession(rc *contract.RelayContext) contract.BillingSession {
 	return s
 }
 
-// ResolvePerCallPrice 严格解析固定价任务族的按次价（W8/MJ-d，R-MJ-01）。
-//
-// 暴露给提交面做「预扣前拒绝」：缺价/错模式必须在触碰资金前变成 400，
-// 而不是让 PreConsume 拿到一个默认倍率快照后按 0 结清。会话内部对
-// UsePrice 估算也走同一严格路径（见 Session.resolveSnapshotLocked），因此
-// 这个方法是「早失败」的便捷入口，不是唯一防线。
-func (e *Engine) ResolvePerCallPrice(ctx context.Context, model, group string) (contract.PriceSnapshot, error) {
-	if e == nil || e.source == nil {
-		return contract.PriceSnapshot{}, ErrNoPricing
-	}
-	strict, ok := e.source.(pricing.PerCallSource)
-	if !ok {
-		return contract.PriceSnapshot{}, fmt.Errorf("%w: 定价源不支持严格按次价", ErrNoPricing)
-	}
-	return strict.ResolvePerCall(ctx, model, group)
-}
-
 // heartbeatInterval 返回心跳间隔（测试可注入更短值）。
 func (e *Engine) heartbeatInterval() time.Duration {
 	if e.heartbeat > 0 {

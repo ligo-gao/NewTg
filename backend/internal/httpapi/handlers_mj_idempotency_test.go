@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,10 +23,11 @@ import (
 	"newtg/gateway/internal/tasks"
 )
 
-// fakeIdemRecord 是幂等表行的内存镜像。
+// fakeIdemRecord 是幂等表行的内存镜像（含 claim_token）。
 type fakeIdemRecord struct {
 	hash         []byte
 	status       string // in_flight / completed
+	claimToken   string
 	publicTaskID string
 	response     []byte
 	claimedAt    time.Time
@@ -33,8 +35,9 @@ type fakeIdemRecord struct {
 }
 
 type fakeMJIdempotency struct {
-	mu   sync.Mutex
-	rows map[string]*fakeIdemRecord
+	mu       sync.Mutex
+	rows     map[string]*fakeIdemRecord
+	tokenSeq int
 }
 
 func newFakeMJIdempotency() *fakeMJIdempotency {
@@ -54,8 +57,18 @@ func (f *fakeMJIdempotency) seed(userID int64, key string, rec fakeIdemRecord) {
 	f.rows[idemRowKey(userID, key)] = &copied
 }
 
+func (f *fakeMJIdempotency) nextTokenLocked() string {
+	f.tokenSeq++
+	return fmt.Sprintf("claim-token-%d", f.tokenSeq)
+}
+
+// ClaimSubmitIdempotency 委托 tasks.EvaluateSubmitIdempotency 做判定。
+//
+// 【为什么不在这里重写哈希/租约规则（复核 M4）】fake 自己实现判定会给
+// HTTP 用例虚假信心：仓储里「忽略请求哈希」的变异在 fake 路径仍然正确，
+// HTTP 层看不出问题。判定只有一份实现，变异必同时命中两条路径。
 func (f *fakeMJIdempotency) ClaimSubmitIdempotency(_ context.Context,
-	c tasks.SubmitIdempotencyClaim) (tasks.SubmitIdempotencyState, *tasks.SubmitIdempotencyRecord, error) {
+	c tasks.SubmitIdempotencyClaim) (tasks.SubmitIdempotencyState, *tasks.SubmitIdempotencyRecord, string, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -63,44 +76,55 @@ func (f *fakeMJIdempotency) ClaimSubmitIdempotency(_ context.Context,
 	if now.IsZero() {
 		now = time.Now()
 	}
-	r := f.rows[idemRowKey(c.UserID, c.Key)]
-	if r == nil || !r.expiresAt.After(now) {
-		f.rows[idemRowKey(c.UserID, c.Key)] = &fakeIdemRecord{
-			hash:      append([]byte(nil), c.RequestHash...),
-			status:    "in_flight",
-			claimedAt: now,
-			expiresAt: now.Add(tasks.SubmitIdempotencyWindow),
+	rowKey := idemRowKey(c.UserID, c.Key)
+	r := f.rows[rowKey]
+	if r == nil {
+		token := f.nextTokenLocked()
+		f.rows[rowKey] = &fakeIdemRecord{
+			hash:       append([]byte(nil), c.RequestHash...),
+			status:     "in_flight",
+			claimToken: token,
+			claimedAt:  now,
+			expiresAt:  now.Add(tasks.SubmitIdempotencyWindow),
 		}
-		return tasks.SubmitIdempotencyClaimed, nil, nil
+		return tasks.SubmitIdempotencyClaimed, nil, token, nil
 	}
-	if !bytes.Equal(r.hash, c.RequestHash) {
-		return tasks.SubmitIdempotencyConflictBody, nil, nil
+	evalRow := &tasks.SubmitIdempotencyRow{
+		RequestHash: r.hash, Status: r.status,
+		ClaimedAt: r.claimedAt, ExpiresAt: r.expiresAt,
 	}
-	switch r.status {
-	case "completed":
+	state, takeover, err := tasks.EvaluateSubmitIdempotency(evalRow, c.RequestHash, now)
+	if err != nil {
+		return 0, nil, "", err
+	}
+	if takeover {
+		token := f.nextTokenLocked()
+		f.rows[rowKey] = &fakeIdemRecord{
+			hash:       append([]byte(nil), c.RequestHash...),
+			status:     "in_flight",
+			claimToken: token,
+			claimedAt:  now,
+			expiresAt:  now.Add(tasks.SubmitIdempotencyWindow),
+		}
+		return tasks.SubmitIdempotencyClaimed, nil, token, nil
+	}
+	if state == tasks.SubmitIdempotencyReplay {
 		return tasks.SubmitIdempotencyReplay, &tasks.SubmitIdempotencyRecord{
 			PublicTaskID: r.publicTaskID,
 			ResponseBody: append([]byte(nil), r.response...),
-		}, nil
-	case "in_flight":
-		if now.Sub(r.claimedAt) >= tasks.SubmitIdempotencyInflightTTL {
-			r.hash = append([]byte(nil), c.RequestHash...)
-			r.claimedAt = now
-			r.expiresAt = now.Add(tasks.SubmitIdempotencyWindow)
-			return tasks.SubmitIdempotencyClaimed, nil, nil
-		}
-		return tasks.SubmitIdempotencyInFlight, nil, nil
+		}, "", nil
 	}
-	return 0, nil, nil
+	return state, nil, "", nil
 }
 
 func (f *fakeMJIdempotency) CompleteSubmitIdempotency(_ context.Context, userID int64,
-	key string, hash []byte, publicTaskID string, response []byte) error {
+	key string, hash []byte, claimToken, publicTaskID string, response []byte) error {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	r := f.rows[idemRowKey(userID, key)]
-	if r == nil || !bytes.Equal(r.hash, hash) || r.status != "in_flight" {
+	if r == nil || r.status != "in_flight" || r.claimToken != claimToken ||
+		!bytes.Equal(r.hash, hash) {
 		return tasks.ErrIdempotencyClaimLost
 	}
 	r.status = "completed"
@@ -110,12 +134,13 @@ func (f *fakeMJIdempotency) CompleteSubmitIdempotency(_ context.Context, userID 
 }
 
 func (f *fakeMJIdempotency) AbandonSubmitIdempotency(_ context.Context, userID int64,
-	key string, hash []byte) error {
+	key string, hash []byte, claimToken string) error {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if r := f.rows[idemRowKey(userID, key)]; r != nil &&
-		bytes.Equal(r.hash, hash) && r.status == "in_flight" {
+		r.status == "in_flight" && r.claimToken == claimToken &&
+		bytes.Equal(r.hash, hash) {
 		delete(f.rows, idemRowKey(userID, key))
 	}
 	return nil
@@ -419,4 +444,134 @@ func TestMJInFlightLimiterIsPerChannel(t *testing.T) {
 		release()
 	}
 	release2()
+}
+
+// TestMJIdempotencyCode21ReuseWritesFirstResult 覆盖 code 21 同用户复用路径：
+// 复用也是「首次结果」，同键重放必须回放同一个 MjId，而不是再次提交。
+func TestMJIdempotencyCode21ReuseWritesFirstResult(t *testing.T) {
+	store := newFakeMJStore()
+	store.byUserUpstream[mjUserUpstreamKey(42, "mj_existing")] = &tasks.Task{
+		ID: 900, PublicTaskID: "task_origin_1", UpstreamTaskID: "mj_existing",
+		Family: tasks.FamilyMJ, UserID: 42, ChannelID: 10, State: tasks.StateSuccess,
+	}
+	upstream := newMJUpstream(t, `{"code":21,"description":"exists","result":"mj_existing"}`)
+	sealer := NewSecretSealer("mj-handler-test-key")
+	normal, cand := sealedMJChannel(t, sealer, 10, mj.ChannelTypeMidjourney,
+		upstream.server.URL, mjAllModels(), 10)
+	channels := &fakeMJChannels{
+		channels:   map[int64]*tasks.ChannelTarget{10: normal},
+		candidates: []tasks.MJChannelCandidate{cand},
+	}
+	idem := newFakeMJIdempotency()
+	env := newMJTestEnvFull(t, store, channels, mjConfigured(nil), upstream, nil, idem, nil)
+
+	first := serveMJ(t, env, requestWithIdemKey(t, `{"prompt":"cat"}`, "reuse-key", "nkt-mj-user-42"))
+	if first.Code != http.StatusOK {
+		t.Fatalf("reuse status = %d (body=%s)", first.Code, first.Body.String())
+	}
+	if got := decodeMJEnvelope(t, first)["result"]; got != "mj_existing" {
+		t.Fatalf("reuse result = %v", got)
+	}
+	rec := idem.completedRecord(42, "reuse-key")
+	if rec == nil || rec.publicTaskID != "task_origin_1" {
+		t.Fatalf("code 21 复用未写首次结果: %+v", rec)
+	}
+	if rows := store.insertedRows(); len(rows) != 0 {
+		t.Fatalf("code 21 复用落了新行: %d", len(rows))
+	}
+
+	replay := serveMJ(t, env, requestWithIdemKey(t, `{"prompt":"cat"}`, "reuse-key", "nkt-mj-user-42"))
+	if replay.Code != http.StatusOK || replay.Body.String() != first.Body.String() {
+		t.Fatalf("reuse replay = %d %s，want 首次 %d %s",
+			replay.Code, replay.Body.String(), first.Code, first.Body.String())
+	}
+	if calls := upstream.calls(); calls != 1 {
+		t.Fatalf("reuse replay 触发了上游: calls = %d", calls)
+	}
+	// 复用请求本身预扣后全额退款；重放不再建计费会话。
+	if got := env.recorderCount(); got != 1 {
+		t.Fatalf("reuse replay 建了计费会话: %d", got)
+	}
+}
+
+// TestMJIdempotencyUploadArrayResultReplays 覆盖 upload-discord-images 的
+// 数组形结果：首次结果的 JSON 必须原样保存并回放。
+func TestMJIdempotencyUploadArrayResultReplays(t *testing.T) {
+	store := newFakeMJStore()
+	upstream := newMJUpstream(t, `{"code":1,"description":"ok","result":["https://cdn/u1.png","https://cdn/u2.png"]}`)
+	sealer := NewSecretSealer("mj-handler-test-key")
+	normal, cand := sealedMJChannel(t, sealer, 10, mj.ChannelTypeMidjourney,
+		upstream.server.URL, mjAllModels(), 10)
+	channels := &fakeMJChannels{
+		channels:   map[int64]*tasks.ChannelTarget{10: normal},
+		candidates: []tasks.MJChannelCandidate{cand},
+	}
+	idem := newFakeMJIdempotency()
+	env := newMJTestEnvFull(t, store, channels, mjConfigured(nil), upstream, nil, idem, nil)
+
+	first := serveMJ(t, env, requestWithIdemKeyPath(t,
+		"/mj/submit/upload-discord-images", `{"base64Array":["aGk="]}`, "upload-key", "nkt-mj-user-42"))
+	if first.Code != http.StatusOK {
+		t.Fatalf("upload status = %d (body=%s)", first.Code, first.Body.String())
+	}
+	body := decodeMJEnvelope(t, first)
+	results, ok := body["result"].([]any)
+	if !ok || len(results) != 2 {
+		t.Fatalf("upload result = %v，want 2 项数组", body["result"])
+	}
+	rec := idem.completedRecord(42, "upload-key")
+	if rec == nil || rec.publicTaskID == "" {
+		t.Fatalf("upload 未写首次结果: %+v", rec)
+	}
+	if rows := store.insertedRows(); len(rows) != 1 || rows[0].FetchMode != "inline" {
+		t.Fatalf("upload rows = %+v，want 1 条 inline 终态行", rows)
+	}
+
+	replay := serveMJ(t, env, requestWithIdemKeyPath(t,
+		"/mj/submit/upload-discord-images", `{"base64Array":["aGk="]}`, "upload-key", "nkt-mj-user-42"))
+	if replay.Code != http.StatusOK || replay.Body.String() != first.Body.String() {
+		t.Fatalf("upload replay = %d %s，want 首次 %d %s",
+			replay.Code, replay.Body.String(), first.Code, first.Body.String())
+	}
+	if calls := upstream.calls(); calls != 1 {
+		t.Fatalf("upload replay 触发了上游: calls = %d", calls)
+	}
+	if got := env.recorderCount(); got != 1 {
+		t.Fatalf("upload replay 建了计费会话: %d", got)
+	}
+}
+
+// TestMJIdempotencyKeyLengthBounds 是 I1 的端点回归：冻结上界 1KiB。
+func TestMJIdempotencyKeyLengthBounds(t *testing.T) {
+	env, _, upstream := newIdemTestEnv(t, `{"code":1,"description":"ok","result":"mj_bound"}`)
+	for _, n := range []int{128, 129, 200, 1024} {
+		key := strings.Repeat("k", n)
+		rec := serveMJ(t, env, requestWithIdemKey(t, `{"prompt":"cat"}`, key, "nkt-mj-user-42"))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%d 字节键 status = %d (body=%s)", n, rec.Code, rec.Body.String())
+		}
+	}
+	if calls := upstream.calls(); calls != 4 {
+		t.Fatalf("upstream calls = %d，want 4（每个键都是独立请求）", calls)
+	}
+	tooLong := serveMJ(t, env, requestWithIdemKey(t, `{"prompt":"cat"}`,
+		strings.Repeat("k", 1025), "nkt-mj-user-42"))
+	if tooLong.Code != http.StatusBadRequest {
+		t.Fatalf("1025 字节键 status = %d，want 400", tooLong.Code)
+	}
+	if got := decodeMJEnvelope(t, tooLong)["description"]; got != mj.DescriptionIdempotencyTooLong {
+		t.Fatalf("超长键 description = %v", got)
+	}
+	if calls := upstream.calls(); calls != 4 {
+		t.Fatalf("超长键触发了上游: calls = %d", calls)
+	}
+}
+
+func requestWithIdemKeyPath(t *testing.T, path, body, key, bearer string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", key)
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	return req
 }

@@ -41,7 +41,8 @@ import (
 // S1（W2）追加订阅事件流 subscription_events（5 列），表数 40→41。
 // S4（W2）追加支付令牌表 payment_methods（11 列）并给 subscriptions 补 3 列
 // 自动续费状态，表数 41→42、subscriptions 23→26。
-// W8/MJ-d 追加任务提交幂等键表 task_submit_idempotency（11 列），表数 42→43。
+// W8/MJ-d 追加任务提交幂等键表 task_submit_idempotency（初版 11 列；
+// 复核 I2 增加 claim_token 后 12 列），表数 42→43。
 //
 //	subscription_plans 17 列、subscriptions 26 列（含 R-D5-03 的 5 个快照列
 //	与 S4 的 3 个自动续费状态列）、
@@ -90,10 +91,10 @@ var wantColumns = map[string]int{
 	// M6d Task 6a 任务数据面主表（relay-06 §7）：契约 §2.5 统一列 13 + 插件
 	// 附加列 14 = 27 列。列数与设计表逐行对应，多一列少一列都视为漂移。
 	"tasks": 27,
-	// W8/MJ-d 提交幂等键（R-MJ-06）：11 列 = id/归属键/请求哈希/端点/状态/
-	// 首次结果 + 时间戳。结果体落 jsonb 是为了原样回放首次响应（包括 upload
-	// 的数组形 result），只存 public_task_id 会丢失响应形状。
-	"task_submit_idempotency": 11,
+	// W8/MJ-d 提交幂等键（R-MJ-06）：12 列 = id/归属键/请求哈希/端点/状态/
+	// claim_token/首次结果 + 时间戳。结果体落 **text** 是为了逐字节回放首次
+	// 响应（jsonb 会规范化键序与空白）；只存 public_task_id 会丢失响应形状。
+	"task_submit_idempotency": 12,
 	// T4 / P-04 批次聚合：父表 9 列（归属/状态/计数/时间），关联表 2 列。
 	// 子任务本身仍是 tasks 行，不在此复制任何上游/结果字段。
 	"task_batches":       9,

@@ -27,7 +27,7 @@ import (
 
 // newMJRetryMux 构造只挂提交面的 handler（固定单渠道）。
 func newMJRetryMux(t *testing.T, upstreamURL string, client *mj.SubmitClient,
-	recorder **taskBillingRecorder) *http.ServeMux {
+	recorder **taskBillingRecorder) (*http.ServeMux, *fakeMJStore) {
 
 	t.Helper()
 	store := newFakeMJStore()
@@ -58,7 +58,7 @@ func newMJRetryMux(t *testing.T, upstreamURL string, client *mj.SubmitClient,
 	})
 	mux := http.NewServeMux()
 	handler.Register(mux, RelayAuth(tokens, fakeTaskAccess{}, nil))
-	return mux
+	return mux, store
 }
 
 func serveRetry(t *testing.T, mux http.Handler) *httptest.ResponseRecorder {
@@ -120,10 +120,13 @@ func TestMJSubmitMatrixSingleAttemptAndRefund(t *testing.T) {
 			defer srv.Close()
 
 			var recorder *taskBillingRecorder
-			mux := newMJRetryMux(t, srv.URL, tc.client, &recorder)
+			mux, store := newMJRetryMux(t, srv.URL, tc.client, &recorder)
 			rec := serveRetry(t, mux)
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d，want %d (body=%s)", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if rows := store.insertedRows(); len(rows) != 0 {
+				t.Fatalf("失败提交落了 %d 条任务行（R-MJ-13：不落行）", len(rows))
 			}
 			if got := decodeMJEnvelope(t, rec)["description"]; got != tc.wantDesc {
 				t.Fatalf("description = %v，want %s", got, tc.wantDesc)

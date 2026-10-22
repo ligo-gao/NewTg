@@ -29,6 +29,9 @@ type mjIdempotencyClaim struct {
 	UserID int64
 	Key    string
 	Hash   []byte
+	// Token 是本次 claim 的归属凭证（复核 I2）。同体接管会轮换 token，
+	// 旧执行者的 Complete/Abandon 因此必然失败，不会覆写接管者结果。
+	Token string
 	// done 表示「本次请求已产生确定结果」：成功回执已写（或至少任务行已
 	// 落库）。done 之后绝不能再 Abandon——删掉已成功的 claim 会让同键重放
 	// 变成第二次提交。
@@ -61,7 +64,7 @@ func (h *MJHandler) beginIdempotency(ctx context.Context, w http.ResponseWriter,
 		return nil, false
 	}
 	hash := mj.SubmitRequestHash(endpoint, body)
-	state, record, err := h.idempotency.ClaimSubmitIdempotency(ctx, tasks.SubmitIdempotencyClaim{
+	state, record, token, err := h.idempotency.ClaimSubmitIdempotency(ctx, tasks.SubmitIdempotencyClaim{
 		UserID:      userID,
 		Key:         key,
 		RequestHash: hash,
@@ -76,7 +79,7 @@ func (h *MJHandler) beginIdempotency(ctx context.Context, w http.ResponseWriter,
 	}
 	switch state {
 	case tasks.SubmitIdempotencyClaimed:
-		return &mjIdempotencyClaim{UserID: userID, Key: key, Hash: hash}, true
+		return &mjIdempotencyClaim{UserID: userID, Key: key, Hash: hash, Token: token}, true
 	case tasks.SubmitIdempotencyReplay:
 		if record == nil || len(record.ResponseBody) == 0 {
 			// 已完成行必须带响应体（DB CHECK 也保证）；缺失说明数据损坏，
@@ -131,7 +134,7 @@ func (h *MJHandler) completeIdempotency(ctx context.Context, claim *mjIdempotenc
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), mjIdempotencyPersistTimeout)
 	defer cancel()
 	if err := h.idempotency.CompleteSubmitIdempotency(persistCtx, claim.UserID, claim.Key,
-		claim.Hash, publicTaskID, body); err != nil {
+		claim.Hash, claim.Token, publicTaskID, body); err != nil {
 		h.log.Warn("mj: complete idempotency claim failed",
 			"user_id", claim.UserID, "public_task_id", publicTaskID, "error", err)
 	}
@@ -144,7 +147,8 @@ func (h *MJHandler) abandonIdempotency(ctx context.Context, claim *mjIdempotency
 	}
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), mjIdempotencyPersistTimeout)
 	defer cancel()
-	if err := h.idempotency.AbandonSubmitIdempotency(persistCtx, claim.UserID, claim.Key, claim.Hash); err != nil {
+	if err := h.idempotency.AbandonSubmitIdempotency(persistCtx, claim.UserID, claim.Key,
+		claim.Hash, claim.Token); err != nil {
 		h.log.Warn("mj: abandon idempotency claim failed",
 			"user_id", claim.UserID, "error", err)
 	}

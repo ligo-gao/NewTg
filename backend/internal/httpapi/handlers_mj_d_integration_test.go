@@ -113,18 +113,59 @@ func countMJDRows(t *testing.T, db *sql.DB, query string, args ...any) int {
 	return n
 }
 
+// mjDPriceBackup 保存一行 model_pricing 的完整快照，用于用例结束后精确恢复。
+//
+// 【为什么必须恢复】mj_imagine 可能是部署种子/管理员配置的真实价格行；
+// 用例直接 DELETE 会永久破坏共享测试库，后续用例（或人工排查）看到的是
+// 被测试改过的定价。快照用 to_jsonb 保留全部 13 列与 identity id。
+type mjDPriceBackup struct {
+	model string
+	raw   []byte
+}
+
+func backupMJPriceRow(t *testing.T, db *sql.DB, model string) *mjDPriceBackup {
+	t.Helper()
+	backup := &mjDPriceBackup{model: model}
+	err := db.QueryRow(`SELECT to_jsonb(mp) FROM model_pricing mp WHERE model = $1`, model).
+		Scan(&backup.raw)
+	if err == sql.ErrNoRows {
+		return backup
+	}
+	if err != nil {
+		t.Fatalf("backup model_pricing(%s): %v", model, err)
+	}
+	t.Cleanup(func() {
+		if _, err := db.Exec(`DELETE FROM model_pricing WHERE model = $1`, model); err != nil {
+			t.Logf("restore cleanup model_pricing(%s): %v", model, err)
+			return
+		}
+		if backup.raw == nil {
+			return
+		}
+		if _, err := db.Exec(`
+			INSERT INTO model_pricing OVERRIDING SYSTEM VALUE
+			SELECT * FROM jsonb_populate_record(NULL::model_pricing, $1::jsonb)`,
+			backup.raw); err != nil {
+			t.Logf("restore model_pricing(%s): %v", model, err)
+		}
+	})
+	return backup
+}
+
 func TestMJDActionPriceAndIdempotencyOnRealDB(t *testing.T) {
 	db, _, repo, engine := openMJDDeps(t)
 	sealer := NewSecretSealer("mj-d-integration-key")
 
 	const price = int64(7)
+	// 先快照再覆盖，Cleanup 精确恢复原行（复核 M7）。
+	backupMJPriceRow(t, db, "mj_imagine")
+	backupMJPriceRow(t, db, "mj_describe")
 	_, _ = db.Exec(`DELETE FROM model_pricing WHERE model = 'mj_imagine'`)
 	if _, err := db.Exec(
 		`INSERT INTO model_pricing (model, mode, prompt_price, status) VALUES ('mj_imagine', 1, $1, 1)`,
 		price); err != nil {
 		t.Fatalf("insert mj_imagine price: %v", err)
 	}
-	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM model_pricing WHERE model = 'mj_imagine'`) })
 	// 缺价动作（describe）必须没有定价行。
 	_, _ = db.Exec(`DELETE FROM model_pricing WHERE model = 'mj_describe'`)
 

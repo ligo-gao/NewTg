@@ -86,10 +86,11 @@ var _ MJTaskStore = (*tasks.Repo)(nil)
 // 同一接口会让只关心查询/图片代理的 fake 也被迫实现 claim 语义。
 type MJIdempotencyStore interface {
 	ClaimSubmitIdempotency(ctx context.Context,
-		claim tasks.SubmitIdempotencyClaim) (tasks.SubmitIdempotencyState, *tasks.SubmitIdempotencyRecord, error)
+		claim tasks.SubmitIdempotencyClaim) (tasks.SubmitIdempotencyState, *tasks.SubmitIdempotencyRecord, string, error)
 	CompleteSubmitIdempotency(ctx context.Context, userID int64, key string,
-		requestHash []byte, publicTaskID string, response []byte) error
-	AbandonSubmitIdempotency(ctx context.Context, userID int64, key string, requestHash []byte) error
+		requestHash []byte, claimToken, publicTaskID string, response []byte) error
+	AbandonSubmitIdempotency(ctx context.Context, userID int64, key string,
+		requestHash []byte, claimToken string) error
 }
 
 var _ MJIdempotencyStore = (*tasks.Repo)(nil)
