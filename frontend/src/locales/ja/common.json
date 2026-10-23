@@ -418,6 +418,7 @@
       "editTitle": "チャネルを編集 · {name}",
       "basics": "基本情報と認証情報",
       "modelsSection": "モデルとグループ",
+      "fetchModels": "上流から取得",
       "routing": "ルーティングとメモ",
       "name": "名前",
       "type": "タイプ",
@@ -574,6 +575,20 @@
         "24h": "24 時間",
         "7d": "7 日"
       }
+    },
+    "fetchModels": {
+      "title": "上流モデルを取得",
+      "description": "このチャネルで公開するモデルを選択します。一覧は上流のモデルカタログから取得します。",
+      "loading": "モデルを取得中…",
+      "error": "上流のモデル一覧を取得できませんでした。",
+      "retry": "再試行",
+      "searchPlaceholder": "モデルを絞り込む",
+      "selectAll": "すべて選択",
+      "clearAll": "選択を解除",
+      "apply": "適用（{count}）",
+      "cancel": "キャンセル",
+      "empty": "一致するモデルがありません。",
+      "selectedCount": "{count} 件選択中"
     }
   },
   "tokens": {

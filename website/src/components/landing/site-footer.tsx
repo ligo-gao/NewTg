@@ -1,4 +1,4 @@
-import { copy } from "@/config/copy";
+import type { Copy } from "@/config/copy";
 
 function RoutingLogo() {
   return (
@@ -18,11 +18,11 @@ function RoutingLogo() {
   );
 }
 
-export function SiteFooter() {
+export function SiteFooter({ copy }: { copy: Copy }) {
   return (
     <footer className="border-t border-line pt-11 pb-8 text-[13px]">
       <div className="mx-auto w-full max-w-[1520px] px-4 min-[621px]:px-6 wide:px-10">
-        <div className="grid grid-cols-2 gap-8 nav:grid-cols-[1.6fr_repeat(3,1fr)] nav:gap-10">
+        <div className="grid grid-cols-2 gap-8 nav:grid-cols-[1.6fr_repeat(4,1fr)] nav:gap-10">
           <div className="col-span-2 nav:col-span-1">
             <a
               href="#top"
@@ -68,19 +68,8 @@ export function SiteFooter() {
           ))}
         </div>
 
-        <div className="mt-8 flex flex-col items-start gap-4 border-t border-line pt-5 text-xs text-faint sm:flex-row sm:items-center sm:justify-between">
+        <div className="mt-8 border-t border-line pt-5 text-xs text-faint">
           <span>{copy.footer.copyright}</span>
-          <nav aria-label="法律信息" className="flex gap-[18px]">
-            {copy.footer.legal.map((link) => (
-              <a
-                key={link.href}
-                href={link.href}
-                className="transition-colors hover:text-muted"
-              >
-                {link.label}
-              </a>
-            ))}
-          </nav>
         </div>
       </div>
     </footer>

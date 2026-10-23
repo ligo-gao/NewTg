@@ -79,6 +79,12 @@ const (
 	ChannelTestRateMark   = "CT"
 	ChannelTestRateLimit  = 10
 	ChannelTestRateWindow = time.Minute
+
+	// 渠道模型拉取桶（POST /api/channels/fetch-models）。与测试桶同为管理员维、
+	// 只读探针、Redis 故障 fail-open；独立桶避免频繁“获取模型”挤掉连通性测试。
+	ChannelModelFetchRateMark   = "CMF"
+	ChannelModelFetchRateLimit  = 10
+	ChannelModelFetchRateWindow = time.Minute
 )
 
 // SetupRateLimitKey 构造 B13 桶键：rateLimit:v2:ip:ST:<ip>。
@@ -116,6 +122,11 @@ func ChannelRevealRateLimitKey(userID int64) string {
 // 与 reveal 桶同族（用户维冻结形状），运维直读 Redis 时自描述。
 func ChannelTestRateLimitKey(userID int64) string {
 	return "rateLimit:v2:user:" + ChannelTestRateMark + ":" + strconv.FormatInt(userID, 10)
+}
+
+// ChannelModelFetchRateLimitKey 构造模型拉取桶键：rateLimit:v2:user:CMF:<userID>。
+func ChannelModelFetchRateLimitKey(userID int64) string {
+	return "rateLimit:v2:user:" + ChannelModelFetchRateMark + ":" + strconv.FormatInt(userID, 10)
 }
 
 // allowRequestRate 消耗固定窗口中的一个名额。

@@ -27,6 +27,8 @@ import type {
   ChannelMetricsWindow,
   ChannelTestInput,
   ChannelTestResult,
+  FetchChannelModelsInput,
+  FetchChannelModelsResponse,
   CreateChannelInput,
   UpdateChannelInput,
 } from './types'
@@ -263,6 +265,20 @@ export function batchDeleteChannels(
     method: 'POST',
     body: { ids },
     idempotencyKey: idempotencyKey ?? createIdempotencyKey(),
+  })
+}
+
+/**
+ * POST /api/channels/fetch-models — pull the upstream's supported models for
+ * the current form values (or the stored credentials when only channel_id is
+ * sent). Admin-only; the credential travels to the upstream, never back.
+ */
+export function fetchChannelModels(
+  input: FetchChannelModelsInput,
+): Promise<FetchChannelModelsResponse> {
+  return request<FetchChannelModelsResponse>('/api/channels/fetch-models', {
+    method: 'POST',
+    body: input,
   })
 }
 

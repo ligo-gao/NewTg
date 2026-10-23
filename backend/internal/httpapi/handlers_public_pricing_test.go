@@ -535,13 +535,16 @@ func TestPublicPricingDetail(t *testing.T) {
 		t.Fatalf("problem.type = %v", problem["type"])
 	}
 
-	// P1 metrics：只注册 404，不返回伪造数据。
+	// P1 metrics：已实现真实聚合；测试装配没有日志库，必须显式 503，
+	// 不能回退成伪造的 200 空数据或误报 404。
 	metrics := env.request(http.MethodGet, "/api/pricing/"+encoded+"/metrics", nil, nil)
-	if metrics.Code != http.StatusNotFound {
+	if metrics.Code != http.StatusServiceUnavailable {
 		t.Fatalf("metrics status = %d", metrics.Code)
 	}
-	if err := json.Unmarshal(metrics.Body.Bytes(), &problem); err != nil || problem["type"] != problemTypeNotImplemented {
-		t.Fatalf("metrics problem = %v", problem)
+	var metricsProblem map[string]any
+	if err := json.Unmarshal(metrics.Body.Bytes(), &metricsProblem); err != nil ||
+		metricsProblem["type"] != problemTypeMetricsUnavailable {
+		t.Fatalf("metrics problem = %v", metricsProblem)
 	}
 }
 

@@ -98,7 +98,7 @@ export function TaskPluginsPage({
 
   return (
     <div
-      className="mx-auto flex max-w-[1440px] flex-col gap-4"
+      className="mx-auto flex max-w-[1520px] flex-col gap-4"
       data-testid="task-plugins-page"
     >
       <header className="flex flex-wrap items-start justify-between gap-3">

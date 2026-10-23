@@ -420,6 +420,9 @@ paths:
   # 既有占位（渠道在模块 06 实现；中继只登记公共面）。
   /api/channels:
     $ref: './paths/admin.yaml#/paths/~1api~1channels'
+  # 渠道模型目录拉取（只读探针；创建/编辑渠道表单共用）。
+  /api/channels/fetch-models:
+    $ref: './paths/admin.yaml#/paths/~1api~1channels~1fetch-models'
   # W11：凭据受控揭示（security-03 §2.10）。唯一返回完整凭据的端点。
   /api/channels/{id}/credentials/reveal:
     $ref: './paths/admin.yaml#/paths/~1api~1channels~1{id}~1credentials~1reveal'

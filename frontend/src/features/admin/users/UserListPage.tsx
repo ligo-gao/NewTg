@@ -117,7 +117,7 @@ export function UserListPage() {
   }
 
   return (
-    <div className="mx-auto flex max-w-[1440px] flex-col gap-3">
+    <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
       <h1 className="text-xl font-semibold text-ink-1">{t('admin.users.title')}</h1>
       <section className="rounded-xl border border-border-hairline bg-surface-subtle p-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">

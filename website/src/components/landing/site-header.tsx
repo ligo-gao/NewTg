@@ -1,7 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { copy } from "@/config/copy";
+import { LanguageSwitcher } from "@/components/language-switcher";
+import { ThemeToggle } from "@/components/theme-toggle";
+import type { Copy } from "@/config/copy";
+import type { Locale } from "@/config/locales";
 import { site } from "@/config/site";
 
 function RoutingLogo({ className }: { className?: string }) {
@@ -23,7 +26,7 @@ function RoutingLogo({ className }: { className?: string }) {
   );
 }
 
-export function SiteHeader() {
+export function SiteHeader({ copy, locale }: { copy: Copy; locale: Locale }) {
   const [open, setOpen] = useState(false);
 
   function closeMenu() {
@@ -31,11 +34,11 @@ export function SiteHeader() {
   }
 
   return (
-    <header className="fixed inset-x-0 top-0 z-50 border-b border-line bg-[rgba(7,11,18,0.74)] backdrop-blur-[14px]">
+    <header className="fixed inset-x-0 top-0 z-50 border-b border-line nav-surface backdrop-blur-[14px]">
       <div className="mx-auto flex h-16 w-full max-w-[1520px] items-center gap-9 px-4 min-[621px]:px-6 wide:px-10">
         <a
           href="#top"
-          aria-label="NEWTG 首页"
+          aria-label={copy.brand}
           className="inline-flex flex-none items-center gap-[9px] text-ink"
         >
           <RoutingLogo className="text-cyan" />
@@ -55,6 +58,8 @@ export function SiteHeader() {
         </nav>
 
         <div className="hidden flex-none items-center gap-3.5 nav:flex">
+          <LanguageSwitcher locale={locale} label={copy.language.label} />
+          <ThemeToggle copy={copy} />
           <a
             href={site.loginHref}
             className="text-sm text-ink-2 transition-colors hover:text-ink"
@@ -66,14 +71,17 @@ export function SiteHeader() {
           </a>
         </div>
 
-        <button
-          type="button"
-          aria-expanded={open}
-          aria-controls="mobile-menu"
-          aria-label={open ? copy.nav.closeMenu : copy.nav.openMenu}
-          onClick={() => setOpen((value) => !value)}
-          className="ml-auto inline-flex h-10 w-10 flex-none items-center justify-center rounded-md border border-line-2 bg-transparent text-ink nav:hidden"
-        >
+        <div className="ml-auto flex items-center gap-2 nav:hidden">
+          <LanguageSwitcher locale={locale} label={copy.language.label} compact />
+          <ThemeToggle copy={copy} />
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls="mobile-menu"
+            aria-label={open ? copy.nav.closeMenu : copy.nav.openMenu}
+            onClick={() => setOpen((value) => !value)}
+            className="inline-flex h-10 w-10 flex-none items-center justify-center rounded-md border border-line-2 bg-transparent text-ink"
+          >
           <svg
             width="16"
             height="16"
@@ -90,14 +98,15 @@ export function SiteHeader() {
               <path d="M2 4h12M2 8h12M2 12h12" />
             )}
           </svg>
-        </button>
+          </button>
+        </div>
       </div>
 
       {open && (
         <nav
           id="mobile-menu"
           aria-label="主导航"
-          className="border-t border-line bg-[rgba(7,11,18,0.97)] nav:hidden"
+          className="border-t border-line menu-surface nav:hidden"
         >
           <div className="mx-auto w-full max-w-[1520px] px-4 pt-2.5 pb-[18px] min-[621px]:px-6 wide:px-10">
             {copy.nav.links.map((link) => (
@@ -117,6 +126,10 @@ export function SiteHeader() {
             >
               {copy.nav.login}
             </a>
+            <div className="flex items-center justify-between border-b border-line py-3">
+              <span className="text-[15px] text-ink-2">{copy.language.label}</span>
+              <LanguageSwitcher locale={locale} label={copy.language.label} />
+            </div>
             <a
               href={site.startHref}
               onClick={closeMenu}

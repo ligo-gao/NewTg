@@ -522,7 +522,7 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
     7 + (capabilities.isAdmin ? 1 : 0) + (capabilities.canFilterByUsername ? 1 : 0)
 
   return (
-    <section className="mx-auto flex max-w-[1440px] flex-col gap-4">
+    <section className="mx-auto flex max-w-[1520px] flex-col gap-4">
       <UsageHeader
         onClear={clearFilters}
         clearLabel={t('logs.usage.filters.reset')}

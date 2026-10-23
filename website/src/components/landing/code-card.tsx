@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { copy } from "@/config/copy";
+import type { Copy } from "@/config/copy";
 
 type CopyResult = "idle" | "copied" | "failed";
 
 type CodeCardProps = {
+  copy: Copy;
   html: string;
   code: string;
 };
@@ -40,7 +41,7 @@ function legacyCopy(text: string): boolean {
   return succeeded;
 }
 
-export function CodeCard({ html, code }: CodeCardProps) {
+export function CodeCard({ copy, html, code }: CodeCardProps) {
   const [result, setResult] = useState<CopyResult>("idle");
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -94,8 +95,8 @@ export function CodeCard({ html, code }: CodeCardProps) {
         : "";
 
   return (
-    <div className="overflow-hidden rounded-[10px] border border-line-2 bg-[linear-gradient(180deg,#0c131d,#080d15)] shadow-[0_30px_70px_-30px_rgba(0,0,0,0.9),inset_0_0_0_1px_rgba(76,215,232,0.04)]">
-      <div className="flex h-[46px] items-center justify-between gap-3 border-b border-line bg-white/[0.015] pl-4 pr-3.5">
+    <div className="code-card">
+      <div className="code-card-head flex h-[46px] items-center justify-between gap-3 border-b border-line pl-4 pr-3.5">
         <div className="flex min-w-0 items-center gap-2.5 overflow-hidden font-mono text-xs text-muted">
           <span className="shrink-0 rounded border border-cyan/[0.28] bg-cyan/[0.07] px-1.5 py-px text-[11px] text-cyan">
             {copy.hero.method}
@@ -128,7 +129,7 @@ export function CodeCard({ html, code }: CodeCardProps) {
 
       <div className="code-block" dangerouslySetInnerHTML={{ __html: html }} />
 
-      <div className="border-t border-line bg-cyan/[0.022] px-4 pb-4 pt-3.5">
+      <div className="code-card-trace border-t border-line px-4 pb-4 pt-3.5">
         <div className="flex items-center gap-2 font-mono text-[11.5px] text-muted">
           <span
             className="live-dot h-1.5 w-1.5 shrink-0 rounded-full bg-green"

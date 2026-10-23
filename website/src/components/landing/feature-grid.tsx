@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { copy, type FeatureIconKey } from "@/config/copy";
+import type { Copy, FeatureIconKey } from "@/config/copy";
 
 const container = "mx-auto w-full max-w-[1520px] px-4 min-[621px]:px-6 wide:px-10";
 
@@ -71,7 +71,7 @@ const icons: Record<FeatureIconKey, ReactNode> = {
   ),
 };
 
-export function FeatureGrid() {
+export function FeatureGrid({ copy }: { copy: Copy }) {
   return (
     <section id="features" className="scroll-mt-20 border-t border-line py-16">
       <div className={container}>

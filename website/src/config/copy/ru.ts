@@ -1,0 +1,222 @@
+import type { Copy } from "./types";
+
+export const ru: Copy = {
+  brand: "NEWTG",
+  skipLink: "Перейти к основному содержимому",
+
+  meta: {
+    title: "NEWTG — Один API для всех основных моделей",
+    description:
+      "Маршрутизируйте GPT, Claude, Gemini, DeepSeek и другие основные модели через один API: умная маршрутизация, автоматическое переключение и единая оплата. Смена модели — одной строкой кода.",
+    ogAlt: "Главная NEWTG: один API для всех основных моделей",
+  },
+
+  language: {
+    label: "Язык",
+  },
+
+  theme: {
+    label: "Тема",
+    toggle: "Переключить тему",
+  },
+
+  nav: {
+    links: [
+      { label: "Модели", href: "#models" },
+      { label: "Тарифы", href: "/pricing" },
+      { label: "Документация", href: "/docs" },
+      { label: "Консоль", href: "/dashboard" },
+    ],
+    login: "Войти",
+    cta: "Начать бесплатно",
+    openMenu: "Открыть меню навигации",
+    closeMenu: "Закрыть меню навигации",
+  },
+
+  hero: {
+    titleLines: ["Один API,", "все основные модели"],
+    subtitle:
+      "Маршрутизируйте GPT, Claude, Gemini, DeepSeek и другие основные модели через одну точку входа. Умная маршрутизация, автоматическое переключение и единая оплата — меняйте модель одной строкой кода с прозрачной стоимостью.",
+    primaryCta: "Начать бесплатно",
+    secondaryCta: "Открыть документацию",
+    compatLabel: "Совместимо с",
+    compat: ["OpenAI SDK", "LangChain", "Vercel AI SDK"],
+    method: "POST",
+    endpoint: "api.newtg.ai/v1/chat/completions",
+    copyLabel: "Копировать",
+    copiedLabel: "Скопировано",
+    copyFailedLabel: "Не удалось скопировать",
+    copySuccessAnnouncement: "Код скопирован в буфер обмена",
+    copyFailureAnnouncement: "Не удалось скопировать; выделите код вручную",
+    code: `curl https://api.newtg.ai/v1/chat/completions \\
+  -H "Authorization: Bearer $NEWTG_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "gpt-4o",
+    "messages": [
+      { "role": "user", "content": "Здравствуйте, расскажите о себе" }
+    ]
+  }'`,
+    requestLabel: "Последний запрос",
+    okLabel: "200 OK",
+    trace: [
+      { label: "Маршрут", value: "openai / gpt-4o" },
+      { label: "Первый токен", value: "412 ms" },
+      { label: "Стоимость", value: "$0.0024" },
+    ],
+  },
+
+  trust: {
+    ariaLabel: "Масштаб платформы",
+    items: [
+      { value: "100+", label: "моделей от 6 провайдеров" },
+      { value: "99.9%", label: "доступность сервиса" },
+      { value: "10ms", label: "умная маршрутизация" },
+      { value: "10,000+", label: "разработчиков" },
+    ],
+    note: "Данные соответствуют production-версии.",
+  },
+
+  models: {
+    title: "Все модели, которые вам нужны",
+    subtitle: "Сравнивайте цены и переключайтесь мгновенно — тарифы и квоты всегда на виду",
+    searchLabel: "Поиск моделей",
+    searchPlaceholder: "Попробуйте GPT-4o / Claude / DeepSeek",
+    vendorFilterLabel: "Фильтр по провайдеру",
+    allVendors: "Все",
+    countUnit: "моделей",
+    compare: "Сравнить",
+    call: "Использовать",
+    callHref: "/dashboard",
+    emptyTitle: "Нет подходящих моделей.",
+    emptyAction: "Сбросить поиск и фильтры",
+    emptyCatalog: "Публичные модели ещё не настроены.",
+    loadError: "Данные моделей временно недоступны.",
+    retry: "Повторить",
+    truncatedNote: "Показаны первые 24 результата.",
+    pricingLink: "Полные тарифы",
+    footnote:
+      "Модели, контекст и цены берутся из бэкенда и синхронизируются в реальном времени; цены указаны за 1M токенов.",
+    badgeFree: "Бесплатно",
+    badgePerRequest: "За запрос",
+    stats: {
+      context: "Контекст",
+      maxOutput: "Макс. вывод",
+      input: "Вход / 1M",
+      output: "Выход / 1M",
+    },
+    compareBar: {
+      ariaLabel: "Сравнение моделей",
+      selected: "Выбрано",
+      unit: "моделей",
+      open: "Сравнить",
+      clear: "Сбросить",
+    },
+    dialog: {
+      title: "Сравнение моделей",
+      close: "Закрыть сравнение",
+      indicator: "Показатель",
+      rows: {
+        vendor: "Провайдер",
+        context: "Контекст",
+        maxOutput: "Макс. вывод",
+        input: "Вход / 1M",
+        output: "Выход / 1M",
+      },
+    },
+  },
+
+  features: {
+    title: "Отдайте рутину моделей шлюзу",
+    subtitle: "Маршрутизация, отказоустойчивость и оплата — в одном пути запроса.",
+    items: [
+      {
+        icon: "router",
+        title: "Умный выбор модели",
+        description: "Автоматически выбирает лучшую модель под задачу и бюджет",
+      },
+      {
+        icon: "failover",
+        title: "Автоматическое переключение",
+        description: "Мгновенно переходит на резервную модель при сбое",
+      },
+      {
+        icon: "plug",
+        title: "Интеграция без переделок",
+        description: "API, совместимый с OpenAI — одна строка конфигурации для смены модели",
+      },
+      {
+        icon: "gauge",
+        title: "Точный контроль расхода",
+        description: "Мониторинг в реальном времени, оповещения о бюджете и оплата по токенам",
+      },
+    ],
+  },
+
+  performance: {
+    title: "Реальная производительность",
+    subtitle:
+      "Задержка первого токена и скорость вывода по моделям за последние 7 дней реальных вызовов",
+    windowLabel: "Последние 7 дней",
+    columns: {
+      model: "Модель",
+      vendor: "Провайдер",
+      ttft: "Задержка первого токена",
+      tps: "Скорость вывода",
+    },
+    lowSample: "Мало данных",
+    unavailable: "Данные о производительности временно недоступны",
+    retry: "Повторить",
+    empty: "Пока нет моделей для отображения.",
+    footnote:
+      "Средние значения по реальным вызовам за 7 дней. Задержка — время до первого токена (TTFT) для потоковых вызовов; скорость вывода оценена по общему числу выходных токенов и общему времени. Модели с менее чем 20 примерами помечены. Отсутствующие данные —.",
+  },
+
+  closing: {
+    title: "Готовы подключить все модели?",
+    cta: "Начать бесплатно",
+    note: "Без банковской карты. Тестовые кредиты при регистрации.",
+  },
+
+  footer: {
+    tagline:
+      "Один API для всех основных моделей. Единый доступ, умная маршрутизация, автоматическое переключение и оплата.",
+    columns: [
+      {
+        title: "Продукт",
+        links: [
+          { label: "Модели", href: "#models" },
+          { label: "Тарифы", href: "/pricing" },
+          { label: "Консоль", href: "/dashboard" },
+        ],
+      },
+      {
+        title: "Документация",
+        links: [
+          { label: "Быстрый старт", href: "/docs" },
+          { label: "Справочник API", href: "/docs" },
+          { label: "SDK и примеры", href: "/docs" },
+          { label: "Журнал изменений", href: "/docs" },
+        ],
+      },
+      {
+        title: "Сообщество",
+        links: [
+          { label: "GitHub", href: "#community" },
+          { label: "Discord", href: "#community" },
+          { label: "X", href: "#community" },
+          { label: "Связаться", href: "#community" },
+        ],
+      },
+      {
+        title: "Правовая информация",
+        links: [
+          { label: "Условия использования", href: "/legal/terms" },
+          { label: "Политика конфиденциальности", href: "/legal/privacy" },
+        ],
+      },
+    ],
+    status: { label: "Статус", href: "#status" },
+    copyright: "© 2026 NEWTG",
+  },
+};

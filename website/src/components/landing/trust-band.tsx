@@ -1,4 +1,4 @@
-import { copy } from "@/config/copy";
+import type { Copy } from "@/config/copy";
 
 const container = "mx-auto w-full max-w-[1520px] px-4 min-[621px]:px-6 wide:px-10";
 
@@ -16,7 +16,7 @@ function cellClasses(index: number): string {
   return "border-t border-l border-line px-6 py-5 nav:border-t-0";
 }
 
-export function TrustBand() {
+export function TrustBand({ copy }: { copy: Copy }) {
   return (
     <section aria-label={copy.trust.ariaLabel} className="border-y border-line">
       <div className={container}>

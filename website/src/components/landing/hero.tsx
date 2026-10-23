@@ -1,10 +1,10 @@
 import { Fragment } from "react";
 import { CodeCard } from "@/components/landing/code-card";
-import { copy } from "@/config/copy";
+import type { Copy } from "@/config/copy";
 import { site } from "@/config/site";
 import { highlightCurl } from "@/lib/highlight";
 
-export async function Hero() {
+export async function Hero({ copy }: { copy: Copy }) {
   const html = await highlightCurl(copy.hero.code);
 
   return (
@@ -49,7 +49,7 @@ export async function Hero() {
         </div>
 
         <figure className="rise rise-2 m-0 min-w-0">
-          <CodeCard html={html} code={copy.hero.code} />
+          <CodeCard copy={copy} html={html} code={copy.hero.code} />
         </figure>
       </div>
     </section>

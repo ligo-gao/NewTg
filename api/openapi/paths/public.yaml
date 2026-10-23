@@ -823,19 +823,58 @@ paths:
     get:
       tags: [public]
       operationId: getPublicPricingMetrics
-      summary: 模型性能指标（P1 占位，未实现）
+      summary: 模型性能指标（真实调用平均值）
       description: |
-        本波（M6c）只注册 404：不返回伪造数据。type=not-implemented 以区别于
-        「模型不存在」。
+        从日志库 `usage_logs` 聚合该模型在窗口内的真实调用数据（modules-09
+        F-09-25）：`avg_latency_ms = AVG(latency_ms)`、`avg_ttft_ms =
+        AVG(first_token_ms)`（仅流式调用有值）、`tps =
+        SUM(completion_tokens) / (SUM(latency_ms)/1000)`（近似值）。
+        无样本时对应字段为 null，前端显示「—」，不得回退成 0。
+        样本少于 20 次由前端标注「样本不足」。
       security: []
       parameters:
         - name: model_id
           in: path
           required: true
           schema: {type: string, maxLength: 512}
+        - name: range
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [24h, 7d]
+            default: 24h
+          description: 统计窗口；缺省 24h。
       responses:
+        '200':
+          description: OK
+          headers:
+            ETag:
+              description: 模型 + 窗口 + 分钟桶派生；60 秒陈旧容忍。
+              schema: {type: string}
+            Cache-Control:
+              description: public, max-age=60
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/public.yaml#/schemas/PublicModelMetrics'
+        '304':
+          description: If-None-Match 命中（无 body）
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
         '404':
-          description: 未实现（type=not-implemented）
+          description: 模型不存在或不可公示（type=model-not-found）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          description: 性能数据源未装配（type=metrics-unavailable）
           content:
             application/problem+json:
               schema:

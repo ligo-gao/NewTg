@@ -418,6 +418,7 @@
       "editTitle": "Modifier le canal · {name}",
       "basics": "Informations de base et identifiants",
       "modelsSection": "Modèles et groupes",
+      "fetchModels": "Récupérer depuis l'amont",
       "routing": "Routage et notes",
       "name": "Nom",
       "type": "Type",
@@ -574,6 +575,20 @@
         "24h": "24 h",
         "7d": "7 j"
       }
+    },
+    "fetchModels": {
+      "title": "Récupérer les modèles de l'amont",
+      "description": "Choisissez les modèles exposés par ce canal. La liste provient du catalogue de l'amont.",
+      "loading": "Récupération des modèles…",
+      "error": "Impossible de récupérer la liste des modèles.",
+      "retry": "Réessayer",
+      "searchPlaceholder": "Filtrer les modèles",
+      "selectAll": "Tout sélectionner",
+      "clearAll": "Tout désélectionner",
+      "apply": "Appliquer ({count})",
+      "cancel": "Annuler",
+      "empty": "Aucun modèle correspondant.",
+      "selectedCount": "{count} sélectionnés"
     }
   },
   "tokens": {

@@ -11,10 +11,57 @@ bun run dev --port 3100      # 3000 端口可能被网关占用
 ```
 
 - 开发：http://localhost:3100
-- 构建：`bun run build`
-- 生产：`PORT=3100 bun run start`
+- 构建：`bun run build`（`output: "export"`，产物在 `out/`）
+- 本地预览构建产物：`bunx serve out`
 - 测试：`bun run test`（Vitest + Testing Library）
 - 类型检查：`bun run typecheck`
+
+## 部署
+
+官网以静态导出接入现有 NEWTG 栈，由 Caddy 直接托管：
+
+- `website/out/` 挂载到 edge 容器的 `/srv/marketing`
+- Caddy 用 `@marketing_home` 接管 `/`、`/en/`、`/zh-TW/`、`/fr/`、`/ru/`、`/ja/`、`/vi/`，并用 `@marketing_assets` 接管 `/_next/*`、`/icon.svg`、`/og.png`
+- 其余路径继续落到控制台 SPA（`/srv/web`），所以 `/sign-in`、`/dashboard`、`/pricing`、`/docs` 等保持原路径不变
+- 官网里的「登录 / 免费开始使用 / 控制台 / 文档」分别指向 `/sign-in`、`/sign-up`、`/dashboard`、`/docs`
+
+重新部署：
+
+```bash
+cd website && bun run build
+cd ../deploy && docker compose up -d --force-recreate --no-deps edge
+```
+
+必须带上 `--force-recreate`：Next 每次构建会重建 `out/` 目录，容器里的 bind mount 仍指向旧 inode，只替换文件不会生效。
+
+后端性能接口改动需要重建网关镜像并重建 gateway / worker：
+
+```bash
+docker build --platform linux/arm64 \
+  --build-arg GOPROXY=https://goproxy.cn,direct \
+  -f backend/Dockerfile -t newtg/gateway:dev .
+cd deploy && docker compose up -d --force-recreate --no-deps gateway worker
+```
+
+## 多语言
+
+- 7 种语言，独立静态路由：`/`（简体中文）、`/en/`、`/zh-TW/`、`/fr/`、`/ru/`、`/ja/`、`/vi/`
+- 导航右侧（移动端为顶栏紧凑码 + 抽屉内完整选择器）的语言选择器跳转到对应路由，并把选择写入 `localStorage` 的 `newtg-locale`
+- 文案在 `src/config/copy/<locale>.ts`；`Copy` 接口强制所有语言的字段一致，漏翻会编译失败
+- `next.config.ts` 开启 `trailingSlash`，每种语言导出为 `out/<locale>/index.html`
+- 页面内联脚本在首帧前把 `html lang` 修正为当前语言
+- 当前 7 套文案由本次实现提供；上线前建议由母语者校对 fr / ru / ja / vi / zh-TW
+
+## 明暗主题
+
+- 首次访问跟随系统 `prefers-color-scheme`；导航栏右侧（移动端在汉堡旁）的月亮/太阳按钮手动切换。
+- 手动选择写入 `localStorage` 的 `newtg-theme`，之后优先于系统偏好；再次切换即覆盖。
+- `layout.tsx` 的 `<head>` 内联脚本在首帧前写入 `data-theme`，避免亮暗闪烁；`suppressHydrationWarning` 避免水合告警。
+- 所有颜色收敛为 `globals.css` 中的语义 token（`:root` 亮色 / `[data-theme="dark"]` 暗色），组件只使用 `bg-*` / `text-*` token。
+- 代码块用 shiki 双主题（`github-light` / `github-dark-default`），通过 `--shiki-light` / `--shiki-dark` 变量随主题切换。
+- 亮色主色使用更深的青色 `#077486`（浅底对比度 5.0+）；主按钮仍用亮青底 + 深色文字。
+
+访问：`http://10.211.55.5:8080/`（会 301 到 `https://10.211.55.5:8443/`，自签证书需手动信任）。
 
 ## 结构
 
@@ -29,32 +76,55 @@ src/
     hero.tsx            # 首屏（服务端，shiki）
     code-card.tsx       # curl 卡片 + 复制（客户端）
     trust-band.tsx
+    landing-page.tsx    # 7 种语言共用的页面组合
+    home-data.tsx       # 拉取目录、随机 6 个、拉取性能指标（客户端）
     model-explorer.tsx  # 搜索 / 筛选 / 对比（客户端）
     model-card.tsx
     feature-grid.tsx
-    pricing-section.tsx
+    performance-section.tsx  # 近 7 天真实性能表（客户端）
     closing-cta.tsx
     site-footer.tsx
+  components/
+    language-switcher.tsx  # 7 语言原生选择器（客户端）
   config/
-    copy.ts             # 全站文案（唯一来源）
-    models.ts           # 6 个模型 + 6 家厂商
+    locales.ts          # 语言代码、路由、endonym、OG locale
+    copy/
+      types.ts          # Copy 接口（字段一致性由类型强制）
+      zh-CN.ts          # 简体中文（默认 /）
+      en.ts zh-TW.ts fr.ts ru.ts ja.ts vi.ts
     site.ts             # 域名与链接
   lib/
-    filter-models.ts    # 纯筛选函数
+    pricing-api.ts      # /api/pricing 与 metrics 的类型和请求
+    pricing-filter.ts   # 搜索 + 厂商筛选
+    pricing-format.ts   # 上下文/价格/TTFT/TPS 格式化
+    pick-random.ts      # Fisher–Yates 随机 6 个
     highlight.ts        # shiki
 ```
 
-## 数据与占位
+## 实时数据
 
-- 模型：每个厂商各 1 个，共 6 个；搜索、筛选、对比均基于 `src/config/models.ts`。
-- 价格与延迟为演示数据，页面已注明上线后由后台同步。
+- 模型目录来自 `GET /api/pricing`（匿名，`page_size=100`）。默认从后台可见模型中随机取 6 个；搜索与厂商筛选作用于完整目录（最多渲染前 24 个结果）。
+- 卡片字段全部来自接口：上下文、最大输出、输入/输出价。价格由积分数按 `meta.quota_per_unit` 换算成 `meta.credit_symbol` 货币，按每 1M tokens（或按次）展示；`null` 显示 —，`0` 显示免费。
+- 性能表调用 `GET /api/pricing/{model_id}/metrics?range=7d`，后端从日志库 `usage_logs` 聚合近 7 天真实调用：
+  - 连接时延 = `AVG(first_token_ms)`，仅统计流式调用；无样本为 `null`。
+  - 输出速度 = `SUM(completion_tokens) / (SUM(latency_ms) / 1000)`，为近似值。
+  - 样本少于 20 次标注「样本不足」；无数据显示 —，不显示 0。
+- 性能表与模型卡片使用同一批随机 6 个模型，由 `HomeDataProvider` 统一加载。
+- 后端实现：`backend/internal/httpapi/handlers_public_pricing.go` 与 `backend/internal/store/public_model_metrics_repo.go`；OpenAPI 已同步。
+- 当前部署的 `model_pricing` 与 `usage_logs` 均为空，所以首页显示空态；在后台添加模型并产生调用后会自动出现真实数据。
+
+## 其他占位
+
 - 信任数字（100+ / 99.9% / 10ms / 10,000+）来自需求文案，页面注明「以上线版本为准」；上线前请替换为真实统计。
-- `#console`、`#docs`、`#community`、`#status`、`#terms`、`#privacy` 为页内占位链接。
-- `https://newtg.ai`、`https://api.newtg.ai` 为占位域名，需替换为实际域名。
+- `#community`、`#status` 仍为页内占位；`https://newtg.ai`、`https://api.newtg.ai` 为占位域名。
 - `public/og.png` 由参考稿渲染生成（1200×630）。
 
 ## 验证
 
-- `bun run test`：4 个测试文件、12 个用例通过（筛选纯函数、导航开关、复制成功/失败、模型搜索/筛选/空状态/对比弹窗）。
-- `bun run build`：通过（Next 16.4.2，静态预渲染）。
-- 浏览器 QA：1920 / 1440 / 390 / 375 宽度；375 无横向溢出；桌面导航距左 40px；移动端汉堡菜单、对比栏、弹窗均正常；控制台无报错。
+- `bun run test`：10 个测试文件、35 个用例通过（实时目录、搜索/筛选、空态、对比弹窗、性能表、主题、导航、复制、格式化、随机抽取、语言切换）。
+- `bun run typecheck` / `bun run build`：通过（`/` + 6 个语言路由的静态预渲染）。
+- 多语言实测：7 个路由均 200，标题随语言变化；在浏览器里把选择器切到 `ja` 后跳转 `/ja/`、`html lang=ja`、`newtg-locale=ja`、导航与正文均为日文。
+- 后端：`go test ./internal/httpapi/ ./internal/store/` 通过；公开指标单测覆盖 200 / 404 / 400 / 503 / 304、无样本 null、低样本与 TPS 计算。
+- 接口实测（临时探针，验证后已清理）：近 7 天 4 次调用 → `avg_latency_ms=875`、`avg_ttft_ms=200`、`tps≈85.7`、`sample_size=4`、`success_rate=0.75`。
+- 浏览器 QA：1920 / 1440 / 390 / 375 宽度；375 无横向溢出；移动端汉堡菜单、对比栏、弹窗正常；空库下模型区与性能区显示确定性空态；控制台无报错。
+- 主题 QA：系统亮色 → 亮色；切换后写入 localStorage 并跨刷新保持；系统暗色且无手动选择 → 暗色；两种主题下均无横向溢出与控制台报错。

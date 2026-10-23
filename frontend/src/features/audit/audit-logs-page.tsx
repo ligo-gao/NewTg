@@ -257,7 +257,7 @@ export function AuditLogsPage({ search, onSearchChange }: AuditLogsPageProps) {
   const columnCount = 6 + (capabilities.canFilterByUsername ? 1 : 0)
 
   return (
-    <section className="mx-auto flex max-w-[1440px] flex-col gap-4">
+    <section className="mx-auto flex max-w-[1520px] flex-col gap-4">
       <div className="flex flex-wrap items-baseline justify-between gap-3">
         <h1 className="text-xl font-semibold text-ink-1">
           {t('logs.audit.title')}

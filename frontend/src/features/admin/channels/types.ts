@@ -178,6 +178,22 @@ export interface BatchOperationResult {
 
 export type BatchStatusAction = 'enable' | 'disable'
 
+export interface FetchChannelModelsInput {
+  /** Edit mode: the backend reads the stored base URL / credentials. */
+  channel_id?: number
+  type: string
+  base_url?: string
+  credentials?: {
+    api_key?: string
+    deployment?: string
+    api_version?: string
+  }
+}
+
+export interface FetchChannelModelsResponse {
+  models: string[]
+}
+
 export interface ChannelTestInput {
   model?: string
   stream?: boolean

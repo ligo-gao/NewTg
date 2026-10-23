@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { CodeCard } from "@/components/landing/code-card";
+import { copy } from "@/config/copy";
 
 const CODE = "curl test";
 const HTML = "<pre><code>curl test</code></pre>";
 
 function renderCard() {
-  return render(<CodeCard code={CODE} html={HTML} />);
+  return render(<CodeCard copy={copy} code={CODE} html={HTML} />);
 }
 
 function stubClipboard(writeText: (text: string) => Promise<void>) {

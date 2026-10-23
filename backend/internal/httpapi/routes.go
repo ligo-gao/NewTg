@@ -541,6 +541,7 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 		publicPricing, err := NewPublicPricingHandlers(PublicPricingHandlerConfig{
 			Repo: publicRepo, Config: cfg.Config, Sessions: cfg.Sessions,
 			UserGroups: userGroups, Redis: cfg.Redis, Logger: cfg.Logger,
+			Metrics: publicModelMetricsSource(cfg.LogDB),
 		})
 		if err != nil {
 			return nil, err
@@ -691,4 +692,13 @@ func withSiteTitle(config ConfigReader, checker auth.CompromisedPasswordChecker)
 	}
 	checker.ContextWords = append(checker.ContextWords, title)
 	return checker
+}
+
+// publicModelMetricsSource 是公开性能接口的装配接缝：只有提供日志库时
+// 才挂载真实聚合；缺失时 handler 返回 503，绝不返回伪造数据。
+func publicModelMetricsSource(logDB *sql.DB) store.PublicModelMetricsSource {
+	if logDB == nil {
+		return nil
+	}
+	return store.NewPublicModelMetricsRepo(logDB)
 }

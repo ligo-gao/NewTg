@@ -238,7 +238,7 @@ export function NotificationTemplatesPage({
   const deliveryPageCount = Math.max(1, Math.ceil(deliveryTotal / DELIVERY_PAGE_SIZE))
 
   return (
-    <div className="mx-auto flex max-w-[1440px] flex-col gap-4" data-testid="notification-templates-page">
+    <div className="mx-auto flex max-w-[1520px] flex-col gap-4" data-testid="notification-templates-page">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold text-ink-1">

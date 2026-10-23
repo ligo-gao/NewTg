@@ -233,7 +233,7 @@ export function SubscriptionPlansPage() {
 
   if (meQuery.isError) {
     return (
-      <div className="mx-auto flex max-w-[1440px] flex-col gap-3">
+      <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
         <h1 className="text-xl font-semibold text-ink-1">
           {t('admin.subscriptions.title')}
         </h1>
@@ -251,7 +251,7 @@ export function SubscriptionPlansPage() {
 
   if (!canManage) {
     return (
-      <div className="mx-auto max-w-[1440px] rounded-xl border border-border-hairline bg-surface-card p-8">
+      <div className="mx-auto max-w-[1520px] rounded-xl border border-border-hairline bg-surface-card p-8">
         <h1 className="text-xl font-semibold text-ink-1">
           {t('common.error403.title')}
         </h1>
@@ -263,7 +263,7 @@ export function SubscriptionPlansPage() {
   const writeDisabled = offline || setStatus.isPending || remove.isPending
 
   return (
-    <div className="mx-auto flex max-w-[1440px] flex-col gap-3">
+    <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
           <h1 className="text-xl font-semibold text-ink-1">
@@ -725,7 +725,7 @@ export function SubscriptionPlansPage() {
 
 function PageSkeleton({ title }: { title: string }) {
   return (
-    <div className="mx-auto flex max-w-[1440px] flex-col gap-3">
+    <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
       <h1 className="text-xl font-semibold text-ink-1">{title}</h1>
       <section className="rounded-xl border border-border-hairline bg-surface-card">
         <div className="space-y-2 p-5" aria-busy="true">

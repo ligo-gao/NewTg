@@ -331,7 +331,7 @@ export function PlaygroundPage() {
   const modelsLoading = statusQuery.isPending || walletQuery.isPending
 
   return (
-    <div className="mx-auto flex max-w-4xl flex-col gap-4">
+    <div className="mx-auto flex max-w-[1520px] flex-col gap-4">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold text-ink-1">
           {t('account.playground.title')}

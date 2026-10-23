@@ -218,7 +218,7 @@ export function GroupPricingListPage() {
 
   if (capabilities.loading) {
     return (
-      <div className="mx-auto flex max-w-[1440px] flex-col gap-3">
+      <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
         <h1 className="text-xl font-semibold text-ink-1">
           {t('admin.pricing.group_title')}
         </h1>
@@ -235,7 +235,7 @@ export function GroupPricingListPage() {
 
   if (capabilities.known && !capabilities.canRead) {
     return (
-      <div className="mx-auto max-w-[1440px] rounded-xl border border-border-hairline bg-surface-card p-8">
+      <div className="mx-auto max-w-[1520px] rounded-xl border border-border-hairline bg-surface-card p-8">
         <h1 className="text-xl font-semibold text-ink-1">{t('common.error403.title')}</h1>
         <p className="mt-2 text-sm text-ink-2">{t('common.error403.body')}</p>
       </div>
@@ -243,7 +243,7 @@ export function GroupPricingListPage() {
   }
 
   return (
-    <div className="mx-auto flex max-w-[1440px] flex-col gap-3">
+    <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
       <h1 className="text-xl font-semibold text-ink-1">{t('admin.pricing.group_title')}</h1>
 
       <div role="tablist" aria-label={t('admin.pricing.group_title')} className="flex gap-1">

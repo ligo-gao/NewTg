@@ -71,7 +71,7 @@ export function OrderListPage() {
   }
 
   return (
-    <section className="mx-auto flex max-w-[1440px] flex-col gap-4">
+    <section className="mx-auto flex max-w-[1520px] flex-col gap-4">
       <h1 className="text-xl font-semibold text-ink-1">{t('account.orders.title')}</h1>
 
       <div className="flex flex-wrap items-center gap-3">

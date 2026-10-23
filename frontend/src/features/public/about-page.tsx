@@ -70,7 +70,7 @@ export function AboutPage({ docsUrl }: AboutPageProps) {
   const languageCount = status.data?.languages.length
 
   return (
-    <article className="mx-auto flex max-w-[880px] flex-col gap-12">
+    <article className="flex w-full flex-col gap-12">
       <header className="flex flex-col gap-2">
         <h1 className="text-[20px] font-semibold leading-7 text-ink-1">
           {t('public.about.title', { site: t('public.about.site_name') })}

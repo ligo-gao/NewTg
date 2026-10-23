@@ -1,7 +1,6 @@
 # NewTG edge（Caddy）——HTTP :80 预演 + 自签 HTTPS :443。
 # TLS 证书由 Caddy internal CA 签发；浏览器首次访问需接受证书警告。
 # 净室声明：本文件全新编写。
-
 {
 	# 无管理 API 暴露面。
 	admin off
@@ -66,6 +65,21 @@
 		reverse_proxy gateway:3000 {
 			import reverse_gateway
 		}
+	}
+
+	# 官网首页：静态导出产物接管 `/` 与其自身资源；其余路径继续由控制台 SPA 处理。
+	# 控制台仍保留 /sign-in、/dashboard、/pricing 等原有路由，不做 base path 迁移。
+	@marketing_home path / /en /en/ /zh-TW /zh-TW/ /fr /fr/ /ru /ru/ /ja /ja/ /vi /vi/
+	handle @marketing_home {
+		encode gzip zstd
+		root * /srv/marketing
+		file_server
+	}
+	@marketing_assets path /_next/* /icon.svg /og.png /index.html
+	handle @marketing_assets {
+		encode gzip zstd
+		root * /srv/marketing
+		file_server
 	}
 
 	# 控制台静态产物由 edge 直接托管；API/中继路由在前面的 handle 已先行匹配。

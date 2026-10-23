@@ -716,6 +716,55 @@ paths:
         '503':
           $ref: '../components/responses.yaml#/responses/Error503'
 
+  # 渠道模型目录拉取（只读探针；创建/编辑渠道表单共用）。编辑模式以
+  # channel_id 指定渠道，base_url 与机密凭据按其已保存值兜底（请求显式值优先）。
+  # 权限与凭据揭示同级（channels:manage_sensitive）：请求可能携带明文密钥并
+  # 发往上游。独立桶「10 次/分钟/管理员」，Redis 故障 fail-open（与测试桶同族）。
+  /api/channels/fetch-models:
+    post:
+      tags: [admin]
+      operationId: fetchChannelModels
+      x-required-permission: channels:manage_sensitive
+      summary: 拉取上游渠道支持的模型列表
+      description: |
+        只读探针：不落库、不改渠道，失败不触发自动禁用。请求体必填（`{}`
+        也必须是合法 JSON，否则 400）。未知渠道类型、缺失 api_key、非法
+        base_url → 422；渠道类型已定义但上游模型目录不支持 → 400；
+        channel_id 不存在 → 404；上游模型目录请求失败 → 502；按管理员
+        10 次/分钟限流，超限 429 + Retry-After。响应只含模型 ID，永不回显
+        凭据或上游地址（GC-6）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/ChannelFetchModelsRequest'
+      responses:
+        '200':
+          description: 上游模型目录
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/ChannelFetchModelsResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '502':
+          $ref: '../components/responses.yaml#/responses/Error502'
+
   # ---------------------------------------------------------------------------
   # 定价管理（M3 Task 7 / modules-06 F-06-13/14/16）
   #

@@ -273,9 +273,13 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 模型性能指标（P1 占位，未实现）
-         * @description 本波（M6c）只注册 404：不返回伪造数据。type=not-implemented 以区别于
-         *     「模型不存在」。
+         * 模型性能指标（真实调用平均值）
+         * @description 从日志库 `usage_logs` 聚合该模型在窗口内的真实调用数据（modules-09
+         *     F-09-25）：`avg_latency_ms = AVG(latency_ms)`、`avg_ttft_ms =
+         *     AVG(first_token_ms)`（仅流式调用有值）、`tps =
+         *     SUM(completion_tokens) / (SUM(latency_ms)/1000)`（近似值）。
+         *     无样本时对应字段为 null，前端显示「—」，不得回退成 0。
+         *     样本少于 20 次由前端标注「样本不足」。
          */
         get: operations["getPublicPricingMetrics"];
         put?: never;
@@ -4136,6 +4140,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/channels/fetch-models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 拉取上游渠道支持的模型列表
+         * @description 只读探针：不落库、不改渠道，失败不触发自动禁用。请求体必填（`{}`
+         *     也必须是合法 JSON，否则 400）。未知渠道类型、缺失 api_key、非法
+         *     base_url → 422；渠道类型已定义但上游模型目录不支持 → 400；
+         *     channel_id 不存在 → 404；上游模型目录请求失败 → 502；按管理员
+         *     10 次/分钟限流，超限 429 + Retry-After。响应只含模型 ID，永不回显
+         *     凭据或上游地址（GC-6）。
+         */
+        post: operations["fetchChannelModels"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/channels/{id}/credentials/reveal": {
         parameters: {
             query?: never;
@@ -6228,6 +6257,31 @@ export interface components {
             rate_limits: components["schemas"]["PublicRateLimit"][];
             /** @description 认证头风格；当前实现恒为 bearer。 */
             auth_style: string;
+        };
+        PublicGroupMetric: {
+            group: string;
+            avg_ttft_ms?: number | null;
+            avg_latency_ms?: number | null;
+            success_rate?: number | null;
+        };
+        PublicModelMetrics: {
+            /** @enum {string} */
+            range: "24h" | "7d";
+            window: {
+                /** Format: date-time */
+                start: string;
+                /** Format: date-time */
+                end: string;
+            };
+            summary: {
+                avg_latency_ms?: number | null;
+                avg_ttft_ms?: number | null;
+                success_rate?: number | null;
+                tps?: number | null;
+                failed_24h?: number | null;
+                sample_size: number;
+            };
+            per_group: components["schemas"]["PublicGroupMetric"][];
         };
         /**
          * @description 关闭态固定 {enabled:false}；开启态 {kid, public_key}，enabled 字段缺席。
@@ -9577,6 +9631,39 @@ export interface components {
         ChannelList: components["schemas"]["Page"] & {
             items?: components["schemas"]["Channel"][];
         };
+        /**
+         * @description 上游凭据。api_key 可省略的前提是 channel_id 指向已保存凭据的渠道；
+         *     否则 422（credentials.api_key is required）。凭据只发往上游，永不回显。
+         */
+        ChannelFetchModelsCredentials: {
+            /** @description 上游 API key。 */
+            api_key?: string;
+            /** @description Azure 等渠道的部署名（可选）。 */
+            deployment?: string;
+            /** @description Azure 等渠道的 API 版本（可选）。 */
+            api_version?: string;
+        };
+        ChannelFetchModelsRequest: {
+            /**
+             * Format: int64
+             * @description 编辑模式：从该渠道读取已保存的 base_url 与机密凭据；不存在 404。
+             */
+            channel_id?: number;
+            /**
+             * @description 渠道类型 slug（如 openai、anthropic、gemini）。未知类型 422；类型已
+             *     定义但上游模型目录不支持时 400。
+             */
+            type: string;
+            /**
+             * Format: uri
+             * @description 可选 http/https URL；缺省时使用 channel_id 已保存的 base_url。
+             */
+            base_url?: string;
+            credentials?: components["schemas"]["ChannelFetchModelsCredentials"];
+        };
+        ChannelFetchModelsResponse: {
+            models: string[];
+        };
         ChannelCredentialsRevealRequest: {
             /** @description 揭示目的；纯空白视为缺失（422）。不得包含凭据值或片段。 */
             reason: string;
@@ -10832,7 +10919,10 @@ export interface operations {
     };
     getPublicPricingMetrics: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description 统计窗口；缺省 24h。 */
+                range?: "24h" | "7d";
+            };
             header?: never;
             path: {
                 model_id: string;
@@ -10841,8 +10931,40 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description 未实现（type=not-implemented） */
+            /** @description OK */
+            200: {
+                headers: {
+                    /** @description 模型 + 窗口 + 分钟桶派生；60 秒陈旧容忍。 */
+                    ETag?: string;
+                    /** @description public, max-age=60 */
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicModelMetrics"];
+                };
+            };
+            /** @description If-None-Match 命中（无 body） */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            /** @description 模型不存在或不可公示（type=model-not-found） */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+            /** @description 性能数据源未装配（type=metrics-unavailable） */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -17951,6 +18073,43 @@ export interface operations {
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
             429: components["responses"]["Error429"];
+        };
+    };
+    fetchChannelModels: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChannelFetchModelsRequest"];
+            };
+        };
+        responses: {
+            /** @description 上游模型目录 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelFetchModelsResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            422: components["responses"]["Error422"];
+            429: components["responses"]["Error429"];
+            502: components["responses"]["Error502"];
         };
     };
     revealChannelCredentials: {

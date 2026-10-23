@@ -1707,6 +1707,24 @@ func (e PublicAnnouncementCategory) Valid() bool {
 	}
 }
 
+// Defines values for PublicModelMetricsRange.
+const (
+	PublicModelMetricsRangeN24h PublicModelMetricsRange = "24h"
+	PublicModelMetricsRangeN7d  PublicModelMetricsRange = "7d"
+)
+
+// Valid indicates whether the value is a known member of the PublicModelMetricsRange enum.
+func (e PublicModelMetricsRange) Valid() bool {
+	switch e {
+	case PublicModelMetricsRangeN24h:
+		return true
+	case PublicModelMetricsRangeN7d:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PublicPricingTypeFacetValue.
 const (
 	PublicPricingTypeFacetValueRequest PublicPricingTypeFacetValue = "request"
@@ -3738,6 +3756,24 @@ func (e GetPublicPricingParamsIncludeGroupPrice) Valid() bool {
 	}
 }
 
+// Defines values for GetPublicPricingMetricsParamsRange.
+const (
+	GetPublicPricingMetricsParamsRangeN24h GetPublicPricingMetricsParamsRange = "24h"
+	GetPublicPricingMetricsParamsRangeN7d  GetPublicPricingMetricsParamsRange = "7d"
+)
+
+// Valid indicates whether the value is a known member of the GetPublicPricingMetricsParamsRange enum.
+func (e GetPublicPricingMetricsParamsRange) Valid() bool {
+	switch e {
+	case GetPublicPricingMetricsParamsRangeN24h:
+		return true
+	case GetPublicPricingMetricsParamsRangeN7d:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ListSubscriptionPlansParamsStatus.
 const (
 	ListSubscriptionPlansParamsStatusDisabled ListSubscriptionPlansParamsStatus = "disabled"
@@ -4944,6 +4980,41 @@ type ChannelCredentialsRevealed struct {
 	ApiKey     string  `json:"api_key"`
 	ApiVersion *string `json:"api_version,omitempty"`
 	Deployment *string `json:"deployment,omitempty"`
+}
+
+// ChannelFetchModelsCredentials 上游凭据。api_key 可省略的前提是 channel_id 指向已保存凭据的渠道；
+// 否则 422（credentials.api_key is required）。凭据只发往上游，永不回显。
+type ChannelFetchModelsCredentials struct {
+	// ApiKey 上游 API key。
+	ApiKey *string `json:"api_key,omitempty"`
+
+	// ApiVersion Azure 等渠道的 API 版本（可选）。
+	ApiVersion *string `json:"api_version,omitempty"`
+
+	// Deployment Azure 等渠道的部署名（可选）。
+	Deployment *string `json:"deployment,omitempty"`
+}
+
+// ChannelFetchModelsRequest defines model for ChannelFetchModelsRequest.
+type ChannelFetchModelsRequest struct {
+	// BaseUrl 可选 http/https URL；缺省时使用 channel_id 已保存的 base_url。
+	BaseUrl *string `json:"base_url,omitempty"`
+
+	// ChannelId 编辑模式：从该渠道读取已保存的 base_url 与机密凭据；不存在 404。
+	ChannelId *int64 `json:"channel_id,omitempty"`
+
+	// Credentials 上游凭据。api_key 可省略的前提是 channel_id 指向已保存凭据的渠道；
+	// 否则 422（credentials.api_key is required）。凭据只发往上游，永不回显。
+	Credentials *ChannelFetchModelsCredentials `json:"credentials,omitempty"`
+
+	// Type 渠道类型 slug（如 openai、anthropic、gemini）。未知类型 422；类型已
+	// 定义但上游模型目录不支持时 400。
+	Type string `json:"type"`
+}
+
+// ChannelFetchModelsResponse defines model for ChannelFetchModelsResponse.
+type ChannelFetchModelsResponse struct {
+	Models []string `json:"models"`
 }
 
 // ChannelList GET /api/channels 的 offset 分页信封。
@@ -7184,6 +7255,14 @@ type PublicGroupFacet_Ratio struct {
 	union json.RawMessage
 }
 
+// PublicGroupMetric defines model for PublicGroupMetric.
+type PublicGroupMetric struct {
+	AvgLatencyMs *float32 `json:"avg_latency_ms,omitempty"`
+	AvgTtftMs    *float32 `json:"avg_ttft_ms,omitempty"`
+	Group        string   `json:"group"`
+	SuccessRate  *float32 `json:"success_rate,omitempty"`
+}
+
 // PublicGroupPrice defines model for PublicGroupPrice.
 type PublicGroupPrice struct {
 	CacheRead  PublicGroupPrice_CacheRead  `json:"cache_read"`
@@ -7531,6 +7610,27 @@ type PublicModelDetailReleasedAt1 = interface{}
 type PublicModelDetail_ReleasedAt struct {
 	union json.RawMessage
 }
+
+// PublicModelMetrics defines model for PublicModelMetrics.
+type PublicModelMetrics struct {
+	PerGroup []PublicGroupMetric     `json:"per_group"`
+	Range    PublicModelMetricsRange `json:"range"`
+	Summary  struct {
+		AvgLatencyMs *float32 `json:"avg_latency_ms,omitempty"`
+		AvgTtftMs    *float32 `json:"avg_ttft_ms,omitempty"`
+		Failed24h    *int     `json:"failed_24h,omitempty"`
+		SampleSize   int      `json:"sample_size"`
+		SuccessRate  *float32 `json:"success_rate,omitempty"`
+		Tps          *float32 `json:"tps,omitempty"`
+	} `json:"summary"`
+	Window struct {
+		End   time.Time `json:"end"`
+		Start time.Time `json:"start"`
+	} `json:"window"`
+}
+
+// PublicModelMetricsRange defines model for PublicModelMetrics.Range.
+type PublicModelMetricsRange string
 
 // PublicModelParameter defines model for PublicModelParameter.
 type PublicModelParameter struct {
@@ -10040,6 +10140,13 @@ type ListChannelsParams struct {
 	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
 }
 
+// FetchChannelModelsParams defines parameters for FetchChannelModels.
+type FetchChannelModelsParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
 // RevealChannelCredentialsParams defines parameters for RevealChannelCredentials.
 type RevealChannelCredentialsParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
@@ -10668,6 +10775,15 @@ type GetPublicPricingParamsQuotaType string
 
 // GetPublicPricingParamsIncludeGroupPrice defines parameters for GetPublicPricing.
 type GetPublicPricingParamsIncludeGroupPrice string
+
+// GetPublicPricingMetricsParams defines parameters for GetPublicPricingMetrics.
+type GetPublicPricingMetricsParams struct {
+	// Range 统计窗口；缺省 24h。
+	Range *GetPublicPricingMetricsParamsRange `form:"range,omitempty" json:"range,omitempty"`
+}
+
+// GetPublicPricingMetricsParamsRange defines parameters for GetPublicPricingMetrics.
+type GetPublicPricingMetricsParamsRange string
 
 // GetPublicRankingsParams defines parameters for GetPublicRankings.
 type GetPublicRankingsParams struct {
@@ -11506,6 +11622,9 @@ type RegisterJSONRequestBody = RegisterRequest
 
 // UpdateBillingPreferenceJSONRequestBody defines body for UpdateBillingPreference for application/json ContentType.
 type UpdateBillingPreferenceJSONRequestBody = BillingPreferenceUpdateRequest
+
+// FetchChannelModelsJSONRequestBody defines body for FetchChannelModels for application/json ContentType.
+type FetchChannelModelsJSONRequestBody = ChannelFetchModelsRequest
 
 // RevealChannelCredentialsJSONRequestBody defines body for RevealChannelCredentials for application/json ContentType.
 type RevealChannelCredentialsJSONRequestBody = ChannelCredentialsRevealRequest

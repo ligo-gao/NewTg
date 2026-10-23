@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -89,6 +90,9 @@ type PublicPricingHandlerConfig struct {
 	// Redis 用于 B8 公开只读限流桶；nil 时跳过限流（仅测试装配）。
 	Redis  *redis.Client
 	Logger *slog.Logger
+	// Metrics 是公开性能接口的数据接缝（读日志库 usage_logs）。nil 时
+	// 接口返回 503，而不是伪造 200 空数据。
+	Metrics store.PublicModelMetricsSource
 }
 
 // PublicPricingHandlers 持有公开目录端点依赖，可并发使用。
@@ -99,6 +103,7 @@ type PublicPricingHandlers struct {
 	groups   PublicUserGroupLookup
 	rdb      *redis.Client
 	log      *slog.Logger
+	metrics  store.PublicModelMetricsSource
 }
 
 // NewPublicPricingHandlers 构造公开目录端点。Repo 必填。
@@ -117,6 +122,7 @@ func NewPublicPricingHandlers(cfg PublicPricingHandlerConfig) (*PublicPricingHan
 		groups:   cfg.UserGroups,
 		rdb:      cfg.Redis,
 		log:      logger,
+		metrics:  cfg.Metrics,
 	}, nil
 }
 
@@ -1288,10 +1294,166 @@ func (h *PublicPricingHandlers) handlePublicPricingDetail(w http.ResponseWriter,
 	writeJSON(w, http.StatusOK, detail)
 }
 
-// handlePublicPricingMetrics 是 P1 指标的显式占位：只注册 404，绝不返回
-// 伪造数据（brief 冻结）。返回独立 type，避免前端把「未实现」当成「模型下架」。
+// PublicModelMetricsSummary 是公开性能接口的模型级汇总。
+//
+// 延迟 / TTFT 为毫秒平均值，无样本时为 null；TPS 为
+// completion_tokens / (Σ latency_ms / 1000) 的近似值；success_rate 为
+// status=1 的占比；failed_24h 固定统计最近 24 小时。
+type PublicModelMetricsSummary struct {
+	AvgLatencyMs *float64 `json:"avg_latency_ms"`
+	AvgTTFTMs    *float64 `json:"avg_ttft_ms"`
+	SuccessRate  *float64 `json:"success_rate"`
+	TPS          *float64 `json:"tps"`
+	Failed24h    *int64   `json:"failed_24h"`
+	SampleSize   int64    `json:"sample_size"`
+}
+
+type PublicModelMetricsWindow struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
+}
+
+type PublicGroupMetricsView struct {
+	Group        string   `json:"group"`
+	AvgTTFTMs    *float64 `json:"avg_ttft_ms"`
+	AvgLatencyMs *float64 `json:"avg_latency_ms"`
+	SuccessRate  *float64 `json:"success_rate"`
+}
+
+type PublicModelMetricsResponse struct {
+	Range    string                    `json:"range"`
+	Window   PublicModelMetricsWindow  `json:"window"`
+	Summary  PublicModelMetricsSummary `json:"summary"`
+	PerGroup []PublicGroupMetricsView  `json:"per_group"`
+}
+
+const (
+	publicMetricsCacheControl = "public, max-age=60"
+	publicMetricsRange24h     = "24h"
+	publicMetricsRange7d      = "7d"
+
+	problemTypeMetricsUnavailable = "https://newtg.dev/problems/metrics-unavailable"
+)
+
+func parsePublicMetricsRange(raw string) (time.Duration, string, bool) {
+	switch raw {
+	case "", publicMetricsRange24h:
+		return 24 * time.Hour, publicMetricsRange24h, true
+	case publicMetricsRange7d:
+		return 7 * 24 * time.Hour, publicMetricsRange7d, true
+	default:
+		return 0, "", false
+	}
+}
+
+func roundMillisPtr(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	rounded := math.Round(*value)
+	return &rounded
+}
+
+func publicMetricsETag(modelID, window string, at time.Time) string {
+	sum := sha256.Sum256([]byte(modelID + "|" + window))
+	return `"metrics-v1-` + hex.EncodeToString(sum[:])[:16] + `-` +
+		strconv.FormatInt(at.Unix()/60, 10) + `"`
+}
+
+// handlePublicPricingMetrics 返回模型级真实调用平均值（modules-09 F-09-25）。
+// 数据来自日志库 usage_logs；无样本时输出 null，由前端显示 "—"。
 func (h *PublicPricingHandlers) handlePublicPricingMetrics(w http.ResponseWriter, r *http.Request) {
-	writeProblem(w, http.StatusNotFound, problemTypeNotImplemented, "Not Implemented")
+	if !h.allowPublicRead(w, r) {
+		return
+	}
+	window, label, ok := parsePublicMetricsRange(r.URL.Query().Get("range"))
+	if !ok {
+		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid range")
+		return
+	}
+	if h.metrics == nil {
+		writeProblem(w, http.StatusServiceUnavailable, problemTypeMetricsUnavailable,
+			"Performance data unavailable")
+		return
+	}
+
+	modelID := r.PathValue("model_id")
+	catalog, err := h.repo.LoadPublicPricingCatalog(r.Context())
+	if err != nil {
+		h.log.Error("public pricing metrics: load catalog failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
+	idx := newPublicCatalogIndex(catalog)
+	visible := false
+	for i := range idx.models {
+		if idx.models[i].rec.Model == modelID {
+			visible = true
+			break
+		}
+	}
+	if !visible {
+		h.writeModelNotFound(w)
+		return
+	}
+
+	end := time.Now().UTC()
+	start := end.Add(-window)
+	data, err := h.metrics.LoadPublicModelMetrics(r.Context(), modelID, start, end)
+	if err != nil {
+		h.log.Error("public pricing metrics: load metrics failed", "model", modelID, "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
+
+	summary := PublicModelMetricsSummary{
+		AvgLatencyMs: roundMillisPtr(data.AvgLatencyMs),
+		AvgTTFTMs:    roundMillisPtr(data.AvgTTFTMs),
+		SampleSize:   data.SampleSize,
+	}
+	if data.SampleSize > 0 {
+		successRate := float64(data.SuccessCount) / float64(data.SampleSize)
+		summary.SuccessRate = &successRate
+		failed := data.Failed24h
+		summary.Failed24h = &failed
+	}
+	if data.LatencySumMs > 0 {
+		tps := float64(data.CompletionTokens) / (float64(data.LatencySumMs) / 1000)
+		summary.TPS = &tps
+	}
+
+	groups := make([]PublicGroupMetricsView, 0, len(data.Groups))
+	for _, group := range data.Groups {
+		view := PublicGroupMetricsView{
+			Group:        group.Group,
+			AvgLatencyMs: roundMillisPtr(group.AvgLatencyMs),
+			AvgTTFTMs:    roundMillisPtr(group.AvgTTFTMs),
+		}
+		if group.SampleSize > 0 {
+			successRate := float64(group.SuccessCount) / float64(group.SampleSize)
+			view.SuccessRate = &successRate
+		}
+		groups = append(groups, view)
+	}
+
+	response := PublicModelMetricsResponse{
+		Range: label,
+		Window: PublicModelMetricsWindow{
+			Start: start.Format(time.RFC3339),
+			End:   end.Format(time.RFC3339),
+		},
+		Summary:  summary,
+		PerGroup: groups,
+	}
+
+	etag := publicMetricsETag(modelID, label, end)
+	w.Header().Set("Cache-Control", publicMetricsCacheControl)
+	w.Header().Set("ETag", etag)
+	if etagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h *PublicPricingHandlers) writeModelNotFound(w http.ResponseWriter) {

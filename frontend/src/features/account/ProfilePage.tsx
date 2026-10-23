@@ -71,7 +71,7 @@ export function ProfilePage() {
   const dirty = displayName !== (me.display_name ?? '')
 
   return (
-    <div className="mx-auto flex max-w-[880px] flex-col gap-4">
+    <div className="mx-auto flex max-w-[1520px] flex-col gap-4">
       <section className="rounded-xl border border-border-hairline bg-surface-card p-5">
         <div className="flex items-center gap-3">
           <span

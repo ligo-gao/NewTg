@@ -89,7 +89,7 @@ export function SubscriptionSection() {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-[1080px] flex-col gap-4">
+    <div className="mx-auto flex w-full max-w-[1520px] flex-col gap-4">
       {offline ? (
         <p
           role="status"

@@ -96,7 +96,7 @@
 
 .public-shell .wrap {
   width: 100%;
-  max-width: 1240px;
+  max-width: 1520px;
   margin-inline: auto;
   padding-left: max(24px, env(safe-area-inset-left, 0px));
   padding-right: max(24px, env(safe-area-inset-right, 0px));

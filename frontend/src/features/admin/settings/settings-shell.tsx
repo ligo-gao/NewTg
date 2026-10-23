@@ -134,7 +134,7 @@ export function SettingsShell({ tab, onTabChange }: SettingsShellProps) {
   )
 
   return (
-    <div className="mx-auto flex max-w-[1440px] flex-col gap-4" data-testid="settings-shell">
+    <div className="mx-auto flex max-w-[1520px] flex-col gap-4" data-testid="settings-shell">
       <PageHeader
         crumbs={[
           { label: t('common.console.label') },

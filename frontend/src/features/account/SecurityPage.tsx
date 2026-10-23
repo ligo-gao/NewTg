@@ -173,7 +173,7 @@ export function SecurityPage({
 
   if (forcePasswordChange) {
     return (
-      <div className="mx-auto flex max-w-[880px] flex-col gap-4">
+      <div className="mx-auto flex max-w-[1520px] flex-col gap-4">
         <h1 className="text-xl font-semibold text-ink-1">
           {t('account.security.force_title')}
         </h1>
@@ -183,7 +183,7 @@ export function SecurityPage({
   }
 
   return (
-    <div className="mx-auto flex max-w-[880px] flex-col gap-4">
+    <div className="mx-auto flex max-w-[1520px] flex-col gap-4">
       <h1 className="text-xl font-semibold text-ink-1">{t('account.security.title')}</h1>
       {passwordCard}
       <TwoFaCard />

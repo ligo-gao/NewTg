@@ -78,7 +78,7 @@ export function GroupListPage() {
   }
 
   return (
-    <div className="mx-auto flex max-w-[1200px] flex-col gap-3">
+    <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
       <section className="rounded-xl border border-border-hairline bg-surface-card">
         <div className="flex items-center justify-between border-b border-border-hairline px-5 py-3">
           <h1 className="text-xl font-semibold text-ink-1">{t('admin.groups.title')}</h1>

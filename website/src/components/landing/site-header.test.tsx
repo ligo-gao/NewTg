@@ -1,12 +1,13 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
+import { copy } from "@/config/copy";
 import { SiteHeader } from "./site-header";
 
 describe("SiteHeader", () => {
   it("opens the mobile menu, then closes it when a link is clicked", async () => {
     const user = userEvent.setup();
-    render(<SiteHeader />);
+    render(<SiteHeader copy={copy} locale="zh-CN" />);
 
     const toggle = screen.getByRole("button", { name: "打开导航菜单" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");

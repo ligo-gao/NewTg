@@ -333,7 +333,7 @@ export function ModelPricingListPage({
 
   if (capabilities.loading) {
     return (
-      <div className="mx-auto flex max-w-[1440px] flex-col gap-3">
+      <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
         <h1 className="text-xl font-semibold text-ink-1">{t('admin.pricing.title')}</h1>
         <section className="rounded-xl border border-border-hairline bg-surface-card">
           <div className="space-y-2 p-5" aria-busy="true">
@@ -348,7 +348,7 @@ export function ModelPricingListPage({
 
   if (capabilities.known && !capabilities.canRead) {
     return (
-      <div className="mx-auto max-w-[1440px] rounded-xl border border-border-hairline bg-surface-card p-8">
+      <div className="mx-auto max-w-[1520px] rounded-xl border border-border-hairline bg-surface-card p-8">
         <h1 className="text-xl font-semibold text-ink-1">{t('common.error403.title')}</h1>
         <p className="mt-2 text-sm text-ink-2">{t('common.error403.body')}</p>
       </div>
@@ -356,7 +356,7 @@ export function ModelPricingListPage({
   }
 
   return (
-    <div className="mx-auto flex max-w-[1440px] flex-col gap-3">
+    <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
       <h1 className="text-xl font-semibold text-ink-1">{t('admin.pricing.title')}</h1>
 
       {pluginActive ? (

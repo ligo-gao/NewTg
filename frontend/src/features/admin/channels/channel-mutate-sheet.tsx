@@ -14,6 +14,7 @@ import {
   updateChannel,
 } from './api'
 import { ChannelTypeSelect } from './channel-type-select'
+import { FetchModelsDialog } from './fetch-models-dialog'
 import { Sheet } from './ui/sheet'
 import {
   REQUIRED_BASE_URL_TYPES,
@@ -333,6 +334,7 @@ function ChannelForm({
   const [formError, setFormError] = useState<string | null>(null)
   const [credentialNotice, setCredentialNotice] = useState<string | null>(null)
   const [modelInput, setModelInput] = useState('')
+  const [fetchModelsOpen, setFetchModelsOpen] = useState(false)
   const [showApiKey, setShowApiKey] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   // The optimistic-concurrency baseline. It starts as the loaded channel and
@@ -709,6 +711,7 @@ function ChannelForm({
   }
 
   return (
+    <>
     <form
       id={formId}
       onSubmit={(event) => {
@@ -937,9 +940,18 @@ function ChannelForm({
       </section>
 
       <section className="flex flex-col gap-4">
-        <h3 className="text-[15px] font-semibold text-ink-1">
-          {t('common.channels.form.modelsSection')}
-        </h3>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h3 className="text-[15px] font-semibold text-ink-1">
+            {t('common.channels.form.modelsSection')}
+          </h3>
+          <Button
+            variant="secondary"
+            onClick={() => setFetchModelsOpen(true)}
+            disabled={submitting}
+          >
+            {t('common.channels.form.fetchModels')}
+          </Button>
+        </div>
 
         <Field id={idFor('models')} label={t('common.channels.form.models')} error={errorFor('models')}>
           <div className="flex flex-col gap-2">
@@ -1168,5 +1180,27 @@ function ChannelForm({
         </Button>
       </div>
     </form>
+    <FetchModelsDialog
+      open={fetchModelsOpen}
+      onOpenChange={setFetchModelsOpen}
+      request={{
+        channel_id: mode === 'edit' ? channel?.id : undefined,
+        type: form.type,
+        base_url: form.baseUrl.trim() === '' ? undefined : form.baseUrl.trim(),
+        credentials: {
+          api_key: form.apiKey.trim() === '' ? undefined : form.apiKey.trim(),
+          deployment:
+            form.deployment.trim() === '' ? undefined : form.deployment.trim(),
+          api_version:
+            form.apiVersion.trim() === '' ? undefined : form.apiVersion.trim(),
+        },
+      }}
+      existingModels={form.models}
+      onApply={(models) => {
+        patch('models', models)
+        setModelInput('')
+      }}
+    />
+    </>
   )
 }

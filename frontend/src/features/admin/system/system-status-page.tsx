@@ -235,7 +235,7 @@ export function SystemStatusPage() {
   const mfaAdminPct = mfa?.admin_mfa_coverage_pct ?? 0
 
   return (
-    <div className="mx-auto flex max-w-[1200px] flex-col gap-4" data-testid="system-status-page">
+    <div className="mx-auto flex max-w-[1520px] flex-col gap-4" data-testid="system-status-page">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold text-ink-1">{t('settings.status.title')}</h1>

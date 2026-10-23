@@ -356,6 +356,60 @@ schemas:
         type: string
         description: 失败时是 F-06-06 五值枚举；成功时省略。
 
+  # 渠道模型目录拉取（POST /api/channels/fetch-models）。只读探针：把表单当前
+  # 值（或编辑模式已保存的 base_url/凭据）发往上游模型目录；不落库、不改渠道、
+  # 失败不触发自动禁用。channel_id 存在时，缺省的 base_url/api_key/api_version
+  # 从已保存渠道补齐；请求中的显式值优先。
+  ChannelFetchModelsRequest:
+    type: object
+    additionalProperties: false
+    required: [type]
+    properties:
+      channel_id:
+        type: integer
+        format: int64
+        minimum: 1
+        description: 编辑模式：从该渠道读取已保存的 base_url 与机密凭据；不存在 404。
+      type:
+        type: string
+        description: |
+          渠道类型 slug（如 openai、anthropic、gemini）。未知类型 422；类型已
+          定义但上游模型目录不支持时 400。
+      base_url:
+        type: string
+        format: uri
+        maxLength: 512
+        description: 可选 http/https URL；缺省时使用 channel_id 已保存的 base_url。
+      credentials:
+        $ref: '#/schemas/ChannelFetchModelsCredentials'
+
+  ChannelFetchModelsCredentials:
+    type: object
+    additionalProperties: false
+    description: |
+      上游凭据。api_key 可省略的前提是 channel_id 指向已保存凭据的渠道；
+      否则 422（credentials.api_key is required）。凭据只发往上游，永不回显。
+    properties:
+      api_key:
+        type: string
+        description: 上游 API key。
+      deployment:
+        type: string
+        description: Azure 等渠道的部署名（可选）。
+      api_version:
+        type: string
+        description: Azure 等渠道的 API 版本（可选）。
+
+  ChannelFetchModelsResponse:
+    type: object
+    additionalProperties: false
+    required: [models]
+    properties:
+      models:
+        type: array
+        items:
+          type: string
+
   AdminUser:
     type: object
     additionalProperties: false

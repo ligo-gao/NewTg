@@ -1259,3 +1259,74 @@ schemas:
         format: date-time
         nullable: true
         description: null = 永久有效。
+
+  # 公开模型性能（modules-09 F-09-25；数据源 usage_logs 的真实调用聚合）。
+  # 无样本的字段为 null（前端显示「—」），sample_size 恒有值。
+  PublicModelMetrics:
+    type: object
+    additionalProperties: false
+    required: [range, window, summary, per_group]
+    properties:
+      range:
+        type: string
+        enum: [24h, 7d]
+      window:
+        type: object
+        additionalProperties: false
+        required: [start, end]
+        properties:
+          start: {type: string, format: date-time}
+          end: {type: string, format: date-time}
+      summary:
+        type: object
+        additionalProperties: false
+        required: [sample_size]
+        properties:
+          avg_latency_ms:
+            type: number
+            nullable: true
+            minimum: 0
+          avg_ttft_ms:
+            type: number
+            nullable: true
+            minimum: 0
+          success_rate:
+            type: number
+            nullable: true
+            minimum: 0
+            maximum: 1
+          tps:
+            type: number
+            nullable: true
+            minimum: 0
+          failed_24h:
+            type: integer
+            nullable: true
+            minimum: 0
+          sample_size:
+            type: integer
+            minimum: 0
+      per_group:
+        type: array
+        items:
+          $ref: '#/schemas/PublicGroupMetric'
+
+  PublicGroupMetric:
+    type: object
+    additionalProperties: false
+    required: [group]
+    properties:
+      group: {type: string}
+      avg_ttft_ms:
+        type: number
+        nullable: true
+        minimum: 0
+      avg_latency_ms:
+        type: number
+        nullable: true
+        minimum: 0
+      success_rate:
+        type: number
+        nullable: true
+        minimum: 0
+        maximum: 1

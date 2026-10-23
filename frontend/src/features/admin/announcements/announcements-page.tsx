@@ -228,7 +228,7 @@ export function AnnouncementsPage({
   }
 
   return (
-    <div className="mx-auto flex max-w-[1440px] flex-col gap-4">
+    <div className="mx-auto flex max-w-[1520px] flex-col gap-4">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold text-ink-1">

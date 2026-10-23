@@ -1,15 +1,31 @@
-export type FeatureIconKey = "router" | "failover" | "plug" | "gauge";
+import type { Copy } from "./types";
 
-export const copy = {
+export const zhCN: Copy = {
   brand: "NEWTG",
   skipLink: "跳到主要内容",
+
+  meta: {
+    title: "NEWTG — 一个 API，调用所有主流模型",
+    description:
+      "统一路由 GPT、Claude、Gemini、DeepSeek 等主流模型，支持智能路由、自动降级与统一计费，一套代码随时切换，成本透明可控。",
+    ogAlt: "NEWTG 首页：一个 API，调用所有主流模型",
+  },
+
+  language: {
+    label: "语言",
+  },
+
+  theme: {
+    label: "主题",
+    toggle: "切换主题",
+  },
 
   nav: {
     links: [
       { label: "模型库", href: "#models" },
-      { label: "定价", href: "#pricing" },
-      { label: "文档", href: "#docs" },
-      { label: "控制台", href: "#console" },
+      { label: "定价", href: "/pricing" },
+      { label: "文档", href: "/docs" },
+      { label: "控制台", href: "/dashboard" },
     ],
     login: "登录",
     cta: "免费开始使用",
@@ -71,13 +87,20 @@ export const copy = {
     countUnit: "个模型",
     compare: "对比",
     call: "调用",
-    callHref: "#console",
+    callHref: "/dashboard",
     emptyTitle: "没有匹配的模型。",
     emptyAction: "清除搜索与筛选",
-    footnote: "价格与延迟为演示数据，上线后由后台同步真实报价与监控指标。",
+    emptyCatalog: "后台还没有可公示的模型。",
+    loadError: "模型数据暂时无法加载。",
+    retry: "重试",
+    truncatedNote: "仅显示前 24 个匹配结果。",
+    pricingLink: "查看完整定价",
+    footnote: "模型、上下文与价格来自后台配置，实时同步；价格按每 1M tokens 展示。",
+    badgeFree: "免费",
+    badgePerRequest: "按次",
     stats: {
       context: "上下文",
-      latency: "P50 延迟",
+      maxOutput: "最大输出",
       input: "输入 / 1M",
       output: "输出 / 1M",
     },
@@ -95,9 +118,9 @@ export const copy = {
       rows: {
         vendor: "厂商",
         context: "上下文",
+        maxOutput: "最大输出",
         input: "输入 / 1M",
         output: "输出 / 1M",
-        latency: "P50 延迟",
       },
     },
   },
@@ -129,31 +152,22 @@ export const copy = {
     ],
   },
 
-  pricing: {
-    title: "透明定价，只为实际用量付费",
-    subtitle: "无订阅、无隐藏费用，充多少用多少",
-    facts: [
-      {
-        title: "按 token 计费",
-        description: "只对实际消耗的输入与输出 token 收费，空闲不产生费用。",
-      },
-      {
-        title: "输入输出分别计价",
-        description: "每种模型的输入与输出单价分开展示，用量与费用逐条可查。",
-      },
-      {
-        title: "没有月费",
-        description: "不设订阅与最低消费，账户余额可随时用于所有模型。",
-      },
-    ],
-    caption: "主流模型价格对照（每 1M tokens，美元）",
+  performance: {
+    title: "真实调用性能",
+    subtitle: "基于近 7 天真实调用，按模型统计首字延迟与输出速度",
+    windowLabel: "近 7 天",
     columns: {
       model: "模型",
-      vendor: "厂商",
-      input: "输入",
-      output: "输出",
+      vendor: "提供商",
+      ttft: "连接时延",
+      tps: "token 输出速度",
     },
-    footnote: "以上为演示价格，最终价格以控制台实时报价为准。",
+    lowSample: "样本不足",
+    unavailable: "性能数据暂不可用",
+    retry: "重试",
+    empty: "暂无可展示的模型。",
+    footnote:
+      "数据为近 7 天真实调用的平均值；连接时延取流式调用的首字时间（TTFT），输出速度为总输出 token 与总耗时的估算值。样本少于 20 次的模型标注「样本不足」，无数据显示 —。",
   },
 
   closing: {
@@ -169,17 +183,17 @@ export const copy = {
         title: "产品",
         links: [
           { label: "模型库", href: "#models" },
-          { label: "定价", href: "#pricing" },
-          { label: "控制台", href: "#console" },
+          { label: "定价", href: "/pricing" },
+          { label: "控制台", href: "/dashboard" },
         ],
       },
       {
         title: "文档",
         links: [
-          { label: "快速开始", href: "#docs" },
-          { label: "API 参考", href: "#docs" },
-          { label: "SDK 与示例", href: "#docs" },
-          { label: "更新日志", href: "#docs" },
+          { label: "快速开始", href: "/docs" },
+          { label: "API 参考", href: "/docs" },
+          { label: "SDK 与示例", href: "/docs" },
+          { label: "更新日志", href: "/docs" },
         ],
       },
       {
@@ -191,12 +205,15 @@ export const copy = {
           { label: "联系我们", href: "#community" },
         ],
       },
+      {
+        title: "法律",
+        links: [
+          { label: "服务条款", href: "/legal/terms" },
+          { label: "隐私政策", href: "/legal/privacy" },
+        ],
+      },
     ],
     status: { label: "状态页", href: "#status" },
     copyright: "© 2026 NEWTG",
-    legal: [
-      { label: "服务条款", href: "#terms" },
-      { label: "隐私政策", href: "#privacy" },
-    ],
   },
-} as const;
+};

@@ -318,7 +318,7 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
 
   if (!wideEnough) {
     return (
-      <div className="mx-auto max-w-[1440px] rounded-xl border border-border-hairline bg-surface-card p-8">
+      <div className="mx-auto max-w-[1520px] rounded-xl border border-border-hairline bg-surface-card p-8">
         <h1 className="text-xl font-semibold text-ink-1">{t('admin.redemption.title')}</h1>
         <p className="mt-2 text-sm text-ink-2">{t('admin.redemption.desktop_only')}</p>
       </div>
@@ -326,7 +326,7 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
   }
 
   return (
-    <div className="mx-auto flex max-w-[1440px] flex-col gap-3">
+    <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-ink-1">{t('admin.redemption.title')}</h1>
         <Button onClick={() => setCreateOpen(true)}>{t('admin.redemption.generate')}</Button>

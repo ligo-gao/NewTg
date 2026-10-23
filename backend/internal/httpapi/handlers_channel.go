@@ -98,6 +98,12 @@ var _ ChannelMetricsStore = (*store.ChannelMetricsRepo)(nil)
 // 映射（失败 → 泛化 RFC7807，绝不回传上游 URL/key）。
 type ChannelTester func(ctx context.Context, ch *store.Channel, model string) (latencyMS int, err error)
 
+// ChannelModelLister 是「从上游拉取支持模型」的接缝。生产实现是
+// *channelhealth.ModelLister；测试注入内存实现，避免 HTTP 契约依赖真实上游。
+type ChannelModelLister interface {
+	List(ctx context.Context, req channelhealth.ModelListRequest) ([]string, error)
+}
+
 // ProbeFailureReporter 是手工连通性测试结果的自动禁用接缝（W7/M4-b / R-M4-15）。
 //
 // 生产实现是 *channelhealth.Reporter：与中继/体检共用同一判定
@@ -553,7 +559,10 @@ type revealCredentialsRequest struct {
 
 // ChannelHandlerOptions 是 phase 8B wiring 的注入点。
 type ChannelHandlerOptions struct {
-	Tester      ChannelTester
+	Tester ChannelTester
+	// ModelLister 是渠道表单「从上游获取模型」的出口。nil 时构造默认实现
+	// （OpenAI 兼容 / Anthropic / Gemini 三类协议）。
+	ModelLister ChannelModelLister
 	Idempotency IdempotencyStore
 	// ProbeReporter 是手工连通性测试的自动禁用接缝（W7/M4-b）。nil 时只回写
 	// last_test_*、不做状态判定（测试/降级装配；生产必须注入）。
@@ -593,6 +602,7 @@ type ChannelHandler struct {
 	access        UserAccessStore
 	sealer        *SecretSealer
 	tester        ChannelTester
+	modelLister   ChannelModelLister
 	probeReporter ProbeFailureReporter
 	config        ConfigReader
 	plugins       TaskPluginCatalog
@@ -626,11 +636,16 @@ func NewChannelHandler(channels ChannelStore, access UserAccessStore, sealer *Se
 	if now == nil {
 		now = time.Now
 	}
+	modelLister := opts.ModelLister
+	if modelLister == nil {
+		modelLister = channelhealth.NewModelLister()
+	}
 	return &ChannelHandler{
 		channels:      channels,
 		access:        access,
 		sealer:        sealer,
 		tester:        opts.Tester,
+		modelLister:   modelLister,
 		probeReporter: opts.ProbeReporter,
 		config:        opts.Config,
 		plugins:       opts.Plugins,
@@ -649,6 +664,7 @@ func NewChannelHandler(channels ChannelStore, access UserAccessStore, sealer *Se
 func (h *ChannelHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/channels", h.handleList)
 	mux.HandleFunc("POST /api/channels", h.handleCreate)
+	mux.HandleFunc("POST /api/channels/fetch-models", h.handleFetchModels)
 	mux.HandleFunc("PATCH /api/channels/batch", h.handleBatchStatus)
 	mux.HandleFunc("POST /api/channels/batch-delete", h.handleBatchDelete)
 	mux.HandleFunc("GET /api/channels/{id}", h.handleGet)
@@ -1805,6 +1821,126 @@ func (h *ChannelHandler) handleBatchDelete(w http.ResponseWriter, r *http.Reques
 		}
 		return http.StatusOK, body, true
 	})
+}
+
+// ---------- 上游模型目录 ----------
+
+// fetchChannelModelsRequest 是「从上游获取模型」的请求。
+//
+// 创建模式传 type/base_url/credentials；编辑模式可以只传 channel_id，
+// 由服务端从已保存渠道解出 base_url 与机密凭据（前端详情接口不回显它们）。
+type fetchChannelModelsRequest struct {
+	ChannelID   int64   `json:"channel_id"`
+	Type        string  `json:"type"`
+	BaseURL     *string `json:"base_url"`
+	Credentials struct {
+		APIKey     string `json:"api_key"`
+		Deployment string `json:"deployment"`
+		APIVersion string `json:"api_version"`
+	} `json:"credentials"`
+}
+
+// handleFetchModels 用表单当前值调用上游模型目录。只读探针：不落库、
+// 不改渠道；失败不触发自动禁用。
+func (h *ChannelHandler) handleFetchModels(w http.ResponseWriter, r *http.Request) {
+	if !h.authorize(w, r, PermChannelsManageSensitive) {
+		return
+	}
+	// 与渠道测试同族的独立桶（10/min/管理员，Redis 故障 fail-open）。
+	if h.rdb != nil {
+		over, retryAfter, err := allowRequestRate(r.Context(), h.rdb,
+			ChannelModelFetchRateLimitKey(actorID(r)), ChannelModelFetchRateLimit, ChannelModelFetchRateWindow)
+		if err != nil {
+			h.log.Warn("channel model fetch rate limit check failed; allowing request (fail-open)", "error", err)
+		} else if over {
+			writeRateLimited(w, retryAfter, "Too many model fetch requests")
+			return
+		}
+	} else {
+		h.log.Warn("channel model fetch rate limit store is not configured; allowing request (fail-open)")
+	}
+
+	var req fetchChannelModelsRequest
+	if err := decodeChannelJSON(r, &req); err != nil {
+		writeAPIError(w, invalidRequestError("request body is not valid JSON"))
+		return
+	}
+
+	var ch *store.Channel
+	if req.ChannelID > 0 {
+		loaded, err := h.channels.Get(r.Context(), req.ChannelID)
+		if err != nil {
+			writeAPIError(w, storeErrorResponse(err))
+			return
+		}
+		ch = loaded
+	}
+
+	rawType := strings.TrimSpace(req.Type)
+	if rawType == "" && ch != nil {
+		rawType = ch.Type
+	}
+	channelType := contract.ChannelType(rawType)
+	if !channelType.Valid() {
+		writeAPIError(w, validationError("type", "type is required"))
+		return
+	}
+
+	baseURL := ""
+	if req.BaseURL != nil {
+		baseURL = strings.TrimSpace(*req.BaseURL)
+	}
+	if baseURL == "" && ch != nil && ch.BaseURL != nil {
+		baseURL = strings.TrimSpace(*ch.BaseURL)
+	}
+	if baseURL != "" {
+		if message := validateBaseURL(baseURL); message != "" {
+			writeAPIError(w, validationError("base_url", message))
+			return
+		}
+	}
+
+	apiKey := strings.TrimSpace(req.Credentials.APIKey)
+	apiVersion := strings.TrimSpace(req.Credentials.APIVersion)
+	if (apiKey == "" || apiVersion == "") && ch != nil {
+		if creds, ok := h.existingCredentials(ch); ok {
+			if apiKey == "" {
+				apiKey = strings.TrimSpace(creds.APIKey)
+			}
+			if apiVersion == "" {
+				apiVersion = strings.TrimSpace(creds.APIVersion)
+			}
+		}
+	}
+	if apiKey == "" {
+		writeAPIError(w, validationError("credentials.api_key", "api_key is required"))
+		return
+	}
+
+	models, err := h.modelLister.List(r.Context(), channelhealth.ModelListRequest{
+		ChannelType: channelType,
+		BaseURL:     baseURL,
+		APIKey:      apiKey,
+		APIVersion:  apiVersion,
+	})
+	if err != nil {
+		if errors.Is(err, channelhealth.ErrModelListUnsupported) ||
+			errors.Is(err, channelhealth.ErrModelListConfig) {
+			writeAPIError(w, &apiError{
+				Status: http.StatusBadRequest,
+				Type:   problemTypeValidationFailed,
+				Title:  "Validation failed",
+				Detail: err.Error(),
+			})
+			return
+		}
+		writeProblemDetail(w, http.StatusBadGateway,
+			"https://newtg.dev/problems/upstream-models",
+			"Failed to fetch models", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"models": models})
 }
 
 // ---------- 连通性测试 ----------

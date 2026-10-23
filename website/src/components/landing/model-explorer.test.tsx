@@ -1,108 +1,208 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { HomeDataProvider } from "@/components/landing/home-data";
 import { copy } from "@/config/copy";
-import { vendors } from "@/config/models";
-import { ModelExplorer } from "./model-explorer";
+import { ModelExplorer } from "@/components/landing/model-explorer";
+import type { ModelMetrics, PricingCatalog, PricingModel } from "@/lib/pricing-api";
 
-function articleFor(name: string) {
-  const heading = screen.getByRole("heading", { name });
-  const article = heading.closest("article");
-  if (!(article instanceof HTMLElement)) {
-    throw new Error(`Missing model card for ${name}`);
-  }
-  return within(article);
+const meta = {
+  credit_symbol: "¥",
+  quota_per_unit: 100,
+  usd_exchange_rate: 7.1,
+  version: "test",
+  generated_at: "2026-10-23T00:00:00Z",
+};
+
+function model(
+  modelID: string,
+  displayName: string,
+  vendor: string,
+  overrides: Partial<PricingModel> = {},
+): PricingModel {
+  return {
+    model_id: modelID,
+    display_name: displayName,
+    vendor,
+    context_length: 128000,
+    max_output: 16384,
+    prompt_price: "250",
+    completion_price: "1000",
+    cache_read_price: null,
+    cache_write_price: null,
+    is_free: false,
+    mode: "per_token",
+    description: null,
+    capabilities: [],
+    tags: [],
+    ...overrides,
+  };
 }
 
-describe("ModelExplorer", () => {
-  it("renders all six models and the total count", () => {
-    render(<ModelExplorer />);
+const catalog: PricingCatalog = {
+  items: [
+    model("openai/gpt-4o", "GPT-4o", "OpenAI"),
+    model("deepseek/deepseek-chat", "DeepSeek-V3.2", "DeepSeek", {
+      prompt_price: "28",
+      completion_price: "42",
+    }),
+    model("deepseek/deepseek-reasoner", "DeepSeek-R1", "DeepSeek"),
+    model("anthropic/claude", "Claude Sonnet 4.5", "Anthropic"),
+    model("google/gemini", "Gemini 2.5 Pro", "Google", { is_free: false }),
+    model("qwen/qwen3-max", "Qwen3-Max", "阿里通义"),
+  ],
+  total: "6",
+  page: 1,
+  page_size: 100,
+  facets: {
+    vendors: [
+      { value: "openai", label: "OpenAI", count: 1 },
+      { value: "deepseek", label: "DeepSeek", count: 2 },
+      { value: "anthropic", label: "Anthropic", count: 1 },
+      { value: "google", label: "Google", count: 1 },
+      { value: "阿里通义", label: "阿里通义", count: 1 },
+    ],
+  },
+  meta,
+};
 
-    expect(screen.getAllByRole("article")).toHaveLength(6);
-    expect(screen.getByText(copy.models.countUnit)).toHaveTextContent("6 个模型");
+function metricsFor(modelID: string): ModelMetrics {
+  const lowSample = modelID === "deepseek/deepseek-reasoner";
+  return {
+    range: "7d",
+    window: { start: "2026-10-16T00:00:00Z", end: "2026-10-23T00:00:00Z" },
+    summary: {
+      avg_latency_ms: 820,
+      avg_ttft_ms: 210,
+      success_rate: 0.99,
+      tps: 42.5,
+      failed_24h: 1,
+      sample_size: lowSample ? 5 : 1543,
+    },
+    per_group: [],
+  };
+}
+
+function jsonResponse(body: unknown): Response {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => body,
+  } as Response;
+}
+
+function stubFetch(failMetricsFor?: string) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith("/api/pricing?")) {
+        return Promise.resolve(jsonResponse(catalog));
+      }
+      if (url.includes("/metrics")) {
+        const encoded = url.split("/api/pricing/")[1].split("/metrics")[0];
+        const modelID = decodeURIComponent(encoded);
+        if (modelID === failMetricsFor) {
+          return Promise.resolve({ ok: false, status: 503, json: async () => ({}) } as Response);
+        }
+        return Promise.resolve(jsonResponse(metricsFor(modelID)));
+      }
+      return Promise.resolve({ ok: false, status: 404, json: async () => ({}) } as Response);
+    }),
+  );
+}
+
+function renderExplorer() {
+  return render(
+    <HomeDataProvider>
+      <ModelExplorer copy={copy} />
+    </HomeDataProvider>,
+  );
+}
+
+beforeEach(() => {
+  stubFetch();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("ModelExplorer live data", () => {
+  it("renders the six models returned by the backend with real prices", async () => {
+    renderExplorer();
+
+    await waitFor(() => {
+      expect(screen.getAllByRole("article")).toHaveLength(6);
+    });
+    expect(screen.getByRole("heading", { name: "GPT-4o" })).toBeInTheDocument();
+    expect(screen.getAllByText("¥2.50 / 1M").length).toBeGreaterThan(0);
+    expect(document.querySelector("#models [aria-live]")?.textContent).toContain("6");
   });
 
-  it("filters the grid while typing in the labelled search box", async () => {
+  it("searches the full catalog, not just the six featured models", async () => {
     const user = userEvent.setup();
-    render(<ModelExplorer />);
+    renderExplorer();
+    await screen.findByRole("heading", { name: "GPT-4o" });
 
-    await user.type(screen.getByLabelText(copy.models.searchLabel), "deepseek");
+    await user.type(screen.getByLabelText("搜索模型"), "deepseek");
 
-    expect(screen.getAllByRole("article")).toHaveLength(1);
+    await waitFor(() => {
+      expect(screen.getAllByRole("article")).toHaveLength(2);
+    });
     expect(screen.getByRole("heading", { name: "DeepSeek-V3.2" })).toBeInTheDocument();
-    expect(screen.getByText(copy.models.countUnit)).toHaveTextContent("1 个模型");
+    expect(screen.getByRole("heading", { name: "DeepSeek-R1" })).toBeInTheDocument();
+    expect(document.querySelector("#models [aria-live]")?.textContent).toContain("2");
   });
 
-  it("shows the empty state and resets the filters from it", async () => {
+  it("filters by vendor and resets from the empty state", async () => {
     const user = userEvent.setup();
-    const google = vendors.find((vendor) => vendor.id === "google");
-    if (!google) {
-      throw new Error("Missing Google vendor");
+    renderExplorer();
+    await screen.findByRole("heading", { name: "GPT-4o" });
+
+    await user.click(screen.getByRole("button", { name: "Google" }));
+    await waitFor(() => {
+      expect(screen.getAllByRole("article")).toHaveLength(1);
+    });
+
+    await user.type(screen.getByLabelText("搜索模型"), "zzz");
+    expect(await screen.findByText("没有匹配的模型。")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "清除搜索与筛选" }));
+    await waitFor(() => {
+      expect(screen.getAllByRole("article")).toHaveLength(6);
+    });
+    expect(screen.getByRole("button", { name: "全部" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("compares two live models and clears the selection", async () => {
+    const user = userEvent.setup();
+    renderExplorer();
+    await screen.findByRole("heading", { name: "GPT-4o" });
+
+    const gptCard = screen.getByRole("heading", { name: "GPT-4o" }).closest("article");
+    const claudeCard = screen.getByRole("heading", { name: "Claude Sonnet 4.5" }).closest("article");
+    if (!(gptCard instanceof HTMLElement) || !(claudeCard instanceof HTMLElement)) {
+      throw new Error("missing model cards");
     }
 
-    render(<ModelExplorer />);
-
-    await user.click(screen.getByRole("button", { name: google.name }));
-    const search = screen.getByLabelText(copy.models.searchLabel);
-    await user.type(search, "zzz");
-
-    expect(screen.queryAllByRole("article")).toHaveLength(0);
-    expect(screen.getByText(copy.models.emptyTitle)).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: copy.models.emptyAction }));
-
-    expect(screen.getAllByRole("article")).toHaveLength(6);
-    expect(screen.getByRole("button", { name: copy.models.allVendors })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    expect(search).toHaveValue("");
-    expect(search).toHaveFocus();
-  });
-
-  it("compares two selected models in the dialog and clears the selection", async () => {
-    const user = userEvent.setup();
-    render(<ModelExplorer />);
-
-    const gptCard = articleFor("GPT-4o");
-    const claudeCard = articleFor("Claude Sonnet 4.5");
-
+    await user.click(within(gptCard).getByRole("checkbox", { name: "对比 GPT-4o" }));
     await user.click(
-      gptCard.getByRole("checkbox", { name: `${copy.models.compare} GPT-4o` }),
-    );
-    await user.click(
-      claudeCard.getByRole("checkbox", {
-        name: `${copy.models.compare} Claude Sonnet 4.5`,
-      }),
+      within(claudeCard).getByRole("checkbox", { name: "对比 Claude Sonnet 4.5" }),
     );
 
-    const bar = screen.getByRole("region", { name: copy.models.compareBar.ariaLabel });
+    const bar = screen.getByRole("region", { name: "模型对比" });
     expect(bar).toHaveTextContent("已选 2 个模型");
 
-    await user.click(within(bar).getByRole("button", { name: copy.models.compareBar.open }));
-
-    const dialog = screen.getByRole("dialog", { name: copy.models.dialog.title });
+    await user.click(within(bar).getByRole("button", { name: "对比" }));
+    const dialog = screen.getByRole("dialog", { name: "模型对比" });
     expect((dialog as HTMLDialogElement).open).toBe(true);
-
-    const inDialog = within(dialog);
-    expect(inDialog.getAllByRole("columnheader")).toHaveLength(3);
-    expect(inDialog.getByRole("columnheader", { name: "GPT-4o" })).toBeInTheDocument();
-    expect(inDialog.getByRole("columnheader", { name: "Claude Sonnet 4.5" })).toBeInTheDocument();
-    expect(inDialog.queryByRole("columnheader", { name: "Gemini 2.5 Pro" })).not.toBeInTheDocument();
-
-    await user.click(inDialog.getByRole("button", { name: copy.models.dialog.close }));
-    expect((dialog as HTMLDialogElement).open).toBe(false);
-
-    await user.click(within(bar).getByRole("button", { name: copy.models.compareBar.clear }));
-
-    expect(screen.queryByRole("region", { name: copy.models.compareBar.ariaLabel })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("columnheader", { name: "GPT-4o" })).toBeInTheDocument();
     expect(
-      gptCard.getByRole("checkbox", { name: `${copy.models.compare} GPT-4o` }),
-    ).not.toBeChecked();
-    expect(
-      claudeCard.getByRole("checkbox", {
-        name: `${copy.models.compare} Claude Sonnet 4.5`,
-      }),
-    ).not.toBeChecked();
+      within(dialog).getByRole("columnheader", { name: "Claude Sonnet 4.5" }),
+    ).toBeInTheDocument();
+
+    await user.click(within(bar).getByRole("button", { name: "清除" }));
+    expect(screen.queryByRole("region", { name: "模型对比" })).not.toBeInTheDocument();
   });
 });

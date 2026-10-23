@@ -418,6 +418,7 @@
       "editTitle": "編輯通道 · {name}",
       "basics": "基本資訊與憑證",
       "modelsSection": "模型與群組",
+      "fetchModels": "從上游取得",
       "routing": "路由與備註",
       "name": "名稱",
       "type": "類型",
@@ -574,6 +575,20 @@
         "24h": "24 小時",
         "7d": "7 天"
       }
+    },
+    "fetchModels": {
+      "title": "從上游取得模型",
+      "description": "選擇此渠道對外提供的模型，清單來自上游的模型目錄。",
+      "loading": "正在取得模型…",
+      "error": "無法取得上游模型清單。",
+      "retry": "重試",
+      "searchPlaceholder": "篩選模型",
+      "selectAll": "全選",
+      "clearAll": "清除",
+      "apply": "套用（{count}）",
+      "cancel": "取消",
+      "empty": "沒有符合的模型。",
+      "selectedCount": "已選 {count} 個"
     }
   },
   "tokens": {

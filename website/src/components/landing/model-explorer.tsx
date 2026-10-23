@@ -1,26 +1,14 @@
 "use client";
 
 import { useId, useMemo, useRef, useState, type MouseEvent } from "react";
-import { copy } from "@/config/copy";
-import { models, vendors, type Model, type VendorId } from "@/config/models";
-import { filterModels } from "@/lib/filter-models";
-import { ModelCard } from "./model-card";
+import { ModelCard } from "@/components/landing/model-card";
+import { useHomeData } from "@/components/landing/home-data";
+import type { Copy } from "@/config/copy";
+import { filterPricingModels } from "@/lib/pricing-filter";
+import { formatPrice, formatTokenCount } from "@/lib/pricing-format";
+import type { PricingModel } from "@/lib/pricing-api";
 
-type VendorFilter = VendorId | "all";
-
-interface CompareRow {
-  label: string;
-  value: (model: Model) => string;
-  mono: boolean;
-}
-
-const compareRows: CompareRow[] = [
-  { label: copy.models.dialog.rows.vendor, value: (model) => model.vendorName, mono: false },
-  { label: copy.models.dialog.rows.context, value: (model) => model.context, mono: true },
-  { label: copy.models.dialog.rows.input, value: (model) => model.inputPrice, mono: true },
-  { label: copy.models.dialog.rows.output, value: (model) => model.outputPrice, mono: true },
-  { label: copy.models.dialog.rows.latency, value: (model) => model.latency, mono: true },
-];
+const MAX_RESULTS = 24;
 
 function chipClass(active: boolean): string {
   return [
@@ -31,20 +19,87 @@ function chipClass(active: boolean): string {
   ].join(" ");
 }
 
-export function ModelExplorer() {
+function SkeletonCard() {
+  return (
+    <div className="flex flex-col gap-4 rounded-[10px] border border-line bg-panel p-[18px]">
+      <div className="flex items-center gap-2">
+        <span className="size-1.5 rounded-full bg-line" />
+        <span className="h-3.5 w-28 animate-pulse rounded bg-line-2/60" />
+      </div>
+      <span className="h-3 w-16 animate-pulse rounded bg-line-2/40" />
+      <div className="grid grid-cols-2 gap-3 border-t border-line pt-3.5">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div key={index} className="space-y-1.5">
+            <span className="block h-2.5 w-12 animate-pulse rounded bg-line-2/40" />
+            <span className="block h-3 w-16 animate-pulse rounded bg-line-2/60" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function ModelExplorer({ copy }: { copy: Copy }) {
+  const { catalogStatus, models, featured, meta, vendors, retry } = useHomeData();
   const [query, setQuery] = useState("");
-  const [vendor, setVendor] = useState<VendorFilter>("all");
+  const [vendor, setVendor] = useState("all");
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const searchRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const searchId = useId();
   const dialogTitleId = useId();
 
-  const filtered = useMemo(() => filterModels(models, { query, vendor }), [query, vendor]);
+  const isDefaultView = query.trim() === "" && vendor === "all";
+  const filtered = useMemo(
+    () => filterPricingModels(models, { query, vendor }),
+    [models, query, vendor],
+  );
+  const shown = isDefaultView ? featured : filtered.slice(0, MAX_RESULTS);
+  const truncated = !isDefaultView && filtered.length > MAX_RESULTS;
+
+  const vendorOptions = useMemo(() => {
+    if (vendors.length > 0) {
+      return vendors.map((item) => ({ value: item.value, label: item.label || item.value }));
+    }
+    const unique = new Map<string, string>();
+    models.forEach((model) => {
+      if (!unique.has(model.vendor)) {
+        unique.set(model.vendor, model.vendor);
+      }
+    });
+    return Array.from(unique, ([value, label]) => ({ value, label }));
+  }, [vendors, models]);
 
   const selectedModels = useMemo(
-    () => models.filter((model) => selected.has(model.id)),
-    [selected],
+    () => models.filter((model) => selected.has(model.model_id)),
+    [models, selected],
+  );
+
+  const compareRows = useMemo(
+    () => [
+      { label: copy.models.dialog.rows.vendor, value: (model: PricingModel) => model.vendor, mono: false },
+      {
+        label: copy.models.dialog.rows.context,
+        value: (model: PricingModel) => formatTokenCount(model.context_length),
+        mono: true,
+      },
+      {
+        label: copy.models.dialog.rows.maxOutput,
+        value: (model: PricingModel) => formatTokenCount(model.max_output),
+        mono: true,
+      },
+      {
+        label: copy.models.dialog.rows.input,
+        value: (model: PricingModel) => formatPrice(model.prompt_price, meta, model.mode),
+        mono: true,
+      },
+      {
+        label: copy.models.dialog.rows.output,
+        value: (model: PricingModel) => formatPrice(model.completion_price, meta, model.mode),
+        mono: true,
+      },
+    ],
+    [meta],
   );
 
   function toggleModel(id: string) {
@@ -140,24 +195,45 @@ export function ModelExplorer() {
             >
               {copy.models.allVendors}
             </button>
-            {vendors.map((item) => (
+            {vendorOptions.map((item) => (
               <button
-                key={item.id}
+                key={item.value}
                 type="button"
-                aria-pressed={vendor === item.id}
-                onClick={() => setVendor(item.id)}
-                className={chipClass(vendor === item.id)}
+                aria-pressed={vendor === item.value}
+                onClick={() => setVendor(item.value)}
+                className={chipClass(vendor === item.value)}
               >
-                {item.name}
+                {item.label}
               </button>
             ))}
           </div>
           <p aria-live="polite" className="font-mono text-xs text-faint">
-            <b className="font-medium text-ink-2">{filtered.length}</b> {copy.models.countUnit}
+            <b className="font-medium text-ink-2">{shown.length}</b> {copy.models.countUnit}
           </p>
         </div>
 
-        {filtered.length === 0 ? (
+        {catalogStatus === "loading" ? (
+          <div className="grid grid-cols-1 gap-3 min-[621px]:grid-cols-2 min-[1081px]:grid-cols-3 xwide:grid-cols-4">
+            {Array.from({ length: 6 }).map((_, index) => (
+              <SkeletonCard key={index} />
+            ))}
+          </div>
+        ) : catalogStatus === "error" ? (
+          <div className="rounded-[10px] border border-dashed border-line-2 px-6 py-14 text-center text-sm text-muted">
+            <p>{copy.models.loadError}</p>
+            <button
+              type="button"
+              onClick={retry}
+              className="mt-3 text-[13px] text-cyan underline underline-offset-[3px] transition-colors hover:text-cyan-soft"
+            >
+              {copy.models.retry}
+            </button>
+          </div>
+        ) : models.length === 0 ? (
+          <div className="rounded-[10px] border border-dashed border-line-2 px-6 py-14 text-center text-sm text-muted">
+            {copy.models.emptyCatalog}
+          </div>
+        ) : shown.length === 0 ? (
           <div className="rounded-[10px] border border-dashed border-line-2 px-6 py-14 text-center text-sm text-muted">
             <p>{copy.models.emptyTitle}</p>
             <button
@@ -170,16 +246,27 @@ export function ModelExplorer() {
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-3 min-[621px]:grid-cols-2 min-[1081px]:grid-cols-3 xwide:grid-cols-4">
-            {filtered.map((model) => (
+            {shown.map((model) => (
               <ModelCard
-                key={model.id}
+                key={model.model_id}
+                copy={copy}
                 model={model}
-                checked={selected.has(model.id)}
+                meta={meta}
+                checked={selected.has(model.model_id)}
                 onToggle={toggleModel}
               />
             ))}
           </div>
         )}
+
+        {truncated ? (
+          <p className="mt-3 text-[12px] text-faint">
+            {copy.models.truncatedNote}{" "}
+            <a className="text-cyan hover:text-cyan-soft" href="/pricing">
+              {copy.models.pricingLink}
+            </a>
+          </p>
+        ) : null}
 
         <p className="mt-[18px] text-[11.5px] text-faint">{copy.models.footnote}</p>
       </div>
@@ -188,7 +275,7 @@ export function ModelExplorer() {
         <div
           role="region"
           aria-label={copy.models.compareBar.ariaLabel}
-          className="fixed inset-x-4 bottom-5 z-[70] mx-auto flex max-w-[720px] flex-wrap items-center gap-3.5 rounded-[10px] border border-line-2 bg-panel/95 px-4 py-3 shadow-[0_20px_50px_-20px_rgba(0,0,0,0.9)] backdrop-blur-md sm:flex-nowrap"
+          className="fixed inset-x-4 bottom-5 z-[70] mx-auto flex max-w-[720px] flex-wrap items-center gap-3.5 rounded-[10px] border border-line-2 bg-panel/95 px-4 py-3 panel-shadow backdrop-blur-md sm:flex-nowrap"
         >
           <p className="mr-auto text-[13px] text-ink-2">
             {copy.models.compareBar.selected}{" "}
@@ -212,7 +299,7 @@ export function ModelExplorer() {
         ref={dialogRef}
         aria-labelledby={dialogTitleId}
         onClick={handleDialogClick}
-        className="m-auto max-h-[min(80vh,640px)] w-[calc(100%_-_2rem)] max-w-[760px] rounded-[10px] border border-line-2 bg-panel p-0 text-ink backdrop:bg-[rgba(3,6,11,0.72)] backdrop:backdrop-blur-[3px]"
+        className="m-auto max-h-[min(80vh,640px)] w-[calc(100%_-_2rem)] max-w-[760px] rounded-[10px] border border-line-2 bg-panel p-0 text-ink backdrop:bg-[var(--overlay)] backdrop:backdrop-blur-[3px]"
       >
         <div className="flex items-center justify-between border-b border-line px-5 py-4">
           <h2 id={dialogTitleId} className="text-[15px] font-semibold">
@@ -240,11 +327,11 @@ export function ModelExplorer() {
                 </th>
                 {selectedModels.map((model) => (
                   <th
-                    key={model.id}
+                    key={model.model_id}
                     scope="col"
                     className="border-b border-line px-2 py-2.5 text-left font-mono text-xs font-medium text-faint"
                   >
-                    {model.name}
+                    {model.display_name || model.model_id}
                   </th>
                 ))}
               </tr>
@@ -264,7 +351,7 @@ export function ModelExplorer() {
                     </th>
                     {selectedModels.map((model) => (
                       <td
-                        key={model.id}
+                        key={model.model_id}
                         className={`px-2 py-2.5 text-ink-2 ${row.mono ? "font-mono text-xs" : "text-[13px]"} ${
                           isLastRow ? "" : "border-b border-line"
                         }`}

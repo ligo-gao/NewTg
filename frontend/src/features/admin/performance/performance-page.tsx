@@ -398,7 +398,7 @@ export function PerformancePage() {
 
   if (!wideEnough) {
     return (
-      <div className="mx-auto max-w-[1440px] rounded-xl border border-border-hairline bg-surface-card p-8">
+      <div className="mx-auto max-w-[1520px] rounded-xl border border-border-hairline bg-surface-card p-8">
         <h1 className="text-xl font-semibold text-ink-1">
           {t('admin.performance.page.title')}
         </h1>
@@ -429,7 +429,7 @@ export function PerformancePage() {
 
   return (
     <div
-      className="mx-auto flex max-w-[1440px] flex-col gap-4"
+      className="mx-auto flex max-w-[1520px] flex-col gap-4"
       data-testid="performance-page"
     >
       <header className="flex flex-wrap items-start justify-between gap-3">

@@ -149,7 +149,7 @@ export function AnnouncementPage({ id }: AnnouncementPageProps) {
 
   if (query.isPending) {
     return (
-      <div aria-busy="true" className="mx-auto flex w-full max-w-[760px] flex-col gap-4">
+      <div aria-busy="true" className="flex w-full flex-col gap-4">
         <span className="sr-only">{t('public.announcements.loading')}</span>
         <div className="h-5 w-24 rounded bg-surface-subtle" />
         <div className="h-7 w-2/3 rounded bg-surface-subtle" />
@@ -203,7 +203,7 @@ export function AnnouncementPage({ id }: AnnouncementPageProps) {
     return (
       <div
         role="alert"
-        className="mx-auto flex w-full max-w-[760px] flex-col items-start gap-3 rounded-xl border border-danger-line bg-danger-bg px-5 py-4 text-danger"
+        className="flex w-full flex-col items-start gap-3 rounded-xl border border-danger-line bg-danger-bg px-5 py-4 text-danger"
       >
         <StateIcon kind="error" />
         <h1 className="text-base font-semibold text-ink-1">
@@ -228,7 +228,7 @@ export function AnnouncementPage({ id }: AnnouncementPageProps) {
   return (
     <article
       aria-labelledby="announcement-title"
-      className="mx-auto flex w-full max-w-[760px] flex-col gap-6"
+      className="flex w-full flex-col gap-6"
     >
       <header className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px] leading-5 text-ink-2">

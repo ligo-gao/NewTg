@@ -418,6 +418,7 @@
       "editTitle": "Sửa kênh · {name}",
       "basics": "Thông tin cơ bản và thông tin xác thực",
       "modelsSection": "Mô hình và nhóm",
+      "fetchModels": "Lấy từ upstream",
       "routing": "Định tuyến và ghi chú",
       "name": "Tên",
       "type": "Loại",
@@ -574,6 +575,20 @@
         "24h": "24 giờ",
         "7d": "7 ngày"
       }
+    },
+    "fetchModels": {
+      "title": "Lấy mô hình từ upstream",
+      "description": "Chọn các mô hình mà kênh này cung cấp. Danh sách lấy từ danh mục mô hình của upstream.",
+      "loading": "Đang lấy mô hình…",
+      "error": "Không thể lấy danh sách mô hình từ upstream.",
+      "retry": "Thử lại",
+      "searchPlaceholder": "Lọc mô hình",
+      "selectAll": "Chọn tất cả",
+      "clearAll": "Bỏ chọn",
+      "apply": "Áp dụng ({count})",
+      "cancel": "Hủy",
+      "empty": "Không có mô hình phù hợp.",
+      "selectedCount": "Đã chọn {count}"
     }
   },
   "tokens": {

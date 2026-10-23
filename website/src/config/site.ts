@@ -2,8 +2,8 @@ export const site = {
   name: "NEWTG",
   url: "https://newtg.ai",
   apiBase: "https://api.newtg.ai",
-  loginHref: "#console",
-  startHref: "#start",
-  docsHref: "#docs",
-  consoleHref: "#console",
+  loginHref: "/sign-in",
+  startHref: "/sign-up",
+  docsHref: "/docs",
+  consoleHref: "/dashboard",
 } as const;

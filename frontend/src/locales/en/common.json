@@ -418,6 +418,7 @@
       "editTitle": "Edit Channel · {name}",
       "basics": "Basics & Credentials",
       "modelsSection": "Models & Groups",
+      "fetchModels": "Fetch from upstream",
       "routing": "Routing & Notes",
       "name": "Name",
       "type": "Type",
@@ -574,6 +575,20 @@
         "24h": "24h",
         "7d": "7d"
       }
+    },
+    "fetchModels": {
+      "title": "Fetch upstream models",
+      "description": "Choose the models this channel should expose. The list comes from the upstream's model catalog.",
+      "loading": "Fetching models…",
+      "error": "Could not fetch the upstream model list.",
+      "retry": "Retry",
+      "searchPlaceholder": "Filter models",
+      "selectAll": "Select all",
+      "clearAll": "Clear",
+      "apply": "Apply ({count})",
+      "cancel": "Cancel",
+      "empty": "No matching models.",
+      "selectedCount": "{count} selected"
     }
   },
   "tokens": {

@@ -170,7 +170,7 @@ export function TopupPage() {
   }
 
   return (
-    <div className="mx-auto flex max-w-[1080px] flex-col gap-4">
+    <div className="mx-auto flex max-w-[1520px] flex-col gap-4">
       <BalanceCard balance={balance} quotaPerUnit={config.quota_per_unit} />
 
       <section className="rounded-xl border border-border-hairline bg-surface-card p-5">
