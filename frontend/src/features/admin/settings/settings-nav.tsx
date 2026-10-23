@@ -116,7 +116,7 @@ export function SettingsNav({
     >
       {SETTINGS_NAV_GROUPS.map((group, groupIndex) => (
         <div key={group.id} className={groupIndex === 0 ? undefined : 'mt-3'}>
-          <div className="px-2 pb-1 text-[10.5px] font-semibold uppercase leading-4 tracking-[0.04em] text-ink-3">
+          <div className="px-2 pb-1 text-[10.5px] font-semibold uppercase leading-4 tracking-[0.04em] text-ink-3 group-data-[collapsed=true]:hidden">
             {t(group.labelKey)}
           </div>
           <div className="flex flex-col gap-0.5">
@@ -133,18 +133,24 @@ export function SettingsNav({
                     itemRefs.current[item.tab] = element
                   }}
                   type="button"
+                  aria-label={t(config.labelKey)}
+                  title={t(config.labelKey)}
                   aria-current={current ? 'page' : undefined}
                   tabIndex={current ? 0 : -1}
                   onClick={() => onTabChange(item.tab)}
                   className={cn(
                     'flex min-h-[34px] w-full items-center gap-2 rounded-lg px-2 text-[13px] leading-5 transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                    'group-data-[collapsed=true]:justify-center group-data-[collapsed=true]:px-0',
                     current
                       ? 'bg-brand-subtle font-semibold text-brand'
                       : 'text-ink-2 hover:bg-surface-hover hover:text-ink-1',
                   )}
                 >
                   <NavIcon name={item.icon} className="size-[17px] shrink-0" />
-                  <span className="min-w-0 flex-1 truncate text-left">
+                  <span
+                    data-testid="settings-nav-label"
+                    className="min-w-0 flex-1 truncate text-left group-data-[collapsed=true]:hidden"
+                  >
                     {t(config.labelKey)}
                   </span>
                   {dirty ? (

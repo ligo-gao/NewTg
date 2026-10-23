@@ -109,10 +109,30 @@ describe('AppSidebar', () => {
     expect(back).toBeTruthy()
     expect(back?.textContent).toContain('Back to console')
     expect(container.querySelector('[data-testid="settings-nav-slot"]')).toBeTruthy()
+    expect(
+      container
+        .querySelector('[data-testid="settings-nav-slot"]')
+        ?.getAttribute('data-collapsed'),
+    ).toBe('false')
     expect(container.querySelector('a[href="/tokens"]')).toBeNull()
     expect(container.textContent).not.toContain('Management')
     // The footer collapse control survives the drill-in.
     expect(getByTestId('sidebar-collapse')).toBeTruthy()
+  })
+
+  it('marks the settings slot collapsed so the drill-in can hide its text', async () => {
+    const { container } = await renderSidebar(
+      FULL_ADMIN,
+      '/admin/settings',
+      true,
+      ['common', 'settings'],
+    )
+
+    const slot = container.querySelector('[data-testid="settings-nav-slot"]')
+    expect(slot?.getAttribute('data-collapsed')).toBe('true')
+    expect(slot?.className).toContain('group')
+    expect(slot?.className).toContain('overflow-x-hidden')
+    expect(container.querySelector('a[href="/tokens"]')).toBeNull()
   })
 
   it('treats nested settings routes as settings mode', async () => {

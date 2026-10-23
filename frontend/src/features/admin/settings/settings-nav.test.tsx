@@ -98,6 +98,41 @@ describe('SettingsNav', () => {
     ).toBeNull()
   })
 
+  it('keeps accessible names and titles on every item and marks text for hiding when collapsed', async () => {
+    await renderWithProviders(
+      <div className="group" data-collapsed="true">
+        <SettingsNav tab="site" onTabChange={() => {}} />
+      </div>,
+      ['common', 'settings'],
+    )
+    const nav = screen.getByRole('navigation', { name: 'Settings sections' })
+
+    for (const name of [
+      'Site',
+      'Authentication',
+      'Billing',
+      'Payments',
+      'Rate limits & security',
+      'Notifications',
+      'Request policies',
+    ]) {
+      const button = within(nav).getByRole('button', { name })
+      expect(button.getAttribute('aria-label')).toBe(name)
+      expect(button.getAttribute('title')).toBe(name)
+      expect(button.className).toContain(
+        'group-data-[collapsed=true]:justify-center',
+      )
+      expect(
+        within(button).getByTestId('settings-nav-label').className,
+      ).toContain('group-data-[collapsed=true]:hidden')
+    }
+
+    // Group headings disappear in the collapsed slot, like the root nav.
+    expect(screen.getByText('Site & brand').className).toContain(
+      'group-data-[collapsed=true]:hidden',
+    )
+  })
+
   it('moves focus and selection vertically with the arrow, Home and End keys', async () => {
     const { nav } = await renderNav()
 
