@@ -28,11 +28,23 @@ export type CommandRoutePath =
   | '/security'
   | '/model-config'
   | '/playground'
+  | '/about'
+  | '/pricing'
+  | '/docs'
+  | '/redemption-codes'
   | '/admin/users'
   | '/admin/users/groups'
+  | '/admin/models'
+  | '/admin/channels'
+  | '/admin/subscriptions'
   | '/admin/pricing/model-pricing'
   | '/admin/pricing/group-pricing'
-  | '/admin/channels'
+  | '/admin/settings'
+  | '/admin/system/status'
+  | '/admin/system/audit-logs'
+  | '/admin/system/deployments'
+  | '/admin/system/task-plugins'
+  | '/admin/system/performance'
 
 export interface CommandDefinition {
   id: string
@@ -161,6 +173,66 @@ export const COMMANDS: readonly CommandDefinition[] = [
     to: '/playground',
   },
   {
+    id: 'about',
+    kind: 'route',
+    group: 'pages',
+    labelKey: 'common.nav.about',
+    keywords: ['help', 'info', 'version'],
+    analyticsId: 'nav.about',
+    to: '/about',
+  },
+  {
+    id: 'pricing',
+    kind: 'route',
+    group: 'pages',
+    labelKey: 'common.nav.pricing',
+    keywords: ['plans', 'rates', 'cost'],
+    analyticsId: 'nav.pricing',
+    to: '/pricing',
+  },
+  {
+    id: 'docs',
+    kind: 'route',
+    group: 'pages',
+    labelKey: 'common.nav.docs',
+    keywords: ['documentation', 'guide', 'help'],
+    analyticsId: 'nav.docs',
+    to: '/docs',
+  },
+  {
+    id: 'redemption-codes',
+    kind: 'route',
+    group: 'pages',
+    labelKey: 'common.nav.redemption_codes',
+    keywords: ['admin', 'redeem', 'credits', 'codes'],
+    requiredRole: 'admin',
+    requiredPermission: 'redemption:manage',
+    analyticsId: 'nav.redemption_codes',
+    to: '/redemption-codes',
+  },
+  {
+    id: 'admin-channels',
+    kind: 'route',
+    group: 'pages',
+    labelKey: 'common.nav.channels',
+    keywords: ['admin', 'channels', 'upstream', 'providers'],
+    requiredRole: 'admin',
+    requiredPermission: 'channels:read',
+    analyticsId: 'nav.admin_channels',
+    to: '/admin/channels',
+  },
+  {
+    id: 'admin-models',
+    kind: 'route',
+    group: 'pages',
+    labelKey: 'common.nav.models',
+    keywords: ['admin', 'models', 'catalog', 'upstream'],
+    requiredRole: 'admin',
+    requiredPermission: 'channels:read',
+    analyticsId: 'nav.admin_models',
+    to: '/admin/models',
+  },
+  {
     id: 'admin-users',
     kind: 'route',
     group: 'pages',
@@ -181,6 +253,17 @@ export const COMMANDS: readonly CommandDefinition[] = [
     requiredPermission: 'groups:manage',
     analyticsId: 'nav.admin_groups',
     to: '/admin/users/groups',
+  },
+  {
+    id: 'admin-subscriptions',
+    kind: 'route',
+    group: 'pages',
+    labelKey: 'common.nav.subscriptions',
+    keywords: ['admin', 'plans', 'billing', 'recurring'],
+    requiredRole: 'admin',
+    requiredPermission: 'settings:manage',
+    analyticsId: 'nav.admin_subscriptions',
+    to: '/admin/subscriptions',
   },
   {
     id: 'admin-model-pricing',
@@ -205,15 +288,68 @@ export const COMMANDS: readonly CommandDefinition[] = [
     to: '/admin/pricing/group-pricing',
   },
   {
-    id: 'admin-channels',
+    id: 'admin-settings',
     kind: 'route',
     group: 'pages',
-    labelKey: 'common.nav.channels',
-    keywords: ['admin', 'channels', 'upstream', 'providers'],
+    labelKey: 'common.nav.settings',
+    keywords: ['admin', 'configuration', 'system', 'preferences'],
     requiredRole: 'admin',
-    requiredPermission: 'channels:read',
-    analyticsId: 'nav.admin_channels',
-    to: '/admin/channels',
+    requiredPermission: 'settings:manage',
+    analyticsId: 'nav.admin_settings',
+    to: '/admin/settings',
+  },
+  {
+    id: 'admin-system-status',
+    kind: 'route',
+    group: 'pages',
+    labelKey: 'common.nav.system_status',
+    keywords: ['admin', 'health', 'uptime', 'services'],
+    requiredRole: 'admin',
+    analyticsId: 'nav.admin_system_status',
+    to: '/admin/system/status',
+  },
+  {
+    id: 'admin-operation-logs',
+    kind: 'route',
+    group: 'pages',
+    labelKey: 'common.nav.operation_logs',
+    keywords: ['admin', 'audit', 'events', 'history'],
+    requiredRole: 'admin',
+    analyticsId: 'nav.admin_operation_logs',
+    to: '/admin/system/audit-logs',
+  },
+  {
+    id: 'admin-deployments',
+    kind: 'route',
+    group: 'pages',
+    labelKey: 'common.nav.model_deployments',
+    keywords: ['admin', 'models', 'instances', 'servers'],
+    requiredRole: 'admin',
+    requiredPermission: 'settings:manage',
+    analyticsId: 'nav.admin_deployments',
+    to: '/admin/system/deployments',
+  },
+  {
+    id: 'admin-task-plugins',
+    kind: 'route',
+    group: 'pages',
+    labelKey: 'common.nav.task_plugins',
+    keywords: ['admin', 'plugins', 'tasks', 'extensions'],
+    requiredRole: 'admin',
+    requiredPermission: 'settings:manage',
+    analyticsId: 'nav.admin_task_plugins',
+    to: '/admin/system/task-plugins',
+  },
+  {
+    id: 'admin-performance',
+    kind: 'route',
+    group: 'pages',
+    labelKey: 'common.nav.performance',
+    keywords: ['admin', 'metrics', 'latency', 'throughput'],
+    requiredRole: 'admin',
+    requiredPermission: 'settings:manage',
+    analyticsId: 'nav.admin_performance',
+    to: '/admin/system/performance',
   },
   {
     id: 'copy-page-url',
