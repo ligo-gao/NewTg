@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import type { DictionaryModule } from '@/app/providers/i18n'
 import type { Me } from '@/lib/session'
 import { renderWithProviders } from '@/test-support/providers'
 
@@ -21,6 +22,7 @@ async function renderSidebar(
   me: Me,
   pathname = '/tokens',
   collapsed = false,
+  modules: readonly DictionaryModule[] = ['common'],
 ) {
   const onToggleCollapsed = vi.fn()
   const result = await renderWithProviders(
@@ -31,7 +33,7 @@ async function renderSidebar(
       onToggleCollapsed={onToggleCollapsed}
       playgroundEnabled
     />,
-    ['common'],
+    modules,
   )
   return { ...result, onToggleCollapsed }
 }
@@ -93,5 +95,43 @@ describe('AppSidebar', () => {
     expect(container.textContent).not.toContain('API')
     getByTestId('sidebar-collapse').click()
     expect(onToggleCollapsed).toHaveBeenCalledTimes(1)
+  })
+
+  it('drills into the settings sections instead of the root nav', async () => {
+    const { container, getByTestId } = await renderSidebar(
+      FULL_ADMIN,
+      '/admin/settings',
+      false,
+      ['common', 'settings'],
+    )
+
+    const back = container.querySelector('a[href="/dashboard"]')
+    expect(back).toBeTruthy()
+    expect(back?.textContent).toContain('Back to console')
+    expect(container.querySelector('[data-testid="settings-nav-slot"]')).toBeTruthy()
+    expect(container.querySelector('a[href="/tokens"]')).toBeNull()
+    expect(container.textContent).not.toContain('Management')
+    // The footer collapse control survives the drill-in.
+    expect(getByTestId('sidebar-collapse')).toBeTruthy()
+  })
+
+  it('treats nested settings routes as settings mode', async () => {
+    const { container } = await renderSidebar(
+      FULL_ADMIN,
+      '/admin/settings/payment',
+      false,
+      ['common', 'settings'],
+    )
+
+    expect(container.querySelector('[data-testid="settings-nav-slot"]')).toBeTruthy()
+    expect(container.querySelector('a[href="/tokens"]')).toBeNull()
+  })
+
+  it('keeps the root navigation on a non-settings route', async () => {
+    const { container } = await renderSidebar(FULL_ADMIN, '/admin/users')
+
+    expect(container.querySelector('a[href="/tokens"]')).toBeTruthy()
+    expect(container.querySelector('[data-testid="settings-nav-slot"]')).toBeNull()
+    expect(container.querySelector('a[href="/dashboard"]')).toBeTruthy()
   })
 })

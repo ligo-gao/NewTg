@@ -1,5 +1,14 @@
 {
+  "nav_group": {
+    "site": "Site & brand",
+    "auth": "Authentication",
+    "billing": "Billing & payments",
+    "security": "Security & limits",
+    "notify": "Notifications",
+    "policy": "Request policy"
+  },
   "shell": {
+    "back": "Back to console",
     "title": "Settings",
     "subtitle": "Configure this deployment. Saved sections apply to every instance instantly.",
     "tabs_label": "Settings sections",

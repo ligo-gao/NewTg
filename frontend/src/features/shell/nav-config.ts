@@ -13,6 +13,7 @@ export interface NavItem {
   permission?: string
   /** Hidden when the site-level Playground module is off. */
   requiresPlayground?: true
+  badge?: string
 }
 
 export interface NavGroup {

@@ -286,7 +286,13 @@ describe('SettingsShell contract', () => {
     expect(await screen.findByDisplayValue('https://gateway.example.com')).toBeTruthy()
     expect(screen.getByTestId('settings-section-site')).toBeTruthy()
     expect(screen.getByTestId('settings-section-nav')).toBeTruthy()
-    expect(screen.getByRole('tab', { name: 'Site' }).getAttribute('aria-selected')).toBe('true')
+    // The shared page header replaces the old inline title block.
+    expect(screen.getByTestId('page-header')).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 1, name: 'Settings' })).toBeTruthy()
+    const nav = screen.getByRole('navigation', { name: 'Settings sections' })
+    expect(
+      within(nav).getByRole('button', { name: 'Site' }).getAttribute('aria-current'),
+    ).toBe('page')
   })
 
   it('marks the section dirty and saves only that section with the optimistic token', async () => {
@@ -430,7 +436,8 @@ describe('SettingsShell contract', () => {
 
     const title = await screen.findByLabelText('Site title')
     await user.type(title, '!')
-    await user.click(screen.getByRole('tab', { name: 'Billing' }))
+    const nav = screen.getByRole('navigation', { name: 'Settings sections' })
+    await user.click(within(nav).getByRole('button', { name: 'Billing' }))
 
     expect(await screen.findByText('You have unsaved changes')).toBeTruthy()
     expect(screen.getByRole('alertdialog')).toBeTruthy()
@@ -519,8 +526,10 @@ describe('SettingsShell contract', () => {
 
     await waitFor(() =>
       expect(
-        screen.getByRole('tab', { name: 'Site' }).getAttribute('aria-selected'),
-      ).toBe('true'),
+        within(screen.getByRole('navigation', { name: 'Settings sections' }))
+          .getByRole('button', { name: 'Site' })
+          .getAttribute('aria-current'),
+      ).toBe('page'),
     )
     expect(screen.queryByTestId('settings-section-pay')).toBeNull()
   })
@@ -815,22 +824,51 @@ describe('SettingsShell contract', () => {
     expect(screen.getByDisplayValue('surprise')).toBeTruthy()
   })
 
-  it('moves between tabs with arrow keys and only links the active panel', async () => {
+  it('moves between settings with the arrow keys', async () => {
     await renderShell('site')
 
-    const siteTab = await screen.findByRole('tab', { name: 'Site' })
-    expect(siteTab.getAttribute('aria-controls')).toBe('settings-panel-site')
-    expect(
-      screen.getByRole('tab', { name: 'Billing' }).getAttribute('aria-controls'),
-    ).toBeNull()
+    const nav = screen.getByRole('navigation', { name: 'Settings sections' })
+    const site = within(nav).getByRole('button', { name: 'Site' })
+    expect(site.getAttribute('aria-current')).toBe('page')
 
-    siteTab.focus()
-    fireEvent.keyDown(screen.getByRole('tablist'), { key: 'ArrowRight' })
+    site.focus()
+    fireEvent.keyDown(nav, { key: 'ArrowDown' })
     await waitFor(() => {
       expect(
-        screen.getByRole('tab', { name: 'Authentication' }).getAttribute('aria-selected'),
-      ).toBe('true')
+        within(nav)
+          .getByRole('button', { name: 'Authentication' })
+          .getAttribute('aria-current'),
+      ).toBe('page')
     })
+  })
+
+  it('portals the drill-in nav into the sidebar slot when one exists', async () => {
+    installSettingsHandlers({
+      site: structuredClone(SITE_STATE),
+      nav: structuredClone(NAV_STATE),
+    })
+    const { container } = await renderWithProviders(
+      <>
+        <div id="console-settings-nav-slot" data-testid="settings-nav-slot" />
+        <Harness initial="site" />
+        <ToastViewport />
+      </>,
+      ['common', 'settings'],
+    )
+
+    const slot = container.querySelector('[data-testid="settings-nav-slot"]')
+    expect(slot).toBeTruthy()
+    await waitFor(() => {
+      expect(
+        within(slot as HTMLElement).getByRole('navigation', {
+          name: 'Settings sections',
+        }),
+      ).toBeTruthy()
+    })
+    // Exactly one nav: it moves into the slot instead of rendering twice.
+    expect(
+      screen.getAllByRole('navigation', { name: 'Settings sections' }),
+    ).toHaveLength(1)
   })
 
   it('registers a beforeunload guard while dirty', async () => {

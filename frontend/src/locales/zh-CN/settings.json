@@ -1,5 +1,14 @@
 {
+  "nav_group": {
+    "site": "站点与品牌",
+    "auth": "认证",
+    "billing": "计费与支付",
+    "security": "安全与限制",
+    "notify": "通知",
+    "policy": "请求策略"
+  },
   "shell": {
+    "back": "返回控制台",
     "title": "设置",
     "subtitle": "配置此部署。保存的分区会立即对所有实例生效。",
     "tabs_label": "设置分区",

@@ -1,5 +1,14 @@
 {
+  "nav_group": {
+    "site": "站點與品牌",
+    "auth": "驗證",
+    "billing": "計費與付款",
+    "security": "安全與限制",
+    "notify": "通知",
+    "policy": "請求策略"
+  },
   "shell": {
+    "back": "返回控制台",
     "title": "設定",
     "subtitle": "設定此部署。儲存的分區會立即套用至所有執行個體。",
     "tabs_label": "設定分區",

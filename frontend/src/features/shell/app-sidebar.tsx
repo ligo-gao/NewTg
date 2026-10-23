@@ -31,6 +31,10 @@ export function AppSidebar({
     playgroundEnabled: playgroundEnabled ?? sitePlaygroundEnabled,
   })
   const active = activeNavItem(pathname)
+  // On a settings route the sidebar drills into the settings sections (rendered
+  // into the slot by `SettingsShell`) instead of showing the root navigation.
+  const settingsMode =
+    pathname === '/admin/settings' || pathname.startsWith('/admin/settings/')
 
   return (
     <aside
@@ -61,55 +65,82 @@ export function AppSidebar({
         )}
       </div>
 
-      <nav
-        className="mt-1 flex-1 overflow-y-auto pb-2"
-        aria-label={t('common.app.title')}
-      >
-        {groups.map((group) => (
-          <div key={group.id} className="mt-3 first:mt-1">
-            {collapsed ? null : (
-              <div className="px-2 pb-1 text-[10.5px] font-semibold uppercase leading-4 tracking-[0.04em] text-ink-3">
-                {t(group.labelKey)}
-              </div>
+      {settingsMode ? (
+        <div className="mt-1 flex min-h-0 flex-1 flex-col gap-1 pb-2">
+          <a
+            href="/dashboard"
+            title={t('settings.shell.back')}
+            className={cn(
+              'flex min-h-[34px] items-center gap-2 rounded-lg px-2 text-[13px] leading-5 text-ink-2 transition-colors hover:bg-surface-hover hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+              collapsed && 'justify-center px-0',
             )}
-            <div className="flex flex-col gap-0.5">
-              {group.items.map((item) => {
-                const current = active?.id === item.id
-                return (
-                  <a
-                    key={item.id}
-                    href={item.to}
-                    title={t(item.labelKey)}
-                    aria-current={current ? 'page' : undefined}
-                    className={cn(
-                      'flex min-h-[34px] items-center gap-2 rounded-lg px-2 text-[13px] leading-5 transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
-                      current
-                        ? 'bg-brand-subtle font-semibold text-brand'
-                        : 'text-ink-2 hover:bg-surface-hover hover:text-ink-1',
-                      collapsed && 'justify-center px-0',
-                    )}
-                  >
-                    <NavIcon
-                      name={item.icon}
-                      className="size-[17px] shrink-0"
-                    />
-                    {collapsed ? null : (
-                      <span className="min-w-0 flex-1 truncate">
-                        {t(item.labelKey)}
-                      </span>
-                    )}
-                    {collapsed || item.badge === undefined ? null : (
-                      <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-surface-subtle px-1 text-[10px] text-ink-3">
-                        {item.badge}
-                      </span>
-                    )}
-                  </a>
-                )
-              })}
+          >
+            <span aria-hidden="true" className="shrink-0 text-[15px] leading-none">
+              ←
+            </span>
+            {collapsed ? null : (
+              <span className="min-w-0 flex-1 truncate">
+                {t('settings.shell.back')}
+              </span>
+            )}
+          </a>
+          <div
+            id="console-settings-nav-slot"
+            data-testid="settings-nav-slot"
+            className="flex-1 min-h-0 overflow-y-auto"
+          />
+        </div>
+      ) : (
+        <nav
+          className="mt-1 flex-1 overflow-y-auto pb-2"
+          aria-label={t('common.app.title')}
+        >
+          {groups.map((group) => (
+            <div key={group.id} className="mt-3 first:mt-1">
+              {collapsed ? null : (
+                <div className="px-2 pb-1 text-[10.5px] font-semibold uppercase leading-4 tracking-[0.04em] text-ink-3">
+                  {t(group.labelKey)}
+                </div>
+              )}
+              <div className="flex flex-col gap-0.5">
+                {group.items.map((item) => {
+                  const current = active?.id === item.id
+                  return (
+                    <a
+                      key={item.id}
+                      href={item.to}
+                      title={t(item.labelKey)}
+                      aria-current={current ? 'page' : undefined}
+                      className={cn(
+                        'flex min-h-[34px] items-center gap-2 rounded-lg px-2 text-[13px] leading-5 transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                        current
+                          ? 'bg-brand-subtle font-semibold text-brand'
+                          : 'text-ink-2 hover:bg-surface-hover hover:text-ink-1',
+                        collapsed && 'justify-center px-0',
+                      )}
+                    >
+                      <NavIcon
+                        name={item.icon}
+                        className="size-[17px] shrink-0"
+                      />
+                      {collapsed ? null : (
+                        <span className="min-w-0 flex-1 truncate">
+                          {t(item.labelKey)}
+                        </span>
+                      )}
+                      {collapsed || item.badge === undefined ? null : (
+                        <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-surface-subtle px-1 text-[10px] text-ink-3">
+                          {item.badge}
+                        </span>
+                      )}
+                    </a>
+                  )
+                })}
+              </div>
             </div>
-          </div>
-        ))}
-      </nav>
+          ))}
+        </nav>
+      )}
 
       <div
         className={cn(

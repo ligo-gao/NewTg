@@ -1,5 +1,14 @@
 {
+  "nav_group": {
+    "site": "Site et marque",
+    "auth": "Authentification",
+    "billing": "Facturation et paiements",
+    "security": "Sécurité et limites",
+    "notify": "Notifications",
+    "policy": "Politique de requête"
+  },
   "shell": {
+    "back": "Retour à la console",
     "title": "Paramètres",
     "subtitle": "Configurez ce déploiement. Les sections enregistrées s'appliquent immédiatement à toutes les instances.",
     "tabs_label": "Sections de paramètres",
