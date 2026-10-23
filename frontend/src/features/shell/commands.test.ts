@@ -37,6 +37,22 @@ describe('command registry', () => {
     }
   })
 
+  it('keeps the nav and command permission gates in lockstep', () => {
+    for (const group of NAV_GROUPS) {
+      for (const item of group.items) {
+        const command = requireRouteTo(item.to)
+        expect(command.requiredRole, item.id).toBe(
+          item.adminOnly === true ? 'admin' : undefined,
+        )
+        expect(command.requiredPermission, item.id).toBe(item.permission)
+      }
+    }
+  })
+
+  it('gates the Docs command on a configured docs target', () => {
+    expect(requireRouteTo('/docs').requiresDocs).toBe(true)
+  })
+
   it('allows every route command for a full admin', () => {
     for (const command of routeCommands()) {
       expect(

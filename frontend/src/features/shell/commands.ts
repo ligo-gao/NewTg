@@ -69,6 +69,11 @@ export interface CommandDefinition {
    * command that would silently bounce to `/dashboard`.
    */
   requiresPlayground?: true
+  /**
+   * Entry exists only when the site configures a docs target (`site.docs_url`,
+   * spec §4). The palette hides it otherwise, matching the sidebar.
+   */
+  requiresDocs?: true
 }
 
 export const COMMAND_GROUP_LABEL_KEYS: Record<CommandGroupId, string> = {
@@ -197,6 +202,7 @@ export const COMMANDS: readonly CommandDefinition[] = [
     labelKey: 'common.nav.docs',
     keywords: ['documentation', 'guide', 'help'],
     analyticsId: 'nav.docs',
+    requiresDocs: true,
     to: '/docs',
   },
   {

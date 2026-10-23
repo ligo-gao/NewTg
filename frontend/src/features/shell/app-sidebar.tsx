@@ -1,3 +1,4 @@
+import { useDocsVisible } from '@/features/public/nav-visibility'
 import { usePlaygroundEnabled } from '@/features/playground/visibility'
 import type { Me } from '@/lib/session'
 import { useI18n } from '@/shared/lib/i18n-context'
@@ -16,6 +17,8 @@ export interface AppSidebarProps {
   onToggleCollapsed: () => void
   /** Test/embedding override for the site-level Playground switch. */
   playgroundEnabled?: boolean
+  /** Test/embedding override for the site-level Docs target. */
+  docsVisible?: boolean
 }
 
 export function AppSidebar({
@@ -24,17 +27,21 @@ export function AppSidebar({
   collapsed,
   onToggleCollapsed,
   playgroundEnabled,
+  docsVisible,
 }: AppSidebarProps) {
   const { t } = useI18n()
   const sitePlaygroundEnabled = usePlaygroundEnabled()
+  const siteDocsVisible = useDocsVisible()
   const groups = visibleNavGroups(me, {
     playgroundEnabled: playgroundEnabled ?? sitePlaygroundEnabled,
+    docsVisible: docsVisible ?? siteDocsVisible,
   })
   const active = activeNavItem(pathname)
-  // On a settings route the sidebar drills into the settings sections (rendered
-  // into the slot by `SettingsShell`) instead of showing the root navigation.
-  const settingsMode =
-    pathname === '/admin/settings' || pathname.startsWith('/admin/settings/')
+  // Only the settings tab route owns the drill-in (it is the sole route that
+  // mounts `SettingsShell` into the slot). Standalone pages such as
+  // `/admin/settings/announcements` keep the root navigation — otherwise the
+  // slot would stay empty and the user would be stranded on "Back to console".
+  const settingsMode = pathname.replace(/\/+$/, '') === '/admin/settings'
 
   return (
     <aside

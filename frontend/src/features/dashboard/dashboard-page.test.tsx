@@ -135,6 +135,17 @@ describe('DashboardPage', () => {
     expect(document.body.textContent ?? '').not.toContain('NaN')
   })
 
+  it('names the overview region after the page heading', async () => {
+    installScenario({})
+    renderWithProviders(<DashboardPage />)
+
+    // The visible h2/h1 lives in PageHeader, outside this section; the region
+    // keeps an accessible name of its own (deferred review #18).
+    expect(
+      await screen.findByRole('region', { name: 'Overview' }),
+    ).toBeTruthy()
+  })
+
   it('formats card values, success rate and the pre-deducted/refunded hover', async () => {
     const user = userEvent.setup()
     installScenario({

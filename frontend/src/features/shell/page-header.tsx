@@ -36,27 +36,37 @@ export function PageHeader({
       <div className="min-w-0">
         <nav aria-label={t('common.console.label')}>
           <ol className="mb-[7px] flex flex-wrap items-center gap-[6px] text-[11.5px]">
-            {crumbs.map((crumb, index) => (
-              <li
-                key={`${crumb.label}-${index}`}
-                className="flex items-center gap-[6px]"
-              >
-                {index === 0 ? null : (
-                  <span aria-hidden="true" className="text-ink-3">
-                    /
-                  </span>
-                )}
-                {crumb.to === undefined ? (
-                  <span aria-current="page" className="text-ink-3">
-                    {crumb.label}
-                  </span>
-                ) : (
-                  <a href={crumb.to} className="text-ink-3 hover:text-ink-1">
-                    {crumb.label}
-                  </a>
-                )}
-              </li>
-            ))}
+            {crumbs.map((crumb, index) => {
+              // Only the final crumb is the current page (spec §6). Ancestors
+              // stay plain text even when they carry no link — marking every
+              // `to`-less crumb `aria-current` announced "current page" three
+              // or four times per page.
+              const current = index === crumbs.length - 1
+              return (
+                <li
+                  key={`${crumb.label}-${index}`}
+                  className="flex items-center gap-[6px]"
+                >
+                  {index === 0 ? null : (
+                    <span aria-hidden="true" className="text-ink-3">
+                      /
+                    </span>
+                  )}
+                  {crumb.to === undefined ? (
+                    <span
+                      aria-current={current ? 'page' : undefined}
+                      className="text-ink-3"
+                    >
+                      {crumb.label}
+                    </span>
+                  ) : (
+                    <a href={crumb.to} className="text-ink-3 hover:text-ink-1">
+                      {crumb.label}
+                    </a>
+                  )}
+                </li>
+              )
+            })}
           </ol>
         </nav>
         <h1 className="text-[21px] leading-7 font-semibold tracking-[-0.01em] text-ink-1">

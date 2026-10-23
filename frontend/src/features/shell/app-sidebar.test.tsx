@@ -23,6 +23,7 @@ async function renderSidebar(
   pathname = '/tokens',
   collapsed = false,
   modules: readonly DictionaryModule[] = ['common'],
+  docsVisible?: boolean,
 ) {
   const onToggleCollapsed = vi.fn()
   const result = await renderWithProviders(
@@ -32,6 +33,7 @@ async function renderSidebar(
       collapsed={collapsed}
       onToggleCollapsed={onToggleCollapsed}
       playgroundEnabled
+      docsVisible={docsVisible}
     />,
     modules,
   )
@@ -135,16 +137,51 @@ describe('AppSidebar', () => {
     expect(container.querySelector('a[href="/tokens"]')).toBeNull()
   })
 
-  it('treats nested settings routes as settings mode', async () => {
+  it('trims a trailing slash when matching the settings tab route', async () => {
     const { container } = await renderSidebar(
       FULL_ADMIN,
-      '/admin/settings/payment',
+      '/admin/settings/',
       false,
       ['common', 'settings'],
     )
 
     expect(container.querySelector('[data-testid="settings-nav-slot"]')).toBeTruthy()
+    expect(container.textContent).toContain('Back to console')
     expect(container.querySelector('a[href="/tokens"]')).toBeNull()
+  })
+
+  it('keeps the root navigation on settings sub-pages that mount their own page', async () => {
+    const { container } = await renderSidebar(
+      FULL_ADMIN,
+      '/admin/settings/announcements',
+      false,
+      ['common', 'settings'],
+    )
+
+    // `/admin/settings/announcements` does not mount `SettingsShell`, so the
+    // drill-in slot would stay empty and hide the whole navigation.
+    expect(container.querySelector('a[href="/tokens"]')).toBeTruthy()
+    expect(container.querySelector('[data-testid="settings-nav-slot"]')).toBeNull()
+    expect(container.querySelector('a[title="Back to console"]')).toBeNull()
+    expect(container.textContent).not.toContain('Back to console')
+  })
+
+  it('hides Docs until a docs target is configured', async () => {
+    const { container } = await renderSidebar(FULL_ADMIN)
+
+    expect(container.querySelector('a[href="/docs"]')).toBeNull()
+  })
+
+  it('shows Docs when the site has a docs target', async () => {
+    const { container } = await renderSidebar(
+      FULL_ADMIN,
+      '/tokens',
+      false,
+      ['common'],
+      true,
+    )
+
+    expect(container.querySelector('a[href="/docs"]')).toBeTruthy()
   })
 
   it('keeps the root navigation on a non-settings route', async () => {

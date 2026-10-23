@@ -20,9 +20,10 @@ import {
 import { NavIcon } from './nav-icon'
 import { activeNavItem } from './nav-config'
 
-const SIDEBAR_STORAGE_KEY = 'newtg.console.sidebar'
+export const SIDEBAR_STORAGE_KEY = 'newtg.console.sidebar'
 
-function readCollapsed(): boolean {
+/** Stored preference wins; otherwise narrow viewports start collapsed. */
+export function readCollapsed(): boolean {
   try {
     if (typeof window === 'undefined') return false
     const stored = window.localStorage.getItem(SIDEBAR_STORAGE_KEY)
@@ -37,7 +38,7 @@ function readCollapsed(): boolean {
   }
 }
 
-function writeCollapsed(collapsed: boolean): void {
+export function writeCollapsed(collapsed: boolean): void {
   try {
     window.localStorage.setItem(
       SIDEBAR_STORAGE_KEY,

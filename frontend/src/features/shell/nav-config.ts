@@ -232,6 +232,11 @@ export const NAV_GROUPS: readonly NavGroup[] = [
 export interface VisibleNavOptions {
   /** `nav.modules.chat.playground`; defaults to true. */
   playgroundEnabled?: boolean
+  /**
+   * `site.docs_url` is configured (spec §4). The Help → Docs entry exists only
+   * when a docs target is set, so it defaults to hidden.
+   */
+  docsVisible?: boolean
 }
 
 function canUse(
@@ -257,6 +262,7 @@ export function visibleNavGroups(
       if (item.requiresPlayground === true && options.playgroundEnabled === false) {
         return false
       }
+      if (item.id === 'docs' && options.docsVisible !== true) return false
       return true
     }),
   })).filter((group) => group.items.length > 0)

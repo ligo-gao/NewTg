@@ -72,7 +72,7 @@ export function DashboardPage() {
         })
 
   return (
-    <section className="mt-6">
+    <section className="mt-6" aria-label={t('common.dashboard.title')}>
       <PageHeader
         crumbs={[
           { label: t('common.console.label') },

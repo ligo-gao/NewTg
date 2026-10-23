@@ -1,4 +1,11 @@
-import type { PublicNav, PublicNavEntry } from '@/lib/public-status'
+import { useQueryClient } from '@tanstack/react-query'
+
+import {
+  PUBLIC_STATUS_QUERY_KEY,
+  type PublicNav,
+  type PublicNavEntry,
+  type PublicStatus,
+} from '@/lib/public-status'
 
 /**
  * F-09-34 navigation visibility (modules-09 C3).
@@ -110,6 +117,19 @@ export function visibleNavItems(
     items.push({ key, href, external: key === 'docs' && isExternalHref(href) })
   }
   return items
+}
+
+/**
+ * Console-side Docs visibility (spec §4): the Help → Docs entry exists only
+ * when a docs target is configured. Reads the `['public','status']` snapshot
+ * the root guard already wrote — no extra request — and fails hidden while the
+ * cache is absent, because an unconfigured target is the default.
+ */
+export function useDocsVisible(): boolean {
+  const status = useQueryClient().getQueryData<PublicStatus>(PUBLIC_STATUS_QUERY_KEY)
+  return status === undefined
+    ? false
+    : isNavEntryVisible(status.nav, 'docs', true, status.site?.docs_url)
 }
 
 /**

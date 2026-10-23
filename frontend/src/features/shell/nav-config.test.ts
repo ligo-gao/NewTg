@@ -61,6 +61,13 @@ describe('nav-config', () => {
     expect(ids).not.toContain('groups')
   })
 
+  it('hides Docs unless a docs target is configured', () => {
+    expect(itemIds(visibleNavGroups(FULL_ADMIN))).not.toContain('docs')
+    expect(
+      itemIds(visibleNavGroups(FULL_ADMIN, { docsVisible: true })),
+    ).toContain('docs')
+  })
+
   it('picks the longest matching route', () => {
     expect(activeNavItem('/dashboard/usage-logs')?.id).toBe('usage-logs')
     expect(activeNavItem('/dashboard/audit-logs')?.id).toBe('audit-logs')

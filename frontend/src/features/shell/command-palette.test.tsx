@@ -409,6 +409,39 @@ describe('command palette session routes (web-00 §15.1)', () => {
     // The rest of the session pages is unaffected.
     expect(screen.getByRole('status').textContent).toContain('No results')
   })
+
+  it('hides Docs until a docs target is configured', async () => {
+    const user = userEvent.setup()
+    await renderHarness(ME_USER)
+
+    const input = await openPalette()
+    await user.type(input, 'docs')
+    await waitFor(() => {
+      expect(screen.queryByRole('option', { name: /Docs/ })).toBeNull()
+    })
+  })
+
+  it('shows Docs when site.docs_url is configured', async () => {
+    installMe(ME_USER)
+    await loadDictionary('en', 'common')
+    const queryClient = createQueryClient()
+    // Seeded by the root guard; the palette only reads the snapshot.
+    queryClient.setQueryData(PUBLIC_STATUS_QUERY_KEY, {
+      site: { docs_url: 'https://docs.example.com' },
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <I18nProvider modules={['common']}>
+          <CommandPalette open onOpenChange={() => {}} onNavigate={() => {}} />
+        </I18nProvider>
+      </QueryClientProvider>,
+    )
+
+    const input = await screen.findByRole('combobox')
+    await userEvent.setup().type(input, 'docs')
+    expect(await screen.findByRole('option', { name: /Docs/ })).toBeTruthy()
+  })
 })
 
 describe('command palette global listener lifecycle', () => {

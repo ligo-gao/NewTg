@@ -43,9 +43,36 @@ describe('PageHeader', () => {
     const current = within(nav).getByText('API tokens')
     expect(current.tagName).toBe('SPAN')
     expect(current.getAttribute('aria-current')).toBe('page')
+    expect(nav.querySelectorAll('[aria-current="page"]')).toHaveLength(1)
     expect(
       within(nav).queryByRole('link', { name: 'API tokens' }),
     ).toBeNull()
+  })
+
+  it('marks only the final crumb as the current page', async () => {
+    const { getByRole } = await renderWithProviders(
+      <PageHeader
+        crumbs={[
+          { label: 'Console' },
+          { label: 'Workspace' },
+          { label: 'Dashboard' },
+        ]}
+        title="Dashboard"
+      />,
+      ['common'],
+    )
+
+    const nav = getByRole('navigation', { name: 'Console' })
+    const current = nav.querySelectorAll('[aria-current="page"]')
+    expect(current).toHaveLength(1)
+    expect(current[0]).toBe(within(nav).getByText('Dashboard'))
+
+    // Ancestors without a link are plain text, not additional current pages.
+    for (const label of ['Console', 'Workspace']) {
+      expect(within(nav).getByText(label).hasAttribute('aria-current')).toBe(
+        false,
+      )
+    }
   })
 
   it('omits the description paragraph when none is given', async () => {
