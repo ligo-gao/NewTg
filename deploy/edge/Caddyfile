@@ -68,12 +68,12 @@
 		}
 	}
 
-	# M0 冻结："/" 指 gateway（未启用 web profile 时由 gateway 托管静态产物；
-	# 启用 web profile 后再切 web:80）。SSE/WS 已由 /v1/* 路由排除，此处压缩仅及静态。
+	# 控制台静态产物由 edge 直接托管；API/中继路由在前面的 handle 已先行匹配。
+	# try_files 回退到 index.html，保证 /sign-in、/setup 等客户端路由可直接打开。
 	handle {
 		encode gzip zstd
-		reverse_proxy gateway:3000 {
-			import reverse_gateway
-		}
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
 	}
 }
