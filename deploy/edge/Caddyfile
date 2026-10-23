@@ -82,7 +82,12 @@
 	import newtg_site
 }
 
-:443 {
+https://10.211.55.5:8443 {
+	tls internal
+	import newtg_site
+}
+
+https://localhost:8443 {
 	tls internal
 	import newtg_site
 }
