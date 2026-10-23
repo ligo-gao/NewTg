@@ -45,6 +45,7 @@ services:
     restart: unless-stopped
     ports:
       - "8080:80"
+      - "8443:443"
     environment:
       TLS_MIN_VERSION: "${TLS_MIN_VERSION:-1.2}"
     command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
