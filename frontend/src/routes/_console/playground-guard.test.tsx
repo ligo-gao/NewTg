@@ -4,7 +4,7 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
@@ -61,15 +61,41 @@ const MODEL_PERF = {
 
 const server = setupServer()
 
+const originalMatchMedia = window.matchMedia
+
 beforeAll(() => {
   server.listen({ onUnhandledRequest: 'error' })
   window.scrollTo = () => {}
 })
-afterEach(() => server.resetHandlers())
+afterEach(() => {
+  server.resetHandlers()
+  // The viewport stub is per-test state; restore jsdom's default afterwards.
+  window.matchMedia = originalMatchMedia
+})
 afterAll(() => server.close())
+
+/**
+ * The console shell is wide-screen only. jsdom's `matchMedia` never matches, so
+ * without a stub `ConsoleShell` would render its gate instead of the sidebar.
+ */
+function installDesktopViewport(): void {
+  window.matchMedia = ((query: string) => ({
+    matches: query === '(min-width: 1024px)',
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia
+}
 
 function installSession(playground: boolean) {
   server.use(
+    http.get(`${ORIGIN}/api/notifications/unread-count`, () =>
+      HttpResponse.json({ unread: 0 }),
+    ),
     http.get(`${ORIGIN}/api/notifications`, () =>
       HttpResponse.json({ items: [], total: 0, page: 1, page_size: 100 }),
     ),
@@ -121,6 +147,7 @@ function installSession(playground: boolean) {
 }
 
 function renderAt(path: string) {
+  installDesktopViewport()
   const queryClient = createQueryClient()
   const router = createRouter({
     routeTree,
@@ -140,24 +167,27 @@ function renderAt(path: string) {
 describe('playground route guard (TC-F-02-19-05)', () => {
   it('redirects a direct link to /dashboard when the site disables Playground', async () => {
     installSession(false)
-    const { router } = renderAt('/playground')
+    const { router, container } = renderAt('/playground')
 
     await waitFor(() => {
       expect(router.state.location.pathname).toBe('/dashboard')
     })
     await waitFor(() => {
-      expect(screen.queryByRole('group', { name: 'Chat' })).toBeNull()
+      expect(container.querySelector('a[href="/playground"]')).toBeNull()
     })
   })
 
-  it('shows the Chat group and the Playground entry when enabled', async () => {
+  it('shows the Playground sidebar entry when enabled', async () => {
     installSession(true)
-    const { router } = renderAt('/playground')
+    const { router, container } = renderAt('/playground')
 
     await waitFor(() => {
       expect(router.state.location.pathname).toBe('/playground')
     })
-    const group = await screen.findByRole('group', { name: 'Chat' })
-    expect(group.textContent).toContain('Playground')
+    await waitFor(() => {
+      const playgroundLink = container.querySelector('a[href="/playground"]')
+      expect(playgroundLink).not.toBeNull()
+      expect(playgroundLink?.textContent).toContain('Playground')
+    })
   })
 })

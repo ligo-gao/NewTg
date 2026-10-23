@@ -8,6 +8,7 @@ import { router } from '@/app/router'
 
 import '@/styles/tokens.css'
 import '@/styles/tailwind.css'
+import '@/styles/home.css'
 
 const rootElement = document.getElementById('root')
 

@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
 
 import { ApiError } from '@/api/errors'
+import { PageHeader } from '@/features/shell/page-header'
 import { formatRelativeTime } from '@/shared/lib/datetime'
 import { formatCredits } from '@/shared/lib/format'
 import { useI18n } from '@/shared/lib/i18n-context'
@@ -381,27 +382,35 @@ export function TokenListPage() {
 
   return (
     <section className="mx-auto flex max-w-[1440px] flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold text-ink-1">{t('common.tokens.title')}</h1>
-        <div className="flex items-center gap-2">
-          {/* F-02-18 / web-00 §4.3.3: the token page's toolbar carries the
-              entry to per-key model limits, so users do not have to know the
-              `/model-config` URL. A real anchor keeps middle-click and
-              keyboard behaviour native. */}
-          <a
-            href="/model-config"
-            className="inline-flex h-9 items-center rounded-lg border border-border-default bg-surface-card px-3 text-sm font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
-          >
-            {t('common.nav.model_config')}
-          </a>
-          <Button variant="secondary" onClick={() => setAddressesOpen(true)}>
-            {t('common.tokens.apiAddresses.title')}
-          </Button>
-          <Button onClick={() => setCreateOpen(true)}>{t('common.tokens.new')}</Button>
-        </div>
-      </div>
+      <PageHeader
+        crumbs={[
+          { label: t('common.console.label') },
+          { label: t('common.nav.group.build') },
+          { label: t('common.tokens.title') },
+        ]}
+        title={t('common.tokens.title')}
+        description={t('common.tokens.page.description')}
+        actions={
+          <>
+            {/* F-02-18 / web-00 §4.3.3: the token page's toolbar carries the
+                entry to per-key model limits, so users do not have to know the
+                `/model-config` URL. A real anchor keeps middle-click and
+                keyboard behaviour native. */}
+            <a
+              href="/model-config"
+              className="inline-flex h-9 items-center rounded-lg border border-border-default bg-surface-card px-3 text-sm font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            >
+              {t('common.nav.model_config')}
+            </a>
+            <Button variant="secondary" onClick={() => setAddressesOpen(true)}>
+              {t('common.tokens.apiAddresses.title')}
+            </Button>
+            <Button onClick={() => setCreateOpen(true)}>{t('common.tokens.new')}</Button>
+          </>
+        }
+      />
 
-      <div className="flex flex-wrap items-end gap-3">
+      <div className="flex flex-wrap items-end gap-3 rounded-xl border border-border-hairline bg-surface-card p-3">
         <div className="flex flex-col gap-1">
           <label htmlFor="token-filter-keyword" className="text-xs text-ink-2">
             {t('common.tokens.filters.search')}
@@ -490,6 +499,19 @@ export function TokenListPage() {
             {t('common.tokens.filters.clear')}
           </Button>
         ) : null}
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-ink-2">
+        <p>{t('common.tokens.page.count', { count: listQuery.data?.total ?? 0 })}</p>
+        <Button
+          variant="ghost"
+          className="h-7 px-2 text-xs"
+          onClick={() => {
+            void listQuery.refetch()
+          }}
+        >
+          {t('common.action.refresh')}
+        </Button>
       </div>
 
       {guidanceToken !== null ? (

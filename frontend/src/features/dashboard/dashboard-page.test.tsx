@@ -135,6 +135,17 @@ describe('DashboardPage', () => {
     expect(document.body.textContent ?? '').not.toContain('NaN')
   })
 
+  it('names the overview region after the page heading', async () => {
+    installScenario({})
+    renderWithProviders(<DashboardPage />)
+
+    // The visible h2/h1 lives in PageHeader, outside this section; the region
+    // keeps an accessible name of its own (deferred review #18).
+    expect(
+      await screen.findByRole('region', { name: 'Overview' }),
+    ).toBeTruthy()
+  })
+
   it('formats card values, success rate and the pre-deducted/refunded hover', async () => {
     const user = userEvent.setup()
     installScenario({
@@ -377,6 +388,26 @@ describe('DashboardPage', () => {
         ),
       ).toBe(false)
     })
+  })
+
+  it('renders the four quick actions below the shared page header', async () => {
+    installScenario({})
+    renderWithProviders(<DashboardPage />)
+
+    const createToken = await screen.findByRole('link', { name: /Create token/ })
+    expect(createToken.getAttribute('href')).toBe('/tokens')
+    expect(screen.getByRole('link', { name: /Top up/ }).getAttribute('href')).toBe(
+      '/wallet',
+    )
+    expect(screen.getByRole('link', { name: /View logs/ }).getAttribute('href')).toBe(
+      '/dashboard/usage-logs',
+    )
+    expect(screen.getByRole('link', { name: /Playground/ }).getAttribute('href')).toBe(
+      '/playground',
+    )
+    // The old inline heading is gone: the shared header owns the page title.
+    expect(screen.getByTestId('page-header')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Overview' })).toBeTruthy()
   })
 
   it('zero-fills the trend across the whole selected window with UTC buckets', async () => {

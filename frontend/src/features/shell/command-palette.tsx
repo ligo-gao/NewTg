@@ -8,6 +8,7 @@ import {
 } from 'react'
 
 import { meQueryOptions } from '@/lib/session'
+import { useDocsVisible } from '@/features/public/nav-visibility'
 import { writeClipboard } from '@/features/tokens/clipboard'
 import { usePlaygroundEnabled } from '@/features/playground/visibility'
 import { useI18n } from '@/shared/lib/i18n-context'
@@ -68,6 +69,9 @@ export function CommandPalette({
   // The route guard still protects direct `/playground` links; hiding here
   // avoids offering a command that would bounce straight back to `/dashboard`.
   const playgroundEnabled = usePlaygroundEnabled()
+  // Same rule for Docs: no configured target, no command (spec §4). The
+  // `/docs` route guard remains authoritative for direct links.
+  const docsVisible = useDocsVisible()
 
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
@@ -81,6 +85,7 @@ export function CommandPalette({
 
     for (const command of COMMANDS) {
       if (command.requiresPlayground === true && !playgroundEnabled) continue
+      if (command.requiresDocs === true && !docsVisible) continue
       if (!isCommandAllowed(command, me)) continue
       const label = t(command.labelKey)
       const score = matchCommand(command, query, label)
@@ -100,7 +105,7 @@ export function CommandPalette({
       remaining -= limited.length
       return { id, items: limited }
     })
-  }, [me, query, t, playgroundEnabled])
+  }, [me, query, t, playgroundEnabled, docsVisible])
 
   const flatItems = useMemo(
     () => groups.flatMap((group) => group.items),

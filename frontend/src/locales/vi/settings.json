@@ -1,5 +1,14 @@
 {
+  "nav_group": {
+    "site": "Trang và thương hiệu",
+    "auth": "Xác thực",
+    "billing": "Tính phí và thanh toán",
+    "security": "Bảo mật và giới hạn",
+    "notify": "Thông báo",
+    "policy": "Chính sách yêu cầu"
+  },
   "shell": {
+    "back": "Quay lại bảng điều khiển",
     "title": "Cài đặt",
     "subtitle": "Cấu hình triển khai này. Các mục đã lưu áp dụng ngay cho mọi phiên bản.",
     "tabs_label": "Các mục cài đặt",

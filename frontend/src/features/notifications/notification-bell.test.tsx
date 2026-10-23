@@ -1,3 +1,4 @@
+import { useQuery } from '@tanstack/react-query'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import { screen, waitFor, within } from '@testing-library/react'
@@ -5,7 +6,9 @@ import userEvent from '@testing-library/user-event'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import type { UserNotification } from '@/features/notifications/api'
-import { ConsoleHeader } from '@/routes/_console'
+import { NotificationBell } from '@/features/notifications/notification-bell'
+import { AppTopbar } from '@/features/shell/app-topbar'
+import { meQueryOptions } from '@/lib/session'
 import { renderWithProviders } from '@/test-support/providers'
 
 const ORIGIN = 'http://localhost:3000'
@@ -145,6 +148,28 @@ async function openPanel(): Promise<HTMLElement> {
   return screen.findByRole('dialog')
 }
 
+/** The console top bar owns the bell; feed it the session it renders from. */
+function TopbarHarness() {
+  const me = useQuery(meQueryOptions())
+  return (
+    <AppTopbar
+      title="Overview"
+      me={me.data}
+      onOpenCommandPalette={() => {}}
+    />
+  )
+}
+
+/**
+ * `AppTopbar` wires no navigation callback into the bell — production takes
+ * the sheet's full-page `window.location.assign` fallback, which jsdom cannot
+ * observe. These cases therefore render the bell directly to keep asserting
+ * the resolved navigation target through its `onNavigate` seam.
+ */
+function BellHarness({ onNavigate }: { onNavigate: (href: string) => void }) {
+  return <NotificationBell signedIn onNavigate={onNavigate} />
+}
+
 describe('console notification bell', () => {
   it('shows the unread badge and a live-region count', async () => {
     install({
@@ -159,7 +184,7 @@ describe('console notification bell', () => {
       ],
     })
 
-    await renderWithProviders(<ConsoleHeader />, ['common'])
+    await renderWithProviders(<TopbarHarness />, ['common'])
 
     const bell = await screen.findByRole('button', {
       name: 'Notifications (2 unread)',
@@ -172,7 +197,7 @@ describe('console notification bell', () => {
 
   it('renders an empty state when there are no notifications', async () => {
     install({ items: [] })
-    await renderWithProviders(<ConsoleHeader />, ['common'])
+    await renderWithProviders(<TopbarHarness />, ['common'])
 
     const dialog = await openPanel()
     expect(within(dialog).getByText('You have no notifications.')).toBeTruthy()
@@ -188,7 +213,7 @@ describe('console notification bell', () => {
       }),
     )
     const log = install({ items })
-    await renderWithProviders(<ConsoleHeader />, ['common'])
+    await renderWithProviders(<TopbarHarness />, ['common'])
 
     const dialog = await openPanel()
     expect(within(dialog).getByText('Notice 1')).toBeTruthy()
@@ -225,10 +250,9 @@ describe('console notification bell', () => {
       ],
     })
     const onNavigate = vi.fn()
-    await renderWithProviders(
-      <ConsoleHeader onNotificationNavigate={onNavigate} />,
-      ['common'],
-    )
+    await renderWithProviders(<BellHarness onNavigate={onNavigate} />, [
+      'common',
+    ])
 
     const dialog = await openPanel()
     const user = userEvent.setup()
@@ -251,7 +275,7 @@ describe('console notification bell', () => {
 
   it('uses singular copy for exactly one unread notification', async () => {
     install({ items: [notification({ id: 1 })] })
-    await renderWithProviders(<ConsoleHeader />, ['common'])
+    await renderWithProviders(<TopbarHarness />, ['common'])
 
     const bell = await screen.findByRole('button', {
       name: 'Notifications (1 unread)',
@@ -273,7 +297,7 @@ describe('console notification bell', () => {
       items: [notification({ id: 1 }), notification({ id: 2 })],
       unread: 100,
     })
-    await renderWithProviders(<ConsoleHeader />, ['common'])
+    await renderWithProviders(<TopbarHarness />, ['common'])
 
     const bell = await screen.findByRole('button', {
       name: 'Notifications (99+ unread)',
@@ -297,10 +321,9 @@ describe('console notification bell', () => {
       readStatus: 500,
     })
     const onNavigate = vi.fn()
-    await renderWithProviders(
-      <ConsoleHeader onNotificationNavigate={onNavigate} />,
-      ['common'],
-    )
+    await renderWithProviders(<BellHarness onNavigate={onNavigate} />, [
+      'common',
+    ])
 
     const dialog = await openPanel()
     const user = userEvent.setup()
@@ -324,10 +347,9 @@ describe('console notification bell', () => {
       ],
     })
     const onNavigate = vi.fn()
-    await renderWithProviders(
-      <ConsoleHeader onNotificationNavigate={onNavigate} />,
-      ['common'],
-    )
+    await renderWithProviders(<BellHarness onNavigate={onNavigate} />, [
+      'common',
+    ])
 
     const dialog = await openPanel()
     const user = userEvent.setup()
@@ -355,10 +377,9 @@ describe('console notification bell', () => {
       ],
     })
     const onNavigate = vi.fn()
-    await renderWithProviders(
-      <ConsoleHeader onNotificationNavigate={onNavigate} />,
-      ['common'],
-    )
+    await renderWithProviders(<BellHarness onNavigate={onNavigate} />, [
+      'common',
+    ])
 
     const dialog = await openPanel()
     const user = userEvent.setup()
@@ -384,10 +405,9 @@ describe('console notification bell', () => {
       ],
     })
     const onNavigate = vi.fn()
-    await renderWithProviders(
-      <ConsoleHeader onNotificationNavigate={onNavigate} />,
-      ['common'],
-    )
+    await renderWithProviders(<BellHarness onNavigate={onNavigate} />, [
+      'common',
+    ])
 
     const dialog = await openPanel()
     const user = userEvent.setup()
@@ -407,7 +427,7 @@ describe('console notification bell', () => {
         notification({ id: 22, title: 'Two' }),
       ],
     })
-    await renderWithProviders(<ConsoleHeader />, ['common'])
+    await renderWithProviders(<TopbarHarness />, ['common'])
 
     const dialog = await openPanel()
     const user = userEvent.setup()
@@ -440,7 +460,7 @@ describe('console notification bell', () => {
       ],
       unread: 3,
     })
-    await renderWithProviders(<ConsoleHeader />, ['common'])
+    await renderWithProviders(<TopbarHarness />, ['common'])
 
     const dialog = await openPanel()
     await waitFor(() => {
@@ -452,7 +472,7 @@ describe('console notification bell', () => {
 
   it('counts down the server Retry-After and re-enables retry when it expires', async () => {
     install({ listStatus: 429, retryAfter: 1 })
-    await renderWithProviders(<ConsoleHeader />, ['common'])
+    await renderWithProviders(<TopbarHarness />, ['common'])
 
     const dialog = await openPanel()
     expect(
@@ -475,7 +495,7 @@ describe('console notification bell', () => {
 
   it('allows manual retry when the 429 has no Retry-After header', async () => {
     install({ listStatus: 429, retryAfter: null })
-    await renderWithProviders(<ConsoleHeader />, ['common'])
+    await renderWithProviders(<TopbarHarness />, ['common'])
 
     const dialog = await openPanel()
     expect(
@@ -497,7 +517,7 @@ describe('console notification bell', () => {
         }),
       ],
     })
-    await renderWithProviders(<ConsoleHeader />, ['common'])
+    await renderWithProviders(<TopbarHarness />, ['common'])
 
     const dialog = await openPanel()
     expect(within(dialog).getByText('Already read')).toBeTruthy()
@@ -510,7 +530,7 @@ describe('console notification bell', () => {
 
   it('offers a retry when the network is offline', async () => {
     install({ offline: true })
-    await renderWithProviders(<ConsoleHeader />, ['common'])
+    await renderWithProviders(<TopbarHarness />, ['common'])
 
     const dialog = await openPanel()
     expect(

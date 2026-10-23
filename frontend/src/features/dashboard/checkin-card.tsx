@@ -10,6 +10,14 @@ import { Button } from '@/shared/ui/button'
 import { fetchCheckinCalendar, submitCheckin } from './api'
 import { formatCreditsValue } from './format'
 
+export interface CheckinCardProps {
+  /**
+   * Replaces the standalone `mt-4` when the card is laid out inside a grid
+   * that already owns the block spacing (pass `''` there).
+   */
+  className?: string
+}
+
 /**
  * Dashboard check-in card (modules-01 §3.19 F-01-30).
  *
@@ -24,7 +32,7 @@ import { formatCreditsValue } from './format'
  * Turnstile is the fifth verification point, so when it is enabled the button
  * stays disabled until a fresh (single-use) token arrives.
  */
-export function CheckinCard() {
+export function CheckinCard({ className = 'mt-4' }: CheckinCardProps = {}) {
   const { t, locale } = useI18n()
   const status = usePublicStatus()
   const queryClient = useQueryClient()
@@ -133,7 +141,12 @@ export function CheckinCard() {
     <section
       data-testid="checkin-card"
       aria-labelledby="checkin-title"
-      className="mt-4 rounded-xl border border-border-default bg-surface-card p-4"
+      className={[
+        'rounded-xl border border-border-default bg-surface-card p-4',
+        className,
+      ]
+        .filter(Boolean)
+        .join(' ')}
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>

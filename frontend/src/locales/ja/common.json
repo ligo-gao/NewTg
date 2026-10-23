@@ -6,7 +6,22 @@
   "action.copy": "コピー",
   "action.copied": "コピーしました",
   "action.retry": "再試行",
+  "action.refresh": "更新",
   "nav.dashboard": "ダッシュボード",
+  "nav.group.workspace": "ワークスペース",
+  "nav.group.build": "開発",
+  "nav.group.billing": "利用と請求",
+  "nav.group.admin": "管理",
+  "nav.group.system": "システム",
+  "nav.group.account": "アカウント",
+  "nav.group.help": "ヘルプ",
+  "console.label": "コンソール",
+  "console.collapse": "サイドバーを閉じる",
+  "console.expand": "サイドバーを開く",
+  "console.gate.title": "ワイド画面でアクセスしてください",
+  "console.gate.body": "コントロールセンターはワイド画面（1024px 以上）向けです。ウィンドウを広げるか、デスクトップブラウザをご利用ください。",
+  "nav.about": "このサイトについて",
+  "nav.docs": "ドキュメント",
   "nav.profile": "プロフィール",
   "nav.security": "セキュリティ",
   "nav.wallet": "ウォレット",
@@ -96,6 +111,20 @@
   },
   "dashboard": {
     "title": "概要",
+    "page": {
+      "description": "今日の利用状況・残高・モデルの状態をひと目で確認できます。"
+    },
+    "quick": {
+      "title": "クイック操作",
+      "description": "よく使う入口をサイドバーに戻らず開けます",
+      "create_token": "トークンを作成",
+      "create_token_hint": "呼び出しキーを追加",
+      "topup": "チャージ",
+      "topup_hint": "残高と注文",
+      "logs": "ログを表示",
+      "logs_hint": "リクエストと消費の明細",
+      "playground_hint": "モデルを直接試す"
+    },
     "error": "統計を読み込めませんでした。",
     "range": {
       "label": "期間",
@@ -549,6 +578,10 @@
   },
   "tokens": {
     "title": "API トークン",
+    "page": {
+      "description": "モデルを呼び出すキーを作成・管理します。キーが全体表示されるのは作成時の一度だけです。",
+      "count": "トークン {count} 件"
+    },
     "new": "トークンを作成",
     "apiAddresses": {
       "title": "API アドレス",

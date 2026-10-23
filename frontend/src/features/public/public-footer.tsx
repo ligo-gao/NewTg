@@ -51,33 +51,17 @@ export function PublicFooter() {
 
   const operatorLinks = sanitizeHtmlFragment(site?.footer_html)
 
-  const defaultLinks: FooterLink[] = [
-    ...(docsVisible
-      ? [{ key: 'docs', label: t('public.footer.docs'), href: docsUrl, external: isExternal(docsUrl) }]
+  const nav = status.data?.nav
+  const productLinks: FooterLink[] = [
+    ...(isNavEntryVisible(nav, 'pricing', isLoggedIn)
+      ? [{ key: 'pricing', label: t('public.nav.pricing'), href: '/pricing', external: false }]
       : []),
-    ...(safeStatusPageUrl !== ''
-      ? [
-          {
-            key: 'status',
-            label: t('public.footer.status'),
-            href: safeStatusPageUrl,
-            external: isExternal(statusPageUrl),
-          },
-        ]
+    ...(isNavEntryVisible(nav, 'rankings', isLoggedIn)
+      ? [{ key: 'rankings', label: t('public.nav.rankings'), href: '/rankings', external: false }]
       : []),
-    { key: 'about', label: t('public.nav.about'), href: '/about', external: false },
-    {
-      key: 'terms',
-      label: t('public.footer.terms'),
-      href: '/legal/terms',
-      external: false,
-    },
-    {
-      key: 'privacy',
-      label: t('public.footer.privacy'),
-      href: '/legal/privacy',
-      external: false,
-    },
+    ...(isNavEntryVisible(nav, 'about', isLoggedIn)
+      ? [{ key: 'about', label: t('public.nav.about'), href: '/about', external: false }]
+      : []),
   ]
 
   const resourceLinks: FooterLink[] = [
@@ -114,8 +98,8 @@ export function PublicFooter() {
   // minimal copyright line instead of guessing links or columns.
   if (status.isError && site === undefined) {
     return (
-      <footer role="contentinfo" className="border-t border-border-hairline bg-surface-page">
-        <div className="mx-auto w-full max-w-[1200px] px-4 py-6 text-xs text-ink-3 md:px-6">
+      <footer role="contentinfo" className="site-footer">
+        <div className="wrap footer-bottom">
           <p>{t('public.footer.copyright', { year, site: title })}</p>
         </div>
       </footer>
@@ -123,50 +107,42 @@ export function PublicFooter() {
   }
 
   return (
-    <footer role="contentinfo" className="border-t border-border-hairline bg-surface-page">
-      <div className="mx-auto w-full max-w-[1200px] px-4 py-10 md:px-6">
-        <div className="grid grid-cols-1 gap-8 md:grid-cols-2 lg:grid-cols-4">
+    <footer role="contentinfo" className="site-footer">
+      <div className="wrap">
+        <div className="footer-grid">
           <div>
             <SiteBrand site={site} />
-            <p className="mt-3 max-w-[280px] text-[13px] leading-5 text-ink-2">
-              {aboutSummary}
-            </p>
+            <p className="footer-tag">{aboutSummary}</p>
           </div>
 
-          <div>
-            <h2 className="text-[13px] font-medium leading-[18px] text-ink-2">
-              {t('public.footer.links')}
-            </h2>
-            {operatorLinks !== '' ? (
-              // Server-sanitized operator HTML; the client allowlist above ran
-              // again and already forced external rel/target.
-              <div
-                className="mt-3 space-y-3 text-[13px] leading-5 text-ink-2 [&_a]:text-ink-2 [&_a:hover]:text-ink-1 [&_a:hover]:underline [&_p]:m-0"
-                dangerouslySetInnerHTML={{ __html: operatorLinks }}
-              />
-            ) : (
-              <FooterLinkList links={defaultLinks} />
-            )}
-          </div>
+          {operatorLinks !== '' || productLinks.length > 0 ? (
+            <div className="footer-col">
+              <h2>{t('public.footer.product')}</h2>
+              {operatorLinks !== '' ? (
+                // Server-sanitized operator HTML; the client allowlist above ran
+                // again and already forced external rel/target.
+                <div
+                  className="footer-operator"
+                  dangerouslySetInnerHTML={{ __html: operatorLinks }}
+                />
+              ) : (
+                <FooterLinkList links={productLinks} />
+              )}
+            </div>
+          ) : null}
 
-          <div>
-            <h2 className="text-[13px] font-medium leading-[18px] text-ink-2">
-              {t('public.footer.resources')}
-            </h2>
+          <div className="footer-col">
+            <h2>{t('public.footer.resources')}</h2>
             <FooterLinkList links={resourceLinks} />
           </div>
 
-          <div>
-            <h2 className="text-[13px] font-medium leading-[18px] text-ink-2">
-              {t('public.language.label')}
-            </h2>
-            <div className="mt-3">
-              <LanguageSwitch variant="footer" />
-            </div>
+          <div className="footer-col">
+            <h2>{t('public.language.label')}</h2>
+            <LanguageSwitch variant="footer" className="home-lang" />
           </div>
         </div>
 
-        <div className="mt-8 flex flex-col gap-2 border-t border-border-hairline pt-6 text-xs text-ink-3 md:flex-row md:items-center md:justify-between">
+        <div className="footer-bottom">
           <p>
             {t('public.footer.copyright', { year, site: title })}
             {'. '}
@@ -177,7 +153,6 @@ export function PublicFooter() {
               href="https://beian.miit.gov.cn/"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-ink-3 hover:text-ink-1 hover:underline"
             >
               {site.filing_no.trim()}
             </a>
@@ -192,7 +167,7 @@ function FooterLinkList({ links }: { links: readonly FooterLink[] }) {
   const { t } = useI18n()
   if (links.length === 0) return null
   return (
-    <ul className="mt-3 space-y-3 text-[13px] leading-5">
+    <ul>
       {links.map((link) => (
         <li key={link.key}>
           <a
@@ -202,7 +177,6 @@ function FooterLinkList({ links }: { links: readonly FooterLink[] }) {
             aria-label={
               link.external ? `${link.label} (${t('public.nav.external')})` : undefined
             }
-            className="inline-flex items-center gap-1 text-ink-2 hover:text-ink-1 hover:underline"
           >
             {link.label}
           </a>

@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { NotifyEntryCard } from '@/features/admin/notifications/notify-entry-card'
+import { PageHeader } from '@/features/shell/page-header'
 import { meQueryOptions } from '@/lib/session'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
@@ -15,12 +17,8 @@ import {
   type PaymentComplianceStatus,
 } from './api'
 import { PaymentComplianceGate } from './payment-compliance-gate'
-import {
-  SETTINGS_TABS,
-  SETTINGS_TABS_CONFIG,
-  tabConfig,
-  type SettingsTab,
-} from './sections'
+import { tabConfig, type SettingsTab } from './sections'
+import { SettingsNav } from './settings-nav'
 import { SettingsSectionForm } from './settings-section-form'
 
 export interface SettingsShellProps {
@@ -68,6 +66,14 @@ export function SettingsShell({ tab, onTabChange }: SettingsShellProps) {
 
   const [dirtySections, setDirtySections] = useState<ReadonlySet<string>>(new Set())
   const [pendingTab, setPendingTab] = useState<SettingsTab | null>(null)
+  // The sidebar owns the slot in the real console; when the shell renders
+  // without one (unit tests, embedded pages) the nav stays inline so the shell
+  // remains usable.
+  const [slot, setSlot] = useState<HTMLElement | null>(null)
+
+  useEffect(() => {
+    setSlot(document.getElementById('console-settings-nav-slot'))
+  }, [])
 
   const handleDirtyChange = useCallback((sectionId: string, dirty: boolean) => {
     setDirtySections((current) => {
@@ -119,95 +125,57 @@ export function SettingsShell({ tab, onTabChange }: SettingsShellProps) {
     if (next !== null) onTabChange(next)
   }
 
-  function handleTabKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
-    if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft' && event.key !== 'Home' && event.key !== 'End') {
-      return
-    }
-    event.preventDefault()
-    const index = SETTINGS_TABS.indexOf(tab)
-    let nextIndex = index
-    if (event.key === 'ArrowRight') nextIndex = (index + 1) % SETTINGS_TABS.length
-    if (event.key === 'ArrowLeft') nextIndex = (index - 1 + SETTINGS_TABS.length) % SETTINGS_TABS.length
-    if (event.key === 'Home') nextIndex = 0
-    if (event.key === 'End') nextIndex = SETTINGS_TABS.length - 1
-    const next = SETTINGS_TABS[nextIndex]
-    if (next === undefined) return
-    document.getElementById(`settings-tab-${next}`)?.focus()
-    requestTabChange(next)
-  }
+  const settingsNav = (
+    <SettingsNav
+      tab={tab}
+      onTabChange={requestTabChange}
+      dirtySections={dirtySections}
+    />
+  )
 
   return (
     <div className="mx-auto flex max-w-[1440px] flex-col gap-4" data-testid="settings-shell">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold text-ink-1">{t('settings.shell.title')}</h1>
-          <p className="mt-1 text-sm text-ink-2">{t('settings.shell.subtitle')}</p>
-        </div>
-        {hasUnsavedChanges ? (
-          <p className="text-xs text-warning" role="status">
-            {t('settings.shell.dirty')}
-          </p>
-        ) : null}
-        {/*
-         * 公告管理入口（F-08-04）：公告是独立列表页，不进本 Shell 的 tab。
-         * 缺少 settings:manage 时不渲染——与页面 403 守卫同一权限口径。
-         * 用普通 <a>（而非 Router Link）是为了让 Shell 仍能在无路由上下文
-         * 的测试/嵌入场景渲染；它只做整页跳转，不参与 Shell 的脏标记。
-         */}
-        {canManage ? (
-          <a
-            href="/admin/settings/announcements"
-            className="inline-flex h-9 items-center justify-center rounded-lg border border-border-default bg-surface-card px-3.5 text-sm font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
-          >
-            {t('settings.shell.manage_announcements')}
-          </a>
-        ) : null}
-      </header>
+      <PageHeader
+        crumbs={[
+          { label: t('common.console.label') },
+          { label: t('common.nav.group.system') },
+          { label: t('common.nav.settings') },
+          { label: t(activeTab.labelKey) },
+        ]}
+        title={t('settings.shell.title')}
+        description={t('settings.shell.subtitle')}
+        actions={
+          <>
+            {hasUnsavedChanges ? (
+              <p className="text-xs text-warning" role="status">
+                {t('settings.shell.dirty')}
+              </p>
+            ) : null}
+            {/*
+             * 公告管理入口（F-08-04）：公告是独立列表页，不进本 Shell 的 tab。
+             * 缺少 settings:manage 时不渲染——与页面 403 守卫同一权限口径。
+             * 用普通 <a>（而非 Router Link）是为了让 Shell 仍能在无路由上下文
+             * 的测试/嵌入场景渲染；它只做整页跳转，不参与 Shell 的脏标记。
+             */}
+            {canManage ? (
+              <a
+                href="/admin/settings/announcements"
+                className="inline-flex h-9 items-center justify-center rounded-lg border border-border-default bg-surface-card px-3.5 text-sm font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              >
+                {t('settings.shell.manage_announcements')}
+              </a>
+            ) : null}
+          </>
+        }
+      />
 
       {!canManage && !meQuery.isPending ? (
         <FormAlert tone="info">{t('settings.shell.read_only')}</FormAlert>
       ) : null}
 
-      <div
-        role="tablist"
-        aria-label={t('settings.shell.tabs_label')}
-        className="flex flex-wrap gap-1 border-b border-border-hairline"
-        onKeyDown={handleTabKeyDown}
-      >
-        {SETTINGS_TABS_CONFIG.map((entry) => {
-          const selected = entry.id === tab
-          return (
-            <button
-              key={entry.id}
-              id={`settings-tab-${entry.id}`}
-              type="button"
-              role="tab"
-              aria-selected={selected}
-              aria-controls={selected ? `settings-panel-${entry.id}` : undefined}
-              tabIndex={selected ? 0 : -1}
-              onClick={() => requestTabChange(entry.id)}
-              className={[
-                'relative h-10 rounded-t-lg px-3 text-[13px]',
-                selected
-                  ? 'border-b-2 border-brand font-medium text-ink-1'
-                  : 'text-ink-2 hover:bg-surface-hover hover:text-ink-1',
-              ].join(' ')}
-            >
-              {t(entry.labelKey)}
-              {dirtySections.size > 0 && entry.sections.some((section) => dirtySections.has(section.id)) ? (
-                <span aria-hidden="true" className="ml-1.5 inline-block size-1.5 rounded-full bg-warning" />
-              ) : null}
-            </button>
-          )
-        })}
-      </div>
+      {slot === null ? settingsNav : createPortal(settingsNav, slot)}
 
-      <div
-        role="tabpanel"
-        id={`settings-panel-${tab}`}
-        aria-labelledby={`settings-tab-${tab}`}
-        className="flex flex-col gap-4"
-      >
+      <div data-testid="settings-panel" className="flex flex-col gap-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="text-sm text-ink-2">{t(activeTab.descriptionKey)}</p>
           {isPaymentTab && canManage && complianceQuery.data?.confirmed ? (

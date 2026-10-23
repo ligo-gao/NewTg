@@ -6,7 +6,22 @@
   "action.copy": "複製",
   "action.copied": "已複製",
   "action.retry": "重試",
+  "action.refresh": "重新整理",
   "nav.dashboard": "儀表板",
+  "nav.group.workspace": "工作台",
+  "nav.group.build": "開發",
+  "nav.group.billing": "用量與帳單",
+  "nav.group.admin": "管理",
+  "nav.group.system": "系統",
+  "nav.group.account": "帳戶",
+  "nav.group.help": "說明",
+  "console.label": "主控台",
+  "console.collapse": "收合側欄",
+  "console.expand": "展開側欄",
+  "console.gate.title": "請使用寬螢幕訪問",
+  "console.gate.body": "控制中心按寬螢幕設計（≥1024px）。請擴大視窗或使用桌面端瀏覽器。",
+  "nav.about": "關於本站",
+  "nav.docs": "文件",
   "nav.profile": "個人資料",
   "nav.security": "安全性",
   "nav.wallet": "錢包",
@@ -96,6 +111,20 @@
   },
   "dashboard": {
     "title": "總覽",
+    "page": {
+      "description": "今天的用量、餘額與模型表現一覽。"
+    },
+    "quick": {
+      "title": "快捷操作",
+      "description": "常用入口，不必回側欄尋找",
+      "create_token": "建立權杖",
+      "create_token_hint": "新增呼叫金鑰",
+      "topup": "儲值",
+      "topup_hint": "餘額與訂單",
+      "logs": "查看日誌",
+      "logs_hint": "請求與消耗明細",
+      "playground_hint": "直接試模型"
+    },
     "error": "無法載入統計資料。",
     "range": {
       "label": "時間範圍",
@@ -549,6 +578,10 @@
   },
   "tokens": {
     "title": "API 權杖",
+    "page": {
+      "description": "建立並管理呼叫模型 API 的權杖；權杖只在建立時完整顯示一次，其餘時間一律遮蔽。",
+      "count": "共 {count} 個權杖"
+    },
     "new": "建立權杖",
     "apiAddresses": {
       "title": "API 位址",
