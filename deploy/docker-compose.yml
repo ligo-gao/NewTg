@@ -51,6 +51,7 @@ services:
     command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
     volumes:
       - "./edge/Caddyfile:/etc/caddy/Caddyfile:ro"
+      - "./edge/certs:/etc/caddy/certs:ro"
       - "../frontend/dist:/srv/web:ro"
       - "caddy_data:/data"
       - "caddy_config:/config"

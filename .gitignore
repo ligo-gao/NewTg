@@ -29,3 +29,5 @@ deploy/backups/
 
 # Worktrees (each design branch lives here; never track them)
 .claude/worktrees/
+
+deploy/edge/certs/
