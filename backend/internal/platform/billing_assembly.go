@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"database/sql"
 	"log/slog"
 
 	"gorm.io/gorm"
@@ -8,6 +9,7 @@ import (
 	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/config"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/holiday"
 )
 
 // initBillingAssembly 完成计费包的进程级装配，gateway 与 worker 共用。
@@ -26,12 +28,21 @@ import (
 // 返回 source 供计费引擎使用；gateway 当前只需要构造副作用，丢弃即可。
 // QPU 非法（非整数/越界/非数字）返回 error，调用方必须让启动失败，
 // 绝不能带着错误汇率对外服务。
-func initBillingAssembly(gormDB *gorm.DB, center pricing.ConfigReader,
+func initBillingAssembly(gormDB *gorm.DB, sqlDB *sql.DB, center pricing.ConfigReader,
 	cfg *config.Config, log *slog.Logger, role string) (*pricing.DBSource, error) {
 
 	source, err := pricing.NewSource(gormDB, center)
 	if err != nil {
 		return nil, err
+	}
+	// 中国法定节假日查表缝（spec §5.2.1）：cn_offpeak 策略在解析时按冻结
+	// 请求时间查 holiday_calendar。sqlDB 为 nil（单测装配）时跳过——日历
+	// 缺失只会让定价按星期规则继续（不失败、不免费），不影响启动。
+	if sqlDB != nil {
+		source.SetHolidayLookup(holiday.NewStore(sqlDB))
+	} else if log != nil {
+		log.Warn("billing: holiday lookup disabled; pricing falls back to weekday schedule",
+			"role", role)
 	}
 	configureClampLogger(log, cfg, role)
 	return source, nil

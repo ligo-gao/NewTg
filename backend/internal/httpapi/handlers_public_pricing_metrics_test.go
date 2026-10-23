@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -32,11 +33,53 @@ func (f *fakePublicModelMetrics) LoadPublicModelMetrics(
 	return f.data, f.err
 }
 
+// fakePublicPerfStore 是公开性能接口的测速事实接缝（最新一次主动测试）。
+type fakePublicPerfStore struct {
+	test    store.ModelPerformanceTest
+	ok      bool
+	err     error
+	called  bool
+	modelID string
+}
+
+func (f *fakePublicPerfStore) Create(
+	_ context.Context, test store.ModelPerformanceTest, _ []store.ModelPerformanceRun,
+) (store.ModelPerformanceTest, error) {
+	return test, nil
+}
+
+func (f *fakePublicPerfStore) ListRecent(
+	_ context.Context, _ int64, _ string, _ int,
+) ([]store.ModelPerformanceTest, error) {
+	return nil, nil
+}
+
+func (f *fakePublicPerfStore) LatestByModel(
+	_ context.Context, model string,
+) (store.ModelPerformanceTest, bool, error) {
+	f.called = true
+	f.modelID = model
+	if f.err != nil {
+		return store.ModelPerformanceTest{}, false, f.err
+	}
+	return f.test, f.ok, nil
+}
+
 func newMetricsTestHandler(t *testing.T, metrics store.PublicModelMetricsSource) *PublicPricingHandlers {
+	t.Helper()
+	return newMetricsTestHandlerWithPerf(t, metrics, nil)
+}
+
+func newMetricsTestHandlerWithPerf(
+	t *testing.T,
+	metrics store.PublicModelMetricsSource,
+	perf store.ModelPerformanceStore,
+) *PublicPricingHandlers {
 	t.Helper()
 	handlers, err := NewPublicPricingHandlers(PublicPricingHandlerConfig{
 		Repo:    &fakePublicPricingRepo{catalog: fixtureCatalog()},
 		Metrics: metrics,
+		Perf:    perf,
 	})
 	if err != nil {
 		t.Fatalf("NewPublicPricingHandlers: %v", err)
@@ -184,4 +227,145 @@ func TestPublicMetricsETag(t *testing.T) {
 	}
 }
 
+func TestPublicMetricsIncludesLatestTest(t *testing.T) {
+	testedAt := time.Date(2026, 10, 23, 12, 30, 0, 0, time.UTC)
+	perf := &fakePublicPerfStore{ok: true, test: store.ModelPerformanceTest{
+		ID:           7,
+		Model:        "openai/gpt-5",
+		Runs:         120,
+		SuccessCount: 118,
+		SuccessRate:  0.9833,
+		TTFTMSP50:    publicIntPtr(180),
+		TTFTMSP95:    publicIntPtr(400),
+		LatencyMSP50: publicIntPtr(900),
+		LatencyMSP95: publicIntPtr(1700),
+		TPSAvg:       publicFloatPtr(55.5),
+		CreatedAt:    testedAt,
+	}}
+	handlers := newMetricsTestHandlerWithPerf(t, &fakePublicModelMetrics{}, perf)
+
+	rr := requestMetrics(t, handlers, "openai/gpt-5", "?range=7d", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+
+	var body PublicModelMetricsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	latest := body.LatestTest
+	if latest == nil {
+		t.Fatalf("latest_test = nil, body=%s", rr.Body.String())
+	}
+	if latest.TTFTMSP50 == nil || *latest.TTFTMSP50 != 180 {
+		t.Fatalf("ttft_ms_p50 = %v", latest.TTFTMSP50)
+	}
+	if latest.TTFTMSP95 == nil || *latest.TTFTMSP95 != 400 {
+		t.Fatalf("ttft_ms_p95 = %v", latest.TTFTMSP95)
+	}
+	if latest.LatencyMSP50 == nil || *latest.LatencyMSP50 != 900 {
+		t.Fatalf("latency_ms_p50 = %v", latest.LatencyMSP50)
+	}
+	if latest.LatencyMSP95 == nil || *latest.LatencyMSP95 != 1700 {
+		t.Fatalf("latency_ms_p95 = %v", latest.LatencyMSP95)
+	}
+	if latest.TPS == nil || *latest.TPS != 55.5 {
+		t.Fatalf("tps = %v", latest.TPS)
+	}
+	if latest.SuccessRate != 0.9833 {
+		t.Fatalf("success_rate = %v", latest.SuccessRate)
+	}
+	if latest.SampleSize != 120 {
+		t.Fatalf("sample_size = %d", latest.SampleSize)
+	}
+	if latest.TestedAt != "2026-10-23T12:30:00Z" {
+		t.Fatalf("tested_at = %q", latest.TestedAt)
+	}
+	if !perf.called || perf.modelID != "openai/gpt-5" {
+		t.Fatalf("perf source called=%v model=%q", perf.called, perf.modelID)
+	}
+}
+
+func TestPublicMetricsLatestTestNullsWhenAbsent(t *testing.T) {
+	// nil 接缝：旧装配或测试环境没有主库时，指标端点仍须 200 且 latest_test=null。
+	handlers := newMetricsTestHandler(t, &fakePublicModelMetrics{})
+	rr := requestMetrics(t, handlers, "openai/gpt-5", "?range=7d", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	var body PublicModelMetricsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.LatestTest != nil {
+		t.Fatalf("latest_test = %+v, want null", body.LatestTest)
+	}
+
+	// 无记录（ok=false）同样是 null，而不是零值对象。
+	perf := &fakePublicPerfStore{}
+	handlers = newMetricsTestHandlerWithPerf(t, &fakePublicModelMetrics{}, perf)
+	rr = requestMetrics(t, handlers, "openai/gpt-5", "?range=7d", nil)
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.LatestTest != nil {
+		t.Fatalf("latest_test = %+v, want null", body.LatestTest)
+	}
+}
+
+func TestPublicMetricsLatestTestErrorIsFailOpen(t *testing.T) {
+	perf := &fakePublicPerfStore{err: errors.New("perf db is down")}
+	handlers := newMetricsTestHandlerWithPerf(t, &fakePublicModelMetrics{}, perf)
+	rr := requestMetrics(t, handlers, "openai/gpt-5", "?range=7d", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var body PublicModelMetricsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.LatestTest != nil {
+		t.Fatalf("latest_test = %+v, want null", body.LatestTest)
+	}
+}
+
+func TestPublicMetricsETagChangesWithLatestTest(t *testing.T) {
+	perf := &fakePublicPerfStore{ok: true, test: store.ModelPerformanceTest{
+		ID:        1,
+		Model:     "openai/gpt-5",
+		CreatedAt: time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC),
+	}}
+	handlers := newMetricsTestHandlerWithPerf(t, &fakePublicModelMetrics{}, perf)
+
+	first := requestMetrics(t, handlers, "openai/gpt-5", "?range=7d", nil)
+	firstETag := first.Header().Get("ETag")
+	if firstETag == "" {
+		t.Fatalf("missing ETag")
+	}
+
+	// 新一次主动测试必须让缓存键失效：旧 ETag 不能再命中 304。
+	perf.test.ID = 2
+	perf.test.CreatedAt = time.Date(2026, 10, 23, 12, 5, 0, 0, time.UTC)
+	second := requestMetrics(t, handlers, "openai/gpt-5", "?range=7d",
+		map[string]string{"If-None-Match": firstETag})
+	if second.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 after a new probe", second.Code)
+	}
+	secondETag := second.Header().Get("ETag")
+	if secondETag == "" || secondETag == firstETag {
+		t.Fatalf("ETag did not change: first=%q second=%q", firstETag, secondETag)
+	}
+	if got := second.Header().Get("Cache-Control"); got != "public, max-age=60" {
+		t.Fatalf("cache-control = %q", got)
+	}
+
+	third := requestMetrics(t, handlers, "openai/gpt-5", "?range=7d",
+		map[string]string{"If-None-Match": secondETag})
+	if third.Code != http.StatusNotModified {
+		t.Fatalf("status = %d, want 304", third.Code)
+	}
+}
+
 func publicFloatPtr(v float64) *float64 { return &v }
+
+func publicIntPtr(v int) *int { return &v }

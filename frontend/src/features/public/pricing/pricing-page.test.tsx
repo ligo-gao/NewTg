@@ -40,6 +40,7 @@ function card(overrides: Record<string, unknown> = {}) {
     cache_write_price: null,
     is_free: false,
     group_price: null,
+    pricing_schedule: null,
     endpoints: [],
     tags: [],
     description: '',

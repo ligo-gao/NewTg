@@ -831,6 +831,10 @@ paths:
         SUM(completion_tokens) / (SUM(latency_ms)/1000)`（近似值）。
         无样本时对应字段为 null，前端显示「—」，不得回退成 0。
         样本少于 20 次由前端标注「样本不足」。
+        `latest_test` 是独立的兜底来源：最近一次管理员主动测速（主库
+        `model_performance_tests`）的 P50/P95、TPS 与成功率；没有记录、
+        测速库未装配或读取失败时为 null（fail-open，端点仍为 200）。前端
+        优先展示真实调用汇总，样本缺失时回退到 `latest_test` 并标注来源。
       security: []
       parameters:
         - name: model_id

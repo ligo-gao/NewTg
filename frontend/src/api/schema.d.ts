@@ -280,6 +280,10 @@ export interface paths {
          *     SUM(completion_tokens) / (SUM(latency_ms)/1000)`（近似值）。
          *     无样本时对应字段为 null，前端显示「—」，不得回退成 0。
          *     样本少于 20 次由前端标注「样本不足」。
+         *     `latest_test` 是独立的兜底来源：最近一次管理员主动测速（主库
+         *     `model_performance_tests`）的 P50/P95、TPS 与成功率；没有记录、
+         *     测速库未装配或读取失败时为 null（fail-open，端点仍为 200）。前端
+         *     优先展示真实调用汇总，样本缺失时回退到 `latest_test` 并标注来源。
          */
         get: operations["getPublicPricingMetrics"];
         put?: never;
@@ -1896,6 +1900,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/model-pricing/candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 已添加模型的候选并集（选择已有模型来定价）
+         * @description 合并 model_meta.model_name、channels.supported_models、
+         *     channels.model_mapping 的键与 model_pricing.model，按模型名去重。
+         *     `priced` 表示已存在定价行（含停用行）；未定价行 `mode` 为 per_token
+         *     （新建草稿的默认计费方式）。keyword 为大小写不敏感子串。
+         *     **不返回**渠道 id、凭据或上游地址：候选只服务定价选择器。
+         */
+        get: operations["listPricingCandidates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/model-pricing:preview": {
         parameters: {
             query?: never;
@@ -1918,7 +1946,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/model-pricing/{model}": {
+    "/api/model-pricing:preview-strategy": {
         parameters: {
             query?: never;
             header?: never;
@@ -1926,6 +1954,37 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
+        put?: never;
+        /**
+         * 时段策略试算（完整草稿 + 样例用量）
+         * @description 接受完整草稿（mode + prices + strategy）与试算时间 `at`，纯计算、
+         *     不写库。返回命中的时段/节假日事实、规范化策略、应用倍率后的各分项
+         *     单价与总价。价格换算复用 pricing.ParsePricingSpec/ComputeQuota，
+         *     时段乘法复用 pricing.ApplyTimeMultiplier——与结算同一实现。
+         *     `strategy` 与 `billing_expr` 互斥，因此只接受 per_token / per_request。
+         *     节假日查询失败时按星期规则试算，并在 match.holiday_lookup_failed
+         *     标记（不失败、不免费）。
+         */
+        post: operations["previewPricingStrategy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/model-pricing/{model}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 读取单条模型定价（含完整 strategy）
+         * @description 列表只返回 has_strategy/strategy_kind 摘要；编辑工作台需要完整窗口
+         *     才能回填，因此单条读取返回规范化后的 `strategy`（无策略时为 null）。
+         */
+        get: operations["getModelPricing"];
         put?: never;
         post?: never;
         /**
@@ -4239,6 +4298,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/channels/{id}/performance-tests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 渠道模型性能测速历史
+         * @description 返回该渠道最近的测速记录（新→旧）。model 可选，按模型精确过滤；
+         *     limit 缺省 20，范围 1..100（越界 422）。渠道不存在 → 404。
+         */
+        get: operations["listChannelPerformanceTests"];
+        put?: never;
+        /**
+         * 对渠道模型发起一批流式性能探测
+         * @description 以固定短 prompt 顺序执行 runs 次流式请求，采集 TTFT、总延迟、输出 token
+         *     与 TPS，并在同一事务内保存汇总与逐次明细。model 必须属于该渠道
+         *     supported_models；runs 缺省 3（1..5）。与连通性测试共用
+         *     「10 次/分钟/管理员」限流桶（超限 429 + Retry-After；Redis 故障 fail-open）。
+         *     Performer/存储未装配 → 503；聚合值绝不返回未持久化的结果。错误体不含
+         *     上游 URL、凭据或原始错误文本（GC-6）。
+         */
+        post: operations["createChannelPerformanceTest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/chat/completions": {
         parameters: {
             query?: never;
@@ -6133,6 +6222,34 @@ export interface components {
             /** @description override=覆盖价；ratio=基准价 × 倍率 ÷ 100（服务端整数运算）。 */
             source: string;
         };
+        PublicPricingWindow: {
+            name: string;
+            /** @description 1=周一 … 7=周日；跨夜窗口指窗口开始的那一天。 */
+            days: number[];
+            start: string;
+            /** @description end <= start 表示跨夜。 */
+            end: string;
+            /** Format: double */
+            multiplier: number;
+        };
+        PublicPricingSchedule: {
+            /**
+             * @description 结构化枚举，前端按七种语言本地化。
+             * @enum {string}
+             */
+            kind: "flat" | "peak_offpeak";
+            /** @description 策略自己的 IANA 时区（不随站点时区变更）。 */
+            timezone: string;
+            /**
+             * Format: double
+             * @description 未命中窗口（以及 cn_offpeak 的法定假日）使用的倍率。
+             */
+            default_multiplier: number;
+            /** @enum {string} */
+            holiday_policy: "none" | "cn_offpeak";
+            /** @description 同一时刻命中多个窗口时数组顺序最后一条生效。 */
+            windows: components["schemas"]["PublicPricingWindow"][];
+        };
         PublicModelCard: {
             model_id: string;
             /** @description 有档案时取档案 display_name；无档案（或空串）回退 model_id（D1-15/D1-16）。 */
@@ -6159,6 +6276,12 @@ export interface components {
             is_free: boolean;
             /** @description 仅登录或显式 group（且 expose=true）时出现（R-PUB-05）。 */
             group_price: components["schemas"]["PublicGroupPrice"] | null;
+            /**
+             * @description 时段计价表：strategy.time.enabled=true 时非 null，否则为 null
+             *     （未启用时段时响应与旧版逐字段一致）。非法策略同样降级为 null
+             *     并记录告警，不阻断公开目录。
+             */
+            pricing_schedule: components["schemas"]["PublicPricingSchedule"] | null;
             /**
              * @description 档案 endpoints 派生的协议端点枚举（D1-19）；未知路径忽略，无档案时
              *     为空数组。
@@ -6264,6 +6387,25 @@ export interface components {
             avg_latency_ms?: number | null;
             success_rate?: number | null;
         };
+        PublicModelLatestTest: {
+            /** @description 首字延迟 P50（毫秒）；无有效样本时为 null。 */
+            ttft_ms_p50: number | null;
+            ttft_ms_p95: number | null;
+            /** @description 端到端延迟 P50（毫秒）；无有效样本时为 null。 */
+            latency_ms_p50: number | null;
+            latency_ms_p95: number | null;
+            /** @description 主动测试的平均输出速度（tokens/s）；无有效样本时为 null。 */
+            tps: number | null;
+            /** @description 成功次数 / 总运行次数。 */
+            success_rate: number;
+            /** @description 本次测试的运行次数（runs）。 */
+            sample_size: number;
+            /**
+             * Format: date-time
+             * @description 测试完成时刻（RFC3339，UTC）。
+             */
+            tested_at: string;
+        };
         PublicModelMetrics: {
             /** @enum {string} */
             range: "24h" | "7d";
@@ -6282,6 +6424,13 @@ export interface components {
                 sample_size: number;
             };
             per_group: components["schemas"]["PublicGroupMetric"][];
+            /**
+             * @description 最近一次管理员主动测速（`model_performance_tests` 汇总行）的公开
+             *     投影。没有主动测试记录、测速库未装配或读取失败时为 null；这是一条
+             *     独立于 `usage_logs` 的兜底来源，前端在真实调用样本缺失/不足时回退
+             *     到它，并用「主动测试」标注来源。
+             */
+            latest_test?: components["schemas"]["PublicModelLatestTest"] | null;
         };
         /**
          * @description 关闭态固定 {enabled:false}；开启态 {kid, public_key}，enabled 字段缺席。
@@ -7478,6 +7627,47 @@ export interface components {
          * @enum {integer}
          */
         PricingStatus: 1 | 2;
+        PricingTimeWindow: {
+            name: string;
+            /** @description 1=周一 … 7=周日；跨夜窗口指**开始**的那一天。 */
+            days: number[];
+            /** @description HH:MM，左闭。 */
+            start: string;
+            /** @description HH:MM，右开；end <= start 表示跨夜。 */
+            end: string;
+            /**
+             * Format: double
+             * @description 十进制倍数（0.5 = 半价），0.01–100。
+             */
+            multiplier: number;
+        };
+        PricingTimeConfig: {
+            /** @description 未启用时公开面 pricing_schedule 为 null，结算行为不变。 */
+            enabled?: boolean;
+            /** @description IANA 时区名（启用时必填，例如 Asia/Shanghai）。 */
+            timezone?: string;
+            /**
+             * @description none=不处理节假日；cn_offpeak=中国法定节假日全天按
+             *     default_multiplier，调休上班日按工作日窗口计价。
+             * @enum {string}
+             */
+            holiday_policy?: "none" | "cn_offpeak";
+            /**
+             * Format: double
+             * @description 未命中窗口（以及 cn_offpeak 的法定假日）使用的倍率，0.01–100。
+             */
+            default_multiplier?: number;
+            /** @description 同一时刻命中多个窗口时，数组顺序最后一条生效（前端提示重叠）。 */
+            windows?: components["schemas"]["PricingTimeWindow"][];
+        };
+        PricingStrategy: {
+            /**
+             * @description 第一阶段只接受 version=1。
+             * @enum {integer}
+             */
+            version: 1;
+            time?: components["schemas"]["PricingTimeConfig"];
+        };
         ModelPricing: {
             /** Format: int64 */
             id: number;
@@ -7501,6 +7691,19 @@ export interface components {
             status: components["schemas"]["PricingStatus"];
             /** @description 四项有效价全为 0 才为 true；单项 0 不得显示「免费」。 */
             free: boolean;
+            /** @description 是否存在结构化时段策略（strategy 非 NULL）。 */
+            has_strategy: boolean;
+            /**
+             * @description 结构化枚举：time.enabled=false / 无策略为 flat，启用时段为
+             *     peak_offpeak。前端按七种语言本地化，响应里不出现中文字符串。
+             * @enum {string}
+             */
+            strategy_kind: "flat" | "peak_offpeak";
+            /**
+             * @description 完整策略。列表响应省略该字段（只给 has_strategy/strategy_kind）；
+             *     单条读取、创建与更新响应返回规范化后的策略（无策略为 null）。
+             */
+            strategy?: components["schemas"]["PricingStrategy"] | null;
             /** Format: date-time */
             created_at: string;
             /**
@@ -7540,6 +7743,12 @@ export interface components {
             author?: string;
             vendor?: string | null;
             status?: components["schemas"]["PricingStatus"];
+            /**
+             * @description 结构化时段策略；与 billing_expr 互斥（同时出现 400）。tiers/service
+             *     等第二阶段字段会被 422 拒绝（problem.fields=[strategy.<field>]）。
+             *     null/缺省表示不配置策略。
+             */
+            strategy?: components["schemas"]["PricingStrategy"] | null;
         };
         PricingModelOption: {
             model: string;
@@ -7548,6 +7757,22 @@ export interface components {
         };
         PricingModelList: {
             items: components["schemas"]["PricingModelOption"][];
+        };
+        PricingCandidate: {
+            model: string;
+            /** @description 来自 model_meta；无档案时为 null。 */
+            display_name: string | null;
+            /** @description 目录供应商名或 model_pricing.vendor；都没有时为 null。 */
+            vendor: string | null;
+            context_length: number | null;
+            /** @description 固定顺序 catalog → channel → pricing。 */
+            sources: ("catalog" | "channel" | "pricing")[];
+            /** @description 已存在 model_pricing 行（含停用行）。 */
+            priced: boolean;
+            mode: components["schemas"]["PricingMode"];
+        };
+        PricingCandidateList: {
+            items: components["schemas"]["PricingCandidate"][];
         };
         PricingPreviewParams: {
             /**
@@ -7618,6 +7843,86 @@ export interface components {
                 [key: string]: unknown;
             } | null;
         };
+        ModelPricingStrategyPreviewPrices: {
+            /**
+             * Format: int64
+             * @description 输入价（积分/1M）；per_request 时是每次请求价。
+             */
+            prompt_price?: number;
+            /** Format: int64 */
+            completion_price?: number;
+            /** Format: int64 */
+            cache_read_price?: number;
+            /** Format: int64 */
+            cache_write_price?: number;
+        };
+        ModelPricingStrategyPreviewRequest: {
+            /** @description 用于模型族默认值（补全/缓存 1h 派生）；可省略。 */
+            model?: string;
+            /**
+             * @description 表达式与策略互斥，试算不支持 tiered_expr。
+             * @default per_token
+             * @enum {string}
+             */
+            mode: "per_token" | "per_request";
+            prices?: components["schemas"]["ModelPricingStrategyPreviewPrices"];
+            strategy?: components["schemas"]["PricingStrategy"] | null;
+            /**
+             * Format: date-time
+             * @description 命中的请求时间（RFC 3339）；缺省为服务端当前时间。
+             */
+            at?: string;
+            /** Format: int64 */
+            input_tokens?: number;
+            /** Format: int64 */
+            output_tokens?: number;
+            /** Format: int64 */
+            cache_read_tokens?: number;
+        };
+        ModelPricingStrategyPreviewMatch: {
+            /** @description 命中的窗口名；未命中（使用默认倍率）时为空串。 */
+            window: string;
+            /** Format: double */
+            multiplier: number;
+            /** @description 命中法定节假日/调休时的名称；无记录时为空串。 */
+            holiday_name: string;
+            holiday_off_day: boolean;
+            /** @description 查过节假日但失败并回退到星期规则。 */
+            holiday_lookup_failed: boolean;
+        };
+        PricingSchedule: {
+            /** @enum {string} */
+            kind: "flat" | "peak_offpeak";
+            timezone: string;
+            /** Format: double */
+            default_multiplier: number;
+            /** @enum {string} */
+            holiday_policy: "none" | "cn_offpeak";
+            windows: components["schemas"]["PricingTimeWindow"][];
+        };
+        ModelPricingStrategyPreviewRates: {
+            prompt_price: number | null;
+            completion_price: number | null;
+            cache_read_price: number | null;
+            /** @description 缓存写 5m 档的生效单价（结算也读该档）。 */
+            cache_write_price: number | null;
+        };
+        ModelPricingStrategyPreviewTotal: {
+            /** Format: int64 */
+            quota: number;
+            /** Format: int64 */
+            quota_per_unit: number;
+            amount_yuan: string;
+        };
+        ModelPricingStrategyPreviewResponse: {
+            match: components["schemas"]["ModelPricingStrategyPreviewMatch"];
+            /** @description 未启用时段时为 null。 */
+            schedule: components["schemas"]["PricingSchedule"] | null;
+            /** @description 规范化后的策略（未提交/显式 null 时为 null）。 */
+            strategy: components["schemas"]["PricingStrategy"] | null;
+            effective_rates: components["schemas"]["ModelPricingStrategyPreviewRates"];
+            total: components["schemas"]["ModelPricingStrategyPreviewTotal"];
+        };
         /**
          * @description 部分更新；model 不可改（提交 model 由字段策略 403）。
          *     updated_at 缺失 400、不匹配 409。空对象/无字段 400。
@@ -7640,6 +7945,11 @@ export interface components {
             author?: string;
             vendor?: string | null;
             status?: components["schemas"]["PricingStatus"];
+            /**
+             * @description 缺省表示保持原值；显式 null 表示清除。与 billing_expr 互斥
+             *     （更新后的有效值同时存在时 400）。
+             */
+            strategy?: components["schemas"]["PricingStrategy"] | null;
         };
         ModelPricingStatusRequest: {
             /** Format: date-time */
@@ -9776,6 +10086,46 @@ export interface components {
             model: string;
             /** @description 失败时是 F-06-06 五值枚举；成功时省略。 */
             error_class?: string;
+        };
+        /**
+         * @description 一次测速的汇总事实（已持久化）。success_rate = success_count / runs；
+         *     TTFT/延迟分位数只取成功且非空样本（nearest-rank）。无样本的聚合字段
+         *     显式输出 null（UI 显示 —，不是 0）。
+         */
+        ModelPerformanceTest: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            channel_id: number;
+            model: string;
+            /** @description 渠道类型 slug（store.Channel.Type）。 */
+            provider: string;
+            /** @description 本批探测次数（成功率分母）。 */
+            runs: number;
+            success_count: number;
+            success_rate: number;
+            ttft_ms_p50?: number | null;
+            ttft_ms_p95?: number | null;
+            latency_ms_p50?: number | null;
+            latency_ms_p95?: number | null;
+            tps_avg?: number | null;
+            output_tokens_avg?: number | null;
+            /** Format: date-time */
+            created_at: string;
+        };
+        ModelPerformanceTestList: {
+            /** @description 按 created_at 倒序（新→旧）。 */
+            items: components["schemas"]["ModelPerformanceTest"][];
+        };
+        /** @description 请求体必填；model 缺失/不属于 supported_models → 422。 */
+        ModelPerformanceTestRequest: {
+            /** @description 必须属于该渠道 supported_models；否则 422。 */
+            model: string;
+            /**
+             * @description 探测次数；缺省 3，超出 1..5 返回 422。
+             * @default 3
+             */
+            runs: number;
         };
         /**
          * @description Responses 对象。`output` 元素本波不做 IR 建模（插件渲染项或产物投影项），
@@ -13866,6 +14216,34 @@ export interface operations {
             500: components["responses"]["Error500"];
         };
     };
+    listPricingCandidates: {
+        parameters: {
+            query?: {
+                /** @description 模型名子串（大小写不敏感）。 */
+                keyword?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PricingCandidateList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
     previewModelPricing: {
         parameters: {
             query?: never;
@@ -13897,6 +14275,69 @@ export interface operations {
             400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    previewPricingStrategy: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelPricingStrategyPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelPricingStrategyPreviewResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getModelPricing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 计费模型名（1–128 字符，允许 A-Za-z0-9._:/-，含公开模型名的厂商前缀 /）；不存在 404。 */
+                model: components["parameters"]["PathPricingModel"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 定价行 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelPricing"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
             500: components["responses"]["Error500"];
         };
     };
@@ -18224,6 +18665,77 @@ export interface operations {
                     "application/json": components["schemas"]["ChannelTestResult"];
                 };
             };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            422: components["responses"]["Error422"];
+            429: components["responses"]["Error429"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    listChannelPerformanceTests: {
+        parameters: {
+            query?: {
+                /** @description 可选；按模型精确过滤。 */
+                model?: string;
+                /** @description 返回条数；缺省 20，上限 100。 */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 测速历史（新→旧） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelPerformanceTestList"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            422: components["responses"]["Error422"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    createChannelPerformanceTest: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelPerformanceTestRequest"];
+            };
+        };
+        responses: {
+            /** @description 已持久化的性能测试结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelPerformanceTest"];
+                };
+            };
+            400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
             404: components["responses"]["Error404"];

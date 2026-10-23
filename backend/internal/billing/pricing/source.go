@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/pricingstrategy"
 )
 
 // ============================================================================
@@ -45,6 +46,19 @@ type ConfigReader interface {
 // Source 解析一次请求的定价快照。
 type Source interface {
 	Resolve(ctx context.Context, model, group string) (contract.PriceSnapshot, error)
+}
+
+// TimeSource 是「按冻结的请求时间解析时段价」的能力（spec §5.2）。
+//
+// Resolve 保留给不关心时段的调用方（内部按 time.Now() 委托给 ResolveAt）；
+// 计费会话必须走 ResolveAt，预扣/结算/跨组重试共用同一个 requestTime。
+//
+// ResolveFixed 不查时间也不查节假日，只把调用方给定的倍率乘到基础快照上：
+// 异步/handoff 结算从 request_pricing 读回预扣时冻结的倍率，避免「结算时
+// 重新按当前时间匹配窗口」导致跨整点请求出现两套价。
+type TimeSource interface {
+	ResolveAt(ctx context.Context, model, group string, at time.Time) (contract.PriceSnapshot, error)
+	ResolveFixed(ctx context.Context, model, group string, multiplier float64) (contract.PriceSnapshot, error)
 }
 
 // PerCallSource 是「严格按次固定价」的解析能力（W8/MJ-d，relay-05 §7.2）。
@@ -88,7 +102,9 @@ type modelPricingRow struct {
 	CompletionPrice *int64
 	CacheReadPrice  *int64
 	CacheWritePrice *int64
-	Status          int16
+	// Strategy 是结构化时段策略 JSONB（spec §5.1）；nil 表示沿用价列/表达式。
+	Strategy []byte
+	Status   int16
 }
 
 // TableName 固定表名，避免 GORM 复数化推断随配置漂移。
@@ -133,6 +149,11 @@ type DBSource struct {
 	ttl time.Duration
 	now func() time.Time
 
+	// holidayLookup 是可选的中国节假日查表缝（Task 3 的 holiday.Store）。
+	// nil 表示未装配：cn_offpeak 策略按星期规则继续（spec §5.2.1 规则 4），
+	// 绝不因日历缺失而失败或免费。
+	holidayLookup pricingstrategy.HolidayLookup
+
 	mu          sync.RWMutex
 	models      map[string]cacheEntry[modelPricingRow]
 	groupPrices map[string]cacheEntry[groupPricingRow]
@@ -174,6 +195,18 @@ func (s *DBSource) Invalidate() {
 	s.groupPrices = make(map[string]cacheEntry[groupPricingRow])
 	s.groupRatios = make(map[string]cacheEntry[float64])
 	s.mu.Unlock()
+}
+
+// SetHolidayLookup 注入节假日查表实现（装配期调用一次）。
+//
+// 只影响 `holiday_policy=cn_offpeak` 的策略；nil 表示没有日历数据，
+// MultiplierAt 会按星期规则继续并置 HolidayLookupFailed。构造后不再修改，
+// 对并发读安全（与 Engine 的可选依赖同一约定）。
+func (s *DBSource) SetHolidayLookup(l pricingstrategy.HolidayLookup) {
+	if s == nil {
+		return
+	}
+	s.holidayLookup = l
 }
 
 // readQuotaPerUnit 读取并校验 billing.quota_per_unit（默认 100）。
@@ -225,7 +258,49 @@ func parseConfigNumber(raw json.RawMessage) (float64, error) {
 }
 
 // Resolve 实现 Source。
+//
+// 这是「不关心时段」的入口：内部用 time.Now() 委托 ResolveAt，因此配置了
+// 时段策略的行仍会按当前时间得到正确价格；需要冻结请求时间的调用方（计费
+// 会话）必须直接使用 ResolveAt。
 func (s *DBSource) Resolve(ctx context.Context, model, group string) (contract.PriceSnapshot, error) {
+	return s.ResolveAt(ctx, model, group, time.Now())
+}
+
+// ResolveAt 在 at 时刻解析定价快照（spec §5.2）。
+//
+// 先按既有优先级解析基础快照（价列 / 表达式 / 按次 / 分组覆盖），再对
+// 配置了启用时段策略的行应用时段倍率。策略与 billing_expr 同存按配置错误
+// 处理（spec §5.2 第 4 条），不回退到其中任一。
+func (s *DBSource) ResolveAt(ctx context.Context, model, group string, at time.Time) (contract.PriceSnapshot, error) {
+	snap, row, matched, err := s.resolveBase(ctx, model, group)
+	if err != nil {
+		return contract.PriceSnapshot{}, err
+	}
+	if matched == "" || len(row.Strategy) == 0 {
+		return snap, nil
+	}
+	return s.applyTimeStrategy(ctx, snap, row, matched, at)
+}
+
+// ResolveFixed 实现 TimeSource：把给定的时段倍率乘到基础快照上。
+//
+// 不查时间、不查节假日——倍率是预扣时冻结的（request_pricing），handoff/
+// 任务轮询重建会话后必须原样复用，否则跨整点、预扣后改策略都会换价。
+// 倍率为 1 时是显式的「无折扣」，不是「未设置」：仍写入 TimeMultiplier=1，
+// 让用量日志能证明结算使用的是冻结事实。
+func (s *DBSource) ResolveFixed(ctx context.Context, model, group string, multiplier float64) (contract.PriceSnapshot, error) {
+	snap, _, _, err := s.resolveBase(ctx, model, group)
+	if err != nil {
+		return contract.PriceSnapshot{}, err
+	}
+	return scaleSnapshotByTime(snap, multiplier, "", "")
+}
+
+// resolveBase 按既有优先级解析基础快照，并返回命中的 model_pricing 行。
+//
+// 返回的 matched 为空表示没有可用的启用定价行（走了内置表达式/默认价），
+// 此时不存在策略可应用。row 只在 matched 非空时有意义。
+func (s *DBSource) resolveBase(ctx context.Context, model, group string) (contract.PriceSnapshot, modelPricingRow, string, error) {
 	candidates := ResolveBillingModelCandidates(model)
 	group = strings.TrimSpace(group)
 	if group == "" {
@@ -243,7 +318,7 @@ func (s *DBSource) Resolve(ctx context.Context, model, group string) (contract.P
 	for _, cand := range candidates {
 		r, ok, err := s.lookupModel(ctx, cand)
 		if err != nil {
-			return contract.PriceSnapshot{}, err
+			return contract.PriceSnapshot{}, modelPricingRow{}, "", err
 		}
 		if ok {
 			row, matched, found = r, cand, true
@@ -251,17 +326,18 @@ func (s *DBSource) Resolve(ctx context.Context, model, group string) (contract.P
 		}
 	}
 	if !found || row.Status != 1 {
-		return s.defaultSnapshot(ctx, candidates, group)
+		snap, err := s.defaultSnapshot(ctx, candidates, group)
+		return snap, modelPricingRow{}, "", err
 	}
 
 	price, mode, exprString, err := priceFromModelRow(row, matched)
 	if err != nil {
-		return contract.PriceSnapshot{}, err
+		return contract.PriceSnapshot{}, modelPricingRow{}, "", err
 	}
 
 	info, err := s.groupInfo(ctx, group)
 	if err != nil {
-		return contract.PriceSnapshot{}, err
+		return contract.PriceSnapshot{}, modelPricingRow{}, "", err
 	}
 	price.GroupRatioInfo = info
 
@@ -270,11 +346,11 @@ func (s *DBSource) Resolve(ctx context.Context, model, group string) (contract.P
 	if mode != contract.BillingModeTieredExpr {
 		override, ok, err := s.lookupGroupPricing(ctx, group, matched)
 		if err != nil {
-			return contract.PriceSnapshot{}, err
+			return contract.PriceSnapshot{}, modelPricingRow{}, "", err
 		}
 		if ok {
 			if err := applyGroupOverride(&price, mode, override); err != nil {
-				return contract.PriceSnapshot{}, err
+				return contract.PriceSnapshot{}, modelPricingRow{}, "", err
 			}
 			// F-06-16：覆盖价「替代 model_pricing 价 × 分组倍率」——覆盖价是
 			// 该分组的最终绝对价，故生效倍率为 1；原始分组倍率保留在
@@ -285,7 +361,11 @@ func (s *DBSource) Resolve(ctx context.Context, model, group string) (contract.P
 		}
 	}
 
-	return ResolveExpression(&price, matched, mode, exprString)
+	snap, err := ResolveExpression(&price, matched, mode, exprString)
+	if err != nil {
+		return contract.PriceSnapshot{}, modelPricingRow{}, "", err
+	}
+	return snap, row, matched, nil
 }
 
 // ResolvePerCall 严格解析「按次固定价」（W8/MJ-d，relay-05 §7.2）。
@@ -361,7 +441,17 @@ func (s *DBSource) ResolvePerCall(ctx context.Context, model, group string) (con
 		return contract.PriceSnapshot{}, fmt.Errorf("%w: model_pricing(%s).prompt_price 未设置", ErrNoPerCallPrice, model)
 	}
 
-	return ResolveExpression(&price, model, contract.BillingModePerCall, "")
+	snap, err := ResolveExpression(&price, model, contract.BillingModePerCall, "")
+	if err != nil {
+		return contract.PriceSnapshot{}, err
+	}
+	// 按次模型同样允许配置时段策略（spec §5.4：mode=per_request 允许
+	// strategy.time）。严格解析路径在预扣时调用，time.Now() 就是请求开始
+	// 时间；结算复用会话冻结的快照或 request_pricing 读回的倍率。
+	if len(row.Strategy) > 0 {
+		return s.applyTimeStrategy(ctx, snap, row, model, time.Now())
+	}
+	return snap, nil
 }
 
 // defaultSnapshot 处理「无定价行 / 停用行」：内置表达式优先，其次默认价。

@@ -36,6 +36,8 @@ function badgeFor(model: PricingModel, copy: Copy): string | null {
 export function ModelCard({ copy, model, meta, checked, onToggle }: ModelCardProps) {
   const displayName = model.display_name || model.model_id;
   const badge = badgeFor(model, copy);
+  const schedule = model.pricing_schedule ?? null;
+  const scheduleBadge = copy.pricingPage.schedule.badge;
   const stats = [
     { label: copy.models.stats.context, value: formatTokenCount(model.context_length) },
     { label: copy.models.stats.maxOutput, value: formatTokenCount(model.max_output) },
@@ -60,10 +62,22 @@ export function ModelCard({ copy, model, meta, checked, onToggle }: ModelCardPro
           </div>
           <p className="mt-1 truncate text-[11.5px] text-faint">{model.vendor}</p>
         </div>
-        {badge ? (
-          <span className="shrink-0 rounded-[4px] border border-cyan/30 px-1.5 py-px font-mono text-[10.5px] text-cyan">
-            {badge}
-          </span>
+        {badge || schedule ? (
+          <div className="flex shrink-0 flex-wrap justify-end gap-1">
+            {badge ? (
+              <span className="rounded-[4px] border border-cyan/30 px-1.5 py-px font-mono text-[10.5px] text-cyan">
+                {badge}
+              </span>
+            ) : null}
+            {schedule ? (
+              <span
+                data-testid="schedule-badge"
+                className="rounded-[4px] border border-cyan/30 px-1.5 py-px font-mono text-[10.5px] text-cyan"
+              >
+                {scheduleBadge}
+              </span>
+            ) : null}
+          </div>
         ) : null}
       </div>
 

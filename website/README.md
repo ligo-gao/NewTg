@@ -52,6 +52,16 @@ cd deploy && docker compose up -d --force-recreate --no-deps gateway worker
 - 页面内联脚本在首帧前把 `html lang` 修正为当前语言
 - 当前 7 套文案由本次实现提供；上线前建议由母语者校对 fr / ru / ja / vi / zh-TW
 
+## 定价页
+
+- 路由：`/pricing/`（简体中文）与 `/<locale>/pricing/`（其余 6 种语言），全部静态导出。
+- 页面不显示「首页 / 定价」面包屑，直接从标题开始。
+- 数据来自公开的 `GET /api/pricing`：分页、搜索、排序、厂商 / 能力 / 上下文 / 端点 / 计费方式筛选、分组、`quotaType` 都走服务端查询参数；展示状态（表格/卡片、1M/1K、$ 参考）只改 URL、不重新请求。
+- 表格列出输入 / 输出 / 缓存读 / 缓存写 / 按次 / 分组价；基准价固定，分组价使用服务端返回的 `group_price`（不在前端乘倍率）。
+- 展开行：完整价签（基准 vs 分组、充值参考）、费用估算（输入/输出 tokens + 缓存命中率，或按次请求数）、模型信息与复制/详情入口。
+- 卡片视图与移动端（≤760px 强制卡片）、最多 3 个模型对比、分页。
+- Caddy 只把精确的 `/pricing` 与 `/<locale>/pricing` 交给官网；`/pricing/{model_id}` 继续由控制台详情页处理。
+
 ## 明暗主题
 
 - 首次访问跟随系统 `prefers-color-scheme`；导航栏右侧（移动端在汉堡旁）的月亮/太阳按钮手动切换。
@@ -69,7 +79,10 @@ cd deploy && docker compose up -d --force-recreate --no-deps gateway worker
 src/
   app/
     layout.tsx          # 字体、metadata、OG
-    page.tsx            # 按区块组装
+    page.tsx            # 首页
+    pricing/page.tsx    # /pricing
+    [locale]/page.tsx   # /<locale>/
+    [locale]/pricing/page.tsx  # /<locale>/pricing/
     globals.css         # 设计 token、按钮、shiki 覆盖、动效
   components/landing/
     site-header.tsx     # 固定毛玻璃导航（客户端）
@@ -82,6 +95,11 @@ src/
     model-card.tsx
     feature-grid.tsx
     performance-section.tsx  # 近 7 天真实性能表（客户端）
+    pricing-page.tsx    # 定价页外壳（服务端）
+    pricing-workbench.tsx  # 定价工作台：筛选/表格/卡片/分页（客户端）
+    pricing-detail.tsx  # 完整价签 + 费用估算
+    pricing-cards.tsx   # 定价卡片
+    pricing-compare.tsx # 对比弹窗
     closing-cta.tsx
     site-footer.tsx
   components/
@@ -121,9 +139,10 @@ src/
 
 ## 验证
 
-- `bun run test`：10 个测试文件、35 个用例通过（实时目录、搜索/筛选、空态、对比弹窗、性能表、主题、导航、复制、格式化、随机抽取、语言切换）。
+- `bun run test`：14 个测试文件、57 个用例通过（实时目录、搜索/筛选、空态、对比弹窗、性能表、定价工作台/详情估算/卡片/对比、主题、导航、复制、格式化、随机抽取、语言切换）。
 - `bun run typecheck` / `bun run build`：通过（`/` + 6 个语言路由的静态预渲染）。
 - 多语言实测：7 个路由均 200，标题随语言变化；在浏览器里把选择器切到 `ja` 后跳转 `/ja/`、`html lang=ja`、`newtg-locale=ja`、导航与正文均为日文。
+- 定价页实测（浏览器注入示例目录，不写数据库）：7 个模型渲染、展开估算 ¥4.13、分组 vip ×1.20、1K + $ 参考、卡片视图、390px 无横向溢出、控制台 0 报错；`/pricing/`、`/en/pricing/`、`/ja/pricing/` 标题与 h1 正确；`/pricing/{id}` 仍由控制台承载。
 - 后端：`go test ./internal/httpapi/ ./internal/store/` 通过；公开指标单测覆盖 200 / 404 / 400 / 503 / 304、无样本 null、低样本与 TPS 计算。
 - 接口实测（临时探针，验证后已清理）：近 7 天 4 次调用 → `avg_latency_ms=875`、`avg_ttft_ms=200`、`tps≈85.7`、`sample_size=4`、`success_rate=0.75`。
 - 浏览器 QA：1920 / 1440 / 390 / 375 宽度；375 无横向溢出；移动端汉堡菜单、对比栏、弹窗正常；空库下模型区与性能区显示确定性空态；控制台无报错。

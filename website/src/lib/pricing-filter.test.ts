@@ -17,6 +17,8 @@ function model(overrides: Partial<PricingModel> & Pick<PricingModel, "model_id">
     description: null,
     capabilities: null,
     tags: null,
+    endpoints: null,
+    group_price: null,
     ...overrides,
   };
 }

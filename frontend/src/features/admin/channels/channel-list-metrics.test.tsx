@@ -76,8 +76,8 @@ describe('ChannelListPage metrics overview', () => {
     expect(await screen.findByText('alpha')).toBeTruthy()
 
     const table = screen.getByTestId('channels-table')
-    expect(within(table).getByRole('columnheader', { name: 'Success (24h)' })).toBeTruthy()
-    expect(within(table).getByRole('columnheader', { name: 'Latency (24h)' })).toBeTruthy()
+    // The redesign merges both metrics under one "24h health" column.
+    expect(within(table).getByRole('columnheader', { name: '24h health' })).toBeTruthy()
     expect(screen.getByTestId('channel-metrics-rate-1').textContent).toBe('80.0%')
     expect(screen.getByTestId('channel-metrics-latency-1').textContent).toBe('150 ms')
     expect(screen.getByTestId('channel-metrics-rate-2').textContent).toBe('—')

@@ -39,6 +39,7 @@ import (
 
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing/pricing"
+	"newtg/gateway/internal/pricingstrategy"
 	"newtg/gateway/internal/settings"
 	"newtg/gateway/internal/store"
 )
@@ -93,6 +94,9 @@ type PublicPricingHandlerConfig struct {
 	// Metrics 是公开性能接口的数据接缝（读日志库 usage_logs）。nil 时
 	// 接口返回 503，而不是伪造 200 空数据。
 	Metrics store.PublicModelMetricsSource
+	// Perf 提供最近一次主动测速结果（主库 model_performance_tests）。nil 或
+	// 查询失败时 latest_test 为 null，指标响应仍为 200（fail-open）。
+	Perf store.ModelPerformanceStore
 }
 
 // PublicPricingHandlers 持有公开目录端点依赖，可并发使用。
@@ -104,6 +108,7 @@ type PublicPricingHandlers struct {
 	rdb      *redis.Client
 	log      *slog.Logger
 	metrics  store.PublicModelMetricsSource
+	perf     store.ModelPerformanceStore
 }
 
 // NewPublicPricingHandlers 构造公开目录端点。Repo 必填。
@@ -123,6 +128,7 @@ func NewPublicPricingHandlers(cfg PublicPricingHandlerConfig) (*PublicPricingHan
 		rdb:      cfg.Redis,
 		log:      logger,
 		metrics:  cfg.Metrics,
+		perf:     cfg.Perf,
 	}, nil
 }
 
@@ -168,9 +174,12 @@ type PublicModelCard struct {
 	CacheWritePrice *string               `json:"cache_write_price"`
 	IsFree          bool                  `json:"is_free"`
 	GroupPrice      *PublicGroupPriceView `json:"group_price"`
-	Endpoints       []string              `json:"endpoints"`
-	Tags            []string              `json:"tags"`
-	Description     string                `json:"description"`
+	// PricingSchedule 是时段计价表（spec §5.4）：strategy.time.enabled=true
+	// 时非 null，否则为 null——未启用时响应与旧版逐字段一致。
+	PricingSchedule *PricingScheduleView `json:"pricing_schedule"`
+	Endpoints       []string             `json:"endpoints"`
+	Tags            []string             `json:"tags"`
+	Description     string               `json:"description"`
 }
 
 // PublicGroupPriceView 是分组实付价（服务端整数运算，前端只展示）。
@@ -1019,7 +1028,7 @@ func (h *PublicPricingHandlers) handlePublicPricingList(w http.ResponseWriter, r
 		if query.IncludeGroupPrice && canExposeGroupPrice && targetGroup != "" {
 			groupPrice = idx.groupPrice(targetGroup, model)
 		}
-		cards = append(cards, newPublicModelCard(model, groupPrice))
+		cards = append(cards, h.newPublicModelCard(model, groupPrice))
 	}
 
 	etag := publicPricingETag(catalog.Version, "")
@@ -1043,7 +1052,7 @@ func (h *PublicPricingHandlers) handlePublicPricingList(w http.ResponseWriter, r
 	})
 }
 
-func newPublicModelCard(model publicCatalogModel, groupPrice *PublicGroupPriceView) PublicModelCard {
+func (h *PublicPricingHandlers) newPublicModelCard(model publicCatalogModel, groupPrice *PublicGroupPriceView) PublicModelCard {
 	card := PublicModelCard{
 		ModelID: model.rec.Model,
 		// 无档案时按 D1-15 降级：display_name=model_id，其余元数据字段为空。
@@ -1058,6 +1067,7 @@ func newPublicModelCard(model publicCatalogModel, groupPrice *PublicGroupPriceVi
 		Tags:         []string{},
 		Description:  "",
 	}
+	card.PricingSchedule = h.publicPricingSchedule(model.rec)
 	if meta := model.meta; meta != nil {
 		// display_name 允许空串：空串回退 model_id（D1-16），避免卡片标题行
 		// 变成一条不可见/不可点击的空白。下发 TrimSpace 后的值，与判空
@@ -1086,6 +1096,24 @@ func newPublicModelCard(model publicCatalogModel, groupPrice *PublicGroupPriceVi
 	// per_request 只展示每次价：输出/缓存价在管理面被禁止，DB 里即使残留
 	// 旧值也不对外展示（与 F-09-18 的隐藏逻辑一致）。
 	return card
+}
+
+// publicPricingSchedule 把 model_pricing.strategy 转成公开时段表。
+//
+// 解析失败按 null 下发并告警：公开目录是展示面，一行脏策略不应让整个定价
+// 目录 500；真正的计费路径仍由 DBSource fail-closed（请求直接失败），所以
+// 「展示为无时段」不会把错价伪装成正确价格。
+func (h *PublicPricingHandlers) publicPricingSchedule(rec store.PublicModelPricing) *PricingScheduleView {
+	if len(rec.Strategy) == 0 {
+		return nil
+	}
+	strategy, err := pricingstrategy.Parse(rec.Strategy)
+	if err != nil {
+		h.log.Warn("public pricing: invalid time strategy; omitting schedule",
+			"model", rec.Model, "error", err)
+		return nil
+	}
+	return newPricingScheduleView(strategy)
 }
 
 // publicModelIsFree 实现 R-PUB-03：四项有效价全部显式 0 才是免费，NULL 不算 0。
@@ -1252,7 +1280,7 @@ func (h *PublicPricingHandlers) handlePublicPricingDetail(w http.ResponseWriter,
 	canExpose := identity.Authenticated || exposeRatios
 	personalized := identity.Authenticated
 
-	card := newPublicModelCard(*model, nil)
+	card := h.newPublicModelCard(*model, nil)
 	detail := PublicModelDetail{
 		PublicModelCard: card,
 		Modalities:      []string{},
@@ -1320,11 +1348,29 @@ type PublicGroupMetricsView struct {
 	SuccessRate  *float64 `json:"success_rate"`
 }
 
+// PublicModelLatestTest 是最近一次管理员主动测速的汇总（契约 latest_test）。
+//
+// 每个可空统计列保持 JSON null：主动测速的某个分位数在样本不足时可能缺失，
+// 用 0 冒充「很快」比留空更有误导性。success_rate/sample_size 由汇总行保证
+// 有值（tested_at 来自 created_at）。
+type PublicModelLatestTest struct {
+	TTFTMSP50    *int     `json:"ttft_ms_p50"`
+	TTFTMSP95    *int     `json:"ttft_ms_p95"`
+	LatencyMSP50 *int     `json:"latency_ms_p50"`
+	LatencyMSP95 *int     `json:"latency_ms_p95"`
+	TPS          *float64 `json:"tps"`
+	SuccessRate  float64  `json:"success_rate"`
+	SampleSize   int      `json:"sample_size"`
+	TestedAt     string   `json:"tested_at"`
+}
+
 type PublicModelMetricsResponse struct {
 	Range    string                    `json:"range"`
 	Window   PublicModelMetricsWindow  `json:"window"`
 	Summary  PublicModelMetricsSummary `json:"summary"`
 	PerGroup []PublicGroupMetricsView  `json:"per_group"`
+	// LatestTest 为最近一次主动测速；没有记录/接缝未装配/查询失败时为 null。
+	LatestTest *PublicModelLatestTest `json:"latest_test"`
 }
 
 const (
@@ -1354,8 +1400,13 @@ func roundMillisPtr(value *float64) *float64 {
 	return &rounded
 }
 
-func publicMetricsETag(modelID, window string, at time.Time) string {
-	sum := sha256.Sum256([]byte(modelID + "|" + window))
+// publicMetricsETag 由模型、窗口、分钟桶与最近一次主动测速的身份派生。
+//
+// 主动测速不进入 usage_logs 聚合，因此必须把测试 ID/时间折进缓存键：否则
+// 管理员刚跑完一次测试，共享缓存仍会在 60 秒内回放旧值。无测试时 identity
+// 为空，行为与旧版一致。
+func publicMetricsETag(modelID, window string, at time.Time, testIdentity string) string {
+	sum := sha256.Sum256([]byte(modelID + "|" + window + "|" + testIdentity))
 	return `"metrics-v1-` + hex.EncodeToString(sum[:])[:16] + `-` +
 		strconv.FormatInt(at.Unix()/60, 10) + `"`
 }
@@ -1436,17 +1487,43 @@ func (h *PublicPricingHandlers) handlePublicPricingMetrics(w http.ResponseWriter
 		groups = append(groups, view)
 	}
 
+	// 主动测速是独立事实源（主库），失败不影响真实调用聚合：日志告警后
+	// latest_test 留空，响应仍是 200（fail-open）。
+	testIdentity := ""
+	var latestTest *PublicModelLatestTest
+	if h.perf == nil {
+		h.log.Warn("public pricing metrics: performance store not configured; latest_test omitted",
+			"model", modelID)
+	} else if test, found, perfErr := h.perf.LatestByModel(r.Context(), modelID); perfErr != nil {
+		h.log.Warn("public pricing metrics: latest performance test unavailable; failing open",
+			"model", modelID, "error", perfErr)
+	} else if found {
+		latestTest = &PublicModelLatestTest{
+			TTFTMSP50:    test.TTFTMSP50,
+			TTFTMSP95:    test.TTFTMSP95,
+			LatencyMSP50: test.LatencyMSP50,
+			LatencyMSP95: test.LatencyMSP95,
+			TPS:          test.TPSAvg,
+			SuccessRate:  test.SuccessRate,
+			SampleSize:   test.Runs,
+			TestedAt:     test.CreatedAt.UTC().Format(time.RFC3339),
+		}
+		testIdentity = strconv.FormatInt(test.ID, 10) + "@" +
+			test.CreatedAt.UTC().Format(time.RFC3339Nano)
+	}
+
 	response := PublicModelMetricsResponse{
 		Range: label,
 		Window: PublicModelMetricsWindow{
 			Start: start.Format(time.RFC3339),
 			End:   end.Format(time.RFC3339),
 		},
-		Summary:  summary,
-		PerGroup: groups,
+		Summary:    summary,
+		PerGroup:   groups,
+		LatestTest: latestTest,
 	}
 
-	etag := publicMetricsETag(modelID, label, end)
+	etag := publicMetricsETag(modelID, label, end, testIdentity)
 	w.Header().Set("Cache-Control", publicMetricsCacheControl)
 	w.Header().Set("ETag", etag)
 	if etagMatches(r.Header.Get("If-None-Match"), etag) {

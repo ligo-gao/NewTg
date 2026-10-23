@@ -29,7 +29,13 @@ export function LanguageSwitcher({
     } catch {
       // Storage can be unavailable; navigation still works.
     }
-    window.location.assign(localePath(next));
+    const path = window.location.pathname;
+    const isPricing = /(^|\/)pricing\/?$/.test(path);
+    const base = localePath(next);
+    const destination = isPricing
+      ? `${base === "/" ? "/" : base}pricing/`
+      : base;
+    window.location.assign(destination);
   }
 
   const current = localeInfo(locale);

@@ -46,32 +46,11 @@ export function AppSidebar({
   return (
     <aside
       className={cn(
-        'sticky top-0 flex h-screen shrink-0 flex-col border-r border-border-hairline bg-surface-card transition-[width] duration-150',
+        'flex h-full shrink-0 flex-col border-r border-border-hairline bg-surface-card transition-[width] duration-150',
         collapsed ? 'w-16 px-2' : 'w-60 px-2.5',
       )}
       aria-label={t('common.app.title')}
     >
-      <div
-        className={cn(
-          'flex items-center gap-2.5 py-3',
-          collapsed ? 'justify-center px-0' : 'px-1.5',
-        )}
-      >
-        <span className="grid size-8 shrink-0 place-items-center rounded-[9px] bg-brand text-[10px] font-bold tracking-[-0.02em] text-white">
-          NTG
-        </span>
-        {collapsed ? null : (
-          <div className="min-w-0">
-            <div className="truncate text-[15px] font-bold leading-5 tracking-[-0.01em] text-ink-1">
-              {t('common.app.title')}
-            </div>
-            <div className="truncate text-[11px] leading-4 text-ink-3">
-              AI API Gateway
-            </div>
-          </div>
-        )}
-      </div>
-
       {settingsMode ? (
         <div className="mt-1 flex min-h-0 flex-1 flex-col gap-1 pb-2">
           <a
@@ -100,13 +79,13 @@ export function AppSidebar({
         </div>
       ) : (
         <nav
-          className="mt-1 flex-1 overflow-y-auto pb-2"
+          className="mt-1 flex-1 overflow-y-auto pb-2 pt-1"
           aria-label={t('common.app.title')}
         >
           {groups.map((group) => (
-            <div key={group.id} className="mt-3 first:mt-1">
+            <div key={group.id} className="mt-3 first:mt-0">
               {collapsed ? null : (
-                <div className="px-2 pb-1 text-[10.5px] font-semibold uppercase leading-4 tracking-[0.04em] text-ink-3">
+                <div className="px-2 pb-1 text-[12px] font-semibold uppercase leading-[18px] tracking-[0.02em] text-ink-2">
                   {t(group.labelKey)}
                 </div>
               )}

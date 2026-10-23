@@ -131,6 +131,10 @@ services:
       # W10-N10/N11：保留/维护主体的日志库 DSN。只授 worker（gateway 不执行
       # DROP/DELETE）；与 app DSN 角色/口令独立，缺失时保留任务 fail-closed。
       DB_RETENTION_DSN: "postgres://newtg_retention:${POSTGRES_RETENTION_PASSWORD:?set POSTGRES_RETENTION_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_LOGS_DB:-newtg_logs}?sslmode=${DATABASE_TLS:-disable}"
+      # holiday_sync（spec §5.2.1）：只在 worker 执行。默认开启，经 egress
+      # 网络拉取 holiday-cn 年度 JSON；离线部署置 false 即可零出站。
+      HOLIDAY_SYNC_ENABLED: "${HOLIDAY_SYNC_ENABLED:-true}"
+      HOLIDAY_SYNC_URL_TEMPLATE: "${HOLIDAY_SYNC_URL_TEMPLATE:-https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/%d.json}"
       METRICS_ADDR: ":8006"
       METRICS_TOKEN: "${METRICS_TOKEN:-}"
     depends_on:

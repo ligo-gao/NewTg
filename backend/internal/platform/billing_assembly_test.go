@@ -47,7 +47,7 @@ func TestInitBillingAssemblySetsQuotaPerUnit(t *testing.T) {
 	reader := billingAssemblyConfigReader{
 		"billing.quota_per_unit": json.RawMessage("200"),
 	}
-	source, err := initBillingAssembly(&gorm.DB{}, reader,
+	source, err := initBillingAssembly(&gorm.DB{}, nil, reader,
 		&config.Config{NodeName: "node-a"}, discardLogger(), "gateway")
 	if err != nil {
 		t.Fatalf("initBillingAssembly: %v", err)
@@ -78,7 +78,7 @@ func TestInitBillingAssemblyRejectsInvalidQuotaPerUnit(t *testing.T) {
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {
 			reader := billingAssemblyConfigReader{"billing.quota_per_unit": raw}
-			if _, err := initBillingAssembly(&gorm.DB{}, reader,
+			if _, err := initBillingAssembly(&gorm.DB{}, nil, reader,
 				&config.Config{NodeName: "node-a"}, discardLogger(), "gateway"); err == nil {
 				t.Fatalf("initBillingAssembly(%s) = nil error, want error", raw)
 			}

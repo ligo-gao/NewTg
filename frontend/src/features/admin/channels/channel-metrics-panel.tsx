@@ -127,11 +127,11 @@ export function ChannelMetricsPanel({ channel }: { channel: Channel }) {
   return (
     <section
       data-testid={`channel-metrics-${channel.id}`}
-      className="mt-4 border-t border-border-hairline pt-4"
+      className="min-w-0 rounded-lg border border-border-hairline bg-surface-card p-4"
       aria-label={t('common.channels.metrics.title')}
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h3 className="text-sm font-medium text-ink-1">
+        <h3 className="text-[11px] font-semibold tracking-[0.02em] text-ink-2">
           {t('common.channels.metrics.title')}
         </h3>
         <div className="flex items-center gap-1" role="tablist">

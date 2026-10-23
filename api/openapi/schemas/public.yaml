@@ -313,7 +313,7 @@ schemas:
     additionalProperties: false
     required: [model_id, display_name, vendor, capabilities, context_length, max_output,
                mode, prompt_price, completion_price, cache_read_price, cache_write_price,
-               is_free, group_price, endpoints, tags, description]
+               is_free, group_price, pricing_schedule, endpoints, tags, description]
     properties:
       model_id: {type: string, maxLength: 128}
       display_name:
@@ -374,6 +374,14 @@ schemas:
           - $ref: '#/schemas/PublicGroupPrice'
           - enum: [null]
         description: 仅登录或显式 group（且 expose=true）时出现（R-PUB-05）。
+      pricing_schedule:
+        anyOf:
+          - $ref: '#/schemas/PublicPricingSchedule'
+          - enum: [null]
+        description: |
+          时段计价表：strategy.time.enabled=true 时非 null，否则为 null
+          （未启用时段时响应与旧版逐字段一致）。非法策略同样降级为 null
+          并记录告警，不阻断公开目录。
       endpoints:
         type: array
         items: {type: string}
@@ -387,6 +395,56 @@ schemas:
       description:
         type: string
         description: 档案 description；无档案时为空串。
+
+  PublicPricingSchedule:
+    type: object
+    additionalProperties: false
+    required: [kind, timezone, default_multiplier, holiday_policy, windows]
+    properties:
+      kind:
+        type: string
+        enum: [flat, peak_offpeak]
+        description: 结构化枚举，前端按七种语言本地化。
+      timezone:
+        type: string
+        description: 策略自己的 IANA 时区（不随站点时区变更）。
+      default_multiplier:
+        type: number
+        format: double
+        description: 未命中窗口（以及 cn_offpeak 的法定假日）使用的倍率。
+      holiday_policy:
+        type: string
+        enum: [none, cn_offpeak]
+      windows:
+        type: array
+        items:
+          $ref: '#/schemas/PublicPricingWindow'
+        description: 同一时刻命中多个窗口时数组顺序最后一条生效。
+
+  PublicPricingWindow:
+    type: object
+    additionalProperties: false
+    required: [name, days, start, end, multiplier]
+    properties:
+      name: {type: string, maxLength: 64}
+      days:
+        type: array
+        minItems: 1
+        items:
+          type: integer
+          minimum: 1
+          maximum: 7
+        description: 1=周一 … 7=周日；跨夜窗口指窗口开始的那一天。
+      start:
+        type: string
+        pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+      end:
+        type: string
+        pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+        description: end <= start 表示跨夜。
+      multiplier:
+        type: number
+        format: double
 
   PublicGroupPrice:
     type: object
@@ -1310,6 +1368,60 @@ schemas:
         type: array
         items:
           $ref: '#/schemas/PublicGroupMetric'
+      latest_test:
+        anyOf:
+          - $ref: '#/schemas/PublicModelLatestTest'
+          - enum: [null]
+        description: |
+          最近一次管理员主动测速（`model_performance_tests` 汇总行）的公开
+          投影。没有主动测试记录、测速库未装配或读取失败时为 null；这是一条
+          独立于 `usage_logs` 的兜底来源，前端在真实调用样本缺失/不足时回退
+          到它，并用「主动测试」标注来源。
+
+  # 主动测速汇总（主库 model_performance_tests）。可空统计列保持 null：
+  # 样本不足缺失的分位数不能用 0 冒充（0 会被读成「极快」）。
+  PublicModelLatestTest:
+    type: object
+    additionalProperties: false
+    required: [ttft_ms_p50, ttft_ms_p95, latency_ms_p50, latency_ms_p95, tps,
+               success_rate, sample_size, tested_at]
+    properties:
+      ttft_ms_p50:
+        type: integer
+        nullable: true
+        minimum: 0
+        description: 首字延迟 P50（毫秒）；无有效样本时为 null。
+      ttft_ms_p95:
+        type: integer
+        nullable: true
+        minimum: 0
+      latency_ms_p50:
+        type: integer
+        nullable: true
+        minimum: 0
+        description: 端到端延迟 P50（毫秒）；无有效样本时为 null。
+      latency_ms_p95:
+        type: integer
+        nullable: true
+        minimum: 0
+      tps:
+        type: number
+        nullable: true
+        minimum: 0
+        description: 主动测试的平均输出速度（tokens/s）；无有效样本时为 null。
+      success_rate:
+        type: number
+        minimum: 0
+        maximum: 1
+        description: 成功次数 / 总运行次数。
+      sample_size:
+        type: integer
+        minimum: 0
+        description: 本次测试的运行次数（runs）。
+      tested_at:
+        type: string
+        format: date-time
+        description: 测试完成时刻（RFC3339，UTC）。
 
   PublicGroupMetric:
     type: object

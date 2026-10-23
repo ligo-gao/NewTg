@@ -75,6 +75,16 @@ type Config struct {
 	// 单向门：只读守卫同时拒绝了 PUT /api/settings，演示站开启后没有任何
 	// 受控出口，只能由部署侧显式关闭（控制端裁决 I2）。
 	DemoEnabled *bool // NEWTG_DEMO_ENABLED
+
+	// HolidaySyncEnabled 控制 holiday_sync worker 任务（spec §5.2.1）。
+	//
+	// 关闭后调度器跳过该任务、手动触发返回 409 holiday_sync_disabled；
+	// 已同步的 holiday_calendar 行仍参与计价——关掉的是「拉取」，不是
+	// 「使用」。离线部署可用它彻底禁掉出站请求。
+	HolidaySyncEnabled bool // HOLIDAY_SYNC_ENABLED
+	// HolidaySyncURLTemplate 是年度 JSON 的地址模板，%d 会被替换成年份。
+	// 默认值是 jsDelivr 缓存的 NateScarlet/holiday-cn（MIT，见 THIRD_PARTY_NOTICES）。
+	HolidaySyncURLTemplate string // HOLIDAY_SYNC_URL_TEMPLATE
 }
 
 // defaults 包级默认值表，与 platform-03 §3.1 的「默认」列一一对应。
@@ -100,6 +110,10 @@ var defaults = map[string]string{
 	"PERF_METRICS_FLUSH_INTERVAL": "5m",
 	"PERF_METRICS_RETENTION_DAYS": "400",
 	"TLS_MIN_VERSION":             "1.2",
+	// 中国法定节假日同步（holiday_sync）。默认开启、默认数据源对公网可达；
+	// 离线部署把 HOLIDAY_SYNC_ENABLED 置 false 即可不发任何出站请求。
+	"HOLIDAY_SYNC_ENABLED":      "true",
+	"HOLIDAY_SYNC_URL_TEMPLATE": "https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/%d.json",
 }
 
 // lookup 集中读取环境变量：非空值优先，否则回落 defaults[key]。
@@ -156,6 +170,14 @@ func Load() (*Config, error) {
 		// 非法值按「未设置」处理：部署侧拼写错误只告警，不得让整站无法启动
 		// （控制端裁决 I2；fail-closed 在这里反而会把演示站永久锁死）。
 		DemoEnabled: parseDemoEnabled(lookup("NEWTG_DEMO_ENABLED")),
+		// 节假日同步只在 worker 角色实际执行；gateway 也解析同一份配置，
+		// 保证管理面展示的开关与 worker 行为一致。
+		HolidaySyncURLTemplate: lookup("HOLIDAY_SYNC_URL_TEMPLATE"),
+	}
+
+	var err error
+	if c.HolidaySyncEnabled, err = parseBool("HOLIDAY_SYNC_ENABLED", lookup("HOLIDAY_SYNC_ENABLED")); err != nil {
+		return nil, err
 	}
 
 	// NODE_NAME 空 → hostname。
@@ -168,7 +190,6 @@ func Load() (*Config, error) {
 		c.NodeName = hostname
 	}
 
-	var err error
 	if c.DBMigrateOnStart, err = parseBool("DB_MIGRATE_ON_START", lookup("DB_MIGRATE_ON_START")); err != nil {
 		return nil, err
 	}
@@ -352,6 +373,13 @@ func (c *Config) Validate() error {
 	}
 	if c.PerfMetricsRetentionDays < 30 || c.PerfMetricsRetentionDays > 400 {
 		return fmt.Errorf("config: PERF_METRICS_RETENTION_DAYS %d out of range [30, 400]", c.PerfMetricsRetentionDays)
+	}
+	// holiday_sync 的 URL 模板必须恰好有一个 %d：拼错的模板会让任务每天
+	// 拉同一个年份或一个带 `%!d(MISSING)` 的地址。启动期失败比运行期
+	// 静默拉错更早暴露。空串表示「未配置」（Load 总会填入默认模板；
+	// 手工构造的 Config 不写该字段时不应被这条规则拦下）。
+	if c.HolidaySyncURLTemplate != "" && strings.Count(c.HolidaySyncURLTemplate, "%d") != 1 {
+		return fmt.Errorf("config: HOLIDAY_SYNC_URL_TEMPLATE %q must contain exactly one %%d", c.HolidaySyncURLTemplate)
 	}
 	return nil
 }

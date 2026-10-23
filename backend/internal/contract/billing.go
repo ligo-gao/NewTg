@@ -236,6 +236,18 @@ type PriceSnapshot struct {
 	PreConsumeMultiplier     float64        // 预扣倍数（快照冻结供图片重试复用）
 	CacheWriteMode           CacheWriteMode // 只读元信息，不参与求值
 	IsClaudeUsageSemantic    bool           // 上游格式事实（归一化的输入之一）
+
+	// 时段计价事实（模型定价策略 spec §5.2）。三者只在某行配置了启用的
+	// `strategy.time` 时非零：0/空串表示「没有时段策略」，既有行为完全不变。
+	//
+	// TimeMultiplier 是**冻结的请求时间**命中的倍率（已经乘进 Price 的绝对
+	// 单价字段）。异步/handoff 结算用 request_pricing 读回的同一倍率重建
+	// 快照，不得按 time.Now() 重新匹配窗口。
+	TimeMultiplier float64
+	// TimeWindow 是命中的窗口名；未命中窗口（使用 default_multiplier）时为空。
+	TimeWindow string
+	// HolidayName 是请求日期命中的中国法定节假日/调休名称（没有日历数据时为空）。
+	HolidayName string
 }
 
 // CacheWriteMode 是缓存写入模式的只读元信息（供展示，不参与表达式执行）。

@@ -9,6 +9,7 @@ import (
 
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/metrics"
+	"newtg/gateway/internal/store"
 )
 
 // 本文件是 worker 的计费兜底循环（billing-06 §5）：周期扫描在飞租约、
@@ -54,6 +55,12 @@ type StaleSubscriptionRecoverer interface {
 	RecoverStaleSubscriptionPreConsumes(ctx context.Context, now time.Time, limit int) (int, error)
 }
 
+// RequestPricingCleaner 清理过期的冻结请求计价事实（spec §5.2）。
+// *store.RequestPricingRepo 是生产实现。
+type RequestPricingCleaner interface {
+	DeleteBefore(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
 // WorkerDeps 是兜底循环的依赖与可调参数。
 //
 // 零值字段使用契约冻结值/默认值：
@@ -67,11 +74,17 @@ type WorkerDeps struct {
 	// SubscriptionRecoverer 是可选的订阅预扣兜底（nil 表示未装配订阅，
 	// 跳过该扫描；装配后每轮与悬挂请求扫描一起执行）。
 	SubscriptionRecoverer StaleSubscriptionRecoverer
-	LogsDB                *sql.DB // 日志库；nil 时跳过分区维护
-	Logger                *slog.Logger
-	Now                   func() time.Time
-	ScanInterval          time.Duration
-	PartitionInterval     time.Duration
+	// RequestPricing 是可选的冻结计价事实清理器（nil 表示未装配，
+	// 跳过清理；装配后与 preconsume_reconcile 同一轮执行）。
+	RequestPricing RequestPricingCleaner
+	// RequestPricingRetention 是冻结事实的保留期；零值用
+	// store.RequestPricingRetention（7 天）。只在测试里覆盖。
+	RequestPricingRetention time.Duration
+	LogsDB                  *sql.DB // 日志库；nil 时跳过分区维护
+	Logger                  *slog.Logger
+	Now                     func() time.Time
+	ScanInterval            time.Duration
+	PartitionInterval       time.Duration
 
 	// PartitionLookaheadMonths 是分区预建的 lookahead（W10-N10 / R-W10-04）：
 	// 当月 + 下 N 个月。0 表示只保证当月；负值按 0 处理。装配层从
@@ -156,6 +169,7 @@ func RunWorkerLoop(ctx context.Context, deps WorkerDeps) error {
 	// 启动序：先保证日志分区存在，再处理钱包悬挂请求（回收过程可能补写日志）。
 	ensure()
 	scanOnce(ctx, deps.Abandoned, deps.Recoverer, log, now)
+	cleanupRequestPricing(ctx, deps, log, now)
 	// 订阅兜底**不在启动时立即执行**（R-W9B-02 / M-4 复核）。
 	//
 	// 任务轮询器与 worker 是并发启动的：任务提交路径 Detach 后到轮询器首次
@@ -179,14 +193,37 @@ func RunWorkerLoop(ctx context.Context, deps WorkerDeps) error {
 		case <-scanTicker.C:
 			scanOnce(ctx, deps.Abandoned, deps.Recoverer, log, now)
 			recoverStaleSubscriptions(ctx, deps.SubscriptionRecoverer, log, now)
+			cleanupRequestPricing(ctx, deps, log, now)
 		case <-partitionTicker.C:
 			ensure()
 		}
 	}
 }
 
-// recoverStaleSubscriptions 执行一轮订阅预扣兜底。
+// cleanupRequestPricing 删除超过保留期的冻结请求计价事实（spec §5.2）。
 //
+// 与 preconsume_reconcile 同一轮执行：两者都是「预扣后的账务清理」，
+// 共用扫描周期即可；失败只告警并在下一轮重试——清理失败不会让计费出错，
+// 但长期堆积会让 request_pricing 无限增长。
+func cleanupRequestPricing(ctx context.Context, deps WorkerDeps, log *slog.Logger, now func() time.Time) {
+	if deps.RequestPricing == nil {
+		return
+	}
+	retention := deps.RequestPricingRetention
+	if retention <= 0 {
+		retention = store.RequestPricingRetention
+	}
+	deleted, err := deps.RequestPricing.DeleteBefore(ctx, now().Add(-retention))
+	if err != nil {
+		log.Warn("billing: cleanup request_pricing failed; retrying next round", "error", err)
+		return
+	}
+	if deleted > 0 {
+		log.Info("billing: cleaned expired request_pricing rows", "deleted", deleted)
+	}
+}
+
+// recoverStaleSubscriptions 执行一轮订阅预扣兜底。//
 // nil 表示未装配订阅（纯钱包部署）：直接跳过，不产生任何日志噪声。
 // 扫描失败只记录并下一轮重试——与钱包悬挂扫描同一失败语义，绝不把
 // 「数据库不可用」当成「没有可退记录」。

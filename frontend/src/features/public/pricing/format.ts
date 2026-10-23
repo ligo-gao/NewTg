@@ -200,3 +200,40 @@ export function rechargeReference(
   const cny = creditsToCny(raw, meta.quota_per_unit, locale)
   return cny === null ? null : `¥${cny}`
 }
+
+/**
+ * 性能区（F-09-25）的展示格式化。`null`/非有限值一律渲染 `—`：
+ * 性能字段缺失表示「没有样本」，不是 0ms / 0 tokens/s。
+ */
+export function formatPerfMilliseconds(
+  value: number | null | undefined,
+  locale: string,
+): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value < 0) {
+    return '—'
+  }
+  return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(value)} ms`
+}
+
+export function formatPerfTPS(
+  value: number | null | undefined,
+  locale: string,
+): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value < 0) {
+    return '—'
+  }
+  return new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value)
+}
+
+export function formatSuccessRate(
+  value: number | null | undefined,
+  locale: string,
+): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return '—'
+  }
+  return new Intl.NumberFormat(locale, {
+    style: 'percent',
+    maximumFractionDigits: 1,
+  }).format(value)
+}

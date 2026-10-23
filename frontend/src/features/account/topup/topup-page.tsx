@@ -1,8 +1,6 @@
 import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { apiClient } from '@/api/client'
-import { requireData } from '@/api/result'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { formatCredits } from '@/shared/lib/format'
 import { Button } from '@/shared/ui/button'
@@ -13,6 +11,11 @@ import { CheckoutDialog } from './checkout-dialog'
 import { PaymentConfirmDialog } from './payment-confirm-dialog'
 import { RedeemPage } from './redeem-page'
 import { centsToCredits, formatYuan, parseYuanToCents } from './money'
+import {
+  topupConfigQueryOptions,
+  WALLET_SUMMARY_KEY,
+  walletSummaryQueryOptions,
+} from './queries'
 import type {
   CreateOrderResponse,
   OrderView,
@@ -21,13 +24,26 @@ import type {
 } from './types'
 import { isUiSupportedProvider } from './types'
 
-const CONFIG_KEY = ['topup', 'config'] as const
-const WALLET_SUMMARY_KEY = ['wallet', 'summary'] as const
-
 interface CheckoutState {
   response: CreateOrderResponse
   /** Replayed orders carry no payment payload; the full row is fetched. */
   replayOrder?: OrderView
+}
+
+/** A top-up intent handed over from the wallet overview. */
+export interface TopupSelection {
+  /** Amount in cents, or null to leave the amount empty (custom mode). */
+  cents: number | null
+  /** Open the custom-amount field instead of a preset. */
+  custom: boolean
+}
+
+export interface TopupPageProps {
+  /**
+   * Seeds the selection when the overview sends the user here with a chosen
+   * amount. When omitted the amount comes from the server config.
+   */
+  initialSelection?: TopupSelection
 }
 
 /**
@@ -52,27 +68,31 @@ function providerMinFor(
  * `GET /api/wallet/summary` (F-03-01) and re-read after a successful top-up or
  * redemption — never incremented locally.
  */
-export function TopupPage() {
+export function TopupPage({ initialSelection }: TopupPageProps) {
   const { t } = useI18n()
   const queryClient = useQueryClient()
 
-  const configQuery = useQuery({
-    queryKey: CONFIG_KEY,
-    queryFn: async () =>
-      requireData(await apiClient.GET('/api/topup/config')),
-  })
+  const configQuery = useQuery(topupConfigQueryOptions())
   const config: TopupConfig | undefined = configQuery.data
 
-  const summaryQuery = useQuery({
-    queryKey: WALLET_SUMMARY_KEY,
-    queryFn: async () =>
-      requireData(await apiClient.GET('/api/wallet/summary')),
-  })
+  const summaryQuery = useQuery(walletSummaryQueryOptions())
   const balance = summaryQuery.data?.balance ?? null
 
-  const [amountCents, setAmountCents] = useState<number | null>(null)
-  const [customMode, setCustomMode] = useState(false)
-  const [customInput, setCustomInput] = useState('')
+  // An explicit selection from the overview wins over the config-derived
+  // default; the custom field opens with the yuan text the user picked.
+  const [amountCents, setAmountCents] = useState<number | null>(
+    initialSelection !== undefined && !initialSelection.custom
+      ? initialSelection.cents
+      : null,
+  )
+  const [customMode, setCustomMode] = useState(
+    initialSelection?.custom ?? false,
+  )
+  const [customInput, setCustomInput] = useState(
+    initialSelection?.custom && initialSelection.cents !== null
+      ? String(initialSelection.cents / 100)
+      : '',
+  )
   const [provider, setProvider] = useState<TopupProvider | null>(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [checkout, setCheckout] = useState<CheckoutState | null>(null)
@@ -160,6 +180,10 @@ export function TopupPage() {
 
   function refreshBalance(): void {
     void queryClient.invalidateQueries({ queryKey: WALLET_SUMMARY_KEY })
+    // Money movements also create ledger rows; the overview's recent list and
+    // the transactions tab must not keep the pre-payment page for their
+    // staleTime. The prefix invalidation covers both query shapes.
+    void queryClient.invalidateQueries({ queryKey: ['wallet', 'transactions'] })
   }
 
   function handleSucceeded(): void {

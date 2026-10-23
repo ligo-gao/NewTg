@@ -41,7 +41,7 @@ export function LandingPage({ locale, copy }: { locale: Locale; copy: Copy }) {
         </HomeDataProvider>
         <ClosingCta copy={copy} />
       </main>
-      <SiteFooter copy={copy} />
+      <SiteFooter copy={copy} locale={locale} />
     </>
   );
 }

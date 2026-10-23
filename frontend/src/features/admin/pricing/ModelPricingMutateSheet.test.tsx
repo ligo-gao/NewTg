@@ -20,8 +20,29 @@ const server = setupServer()
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 afterEach(() => server.resetHandlers())
 afterAll(() => server.close())
+function installCandidates() {
+  server.use(
+    http.get(`${ORIGIN}/api/model-pricing/candidates`, () =>
+      HttpResponse.json({
+        items: [
+          {
+            model: 'deepseek-flash',
+            display_name: 'DeepSeek Flash',
+            vendor: 'DeepSeek',
+            context_length: 128000,
+            sources: ['channel'],
+            priced: true,
+            mode: 'per_token',
+          },
+        ],
+      }),
+    ),
+  )
+}
+
 beforeEach(() => {
   useToastStore.setState({ toasts: [] })
+  installCandidates()
 })
 
 function pricingRow(overrides: Partial<ModelPricing> = {}): ModelPricing {
@@ -38,6 +59,8 @@ function pricingRow(overrides: Partial<ModelPricing> = {}): ModelPricing {
     vendor: null,
     status: 1,
     free: false,
+    has_strategy: false,
+    strategy_kind: 'flat',
     created_at: '2026-10-01T10:00:00Z',
     updated_at: '2026-10-01T10:00:00Z',
     ...overrides,
@@ -125,7 +148,7 @@ describe('PricingMutateSheet expression preview', () => {
     expect(editor.getAttribute('aria-invalid')).toBeNull()
   })
 
-  it('offers a retry when the preview itself fails', async () => {
+  it('offers a retry when the expression preview itself fails', async () => {
     let calls = 0
     server.use(
       http.post(`${ORIGIN}/api/model-pricing:preview`, () => {
@@ -136,11 +159,11 @@ describe('PricingMutateSheet expression preview', () => {
             { status: 500 },
           )
         }
-        return previewSuccess()
+        return previewSuccess('tiered_expr')
       }),
     )
 
-    const { findByText, getByRole } = await renderWithProviders(
+    const { findByText, getByLabelText, getByRole } = await renderWithProviders(
       <ModelPricingMutateSheet
         open
         mode="create"
@@ -151,6 +174,9 @@ describe('PricingMutateSheet expression preview', () => {
       ['common', 'admin'],
     )
     const user = userEvent.setup()
+
+    await user.click(getByRole('button', { name: 'Expression' }))
+    await user.type(getByLabelText('Billing expression'), 'p * 0.001')
 
     expect(await findByText('Preview failed.')).toBeTruthy()
     await user.click(getByRole('button', { name: 'Retry preview' }))
@@ -447,19 +473,20 @@ describe('PricingMutateSheet server field mapping', () => {
     })
   })
 
-  it('uses input-error copy rather than expression copy outside expression mode', async () => {
+  it('keeps the non-expression preview local instead of calling the evaluator', async () => {
+    let previewCalls = 0
     server.use(
-      http.post(`${ORIGIN}/api/model-pricing:preview`, () =>
-        HttpResponse.json(
-          { type: 'about:blank', title: 'Invalid request', fields: ['spec'] },
-          { status: 400 },
-        ),
-      ),
+      http.post(`${ORIGIN}/api/model-pricing:preview`, () => {
+        previewCalls += 1
+        return previewSuccess()
+      }),
     )
 
-    const { findByText, queryByText } = await renderCreate()
+    const { findByText, getByLabelText } = await renderCreate()
+    const user = userEvent.setup()
 
-    expect(await findByText('The preview input is invalid.')).toBeTruthy()
-    expect(queryByText('The expression is invalid.')).toBeNull()
+    await user.type(getByLabelText('Prompt price'), '200')
+    expect(await findByText('Estimated cost')).toBeTruthy()
+    expect(previewCalls).toBe(0)
   })
 })

@@ -458,3 +458,61 @@ func TestPricingIntegrationOverrideCreateVsModelDeleteRace(t *testing.T) {
 		t.Fatalf("竞态留下 %d 条孤儿覆盖价", count)
 	}
 }
+
+// TestPricingIntegrationStrategyRoundTrip 验证 strategy 的 JSONB 写入/读取在
+// 真实 PG 上成立（驱动把 []byte 绑定为 jsonb，nil 落为 NULL），并验证显式
+// null 清除会真的把列置空。
+func TestPricingIntegrationStrategyRoundTrip(t *testing.T) {
+	env := newPricingIntegrationEnv(t)
+	model := pricingIntegrationModel(t)
+	t.Cleanup(func() { cleanupPricingIntegration(t, env.db, model) })
+
+	rr := env.request(t, http.MethodPost, "/api/model-pricing", map[string]any{
+		"model": model, "prompt_price": 200, "completion_price": 800,
+		"strategy": timeStrategyFixture(),
+	}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	detail := decodePricingDetail(t, rr)
+	if detail["has_strategy"] != true || detail["strategy_kind"] != "peak_offpeak" {
+		t.Fatalf("创建响应摘要错误: %+v", detail)
+	}
+
+	var timezone string
+	if err := env.db.QueryRow(
+		`SELECT strategy->'time'->>'timezone' FROM model_pricing WHERE model = $1`, model).
+		Scan(&timezone); err != nil {
+		t.Fatalf("read strategy: %v", err)
+	}
+	if timezone != "Asia/Shanghai" {
+		t.Fatalf("DB strategy.timezone = %q", timezone)
+	}
+
+	// 读取单条：完整策略可回填。
+	rr = env.request(t, http.MethodGet, "/api/model-pricing/"+model, nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	detail = decodePricingDetail(t, rr)
+	if detail["strategy"] == nil {
+		t.Fatal("详情缺少 strategy")
+	}
+
+	// 显式 null 清除 → 列为 NULL。
+	rr = env.request(t, http.MethodPatch, "/api/model-pricing/"+model, map[string]any{
+		"updated_at": detail["updated_at"],
+		"strategy":   nil,
+	}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("clear = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	var isNull bool
+	if err := env.db.QueryRow(
+		`SELECT strategy IS NULL FROM model_pricing WHERE model = $1`, model).Scan(&isNull); err != nil {
+		t.Fatalf("read cleared strategy: %v", err)
+	}
+	if !isNull {
+		t.Fatal("显式 null 未清除 strategy 列")
+	}
+}

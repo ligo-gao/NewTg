@@ -1215,6 +1215,42 @@ func (e ModelMetaUpdateRequestStatus) Valid() bool {
 	}
 }
 
+// Defines values for ModelPricingStrategyKind.
+const (
+	ModelPricingStrategyKindFlat        ModelPricingStrategyKind = "flat"
+	ModelPricingStrategyKindPeakOffpeak ModelPricingStrategyKind = "peak_offpeak"
+)
+
+// Valid indicates whether the value is a known member of the ModelPricingStrategyKind enum.
+func (e ModelPricingStrategyKind) Valid() bool {
+	switch e {
+	case ModelPricingStrategyKindFlat:
+		return true
+	case ModelPricingStrategyKindPeakOffpeak:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelPricingStrategyPreviewRequestMode.
+const (
+	ModelPricingStrategyPreviewRequestModePerRequest ModelPricingStrategyPreviewRequestMode = "per_request"
+	ModelPricingStrategyPreviewRequestModePerToken   ModelPricingStrategyPreviewRequestMode = "per_token"
+)
+
+// Valid indicates whether the value is a known member of the ModelPricingStrategyPreviewRequestMode enum.
+func (e ModelPricingStrategyPreviewRequestMode) Valid() bool {
+	switch e {
+	case ModelPricingStrategyPreviewRequestModePerRequest:
+		return true
+	case ModelPricingStrategyPreviewRequestModePerToken:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for NotificationChannel.
 const (
 	Bark    NotificationChannel = "bark"
@@ -1647,21 +1683,78 @@ func (e PluginRuntimePluginLayer) Valid() bool {
 	}
 }
 
+// Defines values for PricingCandidateSources.
+const (
+	PricingCandidateSourcesCatalog PricingCandidateSources = "catalog"
+	PricingCandidateSourcesChannel PricingCandidateSources = "channel"
+	PricingCandidateSourcesPricing PricingCandidateSources = "pricing"
+)
+
+// Valid indicates whether the value is a known member of the PricingCandidateSources enum.
+func (e PricingCandidateSources) Valid() bool {
+	switch e {
+	case PricingCandidateSourcesCatalog:
+		return true
+	case PricingCandidateSourcesChannel:
+		return true
+	case PricingCandidateSourcesPricing:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PricingMode.
 const (
-	PerRequest PricingMode = "per_request"
-	PerToken   PricingMode = "per_token"
-	TieredExpr PricingMode = "tiered_expr"
+	PricingModePerRequest PricingMode = "per_request"
+	PricingModePerToken   PricingMode = "per_token"
+	PricingModeTieredExpr PricingMode = "tiered_expr"
 )
 
 // Valid indicates whether the value is a known member of the PricingMode enum.
 func (e PricingMode) Valid() bool {
 	switch e {
-	case PerRequest:
+	case PricingModePerRequest:
 		return true
-	case PerToken:
+	case PricingModePerToken:
 		return true
-	case TieredExpr:
+	case PricingModeTieredExpr:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PricingScheduleHolidayPolicy.
+const (
+	PricingScheduleHolidayPolicyCnOffpeak PricingScheduleHolidayPolicy = "cn_offpeak"
+	PricingScheduleHolidayPolicyNone      PricingScheduleHolidayPolicy = "none"
+)
+
+// Valid indicates whether the value is a known member of the PricingScheduleHolidayPolicy enum.
+func (e PricingScheduleHolidayPolicy) Valid() bool {
+	switch e {
+	case PricingScheduleHolidayPolicyCnOffpeak:
+		return true
+	case PricingScheduleHolidayPolicyNone:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PricingScheduleKind.
+const (
+	PricingScheduleKindFlat        PricingScheduleKind = "flat"
+	PricingScheduleKindPeakOffpeak PricingScheduleKind = "peak_offpeak"
+)
+
+// Valid indicates whether the value is a known member of the PricingScheduleKind enum.
+func (e PricingScheduleKind) Valid() bool {
+	switch e {
+	case PricingScheduleKindFlat:
+		return true
+	case PricingScheduleKindPeakOffpeak:
 		return true
 	default:
 		return false
@@ -1680,6 +1773,39 @@ func (e PricingStatus) Valid() bool {
 	case PricingStatusN1:
 		return true
 	case PricingStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PricingStrategyVersion.
+const (
+	PricingStrategyVersionN1 PricingStrategyVersion = 1
+)
+
+// Valid indicates whether the value is a known member of the PricingStrategyVersion enum.
+func (e PricingStrategyVersion) Valid() bool {
+	switch e {
+	case PricingStrategyVersionN1:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PricingTimeConfigHolidayPolicy.
+const (
+	PricingTimeConfigHolidayPolicyCnOffpeak PricingTimeConfigHolidayPolicy = "cn_offpeak"
+	PricingTimeConfigHolidayPolicyNone      PricingTimeConfigHolidayPolicy = "none"
+)
+
+// Valid indicates whether the value is a known member of the PricingTimeConfigHolidayPolicy enum.
+func (e PricingTimeConfigHolidayPolicy) Valid() bool {
+	switch e {
+	case PricingTimeConfigHolidayPolicyCnOffpeak:
+		return true
+	case PricingTimeConfigHolidayPolicyNone:
 		return true
 	default:
 		return false
@@ -1719,6 +1845,42 @@ func (e PublicModelMetricsRange) Valid() bool {
 	case PublicModelMetricsRangeN24h:
 		return true
 	case PublicModelMetricsRangeN7d:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PublicPricingScheduleHolidayPolicy.
+const (
+	PublicPricingScheduleHolidayPolicyCnOffpeak PublicPricingScheduleHolidayPolicy = "cn_offpeak"
+	PublicPricingScheduleHolidayPolicyNone      PublicPricingScheduleHolidayPolicy = "none"
+)
+
+// Valid indicates whether the value is a known member of the PublicPricingScheduleHolidayPolicy enum.
+func (e PublicPricingScheduleHolidayPolicy) Valid() bool {
+	switch e {
+	case PublicPricingScheduleHolidayPolicyCnOffpeak:
+		return true
+	case PublicPricingScheduleHolidayPolicyNone:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PublicPricingScheduleKind.
+const (
+	PublicPricingScheduleKindFlat        PublicPricingScheduleKind = "flat"
+	PublicPricingScheduleKindPeakOffpeak PublicPricingScheduleKind = "peak_offpeak"
+)
+
+// Valid indicates whether the value is a known member of the PublicPricingScheduleKind enum.
+func (e PublicPricingScheduleKind) Valid() bool {
+	switch e {
+	case PublicPricingScheduleKindFlat:
+		return true
+	case PublicPricingScheduleKindPeakOffpeak:
 		return true
 	default:
 		return false
@@ -6329,6 +6491,45 @@ type ModelMissingList struct {
 	Total           int64 `json:"total"`
 }
 
+// ModelPerformanceTest 一次测速的汇总事实（已持久化）。success_rate = success_count / runs；
+// TTFT/延迟分位数只取成功且非空样本（nearest-rank）。无样本的聚合字段
+// 显式输出 null（UI 显示 —，不是 0）。
+type ModelPerformanceTest struct {
+	ChannelId       int64     `json:"channel_id"`
+	CreatedAt       time.Time `json:"created_at"`
+	Id              int64     `json:"id"`
+	LatencyMsP50    *int      `json:"latency_ms_p50,omitempty"`
+	LatencyMsP95    *int      `json:"latency_ms_p95,omitempty"`
+	Model           string    `json:"model"`
+	OutputTokensAvg *float32  `json:"output_tokens_avg,omitempty"`
+
+	// Provider 渠道类型 slug（store.Channel.Type）。
+	Provider string `json:"provider"`
+
+	// Runs 本批探测次数（成功率分母）。
+	Runs         int      `json:"runs"`
+	SuccessCount int      `json:"success_count"`
+	SuccessRate  float32  `json:"success_rate"`
+	TpsAvg       *float32 `json:"tps_avg,omitempty"`
+	TtftMsP50    *int     `json:"ttft_ms_p50,omitempty"`
+	TtftMsP95    *int     `json:"ttft_ms_p95,omitempty"`
+}
+
+// ModelPerformanceTestList defines model for ModelPerformanceTestList.
+type ModelPerformanceTestList struct {
+	// Items 按 created_at 倒序（新→旧）。
+	Items []ModelPerformanceTest `json:"items"`
+}
+
+// ModelPerformanceTestRequest 请求体必填；model 缺失/不属于 supported_models → 422。
+type ModelPerformanceTestRequest struct {
+	// Model 必须属于该渠道 supported_models；否则 422。
+	Model string `json:"model"`
+
+	// Runs 探测次数；缺省 3，超出 1..5 返回 422。
+	Runs *int `json:"runs,omitempty"`
+}
+
 // ModelPricing defines model for ModelPricing.
 type ModelPricing struct {
 	Author string `json:"author"`
@@ -6341,8 +6542,11 @@ type ModelPricing struct {
 	CreatedAt       time.Time `json:"created_at"`
 
 	// Free 四项有效价全为 0 才为 true；单项 0 不得显示「免费」。
-	Free bool  `json:"free"`
-	Id   int64 `json:"id"`
+	Free bool `json:"free"`
+
+	// HasStrategy 是否存在结构化时段策略（strategy 非 NULL）。
+	HasStrategy bool  `json:"has_strategy"`
+	Id          int64 `json:"id"`
 
 	// Mode per_token=积分/1M tokens；per_request=积分/次（只使用 prompt_price）；
 	// tiered_expr=表达式模式（billing_expr 是唯一价格配置）。
@@ -6355,10 +6559,31 @@ type ModelPricing struct {
 	// Status 1=启用，2=停用（软状态，不删行）。
 	Status PricingStatus `json:"status"`
 
+	// Strategy 完整策略。列表响应省略该字段（只给 has_strategy/strategy_kind）；
+	// 单条读取、创建与更新响应返回规范化后的策略（无策略为 null）。
+	Strategy *ModelPricing_Strategy `json:"strategy,omitempty"`
+
+	// StrategyKind 结构化枚举：time.enabled=false / 无策略为 flat，启用时段为
+	// peak_offpeak。前端按七种语言本地化，响应里不出现中文字符串。
+	StrategyKind ModelPricingStrategyKind `json:"strategy_kind"`
+
 	// UpdatedAt 乐观锁版本；PATCH/启停必须原样回传。
 	UpdatedAt time.Time `json:"updated_at"`
 	Vendor    *string   `json:"vendor,omitempty"`
 }
+
+// ModelPricingStrategy1 defines model for ModelPricing.Strategy.1.
+type ModelPricingStrategy1 = interface{}
+
+// ModelPricing_Strategy 完整策略。列表响应省略该字段（只给 has_strategy/strategy_kind）；
+// 单条读取、创建与更新响应返回规范化后的策略（无策略为 null）。
+type ModelPricing_Strategy struct {
+	union json.RawMessage
+}
+
+// ModelPricingStrategyKind 结构化枚举：time.enabled=false / 无策略为 flat，启用时段为
+// peak_offpeak。前端按七种语言本地化，响应里不出现中文字符串。
+type ModelPricingStrategyKind string
 
 // ModelPricingCreateRequest 价格单位是整数积分；展示层按 quota_per_unit 换算为元。
 // 表达式非法/空白 400（problem.fields=[billing_expr]）；负数或超 2^53−1
@@ -6381,7 +6606,22 @@ type ModelPricingCreateRequest struct {
 
 	// Status 1=启用，2=停用（软状态，不删行）。
 	Status *PricingStatus `json:"status,omitempty"`
-	Vendor *string        `json:"vendor,omitempty"`
+
+	// Strategy 结构化时段策略；与 billing_expr 互斥（同时出现 400）。tiers/service
+	// 等第二阶段字段会被 422 拒绝（problem.fields=[strategy.<field>]）。
+	// null/缺省表示不配置策略。
+	Strategy *ModelPricingCreateRequest_Strategy `json:"strategy,omitempty"`
+	Vendor   *string                             `json:"vendor,omitempty"`
+}
+
+// ModelPricingCreateRequestStrategy1 defines model for ModelPricingCreateRequest.Strategy.1.
+type ModelPricingCreateRequestStrategy1 = interface{}
+
+// ModelPricingCreateRequest_Strategy 结构化时段策略；与 billing_expr 互斥（同时出现 400）。tiers/service
+// 等第二阶段字段会被 422 拒绝（problem.fields=[strategy.<field>]）。
+// null/缺省表示不配置策略。
+type ModelPricingCreateRequest_Strategy struct {
+	union json.RawMessage
 }
 
 // ModelPricingList GET /api/model-pricing 的 offset 分页信封。
@@ -6461,6 +6701,148 @@ type ModelPricingStatusRequest struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// ModelPricingStrategyPreviewMatch defines model for ModelPricingStrategyPreviewMatch.
+type ModelPricingStrategyPreviewMatch struct {
+	// HolidayLookupFailed 查过节假日但失败并回退到星期规则。
+	HolidayLookupFailed bool `json:"holiday_lookup_failed"`
+
+	// HolidayName 命中法定节假日/调休时的名称；无记录时为空串。
+	HolidayName   string  `json:"holiday_name"`
+	HolidayOffDay bool    `json:"holiday_off_day"`
+	Multiplier    float64 `json:"multiplier"`
+
+	// Window 命中的窗口名；未命中（使用默认倍率）时为空串。
+	Window string `json:"window"`
+}
+
+// ModelPricingStrategyPreviewPrices defines model for ModelPricingStrategyPreviewPrices.
+type ModelPricingStrategyPreviewPrices struct {
+	CacheReadPrice  *int64 `json:"cache_read_price,omitempty"`
+	CacheWritePrice *int64 `json:"cache_write_price,omitempty"`
+	CompletionPrice *int64 `json:"completion_price,omitempty"`
+
+	// PromptPrice 输入价（积分/1M）；per_request 时是每次请求价。
+	PromptPrice *int64 `json:"prompt_price,omitempty"`
+}
+
+// ModelPricingStrategyPreviewRates defines model for ModelPricingStrategyPreviewRates.
+type ModelPricingStrategyPreviewRates struct {
+	CacheReadPrice ModelPricingStrategyPreviewRates_CacheReadPrice `json:"cache_read_price"`
+
+	// CacheWritePrice 缓存写 5m 档的生效单价（结算也读该档）。
+	CacheWritePrice ModelPricingStrategyPreviewRates_CacheWritePrice `json:"cache_write_price"`
+	CompletionPrice ModelPricingStrategyPreviewRates_CompletionPrice `json:"completion_price"`
+	PromptPrice     ModelPricingStrategyPreviewRates_PromptPrice     `json:"prompt_price"`
+}
+
+// ModelPricingStrategyPreviewRatesCacheReadPrice0 defines model for ModelPricingStrategyPreviewRates.CacheReadPrice.0.
+type ModelPricingStrategyPreviewRatesCacheReadPrice0 = float64
+
+// ModelPricingStrategyPreviewRatesCacheReadPrice1 defines model for ModelPricingStrategyPreviewRates.CacheReadPrice.1.
+type ModelPricingStrategyPreviewRatesCacheReadPrice1 = interface{}
+
+// ModelPricingStrategyPreviewRates_CacheReadPrice defines model for ModelPricingStrategyPreviewRates.CacheReadPrice.
+type ModelPricingStrategyPreviewRates_CacheReadPrice struct {
+	union json.RawMessage
+}
+
+// ModelPricingStrategyPreviewRatesCacheWritePrice0 defines model for ModelPricingStrategyPreviewRates.CacheWritePrice.0.
+type ModelPricingStrategyPreviewRatesCacheWritePrice0 = float64
+
+// ModelPricingStrategyPreviewRatesCacheWritePrice1 defines model for ModelPricingStrategyPreviewRates.CacheWritePrice.1.
+type ModelPricingStrategyPreviewRatesCacheWritePrice1 = interface{}
+
+// ModelPricingStrategyPreviewRates_CacheWritePrice 缓存写 5m 档的生效单价（结算也读该档）。
+type ModelPricingStrategyPreviewRates_CacheWritePrice struct {
+	union json.RawMessage
+}
+
+// ModelPricingStrategyPreviewRatesCompletionPrice0 defines model for ModelPricingStrategyPreviewRates.CompletionPrice.0.
+type ModelPricingStrategyPreviewRatesCompletionPrice0 = float64
+
+// ModelPricingStrategyPreviewRatesCompletionPrice1 defines model for ModelPricingStrategyPreviewRates.CompletionPrice.1.
+type ModelPricingStrategyPreviewRatesCompletionPrice1 = interface{}
+
+// ModelPricingStrategyPreviewRates_CompletionPrice defines model for ModelPricingStrategyPreviewRates.CompletionPrice.
+type ModelPricingStrategyPreviewRates_CompletionPrice struct {
+	union json.RawMessage
+}
+
+// ModelPricingStrategyPreviewRatesPromptPrice0 defines model for ModelPricingStrategyPreviewRates.PromptPrice.0.
+type ModelPricingStrategyPreviewRatesPromptPrice0 = float64
+
+// ModelPricingStrategyPreviewRatesPromptPrice1 defines model for ModelPricingStrategyPreviewRates.PromptPrice.1.
+type ModelPricingStrategyPreviewRatesPromptPrice1 = interface{}
+
+// ModelPricingStrategyPreviewRates_PromptPrice defines model for ModelPricingStrategyPreviewRates.PromptPrice.
+type ModelPricingStrategyPreviewRates_PromptPrice struct {
+	union json.RawMessage
+}
+
+// ModelPricingStrategyPreviewRequest defines model for ModelPricingStrategyPreviewRequest.
+type ModelPricingStrategyPreviewRequest struct {
+	// At 命中的请求时间（RFC 3339）；缺省为服务端当前时间。
+	At              *time.Time `json:"at,omitempty"`
+	CacheReadTokens *int64     `json:"cache_read_tokens,omitempty"`
+	InputTokens     *int64     `json:"input_tokens,omitempty"`
+
+	// Mode 表达式与策略互斥，试算不支持 tiered_expr。
+	Mode *ModelPricingStrategyPreviewRequestMode `json:"mode,omitempty"`
+
+	// Model 用于模型族默认值（补全/缓存 1h 派生）；可省略。
+	Model        *string                                      `json:"model,omitempty"`
+	OutputTokens *int64                                       `json:"output_tokens,omitempty"`
+	Prices       *ModelPricingStrategyPreviewPrices           `json:"prices,omitempty"`
+	Strategy     *ModelPricingStrategyPreviewRequest_Strategy `json:"strategy,omitempty"`
+}
+
+// ModelPricingStrategyPreviewRequestMode 表达式与策略互斥，试算不支持 tiered_expr。
+type ModelPricingStrategyPreviewRequestMode string
+
+// ModelPricingStrategyPreviewRequestStrategy1 defines model for ModelPricingStrategyPreviewRequest.Strategy.1.
+type ModelPricingStrategyPreviewRequestStrategy1 = interface{}
+
+// ModelPricingStrategyPreviewRequest_Strategy defines model for ModelPricingStrategyPreviewRequest.Strategy.
+type ModelPricingStrategyPreviewRequest_Strategy struct {
+	union json.RawMessage
+}
+
+// ModelPricingStrategyPreviewResponse defines model for ModelPricingStrategyPreviewResponse.
+type ModelPricingStrategyPreviewResponse struct {
+	EffectiveRates ModelPricingStrategyPreviewRates `json:"effective_rates"`
+	Match          ModelPricingStrategyPreviewMatch `json:"match"`
+
+	// Schedule 未启用时段时为 null。
+	Schedule ModelPricingStrategyPreviewResponse_Schedule `json:"schedule"`
+
+	// Strategy 规范化后的策略（未提交/显式 null 时为 null）。
+	Strategy ModelPricingStrategyPreviewResponse_Strategy `json:"strategy"`
+	Total    ModelPricingStrategyPreviewTotal             `json:"total"`
+}
+
+// ModelPricingStrategyPreviewResponseSchedule1 defines model for ModelPricingStrategyPreviewResponse.Schedule.1.
+type ModelPricingStrategyPreviewResponseSchedule1 = interface{}
+
+// ModelPricingStrategyPreviewResponse_Schedule 未启用时段时为 null。
+type ModelPricingStrategyPreviewResponse_Schedule struct {
+	union json.RawMessage
+}
+
+// ModelPricingStrategyPreviewResponseStrategy1 defines model for ModelPricingStrategyPreviewResponse.Strategy.1.
+type ModelPricingStrategyPreviewResponseStrategy1 = interface{}
+
+// ModelPricingStrategyPreviewResponse_Strategy 规范化后的策略（未提交/显式 null 时为 null）。
+type ModelPricingStrategyPreviewResponse_Strategy struct {
+	union json.RawMessage
+}
+
+// ModelPricingStrategyPreviewTotal defines model for ModelPricingStrategyPreviewTotal.
+type ModelPricingStrategyPreviewTotal struct {
+	AmountYuan   string `json:"amount_yuan"`
+	Quota        int64  `json:"quota"`
+	QuotaPerUnit int64  `json:"quota_per_unit"`
+}
+
 // ModelPricingUpdateRequest 部分更新；model 不可改（提交 model 由字段策略 403）。
 // updated_at 缺失 400、不匹配 409。空对象/无字段 400。
 type ModelPricingUpdateRequest struct {
@@ -6479,9 +6861,22 @@ type ModelPricingUpdateRequest struct {
 	PromptPrice *int64       `json:"prompt_price,omitempty"`
 
 	// Status 1=启用，2=停用（软状态，不删行）。
-	Status    *PricingStatus `json:"status,omitempty"`
-	UpdatedAt time.Time      `json:"updated_at"`
-	Vendor    *string        `json:"vendor,omitempty"`
+	Status *PricingStatus `json:"status,omitempty"`
+
+	// Strategy 缺省表示保持原值；显式 null 表示清除。与 billing_expr 互斥
+	// （更新后的有效值同时存在时 400）。
+	Strategy  *ModelPricingUpdateRequest_Strategy `json:"strategy,omitempty"`
+	UpdatedAt time.Time                           `json:"updated_at"`
+	Vendor    *string                             `json:"vendor,omitempty"`
+}
+
+// ModelPricingUpdateRequestStrategy1 defines model for ModelPricingUpdateRequest.Strategy.1.
+type ModelPricingUpdateRequestStrategy1 = interface{}
+
+// ModelPricingUpdateRequest_Strategy 缺省表示保持原值；显式 null 表示清除。与 billing_expr 互斥
+// （更新后的有效值同时存在时 400）。
+type ModelPricingUpdateRequest_Strategy struct {
+	union json.RawMessage
 }
 
 // ModelSyncApplyRequest defines model for ModelSyncApplyRequest.
@@ -7121,6 +7516,69 @@ type PluginVersionDeleteResponse struct {
 	UpdatedAt       *time.Time `json:"updated_at,omitempty"`
 }
 
+// PricingCandidate defines model for PricingCandidate.
+type PricingCandidate struct {
+	ContextLength PricingCandidate_ContextLength `json:"context_length"`
+
+	// DisplayName 来自 model_meta；无档案时为 null。
+	DisplayName PricingCandidate_DisplayName `json:"display_name"`
+
+	// Mode per_token=积分/1M tokens；per_request=积分/次（只使用 prompt_price）；
+	// tiered_expr=表达式模式（billing_expr 是唯一价格配置）。
+	Mode  PricingMode `json:"mode"`
+	Model string      `json:"model"`
+
+	// Priced 已存在 model_pricing 行（含停用行）。
+	Priced bool `json:"priced"`
+
+	// Sources 固定顺序 catalog → channel → pricing。
+	Sources []PricingCandidateSources `json:"sources"`
+
+	// Vendor 目录供应商名或 model_pricing.vendor；都没有时为 null。
+	Vendor PricingCandidate_Vendor `json:"vendor"`
+}
+
+// PricingCandidateContextLength0 defines model for PricingCandidate.ContextLength.0.
+type PricingCandidateContextLength0 = int64
+
+// PricingCandidateContextLength1 defines model for PricingCandidate.ContextLength.1.
+type PricingCandidateContextLength1 = interface{}
+
+// PricingCandidate_ContextLength defines model for PricingCandidate.ContextLength.
+type PricingCandidate_ContextLength struct {
+	union json.RawMessage
+}
+
+// PricingCandidateDisplayName0 defines model for PricingCandidate.DisplayName.0.
+type PricingCandidateDisplayName0 = string
+
+// PricingCandidateDisplayName1 defines model for PricingCandidate.DisplayName.1.
+type PricingCandidateDisplayName1 = interface{}
+
+// PricingCandidate_DisplayName 来自 model_meta；无档案时为 null。
+type PricingCandidate_DisplayName struct {
+	union json.RawMessage
+}
+
+// PricingCandidateSources defines model for PricingCandidate.Sources.
+type PricingCandidateSources string
+
+// PricingCandidateVendor0 defines model for PricingCandidate.Vendor.0.
+type PricingCandidateVendor0 = string
+
+// PricingCandidateVendor1 defines model for PricingCandidate.Vendor.1.
+type PricingCandidateVendor1 = interface{}
+
+// PricingCandidate_Vendor 目录供应商名或 model_pricing.vendor；都没有时为 null。
+type PricingCandidate_Vendor struct {
+	union json.RawMessage
+}
+
+// PricingCandidateList defines model for PricingCandidateList.
+type PricingCandidateList struct {
+	Items []PricingCandidate `json:"items"`
+}
+
 // PricingMode per_token=积分/1M tokens；per_request=积分/次（只使用 prompt_price）；
 // tiered_expr=表达式模式（billing_expr 是唯一价格配置）。
 type PricingMode string
@@ -7161,8 +7619,73 @@ type PricingPreviewParams struct {
 	P *int64 `json:"p,omitempty"`
 }
 
+// PricingSchedule defines model for PricingSchedule.
+type PricingSchedule struct {
+	DefaultMultiplier float64                      `json:"default_multiplier"`
+	HolidayPolicy     PricingScheduleHolidayPolicy `json:"holiday_policy"`
+	Kind              PricingScheduleKind          `json:"kind"`
+	Timezone          string                       `json:"timezone"`
+	Windows           []PricingTimeWindow          `json:"windows"`
+}
+
+// PricingScheduleHolidayPolicy defines model for PricingSchedule.HolidayPolicy.
+type PricingScheduleHolidayPolicy string
+
+// PricingScheduleKind defines model for PricingSchedule.Kind.
+type PricingScheduleKind string
+
 // PricingStatus 1=启用，2=停用（软状态，不删行）。
 type PricingStatus int
+
+// PricingStrategy defines model for PricingStrategy.
+type PricingStrategy struct {
+	Time *PricingTimeConfig `json:"time,omitempty"`
+
+	// Version 第一阶段只接受 version=1。
+	Version PricingStrategyVersion `json:"version"`
+}
+
+// PricingStrategyVersion 第一阶段只接受 version=1。
+type PricingStrategyVersion int
+
+// PricingTimeConfig defines model for PricingTimeConfig.
+type PricingTimeConfig struct {
+	// DefaultMultiplier 未命中窗口（以及 cn_offpeak 的法定假日）使用的倍率，0.01–100。
+	DefaultMultiplier *float64 `json:"default_multiplier,omitempty"`
+
+	// Enabled 未启用时公开面 pricing_schedule 为 null，结算行为不变。
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// HolidayPolicy none=不处理节假日；cn_offpeak=中国法定节假日全天按
+	// default_multiplier，调休上班日按工作日窗口计价。
+	HolidayPolicy *PricingTimeConfigHolidayPolicy `json:"holiday_policy,omitempty"`
+
+	// Timezone IANA 时区名（启用时必填，例如 Asia/Shanghai）。
+	Timezone *string `json:"timezone,omitempty"`
+
+	// Windows 同一时刻命中多个窗口时，数组顺序最后一条生效（前端提示重叠）。
+	Windows *[]PricingTimeWindow `json:"windows,omitempty"`
+}
+
+// PricingTimeConfigHolidayPolicy none=不处理节假日；cn_offpeak=中国法定节假日全天按
+// default_multiplier，调休上班日按工作日窗口计价。
+type PricingTimeConfigHolidayPolicy string
+
+// PricingTimeWindow defines model for PricingTimeWindow.
+type PricingTimeWindow struct {
+	// Days 1=周一 … 7=周日；跨夜窗口指**开始**的那一天。
+	Days []int `json:"days"`
+
+	// End HH:MM，右开；end <= start 表示跨夜。
+	End string `json:"end"`
+
+	// Multiplier 十进制倍数（0.5 = 半价），0.01–100。
+	Multiplier float64 `json:"multiplier"`
+	Name       string  `json:"name"`
+
+	// Start HH:MM，左闭。
+	Start string `json:"start"`
+}
 
 // Problem RFC 7807 Problem Details；允许扩展成员（如 request_id）。
 type Problem struct {
@@ -7374,6 +7897,11 @@ type PublicModelCard struct {
 	Mode    string `json:"mode"`
 	ModelId string `json:"model_id"`
 
+	// PricingSchedule 时段计价表：strategy.time.enabled=true 时非 null，否则为 null
+	// （未启用时段时响应与旧版逐字段一致）。非法策略同样降级为 null
+	// 并记录告警，不阻断公开目录。
+	PricingSchedule PublicModelCard_PricingSchedule `json:"pricing_schedule"`
+
 	// PromptPrice int64 的 JSON 字符串；DB NULL 时为 null（R-PUB-03）。
 	PromptPrice PublicModelCard_PromptPrice `json:"prompt_price"`
 
@@ -7448,6 +7976,16 @@ type PublicModelCard_MaxOutput struct {
 	union json.RawMessage
 }
 
+// PublicModelCardPricingSchedule1 defines model for PublicModelCard.PricingSchedule.1.
+type PublicModelCardPricingSchedule1 = interface{}
+
+// PublicModelCard_PricingSchedule 时段计价表：strategy.time.enabled=true 时非 null，否则为 null
+// （未启用时段时响应与旧版逐字段一致）。非法策略同样降级为 null
+// 并记录告警，不阻断公开目录。
+type PublicModelCard_PricingSchedule struct {
+	union json.RawMessage
+}
+
 // PublicModelCardPromptPrice0 defines model for PublicModelCard.PromptPrice.0.
 type PublicModelCardPromptPrice0 = string
 
@@ -7505,6 +8043,11 @@ type PublicModelDetail struct {
 
 	// Parameters 档案 parameters；无档案时为空数组。
 	Parameters []PublicModelParameter `json:"parameters"`
+
+	// PricingSchedule 时段计价表：strategy.time.enabled=true 时非 null，否则为 null
+	// （未启用时段时响应与旧版逐字段一致）。非法策略同样降级为 null
+	// 并记录告警，不阻断公开目录。
+	PricingSchedule PublicModelDetail_PricingSchedule `json:"pricing_schedule"`
 
 	// PromptPrice int64 的 JSON 字符串；DB NULL 时为 null（R-PUB-03）。
 	PromptPrice PublicModelDetail_PromptPrice `json:"prompt_price"`
@@ -7595,6 +8138,16 @@ type PublicModelDetail_MaxOutput struct {
 	union json.RawMessage
 }
 
+// PublicModelDetailPricingSchedule1 defines model for PublicModelDetail.PricingSchedule.1.
+type PublicModelDetailPricingSchedule1 = interface{}
+
+// PublicModelDetail_PricingSchedule 时段计价表：strategy.time.enabled=true 时非 null，否则为 null
+// （未启用时段时响应与旧版逐字段一致）。非法策略同样降级为 null
+// 并记录告警，不阻断公开目录。
+type PublicModelDetail_PricingSchedule struct {
+	union json.RawMessage
+}
+
 // PublicModelDetailPromptPrice0 defines model for PublicModelDetail.PromptPrice.0.
 type PublicModelDetailPromptPrice0 = string
 
@@ -7617,11 +8170,39 @@ type PublicModelDetail_ReleasedAt struct {
 	union json.RawMessage
 }
 
+// PublicModelLatestTest defines model for PublicModelLatestTest.
+type PublicModelLatestTest struct {
+	// LatencyMsP50 端到端延迟 P50（毫秒）；无有效样本时为 null。
+	LatencyMsP50 int `json:"latency_ms_p50"`
+	LatencyMsP95 int `json:"latency_ms_p95"`
+
+	// SampleSize 本次测试的运行次数（runs）。
+	SampleSize int `json:"sample_size"`
+
+	// SuccessRate 成功次数 / 总运行次数。
+	SuccessRate float32 `json:"success_rate"`
+
+	// TestedAt 测试完成时刻（RFC3339，UTC）。
+	TestedAt time.Time `json:"tested_at"`
+
+	// Tps 主动测试的平均输出速度（tokens/s）；无有效样本时为 null。
+	Tps float32 `json:"tps"`
+
+	// TtftMsP50 首字延迟 P50（毫秒）；无有效样本时为 null。
+	TtftMsP50 int `json:"ttft_ms_p50"`
+	TtftMsP95 int `json:"ttft_ms_p95"`
+}
+
 // PublicModelMetrics defines model for PublicModelMetrics.
 type PublicModelMetrics struct {
-	PerGroup []PublicGroupMetric     `json:"per_group"`
-	Range    PublicModelMetricsRange `json:"range"`
-	Summary  struct {
+	// LatestTest 最近一次管理员主动测速（`model_performance_tests` 汇总行）的公开
+	// 投影。没有主动测试记录、测速库未装配或读取失败时为 null；这是一条
+	// 独立于 `usage_logs` 的兜底来源，前端在真实调用样本缺失/不足时回退
+	// 到它，并用「主动测试」标注来源。
+	LatestTest *PublicModelMetrics_LatestTest `json:"latest_test,omitempty"`
+	PerGroup   []PublicGroupMetric            `json:"per_group"`
+	Range      PublicModelMetricsRange        `json:"range"`
+	Summary    struct {
 		AvgLatencyMs *float32 `json:"avg_latency_ms,omitempty"`
 		AvgTtftMs    *float32 `json:"avg_ttft_ms,omitempty"`
 		Failed24h    *int     `json:"failed_24h,omitempty"`
@@ -7633,6 +8214,17 @@ type PublicModelMetrics struct {
 		End   time.Time `json:"end"`
 		Start time.Time `json:"start"`
 	} `json:"window"`
+}
+
+// PublicModelMetricsLatestTest1 defines model for PublicModelMetrics.LatestTest.1.
+type PublicModelMetricsLatestTest1 = interface{}
+
+// PublicModelMetrics_LatestTest 最近一次管理员主动测速（`model_performance_tests` 汇总行）的公开
+// 投影。没有主动测试记录、测速库未装配或读取失败时为 null；这是一条
+// 独立于 `usage_logs` 的兜底来源，前端在真实调用样本缺失/不足时回退
+// 到它，并用「主动测试」标注来源。
+type PublicModelMetrics_LatestTest struct {
+	union json.RawMessage
 }
 
 // PublicModelMetricsRange defines model for PublicModelMetrics.Range.
@@ -7727,6 +8319,28 @@ type PublicPricingMeta struct {
 	Version         string    `json:"version"`
 }
 
+// PublicPricingSchedule defines model for PublicPricingSchedule.
+type PublicPricingSchedule struct {
+	// DefaultMultiplier 未命中窗口（以及 cn_offpeak 的法定假日）使用的倍率。
+	DefaultMultiplier float64                            `json:"default_multiplier"`
+	HolidayPolicy     PublicPricingScheduleHolidayPolicy `json:"holiday_policy"`
+
+	// Kind 结构化枚举，前端按七种语言本地化。
+	Kind PublicPricingScheduleKind `json:"kind"`
+
+	// Timezone 策略自己的 IANA 时区（不随站点时区变更）。
+	Timezone string `json:"timezone"`
+
+	// Windows 同一时刻命中多个窗口时数组顺序最后一条生效。
+	Windows []PublicPricingWindow `json:"windows"`
+}
+
+// PublicPricingScheduleHolidayPolicy defines model for PublicPricingSchedule.HolidayPolicy.
+type PublicPricingScheduleHolidayPolicy string
+
+// PublicPricingScheduleKind 结构化枚举，前端按七种语言本地化。
+type PublicPricingScheduleKind string
+
 // PublicPricingTypeFacet defines model for PublicPricingTypeFacet.
 type PublicPricingTypeFacet struct {
 	Count int64                       `json:"count"`
@@ -7735,6 +8349,18 @@ type PublicPricingTypeFacet struct {
 
 // PublicPricingTypeFacetValue defines model for PublicPricingTypeFacet.Value.
 type PublicPricingTypeFacetValue string
+
+// PublicPricingWindow defines model for PublicPricingWindow.
+type PublicPricingWindow struct {
+	// Days 1=周一 … 7=周日；跨夜窗口指窗口开始的那一天。
+	Days []int `json:"days"`
+
+	// End end <= start 表示跨夜。
+	End        string  `json:"end"`
+	Multiplier float64 `json:"multiplier"`
+	Name       string  `json:"name"`
+	Start      string  `json:"start"`
+}
 
 // PublicRateLimit defines model for PublicRateLimit.
 type PublicRateLimit struct {
@@ -10169,6 +10795,22 @@ type GetChannelMetricsParams struct {
 // GetChannelMetricsParamsWindow defines parameters for GetChannelMetrics.
 type GetChannelMetricsParamsWindow string
 
+// ListChannelPerformanceTestsParams defines parameters for ListChannelPerformanceTests.
+type ListChannelPerformanceTestsParams struct {
+	// Model 可选；按模型精确过滤。
+	Model *string `form:"model,omitempty" json:"model,omitempty"`
+
+	// Limit 返回条数；缺省 20，上限 100。
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// CreateChannelPerformanceTestParams defines parameters for CreateChannelPerformanceTest.
+type CreateChannelPerformanceTestParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
 // TestChannelParams defines parameters for TestChannel.
 type TestChannelParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
@@ -10389,6 +11031,13 @@ type CreateModelPricingParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// ListPricingCandidatesParams defines parameters for ListPricingCandidates.
+type ListPricingCandidatesParams struct {
+	// Keyword 模型名子串（大小写不敏感）。
+	Keyword *string `form:"keyword,omitempty" json:"keyword,omitempty"`
+	Limit   *int    `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // ListPricingModelsParams defines parameters for ListPricingModels.
 type ListPricingModelsParams struct {
 	Keyword *string                        `form:"keyword,omitempty" json:"keyword,omitempty"`
@@ -10433,6 +11082,13 @@ type EnableModelPricingParams struct {
 
 // PreviewModelPricingParams defines parameters for PreviewModelPricing.
 type PreviewModelPricingParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// PreviewPricingStrategyParams defines parameters for PreviewPricingStrategy.
+type PreviewPricingStrategyParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
 	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
@@ -11635,6 +12291,9 @@ type FetchChannelModelsJSONRequestBody = ChannelFetchModelsRequest
 // RevealChannelCredentialsJSONRequestBody defines body for RevealChannelCredentials for application/json ContentType.
 type RevealChannelCredentialsJSONRequestBody = ChannelCredentialsRevealRequest
 
+// CreateChannelPerformanceTestJSONRequestBody defines body for CreateChannelPerformanceTest for application/json ContentType.
+type CreateChannelPerformanceTestJSONRequestBody = ModelPerformanceTestRequest
+
 // TestChannelJSONRequestBody defines body for TestChannel for application/json ContentType.
 type TestChannelJSONRequestBody = ChannelTestRequest
 
@@ -11700,6 +12359,9 @@ type EnableModelPricingJSONRequestBody = ModelPricingStatusRequest
 
 // PreviewModelPricingJSONRequestBody defines body for PreviewModelPricing for application/json ContentType.
 type PreviewModelPricingJSONRequestBody = ModelPricingPreviewRequest
+
+// PreviewPricingStrategyJSONRequestBody defines body for PreviewPricingStrategy for application/json ContentType.
+type PreviewPricingStrategyJSONRequestBody = ModelPricingStrategyPreviewRequest
 
 // CreateModelMetaJSONRequestBody defines body for CreateModelMeta for application/json ContentType.
 type CreateModelMetaJSONRequestBody = ModelMetaCreateRequest
@@ -12938,6 +13600,130 @@ func (t *LoginResponse) UnmarshalJSON(b []byte) error {
 	return err
 }
 
+// AsPricingStrategy returns the union data inside the ModelPricing_Strategy as a PricingStrategy
+func (t ModelPricing_Strategy) AsPricingStrategy() (PricingStrategy, error) {
+	var body PricingStrategy
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPricingStrategy overwrites any union data inside the ModelPricing_Strategy as the provided PricingStrategy
+func (t *ModelPricing_Strategy) FromPricingStrategy(v PricingStrategy) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePricingStrategy performs a merge with any union data inside the ModelPricing_Strategy, using the provided PricingStrategy
+func (t *ModelPricing_Strategy) MergePricingStrategy(v PricingStrategy) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsModelPricingStrategy1 returns the union data inside the ModelPricing_Strategy as a ModelPricingStrategy1
+func (t ModelPricing_Strategy) AsModelPricingStrategy1() (ModelPricingStrategy1, error) {
+	var body ModelPricingStrategy1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromModelPricingStrategy1 overwrites any union data inside the ModelPricing_Strategy as the provided ModelPricingStrategy1
+func (t *ModelPricing_Strategy) FromModelPricingStrategy1(v ModelPricingStrategy1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeModelPricingStrategy1 performs a merge with any union data inside the ModelPricing_Strategy, using the provided ModelPricingStrategy1
+func (t *ModelPricing_Strategy) MergeModelPricingStrategy1(v ModelPricingStrategy1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ModelPricing_Strategy) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ModelPricing_Strategy) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPricingStrategy returns the union data inside the ModelPricingCreateRequest_Strategy as a PricingStrategy
+func (t ModelPricingCreateRequest_Strategy) AsPricingStrategy() (PricingStrategy, error) {
+	var body PricingStrategy
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPricingStrategy overwrites any union data inside the ModelPricingCreateRequest_Strategy as the provided PricingStrategy
+func (t *ModelPricingCreateRequest_Strategy) FromPricingStrategy(v PricingStrategy) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePricingStrategy performs a merge with any union data inside the ModelPricingCreateRequest_Strategy, using the provided PricingStrategy
+func (t *ModelPricingCreateRequest_Strategy) MergePricingStrategy(v PricingStrategy) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsModelPricingCreateRequestStrategy1 returns the union data inside the ModelPricingCreateRequest_Strategy as a ModelPricingCreateRequestStrategy1
+func (t ModelPricingCreateRequest_Strategy) AsModelPricingCreateRequestStrategy1() (ModelPricingCreateRequestStrategy1, error) {
+	var body ModelPricingCreateRequestStrategy1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromModelPricingCreateRequestStrategy1 overwrites any union data inside the ModelPricingCreateRequest_Strategy as the provided ModelPricingCreateRequestStrategy1
+func (t *ModelPricingCreateRequest_Strategy) FromModelPricingCreateRequestStrategy1(v ModelPricingCreateRequestStrategy1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeModelPricingCreateRequestStrategy1 performs a merge with any union data inside the ModelPricingCreateRequest_Strategy, using the provided ModelPricingCreateRequestStrategy1
+func (t *ModelPricingCreateRequest_Strategy) MergeModelPricingCreateRequestStrategy1(v ModelPricingCreateRequestStrategy1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ModelPricingCreateRequest_Strategy) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ModelPricingCreateRequest_Strategy) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // AsModelPricingPreviewRequestSpec0 returns the union data inside the ModelPricingPreviewRequest_Spec as a ModelPricingPreviewRequestSpec0
 func (t ModelPricingPreviewRequest_Spec) AsModelPricingPreviewRequestSpec0() (ModelPricingPreviewRequestSpec0, error) {
 	var body ModelPricingPreviewRequestSpec0
@@ -13000,6 +13786,502 @@ func (t *ModelPricingPreviewRequest_Spec) UnmarshalJSON(b []byte) error {
 	return err
 }
 
+// AsModelPricingStrategyPreviewRatesCacheReadPrice0 returns the union data inside the ModelPricingStrategyPreviewRates_CacheReadPrice as a ModelPricingStrategyPreviewRatesCacheReadPrice0
+func (t ModelPricingStrategyPreviewRates_CacheReadPrice) AsModelPricingStrategyPreviewRatesCacheReadPrice0() (ModelPricingStrategyPreviewRatesCacheReadPrice0, error) {
+	var body ModelPricingStrategyPreviewRatesCacheReadPrice0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromModelPricingStrategyPreviewRatesCacheReadPrice0 overwrites any union data inside the ModelPricingStrategyPreviewRates_CacheReadPrice as the provided ModelPricingStrategyPreviewRatesCacheReadPrice0
+func (t *ModelPricingStrategyPreviewRates_CacheReadPrice) FromModelPricingStrategyPreviewRatesCacheReadPrice0(v ModelPricingStrategyPreviewRatesCacheReadPrice0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeModelPricingStrategyPreviewRatesCacheReadPrice0 performs a merge with any union data inside the ModelPricingStrategyPreviewRates_CacheReadPrice, using the provided ModelPricingStrategyPreviewRatesCacheReadPrice0
+func (t *ModelPricingStrategyPreviewRates_CacheReadPrice) MergeModelPricingStrategyPreviewRatesCacheReadPrice0(v ModelPricingStrategyPreviewRatesCacheReadPrice0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsModelPricingStrategyPreviewRatesCacheReadPrice1 returns the union data inside the ModelPricingStrategyPreviewRates_CacheReadPrice as a ModelPricingStrategyPreviewRatesCacheReadPrice1
+func (t ModelPricingStrategyPreviewRates_CacheReadPrice) AsModelPricingStrategyPreviewRatesCacheReadPrice1() (ModelPricingStrategyPreviewRatesCacheReadPrice1, error) {
+	var body ModelPricingStrategyPreviewRatesCacheReadPrice1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromModelPricingStrategyPreviewRatesCacheReadPrice1 overwrites any union data inside the ModelPricingStrategyPreviewRates_CacheReadPrice as the provided ModelPricingStrategyPreviewRatesCacheReadPrice1
+func (t *ModelPricingStrategyPreviewRates_CacheReadPrice) FromModelPricingStrategyPreviewRatesCacheReadPrice1(v ModelPricingStrategyPreviewRatesCacheReadPrice1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeModelPricingStrategyPreviewRatesCacheReadPrice1 performs a merge with any union data inside the ModelPricingStrategyPreviewRates_CacheReadPrice, using the provided ModelPricingStrategyPreviewRatesCacheReadPrice1
+func (t *ModelPricingStrategyPreviewRates_CacheReadPrice) MergeModelPricingStrategyPreviewRatesCacheReadPrice1(v ModelPricingStrategyPreviewRatesCacheReadPrice1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ModelPricingStrategyPreviewRates_CacheReadPrice) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ModelPricingStrategyPreviewRates_CacheReadPrice) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsModelPricingStrategyPreviewRatesCacheWritePrice0 returns the union data inside the ModelPricingStrategyPreviewRates_CacheWritePrice as a ModelPricingStrategyPreviewRatesCacheWritePrice0
+func (t ModelPricingStrategyPreviewRates_CacheWritePrice) AsModelPricingStrategyPreviewRatesCacheWritePrice0() (ModelPricingStrategyPreviewRatesCacheWritePrice0, error) {
+	var body ModelPricingStrategyPreviewRatesCacheWritePrice0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromModelPricingStrategyPreviewRatesCacheWritePrice0 overwrites any union data inside the ModelPricingStrategyPreviewRates_CacheWritePrice as the provided ModelPricingStrategyPreviewRatesCacheWritePrice0
+func (t *ModelPricingStrategyPreviewRates_CacheWritePrice) FromModelPricingStrategyPreviewRatesCacheWritePrice0(v ModelPricingStrategyPreviewRatesCacheWritePrice0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeModelPricingStrategyPreviewRatesCacheWritePrice0 performs a merge with any union data inside the ModelPricingStrategyPreviewRates_CacheWritePrice, using the provided ModelPricingStrategyPreviewRatesCacheWritePrice0
+func (t *ModelPricingStrategyPreviewRates_CacheWritePrice) MergeModelPricingStrategyPreviewRatesCacheWritePrice0(v ModelPricingStrategyPreviewRatesCacheWritePrice0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsModelPricingStrategyPreviewRatesCacheWritePrice1 returns the union data inside the ModelPricingStrategyPreviewRates_CacheWritePrice as a ModelPricingStrategyPreviewRatesCacheWritePrice1
+func (t ModelPricingStrategyPreviewRates_CacheWritePrice) AsModelPricingStrategyPreviewRatesCacheWritePrice1() (ModelPricingStrategyPreviewRatesCacheWritePrice1, error) {
+	var body ModelPricingStrategyPreviewRatesCacheWritePrice1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromModelPricingStrategyPreviewRatesCacheWritePrice1 overwrites any union data inside the ModelPricingStrategyPreviewRates_CacheWritePrice as the provided ModelPricingStrategyPreviewRatesCacheWritePrice1
+func (t *ModelPricingStrategyPreviewRates_CacheWritePrice) FromModelPricingStrategyPreviewRatesCacheWritePrice1(v ModelPricingStrategyPreviewRatesCacheWritePrice1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeModelPricingStrategyPreviewRatesCacheWritePrice1 performs a merge with any union data inside the ModelPricingStrategyPreviewRates_CacheWritePrice, using the provided ModelPricingStrategyPreviewRatesCacheWritePrice1
+func (t *ModelPricingStrategyPreviewRates_CacheWritePrice) MergeModelPricingStrategyPreviewRatesCacheWritePrice1(v ModelPricingStrategyPreviewRatesCacheWritePrice1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ModelPricingStrategyPreviewRates_CacheWritePrice) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ModelPricingStrategyPreviewRates_CacheWritePrice) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsModelPricingStrategyPreviewRatesCompletionPrice0 returns the union data inside the ModelPricingStrategyPreviewRates_CompletionPrice as a ModelPricingStrategyPreviewRatesCompletionPrice0
+func (t ModelPricingStrategyPreviewRates_CompletionPrice) AsModelPricingStrategyPreviewRatesCompletionPrice0() (ModelPricingStrategyPreviewRatesCompletionPrice0, error) {
+	var body ModelPricingStrategyPreviewRatesCompletionPrice0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromModelPricingStrategyPreviewRatesCompletionPrice0 overwrites any union data inside the ModelPricingStrategyPreviewRates_CompletionPrice as the provided ModelPricingStrategyPreviewRatesCompletionPrice0
+func (t *ModelPricingStrategyPreviewRates_CompletionPrice) FromModelPricingStrategyPreviewRatesCompletionPrice0(v ModelPricingStrategyPreviewRatesCompletionPrice0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeModelPricingStrategyPreviewRatesCompletionPrice0 performs a merge with any union data inside the ModelPricingStrategyPreviewRates_CompletionPrice, using the provided ModelPricingStrategyPreviewRatesCompletionPrice0
+func (t *ModelPricingStrategyPreviewRates_CompletionPrice) MergeModelPricingStrategyPreviewRatesCompletionPrice0(v ModelPricingStrategyPreviewRatesCompletionPrice0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsModelPricingStrategyPreviewRatesCompletionPrice1 returns the union data inside the ModelPricingStrategyPreviewRates_CompletionPrice as a ModelPricingStrategyPreviewRatesCompletionPrice1
+func (t ModelPricingStrategyPreviewRates_CompletionPrice) AsModelPricingStrategyPreviewRatesCompletionPrice1() (ModelPricingStrategyPreviewRatesCompletionPrice1, error) {
+	var body ModelPricingStrategyPreviewRatesCompletionPrice1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromModelPricingStrategyPreviewRatesCompletionPrice1 overwrites any union data inside the ModelPricingStrategyPreviewRates_CompletionPrice as the provided ModelPricingStrategyPreviewRatesCompletionPrice1
+func (t *ModelPricingStrategyPreviewRates_CompletionPrice) FromModelPricingStrategyPreviewRatesCompletionPrice1(v ModelPricingStrategyPreviewRatesCompletionPrice1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeModelPricingStrategyPreviewRatesCompletionPrice1 performs a merge with any union data inside the ModelPricingStrategyPreviewRates_CompletionPrice, using the provided ModelPricingStrategyPreviewRatesCompletionPrice1
+func (t *ModelPricingStrategyPreviewRates_CompletionPrice) MergeModelPricingStrategyPreviewRatesCompletionPrice1(v ModelPricingStrategyPreviewRatesCompletionPrice1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ModelPricingStrategyPreviewRates_CompletionPrice) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ModelPricingStrategyPreviewRates_CompletionPrice) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsModelPricingStrategyPreviewRatesPromptPrice0 returns the union data inside the ModelPricingStrategyPreviewRates_PromptPrice as a ModelPricingStrategyPreviewRatesPromptPrice0
+func (t ModelPricingStrategyPreviewRates_PromptPrice) AsModelPricingStrategyPreviewRatesPromptPrice0() (ModelPricingStrategyPreviewRatesPromptPrice0, error) {
+	var body ModelPricingStrategyPreviewRatesPromptPrice0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromModelPricingStrategyPreviewRatesPromptPrice0 overwrites any union data inside the ModelPricingStrategyPreviewRates_PromptPrice as the provided ModelPricingStrategyPreviewRatesPromptPrice0
+func (t *ModelPricingStrategyPreviewRates_PromptPrice) FromModelPricingStrategyPreviewRatesPromptPrice0(v ModelPricingStrategyPreviewRatesPromptPrice0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeModelPricingStrategyPreviewRatesPromptPrice0 performs a merge with any union data inside the ModelPricingStrategyPreviewRates_PromptPrice, using the provided ModelPricingStrategyPreviewRatesPromptPrice0
+func (t *ModelPricingStrategyPreviewRates_PromptPrice) MergeModelPricingStrategyPreviewRatesPromptPrice0(v ModelPricingStrategyPreviewRatesPromptPrice0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsModelPricingStrategyPreviewRatesPromptPrice1 returns the union data inside the ModelPricingStrategyPreviewRates_PromptPrice as a ModelPricingStrategyPreviewRatesPromptPrice1
+func (t ModelPricingStrategyPreviewRates_PromptPrice) AsModelPricingStrategyPreviewRatesPromptPrice1() (ModelPricingStrategyPreviewRatesPromptPrice1, error) {
+	var body ModelPricingStrategyPreviewRatesPromptPrice1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromModelPricingStrategyPreviewRatesPromptPrice1 overwrites any union data inside the ModelPricingStrategyPreviewRates_PromptPrice as the provided ModelPricingStrategyPreviewRatesPromptPrice1
+func (t *ModelPricingStrategyPreviewRates_PromptPrice) FromModelPricingStrategyPreviewRatesPromptPrice1(v ModelPricingStrategyPreviewRatesPromptPrice1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeModelPricingStrategyPreviewRatesPromptPrice1 performs a merge with any union data inside the ModelPricingStrategyPreviewRates_PromptPrice, using the provided ModelPricingStrategyPreviewRatesPromptPrice1
+func (t *ModelPricingStrategyPreviewRates_PromptPrice) MergeModelPricingStrategyPreviewRatesPromptPrice1(v ModelPricingStrategyPreviewRatesPromptPrice1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ModelPricingStrategyPreviewRates_PromptPrice) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ModelPricingStrategyPreviewRates_PromptPrice) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPricingStrategy returns the union data inside the ModelPricingStrategyPreviewRequest_Strategy as a PricingStrategy
+func (t ModelPricingStrategyPreviewRequest_Strategy) AsPricingStrategy() (PricingStrategy, error) {
+	var body PricingStrategy
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPricingStrategy overwrites any union data inside the ModelPricingStrategyPreviewRequest_Strategy as the provided PricingStrategy
+func (t *ModelPricingStrategyPreviewRequest_Strategy) FromPricingStrategy(v PricingStrategy) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePricingStrategy performs a merge with any union data inside the ModelPricingStrategyPreviewRequest_Strategy, using the provided PricingStrategy
+func (t *ModelPricingStrategyPreviewRequest_Strategy) MergePricingStrategy(v PricingStrategy) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsModelPricingStrategyPreviewRequestStrategy1 returns the union data inside the ModelPricingStrategyPreviewRequest_Strategy as a ModelPricingStrategyPreviewRequestStrategy1
+func (t ModelPricingStrategyPreviewRequest_Strategy) AsModelPricingStrategyPreviewRequestStrategy1() (ModelPricingStrategyPreviewRequestStrategy1, error) {
+	var body ModelPricingStrategyPreviewRequestStrategy1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromModelPricingStrategyPreviewRequestStrategy1 overwrites any union data inside the ModelPricingStrategyPreviewRequest_Strategy as the provided ModelPricingStrategyPreviewRequestStrategy1
+func (t *ModelPricingStrategyPreviewRequest_Strategy) FromModelPricingStrategyPreviewRequestStrategy1(v ModelPricingStrategyPreviewRequestStrategy1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeModelPricingStrategyPreviewRequestStrategy1 performs a merge with any union data inside the ModelPricingStrategyPreviewRequest_Strategy, using the provided ModelPricingStrategyPreviewRequestStrategy1
+func (t *ModelPricingStrategyPreviewRequest_Strategy) MergeModelPricingStrategyPreviewRequestStrategy1(v ModelPricingStrategyPreviewRequestStrategy1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ModelPricingStrategyPreviewRequest_Strategy) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ModelPricingStrategyPreviewRequest_Strategy) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPricingSchedule returns the union data inside the ModelPricingStrategyPreviewResponse_Schedule as a PricingSchedule
+func (t ModelPricingStrategyPreviewResponse_Schedule) AsPricingSchedule() (PricingSchedule, error) {
+	var body PricingSchedule
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPricingSchedule overwrites any union data inside the ModelPricingStrategyPreviewResponse_Schedule as the provided PricingSchedule
+func (t *ModelPricingStrategyPreviewResponse_Schedule) FromPricingSchedule(v PricingSchedule) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePricingSchedule performs a merge with any union data inside the ModelPricingStrategyPreviewResponse_Schedule, using the provided PricingSchedule
+func (t *ModelPricingStrategyPreviewResponse_Schedule) MergePricingSchedule(v PricingSchedule) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsModelPricingStrategyPreviewResponseSchedule1 returns the union data inside the ModelPricingStrategyPreviewResponse_Schedule as a ModelPricingStrategyPreviewResponseSchedule1
+func (t ModelPricingStrategyPreviewResponse_Schedule) AsModelPricingStrategyPreviewResponseSchedule1() (ModelPricingStrategyPreviewResponseSchedule1, error) {
+	var body ModelPricingStrategyPreviewResponseSchedule1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromModelPricingStrategyPreviewResponseSchedule1 overwrites any union data inside the ModelPricingStrategyPreviewResponse_Schedule as the provided ModelPricingStrategyPreviewResponseSchedule1
+func (t *ModelPricingStrategyPreviewResponse_Schedule) FromModelPricingStrategyPreviewResponseSchedule1(v ModelPricingStrategyPreviewResponseSchedule1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeModelPricingStrategyPreviewResponseSchedule1 performs a merge with any union data inside the ModelPricingStrategyPreviewResponse_Schedule, using the provided ModelPricingStrategyPreviewResponseSchedule1
+func (t *ModelPricingStrategyPreviewResponse_Schedule) MergeModelPricingStrategyPreviewResponseSchedule1(v ModelPricingStrategyPreviewResponseSchedule1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ModelPricingStrategyPreviewResponse_Schedule) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ModelPricingStrategyPreviewResponse_Schedule) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPricingStrategy returns the union data inside the ModelPricingStrategyPreviewResponse_Strategy as a PricingStrategy
+func (t ModelPricingStrategyPreviewResponse_Strategy) AsPricingStrategy() (PricingStrategy, error) {
+	var body PricingStrategy
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPricingStrategy overwrites any union data inside the ModelPricingStrategyPreviewResponse_Strategy as the provided PricingStrategy
+func (t *ModelPricingStrategyPreviewResponse_Strategy) FromPricingStrategy(v PricingStrategy) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePricingStrategy performs a merge with any union data inside the ModelPricingStrategyPreviewResponse_Strategy, using the provided PricingStrategy
+func (t *ModelPricingStrategyPreviewResponse_Strategy) MergePricingStrategy(v PricingStrategy) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsModelPricingStrategyPreviewResponseStrategy1 returns the union data inside the ModelPricingStrategyPreviewResponse_Strategy as a ModelPricingStrategyPreviewResponseStrategy1
+func (t ModelPricingStrategyPreviewResponse_Strategy) AsModelPricingStrategyPreviewResponseStrategy1() (ModelPricingStrategyPreviewResponseStrategy1, error) {
+	var body ModelPricingStrategyPreviewResponseStrategy1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromModelPricingStrategyPreviewResponseStrategy1 overwrites any union data inside the ModelPricingStrategyPreviewResponse_Strategy as the provided ModelPricingStrategyPreviewResponseStrategy1
+func (t *ModelPricingStrategyPreviewResponse_Strategy) FromModelPricingStrategyPreviewResponseStrategy1(v ModelPricingStrategyPreviewResponseStrategy1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeModelPricingStrategyPreviewResponseStrategy1 performs a merge with any union data inside the ModelPricingStrategyPreviewResponse_Strategy, using the provided ModelPricingStrategyPreviewResponseStrategy1
+func (t *ModelPricingStrategyPreviewResponse_Strategy) MergeModelPricingStrategyPreviewResponseStrategy1(v ModelPricingStrategyPreviewResponseStrategy1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ModelPricingStrategyPreviewResponse_Strategy) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ModelPricingStrategyPreviewResponse_Strategy) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPricingStrategy returns the union data inside the ModelPricingUpdateRequest_Strategy as a PricingStrategy
+func (t ModelPricingUpdateRequest_Strategy) AsPricingStrategy() (PricingStrategy, error) {
+	var body PricingStrategy
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPricingStrategy overwrites any union data inside the ModelPricingUpdateRequest_Strategy as the provided PricingStrategy
+func (t *ModelPricingUpdateRequest_Strategy) FromPricingStrategy(v PricingStrategy) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePricingStrategy performs a merge with any union data inside the ModelPricingUpdateRequest_Strategy, using the provided PricingStrategy
+func (t *ModelPricingUpdateRequest_Strategy) MergePricingStrategy(v PricingStrategy) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsModelPricingUpdateRequestStrategy1 returns the union data inside the ModelPricingUpdateRequest_Strategy as a ModelPricingUpdateRequestStrategy1
+func (t ModelPricingUpdateRequest_Strategy) AsModelPricingUpdateRequestStrategy1() (ModelPricingUpdateRequestStrategy1, error) {
+	var body ModelPricingUpdateRequestStrategy1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromModelPricingUpdateRequestStrategy1 overwrites any union data inside the ModelPricingUpdateRequest_Strategy as the provided ModelPricingUpdateRequestStrategy1
+func (t *ModelPricingUpdateRequest_Strategy) FromModelPricingUpdateRequestStrategy1(v ModelPricingUpdateRequestStrategy1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeModelPricingUpdateRequestStrategy1 performs a merge with any union data inside the ModelPricingUpdateRequest_Strategy, using the provided ModelPricingUpdateRequestStrategy1
+func (t *ModelPricingUpdateRequest_Strategy) MergeModelPricingUpdateRequestStrategy1(v ModelPricingUpdateRequestStrategy1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ModelPricingUpdateRequest_Strategy) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ModelPricingUpdateRequest_Strategy) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // AsPermissionKey returns the union data inside the PermissionGrant as a PermissionKey
 func (t PermissionGrant) AsPermissionKey() (PermissionKey, error) {
 	var body PermissionKey
@@ -13058,6 +14340,192 @@ func (t PermissionGrant) MarshalJSON() ([]byte, error) {
 }
 
 func (t *PermissionGrant) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPricingCandidateContextLength0 returns the union data inside the PricingCandidate_ContextLength as a PricingCandidateContextLength0
+func (t PricingCandidate_ContextLength) AsPricingCandidateContextLength0() (PricingCandidateContextLength0, error) {
+	var body PricingCandidateContextLength0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPricingCandidateContextLength0 overwrites any union data inside the PricingCandidate_ContextLength as the provided PricingCandidateContextLength0
+func (t *PricingCandidate_ContextLength) FromPricingCandidateContextLength0(v PricingCandidateContextLength0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePricingCandidateContextLength0 performs a merge with any union data inside the PricingCandidate_ContextLength, using the provided PricingCandidateContextLength0
+func (t *PricingCandidate_ContextLength) MergePricingCandidateContextLength0(v PricingCandidateContextLength0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPricingCandidateContextLength1 returns the union data inside the PricingCandidate_ContextLength as a PricingCandidateContextLength1
+func (t PricingCandidate_ContextLength) AsPricingCandidateContextLength1() (PricingCandidateContextLength1, error) {
+	var body PricingCandidateContextLength1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPricingCandidateContextLength1 overwrites any union data inside the PricingCandidate_ContextLength as the provided PricingCandidateContextLength1
+func (t *PricingCandidate_ContextLength) FromPricingCandidateContextLength1(v PricingCandidateContextLength1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePricingCandidateContextLength1 performs a merge with any union data inside the PricingCandidate_ContextLength, using the provided PricingCandidateContextLength1
+func (t *PricingCandidate_ContextLength) MergePricingCandidateContextLength1(v PricingCandidateContextLength1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PricingCandidate_ContextLength) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PricingCandidate_ContextLength) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPricingCandidateDisplayName0 returns the union data inside the PricingCandidate_DisplayName as a PricingCandidateDisplayName0
+func (t PricingCandidate_DisplayName) AsPricingCandidateDisplayName0() (PricingCandidateDisplayName0, error) {
+	var body PricingCandidateDisplayName0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPricingCandidateDisplayName0 overwrites any union data inside the PricingCandidate_DisplayName as the provided PricingCandidateDisplayName0
+func (t *PricingCandidate_DisplayName) FromPricingCandidateDisplayName0(v PricingCandidateDisplayName0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePricingCandidateDisplayName0 performs a merge with any union data inside the PricingCandidate_DisplayName, using the provided PricingCandidateDisplayName0
+func (t *PricingCandidate_DisplayName) MergePricingCandidateDisplayName0(v PricingCandidateDisplayName0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPricingCandidateDisplayName1 returns the union data inside the PricingCandidate_DisplayName as a PricingCandidateDisplayName1
+func (t PricingCandidate_DisplayName) AsPricingCandidateDisplayName1() (PricingCandidateDisplayName1, error) {
+	var body PricingCandidateDisplayName1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPricingCandidateDisplayName1 overwrites any union data inside the PricingCandidate_DisplayName as the provided PricingCandidateDisplayName1
+func (t *PricingCandidate_DisplayName) FromPricingCandidateDisplayName1(v PricingCandidateDisplayName1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePricingCandidateDisplayName1 performs a merge with any union data inside the PricingCandidate_DisplayName, using the provided PricingCandidateDisplayName1
+func (t *PricingCandidate_DisplayName) MergePricingCandidateDisplayName1(v PricingCandidateDisplayName1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PricingCandidate_DisplayName) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PricingCandidate_DisplayName) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPricingCandidateVendor0 returns the union data inside the PricingCandidate_Vendor as a PricingCandidateVendor0
+func (t PricingCandidate_Vendor) AsPricingCandidateVendor0() (PricingCandidateVendor0, error) {
+	var body PricingCandidateVendor0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPricingCandidateVendor0 overwrites any union data inside the PricingCandidate_Vendor as the provided PricingCandidateVendor0
+func (t *PricingCandidate_Vendor) FromPricingCandidateVendor0(v PricingCandidateVendor0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePricingCandidateVendor0 performs a merge with any union data inside the PricingCandidate_Vendor, using the provided PricingCandidateVendor0
+func (t *PricingCandidate_Vendor) MergePricingCandidateVendor0(v PricingCandidateVendor0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPricingCandidateVendor1 returns the union data inside the PricingCandidate_Vendor as a PricingCandidateVendor1
+func (t PricingCandidate_Vendor) AsPricingCandidateVendor1() (PricingCandidateVendor1, error) {
+	var body PricingCandidateVendor1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPricingCandidateVendor1 overwrites any union data inside the PricingCandidate_Vendor as the provided PricingCandidateVendor1
+func (t *PricingCandidate_Vendor) FromPricingCandidateVendor1(v PricingCandidateVendor1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePricingCandidateVendor1 performs a merge with any union data inside the PricingCandidate_Vendor, using the provided PricingCandidateVendor1
+func (t *PricingCandidate_Vendor) MergePricingCandidateVendor1(v PricingCandidateVendor1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PricingCandidate_Vendor) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PricingCandidate_Vendor) UnmarshalJSON(b []byte) error {
 	err := t.union.UnmarshalJSON(b)
 	return err
 }
@@ -13806,6 +15274,68 @@ func (t *PublicModelCard_MaxOutput) UnmarshalJSON(b []byte) error {
 	return err
 }
 
+// AsPublicPricingSchedule returns the union data inside the PublicModelCard_PricingSchedule as a PublicPricingSchedule
+func (t PublicModelCard_PricingSchedule) AsPublicPricingSchedule() (PublicPricingSchedule, error) {
+	var body PublicPricingSchedule
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicPricingSchedule overwrites any union data inside the PublicModelCard_PricingSchedule as the provided PublicPricingSchedule
+func (t *PublicModelCard_PricingSchedule) FromPublicPricingSchedule(v PublicPricingSchedule) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicPricingSchedule performs a merge with any union data inside the PublicModelCard_PricingSchedule, using the provided PublicPricingSchedule
+func (t *PublicModelCard_PricingSchedule) MergePublicPricingSchedule(v PublicPricingSchedule) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicModelCardPricingSchedule1 returns the union data inside the PublicModelCard_PricingSchedule as a PublicModelCardPricingSchedule1
+func (t PublicModelCard_PricingSchedule) AsPublicModelCardPricingSchedule1() (PublicModelCardPricingSchedule1, error) {
+	var body PublicModelCardPricingSchedule1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelCardPricingSchedule1 overwrites any union data inside the PublicModelCard_PricingSchedule as the provided PublicModelCardPricingSchedule1
+func (t *PublicModelCard_PricingSchedule) FromPublicModelCardPricingSchedule1(v PublicModelCardPricingSchedule1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelCardPricingSchedule1 performs a merge with any union data inside the PublicModelCard_PricingSchedule, using the provided PublicModelCardPricingSchedule1
+func (t *PublicModelCard_PricingSchedule) MergePublicModelCardPricingSchedule1(v PublicModelCardPricingSchedule1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicModelCard_PricingSchedule) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicModelCard_PricingSchedule) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // AsPublicModelCardPromptPrice0 returns the union data inside the PublicModelCard_PromptPrice as a PublicModelCardPromptPrice0
 func (t PublicModelCard_PromptPrice) AsPublicModelCardPromptPrice0() (PublicModelCardPromptPrice0, error) {
 	var body PublicModelCardPromptPrice0
@@ -14302,6 +15832,68 @@ func (t *PublicModelDetail_MaxOutput) UnmarshalJSON(b []byte) error {
 	return err
 }
 
+// AsPublicPricingSchedule returns the union data inside the PublicModelDetail_PricingSchedule as a PublicPricingSchedule
+func (t PublicModelDetail_PricingSchedule) AsPublicPricingSchedule() (PublicPricingSchedule, error) {
+	var body PublicPricingSchedule
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicPricingSchedule overwrites any union data inside the PublicModelDetail_PricingSchedule as the provided PublicPricingSchedule
+func (t *PublicModelDetail_PricingSchedule) FromPublicPricingSchedule(v PublicPricingSchedule) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicPricingSchedule performs a merge with any union data inside the PublicModelDetail_PricingSchedule, using the provided PublicPricingSchedule
+func (t *PublicModelDetail_PricingSchedule) MergePublicPricingSchedule(v PublicPricingSchedule) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicModelDetailPricingSchedule1 returns the union data inside the PublicModelDetail_PricingSchedule as a PublicModelDetailPricingSchedule1
+func (t PublicModelDetail_PricingSchedule) AsPublicModelDetailPricingSchedule1() (PublicModelDetailPricingSchedule1, error) {
+	var body PublicModelDetailPricingSchedule1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelDetailPricingSchedule1 overwrites any union data inside the PublicModelDetail_PricingSchedule as the provided PublicModelDetailPricingSchedule1
+func (t *PublicModelDetail_PricingSchedule) FromPublicModelDetailPricingSchedule1(v PublicModelDetailPricingSchedule1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelDetailPricingSchedule1 performs a merge with any union data inside the PublicModelDetail_PricingSchedule, using the provided PublicModelDetailPricingSchedule1
+func (t *PublicModelDetail_PricingSchedule) MergePublicModelDetailPricingSchedule1(v PublicModelDetailPricingSchedule1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicModelDetail_PricingSchedule) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicModelDetail_PricingSchedule) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // AsPublicModelDetailPromptPrice0 returns the union data inside the PublicModelDetail_PromptPrice as a PublicModelDetailPromptPrice0
 func (t PublicModelDetail_PromptPrice) AsPublicModelDetailPromptPrice0() (PublicModelDetailPromptPrice0, error) {
 	var body PublicModelDetailPromptPrice0
@@ -14422,6 +16014,68 @@ func (t PublicModelDetail_ReleasedAt) MarshalJSON() ([]byte, error) {
 }
 
 func (t *PublicModelDetail_ReleasedAt) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicModelLatestTest returns the union data inside the PublicModelMetrics_LatestTest as a PublicModelLatestTest
+func (t PublicModelMetrics_LatestTest) AsPublicModelLatestTest() (PublicModelLatestTest, error) {
+	var body PublicModelLatestTest
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelLatestTest overwrites any union data inside the PublicModelMetrics_LatestTest as the provided PublicModelLatestTest
+func (t *PublicModelMetrics_LatestTest) FromPublicModelLatestTest(v PublicModelLatestTest) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelLatestTest performs a merge with any union data inside the PublicModelMetrics_LatestTest, using the provided PublicModelLatestTest
+func (t *PublicModelMetrics_LatestTest) MergePublicModelLatestTest(v PublicModelLatestTest) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicModelMetricsLatestTest1 returns the union data inside the PublicModelMetrics_LatestTest as a PublicModelMetricsLatestTest1
+func (t PublicModelMetrics_LatestTest) AsPublicModelMetricsLatestTest1() (PublicModelMetricsLatestTest1, error) {
+	var body PublicModelMetricsLatestTest1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelMetricsLatestTest1 overwrites any union data inside the PublicModelMetrics_LatestTest as the provided PublicModelMetricsLatestTest1
+func (t *PublicModelMetrics_LatestTest) FromPublicModelMetricsLatestTest1(v PublicModelMetricsLatestTest1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelMetricsLatestTest1 performs a merge with any union data inside the PublicModelMetrics_LatestTest, using the provided PublicModelMetricsLatestTest1
+func (t *PublicModelMetrics_LatestTest) MergePublicModelMetricsLatestTest1(v PublicModelMetricsLatestTest1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicModelMetrics_LatestTest) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicModelMetrics_LatestTest) UnmarshalJSON(b []byte) error {
 	err := t.union.UnmarshalJSON(b)
 	return err
 }

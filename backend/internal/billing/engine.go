@@ -254,6 +254,11 @@ type Engine struct {
 	// 资金分派保持纯钱包行为（与 S4a 之前一致）。
 	subscriptionFunding SubscriptionFundingSource
 
+	// requestPricing 是冻结请求计价事实的接缝（spec §5.2）：预扣成功后
+	// 写入 request_time 与命中倍率，handoff/任务轮询重建会话时读回。
+	// nil 表示未装配（单测/无异步结算的部署），此时行为与旧版一致。
+	requestPricing RequestPricingStore
+
 	// historyCache 是免费模型可信阈值用的「历史累计消费」短 TTL 缓存。
 	historyMu    sync.Mutex
 	historyCache map[int64]historyEntry
@@ -295,6 +300,15 @@ func (e *Engine) SetSubscriptionFunding(f SubscriptionFundingSource) {
 	e.subscriptionFunding = f
 }
 
+// SetRequestPricingStore 装配冻结请求计价仓储（spec §5.2）。
+//
+// 与 SetSubscriptionFunding 同一约定：装配期调用一次，构造后不再修改。
+// 未装配时 PreConsume 跳过持久化、handoff 结算保持旧行为（按当前定价
+// 重解析），并在日志里给出 WARN。
+func (e *Engine) SetRequestPricingStore(store RequestPricingStore) {
+	e.requestPricing = store
+}
+
 // EffectiveConfig 返回构造时注入的配置读取面。
 //
 // 它只服务于装配可观测性（控制端 W13 裁决 I2）：platform 装配测试必须能
@@ -311,7 +325,7 @@ func (e *Engine) EffectiveConfig() ConfigReader {
 
 // NewSession 为一次请求绑定一个计费会话（relay 每请求调用工厂）。
 func (e *Engine) NewSession(rc *contract.RelayContext) contract.BillingSession {
-	s := &Session{engine: e, rc: rc}
+	s := &Session{engine: e, rc: rc, requestTime: time.Now()}
 	if rc != nil {
 		s.requestID = rc.RequestID
 		s.userID = int64(rc.UserID)

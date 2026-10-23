@@ -356,6 +356,94 @@ schemas:
         type: string
         description: 失败时是 F-06-06 五值枚举；成功时省略。
 
+  # 渠道模型性能测速（管理员显式发起的一次流式探测批次）。
+  ModelPerformanceTestRequest:
+    type: object
+    additionalProperties: false
+    required: [model]
+    properties:
+      model:
+        type: string
+        minLength: 1
+        description: 必须属于该渠道 supported_models；否则 422。
+      runs:
+        type: integer
+        minimum: 1
+        maximum: 5
+        default: 3
+        description: 探测次数；缺省 3，超出 1..5 返回 422。
+    description: 请求体必填；model 缺失/不属于 supported_models → 422。
+
+  ModelPerformanceTest:
+    type: object
+    additionalProperties: false
+    description: |
+      一次测速的汇总事实（已持久化）。success_rate = success_count / runs；
+      TTFT/延迟分位数只取成功且非空样本（nearest-rank）。无样本的聚合字段
+      显式输出 null（UI 显示 —，不是 0）。
+    required:
+      - id
+      - channel_id
+      - model
+      - provider
+      - runs
+      - success_count
+      - success_rate
+      - created_at
+    properties:
+      id:
+        type: integer
+        format: int64
+      channel_id:
+        type: integer
+        format: int64
+      model:
+        type: string
+      provider:
+        type: string
+        description: 渠道类型 slug（store.Channel.Type）。
+      runs:
+        type: integer
+        description: 本批探测次数（成功率分母）。
+      success_count:
+        type: integer
+      success_rate:
+        type: number
+        minimum: 0
+        maximum: 1
+      ttft_ms_p50:
+        type: integer
+        nullable: true
+      ttft_ms_p95:
+        type: integer
+        nullable: true
+      latency_ms_p50:
+        type: integer
+        nullable: true
+      latency_ms_p95:
+        type: integer
+        nullable: true
+      tps_avg:
+        type: number
+        nullable: true
+      output_tokens_avg:
+        type: number
+        nullable: true
+      created_at:
+        type: string
+        format: date-time
+
+  ModelPerformanceTestList:
+    type: object
+    additionalProperties: false
+    required: [items]
+    properties:
+      items:
+        type: array
+        description: 按 created_at 倒序（新→旧）。
+        items:
+          $ref: '#/schemas/ModelPerformanceTest'
+
   # 渠道模型目录拉取（POST /api/channels/fetch-models）。只读探针：把表单当前
   # 值（或编辑模式已保存的 base_url/凭据）发往上游模型目录；不落库、不改渠道、
   # 失败不触发自动禁用。channel_id 存在时，缺省的 base_url/api_key/api_version
@@ -817,6 +905,8 @@ schemas:
       - author
       - status
       - free
+      - has_strategy
+      - strategy_kind
       - created_at
       - updated_at
     properties:
@@ -870,6 +960,22 @@ schemas:
       free:
         type: boolean
         description: 四项有效价全为 0 才为 true；单项 0 不得显示「免费」。
+      has_strategy:
+        type: boolean
+        description: 是否存在结构化时段策略（strategy 非 NULL）。
+      strategy_kind:
+        type: string
+        enum: [flat, peak_offpeak]
+        description: |
+          结构化枚举：time.enabled=false / 无策略为 flat，启用时段为
+          peak_offpeak。前端按七种语言本地化，响应里不出现中文字符串。
+      strategy:
+        anyOf:
+          - $ref: '#/schemas/PricingStrategy'
+          - enum: [null]
+        description: |
+          完整策略。列表响应省略该字段（只给 has_strategy/strategy_kind）；
+          单条读取、创建与更新响应返回规范化后的策略（无策略为 null）。
       created_at:
         type: string
         format: date-time
@@ -942,6 +1048,14 @@ schemas:
         maxLength: 64
       status:
         $ref: '#/schemas/PricingStatus'
+      strategy:
+        anyOf:
+          - $ref: '#/schemas/PricingStrategy'
+          - enum: [null]
+        description: |
+          结构化时段策略；与 billing_expr 互斥（同时出现 400）。tiers/service
+          等第二阶段字段会被 422 拒绝（problem.fields=[strategy.<field>]）。
+          null/缺省表示不配置策略。
     description: |
       价格单位是整数积分；展示层按 quota_per_unit 换算为元。
       表达式非法/空白 400（problem.fields=[billing_expr]）；负数或超 2^53−1
@@ -997,6 +1111,13 @@ schemas:
         maxLength: 64
       status:
         $ref: '#/schemas/PricingStatus'
+      strategy:
+        anyOf:
+          - $ref: '#/schemas/PricingStrategy'
+          - enum: [null]
+        description: |
+          缺省表示保持原值；显式 null 表示清除。与 billing_expr 互斥
+          （更新后的有效值同时存在时 400）。
     description: |
       部分更新；model 不可改（提交 model 由字段策略 403）。
       updated_at 缺失 400、不匹配 409。空对象/无字段 400。
@@ -1009,6 +1130,274 @@ schemas:
       updated_at:
         type: string
         format: date-time
+
+  # ---------------------------------------------------------------------------
+  # 结构化时段策略（spec §5.1）。倍率是十进制倍数（0.5 = 半价），范围
+  # 0.01–100；days 用 1=周一 … 7=周日（JSON 不接受 0）。
+  # ---------------------------------------------------------------------------
+  PricingStrategy:
+    type: object
+    additionalProperties: false
+    required: [version]
+    properties:
+      version:
+        type: integer
+        enum: [1]
+        description: 第一阶段只接受 version=1。
+      time:
+        $ref: '#/schemas/PricingTimeConfig'
+
+  PricingTimeConfig:
+    type: object
+    additionalProperties: false
+    properties:
+      enabled:
+        type: boolean
+        description: 未启用时公开面 pricing_schedule 为 null，结算行为不变。
+      timezone:
+        type: string
+        description: IANA 时区名（启用时必填，例如 Asia/Shanghai）。
+      holiday_policy:
+        type: string
+        enum: [none, cn_offpeak]
+        description: |
+          none=不处理节假日；cn_offpeak=中国法定节假日全天按
+          default_multiplier，调休上班日按工作日窗口计价。
+      default_multiplier:
+        type: number
+        format: double
+        description: 未命中窗口（以及 cn_offpeak 的法定假日）使用的倍率，0.01–100。
+      windows:
+        type: array
+        items:
+          $ref: '#/schemas/PricingTimeWindow'
+        description: 同一时刻命中多个窗口时，数组顺序最后一条生效（前端提示重叠）。
+
+  PricingTimeWindow:
+    type: object
+    additionalProperties: false
+    required: [name, days, start, end, multiplier]
+    properties:
+      name:
+        type: string
+        maxLength: 64
+      days:
+        type: array
+        minItems: 1
+        items:
+          type: integer
+          minimum: 1
+          maximum: 7
+        description: 1=周一 … 7=周日；跨夜窗口指**开始**的那一天。
+      start:
+        type: string
+        pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+        description: HH:MM，左闭。
+      end:
+        type: string
+        pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+        description: HH:MM，右开；end <= start 表示跨夜。
+      multiplier:
+        type: number
+        format: double
+        description: 十进制倍数（0.5 = 半价），0.01–100。
+
+  PricingSchedule:
+    type: object
+    additionalProperties: false
+    required: [kind, timezone, default_multiplier, holiday_policy, windows]
+    properties:
+      kind:
+        type: string
+        enum: [flat, peak_offpeak]
+      timezone: {type: string}
+      default_multiplier: {type: number, format: double}
+      holiday_policy:
+        type: string
+        enum: [none, cn_offpeak]
+      windows:
+        type: array
+        items:
+          $ref: '#/schemas/PricingTimeWindow'
+
+  PricingCandidate:
+    type: object
+    additionalProperties: false
+    required: [model, display_name, vendor, context_length, sources, priced, mode]
+    properties:
+      model:
+        type: string
+        pattern: '^[A-Za-z0-9._:/-]{1,128}$'
+      display_name:
+        anyOf:
+          - type: string
+          - enum: [null]
+        description: 来自 model_meta；无档案时为 null。
+      vendor:
+        anyOf:
+          - type: string
+          - enum: [null]
+        description: 目录供应商名或 model_pricing.vendor；都没有时为 null。
+      context_length:
+        anyOf:
+          - type: integer
+            format: int64
+          - enum: [null]
+      sources:
+        type: array
+        items:
+          type: string
+          enum: [catalog, channel, pricing]
+        description: 固定顺序 catalog → channel → pricing。
+      priced:
+        type: boolean
+        description: 已存在 model_pricing 行（含停用行）。
+      mode:
+        $ref: '#/schemas/PricingMode'
+
+  PricingCandidateList:
+    type: object
+    additionalProperties: false
+    required: [items]
+    properties:
+      items:
+        type: array
+        items:
+          $ref: '#/schemas/PricingCandidate'
+
+  ModelPricingStrategyPreviewPrices:
+    type: object
+    additionalProperties: false
+    properties:
+      prompt_price:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+        description: 输入价（积分/1M）；per_request 时是每次请求价。
+      completion_price:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      cache_read_price:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+      cache_write_price:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+
+  ModelPricingStrategyPreviewRequest:
+    type: object
+    additionalProperties: false
+    properties:
+      model:
+        type: string
+        pattern: '^[A-Za-z0-9._:/-]{1,128}$'
+        description: 用于模型族默认值（补全/缓存 1h 派生）；可省略。
+      mode:
+        type: string
+        enum: [per_token, per_request]
+        default: per_token
+        description: 表达式与策略互斥，试算不支持 tiered_expr。
+      prices:
+        $ref: '#/schemas/ModelPricingStrategyPreviewPrices'
+      strategy:
+        anyOf:
+          - $ref: '#/schemas/PricingStrategy'
+          - enum: [null]
+      at:
+        type: string
+        format: date-time
+        description: 命中的请求时间（RFC 3339）；缺省为服务端当前时间。
+      input_tokens:
+        type: integer
+        format: int64
+        minimum: 0
+      output_tokens:
+        type: integer
+        format: int64
+        minimum: 0
+      cache_read_tokens:
+        type: integer
+        format: int64
+        minimum: 0
+
+  ModelPricingStrategyPreviewMatch:
+    type: object
+    additionalProperties: false
+    required: [window, multiplier, holiday_name, holiday_off_day, holiday_lookup_failed]
+    properties:
+      window:
+        type: string
+        description: 命中的窗口名；未命中（使用默认倍率）时为空串。
+      multiplier:
+        type: number
+        format: double
+      holiday_name:
+        type: string
+        description: 命中法定节假日/调休时的名称；无记录时为空串。
+      holiday_off_day:
+        type: boolean
+      holiday_lookup_failed:
+        type: boolean
+        description: 查过节假日但失败并回退到星期规则。
+
+  ModelPricingStrategyPreviewRates:
+    type: object
+    additionalProperties: false
+    required: [prompt_price, completion_price, cache_read_price, cache_write_price]
+    properties:
+      prompt_price:
+        anyOf: [{type: number, format: double}, {enum: [null]}]
+      completion_price:
+        anyOf: [{type: number, format: double}, {enum: [null]}]
+      cache_read_price:
+        anyOf: [{type: number, format: double}, {enum: [null]}]
+      cache_write_price:
+        anyOf: [{type: number, format: double}, {enum: [null]}]
+        description: 缓存写 5m 档的生效单价（结算也读该档）。
+
+  ModelPricingStrategyPreviewTotal:
+    type: object
+    additionalProperties: false
+    required: [quota, quota_per_unit, amount_yuan]
+    properties:
+      quota:
+        type: integer
+        format: int64
+      quota_per_unit:
+        type: integer
+        format: int64
+      amount_yuan:
+        type: string
+        pattern: '^-?[0-9]+\.[0-9]{2}$'
+
+  ModelPricingStrategyPreviewResponse:
+    type: object
+    additionalProperties: false
+    required: [match, schedule, strategy, effective_rates, total]
+    properties:
+      match:
+        $ref: '#/schemas/ModelPricingStrategyPreviewMatch'
+      schedule:
+        anyOf:
+          - $ref: '#/schemas/PricingSchedule'
+          - enum: [null]
+        description: 未启用时段时为 null。
+      strategy:
+        anyOf:
+          - $ref: '#/schemas/PricingStrategy'
+          - enum: [null]
+        description: 规范化后的策略（未提交/显式 null 时为 null）。
+      effective_rates:
+        $ref: '#/schemas/ModelPricingStrategyPreviewRates'
+      total:
+        $ref: '#/schemas/ModelPricingStrategyPreviewTotal'
 
   PricingModelOption:
     type: object

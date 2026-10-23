@@ -49,6 +49,7 @@ import (
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/pricingstrategy"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 )
@@ -89,25 +90,34 @@ type PricingHandlerConfig struct {
 	// OnChange 在定价写成功后触发（进程内缓存失效接缝）。M3 的 DBSource
 	// 以 30s TTL 兜底；T9 装配引擎后可把它接到 Source.Invalidate。
 	OnChange func()
+	// HolidayLookup 是试算用的节假日日历（生产为 holiday.Store）。nil 时
+	// cn_offpeak 策略按星期规则试算并在 match.holiday_lookup_failed 标记，
+	// 与计费路径的降级方向一致（不失败、不免费）。
+	HolidayLookup pricingstrategy.HolidayLookup
 }
 
 // PricingHandlers 持有定价端点依赖，可并发使用。
 type PricingHandlers struct {
-	repo     store.PricingRepo
-	rdb      *redis.Client
-	authz    *rbac.AuthzMiddleware
-	log      *slog.Logger
-	onChange func()
+	repo          store.PricingRepo
+	rdb           *redis.Client
+	authz         *rbac.AuthzMiddleware
+	log           *slog.Logger
+	onChange      func()
+	holidayLookup pricingstrategy.HolidayLookup
 }
 
 var (
 	pricingListAction    = rbac.AuthzAction{ResourceKind: "pricing", ActionName: "list"}
+	pricingGetAction     = rbac.AuthzAction{ResourceKind: "pricing", ActionName: "get"}
 	pricingModelsAction  = rbac.AuthzAction{ResourceKind: "pricing", ActionName: "models"}
 	pricingPreviewAction = rbac.AuthzAction{ResourceKind: "pricing", ActionName: "preview"}
-	pricingCreateAction  = rbac.AuthzAction{ResourceKind: "pricing", ActionName: "create"}
-	pricingUpdateAction  = rbac.AuthzAction{ResourceKind: "pricing", ActionName: "update"}
-	pricingDeleteAction  = rbac.AuthzAction{ResourceKind: "pricing", ActionName: "delete"}
-	pricingStatusAction  = rbac.AuthzAction{ResourceKind: "pricing", ActionName: "status"}
+	// 候选并集与策略试算都是只读语义（POST 只是因为 body 是结构化草稿）。
+	pricingCandidatesAction      = rbac.AuthzAction{ResourceKind: "pricing", ActionName: "candidates"}
+	pricingPreviewStrategyAction = rbac.AuthzAction{ResourceKind: "pricing", ActionName: "preview_strategy"}
+	pricingCreateAction          = rbac.AuthzAction{ResourceKind: "pricing", ActionName: "create"}
+	pricingUpdateAction          = rbac.AuthzAction{ResourceKind: "pricing", ActionName: "update"}
+	pricingDeleteAction          = rbac.AuthzAction{ResourceKind: "pricing", ActionName: "delete"}
+	pricingStatusAction          = rbac.AuthzAction{ResourceKind: "pricing", ActionName: "status"}
 
 	groupPricingListAction   = rbac.AuthzAction{ResourceKind: "group_pricing", ActionName: "list"}
 	groupPricingCreateAction = rbac.AuthzAction{ResourceKind: "group_pricing", ActionName: "create"}
@@ -136,6 +146,7 @@ func NewPricingHandlers(cfg PricingHandlerConfig) (*PricingHandlers, error) {
 	}
 	h := &PricingHandlers{
 		repo: cfg.Repo, rdb: cfg.Redis, authz: authz, log: logger, onChange: cfg.OnChange,
+		holidayLookup: cfg.HolidayLookup,
 	}
 	h.registerPolicies()
 	return h, nil
@@ -156,6 +167,7 @@ func (h *PricingHandlers) registerPolicies() {
 			"author":            nil,
 			"vendor":            nil,
 			"status":            nil,
+			"strategy":          nil,
 		}
 		for _, name := range extra {
 			fields[name] = nil
@@ -180,6 +192,18 @@ func (h *PricingHandlers) registerPolicies() {
 		"model":       nil,
 		"group_ratio": nil,
 		"params":      nil,
+	}})
+	// 策略试算同样是「POST 但只读」：草稿字段全部登记，否则字段层会把一个
+	// 合法的试算请求拒绝成 policy_missing。
+	h.authz.SetWritePolicy(pricingPreviewStrategyAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{
+		"model":             nil,
+		"mode":              nil,
+		"prices":            nil,
+		"strategy":          nil,
+		"at":                nil,
+		"input_tokens":      nil,
+		"output_tokens":     nil,
+		"cache_read_tokens": nil,
 	}})
 
 	groupFields := func(extra ...string) *rbac.FieldPolicy {
@@ -227,7 +251,13 @@ func (h *PricingHandlers) RegisterPricingRoutes(mux *http.ServeMux, wrap func(ht
 	mount("POST /api/model-pricing", fixed(rbac.PermPricingManage, pricingCreateAction,
 		h.idempotentCreate("model", h.handleCreateModelPricing)))
 	mount("GET /api/model-pricing/models", fixed(rbac.PermPricingRead, pricingModelsAction, h.handleListPricingModels))
+	// 候选并集：字面量 `candidates` 优先于同段的 `{model}` 通配，不会互相截获。
+	mount("GET /api/model-pricing/candidates", fixed(rbac.PermPricingRead, pricingCandidatesAction,
+		h.handleListPricingCandidates))
 	mount("POST /api/model-pricing:preview", fixed(rbac.PermPricingRead, pricingPreviewAction, h.handlePreviewPricing))
+	mount("POST /api/model-pricing:preview-strategy", fixed(rbac.PermPricingRead, pricingPreviewStrategyAction,
+		h.handlePreviewPricingStrategy))
+	mount("GET /api/model-pricing/{model}", fixed(rbac.PermPricingRead, pricingGetAction, h.handleGetModelPricing))
 	mount("PATCH /api/model-pricing/{model}", fixed(rbac.PermPricingManage, pricingUpdateAction, h.handleUpdateModelPricing))
 	mount("DELETE /api/model-pricing/{model}", fixed(rbac.PermPricingManage, pricingDeleteAction, h.handleDeleteModelPricing))
 	// 动作端点：{model}:enable / {model}:disable（Go 1.22 不允许同段混排）。
@@ -253,20 +283,53 @@ func (h *PricingHandlers) notifyChange() {
 // ---------------------------------------------------------------------------
 
 type modelPricingView struct {
-	ID              int64     `json:"id"`
-	Model           string    `json:"model"`
-	Mode            string    `json:"mode"`
-	BillingExpr     *string   `json:"billing_expr"`
-	PromptPrice     *int64    `json:"prompt_price"`
-	CompletionPrice *int64    `json:"completion_price"`
-	CacheReadPrice  *int64    `json:"cache_read_price"`
-	CacheWritePrice *int64    `json:"cache_write_price"`
-	Author          string    `json:"author"`
-	Vendor          *string   `json:"vendor"`
-	Status          int16     `json:"status"`
-	Free            bool      `json:"free"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID              int64   `json:"id"`
+	Model           string  `json:"model"`
+	Mode            string  `json:"mode"`
+	BillingExpr     *string `json:"billing_expr"`
+	PromptPrice     *int64  `json:"prompt_price"`
+	CompletionPrice *int64  `json:"completion_price"`
+	CacheReadPrice  *int64  `json:"cache_read_price"`
+	CacheWritePrice *int64  `json:"cache_write_price"`
+	Author          string  `json:"author"`
+	Vendor          *string `json:"vendor"`
+	Status          int16   `json:"status"`
+	Free            bool    `json:"free"`
+	// HasStrategy/StrategyKind 是列表页需要的摘要；完整策略只在详情响应
+	// 下发（列表逐行返回 windows 会把信封放大且前端列表并不渲染）。
+	HasStrategy  bool      `json:"has_strategy"`
+	StrategyKind string    `json:"strategy_kind"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// modelPricingDetailView 在列表投影上追加完整策略（GET 单条 / 创建 / 更新）。
+// Strategy 为 JSONB 原文：nil 序列化为 null，显式「无策略」与「未启用」
+// 在前端可区分（后者是非 null 对象且 time.enabled=false）。
+type modelPricingDetailView struct {
+	modelPricingView
+	Strategy json.RawMessage `json:"strategy"`
+}
+
+// PricingScheduleView 是时段策略的公开投影（管理面试算与公开目录共用）。
+//
+// kind 是结构化枚举（flat / peak_offpeak），前端按七种语言本地化，响应里
+// 不出现中文字符串（spec §5.4）。
+type PricingScheduleView struct {
+	Kind              string                  `json:"kind"`
+	Timezone          string                  `json:"timezone"`
+	DefaultMultiplier float64                 `json:"default_multiplier"`
+	HolidayPolicy     string                  `json:"holiday_policy"`
+	Windows           []PricingScheduleWindow `json:"windows"`
+}
+
+// PricingScheduleWindow 是时段窗口的公开投影。days 用 1=周一 … 7=周日。
+type PricingScheduleWindow struct {
+	Name       string  `json:"name"`
+	Days       []int   `json:"days"`
+	Start      string  `json:"start"`
+	End        string  `json:"end"`
+	Multiplier float64 `json:"multiplier"`
 }
 
 type modelPricingListView struct {
@@ -285,6 +348,58 @@ type pricingModelOptionView struct {
 
 type pricingModelListView struct {
 	Items []pricingModelOptionView `json:"items"`
+}
+
+// pricingCandidateView 是候选并集的一行（spec §5.4）。
+//
+// 不含渠道 id/凭据/上游地址：候选表只服务「选一个已添加的模型来定价」。
+type pricingCandidateView struct {
+	Model         string   `json:"model"`
+	DisplayName   *string  `json:"display_name"`
+	Vendor        *string  `json:"vendor"`
+	ContextLength *int64   `json:"context_length"`
+	Sources       []string `json:"sources"`
+	Priced        bool     `json:"priced"`
+	Mode          string   `json:"mode"`
+}
+
+type pricingCandidateListView struct {
+	Items []pricingCandidateView `json:"items"`
+}
+
+// pricingStrategyPreviewMatch 是试算命中的时段事实。
+type pricingStrategyPreviewMatch struct {
+	Window     string  `json:"window"`
+	Multiplier float64 `json:"multiplier"`
+	// HolidayName 是命中中国法定节假日/调休时的名称；没有日历或当日无记录时为空。
+	HolidayName   string `json:"holiday_name"`
+	HolidayOffDay bool   `json:"holiday_off_day"`
+	// HolidayLookupFailed 表示查过日历但失败并回退到星期规则（不阻断试算）。
+	HolidayLookupFailed bool `json:"holiday_lookup_failed"`
+}
+
+// pricingStrategyPreviewRates 是应用时段倍率后的生效单价（积分/1M tokens；
+// per_request 时 prompt_price 是积分/次）。未参与计费的字段为 null。
+type pricingStrategyPreviewRates struct {
+	PromptPrice     *float64 `json:"prompt_price"`
+	CompletionPrice *float64 `json:"completion_price"`
+	CacheReadPrice  *float64 `json:"cache_read_price"`
+	CacheWritePrice *float64 `json:"cache_write_price"`
+}
+
+// pricingStrategyPreviewTotal 是把样例用量代入同一计价实现后的结果。
+type pricingStrategyPreviewTotal struct {
+	Quota        int64  `json:"quota"`
+	QuotaPerUnit int64  `json:"quota_per_unit"`
+	AmountYuan   string `json:"amount_yuan"`
+}
+
+type pricingStrategyPreviewView struct {
+	Match          pricingStrategyPreviewMatch `json:"match"`
+	Schedule       *PricingScheduleView        `json:"schedule"`
+	Strategy       json.RawMessage             `json:"strategy"`
+	EffectiveRates pricingStrategyPreviewRates `json:"effective_rates"`
+	Total          pricingStrategyPreviewTotal `json:"total"`
 }
 
 type groupPricingView struct {
@@ -335,12 +450,61 @@ func newModelPricingView(rec store.ModelPricingRecord) modelPricingView {
 	case rec.Mode == 1:
 		mode = pricingModePerRequest
 	}
-	return modelPricingView{
+	view := modelPricingView{
 		ID: rec.ID, Model: rec.Model, Mode: mode, BillingExpr: rec.BillingExpr,
 		PromptPrice: rec.PromptPrice, CompletionPrice: rec.CompletionPrice,
 		CacheReadPrice: rec.CacheReadPrice, CacheWritePrice: rec.CacheWritePrice,
 		Author: rec.Author, Vendor: rec.Vendor, Status: rec.Status,
 		Free: modelPricingFree(rec), CreatedAt: rec.CreatedAt, UpdatedAt: rec.UpdatedAt,
+		HasStrategy: len(rec.Strategy) > 0, StrategyKind: pricingStrategyKind(rec.Strategy),
+	}
+	return view
+}
+
+// newModelPricingDetailView 在列表投影上挂原始策略 JSON。
+func newModelPricingDetailView(rec store.ModelPricingRecord) modelPricingDetailView {
+	return modelPricingDetailView{
+		modelPricingView: newModelPricingView(rec),
+		Strategy:         json.RawMessage(rec.Strategy),
+	}
+}
+
+// pricingStrategyKind 把策略映射为结构化枚举。
+//
+// NULL / 解析失败 / time.enabled=false 都是 flat：损坏的策略在管理面按
+// 「未启用时段」展示，真正的配置错误由保存期校验与计费路径 fail-closed
+// 兜住；列表页不该因一行脏数据整体 500。
+func pricingStrategyKind(raw []byte) string {
+	if len(raw) == 0 {
+		return "flat"
+	}
+	strategy, err := pricingstrategy.Parse(raw)
+	if err != nil || !strategy.Time.Enabled {
+		return "flat"
+	}
+	return "peak_offpeak"
+}
+
+// newPricingScheduleView 把策略规范化为公开的时段投影；未启用时返回 nil
+// （响应里是 JSON null，与旧版本逐字段一致）。
+func newPricingScheduleView(strategy pricingstrategy.Strategy) *PricingScheduleView {
+	if !strategy.Time.Enabled {
+		return nil
+	}
+	windows := make([]PricingScheduleWindow, 0, len(strategy.Time.Windows))
+	for _, window := range strategy.Time.Windows {
+		days := make([]int, 0, len(window.Days))
+		days = append(days, window.Days...)
+		windows = append(windows, PricingScheduleWindow{
+			Name: window.Name, Days: days, Start: window.Start,
+			End: window.End, Multiplier: window.Multiplier,
+		})
+	}
+	return &PricingScheduleView{
+		Kind: "peak_offpeak", Timezone: strategy.Time.Timezone,
+		DefaultMultiplier: strategy.Time.DefaultMultiplier,
+		HolidayPolicy:     strategy.Time.HolidayPolicy,
+		Windows:           windows,
 	}
 }
 
@@ -425,6 +589,11 @@ type modelPricingPayload struct {
 	VendorSet bool
 
 	Status *int16
+
+	// Strategy 是已用 pricingstrategy.Parse 校验并规范化的 JSON；StrategySet
+	// 承载「未提交（保持原值）」与「显式 null（清除）」的三值语义。
+	Strategy    []byte
+	StrategySet bool
 }
 
 func decodeNullableInt64(raw json.RawMessage) (*int64, error) {
@@ -546,7 +715,54 @@ func parseModelPricingPayload(body map[string]json.RawMessage) (modelPricingPayl
 		}
 		payload.Status = &status
 	}
+	if raw, ok := body["strategy"]; ok {
+		payload.StrategySet = true
+		// 显式 null = 清除策略；其余交给 pricingstrategy.Parse（未知字段由
+		// DisallowUnknownFields 拒绝，第一阶段据此拒绝 tiers/service）。
+		if string(bytesTrimSpace(raw)) == "null" {
+			payload.Strategy = nil
+		} else {
+			strategy, err := pricingstrategy.Parse(raw)
+			if err != nil {
+				return payload, pricingStrategyFieldError(err)
+			}
+			normalized, err := json.Marshal(strategy)
+			if err != nil {
+				return payload, pricingStrategyFieldError(err)
+			}
+			payload.Strategy = normalized
+		}
+	}
 	return payload, nil
+}
+
+// bytesTrimSpace 去掉 JSON 原始字节两端的空白，供 `null` 判定使用。
+func bytesTrimSpace(raw json.RawMessage) []byte {
+	isSpace := func(b byte) bool {
+		return b == ' ' || b == '\t' || b == '\r' || b == '\n'
+	}
+	start, end := 0, len(raw)
+	for start < end && isSpace(raw[start]) {
+		start++
+	}
+	for end > start && isSpace(raw[end-1]) {
+		end--
+	}
+	return raw[start:end]
+}
+
+// pricingStrategyFieldError 把策略校验错误映射为 422 字段错误，字段名带
+// `strategy.` 前缀（spec §5.4：strategy.time.windows[0].start 这类路径）。
+func pricingStrategyFieldError(err error) *pricingFieldError {
+	var validation *pricingstrategy.ValidationError
+	if errors.As(err, &validation) {
+		field := "strategy"
+		if validation.Field != "" {
+			field += "." + validation.Field
+		}
+		return &pricingFieldError{message: validation.Reason, fields: []string{field}}
+	}
+	return &pricingFieldError{message: err.Error(), fields: []string{"strategy"}}
 }
 
 func parsePricingMode(raw string) (int16, string, error) {
@@ -831,6 +1047,50 @@ func (h *PricingHandlers) handleListPricingModels(w http.ResponseWriter, r *http
 }
 
 // ---------------------------------------------------------------------------
+// 模型定价：候选并集
+// ---------------------------------------------------------------------------
+
+// handleListPricingCandidates 返回「已添加模型」的并集（spec §5.4）。
+func (h *PricingHandlers) handleListPricingCandidates(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	filter := store.PricingCandidateFilter{Limit: pricingModelLimitDef}
+	filter.Keyword = strings.TrimSpace(q.Get("keyword"))
+	if utf8.RuneCountInString(filter.Keyword) > pricingModelMaxRunes {
+		writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request", "keyword is too long")
+		return
+	}
+	if raw := strings.TrimSpace(q.Get("limit")); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil || limit < 1 || limit > pricingModelLimitMax {
+			writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+				fmt.Sprintf("limit must be between 1 and %d", pricingModelLimitMax))
+			return
+		}
+		filter.Limit = limit
+	}
+	items, err := h.repo.ListPricingCandidates(r.Context(), filter)
+	if err != nil {
+		h.writePricingRepoError(w, "list pricing candidates", err)
+		return
+	}
+	views := make([]pricingCandidateView, 0, len(items))
+	for _, item := range items {
+		// sources 恒为非 nil 数组：前端按固定枚举渲染标签，null 会被当成
+		// 「来源未知」而不是「没有来源」（候选至少来自一个来源）。
+		sources := item.Sources
+		if sources == nil {
+			sources = []string{}
+		}
+		views = append(views, pricingCandidateView{
+			Model: item.Model, DisplayName: item.DisplayName, Vendor: item.Vendor,
+			ContextLength: item.ContextLength, Sources: sources,
+			Priced: item.Priced, Mode: item.Mode,
+		})
+	}
+	writeJSON(w, http.StatusOK, pricingCandidateListView{Items: views})
+}
+
+// ---------------------------------------------------------------------------
 // 模型定价：创建
 // ---------------------------------------------------------------------------
 
@@ -857,6 +1117,13 @@ func (h *PricingHandlers) handleCreateModelPricing(w http.ResponseWriter, r *htt
 		writePricingProblemWithFields(w, http.StatusUnprocessableEntity, problemTypeValidationFailed,
 			"Validation failed", `author must not be null or empty; omit it for "Unknown" or submit "Unknown"`,
 			[]string{"author"})
+		return
+	}
+	// 表达式与结构化策略互斥（spec §5.2 第 4 条 / §5.4 保存校验）：
+	// 同时存在说明价格来源不唯一，静默选一个都会让账单与配置不一致。
+	if payload.Strategy != nil && payload.Expr != nil {
+		writePricingProblemWithFields(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+			"strategy and billing_expr are mutually exclusive", []string{"strategy", "billing_expr"})
 		return
 	}
 	if payload.ExprSet && payload.Expr != nil {
@@ -910,6 +1177,7 @@ func (h *PricingHandlers) handleCreateModelPricing(w http.ResponseWriter, r *htt
 
 	input := store.ModelPricingInput{
 		Model: model, Mode: mode, Author: "Unknown", Status: 1,
+		Strategy: payload.Strategy,
 	}
 	if modeName == pricingModeTieredExpr {
 		input.BillingExpr = payload.Expr
@@ -942,7 +1210,7 @@ func (h *PricingHandlers) handleCreateModelPricing(w http.ResponseWriter, r *htt
 		return
 	}
 	h.notifyChange()
-	writeJSON(w, http.StatusCreated, newModelPricingView(rec))
+	writeJSON(w, http.StatusCreated, newModelPricingDetailView(rec))
 }
 
 // ---------------------------------------------------------------------------
@@ -991,6 +1259,21 @@ func (h *PricingHandlers) handleUpdateModelPricing(w http.ResponseWriter, r *htt
 		h.writePricingRepoError(w, "read model pricing before update", err)
 		return
 	}
+	// 表达式与策略互斥在「更新后的有效值」上判定：请求只改一侧时，另一侧
+	// 沿用当前行——否则在表达式行上写入策略会静默共存。
+	exprAfter := current.BillingExpr
+	if payload.ExprSet {
+		exprAfter = payload.Expr
+	}
+	strategyAfter := current.Strategy
+	if payload.StrategySet {
+		strategyAfter = payload.Strategy
+	}
+	if exprAfter != nil && len(strategyAfter) > 0 {
+		writePricingProblemWithFields(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+			"strategy and billing_expr are mutually exclusive", []string{"strategy", "billing_expr"})
+		return
+	}
 	patch, err := buildModelPricingPatch(current, payload)
 	if err != nil {
 		var fieldErr *pricingFieldError
@@ -1009,7 +1292,28 @@ func (h *PricingHandlers) handleUpdateModelPricing(w http.ResponseWriter, r *htt
 		return
 	}
 	h.notifyChange()
-	writeJSON(w, http.StatusOK, newModelPricingView(rec))
+	writeJSON(w, http.StatusOK, newModelPricingDetailView(rec))
+}
+
+// handleGetModelPricing 返回单条定价（含完整 strategy）。
+//
+// 列表只下发 has_strategy/strategy_kind；编辑工作台需要完整窗口列表才能
+// 回填表单，因此单条读取必须返回原始策略（spec §5.4）。
+func (h *PricingHandlers) handleGetModelPricing(w http.ResponseWriter, r *http.Request) {
+	model := strings.TrimSpace(r.PathValue("model"))
+	if model == "" {
+		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
+		return
+	}
+	if !validatePricingModelParam(w, model) {
+		return
+	}
+	rec, err := h.repo.GetModelPricing(r.Context(), model)
+	if err != nil {
+		h.writePricingRepoError(w, "get model pricing", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newModelPricingDetailView(rec))
 }
 
 // pricingFieldError 让字段级校验错误携带 fields（problem.fields）。
@@ -1114,6 +1418,16 @@ func buildModelPricingPatch(current store.ModelPricingRecord, payload modelPrici
 		}
 	}
 
+	// 表达式与策略互斥（更新后的有效值）：在表达式行上写入策略、或切到
+	// 表达式但保留旧策略都必须是显式操作，不能静默共存。
+	strategyAfter := current.Strategy
+	if payload.StrategySet {
+		strategyAfter = payload.Strategy
+	}
+	if exprAfter != nil && len(strategyAfter) > 0 {
+		return patch, errors.New("strategy and billing_expr are mutually exclusive")
+	}
+
 	// 有效模式 = 本次提交的 mode（若有）否则当前行模式。per_request 只读
 	// prompt_price；即使请求没带 mode，在当前 per_request 行上写隐藏价同样是
 	// 静默 no-op，必须 422（与 create 的显式 0 也拒绝的口径一致）。
@@ -1168,6 +1482,11 @@ func buildModelPricingPatch(current store.ModelPricingRecord, payload modelPrici
 	}
 	if payload.Status != nil {
 		patch.Status = payload.Status
+		hasChange = true
+	}
+	if payload.StrategySet {
+		patch.Strategy = payload.Strategy
+		patch.StrategySet = true
 		hasChange = true
 	}
 	if !hasChange {
@@ -1419,6 +1738,307 @@ func pricingModeName(mode contract.BillingMode) string {
 	default:
 		return pricingModePerToken
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 时段策略试算
+// ---------------------------------------------------------------------------
+
+// strategyPreviewPrices 是试算草稿的四个基础价（积分/1M tokens；per_request
+// 时 prompt_price 是积分/次）。指针区分「未提交」与「显式 0」。
+type strategyPreviewPrices struct {
+	PromptPrice     *int64
+	CompletionPrice *int64
+	CacheReadPrice  *int64
+	CacheWritePrice *int64
+}
+
+// pricingStrategyPreviewRequest 是 POST /api/model-pricing:preview-strategy 的
+// 解析结果。Strategy 为 nil 表示未提供/显式 null（禁用时段）。
+type pricingStrategyPreviewRequest struct {
+	Model           string
+	Mode            string
+	Prices          strategyPreviewPrices
+	Strategy        []byte
+	At              time.Time
+	InputTokens     int64
+	OutputTokens    int64
+	CacheReadTokens int64
+}
+
+// handlePreviewPricingStrategy 用完整草稿（模式 + 基础价 + 策略 + 样例用量）
+// 做纯计算试算（spec §5.4）：不写库，价格换算复用 pricing.ParsePricingSpec /
+// ComputeQuota，时段乘法复用 pricing.ApplyTimeMultiplier——与结算同一实现。
+func (h *PricingHandlers) handlePreviewPricingStrategy(w http.ResponseWriter, r *http.Request) {
+	body, err := readRawObject(r)
+	if err != nil {
+		writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+			"request body must be a JSON object")
+		return
+	}
+	req, err := parsePricingStrategyPreviewRequest(body)
+	if err != nil {
+		writePricingParseError(w, err)
+		return
+	}
+
+	strategy := pricingstrategy.Strategy{}
+	if len(req.Strategy) > 0 {
+		strategy, err = pricingstrategy.Parse(req.Strategy)
+		if err != nil {
+			writePricingParseError(w, pricingStrategyFieldError(err))
+			return
+		}
+	}
+	at := req.At
+	if at.IsZero() {
+		// 未给试算时间时按「现在」试算；响应仍回显 at 供前端确认。
+		at = time.Now()
+	}
+	match, err := strategy.MultiplierAt(r.Context(), at, h.holidayLookup)
+	if err != nil {
+		writePricingParseError(w, pricingStrategyFieldError(err))
+		return
+	}
+
+	spec, err := strategyPreviewSpec(req)
+	if err != nil {
+		writePricingParseError(w, err)
+		return
+	}
+	parsed, err := pricing.ParsePricingSpec(spec)
+	if err != nil {
+		writePricingProblemWithFields(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+			err.Error(), []string{"prices"})
+		return
+	}
+	parsed.Price.GroupRatioInfo = contract.GroupRatioInfo{Group: "preview", GroupRatio: 1}
+	snapshot, err := pricing.ResolveExpression(&parsed.Price, req.Model, parsed.Mode, parsed.Expr)
+	if err != nil {
+		writePricingProblemWithFields(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+			err.Error(), []string{"prices"})
+		return
+	}
+	snapshot, err = pricing.ApplyTimeMultiplier(snapshot, match.Multiplier, match.Window, match.HolidayName)
+	if err != nil {
+		writePricingProblemWithFields(w, http.StatusUnprocessableEntity, problemTypeValidationFailed,
+			"Validation failed", err.Error(), []string{"strategy"})
+		return
+	}
+
+	params := contract.TokenParams{
+		P: req.InputTokens, C: req.OutputTokens, CR: req.CacheReadTokens,
+		ImageCount: pricing.ImageCountUnset,
+	}
+	quota, computeErr := pricing.ComputeQuota(snapshot, params, nil)
+	if computeErr != nil {
+		clamp, ok := pricing.AsClamp(computeErr)
+		if !ok {
+			writePricingProblemWithFields(w, http.StatusUnprocessableEntity, problemTypeValidationFailed,
+				"Validation failed", computeErr.Error(), []string{"input_tokens"})
+			return
+		}
+		quota = clamp.Clamped
+	}
+
+	rates := pricingStrategyPreviewRates{}
+	if snapshot.Mode == contract.BillingModePerCall {
+		rates.PromptPrice = float64Ptr(snapshot.Price.ModelPrice)
+	} else {
+		rates.PromptPrice = float64Ptr(snapshot.Price.ModelRatio)
+		rates.CompletionPrice = float64Ptr(snapshot.Price.CompletionRatio)
+		rates.CacheReadPrice = float64Ptr(snapshot.Price.CacheRatio)
+		// 缓存写展示 5m 档（DB 的 cache_write_price 就是通用写价）：结算也只
+		// 读 5m/1h 两个派生值，读基准比例会把未缩放的旧值显示出来。
+		rates.CacheWritePrice = float64Ptr(snapshot.Price.CacheCreation5mRatio)
+	}
+
+	writeJSON(w, http.StatusOK, pricingStrategyPreviewView{
+		Match: pricingStrategyPreviewMatch{
+			Window: match.Window, Multiplier: match.Multiplier,
+			HolidayName: match.HolidayName, HolidayOffDay: match.HolidayOffDay,
+			HolidayLookupFailed: match.HolidayLookupFailed,
+		},
+		Schedule:       newPricingScheduleView(strategy),
+		Strategy:       json.RawMessage(req.Strategy),
+		EffectiveRates: rates,
+		Total: pricingStrategyPreviewTotal{
+			Quota: quota, QuotaPerUnit: pricing.CurrentQuotaPerUnit(),
+			AmountYuan: quotaToYuan(quota),
+		},
+	})
+}
+
+// parsePricingStrategyPreviewRequest 解析草稿；字段错误带 problem.fields。
+func parsePricingStrategyPreviewRequest(body map[string]json.RawMessage) (pricingStrategyPreviewRequest, error) {
+	req := pricingStrategyPreviewRequest{Mode: pricingModePerToken}
+
+	if raw, ok := body["model"]; ok {
+		var model string
+		if err := json.Unmarshal(raw, &model); err != nil {
+			return req, &pricingFieldError{message: "model 必须是字符串", fields: []string{"model"}}
+		}
+		req.Model = strings.TrimSpace(model)
+		if req.Model != "" && !pricingModelPattern.MatchString(req.Model) {
+			return req, &pricingFieldError{
+				message: "model must be 1-128 characters of [A-Za-z0-9._:/-]",
+				fields:  []string{"model"},
+			}
+		}
+	}
+
+	if raw, ok := body["mode"]; ok {
+		var mode string
+		if err := json.Unmarshal(raw, &mode); err != nil {
+			return req, &pricingFieldError{message: "mode 必须是字符串", fields: []string{"mode"}}
+		}
+		switch strings.TrimSpace(mode) {
+		case pricingModePerToken:
+			req.Mode = pricingModePerToken
+		case pricingModePerRequest:
+			req.Mode = pricingModePerRequest
+		default:
+			// 表达式与策略互斥，表达式草稿不参与时段试算。
+			return req, &pricingFieldError{
+				message: "策略试算只支持 per_token 或 per_request",
+				fields:  []string{"mode"},
+			}
+		}
+	}
+
+	if raw, ok := body["prices"]; ok && string(bytesTrimSpace(raw)) != "null" {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			return req, &pricingFieldError{message: "prices 必须是对象", fields: []string{"prices"}}
+		}
+		for name, value := range fields {
+			var dst **int64
+			switch name {
+			case "prompt_price":
+				dst = &req.Prices.PromptPrice
+			case "completion_price":
+				dst = &req.Prices.CompletionPrice
+			case "cache_read_price":
+				dst = &req.Prices.CacheReadPrice
+			case "cache_write_price":
+				dst = &req.Prices.CacheWritePrice
+			default:
+				// 未知价格键按配置错误拒绝：静默忽略会让管理员以为价格生效。
+				return req, &pricingFieldError{
+					message: "未知的价格字段",
+					fields:  []string{"prices." + name},
+				}
+			}
+			parsed, err := decodeNullableInt64(value)
+			if err != nil {
+				return req, &pricingFieldError{
+					message: fmt.Sprintf("prices.%s %v", name, err),
+					fields:  []string{"prices." + name},
+				}
+			}
+			*dst = parsed
+		}
+	}
+
+	if raw, ok := body["strategy"]; ok && string(bytesTrimSpace(raw)) != "null" {
+		strategy, err := pricingstrategy.Parse(raw)
+		if err != nil {
+			return req, pricingStrategyFieldError(err)
+		}
+		normalized, err := json.Marshal(strategy)
+		if err != nil {
+			return req, pricingStrategyFieldError(err)
+		}
+		req.Strategy = normalized
+	}
+
+	if raw, ok := body["at"]; ok && string(bytesTrimSpace(raw)) != "null" {
+		var at string
+		if err := json.Unmarshal(raw, &at); err != nil {
+			return req, &pricingFieldError{message: "at 必须是 RFC 3339 时间戳", fields: []string{"at"}}
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(at))
+		if err != nil {
+			return req, &pricingFieldError{message: "at 必须是 RFC 3339 时间戳", fields: []string{"at"}}
+		}
+		req.At = parsed
+	}
+
+	tokenFields := []struct {
+		name string
+		dst  *int64
+	}{
+		{"input_tokens", &req.InputTokens},
+		{"output_tokens", &req.OutputTokens},
+		{"cache_read_tokens", &req.CacheReadTokens},
+	}
+	for _, field := range tokenFields {
+		raw, ok := body[field.name]
+		if !ok {
+			continue
+		}
+		var value int64
+		if err := json.Unmarshal(raw, &value); err != nil || value < 0 {
+			return req, &pricingFieldError{
+				message: fmt.Sprintf("%s 必须是非负整数", field.name),
+				fields:  []string{field.name},
+			}
+		}
+		*field.dst = value
+	}
+	return req, nil
+}
+
+// strategyPreviewSpec 把草稿转换成 pricing.ParsePricingSpec 的标准 spec。
+//
+// DB 语义里 per_request 的每次价存在 prompt_price；解析器的按次模式用
+// model_price 表达，因此这里做一次字段名换算，让试算与保存走同一套校验。
+func strategyPreviewSpec(req pricingStrategyPreviewRequest) (string, error) {
+	fields := make(map[string]any, 5)
+	switch req.Mode {
+	case pricingModePerRequest:
+		if req.Prices.CompletionPrice != nil || req.Prices.CacheReadPrice != nil ||
+			req.Prices.CacheWritePrice != nil {
+			return "", &pricingFieldError{
+				message: "per_request 模式只使用 prompt_price（每次请求价）",
+				fields: []string{
+					"prices.completion_price", "prices.cache_read_price", "prices.cache_write_price",
+				},
+			}
+		}
+		if req.Prices.PromptPrice == nil {
+			return "", &pricingFieldError{
+				message: "per_request 模式必须提供 prices.prompt_price（每次请求价）",
+				fields:  []string{"prices.prompt_price"},
+			}
+		}
+		fields["mode"] = pricingModePerRequest
+		fields["model_price"] = *req.Prices.PromptPrice
+	default:
+		fields["mode"] = pricingModePerToken
+		if req.Prices.PromptPrice != nil {
+			fields["prompt_price"] = *req.Prices.PromptPrice
+		}
+		if req.Prices.CompletionPrice != nil {
+			fields["completion_price"] = *req.Prices.CompletionPrice
+		}
+		if req.Prices.CacheReadPrice != nil {
+			fields["cache_read_price"] = *req.Prices.CacheReadPrice
+		}
+		if req.Prices.CacheWritePrice != nil {
+			fields["cache_write_price"] = *req.Prices.CacheWritePrice
+		}
+	}
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func float64Ptr(value float64) *float64 {
+	out := value
+	return &out
 }
 
 // ---------------------------------------------------------------------------

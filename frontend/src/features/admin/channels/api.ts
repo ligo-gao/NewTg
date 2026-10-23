@@ -25,6 +25,8 @@ import type {
   ChannelListResponse,
   ChannelMetrics,
   ChannelMetricsWindow,
+  ChannelPerformanceTest,
+  ChannelPerformanceTestList,
   ChannelTestInput,
   ChannelTestResult,
   FetchChannelModelsInput,
@@ -290,4 +292,42 @@ export function testChannel(
     method: 'POST',
     body: input,
   })
+}
+
+export interface ChannelPerformanceTestListParams {
+  model?: string
+  limit?: number
+}
+
+/**
+ * POST /api/channels/{id}/performance-tests — run `runs` probes (1..5) of one
+ * supported model and persist the aggregate. Like the connectivity test this
+ * is a read-flavoured action with no idempotency key: a retry is a new sample
+ * set, not a replay.
+ */
+export function runChannelPerformanceTest(
+  channelId: number,
+  model: string,
+  runs: number,
+): Promise<ChannelPerformanceTest> {
+  return request<ChannelPerformanceTest>(
+    `/api/channels/${channelId}/performance-tests`,
+    { method: 'POST', body: { model, runs } },
+  )
+}
+
+/** GET /api/channels/{id}/performance-tests — recent aggregates, newest first. */
+export function listChannelPerformanceTests(
+  channelId: number,
+  params: ChannelPerformanceTestListParams = {},
+): Promise<ChannelPerformanceTestList> {
+  const query = new URLSearchParams()
+  if (params.model !== undefined && params.model !== '') {
+    query.set('model', params.model)
+  }
+  if (params.limit !== undefined) query.set('limit', String(params.limit))
+  const suffix = query.toString() === '' ? '' : `?${query.toString()}`
+  return request<ChannelPerformanceTestList>(
+    `/api/channels/${channelId}/performance-tests${suffix}`,
+  )
 }

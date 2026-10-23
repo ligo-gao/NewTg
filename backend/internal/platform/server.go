@@ -524,7 +524,7 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	// 计费进程级装配（与 gateway 共用）：定价源构造写入进程级 QPU，
 	// 并把钳制审计接到 slog（billing-07 §4.5）。必须在 configcenter.Load
 	// 之后；非法 QPU 让 worker 启动失败，而不是带着错误汇率运行。
-	source, err := initBillingAssembly(gormDB, center, cfg, log, "worker")
+	source, err := initBillingAssembly(gormDB, sqlDB, center, cfg, log, "worker")
 	if err != nil {
 		_ = redisRes.Close()
 		_ = logsRes.Close()
@@ -557,6 +557,9 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	engine := newDemoAwareBillingEngine(gormDB, sqlLogs, rr.client, center, cfg.DemoEnabled, source, registry,
 		// worker 只做兜底退款（fact=nil，不进入性能采样），不挂采集器。
 		newUsageLogDBLogger(sqlLogs, feedPublisher, center, rr.client, log, nil))
+	// spec §5.2：worker 会处理任务轮询/崩溃恢复的 handoff 结算，必须用
+	// request_pricing 读回预扣时冻结的时间与倍率。
+	engine.SetRequestPricingStore(store.NewRequestPricingRepo(sqlDB))
 	// S4a：与 gateway 同一装配口径。worker 复用引擎做兜底恢复，
 	// 未装配会让订阅偏好退化为纯钱包行为。
 	engine.SetSubscriptionFunding(billing.NewStoreSubscriptionFunding(
@@ -985,8 +988,10 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		Abandoned:             registry,
 		Recoverer:             engine,
 		SubscriptionRecoverer: engine,
-		LogsDB:                sqlLogs,
-		Logger:                log,
+		// spec §5.2：request_pricing 行与 preconsume_reconcile 同轮清理（7 天）。
+		RequestPricing: store.NewRequestPricingRepo(sqlDB),
+		LogsDB:         sqlLogs,
+		Logger:         log,
 		// R-W10-04：lookahead 来自启动期设置快照（默认 3），与删除循环一致。
 		PartitionLookaheadMonths: retentionSettings.PartitionLookaheadMonths,
 	})

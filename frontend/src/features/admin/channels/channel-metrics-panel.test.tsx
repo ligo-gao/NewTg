@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 
@@ -76,11 +76,16 @@ describe('ChannelMetricsPanel', () => {
 
     renderWithProviders(<ChannelMetricsPanel channel={makeChannel({ id: 1 })} />)
 
-    expect(await screen.findByText('Usage metrics')).toBeTruthy()
+    // The panel is a self-contained card (region) so the dossier can render it
+    // full width beneath the three-card row.
+    const panel = screen.getByRole('region', { name: 'Usage metrics' })
+    expect(await within(panel).findByText('Requests')).toBeTruthy()
     expect(await screen.findByText('Requests')).toBeTruthy()
     expect(screen.getByText('12')).toBeTruthy()
     expect(screen.getByText('75.0%')).toBeTruthy()
     expect(screen.getByText('240 ms')).toBeTruthy()
+    expect(within(panel).getByText('Avg first token')).toBeTruthy()
+    expect(within(panel).getByText('Credits (24h)')).toBeTruthy()
     const svg = screen.getByTestId('channel-metrics-sparkline')
     const line = svg.querySelector('path')
     expect(line?.getAttribute('d')).toBeTruthy()

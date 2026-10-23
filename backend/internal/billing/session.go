@@ -50,6 +50,15 @@ type Session struct {
 	userID    int64
 	tokenID   int64 // rc.TokenID；0 表示无绑定令牌（跳过令牌额度）
 
+	// requestTime 是本请求的**冻结时间**（spec §5.2）：创建会话时取一次，
+	// 预扣、结算、跨组重试都传给定价源 ResolveAt。长请求跨整点时按请求开始
+	// 时间计价，避免预扣与结算命中不同窗口。
+	requestTime time.Time
+	// frozenMultiplier 非 nil 表示本会话的结算来自异步/handoff 重建：
+	// request_pricing 读回了预扣时命中的时段倍率，必须用 ResolveFixed
+	// 原样复用，绝不再按当前时间重新匹配窗口。
+	frozenMultiplier *float64
+
 	snap        *contract.PriceSnapshot
 	model       string
 	group       string
@@ -253,6 +262,14 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) (err error) {
 	defer func() {
 		if !succeeded {
 			s.preConsumeCalled = false
+		}
+	}()
+	// 预扣成功时冻结 request_time 与命中的时段倍率（spec §5.2）。放在 defer
+	// 里覆盖全部分支（信任旁路、免费模型、余额不足前的零预算等）；
+	// 失败只 WARN，不改变已成功的资金结果。
+	defer func() {
+		if succeeded {
+			s.persistRequestPricing(ctx)
 		}
 	}()
 
@@ -1479,6 +1496,79 @@ func (s *Session) adoptImageCount(fact contract.UsageFact) int {
 	return fact.ImageCount
 }
 
+// resolveAt 用会话冻结的请求时间解析定价（spec §5.2）。
+//
+// 三条路径共用本函数：预扣（resolveSnapshotLocked）、结算
+// （currentSnapshotLocked）、跨组重试（refreshSnapshotForGroupLocked）。
+// 定价源实现 pricing.TimeSource 时传 requestTime，否则退回 Resolve（该源
+// 没有时段概念，行为与旧版一致）。
+//
+// frozenMultiplier 非 nil 表示会话由 request_pricing 重建：必须用
+// ResolveFixed 复用预扣时的倍率，不能把 requestTime 再交给 ResolveAt
+// 重新匹配（策略可能在预扣后被修改，节假日缓存也可能已刷新）。
+func (s *Session) resolveAt(ctx context.Context, model, group string) (contract.PriceSnapshot, error) {
+	src := s.engine.source
+	if s.frozenMultiplier != nil {
+		if ts, ok := src.(pricing.TimeSource); ok {
+			return ts.ResolveFixed(ctx, model, group, *s.frozenMultiplier)
+		}
+		// 定价源不支持时段冻结：按当前定价继续，但必须告警——这是配置
+		// 错误（装配了 request_pricing 却没有时段感知的定价源）。
+		slog.Warn("billing: pricing source cannot apply frozen time multiplier; using current pricing",
+			"request_id", s.requestID)
+	}
+	if ts, ok := src.(pricing.TimeSource); ok {
+		at := s.requestTime
+		if at.IsZero() {
+			// 手工构造的会话（测试/handoff 分支）没有冻结时间：用当前时间
+			// 只用于首次解析，结算路径由 Session 快照冻结后续值。
+			at = time.Now()
+		}
+		return ts.ResolveAt(ctx, model, group, at)
+	}
+	return src.Resolve(ctx, model, group)
+}
+
+// persistRequestPricing 写入本请求的冻结计价事实（spec §5.2）。
+//
+// 【失败方向】写失败只 WARN 不阻断请求：预扣的资金已经提交，回滚预扣
+// 换不来正确性；同步结算仍用内存快照。代价是异步 handoff 结算读不到记录，
+// 会退回既有行为并再次 WARN（见 Engine.loadFrozenPricing）。
+//
+// 【非 UUID 的 requestID】生产 RequestID 是 32 位十六进制；内部测试/演示
+// 可能用 "req-xxx"。这类 id 无法写进 uuid 主键，直接跳过而不是让每次
+// 预扣都失败。
+func (s *Session) persistRequestPricing(ctx context.Context) {
+	if s.engine == nil || s.engine.requestPricing == nil || s.requestID == "" {
+		return
+	}
+	if !store.ValidRequestPricingID(s.requestID) {
+		return
+	}
+	multiplier := 1.0
+	window := ""
+	if s.snap != nil {
+		if s.snap.TimeMultiplier > 0 {
+			multiplier = s.snap.TimeMultiplier
+		}
+		window = s.snap.TimeWindow
+	}
+	requestTime := s.requestTime
+	if requestTime.IsZero() {
+		requestTime = time.Now()
+	}
+	rec := store.RequestPricing{
+		RequestID:      s.requestID,
+		RequestTime:    requestTime,
+		TimeMultiplier: multiplier,
+		TimeWindow:     window,
+	}
+	if err := s.engine.requestPricing.Upsert(ctx, rec); err != nil {
+		slog.Warn("billing: persist frozen request pricing failed; async settlement will fall back",
+			"request_id", s.requestID, "error", err)
+	}
+}
+
 // resolveSnapshotLocked 返回本次请求的定价快照。
 //
 // 优先使用 rc.PriceSnapshot（M2 已冻结/透传）；没有时调定价源 Resolve。
@@ -1530,7 +1620,7 @@ func (s *Session) resolveSnapshotLocked(ctx context.Context, est contract.QuotaE
 		s.adoptSnapshotLocked(s.snap)
 		return s.snap, nil
 	}
-	snap, err := s.engine.source.Resolve(ctx, model, group)
+	snap, err := s.resolveAt(ctx, model, group)
 	if err != nil {
 		return nil, fmt.Errorf("billing: resolve pricing for model %q: %w", model, err)
 	}
@@ -1585,7 +1675,7 @@ func (s *Session) currentSnapshotLocked(ctx context.Context, fallbackModel strin
 	if s.rc != nil && strings.TrimSpace(s.rc.UsingGroup) != "" {
 		group = strings.TrimSpace(s.rc.UsingGroup)
 	}
-	snap, err := s.engine.source.Resolve(ctx, model, group)
+	snap, err := s.resolveAt(ctx, model, group)
 	if err != nil {
 		return nil, fmt.Errorf("billing: resolve pricing for model %q: %w", model, err)
 	}
@@ -1627,7 +1717,7 @@ func (s *Session) refreshSnapshotForGroupLocked(ctx context.Context) error {
 	if model == "" {
 		model = s.rc.OriginModel
 	}
-	snap, err := s.engine.source.Resolve(ctx, model, group)
+	snap, err := s.resolveAt(ctx, model, group)
 	if err != nil {
 		return fmt.Errorf("billing: refresh pricing for group %q: %w", group, err)
 	}

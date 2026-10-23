@@ -770,6 +770,17 @@ func buildUsageLogOther(rc *contract.RelayContext,
 		if snap.IsClaudeUsageSemantic {
 			setPublicKey(other, "usage_semantic", "anthropic")
 		}
+		// 时段计价的可审计事实（spec §7）：TimeMultiplier=0 表示该模型没有
+		// 启用时段策略，键不写，日志与旧版逐字段一致。
+		if snap.TimeMultiplier > 0 {
+			setPublicKey(other, "time_multiplier", snap.TimeMultiplier)
+			if snap.TimeWindow != "" {
+				setPublicKey(other, "time_window", snap.TimeWindow)
+			}
+			if snap.HolidayName != "" {
+				setPublicKey(other, "holiday_name", snap.HolidayName)
+			}
+		}
 	}
 
 	adminInfo := make(map[string]any, 1)

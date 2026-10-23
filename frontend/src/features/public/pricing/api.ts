@@ -5,7 +5,8 @@
  * `api/schema.d.ts` 校验，不在前端另写一份会漂移的接口镜像。
  */
 
-import { apiClient } from '@/api/client'
+import { apiClient, toApiError } from '@/api/client'
+import { parseProblem } from '@/api/errors'
 import { requireData } from '@/api/result'
 import type { components } from '@/api/schema'
 
@@ -115,6 +116,88 @@ export function pricingDetailQueryOptions(modelId: string) {
     queryKey: pricingDetailQueryKey(modelId),
     queryFn: ({ signal }: { signal: AbortSignal }) =>
       fetchPricingDetail(modelId, signal),
+    retry: false as const,
+  }
+}
+
+/**
+ * 公开指标响应（F-09-25）的本地类型镜像。
+ *
+ * 这里手写而不是用生成类型：详情页只读取少数展示字段，且 `latest_test`
+ * 属于独立的主动测速兜底来源——把它固定在本模块能一眼看清前端依赖了
+ * 哪些字段，也避免生成文件字段可选性（openapi-typescript 的 `?`）渗进
+ * 渲染分支。
+ */
+export interface PublicModelMetricsLatestTest {
+  ttft_ms_p50: number | null
+  ttft_ms_p95: number | null
+  latency_ms_p50: number | null
+  latency_ms_p95: number | null
+  tps: number | null
+  success_rate: number
+  sample_size: number
+  tested_at: string
+}
+
+export interface PublicModelMetricsSummary {
+  avg_latency_ms: number | null
+  avg_ttft_ms: number | null
+  success_rate: number | null
+  tps: number | null
+  failed_24h: number | null
+  sample_size: number
+}
+
+export interface PublicModelMetrics {
+  range: '24h' | '7d'
+  window: { start: string; end: string }
+  summary: PublicModelMetricsSummary
+  per_group: Array<{
+    group: string
+    avg_ttft_ms: number | null
+    avg_latency_ms: number | null
+    success_rate: number | null
+  }>
+  /** 最近一次管理员主动测速；无记录/读取失败（fail-open）时为 null。 */
+  latest_test: PublicModelMetricsLatestTest | null
+}
+
+/** Same-origin absolute URL; jsdom's Node fetch rejects relative URLs in tests. */
+function apiUrl(path: string): string {
+  const base = typeof location !== 'undefined' ? location.origin : 'http://localhost'
+  return new URL(path, base).toString()
+}
+
+export function pricingMetricsQueryKey(modelId: string) {
+  return ['public', 'pricing', 'metrics', modelId] as const
+}
+
+export async function fetchPricingMetrics(
+  modelId: string,
+  signal?: AbortSignal,
+): Promise<PublicModelMetrics> {
+  const path = `/api/pricing/${encodeURIComponent(modelId)}/metrics?range=7d`
+  let response: Response
+  try {
+    response = await fetch(apiUrl(path), {
+      signal,
+      headers: { Accept: 'application/json' },
+      credentials: 'same-origin',
+    })
+  } catch (error) {
+    // 取消是调用方行为，不是离线；其它传输失败沿用统一的 offline 语义。
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw parseProblem({ status: 0 })
+  }
+  if (!response.ok) throw await toApiError(response)
+  return (await response.json()) as PublicModelMetrics
+}
+
+export function pricingMetricsQueryOptions(modelId: string) {
+  return {
+    queryKey: pricingMetricsQueryKey(modelId),
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      fetchPricingMetrics(modelId, signal),
     retry: false as const,
   }
 }

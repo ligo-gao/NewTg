@@ -542,6 +542,9 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 			Repo: publicRepo, Config: cfg.Config, Sessions: cfg.Sessions,
 			UserGroups: userGroups, Redis: cfg.Redis, Logger: cfg.Logger,
 			Metrics: publicModelMetricsSource(cfg.LogDB),
+			// 主动测速汇总在主库（channels/users 外键）；缺 DB 时不装配，
+			// 公开指标响应仍为 200 且 latest_test=null。
+			Perf: publicModelPerformanceStore(cfg.DB),
 		})
 		if err != nil {
 			return nil, err
@@ -701,4 +704,13 @@ func publicModelMetricsSource(logDB *sql.DB) store.PublicModelMetricsSource {
 		return nil
 	}
 	return store.NewPublicModelMetricsRepo(logDB)
+}
+
+// publicModelPerformanceStore 装配主动测速汇总的读面。nil DB（测试装配或
+// 纯公开目录）时不装配，端点降级为 latest_test=null。
+func publicModelPerformanceStore(db *sql.DB) store.ModelPerformanceStore {
+	if db == nil {
+		return nil
+	}
+	return store.NewSQLModelPerformanceStore(db)
 }

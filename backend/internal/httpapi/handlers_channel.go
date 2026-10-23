@@ -589,6 +589,11 @@ type ChannelHandlerOptions struct {
 	// Metrics 是渠道指标的日志库读取面（W16-1 / F-06-11）。nil 时指标端点
 	// 返回 503（日志库不可用），列表省略 metrics 字段——绝不伪造 0。
 	Metrics ChannelMetricsStore
+	// Performer 是渠道测速的执行接缝（模型性能测试）。nil 时 POST 测速
+	// 返回 503，绝不伪造样本。
+	Performer ChannelPerformer
+	// Performance 是测速结果的主库存储面。nil 时测速端点返回 503。
+	Performance store.ModelPerformanceStore
 	// Now 是指标桶边界的时钟接缝；nil 时使用 time.Now。
 	Now func() time.Time
 	// Logger 记录幂等 finalize 失败等不可返回给客户端的内部错误；
@@ -611,6 +616,8 @@ type ChannelHandler struct {
 	reauth        *auth.ReauthGate
 	audit         *audit.Logger
 	metrics       ChannelMetricsStore
+	performer     ChannelPerformer
+	performance   store.ModelPerformanceStore
 	now           func() time.Time
 	log           *slog.Logger
 }
@@ -654,6 +661,8 @@ func NewChannelHandler(channels ChannelStore, access UserAccessStore, sealer *Se
 		reauth:        opts.Reauth,
 		audit:         opts.Audit,
 		metrics:       opts.Metrics,
+		performer:     opts.Performer,
+		performance:   opts.Performance,
 		now:           now,
 		log:           logger,
 	}
@@ -673,6 +682,9 @@ func (h *ChannelHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/channels/{id}/test", h.handleTest)
 	// 渠道指标（W16-1 / F-06-11）：只读，权限与渠道读取同源。
 	mux.HandleFunc("GET /api/channels/{id}/metrics", h.handleMetrics)
+	// 渠道测速（模型性能测试）：POST 会真实消耗上游配额，与 /test 共用限流桶。
+	mux.HandleFunc("POST /api/channels/{id}/performance-tests", h.handleCreatePerformanceTest)
+	mux.HandleFunc("GET /api/channels/{id}/performance-tests", h.handleListPerformanceTests)
 	// 凭据揭示是只读受控例外（security-03 §2.10）；路径按 G7-R13 资源命名。
 	mux.HandleFunc("POST /api/channels/{id}/credentials/reveal", h.handleRevealCredentials)
 }

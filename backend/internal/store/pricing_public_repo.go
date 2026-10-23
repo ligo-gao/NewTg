@@ -45,6 +45,10 @@ type PublicModelPricing struct {
 	// Vendor 是 model_pricing.vendor（可空）。它是卡片供应商的**第二级**
 	// 回退：档案关联的 vendors.name → 本列 → model_id 首段前缀（D1-16）。
 	Vendor *string
+	// Strategy 是结构化时段策略的 JSONB 原文；nil 表示没有策略。handler 用
+	// pricingstrategy.Parse 归一后决定是否下发 pricing_schedule（启用时段
+	// 才下发，未启用/无策略为 null，与旧响应形状一致）。
+	Strategy []byte
 }
 
 // PublicVendor 是公开面需要的供应商投影。
@@ -183,7 +187,8 @@ func (r *SQLPublicPricingRepo) LoadPublicPricingCatalog(ctx context.Context) (Pu
 
 func loadPublicModels(ctx context.Context, tx *sql.Tx) ([]PublicModelPricing, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT model, mode, prompt_price, completion_price, cache_read_price, cache_write_price, vendor
+		SELECT model, mode, prompt_price, completion_price, cache_read_price, cache_write_price, vendor,
+		       strategy
 		FROM model_pricing
 		WHERE `+visibleModelWhere+`
 		ORDER BY model ASC`)
@@ -198,7 +203,8 @@ func loadPublicModels(ctx context.Context, tx *sql.Tx) ([]PublicModelPricing, er
 	for rows.Next() {
 		var rec PublicModelPricing
 		if err := rows.Scan(&rec.Model, &rec.Mode, &rec.PromptPrice,
-			&rec.CompletionPrice, &rec.CacheReadPrice, &rec.CacheWritePrice, &rec.Vendor); err != nil {
+			&rec.CompletionPrice, &rec.CacheReadPrice, &rec.CacheWritePrice, &rec.Vendor,
+			&rec.Strategy); err != nil {
 			return nil, fmt.Errorf("store: scan public model_pricing: %w", err)
 		}
 		models = append(models, rec)
@@ -341,6 +347,17 @@ func publicPricingVersion(ctx context.Context, tx *sql.Tx) (string, error) {
 		}
 		builder = fmt.Appendf(builder, "%s|%d|%d|%d;", table, updated.UTC().UnixNano(), count, maxID)
 	}
+	// 策略内容指纹（spec §5.4 / 计划 Task 6）：strategy 决定公开面的
+	// pricing_schedule。虽然管理面改策略会推进 updated_at，但迁移回填或直接
+	// SQL 可能只改内容不改时间戳；把内容本身纳入版本，保证「策略变了 ⇒ 版本
+	// 必变」，避免公开页因 If-None-Match 继续返回旧的时段表。
+	var strategyFingerprint string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(md5(string_agg(COALESCE(strategy::text, ''), '|' ORDER BY model)), '')
+		FROM model_pricing`).Scan(&strategyFingerprint); err != nil {
+		return "", fmt.Errorf("store: read model_pricing strategy version: %w", err)
+	}
+	builder = fmt.Appendf(builder, "strategy|%s;", strategyFingerprint)
 	sum := sha256.Sum256(builder)
 	// 取前 16 个 hex 字符（64 bit）作为版本标签：ETag 需要稳定且短，完整
 	// 256 bit 对缓存键过重；碰撞概率在「定价变更 + 相同请求」下可忽略。

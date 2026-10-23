@@ -8,6 +8,11 @@ export interface SheetProps {
   description?: string
   children?: ReactNode
   footer?: ReactNode
+  /**
+   * 面板最大宽度类。默认是 480px 的窄抽屉；工作台类表单（例如定价时段
+   * 编辑器）需要更宽的画布，调用方可传 `max-w-[1100px]` 而不复制面板。
+   */
+  widthClassName?: string
 }
 
 const FOCUSABLE_SELECTOR = [
@@ -48,6 +53,7 @@ export function Sheet({
   description,
   children,
   footer,
+  widthClassName = 'max-w-[480px]',
 }: SheetProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const titleId = useId()
@@ -144,7 +150,7 @@ export function Sheet({
         aria-labelledby={titleId}
         aria-describedby={description ? descriptionId : undefined}
         tabIndex={-1}
-        className="relative flex h-full w-full max-w-[480px] flex-col overflow-y-auto border-l border-border-hairline bg-surface-card p-5 text-ink-1 shadow-xl"
+        className={`relative flex h-full w-full ${widthClassName} flex-col overflow-y-auto border-l border-border-hairline bg-surface-card p-5 text-ink-1 shadow-xl`}
       >
         <h2 id={titleId} className="text-[15px] font-semibold leading-[22px]">
           {title}

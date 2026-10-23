@@ -1,11 +1,11 @@
 import { useMemo } from 'react'
 
 import { bucketSeries, type ChartSeries } from '@/shared/lib/chart-data'
+import { fillBucketSpine } from '@/shared/lib/timeseries-spine'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { AnalyticsChart } from '@/shared/ui/analytics-chart'
 
 import type { UsageGranularity, UsageRange, UsageStatsTimeseriesItem } from './api'
-import { fillBucketSpine } from './timeseries-spine'
 
 export interface ConsumptionTrendProps {
   items: UsageStatsTimeseriesItem[]

@@ -318,5 +318,19 @@ func DefaultRegistry() (*Registry, error) {
 			// 白名单第 5 项：按时间物理删除历史，幂等且无业务副作用。
 			ManualTriggerAllowed: true,
 		},
+		// ---- C 类：W18 定价时段策略新增（框架调度型） ----
+		Task{
+			Name:        "holiday_sync",
+			Description: "Sync the Chinese public holiday calendar (holiday-cn)",
+			// spec §5.2.1 要求每天一次；调度器按 last_run_at + Interval 判定
+			// 到期，因此新建任务行（last_run_at 为空）会在启动后首个 pass
+			// 立即执行——这同时满足「启动时若当年没有数据立即补一次」。
+			Interval:  24 * time.Hour,
+			Timeout:   2 * time.Minute,
+			Scheduled: true,
+			// spec §5.2.1：手工触发沿用现有任务触发端点与权限。只拉取并整年
+			// 替换日历，幂等；数据源不可达时保留旧行。
+			ManualTriggerAllowed: true,
+		},
 	)
 }

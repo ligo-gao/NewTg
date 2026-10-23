@@ -1,6 +1,8 @@
 import type { ChartPoint } from '@/shared/lib/chart-data'
 
-import type { UsageGranularity, UsageRange } from './api'
+/** Windows the spine can materialise. `24h` is hourly, the rest daily. */
+export type SpineRange = '24h' | '7d' | '14d' | '30d'
+export type SpineGranularity = 'hour' | 'day'
 
 /**
  * The backend only returns buckets that exist and delegates zero-fill to the
@@ -8,11 +10,14 @@ import type { UsageGranularity, UsageRange } from './api'
  * connect hours/days with no traffic and shrink the x-axis to the first/last
  * active bucket. This module materialises the full UTC bucket spine for the
  * selected window, then merges the server points into it.
+ *
+ * Lives in `shared/lib` because both the dashboard and the wallet overview draw
+ * this series; the function is pure and frame-agnostic.
  */
 const HOUR_MS = 3_600_000
 const DAY_MS = 86_400_000
 
-const RANGE_BUCKETS: Record<UsageRange, number> = {
+const RANGE_BUCKETS: Record<SpineRange, number> = {
   '24h': 24,
   '7d': 7,
   '14d': 14,
@@ -25,7 +30,7 @@ const RANGE_BUCKETS: Record<UsageRange, number> = {
 const MAX_STRAY_HOURS = 168
 const MAX_STRAY_DAYS = 7
 
-function stepMs(granularity: UsageGranularity): number {
+function stepMs(granularity: SpineGranularity): number {
   return granularity === 'hour' ? HOUR_MS : DAY_MS
 }
 
@@ -38,8 +43,8 @@ function stepMs(granularity: UsageGranularity): number {
  */
 export function fillBucketSpine(
   points: ChartPoint[],
-  range: UsageRange,
-  granularity: UsageGranularity,
+  range: SpineRange,
+  granularity: SpineGranularity,
   now: number = Date.now(),
 ): ChartPoint[] {
   const step = stepMs(granularity)

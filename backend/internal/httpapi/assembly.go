@@ -40,10 +40,12 @@ import (
 	deploybilling "newtg/gateway/internal/deploy/billing"
 	"newtg/gateway/internal/deploy/ionet"
 	"newtg/gateway/internal/egress"
+	"newtg/gateway/internal/holiday"
 	"newtg/gateway/internal/mj"
 	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/perfmetrics"
 	"newtg/gateway/internal/plugin"
+	"newtg/gateway/internal/pricingstrategy"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/settings"
 	"newtg/gateway/internal/store"
@@ -247,12 +249,19 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		if pricingRepo == nil {
 			pricingRepo = store.NewPricingRepo(deps.DB)
 		}
+		// 时段策略试算的节假日日历与计费源共用同一个 holiday_calendar：
+		// 试算结果必须能复现结算（spec §5.2.1）。nil DB 时按星期规则继续。
+		var holidayLookup pricingstrategy.HolidayLookup
+		if deps.DB != nil {
+			holidayLookup = holiday.NewStore(deps.DB)
+		}
 		handlers, err := NewPricingHandlers(PricingHandlerConfig{
-			Repo:     pricingRepo,
-			Redis:    deps.Redis,
-			Authz:    deps.Authz,
-			Logger:   deps.Logger,
-			OnChange: deps.PricingOnChange,
+			Repo:          pricingRepo,
+			Redis:         deps.Redis,
+			Authz:         deps.Authz,
+			Logger:        deps.Logger,
+			OnChange:      deps.PricingOnChange,
+			HolidayLookup: holidayLookup,
 		})
 		if err != nil {
 			return nil, err

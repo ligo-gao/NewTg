@@ -206,6 +206,37 @@ export interface ChannelTestResult {
   error_class?: string
 }
 
+/**
+ * One persisted performance-test aggregate
+ * (`POST/GET /api/channels/{id}/performance-tests`).
+ *
+ * `success_rate` is `success_count / runs` (0..1). All other aggregate numbers
+ * are null when that run produced no samples, so the UI renders "—" rather
+ * than inventing zero (mirrors the backend's explicit `null`).
+ */
+export interface ChannelPerformanceTest {
+  id: number
+  channel_id: number
+  model: string
+  /** Channel type slug (`Channel.type`). */
+  provider: string
+  runs: number
+  success_count: number
+  success_rate: number
+  ttft_ms_p50: number | null
+  ttft_ms_p95: number | null
+  latency_ms_p50: number | null
+  latency_ms_p95: number | null
+  tps_avg: number | null
+  output_tokens_avg: number | null
+  created_at: string
+}
+
+/** GET /api/channels/{id}/performance-tests response (newest first). */
+export interface ChannelPerformanceTestList {
+  items: ChannelPerformanceTest[]
+}
+
 // ---------------------------------------------------------------------------
 // Channel type catalogue (R-P20)
 // ---------------------------------------------------------------------------

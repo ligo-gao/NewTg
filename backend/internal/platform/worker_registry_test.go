@@ -4,7 +4,8 @@ package platform
 //
 // 覆盖：
 //   - 同名任务启动期失败；
-//   - 白名单恰好是 billing-06 §13.5.1 冻结的 5 个任务；
+//   - 白名单恰好是 billing-06 §13.5.1 冻结的 5 个任务 + spec §5.2.1 要求的
+//     holiday_sync（手工同步节假日日历）；
 //   - 只有绑定 Run 的任务才能被手动触发（否则触发会留下永不执行的 pending 行）。
 
 import (
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"newtg/gateway/internal/holiday"
 	"newtg/gateway/internal/worker"
 )
 
@@ -37,6 +39,8 @@ func TestDefaultRegistryManualWhitelistIsFrozen(t *testing.T) {
 		"redemption_expiry":       true,
 		"rankings_snapshot":       true,
 		"worker_history_cleanup":  true,
+		// spec §5.2.1：手工同步中国节假日日历（整年替换，幂等）。
+		"holiday_sync": true,
 	}
 	got := make(map[string]bool)
 	for _, task := range registry.Tasks() {
@@ -64,6 +68,63 @@ func TestDefaultRegistryManualWhitelistIsFrozen(t *testing.T) {
 		if task.ManualTriggerAllowed {
 			t.Fatalf("%s 不应允许手动触发", name)
 		}
+	}
+}
+
+// TestHolidaySyncYearSelection 锁定「12 月追加下一年」与「按中国日历取今年」：
+// 用 UTC 表达跨年瞬间，确认年份边界按 +08:00 判定。
+func TestHolidaySyncYearSelection(t *testing.T) {
+	cases := []struct {
+		name string
+		now  time.Time
+		want []int
+	}{
+		{"mid-year", time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC), []int{2026}},
+		{"december prep next year", time.Date(2026, 12, 1, 3, 30, 0, 0, holidaySyncLocation), []int{2026, 2027}},
+		// 2026-12-31 20:00 UTC = 2027-01-01 04:00 +08：已经是中国的新年。
+		{"utc new year's eve", time.Date(2026, 12, 31, 20, 0, 0, 0, time.UTC), []int{2027}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := holidaySyncYears(tc.now)
+			if len(got) != len(tc.want) {
+				t.Fatalf("years = %v，期望 %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("years = %v，期望 %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestCountHolidayDays(t *testing.T) {
+	off, makeup := countHolidayDays([]holiday.Day{
+		{Date: "2026-10-01", OffDay: true},
+		{Date: "2026-10-02", OffDay: true},
+		{Date: "2026-10-10", OffDay: false},
+	})
+	if off != 2 || makeup != 1 {
+		t.Fatalf("off/makeup = %d/%d，期望 2/1", off, makeup)
+	}
+}
+
+func TestHolidaySyncDisabledWithoutConfig(t *testing.T) {
+	registry, err := worker.DefaultRegistry()
+	if err != nil {
+		t.Fatalf("DefaultRegistry: %v", err)
+	}
+	if err := bindWorkerTaskRuns(registry, workerTaskDeps{}); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	task, ok := registry.Get("holiday_sync")
+	if !ok {
+		t.Fatal("holiday_sync 未注册")
+	}
+	// 装配缺配置时按关闭处理：不得在没有开关值的情况下发出站请求。
+	if task.Enabled == nil || task.Enabled() {
+		t.Fatal("无配置时 holiday_sync 应视为关闭")
 	}
 }
 

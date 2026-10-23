@@ -38,6 +38,8 @@ function pricingRow(overrides: Partial<ModelPricing> = {}): ModelPricing {
     vendor: null,
     status: 1,
     free: false,
+    has_strategy: false,
+    strategy_kind: 'flat',
     created_at: '2026-10-01T10:00:00Z',
     updated_at: '2026-10-01T10:00:00Z',
     ...overrides,
@@ -374,6 +376,30 @@ describe('ModelPricingListPage', () => {
     expect(freeTags).toHaveLength(1)
     expect(freeTags[0]?.getAttribute('aria-label')).toBe('Free')
     expect((await findByText('partial-zero')).closest('tr')?.textContent).toContain('0')
+  })
+
+  it('tags peak/off-peak rows without changing flat rows', async () => {
+    installBaseHandlers({
+      items: [
+        pricingRow({
+          model: 'deepseek-flash',
+          has_strategy: true,
+          strategy_kind: 'peak_offpeak',
+        }),
+        pricingRow({ id: 2, model: 'gpt-5', strategy_kind: 'flat' }),
+      ],
+      total: 2,
+    })
+
+    const { findAllByText, findByText } = await renderWithProviders(
+      <ModelPricingListPage />,
+      ['common', 'admin'],
+    )
+
+    expect(await findByText('deepseek-flash')).toBeTruthy()
+    const badges = await findAllByText('Peak / off-peak pricing')
+    expect(badges).toHaveLength(1)
+    expect(badges[0]?.getAttribute('aria-label')).toBe('Peak / off-peak pricing')
   })
 
   it('skips the list request entirely when pricing:read is absent', async () => {

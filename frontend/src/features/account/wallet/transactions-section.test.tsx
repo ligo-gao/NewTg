@@ -225,8 +225,9 @@ describe('TransactionsSection list (F-03-02)', () => {
     expect(await screen.findByText('No transactions yet')).toBeTruthy()
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Go to top-up' }))
+    // `tab: undefined` 表示默认 Overview 视图；这里必须显式跳到 topup。
     expect(onChange).toHaveBeenLastCalledWith(
-      expect.objectContaining({ tab: undefined }),
+      expect.objectContaining({ tab: 'topup', p: 1, page_size: 20 }),
     )
     first.unmount()
 

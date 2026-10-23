@@ -1,4 +1,4 @@
-import { isUuid, normalizeRequestId } from '@/features/logs/search'
+import { isUuid, normalizeRequestId } from '@/shared/lib/request-id'
 
 import type {
   WalletTransactionFilterDir,
@@ -9,11 +9,38 @@ import type {
 /**
  * `/wallet` 的页面级 Tab 与流水筛选的 URL 形状（R-M3-01/R-M3-07）。
  *
- * 默认 Tab 是 `topup`：只有 `?tab=transactions` 会被序列化，默认视图保持
- * 干净链接。流水筛选与分页全部写回 URL，刷新/分享可复现（F-03-02 主流程 2）。
+ * 默认 Tab 是 `overview`：只有显式选择的 `topup` / `subscription` /
+ * `transactions` 会被序列化，默认视图保持干净链接。流水筛选与分页全部
+ * 写回 URL，刷新/分享可复现（F-03-02 主流程 2）。
  */
 
-export type WalletTab = 'topup' | 'transactions'
+export type WalletTab = 'topup' | 'subscription' | 'transactions'
+
+/** Tab 的运行时全集（含默认项），用于渲染 tablist。 */
+export type WalletTabId = 'overview' | WalletTab
+
+export const WALLET_TABS: readonly WalletTabId[] = [
+  'overview',
+  'topup',
+  'subscription',
+  'transactions',
+]
+
+/**
+ * Runtime tab normalizer.
+ *
+ * `validateSearch` drops unknown values, but TanStack Router merges the raw
+ * search into the validated object, so a hand-edited `?tab=bogus` can still
+ * reach the page. Falling back here keeps the default view rendered instead
+ * of a tablist with nothing selected.
+ */
+export function walletTabOf(search: { tab?: unknown }): WalletTabId {
+  return search.tab === 'topup' ||
+    search.tab === 'subscription' ||
+    search.tab === 'transactions'
+    ? search.tab
+    : 'overview'
+}
 
 export const WALLET_TRANSACTION_TYPES: readonly WalletTransactionType[] = [
   'topup',
@@ -45,10 +72,10 @@ const MAX_WALLET_RANGE_MS = MAX_WALLET_RANGE_DAYS * 24 * 60 * 60 * 1000
 
 export interface WalletTransactionsSearch {
   /**
-   * 只有 `transactions` 会出现在 URL；缺省/非法值都落到 `topup`。
-   * 它不在类型里用 `tab?: WalletTab`，避免把默认值写进链接。
+   * 只有非默认 Tab 会出现在 URL；缺省/非法值都落到 `overview`。
+   * 它不在类型里写成必填，避免把默认值写进链接。
    */
-  tab?: 'transactions'
+  tab?: WalletTab
   type?: WalletTransactionType
   status?: WalletTransactionStatus
   dir?: WalletTransactionFilterDir
@@ -110,7 +137,13 @@ export function validateWalletSearch(
     page_size: DEFAULT_WALLET_SEARCH.page_size,
   }
 
-  if (search.tab === 'transactions') result.tab = 'transactions'
+  if (
+    search.tab === 'topup' ||
+    search.tab === 'subscription' ||
+    search.tab === 'transactions'
+  ) {
+    result.tab = search.tab
+  }
 
   const type = asTrimmedString(search.type)
   if (

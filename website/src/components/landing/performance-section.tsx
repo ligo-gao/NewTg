@@ -117,8 +117,19 @@ export function PerformanceSection({ copy }: { copy: Copy }) {
                         </tr>
                       ))
                     : featured.map((model) => {
-                        const summary = metrics[model.model_id]?.summary;
-                        const sampleSize = summary?.sample_size ?? 0;
+                        const entry = metrics[model.model_id];
+                        const summary = entry?.summary;
+                        const latest = entry?.latest_test ?? null;
+                        // Prefer the real-call corpus; fall back to the latest
+                        // admin probe when a value is missing from usage_logs.
+                        const ttft = summary?.avg_ttft_ms ?? latest?.ttft_ms_p50 ?? null;
+                        const tps = summary?.tps ?? latest?.tps ?? null;
+                        const sampleSize =
+                          summary?.sample_size || latest?.sample_size || 0;
+                        const ttftFromProbe =
+                          summary?.avg_ttft_ms == null && latest?.ttft_ms_p50 != null;
+                        const tpsFromProbe = summary?.tps == null && latest?.tps != null;
+                        const showProbe = ttftFromProbe || tpsFromProbe;
                         return (
                           <tr
                             key={model.model_id}
@@ -134,23 +145,28 @@ export function PerformanceSection({ copy }: { copy: Copy }) {
                                     {copy.performance.lowSample}
                                   </span>
                                 ) : null}
+                                {showProbe ? (
+                                  <span className="rounded-[4px] border border-cyan/35 px-1.5 py-px font-mono text-[10px] text-cyan">
+                                    {copy.performance.probe}
+                                  </span>
+                                ) : null}
                               </div>
                             </td>
                             <td className="border-b border-line px-5 py-3.5 text-muted">
                               {model.vendor}
                             </td>
                             <td className="border-b border-line px-5 py-3.5 font-mono text-[12.5px] tabular-nums text-ink-2">
-                              {loadingMetrics && !summary ? (
+                              {loadingMetrics && !entry ? (
                                 <SkeletonValue />
                               ) : (
-                                formatTTFT(summary?.avg_ttft_ms ?? null)
+                                formatTTFT(ttft)
                               )}
                             </td>
                             <td className="border-b border-line px-5 py-3.5 font-mono text-[12.5px] tabular-nums text-ink-2">
-                              {loadingMetrics && !summary ? (
+                              {loadingMetrics && !entry ? (
                                 <SkeletonValue />
                               ) : (
-                                formatTPS(summary?.tps ?? null)
+                                formatTPS(tps)
                               )}
                             </td>
                           </tr>

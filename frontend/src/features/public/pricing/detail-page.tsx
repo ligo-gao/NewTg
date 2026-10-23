@@ -2,8 +2,12 @@
  * 模型详情页（F-09-24 / F-09-27）。
  *
  * 信息区只展示后端实际返回的静态事实；`NULL`/空数组的行隐藏，而不是
- * 用 `0`、`—` 或编造值填充（R-PUB-01）。性能区按 P1 本波不渲染，也不
- * 请求 `/metrics`——后端已显式返回 404（not-implemented）。
+ * 用 `0`、`—` 或编造值填充（R-PUB-01）。
+ *
+ * 性能块（F-09-25）读取 `/api/pricing/{model_id}/metrics?range=7d`：优先
+ * 展示 `usage_logs` 真实调用汇总，字段缺失时回退到最近一次主动测速
+ * `latest_test`（独立兜底来源）。两者都缺失时显示 `—`；请求失败时保留
+ * `—` 并在块内提供重试，不把整页变成错误态。
  */
 
 import { useQuery } from '@tanstack/react-query'
@@ -16,9 +20,16 @@ import { useI18n } from '@/shared/lib/i18n-context'
 import { Tag } from '@/shared/ui/tag'
 import { useToastStore } from '@/shared/ui/toast'
 
-import { pricingDetailQueryOptions } from './api'
+import { pricingDetailQueryOptions, pricingMetricsQueryOptions } from './api'
 import { copyText } from './copy'
-import { formatContextTokens, formatCredit, formatRatio } from './format'
+import {
+  formatContextTokens,
+  formatCredit,
+  formatPerfMilliseconds,
+  formatPerfTPS,
+  formatRatio,
+  formatSuccessRate,
+} from './format'
 import { IntegrationSection } from './integration-section'
 import { capabilityLabel, endpointLabel, modalityLabel } from './metadata'
 import { PriceRegister } from './price-register'
@@ -44,6 +55,12 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
   const status = usePublicStatus()
   const me = useQuery({ ...meQueryOptions(), queryKey: ME_QUERY_KEY })
   const query = useQuery(pricingDetailQueryOptions(modelId))
+  // 模型不存在时详情已走 404 分支；指标端点对同一路径同样 404，等详情
+  // 成功再请求可以少一次无意义的错误请求。
+  const metricsQuery = useQuery({
+    ...pricingMetricsQueryOptions(modelId),
+    enabled: query.isSuccess,
+  })
 
   const copyName = async () => {
     const ok = await copyText(modelId)
@@ -137,6 +154,45 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
     },
   ]
 
+  // 真实调用汇总优先；某个字段缺失（如无流式样本）时回退到主动测速，
+  // 两者都没有就是 `—`（不把「没有样本」渲染成 0）。
+  const metricsSummary = metricsQuery.data?.summary
+  const latestTest = metricsQuery.data?.latest_test ?? null
+  const performanceStats = [
+    {
+      key: 'ttft',
+      label: t('public.perf.avg_ttft'),
+      value: formatPerfMilliseconds(
+        metricsSummary?.avg_ttft_ms ?? latestTest?.ttft_ms_p50 ?? null,
+        locale,
+      ),
+    },
+    {
+      key: 'latency',
+      label: t('public.perf.avg_latency'),
+      value: formatPerfMilliseconds(
+        metricsSummary?.avg_latency_ms ?? latestTest?.latency_ms_p50 ?? null,
+        locale,
+      ),
+    },
+    {
+      key: 'tps',
+      label: t('public.perf.tps'),
+      value: formatPerfTPS(
+        metricsSummary?.tps ?? latestTest?.tps ?? null,
+        locale,
+      ),
+    },
+    {
+      key: 'success_rate',
+      label: t('public.perf.success_rate'),
+      value: formatSuccessRate(
+        metricsSummary?.success_rate ?? latestTest?.success_rate ?? null,
+        locale,
+      ),
+    },
+  ]
+
   return (
     <div className="flex flex-col gap-6">
       <Breadcrumb
@@ -212,6 +268,37 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
             dualCurrency={false}
             rechargePrice={false}
           />
+        </div>
+      </section>
+
+      <section aria-labelledby="pricing-detail-performance" className="flex flex-col gap-2">
+        <h2 id="pricing-detail-performance" className="text-base font-semibold leading-6 text-ink-1">
+          {t('public.perf.title')}
+        </h2>
+        <div className="rounded-xl border border-border-default bg-surface-card p-4">
+          <dl className="grid grid-cols-2 gap-4 md:grid-cols-4">
+            {performanceStats.map((stat) => (
+              <div key={stat.key} className="flex flex-col gap-0.5">
+                <dt className="text-xs leading-[18px] text-ink-2">{stat.label}</dt>
+                <dd className="text-sm leading-[22px] tabular-nums text-ink-1">
+                  {stat.value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+          {metricsQuery.isError ? (
+            <div className="mt-3">
+              <InlineError
+                message={
+                  metricsQuery.error instanceof ApiError &&
+                  metricsQuery.error.kind === 'rate_limited'
+                    ? t('public.perf.rate_limited')
+                    : t('public.perf.unavailable')
+                }
+                onRetry={() => void metricsQuery.refetch()}
+              />
+            </div>
+          ) : null}
         </div>
       </section>
 

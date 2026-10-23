@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -591,3 +592,301 @@ ON CONFLICT (bucket_start, model) DO UPDATE SET
     observed_seconds = EXCLUDED.observed_seconds,
     up_seconds = EXCLUDED.up_seconds,
     updated_at = now()`
+
+// ---------------------------------------------------------------------------
+// 模型性能测试（渠道测速）主库仓储
+// ---------------------------------------------------------------------------
+//
+// 本段与上面的「独立指标库」实现是两条互不相干的读/写面：
+//   - 上面的 ModelPerfRepo 连接 PERF_METRICS_DSN，保存持续的分钟/小时观测；
+//   - 下面的 SQLModelPerformanceStore 连接主库，保存管理员显式发起的单次
+//     测速（汇总行 + 逐次明细），并依赖 channels/users 的外键。
+//
+// 汇总列全部由调用方在写入前算好（成功率、P50/P95、平均 TPS），仓储只负责
+// 原子落库与按读面取数；空值用指针表达，读面必须输出 null / "—"，不得
+// 回退成 0。
+
+// ModelPerformanceRun 是一次测速里的单次请求观测。
+type ModelPerformanceRun struct {
+	RunIndex     int
+	Success      bool
+	TTFTMS       *int
+	LatencyMS    *int
+	OutputTokens *int
+	TPS          *float64
+	ErrorClass   string
+}
+
+// ModelPerformanceTest 是一次模型性能测试的汇总事实。
+type ModelPerformanceTest struct {
+	ID              int64
+	ChannelID       int64
+	Model           string
+	Provider        string
+	Runs            int
+	SuccessCount    int
+	SuccessRate     float64
+	TTFTMSP50       *int
+	TTFTMSP95       *int
+	LatencyMSP50    *int
+	LatencyMSP95    *int
+	TPSAvg          *float64
+	OutputTokensAvg *float64
+	CreatedBy       *int64
+	CreatedAt       time.Time
+}
+
+// ModelPerformanceStore 是测速管理面的存储接缝（单测注入内存实现）。
+type ModelPerformanceStore interface {
+	// Create 在同一事务内写入汇总行与其全部逐次明细，返回带生成 id 与
+	// created_at 的汇总。
+	Create(ctx context.Context, test ModelPerformanceTest, runs []ModelPerformanceRun) (ModelPerformanceTest, error)
+	// ListRecent 返回某渠道最近的测试；model 为空表示不按模型过滤。
+	// limit 收敛到 1..100（<=0 取默认 20）。
+	ListRecent(ctx context.Context, channelID int64, model string, limit int) ([]ModelPerformanceTest, error)
+	// LatestByModel 返回该模型（不限渠道）最新的一条测试；无记录时 ok=false。
+	LatestByModel(ctx context.Context, model string) (ModelPerformanceTest, bool, error)
+}
+
+// SQLModelPerformanceStore 是 ModelPerformanceStore 的 PostgreSQL 实现。
+type SQLModelPerformanceStore struct {
+	db *sql.DB
+}
+
+// NewSQLModelPerformanceStore 构造仓储。db 必须是主库连接（有 channels/users）。
+func NewSQLModelPerformanceStore(db *sql.DB) *SQLModelPerformanceStore {
+	return &SQLModelPerformanceStore{db: db}
+}
+
+// modelPerformanceTestColumns 与 scanModelPerformanceTest 的扫描顺序一一对应。
+const modelPerformanceTestColumns = `id, channel_id, model, provider, runs,
+	success_count, success_rate, ttft_ms_p50, ttft_ms_p95, latency_ms_p50,
+	latency_ms_p95, tps_avg, output_tokens_avg, created_by, created_at`
+
+// Create 写入一次测试的汇总行与全部明细行。
+//
+// 【必须单事务】汇总行与明细行是同一事实的两个投影：只写汇总会让排障明细
+// 缺失，只写明细会让列表页读不到结果。任一条明细失败即整体回滚，不会留下
+// 「成功率为 N 次但明细只有 M 条」的半成品。
+//
+// 【RETURNING 回读】id/created_at 由数据库生成；created_at 统一转 UTC，与
+// 其它仓储的读出口径一致。
+func (r *SQLModelPerformanceStore) Create(
+	ctx context.Context,
+	test ModelPerformanceTest,
+	runs []ModelPerformanceRun,
+) (ModelPerformanceTest, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ModelPerformanceTest{}, fmt.Errorf("store: begin model performance test: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO model_performance_tests
+			(channel_id, model, provider, runs, success_count, success_rate,
+			 ttft_ms_p50, ttft_ms_p95, latency_ms_p50, latency_ms_p95,
+			 tps_avg, output_tokens_avg, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		RETURNING id, created_at`,
+		test.ChannelID, test.Model, test.Provider, test.Runs, test.SuccessCount,
+		test.SuccessRate, test.TTFTMSP50, test.TTFTMSP95, test.LatencyMSP50,
+		test.LatencyMSP95, test.TPSAvg, test.OutputTokensAvg, test.CreatedBy,
+	).Scan(&test.ID, &test.CreatedAt); err != nil {
+		return ModelPerformanceTest{}, fmt.Errorf(
+			"store: insert model performance test(%s/%d): %w", test.Model, test.ChannelID, err)
+	}
+	test.CreatedAt = test.CreatedAt.UTC()
+
+	// runs 上限是 10（schema CHECK），逐条插入保持参数简单，不做动态多行 SQL。
+	for _, run := range runs {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO model_performance_runs
+				(test_id, run_index, success, ttft_ms, latency_ms, output_tokens, tps, error_class)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			test.ID, run.RunIndex, run.Success, run.TTFTMS, run.LatencyMS,
+			run.OutputTokens, run.TPS, nullableErrorClass(run.ErrorClass),
+		); err != nil {
+			return ModelPerformanceTest{}, fmt.Errorf(
+				"store: insert model performance run %d: %w", run.RunIndex, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return ModelPerformanceTest{}, fmt.Errorf("store: commit model performance test: %w", err)
+	}
+	return test, nil
+}
+
+// ListRecent 按 created_at DESC 返回渠道最近的测试。
+//
+// 同一毫秒内的两条测试用 id DESC 兜底，保证分页/快照读取顺序确定。
+func (r *SQLModelPerformanceStore) ListRecent(
+	ctx context.Context,
+	channelID int64,
+	model string,
+	limit int,
+) ([]ModelPerformanceTest, error) {
+	limit = clampModelPerfLimit(limit)
+	query := `SELECT ` + modelPerformanceTestColumns +
+		` FROM model_performance_tests WHERE channel_id = $1`
+	args := []any{channelID}
+	if model != "" {
+		args = append(args, model)
+		query += fmt.Sprintf(" AND model = $%d", len(args))
+	}
+	args = append(args, limit)
+	query += fmt.Sprintf(" ORDER BY created_at DESC, id DESC LIMIT $%d", len(args))
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list model performance tests: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	items := make([]ModelPerformanceTest, 0, limit)
+	for rows.Next() {
+		test, scanErr := scanModelPerformanceTest(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("store: scan model performance test: %w", scanErr)
+		}
+		items = append(items, test)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate model performance tests: %w", err)
+	}
+	return items, nil
+}
+
+// LatestByModel 返回该模型（任意渠道）最新的一条测试。
+//
+// 模型相同但渠道不同是常见情形（同一模型挂在多个渠道）；本读面只回答
+// 「这个模型最近一次测速结果」，因此跨渠道取 created_at 最大的一行。
+// 无记录不是错误：ok=false 让调用方渲染空状态而不是 500。
+func (r *SQLModelPerformanceStore) LatestByModel(
+	ctx context.Context,
+	model string,
+) (ModelPerformanceTest, bool, error) {
+	test, err := scanModelPerformanceTest(r.db.QueryRowContext(ctx,
+		`SELECT `+modelPerformanceTestColumns+`
+		 FROM model_performance_tests WHERE model = $1
+		 ORDER BY created_at DESC, id DESC LIMIT 1`, model))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ModelPerformanceTest{}, false, nil
+	}
+	if err != nil {
+		return ModelPerformanceTest{}, false, fmt.Errorf(
+			"store: latest model performance test(%s): %w", model, err)
+	}
+	return test, true, nil
+}
+
+// scanModelPerformanceTest 读取汇总行，并把可空列映射为指针。
+func scanModelPerformanceTest(row interface{ Scan(...any) error }) (ModelPerformanceTest, error) {
+	var (
+		test     ModelPerformanceTest
+		ttftP50  sql.NullInt64
+		ttftP95  sql.NullInt64
+		latP50   sql.NullInt64
+		latP95   sql.NullInt64
+		tpsAvg   sql.NullFloat64
+		tokens   sql.NullFloat64
+		createdB sql.NullInt64
+	)
+	if err := row.Scan(
+		&test.ID, &test.ChannelID, &test.Model, &test.Provider, &test.Runs,
+		&test.SuccessCount, &test.SuccessRate, &ttftP50, &ttftP95, &latP50, &latP95,
+		&tpsAvg, &tokens, &createdB, &test.CreatedAt,
+	); err != nil {
+		return ModelPerformanceTest{}, err
+	}
+	test.TTFTMSP50 = intPtrFromNull(ttftP50)
+	test.TTFTMSP95 = intPtrFromNull(ttftP95)
+	test.LatencyMSP50 = intPtrFromNull(latP50)
+	test.LatencyMSP95 = intPtrFromNull(latP95)
+	test.TPSAvg = float64PtrFromNull(tpsAvg)
+	test.OutputTokensAvg = float64PtrFromNull(tokens)
+	test.CreatedBy = int64PtrFromNull(createdB)
+	test.CreatedAt = test.CreatedAt.UTC()
+	return test, nil
+}
+
+func intPtrFromNull(value sql.NullInt64) *int {
+	if !value.Valid {
+		return nil
+	}
+	n := int(value.Int64)
+	return &n
+}
+
+func int64PtrFromNull(value sql.NullInt64) *int64 {
+	if !value.Valid {
+		return nil
+	}
+	n := value.Int64
+	return &n
+}
+
+func float64PtrFromNull(value sql.NullFloat64) *float64 {
+	if !value.Valid {
+		return nil
+	}
+	f := value.Float64
+	return &f
+}
+
+// nullableErrorClass 把「无错误分类」写成 SQL NULL 而不是空串：明细表只用
+// error_class 区分失败原因，成功行（或未分类失败）没有该事实。
+func nullableErrorClass(class string) any {
+	if class == "" {
+		return nil
+	}
+	return class
+}
+
+// clampModelPerfLimit 按读面契约收敛 limit：<=0 取默认 20，>100 截到 100。
+// 上限防止调用方把一次列表放大成整表扫描；非正数不能直接进 LIMIT（PG 会报错）。
+func clampModelPerfLimit(limit int) int {
+	if limit <= 0 {
+		return 20
+	}
+	if limit > 100 {
+		return 100
+	}
+	return limit
+}
+
+// Percentile 返回升序整数样本的 p 分位数（0 ≤ p ≤ 1），空切片返回 ok=false。
+//
+// 【算法：nearest-rank】rank = ceil(p*n)，再收敛到 [1,n]，返回 sorted[rank-1]。
+// 选 nearest-rank 而不是线性插值，是因为延迟/TTFT 样本是整数毫秒，插值会
+// 造出原始样本中不存在的值；nearest-rank 的结果必定是某个真实观测。
+// p=0 返回最小值，p=1 返回最大值；p<0 / p>1 分别按 0 / 1 处理，NaN 按 0。
+//
+// 【输入必须升序，本函数不排序】调用方（测速汇总）已经持有排好序的样本，
+// 重复调用时再排序是 O(n log n) 的无谓开销。传入未排序切片不会 panic——
+// 返回的仍会是切片内的某个元素，但不再是统计意义上的分位数；这是调用方
+// 的契约错误，函数不做静默纠正。
+func Percentile(sorted []int, p float64) (int, bool) {
+	n := len(sorted)
+	if n == 0 {
+		return 0, false
+	}
+	if math.IsNaN(p) {
+		p = 0
+	}
+	if p <= 0 {
+		return sorted[0], true
+	}
+	if p >= 1 {
+		return sorted[n-1], true
+	}
+	rank := int(math.Ceil(p * float64(n)))
+	if rank < 1 {
+		rank = 1
+	}
+	if rank > n {
+		rank = n
+	}
+	return sorted[rank-1], true
+}

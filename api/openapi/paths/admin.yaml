@@ -716,6 +716,111 @@ paths:
         '503':
           $ref: '../components/responses.yaml#/responses/Error503'
 
+  # 渠道模型性能测速（管理员显式发起的流式探测批次）。上游失败是样本事实
+  # （success_rate 反映观测），仍为 200；结果必须持久化成功才返回。与 /test
+  # 共用「10 次/分钟/管理员」限流桶，Redis 故障 fail-open。
+  /api/channels/{id}/performance-tests:
+    post:
+      tags: [admin]
+      operationId: createChannelPerformanceTest
+      x-required-permission: channels:manage
+      summary: 对渠道模型发起一批流式性能探测
+      description: |
+        以固定短 prompt 顺序执行 runs 次流式请求，采集 TTFT、总延迟、输出 token
+        与 TPS，并在同一事务内保存汇总与逐次明细。model 必须属于该渠道
+        supported_models；runs 缺省 3（1..5）。与连通性测试共用
+        「10 次/分钟/管理员」限流桶（超限 429 + Retry-After；Redis 故障 fail-open）。
+        Performer/存储未装配 → 503；聚合值绝不返回未持久化的结果。错误体不含
+        上游 URL、凭据或原始错误文本（GC-6）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/ModelPerformanceTestRequest'
+      responses:
+        '200':
+          description: 已持久化的性能测试结果
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/ModelPerformanceTest'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+    get:
+      tags: [admin]
+      operationId: listChannelPerformanceTests
+      x-required-permission: channels:read
+      summary: 渠道模型性能测速历史
+      description: |
+        返回该渠道最近的测速记录（新→旧）。model 可选，按模型精确过滤；
+        limit 缺省 20，范围 1..100（越界 422）。渠道不存在 → 404。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - name: model
+          in: query
+          required: false
+          description: 可选；按模型精确过滤。
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: 返回条数；缺省 20，上限 100。
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: 测速历史（新→旧）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/ModelPerformanceTestList'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
   # 渠道模型目录拉取（只读探针；创建/编辑渠道表单共用）。编辑模式以
   # channel_id 指定渠道，base_url 与机密凭据按其已保存值兜底（请求显式值优先）。
   # 权限与凭据揭示同级（channels:manage_sensitive）：请求可能携带明文密钥并
@@ -914,6 +1019,52 @@ paths:
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
 
+  /api/model-pricing/candidates:
+    get:
+      tags: [admin]
+      operationId: listPricingCandidates
+      x-required-permission: pricing:read
+      summary: 已添加模型的候选并集（选择已有模型来定价）
+      description: |
+        合并 model_meta.model_name、channels.supported_models、
+        channels.model_mapping 的键与 model_pricing.model，按模型名去重。
+        `priced` 表示已存在定价行（含停用行）；未定价行 `mode` 为 per_token
+        （新建草稿的默认计费方式）。keyword 为大小写不敏感子串。
+        **不返回**渠道 id、凭据或上游地址：候选只服务定价选择器。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: keyword
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+          description: 模型名子串（大小写不敏感）。
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 200
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/PricingCandidateList'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
   /api/model-pricing:preview:
     post:
       tags: [admin]
@@ -950,7 +1101,78 @@ paths:
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
 
+  /api/model-pricing:preview-strategy:
+    post:
+      tags: [admin]
+      operationId: previewPricingStrategy
+      x-required-permission: pricing:read
+      summary: 时段策略试算（完整草稿 + 样例用量）
+      description: |
+        接受完整草稿（mode + prices + strategy）与试算时间 `at`，纯计算、
+        不写库。返回命中的时段/节假日事实、规范化策略、应用倍率后的各分项
+        单价与总价。价格换算复用 pricing.ParsePricingSpec/ComputeQuota，
+        时段乘法复用 pricing.ApplyTimeMultiplier——与结算同一实现。
+        `strategy` 与 `billing_expr` 互斥，因此只接受 per_token / per_request。
+        节假日查询失败时按星期规则试算，并在 match.holiday_lookup_failed
+        标记（不失败、不免费）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/admin.yaml#/schemas/ModelPricingStrategyPreviewRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/ModelPricingStrategyPreviewResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
   /api/model-pricing/{model}:
+    get:
+      tags: [admin]
+      operationId: getModelPricing
+      x-required-permission: pricing:read
+      summary: 读取单条模型定价（含完整 strategy）
+      description: |
+        列表只返回 has_strategy/strategy_kind 摘要；编辑工作台需要完整窗口
+        才能回填，因此单条读取返回规范化后的 `strategy`（无策略时为 null）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/PathPricingModel'
+      responses:
+        '200':
+          description: 定价行
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/ModelPricing'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
     patch:
       tags: [admin]
       operationId: updateModelPricing

@@ -433,7 +433,7 @@ export function TransactionsSection({
                 type="button"
                 className="text-[13px] font-medium text-brand hover:text-brand-hover"
                 onClick={() => {
-                  onSearchChange({ ...search, tab: undefined, p: 1 })
+                  onSearchChange({ ...search, tab: 'topup', p: 1 })
                 }}
               >
                 {t('account.wallet.go_topup')}

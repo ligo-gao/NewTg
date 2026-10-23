@@ -41,6 +41,12 @@ async function renderSidebar(
 }
 
 describe('AppSidebar', () => {
+  it('leaves the brand to the site navigation', async () => {
+    const { container } = await renderSidebar(FULL_ADMIN)
+
+    expect(container.textContent).not.toContain('AI API Gateway')
+  })
+
   it('renders every group and admin entry for a full admin', async () => {
     const { container } = await renderSidebar(FULL_ADMIN)
 

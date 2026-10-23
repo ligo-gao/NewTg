@@ -163,6 +163,63 @@ func TestPublicPricingRepoVisibleSetAndVersion(t *testing.T) {
 	}
 }
 
+// TestPublicPricingRepoStrategyFieldAndVersion 冻结 Task 6 的两条真相：
+//  1. strategy 列随可见集合返回（handler 据此生成 pricing_schedule）；
+//  2. 只改策略内容也必须改变版本号——否则公开页的 If-None-Match 会继续
+//     返回旧时段表。
+func TestPublicPricingRepoStrategyFieldAndVersion(t *testing.T) {
+	db := openPublicPricingTestDB(t)
+	repo := NewPublicPricingRepo(db)
+	ctx := context.Background()
+
+	model := fmt.Sprintf("t6-pub-strategy-%d", time.Now().UnixNano())
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM model_pricing WHERE model = $1`, model) })
+
+	if _, err := db.Exec(`INSERT INTO model_pricing (model, mode, prompt_price, author, status)
+		VALUES ($1, 0, 250, 't6', 1)`, model); err != nil {
+		t.Fatalf("insert model_pricing: %v", err)
+	}
+	baseline, err := repo.LoadPublicPricingCatalog(ctx)
+	if err != nil {
+		t.Fatalf("baseline Load: %v", err)
+	}
+
+	var strategy []byte
+	for _, row := range baseline.Models {
+		if row.Model == model {
+			strategy = row.Strategy
+		}
+	}
+	if len(strategy) != 0 {
+		t.Fatalf("未配置策略时 Strategy 应为 nil: %s", strategy)
+	}
+
+	if _, err := db.Exec(`UPDATE model_pricing
+		SET strategy = '{"version":1,"time":{"enabled":true,"timezone":"Asia/Shanghai","holiday_policy":"none","default_multiplier":0.5,"windows":[]}}'::jsonb
+		WHERE model = $1`, model); err != nil {
+		t.Fatalf("set strategy: %v", err)
+	}
+	afterStrategy, err := repo.LoadPublicPricingCatalog(ctx)
+	if err != nil {
+		t.Fatalf("Load after strategy: %v", err)
+	}
+	if afterStrategy.Version == baseline.Version {
+		t.Fatal("策略变更后版本号未改变")
+	}
+	found := false
+	for _, row := range afterStrategy.Models {
+		if row.Model == model {
+			found = true
+			if len(row.Strategy) == 0 {
+				t.Fatal("strategy 列未随快照返回")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("模型不在公开快照中")
+	}
+}
+
 // TestPublicPricingRepoMetadataSnapshot 冻结 D1-22 的两条真相：
 //  1. model_meta（含 status=2）与 vendors 与定价三表在同一快照返回；
 //  2. 两表的编辑都会改变版本号——否则公开页的 If-None-Match 会持续 304。

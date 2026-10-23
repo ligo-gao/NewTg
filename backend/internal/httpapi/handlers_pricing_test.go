@@ -28,6 +28,7 @@ import (
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/pricingstrategy"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 )
@@ -43,14 +44,20 @@ type fakePricingRepo struct {
 	nextID      int64
 	clock       time.Time
 	groupsExist map[string]bool
+	// 候选并集的非定价来源：catalog 提供展示字段，channel 只有模型名。
+	// 定价来源直接从 models 派生，保证 priced 与真实行一致。
+	catalogModels map[string]store.PricingCandidate
+	channelModels map[string]bool
 }
 
 func newFakePricingRepo() *fakePricingRepo {
 	return &fakePricingRepo{
-		models:      map[string]*store.ModelPricingRecord{},
-		groups:      map[string]*store.GroupPricingRecord{},
-		clock:       time.Date(2026, 10, 19, 8, 0, 0, 0, time.UTC),
-		groupsExist: map[string]bool{"default": true, "vip": true},
+		models:        map[string]*store.ModelPricingRecord{},
+		groups:        map[string]*store.GroupPricingRecord{},
+		clock:         time.Date(2026, 10, 19, 8, 0, 0, 0, time.UTC),
+		groupsExist:   map[string]bool{"default": true, "vip": true},
+		catalogModels: map[string]store.PricingCandidate{},
+		channelModels: map[string]bool{},
 	}
 }
 
@@ -147,6 +154,7 @@ func (r *fakePricingRepo) CreateModelPricing(_ context.Context, in store.ModelPr
 		PromptPrice: in.PromptPrice, CompletionPrice: in.CompletionPrice,
 		CacheReadPrice: in.CacheReadPrice, CacheWritePrice: in.CacheWritePrice,
 		Author: in.Author, Vendor: in.Vendor, Status: in.Status,
+		Strategy:  in.Strategy,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	r.models[in.Model] = rec
@@ -189,6 +197,9 @@ func (r *fakePricingRepo) UpdateModelPricing(_ context.Context, model string, pa
 	}
 	if patch.Status != nil {
 		rec.Status = *patch.Status
+	}
+	if patch.StrategySet {
+		rec.Strategy = patch.Strategy
 	}
 	rec.UpdatedAt = r.adv()
 	return *rec, nil
@@ -246,6 +257,58 @@ func (r *fakePricingRepo) ListPricingModels(_ context.Context, filter store.Pric
 			mode = "per_request"
 		}
 		items = append(items, store.PricingModelOption{Model: rec.Model, Mode: mode, Status: rec.Status})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Model < items[j].Model })
+	if filter.Limit > 0 && len(items) > filter.Limit {
+		items = items[:filter.Limit]
+	}
+	return items, nil
+}
+
+func (r *fakePricingRepo) ListPricingCandidates(_ context.Context, filter store.PricingCandidateFilter) ([]store.PricingCandidate, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	names := make(map[string]struct{}, len(r.catalogModels)+len(r.channelModels)+len(r.models))
+	for name := range r.catalogModels {
+		names[name] = struct{}{}
+	}
+	for name := range r.channelModels {
+		names[name] = struct{}{}
+	}
+	for name := range r.models {
+		names[name] = struct{}{}
+	}
+	items := make([]store.PricingCandidate, 0, len(names))
+	for name := range names {
+		if filter.Keyword != "" &&
+			!strings.Contains(strings.ToLower(name), strings.ToLower(filter.Keyword)) {
+			continue
+		}
+		candidate := r.catalogModels[name]
+		candidate.Model = name
+		candidate.Sources = make([]string, 0, 3)
+		if _, ok := r.catalogModels[name]; ok {
+			candidate.Sources = append(candidate.Sources, store.PricingCandidateSourceCatalog)
+		}
+		if r.channelModels[name] {
+			candidate.Sources = append(candidate.Sources, store.PricingCandidateSourceChannel)
+		}
+		if rec, ok := r.models[name]; ok {
+			candidate.Sources = append(candidate.Sources, store.PricingCandidateSourcePricing)
+			candidate.Priced = true
+			switch {
+			case rec.BillingExpr != nil:
+				candidate.Mode = "tiered_expr"
+			case rec.Mode == 1:
+				candidate.Mode = "per_request"
+			default:
+				candidate.Mode = "per_token"
+			}
+		} else {
+			candidate.Priced = false
+			candidate.Mode = "per_token"
+		}
+		items = append(items, candidate)
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Model < items[j].Model })
 	if filter.Limit > 0 && len(items) > filter.Limit {
@@ -425,12 +488,19 @@ type pricingTestEnv struct {
 
 func newPricingTestEnv(t *testing.T) *pricingTestEnv {
 	t.Helper()
+	return newPricingTestEnvWithLookup(t, nil)
+}
+
+// newPricingTestEnvWithLookup 允许注入节假日日历（时段试算的 holiday_policy）。
+func newPricingTestEnvWithLookup(t *testing.T, lookup pricingstrategy.HolidayLookup) *pricingTestEnv {
+	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
 	t.Cleanup(func() { _ = rdb.Close() })
 	repo := newFakePricingRepo()
 	handlers, err := NewPricingHandlers(PricingHandlerConfig{
 		Repo: repo, Redis: rdb, Authz: rbac.NewAuthzMiddleware(), Logger: testLogger(),
+		HolidayLookup: lookup,
 	})
 	if err != nil {
 		t.Fatalf("NewPricingHandlers: %v", err)

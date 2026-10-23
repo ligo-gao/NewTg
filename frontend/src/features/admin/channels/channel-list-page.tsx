@@ -9,10 +9,8 @@ import {
 } from 'react'
 
 import { ApiError } from '@/api/errors'
-import {
-  useI18n,
-  type TranslateFn,
-} from '@/shared/lib/i18n-context'
+import { PageHeader } from '@/features/shell/page-header'
+import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/base/button'
 import { Tag } from '@/shared/ui/tag'
 import { pushErrorToast, useToastStore } from '@/shared/ui/toast'
@@ -26,9 +24,11 @@ import {
   testChannel,
   updateChannel,
 } from './api'
+import { ChannelDetailPanel } from './channel-detail-panel'
+import { ChannelModelCell } from './channel-model-cell'
 import { ChannelMutateSheet } from './channel-mutate-sheet'
-import { ChannelMetricsPanel } from './channel-metrics-panel'
-import { channelDisabledReasonKey } from './channel-disabled-reason'
+import { ChannelPerformanceDialog } from './channel-perf-dialog'
+import { ChannelRowActions } from './channel-row-actions'
 import { ChannelStatusBadge } from './channel-status-badge'
 import { ChannelTestDialog } from './channel-test-dialog'
 import { CrossProtocolForwardInfo } from './cross-protocol-forward-info'
@@ -54,18 +54,6 @@ type SheetState =
 type DeleteTarget =
   | { kind: 'bulk' }
   | { kind: 'single'; channel: Channel }
-
-function formatRelativeTime(iso: string, t: TranslateFn): string {
-  const timestamp = Date.parse(iso)
-  if (Number.isNaN(timestamp)) return '—'
-  const seconds = Math.round((Date.now() - timestamp) / 1000)
-  if (seconds < 60) return t('common.channels.time.justNow')
-  const minutes = Math.round(seconds / 60)
-  if (minutes < 60) return t('common.channels.time.minutesAgo', { count: minutes })
-  const hours = Math.round(minutes / 60)
-  if (hours < 24) return t('common.channels.time.hoursAgo', { count: hours })
-  return t('common.channels.time.daysAgo', { count: Math.round(hours / 24) })
-}
 
 /**
  * Channel list (modules-06 §2, F-06-01/F-06-02/F-06-08).
@@ -99,11 +87,13 @@ export function ChannelListPage() {
   const [bulkBusy, setBulkBusy] = useState(false)
   const [sheet, setSheet] = useState<SheetState>({ open: false })
   const [testTarget, setTestTarget] = useState<Channel | null>(null)
+  const [perfTarget, setPerfTarget] = useState<Channel | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
   // One Idempotency-Key per delete intent: retrying the same id set after a
   // failure replays the original request; a different selection mints a new one.
   const deleteIntent = useRef<{ signature: string; key: string } | null>(null)
+  const selectAllRef = useRef<HTMLInputElement>(null)
 
   // F-06-01: keyword/model filtering is debounced by 300ms; the other filters
   // apply immediately and always reset to page 1 (modules-06 §2.2). Selection
@@ -333,6 +323,10 @@ export function ChannelListPage() {
     if (selected.size === 0) return
     const ids = Array.from(selected)
     setBulkBusy(true)
+    // Lock every row the batch mutates for its whole duration: a row switch or
+    // kebab would otherwise start a competing write against the same channel
+    // while the batch PATCH is in flight.
+    for (const id of ids) setRowBusy(id, true)
     try {
       const result = await batchChannelStatus(action, ids)
       if (result.failed.length === 0) {
@@ -360,6 +354,7 @@ export function ChannelListPage() {
     } catch (reason) {
       reportError(reason)
     } finally {
+      for (const id of ids) setRowBusy(id, false)
       setBulkBusy(false)
     }
   }
@@ -442,6 +437,15 @@ export function ChannelListPage() {
 
   const allSelected =
     items.length > 0 && items.every((channel) => selected.has(channel.id))
+  // The DOM checkbox needs an explicit indeterminate flag: `checked` only
+  // models the all/none states, so a partial selection would otherwise look
+  // unchecked. It is a property, not an attribute, so React cannot set it.
+  const partiallySelected = selected.size > 0 && !allSelected
+  useEffect(() => {
+    if (selectAllRef.current !== null) {
+      selectAllRef.current.indeterminate = partiallySelected
+    }
+  }, [partiallySelected])
   const deleteCount = deleteTarget?.kind === 'bulk' ? selected.size : 1
   const loading = channelsQuery.isPending
   // A bulk write must not run while any selected row still has a mutation in
@@ -453,6 +457,25 @@ export function ChannelListPage() {
 
   return (
     <section className="flex flex-col gap-4">
+      <PageHeader
+        crumbs={[
+          { label: t('common.console.label') },
+          { label: t('common.nav.group.admin') },
+          { label: t('common.channels.title') },
+        ]}
+        title={t('common.channels.title')}
+        description={t('common.channels.subtitle')}
+        actions={
+          <Button
+            onClick={() => {
+              setSheet({ open: true, mode: 'create' })
+            }}
+          >
+            {t('common.channels.new')}
+          </Button>
+        }
+      />
+
       {/* Read-only by design: the switch lives in module 08 settings and M4 has
           no API for it, so no `enabled` prop is passed here (status unknown). */}
       <CrossProtocolForwardInfo />
@@ -564,25 +587,23 @@ export function ChannelListPage() {
         ) : null}
       </div>
 
-      <div className="flex items-center justify-between">
-        <Button
-          onClick={() => {
-            setSheet({ open: true, mode: 'create' })
-          }}
-        >
-          {t('common.channels.new')}
-        </Button>
-        <p className="text-sm text-ink-2">
-          {t('common.channels.total', { total })}
+      <div className="flex justify-end">
+        <p className="text-sm text-ink-2" data-testid="channels-total">
+          {loading ? '—' : t('common.channels.total', { total })}
         </p>
       </div>
 
       <div className="overflow-x-auto rounded-xl border border-border-hairline bg-surface-card">
-        <table data-testid="channels-table" className="w-full min-w-[960px] border-collapse text-sm">
+        <table
+          data-testid="channels-table"
+          aria-busy={loading}
+          className="w-full min-w-[1080px] border-collapse text-sm"
+        >
           <thead>
             <tr>
-              <th scope="col" className="w-10 border-b border-border-hairline bg-surface-subtle px-3 py-2">
+              <th scope="col" className="w-10 whitespace-nowrap border-b border-border-hairline bg-surface-subtle px-3 py-2">
                 <input
+                  ref={selectAllRef}
                   type="checkbox"
                   aria-label={t('common.channels.table.selectAll')}
                   checked={allSelected}
@@ -596,38 +617,22 @@ export function ChannelListPage() {
                 sort={sort}
                 onSort={changeSort}
               />
-              <th scope="col" className="border-b border-border-hairline bg-surface-subtle px-3 py-2 text-left text-xs font-medium text-ink-2">
-                {t('common.channels.table.type')}
-              </th>
-              <th scope="col" className="border-b border-border-hairline bg-surface-subtle px-3 py-2 text-left text-xs font-medium text-ink-2">
+              <th scope="col" className="whitespace-nowrap border-b border-border-hairline bg-surface-subtle px-3 py-2 text-left text-xs font-medium text-ink-2">
                 {t('common.channels.table.status')}
               </th>
-              <th scope="col" className="border-b border-border-hairline bg-surface-subtle px-3 py-2 text-left text-xs font-medium text-ink-2">
+              <th scope="col" className="whitespace-nowrap border-b border-border-hairline bg-surface-subtle px-3 py-2 text-left text-xs font-medium text-ink-2">
                 {t('common.channels.table.models')}
               </th>
-              <th scope="col" className="border-b border-border-hairline bg-surface-subtle px-3 py-2 text-left text-xs font-medium text-ink-2">
-                {t('common.channels.table.groups')}
-              </th>
               <SortHeader
-                label={t('common.channels.table.priority')}
+                label={t('common.channels.table.routingGroups')}
                 column="priority"
                 sort={sort}
                 onSort={changeSort}
-                align="right"
               />
-              <th scope="col" className="border-b border-border-hairline bg-surface-subtle px-3 py-2 text-right text-xs font-medium text-ink-2">
-                {t('common.channels.table.weight')}
+              <th scope="col" className="hidden whitespace-nowrap border-b border-border-hairline bg-surface-subtle px-3 py-2 text-left text-xs font-medium text-ink-2 xl:table-cell">
+                {t('common.channels.table.health24h')}
               </th>
-              <th scope="col" className="border-b border-border-hairline bg-surface-subtle px-3 py-2 text-left text-xs font-medium text-ink-2">
-                {t('common.channels.table.lastTest')}
-              </th>
-              <th scope="col" className="border-b border-border-hairline bg-surface-subtle px-3 py-2 text-left text-xs font-medium text-ink-2">
-                {t('common.channels.table.successRate24h')}
-              </th>
-              <th scope="col" className="border-b border-border-hairline bg-surface-subtle px-3 py-2 text-right text-xs font-medium text-ink-2">
-                {t('common.channels.table.avgLatency24h')}
-              </th>
-              <th scope="col" className="border-b border-border-hairline bg-surface-subtle px-3 py-2 text-left text-xs font-medium text-ink-2">
+              <th scope="col" className="whitespace-nowrap border-b border-border-hairline bg-surface-subtle px-3 py-2 text-right text-xs font-medium text-ink-2">
                 {t('common.channels.table.actions')}
               </th>
             </tr>
@@ -636,14 +641,14 @@ export function ChannelListPage() {
             {loading ? (
               Array.from({ length: 5 }, (_, index) => (
                 <tr key={`skeleton-${index}`}>
-                  <td colSpan={12} className="border-b border-border-hairline px-3 py-3">
+                  <td colSpan={7} className="border-b border-border-hairline px-3 py-3">
                     <div className="h-6 animate-pulse rounded bg-surface-subtle" />
                   </td>
                 </tr>
               ))
             ) : channelsQuery.isError ? (
               <tr>
-                <td colSpan={12} className="px-3 py-8 text-center">
+                <td colSpan={7} className="px-3 py-8 text-center">
                   <div role="alert" className="flex flex-col items-center gap-2 text-sm text-danger">
                     <p>{t('common.channels.error.load')}</p>
                     <Button
@@ -659,7 +664,7 @@ export function ChannelListPage() {
               </tr>
             ) : items.length === 0 ? (
               <tr>
-                <td colSpan={12} className="px-3 py-10 text-center">
+                <td colSpan={7} className="px-3 py-10 text-center">
                   <p className="text-sm text-ink-2">
                     {hasFilters
                       ? t('common.channels.empty.filtered')
@@ -694,25 +699,45 @@ export function ChannelListPage() {
                         />
                       </td>
                       <td className="border-b border-border-hairline px-3 py-3">
-                        <button
-                          type="button"
-                          aria-expanded={expanded}
-                          aria-label={t(
-                            expanded
-                              ? 'common.channels.table.collapse'
-                              : 'common.channels.table.expand',
-                            { name: channel.name },
-                          )}
-                          className="max-w-48 truncate text-left font-medium text-ink-1 underline-offset-2 hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
-                          onClick={() => {
-                            setExpandedId(expanded ? null : channel.id)
-                          }}
-                        >
-                          {channel.name}
-                        </button>
-                      </td>
-                      <td className="border-b border-border-hairline px-3 py-3">
-                        <Tag>{channel.type}</Tag>
+                        <div className="flex flex-col gap-1">
+                          <div className="flex items-center gap-1">
+                            <svg
+                              aria-hidden="true"
+                              viewBox="0 0 20 20"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.8"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              className={[
+                                'size-3.5 shrink-0 text-ink-3 transition-transform',
+                                expanded ? 'rotate-90' : '',
+                              ].join(' ')}
+                            >
+                              <path d="m8 5 5 5-5 5" />
+                            </svg>
+                            <button
+                              type="button"
+                              aria-expanded={expanded}
+                              aria-controls={
+                                expanded ? `channel-detail-${channel.id}` : undefined
+                              }
+                              aria-label={t(
+                                expanded
+                                  ? 'common.channels.table.collapse'
+                                  : 'common.channels.table.expand',
+                                { name: channel.name },
+                              )}
+                              className="max-w-48 truncate text-left font-medium text-ink-1 underline-offset-2 hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                              onClick={() => {
+                                setExpandedId(expanded ? null : channel.id)
+                              }}
+                            >
+                              {channel.name}
+                            </button>
+                          </div>
+                          <span className="text-xs text-ink-3">{channel.type}</span>
+                        </div>
                       </td>
                       <td className="border-b border-border-hairline px-3 py-3">
                         <ChannelStatusBadge
@@ -722,117 +747,75 @@ export function ChannelListPage() {
                         />
                       </td>
                       <td className="border-b border-border-hairline px-3 py-3">
-                        <ModelCell models={channel.supported_models} />
+                        <ChannelModelCell
+                          channelId={channel.id}
+                          channelName={channel.name}
+                          models={channel.supported_models}
+                          expanded={expanded}
+                          onToggle={() => {
+                            setExpandedId(expanded ? null : channel.id)
+                          }}
+                        />
                       </td>
                       <td className="border-b border-border-hairline px-3 py-3">
-                        <GroupsCell groups={channel.group_tags} />
+                        <div className="flex flex-col gap-1">
+                          <GroupsCell groups={channel.group_tags} />
+                          <span className="flex items-center gap-3 whitespace-nowrap text-xs text-ink-2">
+                            <span>
+                              {t('common.channels.table.priority')}{' '}
+                              <span className="tabular-nums text-ink-1">{channel.priority}</span>
+                            </span>
+                            <span>
+                              {t('common.channels.table.weight')}{' '}
+                              <span className="tabular-nums text-ink-1">{channel.weight}</span>
+                            </span>
+                          </span>
+                        </div>
                       </td>
-                      <td className="border-b border-border-hairline px-3 py-3 text-right tabular-nums">
-                        {channel.priority}
-                      </td>
-                      <td className="border-b border-border-hairline px-3 py-3 text-right tabular-nums">
-                        {channel.weight}
+                      <td className="hidden border-b border-border-hairline px-3 py-3 xl:table-cell">
+                        <div className="flex flex-col gap-0.5 whitespace-nowrap">
+                          <MetricsSuccessCell channel={channel} />
+                          <MetricsLatencyCell channel={channel} />
+                        </div>
                       </td>
                       <td className="border-b border-border-hairline px-3 py-3">
-                        <LastTestCell channel={channel} />
-                      </td>
-                      <td className="border-b border-border-hairline px-3 py-3">
-                        <MetricsSuccessCell channel={channel} />
-                      </td>
-                      <td className="border-b border-border-hairline px-3 py-3 text-right tabular-nums">
-                        <MetricsLatencyCell channel={channel} />
-                      </td>
-                      <td className="border-b border-border-hairline px-3 py-3">
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            role="switch"
-                            aria-checked={channel.status === 1}
-                            aria-busy={busy}
-                            aria-label={t(
-                              channel.status === 1
-                                ? 'common.channels.actions.disableChannel'
-                                : 'common.channels.actions.enableChannel',
-                              { name: channel.name },
-                            )}
-                            disabled={busy}
-                            onClick={() => {
-                              void handleToggleStatus(channel)
-                            }}
-                            className={[
-                              'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50',
-                              channel.status === 1 ? 'bg-success' : 'bg-neutral-line',
-                            ].join(' ')}
-                          >
-                            {busy ? (
-                              <span
-                                data-testid={`channel-row-busy-${channel.id}`}
-                                aria-hidden="true"
-                                className="absolute inset-0 flex items-center justify-center"
-                              >
-                                <span className="size-3 animate-spin rounded-full border-2 border-on-brand border-t-transparent" />
-                              </span>
-                            ) : (
-                              <span
-                                aria-hidden="true"
-                                className={[
-                                  'inline-block size-4 rounded-full bg-surface-card transition-transform',
-                                  channel.status === 1 ? 'translate-x-4' : 'translate-x-0.5',
-                                ].join(' ')}
-                              />
-                            )}
-                          </button>
-                          <Button
-                            variant="ghost"
-                            disabled={busy}
-                            onClick={() => {
-                              void handleSingleTest(channel)
-                            }}
-                          >
-                            {t('common.channels.actions.test')}
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            disabled={busy}
-                            onClick={() => {
+                        <div className="flex justify-end">
+                          <ChannelRowActions
+                            channel={channel}
+                            busy={busy}
+                            onToggleStatus={() => handleToggleStatus(channel)}
+                            onTest={() => handleSingleTest(channel)}
+                            onBatchTest={() => {
                               setTestTarget(channel)
                             }}
-                          >
-                            {t('common.channels.actions.batchTest')}
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            disabled={busy}
-                            onClick={() => {
+                            onEdit={() => {
                               setSheet({
                                 open: true,
                                 mode: 'edit',
                                 channelId: channel.id,
                               })
                             }}
-                          >
-                            {t('common.channels.actions.edit')}
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            disabled={busy}
-                            onClick={() => {
+                            onDelete={() => {
                               setDeleteTarget({ kind: 'single', channel })
                             }}
-                          >
-                            {t('common.channels.actions.delete')}
-                          </Button>
+                          />
                         </div>
                       </td>
                     </tr>
                     {expanded ? (
                       <tr>
                         <td
-                          colSpan={12}
+                          id={`channel-detail-${channel.id}`}
+                          colSpan={7}
                           data-testid={`channel-detail-${channel.id}`}
                           className="border-b border-border-hairline bg-surface-subtle px-5 py-4"
                         >
-                          <ChannelDetailPanel channel={channel} />
+                          <ChannelDetailPanel
+                            channel={channel}
+                            onPerformanceTest={() => {
+                              setPerfTarget(channel)
+                            }}
+                          />
                         </td>
                       </tr>
                     ) : null}
@@ -855,8 +838,8 @@ export function ChannelListPage() {
         >
           {t('common.channels.pagination.previous')}
         </Button>
-        <p className="text-sm text-ink-2">
-          {t('common.channels.pagination.page', { page, totalPages })}
+        <p className="text-sm text-ink-2" data-testid="channels-page-indicator">
+          {loading ? '—' : t('common.channels.pagination.page', { page, totalPages })}
         </p>
         <div className="flex items-center gap-2">
           <label htmlFor="channel-page-size" className="text-sm text-ink-2">
@@ -950,6 +933,15 @@ export function ChannelListPage() {
         onCompleted={invalidate}
       />
 
+      <ChannelPerformanceDialog
+        open={perfTarget !== null}
+        channel={perfTarget}
+        onOpenChange={(open) => {
+          if (!open) setPerfTarget(null)
+        }}
+        onCompleted={invalidate}
+      />
+
       <ConfirmDialog
         open={deleteTarget !== null}
         onOpenChange={(open) => {
@@ -1000,7 +992,7 @@ function SortHeader({ label, column, sort, onSort, align = 'left' }: SortHeaderP
       scope="col"
       aria-sort={ariaSort}
       className={[
-        'border-b border-border-hairline bg-surface-subtle px-3 py-2 text-xs font-medium text-ink-2',
+        'whitespace-nowrap border-b border-border-hairline bg-surface-subtle px-3 py-2 text-xs font-medium text-ink-2',
         align === 'right' ? 'text-right' : 'text-left',
       ].join(' ')}
     >
@@ -1017,22 +1009,6 @@ function SortHeader({ label, column, sort, onSort, align = 'left' }: SortHeaderP
         ) : null}
       </button>
     </th>
-  )
-}
-
-function ModelCell({ models }: { models: string[] }) {
-  const { t } = useI18n()
-  if (models.length === 0) return <span className="text-ink-3">—</span>
-  const first = models[0]
-  if (first === undefined) return <span className="text-ink-3">—</span>
-  const rest = models.length - 1
-  return (
-    <span title={models.join(', ')} className="inline-flex items-center gap-1">
-      <span className="max-w-40 truncate font-mono text-xs text-ink-1">{first}</span>
-      {rest > 0 ? (
-        <Tag variant="neutral">{t('common.channels.table.moreModels', { count: rest })}</Tag>
-      ) : null}
-    </span>
   )
 }
 
@@ -1053,117 +1029,63 @@ function GroupsCell({ groups }: { groups: string[] | null }) {
 /**
  * 24h success-rate cell (W16-1). `channel.metrics` is absent when the logs
  * database is unavailable and `success_rate` is null when the channel had no
- * traffic — both render — rather than inventing 0%.
+ * traffic — both render a muted dash rather than inventing 0%. A real rate is
+ * coloured by threshold (99%+ success, 95%+ warning, lower danger), and when
+ * neither metric exists the cell pairs the dash with a muted "No data" line.
  */
 function MetricsSuccessCell({ channel }: { channel: Channel }) {
+  const { t } = useI18n()
   const rate = channel.metrics?.success_rate ?? null
+  const noData =
+    rate === null && (channel.metrics?.avg_latency_ms ?? null) === null
+  const text = rate === null ? '—' : `${(rate * 100).toFixed(1)}%`
+  // Thresholds mirror the approved channel preview: 99%+ is healthy, 95%+
+  // needs watching, anything lower is failing. No data stays muted.
+  const tone =
+    rate === null
+      ? 'text-ink-3'
+      : rate >= 0.99
+        ? 'text-success'
+        : rate >= 0.95
+          ? 'text-warning'
+          : 'text-danger'
   return (
-    <span
-      data-testid={`channel-metrics-rate-${channel.id}`}
-      className="text-xs tabular-nums text-ink-1"
-    >
-      {rate === null ? '—' : `${(rate * 100).toFixed(1)}%`}
+    <span className="flex flex-col gap-0.5">
+      <span
+        data-testid={`channel-metrics-rate-${channel.id}`}
+        aria-label={`${t('common.channels.table.successRate24h')}: ${text}`}
+        className={`text-xs font-semibold tabular-nums ${tone}`}
+      >
+        {text}
+      </span>
+      {noData ? (
+        <span className="text-[11px] text-ink-3">
+          {t('common.channels.table.noHealthData')}
+        </span>
+      ) : null}
     </span>
   )
 }
 
 /** 24h average latency cell (W16-1). Null means "no samples". */
 function MetricsLatencyCell({ channel }: { channel: Channel }) {
+  const { t } = useI18n()
   const latency = channel.metrics?.avg_latency_ms ?? null
+  // With no samples at all the success cell owns the single em dash and the
+  // muted "No data" line; this value would otherwise repeat the dash.
+  const hasAnyMetrics =
+    (channel.metrics?.success_rate ?? null) !== null || latency !== null
+  const text = latency === null ? '—' : `${Math.round(latency)} ms`
   return (
     <span
       data-testid={`channel-metrics-latency-${channel.id}`}
-      className="text-xs tabular-nums text-ink-1"
+      aria-label={`${t('common.channels.table.avgLatency24h')}: ${text}`}
+      className={[
+        'text-xs tabular-nums text-ink-2',
+        hasAnyMetrics ? '' : 'hidden',
+      ].join(' ')}
     >
-      {latency === null ? '—' : `${Math.round(latency)} ms`}
+      {text}
     </span>
-  )
-}
-
-function LastTestCell({ channel }: { channel: Channel }) {
-  const { t, locale } = useI18n()
-  if (channel.last_test_at === null) {
-    return <span className="text-xs text-ink-3">{t('common.channels.table.neverTested')}</span>
-  }
-  const timestamp = Date.parse(channel.last_test_at)
-  const absolute = Number.isNaN(timestamp)
-    ? channel.last_test_at
-    : new Date(timestamp).toLocaleString(locale)
-  const tone =
-    channel.last_test_result === true
-      ? 'text-success'
-      : channel.last_test_result === false
-        ? 'text-danger'
-        : 'text-ink-2'
-  return (
-    <span title={absolute} className={`text-xs ${tone}`}>
-      {channel.last_test_result === true
-        ? '✓'
-        : channel.last_test_result === false
-          ? '✗'
-          : ''}{' '}
-      {formatRelativeTime(channel.last_test_at, t)}
-    </span>
-  )
-}
-
-function ChannelDetailPanel({ channel }: { channel: Channel }) {
-  const { t, locale } = useI18n()
-  const updatedAt = new Date(channel.updated_at).toLocaleString(locale)
-  const rows: Array<{ label: string; value: string }> = [
-    { label: t('common.channels.detail.id'), value: String(channel.id) },
-    {
-      label: t('common.channels.detail.rateLimit'),
-      value:
-        channel.rate_limit === null
-          ? t('common.channels.detail.unlimited')
-          : String(channel.rate_limit),
-    },
-    {
-      label: t('common.channels.detail.autoBan'),
-      value: channel.auto_ban
-        ? t('common.channels.detail.yes')
-        : t('common.channels.detail.no'),
-    },
-    {
-      label: t('common.channels.detail.failCount'),
-      value: String(channel.fail_count),
-    },
-    {
-      label: t('common.channels.detail.tag'),
-      value: channel.tag ?? '—',
-    },
-    {
-      label: t('common.channels.detail.updated'),
-      value: updatedAt,
-    },
-  ]
-  // 自动禁用原因只在 status=3 且 code 非空时显示（空值隐藏）。时间复用
-  // updated_at，因此文案是「最近更新」而不是「禁用时刻」（R-M4-05）。
-  if (channel.status === 3 && channel.auto_disabled_reason) {
-    rows.splice(rows.length - 1, 0, {
-      label: t('common.channels.detail.autoDisabledReason'),
-      value: `${t(channelDisabledReasonKey(channel.auto_disabled_reason))} · ${t(
-        'common.channels.detail.reasonUpdatedAt',
-        { at: updatedAt },
-      )}`,
-    })
-  }
-  // The list DTO deliberately omits credentials_masked and credentials_set
-  // (GC-6); only the detail endpoint returns them. Expanding a list row therefore
-  // has no credentials cell to render — the mask is shown by the edit sheet's
-  // detail load (and verified through the POST/detail response).
-  return (
-    <div>
-      <dl className="grid grid-cols-4 gap-4 text-sm">
-        {rows.map((row) => (
-          <div key={row.label}>
-            <dt className="text-xs text-ink-2">{row.label}</dt>
-            <dd className="mt-0.5 text-ink-1">{row.value}</dd>
-          </div>
-        ))}
-      </dl>
-      <ChannelMetricsPanel channel={channel} />
-    </div>
   )
 }

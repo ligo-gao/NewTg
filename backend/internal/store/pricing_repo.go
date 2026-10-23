@@ -51,7 +51,7 @@ var (
 	ErrPricingPerRequestFields = errors.New("store: per_request source ignores completion/cache override prices")
 )
 
-// ModelPricingRecord 是 model_pricing 的完整读取投影（13 列）。
+// ModelPricingRecord 是 model_pricing 的完整读取投影（14 列）。
 type ModelPricingRecord struct {
 	ID              int64
 	Model           string
@@ -64,8 +64,12 @@ type ModelPricingRecord struct {
 	Author          string
 	Vendor          *string
 	Status          int16
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// Strategy 是结构化时段策略的 JSONB 原文（spec §5.1）；nil 表示 NULL，
+	// 即沿用价列/表达式。写入前已由 httpapi 用 pricingstrategy.Parse 校验并
+	// 规范化，store 层只负责原样保存。
+	Strategy  []byte
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // GroupPricingRecord 是 group_pricing 的读取投影，附带源模型的派生信息
@@ -136,6 +140,8 @@ type ModelPricingInput struct {
 	Author          string
 	Vendor          *string
 	Status          int16
+	// Strategy 是已校验的策略 JSON；nil 落库为 NULL（无策略）。
+	Strategy []byte
 }
 
 // ModelPricingPatch 是模型定价的部分更新。Set 标记区分「未提交」与「显式置空」。
@@ -162,6 +168,11 @@ type ModelPricingPatch struct {
 	// VendorSet 为 true 且 Vendor 为 nil 时把 vendor 置 NULL。
 	VendorSet bool
 	Status    *int16
+
+	// Strategy / StrategySet 承载三值语义：未提交（Set=false）= 保持原值；
+	// StrategySet=true 且 Strategy=nil = 显式清除；非 nil = 写入新策略。
+	Strategy    []byte
+	StrategySet bool
 }
 
 // GroupPricingInput 是创建分组覆盖价的写入值。四个价列 NOT NULL（默认 0）。
@@ -193,6 +204,10 @@ type PricingRepo interface {
 	DeleteModelPricing(ctx context.Context, model string, expectUpdatedAt time.Time) error
 	SetModelPricingStatus(ctx context.Context, model string, status int16, expectUpdatedAt time.Time) (ModelPricingRecord, error)
 	ListPricingModels(ctx context.Context, filter PricingModelFilter) ([]PricingModelOption, error)
+	// ListPricingCandidates 返回「已添加模型」的并集（model_meta / 渠道
+	// supported_models / model_mapping 键 / model_pricing），供管理面选择器
+	// 使用；见 pricing_candidates_repo.go。
+	ListPricingCandidates(ctx context.Context, filter PricingCandidateFilter) ([]PricingCandidate, error)
 
 	ListGroupPricing(ctx context.Context, filter GroupPricingFilter) ([]GroupPricingRecord, int64, error)
 	CreateGroupPricing(ctx context.Context, in GroupPricingInput) (GroupPricingRecord, error)
@@ -214,14 +229,15 @@ func NewPricingRepo(db *sql.DB) *SQLPricingRepo {
 
 const modelPricingColumns = `id, model, mode, billing_expr, prompt_price,
 	completion_price, cache_read_price, cache_write_price, author, vendor,
-	status, created_at, updated_at`
+	status, strategy, created_at, updated_at`
 
 func scanModelPricing(row interface{ Scan(...any) error }) (ModelPricingRecord, error) {
 	var rec ModelPricingRecord
 	err := row.Scan(
 		&rec.ID, &rec.Model, &rec.Mode, &rec.BillingExpr, &rec.PromptPrice,
 		&rec.CompletionPrice, &rec.CacheReadPrice, &rec.CacheWritePrice,
-		&rec.Author, &rec.Vendor, &rec.Status, &rec.CreatedAt, &rec.UpdatedAt,
+		&rec.Author, &rec.Vendor, &rec.Status, &rec.Strategy,
+		&rec.CreatedAt, &rec.UpdatedAt,
 	)
 	return rec, err
 }
@@ -374,11 +390,12 @@ func (r *SQLPricingRepo) CreateModelPricing(ctx context.Context, in ModelPricing
 	row := r.db.QueryRowContext(ctx, `
 		INSERT INTO model_pricing
 			(model, mode, billing_expr, prompt_price, completion_price,
-			 cache_read_price, cache_write_price, author, vendor, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			 cache_read_price, cache_write_price, author, vendor, status, strategy)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING `+modelPricingColumns,
 		in.Model, in.Mode, in.BillingExpr, in.PromptPrice, in.CompletionPrice,
-		in.CacheReadPrice, in.CacheWritePrice, in.Author, in.Vendor, in.Status)
+		in.CacheReadPrice, in.CacheWritePrice, in.Author, in.Vendor, in.Status,
+		in.Strategy)
 	rec, err := scanModelPricing(row)
 	if err == nil {
 		return rec, nil
@@ -425,6 +442,9 @@ func (r *SQLPricingRepo) UpdateModelPricing(ctx context.Context, model string, p
 	}
 	if patch.Status != nil {
 		add("status", *patch.Status)
+	}
+	if patch.StrategySet {
+		add("strategy", patch.Strategy)
 	}
 	// updated_at 由数据库 now() 推进；调用方传入的 expected 只用于 WHERE。
 	sets = append(sets, "updated_at = now()")

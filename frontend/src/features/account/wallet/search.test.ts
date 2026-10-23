@@ -12,11 +12,15 @@ import {
 } from './search'
 
 describe('validateWalletSearch (R-M3-01)', () => {
-  it('defaults to the top-up tab and keeps ?tab=transactions', () => {
+  it('defaults to the overview tab and keeps explicit tabs', () => {
     expect(validateWalletSearch({}).tab).toBeUndefined()
-    expect(validateWalletSearch({ tab: 'topup' }).tab).toBeUndefined()
-    expect(validateWalletSearch({ tab: 'bogus' }).tab).toBeUndefined()
+    expect(validateWalletSearch({ tab: 'overview' }).tab).toBeUndefined()
+    expect(validateWalletSearch({ tab: 'topup' }).tab).toBe('topup')
+    expect(validateWalletSearch({ tab: 'subscription' }).tab).toBe(
+      'subscription',
+    )
     expect(validateWalletSearch({ tab: 'transactions' }).tab).toBe('transactions')
+    expect(validateWalletSearch({ tab: 'bogus' }).tab).toBeUndefined()
   })
 
   it('drops unknown enum values and keeps valid filters', () => {

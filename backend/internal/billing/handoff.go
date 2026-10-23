@@ -5,10 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/store"
 )
+
+// RequestPricingStore 是 request_pricing 的读写缝（spec §5.2）。
+//
+// *store.RequestPricingRepo 是生产实现；单测用内存 fake。方法集合只包含
+// 计费需要的三个操作：预扣写、结算读、周期清理。
+type RequestPricingStore interface {
+	Upsert(ctx context.Context, rec store.RequestPricing) error
+	Get(ctx context.Context, requestID string) (store.RequestPricing, bool, error)
+	DeleteBefore(ctx context.Context, cutoff time.Time) (int64, error)
+}
 
 // 本文件是任务平台的**按 requestID 结算入口**（contract.BillingHandoff 的
 // 引擎侧）。任务提交返回后原 Session 已 Detach（心跳停止、hold 保留），
@@ -131,6 +142,11 @@ func (e *Engine) terminateByRequestID(requestID string, tokenID int64, cost *int
 			// 空 fact 由 terminateSubscriptionLocked 按「预扣额即成本」结算
 			// （delta=0），不需要钱包的 terminateAtHeld 分支。forcedCost 非
 			// nil 时同函数改用冻结成本。
+			if needsFrozenPricing(cost, fact) {
+				if _, err := e.loadFrozenPricing(ctx, requestID, s); err != nil {
+					return err
+				}
+			}
 			return s.Terminate(fact)
 		case errors.Is(recErr, store.ErrPreConsumeNotFound):
 			// 不是订阅来源：继续钱包路径。
@@ -167,7 +183,58 @@ func (e *Engine) terminateByRequestID(requestID string, tokenID int64, cost *int
 			TokenID:   int(tokenID),
 		},
 	}
+	// 非空 fact 会按模型快照重算：时段倍率必须来自预扣时的冻结事实，
+	// 不能按结算时刻重新匹配窗口（spec §5.2）。读回失败 fail-closed。
+	if needsFrozenPricing(cost, fact) {
+		if _, err := e.loadFrozenPricing(ctx, requestID, s); err != nil {
+			return err
+		}
+	}
 	return s.Terminate(fact)
+}
+
+// needsFrozenPricing 判断重建的会话是否会解析价格快照。
+//
+// 只有「需要按 fact 重算」的路径才依赖 request_pricing；按预扣额结清
+// （terminateAtHeld / 订阅 delta=0）与冻结成本不读定价，缺行不应阻塞
+// 一个纯资金收尾操作。
+func needsFrozenPricing(cost *int64, fact contract.UsageFact) bool {
+	if cost != nil {
+		return false
+	}
+	return fact.Model != "" || !usageIsZero(fact.Usage)
+}
+
+// loadFrozenPricing 把 request_pricing 的冻结时间与倍率写入重建的会话。
+//
+// 【失败方向】读表错误返回 error（fail-closed）：用 time.Now() 兜底会让
+// 跨整点/预扣后改策略的请求按另一套价结算，比拒绝结算更危险。缺行是另一
+// 回事——本功能上线前的在飞请求没有记录，按既有行为继续并 WARN（plan
+// Task 4「if absent, fall back to the existing behavior and log a WARN」）。
+func (e *Engine) loadFrozenPricing(ctx context.Context, requestID string, s *Session) (bool, error) {
+	if e.requestPricing == nil || s == nil {
+		return false, nil
+	}
+	// 非 UUID 的 requestID 不可能有记录（persistRequestPricing 同样跳过）：
+	// 按缺行处理，避免内部/演示 id 的结算被 uuid 校验永久卡住。
+	if !store.ValidRequestPricingID(requestID) {
+		slog.Warn("billing: request_id is not a UUID; no frozen request pricing available",
+			"request_id", requestID)
+		return false, nil
+	}
+	rec, ok, err := e.requestPricing.Get(ctx, requestID)
+	if err != nil {
+		return false, fmt.Errorf("billing: read frozen request pricing for %s: %w", requestID, err)
+	}
+	if !ok {
+		slog.Warn("billing: request_pricing row missing; settling with current pricing",
+			"request_id", requestID)
+		return false, nil
+	}
+	s.requestTime = rec.RequestTime
+	multiplier := rec.TimeMultiplier
+	s.frozenMultiplier = &multiplier
+	return true, nil
 }
 
 // RefreshInflightLeases 续租一批订阅请求的 in-flight 租约（R-W9B-02）。

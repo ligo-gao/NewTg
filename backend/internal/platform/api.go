@@ -304,7 +304,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	// 返回的 source 实例必须保留：它同时是（a）真实计费引擎的定价源，
 	// （b）管理面定价写成功后的缓存失效目标（R-63）。两处必须共用同一实例，
 	// 否则失效钩子清的是另一个缓存，定价变更仍要等 30s TTL。
-	source, err := initBillingAssembly(gormDB, center, cfg, log, "gateway")
+	source, err := initBillingAssembly(gormDB, db, center, cfg, log, "gateway")
 	if err != nil {
 		return nil, fmt.Errorf("gateway: billing assembly: %w", err)
 	}
@@ -337,6 +337,9 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	}
 	engine := newDemoAwareBillingEngine(gormDB, logsDB, rdb, center, cfg.DemoEnabled, source,
 		billing.NewRegistry(rdb), newUsageLogDBLogger(logsDB, feedPublisher, center, rdb, log, perfRecorder))
+	// spec §5.2：冻结请求时间与时段倍率，供任务轮询/崩溃恢复的异步结算
+	// 读回（不使用 time.Now() 重新匹配窗口）。
+	engine.SetRequestPricingStore(store.NewRequestPricingRepo(db))
 	// 其余读取面（守卫、中继额度、管理面 RouterConfig）派生自引擎的有效
 	// 配置面，确保三处与计费看到同一个 NEWTG_DEMO_ENABLED 有效值。
 	demoConfig := engine.EffectiveConfig()
@@ -540,6 +543,17 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	}
 	channelRevealGate := auth.NewReauthGate(rdb, revealSource, auth.VerifyTOTP)
 
+	// 模型性能测速：与体检/手工测试共用同一出站客户端与凭据解封面，不新增
+	// 第二套上游策略。30s 覆盖「建连 + 整段生成」（R-M4-14 的例外口径）。
+	perfRunner, err := channelhealth.NewPerfRunner(channelhealth.ProberConfig{
+		Opener:  channelSealer,
+		Client:  httpapi.NewChannelProbeClient(),
+		Timeout: 30 * time.Second,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gateway: channel performance runner: %w", err)
+	}
+
 	channelHandler := httpapi.NewChannelHandler(
 		store.NewChannelRepo(db),
 		store.NewTokenRepo(db),
@@ -559,6 +573,9 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 			// W16-1：渠道指标直查日志库 usage_logs（+60s Redis 缓存）。
 			// 主库渠道行与日志库分离，指标仓储必须拿 logsDB，不能拿 db。
 			Metrics: store.NewChannelMetricsRepo(logsDB),
+			// 测速结果保存到主库（依赖 channels/users 外键），不是日志库。
+			Performer:   perfRunner.Run,
+			Performance: store.NewSQLModelPerformanceStore(db),
 		},
 	)
 

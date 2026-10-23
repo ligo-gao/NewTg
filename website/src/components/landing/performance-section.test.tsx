@@ -29,6 +29,8 @@ function model(modelID: string, displayName: string, vendor: string): PricingMod
     description: null,
     capabilities: [],
     tags: [],
+    endpoints: [],
+    group_price: null,
   };
 }
 
@@ -46,23 +48,31 @@ const catalog: PricingCatalog = {
   total: "6",
   page: 1,
   page_size: 100,
-  facets: { vendors: [] },
+  facets: { vendors: [], capabilities: [], context: [], groups: [], endpoints: [], pricing_types: [] },
   meta,
 };
 
-function metricsWith(sampleSize: number, tps: number | null): ModelMetrics {
+function metricsWith(
+  sampleSize: number,
+  tps: number | null,
+  options: {
+    avgTTFTMs?: number | null;
+    latestTest?: ModelMetrics["latest_test"] | undefined;
+  } = {},
+): ModelMetrics {
   return {
     range: "7d",
     window: { start: "2026-10-16T00:00:00Z", end: "2026-10-23T00:00:00Z" },
     summary: {
       avg_latency_ms: 820,
-      avg_ttft_ms: 210,
+      avg_ttft_ms: options.avgTTFTMs === undefined ? 210 : options.avgTTFTMs,
       success_rate: 0.99,
       tps,
       failed_24h: 1,
       sample_size: sampleSize,
     },
     per_group: [],
+    latest_test: options.latestTest ?? null,
   };
 }
 
@@ -70,7 +80,13 @@ function jsonResponse(body: unknown): Response {
   return { ok: true, status: 200, json: async () => body } as Response;
 }
 
-function stubFetch(failAllMetrics = false) {
+function stubFetch(
+  options: {
+    failAllMetrics?: boolean;
+    metrics?: Record<string, ModelMetrics>;
+  } = {},
+) {
+  const { failAllMetrics = false, metrics = {} } = options;
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL) => {
@@ -84,10 +100,15 @@ function stubFetch(failAllMetrics = false) {
         }
         const encoded = url.split("/api/pricing/")[1].split("/metrics")[0];
         const modelID = decodeURIComponent(encoded);
+        if (metrics[modelID]) {
+          return Promise.resolve(jsonResponse(metrics[modelID]));
+        }
         if (modelID === "google/gemini") {
           return Promise.resolve({ ok: false, status: 503, json: async () => ({}) } as Response);
         }
-        return Promise.resolve(jsonResponse(metricsWith(modelID === "deepseek/deepseek-reasoner" ? 5 : 1543, 42.5)));
+        return Promise.resolve(
+          jsonResponse(metricsWith(modelID === "deepseek/deepseek-reasoner" ? 5 : 1543, 42.5)),
+        );
       }
       return Promise.resolve({ ok: false, status: 404, json: async () => ({}) } as Response);
     }),
@@ -127,7 +148,7 @@ describe("PerformanceSection", () => {
   });
 
   it("degrades to dashes and a retry notice when the metrics endpoint is unavailable", async () => {
-    stubFetch(true);
+    stubFetch({ failAllMetrics: true });
     renderSection();
 
     expect(await screen.findByText("性能数据暂不可用")).toBeInTheDocument();
@@ -135,5 +156,80 @@ describe("PerformanceSection", () => {
       expect(screen.getAllByText("—").length).toBeGreaterThan(0);
     });
     expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
+  });
+
+  it("prefers real usage summary values over a probe", async () => {
+    stubFetch({
+      metrics: {
+        "openai/gpt-4o": metricsWith(1543, 42.5, {
+          avgTTFTMs: 210,
+          latestTest: {
+            ttft_ms_p50: 999,
+            ttft_ms_p95: 1500,
+            latency_ms_p50: 2000,
+            latency_ms_p95: 3000,
+            tps: 1.5,
+            success_rate: 0.8,
+            sample_size: 50,
+            tested_at: "2026-10-23T00:00:00Z",
+          },
+        }),
+      },
+    });
+    renderSection();
+
+    const row = (await screen.findByText("GPT-4o")).closest("tr");
+    if (!(row instanceof HTMLTableRowElement)) {
+      throw new Error("missing GPT-4o row");
+    }
+    expect(within(row).getByText("210 ms")).toBeInTheDocument();
+    expect(within(row).getByText("42.5 tokens/s")).toBeInTheDocument();
+    expect(within(row).queryByText("999 ms")).toBeNull();
+    expect(within(row).queryByText("主动测试")).toBeNull();
+  });
+
+  it("falls back to the latest probe when the usage corpus has no values", async () => {
+    stubFetch({
+      metrics: {
+        "openai/gpt-4o": metricsWith(0, null, {
+          avgTTFTMs: null,
+          latestTest: {
+            ttft_ms_p50: 350,
+            ttft_ms_p95: 700,
+            latency_ms_p50: 1200,
+            latency_ms_p95: 2200,
+            tps: 20,
+            success_rate: 0.98,
+            sample_size: 200,
+            tested_at: "2026-10-23T00:00:00Z",
+          },
+        }),
+      },
+    });
+    renderSection();
+
+    const row = (await screen.findByText("GPT-4o")).closest("tr");
+    if (!(row instanceof HTMLTableRowElement)) {
+      throw new Error("missing GPT-4o row");
+    }
+    expect(within(row).getByText("350 ms")).toBeInTheDocument();
+    expect(within(row).getByText("20.0 tokens/s")).toBeInTheDocument();
+    expect(within(row).getByText("主动测试")).toBeInTheDocument();
+  });
+
+  it("shows a dash for both values when neither the corpus nor a probe has data", async () => {
+    stubFetch({
+      metrics: {
+        "openai/gpt-4o": metricsWith(0, null, { avgTTFTMs: null, latestTest: null }),
+      },
+    });
+    renderSection();
+
+    const row = (await screen.findByText("GPT-4o")).closest("tr");
+    if (!(row instanceof HTMLTableRowElement)) {
+      throw new Error("missing GPT-4o row");
+    }
+    expect(within(row).getAllByText("—")).toHaveLength(2);
+    expect(within(row).queryByText("主动测试")).toBeNull();
   });
 });

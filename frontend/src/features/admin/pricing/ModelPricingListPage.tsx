@@ -566,6 +566,14 @@ export function ModelPricingListPage({
                     >
                       <td className="px-4 py-3">
                         <span className="font-mono text-ink-1">{row.model}</span>{' '}
+                        {row.strategy_kind === 'peak_offpeak' ? (
+                          <Tag
+                            variant="info"
+                            ariaLabel={t('admin.pricing.strategy_kind_peak_offpeak')}
+                          >
+                            {t('admin.pricing.strategy_kind_peak_offpeak')}
+                          </Tag>
+                        ) : null}{' '}
                         {row.free ? (
                           <Tag variant="success" ariaLabel={t('admin.pricing.free')}>
                             {t('admin.pricing.free')}

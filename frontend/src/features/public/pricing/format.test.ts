@@ -5,7 +5,10 @@ import {
   creditsToCny,
   currencyReference,
   formatCredit,
+  formatPerfMilliseconds,
+  formatPerfTPS,
   formatRatio,
+  formatSuccessRate,
   formatTotal,
   parseCredit,
   rechargeReference,
@@ -73,5 +76,21 @@ describe('pricing amount formatting (int64 strings, never Number)', () => {
     expect(formatRatio(null)).toBeNull()
     expect(formatTotal('128', 'en')).toBe('128')
     expect(formatTotal('128', 'de')).toBe('128')
+  })
+
+  it('formats performance values and renders missing data as a dash', () => {
+    expect(formatPerfMilliseconds(210, 'en')).toBe('210 ms')
+    expect(formatPerfMilliseconds(0, 'en')).toBe('0 ms')
+    expect(formatPerfMilliseconds(null, 'en')).toBe('—')
+    expect(formatPerfMilliseconds(undefined, 'en')).toBe('—')
+    expect(formatPerfMilliseconds(Number.NaN, 'en')).toBe('—')
+
+    expect(formatPerfTPS(42.55, 'en')).toBe('42.6')
+    expect(formatPerfTPS(0, 'en')).toBe('0')
+    expect(formatPerfTPS(null, 'en')).toBe('—')
+
+    expect(formatSuccessRate(0.99, 'en')).toBe('99%')
+    expect(formatSuccessRate(0.9833, 'en')).toBe('98.3%')
+    expect(formatSuccessRate(null, 'en')).toBe('—')
   })
 })

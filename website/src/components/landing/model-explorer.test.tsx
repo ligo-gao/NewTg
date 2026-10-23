@@ -35,6 +35,8 @@ function model(
     description: null,
     capabilities: [],
     tags: [],
+    endpoints: [],
+    group_price: null,
     ...overrides,
   };
 }
@@ -45,6 +47,15 @@ const catalog: PricingCatalog = {
     model("deepseek/deepseek-chat", "DeepSeek-V3.2", "DeepSeek", {
       prompt_price: "28",
       completion_price: "42",
+      pricing_schedule: {
+        kind: "peak_offpeak",
+        timezone: "Asia/Shanghai",
+        default_multiplier: 0.5,
+        holiday_policy: "cn_offpeak",
+        windows: [
+          { name: "上午高峰", days: [1, 2, 3, 4, 5], start: "09:00", end: "12:00", multiplier: 1 },
+        ],
+      },
     }),
     model("deepseek/deepseek-reasoner", "DeepSeek-R1", "DeepSeek"),
     model("anthropic/claude", "Claude Sonnet 4.5", "Anthropic"),
@@ -55,6 +66,11 @@ const catalog: PricingCatalog = {
   page: 1,
   page_size: 100,
   facets: {
+    capabilities: [],
+    context: [],
+    groups: [],
+    endpoints: [],
+    pricing_types: [],
     vendors: [
       { value: "openai", label: "OpenAI", count: 1 },
       { value: "deepseek", label: "DeepSeek", count: 2 },
@@ -80,6 +96,7 @@ function metricsFor(modelID: string): ModelMetrics {
       sample_size: lowSample ? 5 : 1543,
     },
     per_group: [],
+    latest_test: null,
   };
 }
 
@@ -140,8 +157,27 @@ describe("ModelExplorer live data", () => {
     expect(document.querySelector("#models [aria-live]")?.textContent).toContain("6");
   });
 
-  it("searches the full catalog, not just the six featured models", async () => {
-    const user = userEvent.setup();
+  it("shows the peak/off-peak badge only for models with a published schedule", async () => {
+    renderExplorer();
+
+    const scheduledHeading = await screen.findByRole("heading", { name: "DeepSeek-V3.2" });
+    const scheduledCard = scheduledHeading.closest("article");
+    if (!(scheduledCard instanceof HTMLElement)) {
+      throw new Error("missing scheduled model card");
+    }
+    expect(within(scheduledCard).getByTestId("schedule-badge")).toHaveTextContent(
+      copy.pricingPage.schedule.badge,
+    );
+
+    const flatHeading = screen.getByRole("heading", { name: "GPT-4o" });
+    const flatCard = flatHeading.closest("article");
+    if (!(flatCard instanceof HTMLElement)) {
+      throw new Error("missing flat model card");
+    }
+    expect(within(flatCard).queryByTestId("schedule-badge")).not.toBeInTheDocument();
+  });
+
+  it("searches the full catalog, not just the six featured models", async () => {    const user = userEvent.setup();
     renderExplorer();
     await screen.findByRole("heading", { name: "GPT-4o" });
 

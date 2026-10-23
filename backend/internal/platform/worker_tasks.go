@@ -16,8 +16,10 @@ package platform
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -25,7 +27,9 @@ import (
 	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/config"
 	"newtg/gateway/internal/configcenter"
+	"newtg/gateway/internal/holiday"
 	"newtg/gateway/internal/httpapi"
+	"newtg/gateway/internal/pricingstrategy"
 	"newtg/gateway/internal/rankings"
 	"newtg/gateway/internal/worker"
 )
@@ -207,6 +211,9 @@ func bindWorkerTaskRuns(registry *worker.Registry, deps workerTaskDeps) error {
 			}
 			return worker.Result{"periods": 4}, nil
 		},
+		"holiday_sync": func(ctx context.Context) (worker.Result, error) {
+			return runHolidaySync(ctx, deps)
+		},
 	}
 	for name, run := range bindings {
 		if err := registry.BindRun(name, run); err != nil {
@@ -221,5 +228,118 @@ func bindWorkerTaskRuns(registry *worker.Registry, deps workerTaskDeps) error {
 		"log_partition_drop_disabled"); err != nil {
 		return fmt.Errorf("worker task enable predicate: %w", err)
 	}
+	// holiday_sync 的出站开关（HOLIDAY_SYNC_ENABLED）：关闭时调度 pass 跳过、
+	// 手动触发 409 holiday_sync_disabled。已同步的 holiday_calendar 行仍参与
+	// 计价——关掉的是拉取，不是使用。deps.Cfg 为 nil 表示装配不完整，按关闭
+	// 处理（与配置默认 true 相反，但装配缺配置时不该发请求）。
+	if err := registry.SetEnabled("holiday_sync",
+		func() bool { return deps.Cfg != nil && deps.Cfg.HolidaySyncEnabled },
+		"holiday_sync_disabled"); err != nil {
+		return fmt.Errorf("worker task enable predicate: %w", err)
+	}
 	return nil
+}
+
+// ---- holiday_sync（spec §5.2.1） ------------------------------------------
+
+const (
+	// holidaySyncClientTimeout 是单次拉取的 HTTP 超时（spec §5.2.1「HTTP 超时 10s」）。
+	holidaySyncClientTimeout = 10 * time.Second
+)
+
+// holidaySyncLocation 是中国日期的「今天/今年」口径。中国不实行夏令时，
+// 固定 +08:00 与 Asia/Shanghai 在当前与历史年份都等价，且不会因容器缺
+// tzdata 而 init 失败。
+var holidaySyncLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
+
+// runHolidaySync 拉取并替换当前年度（12 月追加下一年）的中国节假日日历。
+//
+// 每年独立「拉取 → 校验 → 整年替换」：某一年失败只保留该年的旧行，不影响
+// 另一次写入（spec §5.2.1「失败保留上一次的好数据」）。运行结果只包含年、
+// 假日数与调休数（运行历史保留 30 天，不得写入上游响应体）。
+func runHolidaySync(ctx context.Context, deps workerTaskDeps) (worker.Result, error) {
+	log := deps.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	if deps.Cfg == nil {
+		return nil, errors.New("worker: holiday sync requires config")
+	}
+	if deps.DB == nil {
+		return nil, errors.New("worker: holiday sync requires the main database")
+	}
+
+	store := holiday.NewStore(deps.DB)
+	client := &http.Client{Timeout: holidaySyncClientTimeout}
+	template := deps.Cfg.HolidaySyncURLTemplate
+	years := holidaySyncYears(time.Now())
+
+	var (
+		failures []error
+		offDays  int
+		makeups  int
+		perYear  []map[string]any
+	)
+	for _, year := range years {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		days, err := holiday.FetchYear(ctx, client, template, year)
+		if err != nil {
+			log.Warn("worker: holiday sync fetch failed; keeping existing rows",
+				"year", year, "source", holiday.SourceName, "error", err)
+			failures = append(failures, fmt.Errorf("year %d: %w", year, err))
+			continue
+		}
+		off, makeup := countHolidayDays(days)
+		if err := store.ReplaceYear(ctx, pricingstrategy.CountryCN, year, days, holiday.SourceName); err != nil {
+			log.Warn("worker: holiday sync store failed; existing rows kept",
+				"year", year, "source", holiday.SourceName, "error", err)
+			failures = append(failures, fmt.Errorf("year %d: %w", year, err))
+			continue
+		}
+		log.Info("worker: holiday sync stored year",
+			"year", year, "off_days", off, "makeup_days", makeup, "source", holiday.SourceName)
+		offDays += off
+		makeups += makeup
+		perYear = append(perYear, map[string]any{
+			"year": year, "off_days": off, "makeup_days": makeup,
+		})
+	}
+
+	result := worker.Result{
+		"years":       perYear,
+		"off_days":    offDays,
+		"makeup_days": makeups,
+	}
+	if len(failures) > 0 {
+		// 部分年份失败仍返回已成功的计数：运行历史里能看到「成功的年份
+		// 已写库、失败的年份保留旧数据」。errors.Join 保留 context 取消
+		// 的 errors.Is 语义。
+		return result, errors.Join(failures...)
+	}
+	return result, nil
+}
+
+// holidaySyncYears 返回本次要同步的年份：始终含当年；12 月追加下一年，
+// 让元旦假期在数据源发布后尽快进入日历（spec §5.2.1）。
+func holidaySyncYears(now time.Time) []int {
+	local := now.In(holidaySyncLocation)
+	years := []int{local.Year()}
+	if local.Month() == time.December {
+		years = append(years, local.Year()+1)
+	}
+	return years
+}
+
+// countHolidayDays 统计法定假日与调休上班日，用于运行结果与日志。
+func countHolidayDays(days []holiday.Day) (off, makeup int) {
+	for _, day := range days {
+		if day.OffDay {
+			off++
+		} else {
+			makeup++
+		}
+	}
+	return off, makeup
 }

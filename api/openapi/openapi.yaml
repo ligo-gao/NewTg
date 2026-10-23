@@ -194,8 +194,12 @@ paths:
     $ref: './paths/admin.yaml#/paths/~1api~1model-pricing'
   /api/model-pricing/models:
     $ref: './paths/admin.yaml#/paths/~1api~1model-pricing~1models'
+  /api/model-pricing/candidates:
+    $ref: './paths/admin.yaml#/paths/~1api~1model-pricing~1candidates'
   /api/model-pricing:preview:
     $ref: './paths/admin.yaml#/paths/~1api~1model-pricing:preview'
+  /api/model-pricing:preview-strategy:
+    $ref: './paths/admin.yaml#/paths/~1api~1model-pricing:preview-strategy'
   /api/model-pricing/{model}:
     $ref: './paths/admin.yaml#/paths/~1api~1model-pricing~1{model}'
   /api/model-pricing/{model}:enable:
@@ -433,6 +437,9 @@ paths:
 
   /api/channels/{id}/test:
     $ref: './paths/admin.yaml#/paths/~1api~1channels~1{id}~1test'
+  # 渠道模型性能测速（POST 执行并落库、GET 读历史）。
+  /api/channels/{id}/performance-tests:
+    $ref: './paths/admin.yaml#/paths/~1api~1channels~1{id}~1performance-tests'
   /v1/chat/completions:
     $ref: './paths/relay.yaml#/paths/~1v1~1chat~1completions'
   # Anthropic Messages 原生入口（W7/M1）：Claude 原生客户端直连；非 Anthropic
