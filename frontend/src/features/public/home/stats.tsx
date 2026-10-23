@@ -4,7 +4,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { toApiError } from '@/api/client'
 import { parseProblem } from '@/api/errors'
 import type { components } from '@/api/schema'
+import { usePublicStatus } from '@/lib/public-status'
 import { useI18n } from '@/shared/lib/i18n-context'
+
+import { navEntryOf } from '../nav-visibility'
 
 /**
  * Generated contract for `GET /api/home/stats` (R-PUB-08). The local
@@ -139,6 +142,8 @@ function useInView() {
 export function StatsSection() {
   const { t } = useI18n()
   const { ref, inView } = useInView()
+  const status = usePublicStatus()
+  const pricingEnabled = navEntryOf(status.data?.nav, 'pricing').enabled
   const query = useQuery({
     queryKey: HOME_STATS_QUERY_KEY,
     queryFn: ({ signal }) => fetchHomeStats(signal),
@@ -164,27 +169,27 @@ export function StatsSection() {
   if (query.isError && cached === null) return null
 
   return (
-    <section ref={ref} className="border-y border-border-hairline bg-surface-subtle">
-      <div className="mx-auto w-full max-w-[1200px] px-4 py-10 md:px-6">
-        <ul className="grid grid-cols-2 gap-6 md:grid-cols-4">
+    <section ref={ref} className="stats">
+      <div className="wrap">
+        <div className="stats-row">
           {(stats === null ? STAT_KEYS : visible).map((key) => (
-            <li key={key}>
+            <div key={key} className="stat">
               {stats === null ? (
-                <span
-                  aria-hidden="true"
-                  className="block h-8 w-16 rounded bg-ink-4/30"
-                />
+                <span aria-hidden="true" className="stat-skeleton" />
               ) : (
-                <span className="block text-2xl font-semibold leading-8 text-ink-1">
+                <span className="stat-n">
                   {new Intl.NumberFormat().format(stats[key])}
                 </span>
               )}
-              <span className="mt-1 block text-xs font-medium leading-[18px] text-ink-2">
-                {t(`public.home.stats.${key}`)}
-              </span>
-            </li>
+              <span className="stat-l">{t(`public.home.stats.${key}`)}</span>
+            </div>
           ))}
-        </ul>
+          {pricingEnabled ? (
+            <a className="stats-link" href="/pricing">
+              {t('public.home.stats.link')}
+            </a>
+          ) : null}
+        </div>
       </div>
     </section>
   )

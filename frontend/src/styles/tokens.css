@@ -118,6 +118,31 @@
   /* Primitive extension required by the Button shell: text on --brand.
      White on --brand is the documented 5.17:1 pairing (§4.6.1). */
   --on-brand: #ffffff;
+
+  /* Public homepage — "The Relay Board" (§F-09-01 visual direction).
+     Scoped to `.public-shell`; the console keeps the product palette above.
+     Copper is the only signal colour: it marks the path a request takes. */
+  --home-paper: #f3f4f1;
+  --home-paper-2: #e9ece6;
+  --home-card: #ffffff;
+  --home-ink: #101c23;
+  --home-muted: #5b666c;
+  --home-faint: #7c878c;
+  --home-rule: #d7dbd4;
+  --home-rule-strong: #c1c7bf;
+  --home-panel: #0d1a22;
+  --home-panel-2: #112530;
+  --home-panel-line: #28424f;
+  --home-panel-ink: #e9eff2;
+  --home-panel-muted: #9db4c0;
+  --home-signal: #b84d1f;
+  --home-signal-strong: #9c3f18;
+  --home-signal-bright: #e2773f;
+  --home-signal-soft: #f6e9e1;
+  --home-signal-line: #e7c5b5;
+  --home-on-signal: #ffffff;
+  --home-pulse-rgb: 226 119 63;
+  --home-shadow: 0 18px 48px rgb(13 26 34 / 0.12);
 }
 
 :root[data-theme='dark'] {
@@ -200,4 +225,29 @@
      instead: #0C111D on #3B82F6 measures 5.13:1. The light theme keeps white
      (5.17:1 on #2563EB), so only the dark value changes. */
   --on-brand: #0c111d;
+
+  /* Public homepage dark column. The public shell follows the same roles:
+     paper becomes the night surface, the panel keeps its instrument colour,
+     and copper brightens to stay legible on both. */
+  --home-paper: #0b1215;
+  --home-paper-2: #101a1e;
+  --home-card: #121e23;
+  --home-ink: #e9eff2;
+  --home-muted: #a3b0b6;
+  --home-faint: #7d8b91;
+  --home-rule: #22323a;
+  --home-rule-strong: #2e424c;
+  --home-panel: #0d1a22;
+  --home-panel-2: #112530;
+  --home-panel-line: #28424f;
+  --home-panel-ink: #e9eff2;
+  --home-panel-muted: #9db4c0;
+  --home-signal: #e2773f;
+  --home-signal-strong: #f2a077;
+  --home-signal-bright: #f08a52;
+  --home-signal-soft: #2a1a13;
+  --home-signal-line: #5a3324;
+  --home-on-signal: #0b1215;
+  --home-pulse-rgb: 240 138 82;
+  --home-shadow: 0 18px 48px rgb(0 0 0 / 0.45);
 }

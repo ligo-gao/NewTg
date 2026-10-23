@@ -107,73 +107,81 @@ export function OnboardingSection({ serverAddress, isLoggedIn }: OnboardingSecti
   }
 
   return (
-    <section className="bg-surface-card">
-      <div className="mx-auto w-full max-w-[1200px] px-4 py-16 md:px-6 md:py-20">
-        <h2 className="text-base font-semibold leading-6 text-ink-1">
-          {t('public.home.onboarding.title')}
-        </h2>
+    <section className="start">
+      <div className="wrap">
+        <div className="section-head">
+          <h2 className="section-title">{t('public.home.onboarding.title')}</h2>
+          <p className="note">{t('public.home.onboarding.lede')}</p>
+        </div>
 
-        <ol className="mt-8 grid gap-8 lg:grid-cols-3">
-          <li>
-            <span className="text-xs font-medium text-ink-3">
-              {t('public.home.onboarding.step', { number: 1 })}
-            </span>
-            <h3 className="mt-1 text-[15px] font-semibold text-ink-1">
-              {t('public.home.onboarding.token_title')}
-            </h3>
-            <p className="mt-1 text-sm leading-[22px] text-ink-2">
-              {t('public.home.onboarding.token_body')}
-            </p>
-            <a
-              href={createTokenHref}
-              className="mt-4 inline-flex h-9 items-center rounded-lg bg-brand px-3.5 text-sm font-medium text-on-brand hover:bg-brand-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
-            >
-              {t('public.home.onboarding.create_token')}
-            </a>
-          </li>
+        <div className="start-grid">
+          <ol className="steps">
+            <li className="step">
+              <span className="step-n" aria-hidden="true">
+                01
+              </span>
+              <div>
+                <span className="sr-only">
+                  {t('public.home.onboarding.step', { number: 1 })}
+                </span>
+                <h3>{t('public.home.onboarding.token_title')}</h3>
+                <p>{t('public.home.onboarding.token_body')}</p>
+                <a href={createTokenHref} className="btn btn-sm">
+                  {t('public.home.onboarding.create_token')}
+                </a>
+              </div>
+            </li>
 
-          <li>
-            <span className="text-xs font-medium text-ink-3">
-              {t('public.home.onboarding.step', { number: 2 })}
-            </span>
-            <h3 className="mt-1 text-[15px] font-semibold text-ink-1">
-              {t('public.home.onboarding.base_url_title')}
-            </h3>
-            <p className="mt-1 text-sm leading-[22px] text-ink-2">
-              {t('public.home.onboarding.base_url_body')}
-            </p>
-            <div className="mt-4 flex items-center gap-2">
-              <code className="min-w-0 flex-1 overflow-x-auto rounded-lg border border-border-default bg-surface-subtle px-3 py-2 font-mono text-[13px] text-ink-1">
-                {base.url}
-              </code>
-              <button
-                type="button"
-                aria-label={t('public.home.onboarding.copy_base_url')}
-                onClick={() => void copy(base.url)}
-                className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-border-default text-ink-2 hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            <li className="step">
+              <span className="step-n" aria-hidden="true">
+                02
+              </span>
+              <div>
+                <span className="sr-only">
+                  {t('public.home.onboarding.step', { number: 2 })}
+                </span>
+                <h3>{t('public.home.onboarding.base_url_title')}</h3>
+                <p>{t('public.home.onboarding.base_url_body')}</p>
+                <div className="baseurl">
+                  <code>{base.url}</code>
+                  <button
+                    type="button"
+                    aria-label={t('public.home.onboarding.copy_base_url')}
+                    onClick={() => void copy(base.url)}
+                    className="copy-btn"
+                  >
+                    <Copy01Icon size={16} strokeWidth={1.5} />
+                  </button>
+                </div>
+                {base.placeholder ? (
+                  <p className="step-hint">
+                    {t('public.home.onboarding.base_url_unset')}
+                  </p>
+                ) : null}
+              </div>
+            </li>
+
+            <li className="step">
+              <span className="step-n" aria-hidden="true">
+                03
+              </span>
+              <div>
+                <span className="sr-only">
+                  {t('public.home.onboarding.step', { number: 3 })}
+                </span>
+                <h3>{t('public.home.onboarding.request_title')}</h3>
+                <p>{t('public.home.onboarding.request_body')}</p>
+              </div>
+            </li>
+          </ol>
+
+          <div className="terminal">
+            <div className="term-bar">
+              <div
+                role="tablist"
+                aria-label={t('public.home.onboarding.lang_label')}
+                className="term-tabs"
               >
-                <Copy01Icon size={16} strokeWidth={1.5} />
-              </button>
-            </div>
-            {base.placeholder ? (
-              <p className="mt-2 text-xs text-ink-3">
-                {t('public.home.onboarding.base_url_unset')}
-              </p>
-            ) : null}
-          </li>
-
-          <li>
-            <span className="text-xs font-medium text-ink-3">
-              {t('public.home.onboarding.step', { number: 3 })}
-            </span>
-            <h3 className="mt-1 text-[15px] font-semibold text-ink-1">
-              {t('public.home.onboarding.request_title')}
-            </h3>
-            <p className="mt-1 text-sm leading-[22px] text-ink-2">
-              {t('public.home.onboarding.request_body')}
-            </p>
-            <div className="mt-4">
-              <div role="tablist" aria-label={t('public.home.onboarding.lang_label')} className="flex gap-1">
                 {SAMPLE_LANGS.map((item) => (
                   <button
                     key={item}
@@ -181,35 +189,29 @@ export function OnboardingSection({ serverAddress, isLoggedIn }: OnboardingSecti
                     role="tab"
                     aria-selected={lang === item}
                     onClick={() => setLang(item)}
-                    className={[
-                      'h-8 rounded-lg px-2.5 text-[13px]',
-                      lang === item
-                        ? 'bg-surface-hover font-medium text-ink-1'
-                        : 'text-ink-2 hover:text-ink-1',
-                    ].join(' ')}
+                    className="term-tab"
                   >
                     {t(`public.home.onboarding.lang.${item}`)}
                   </button>
                 ))}
               </div>
-              <div className="mt-2 rounded-lg border border-border-default bg-surface-subtle">
-                <pre className="overflow-x-auto p-3 font-mono text-[13px] leading-5 text-ink-1">
-                  <code className="select-text">{code}</code>
-                </pre>
-                <div className="flex justify-end border-t border-border-hairline p-2">
-                  <button
-                    type="button"
-                    onClick={() => void copy(code)}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] text-ink-2 hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
-                  >
-                    <Copy01Icon size={14} strokeWidth={1.5} />
-                    {t('public.home.onboarding.copy_code')}
-                  </button>
-                </div>
-              </div>
+              <button
+                type="button"
+                onClick={() => void copy(code)}
+                className="term-copy"
+              >
+                {t('public.home.onboarding.copy_code')}
+              </button>
             </div>
-          </li>
-        </ol>
+            <pre>
+              <code className="select-text">{code}</code>
+            </pre>
+            <div className="term-foot">
+              <span>{t('public.home.onboarding.term_base')}</span>
+              <span>{t('public.home.onboarding.term_sdks')}</span>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
   )

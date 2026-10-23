@@ -64,36 +64,24 @@ function PauseIcon({ paused }: { paused: boolean }) {
   )
 }
 
-function RedactionMask() {
-  return (
-    <span className="inline-flex items-center gap-1" aria-hidden="true">
-      {[0, 1, 2, 3].map((index) => (
-        <span key={index} className="h-3 w-1.5 rounded-sm bg-ink-4" />
-      ))}
-    </span>
-  )
-}
-
 function StatusCell({ status }: { status: LiveFeedEvent['status'] }) {
   const { t } = useI18n()
   return status === 'ok' ? (
-    <span className="inline-flex items-center gap-1 text-success">
-      <span aria-hidden="true">✓</span>
-      {t('public.live_feed.status.ok')}
+    <span className="status-ok">
+      <span aria-hidden="true">✓</span> {t('public.live_feed.status.ok')}
     </span>
   ) : (
-    <span className="inline-flex items-center gap-1 text-danger">
-      <span aria-hidden="true">▲</span>
-      {t('public.live_feed.status.error')}
+    <span className="status-error">
+      <span aria-hidden="true">▲</span> {t('public.live_feed.status.error')}
     </span>
   )
 }
 
 function FeedSkeleton() {
   return (
-    <div className="mt-4 flex flex-col gap-2" data-testid="live-feed-skeleton">
+    <div className="feed-skeleton" data-testid="live-feed-skeleton" aria-hidden="true">
       {[0, 1, 2, 3, 4].map((row) => (
-        <div key={row} className="h-10 rounded bg-ink-4/15" />
+        <span key={row} />
       ))}
     </div>
   )
@@ -109,19 +97,17 @@ function ConnectionBadge({ connection }: { connection: ConnectionState }) {
         : connection === 'reconnecting'
           ? t('public.live_feed.reconnecting')
           : t('public.live_feed.connecting')
-  const dot =
-    connection === 'live'
-      ? 'bg-brand animate-pulse motion-reduce:animate-none'
+  const tone =
+    connection === 'paused'
+      ? ' is-paused'
       : connection === 'reconnecting'
-        ? 'bg-warning'
-        : 'bg-ink-4'
+        ? ' is-warning'
+        : connection === 'connecting'
+          ? ' is-idle'
+          : ''
   return (
-    <span
-      role="status"
-      aria-live="polite"
-      className="inline-flex items-center gap-2 text-xs font-medium text-ink-2"
-    >
-      <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${dot}`} />
+    <span role="status" aria-live="polite" className={`live-badge${tone}`}>
+      <i aria-hidden="true" />
       {label}
     </span>
   )
@@ -130,58 +116,48 @@ function ConnectionBadge({ connection }: { connection: ConnectionState }) {
 function DesktopTable({ events, locale }: { events: LiveFeedEvent[]; locale: string }) {
   const { t } = useI18n()
   return (
-    <table className="mt-4 hidden w-full table-fixed text-left text-[13px] md:table">
+    <table className="ledger-table">
+      <caption>{t('public.live_feed.anonymized')}</caption>
+      <colgroup>
+        <col style={{ width: '10%' }} />
+        <col style={{ width: '27%' }} />
+        <col style={{ width: '15%' }} />
+        <col style={{ width: '18%' }} />
+        <col style={{ width: '16%' }} />
+        <col style={{ width: '14%' }} />
+      </colgroup>
       <thead>
-        <tr className="h-9 border-b border-brand-line text-xs text-ink-2">
-          <th scope="col" className="w-[88px] font-medium">
-            {t('public.live_feed.col.time')}
-          </th>
-          <th scope="col" className="font-medium">
-            {t('public.live_feed.col.model')}
-          </th>
-          <th scope="col" className="w-[150px] font-medium">
-            {t('public.live_feed.col.upstream')}
-          </th>
-          <th scope="col" className="w-[140px] text-right font-medium">
+        <tr>
+          <th scope="col">{t('public.live_feed.col.time')}</th>
+          <th scope="col">{t('public.live_feed.col.model')}</th>
+          <th scope="col">{t('public.live_feed.col.upstream')}</th>
+          <th scope="col" className="num">
             {t('public.live_feed.col.tokens')}
           </th>
-          <th scope="col" className="w-[96px] text-right font-medium">
+          <th scope="col" className="num">
             {t('public.live_feed.col.latency')}
           </th>
-          <th scope="col" className="w-[96px] text-right font-medium">
-            {t('public.live_feed.col.status')}
-          </th>
+          <th scope="col">{t('public.live_feed.col.status')}</th>
         </tr>
       </thead>
       <tbody>
         {events.slice(0, 12).map((event) => (
-          <tr
-            key={event.id}
-            data-event-id={event.id}
-            className="h-11 border-b border-border-hairline/60 hover:bg-surface-hover"
-          >
-            <td className="pr-4 font-mono tabular-nums text-ink-2">
-              {formatClock(event.ts, locale)}
-            </td>
-            <td className="truncate pr-4 text-ink-1" title={event.model}>
+          <tr key={event.id} data-event-id={event.id}>
+            <td className="time">{formatClock(event.ts, locale)}</td>
+            <td className="model" title={event.model}>
               {event.model}
             </td>
-            <td className="pr-4">
-              <span className="inline-flex items-center gap-2">
-                <span className="font-mono text-xs text-ink-2">{event.upstream}</span>
-                <RedactionMask />
-              </span>
-            </td>
-            <td className="pr-4 text-right font-mono tabular-nums text-ink-2">
+            <td className="data">{event.upstream}</td>
+            <td className="data num">
               {formatInteger(event.tokens_in, locale)}
-              <span className="px-1 text-ink-4">/</span>
+              <span aria-hidden="true"> / </span>
               {formatInteger(event.tokens_out, locale)}
             </td>
-            <td className="pr-4 text-right font-mono tabular-nums text-ink-2">
+            <td className="data num">
               {formatInteger(event.latency_ms, locale)}{' '}
               {t('public.live_feed.unit.ms')}
             </td>
-            <td className="text-right text-xs">
+            <td className="status-cell">
               <StatusCell status={event.status} />
             </td>
           </tr>
@@ -194,35 +170,25 @@ function DesktopTable({ events, locale }: { events: LiveFeedEvent[]; locale: str
 function MobileCards({ events, locale }: { events: LiveFeedEvent[]; locale: string }) {
   const { t } = useI18n()
   return (
-    <ul className="mt-4 flex flex-col gap-3 md:hidden">
+    <ul className="ledger-cards">
       {events.slice(0, 8).map((event) => (
-        <li
-          key={event.id}
-          data-event-id={event.id}
-          className="rounded-lg border border-border-hairline bg-surface-card p-4"
-        >
-          <div className="flex items-center justify-between">
-            <span className="font-mono text-xs tabular-nums text-ink-2">
-              {formatClock(event.ts, locale)}
-            </span>
+        <li key={event.id} data-event-id={event.id} className="ledger-card">
+          <div className="top">
+            <span className="time">{formatClock(event.ts, locale)}</span>
             <StatusCell status={event.status} />
           </div>
-          <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-            <dt className="text-ink-2">{t('public.live_feed.col.model')}</dt>
-            <dd className="truncate text-ink-1">{event.model}</dd>
-            <dt className="text-ink-2">{t('public.live_feed.col.upstream')}</dt>
-            <dd className="font-mono text-ink-2">{event.upstream}</dd>
-            <dt className="text-ink-2">{t('public.live_feed.col.tokens')}</dt>
-            <dd className="font-mono tabular-nums text-ink-2">
+          <div className="model">{event.model}</div>
+          <div className="meta">
+            <span>{event.upstream}</span>
+            <span>
               {formatInteger(event.tokens_in, locale)} /{' '}
               {formatInteger(event.tokens_out, locale)}
-            </dd>
-            <dt className="text-ink-2">{t('public.live_feed.col.latency')}</dt>
-            <dd className="font-mono tabular-nums text-ink-2">
+            </span>
+            <span>
               {formatInteger(event.latency_ms, locale)}{' '}
               {t('public.live_feed.unit.ms')}
-            </dd>
-          </dl>
+            </span>
+          </div>
         </li>
       ))}
     </ul>
@@ -440,18 +406,14 @@ export function LiveFeedSection() {
   if (disabled) return null
 
   return (
-    <section data-testid="live-feed-section" className="bg-brand-subtle">
-      <div className="mx-auto w-full max-w-[1200px] px-4 py-16 md:px-6 md:py-20">
-        <div className="flex flex-wrap items-start justify-between gap-4">
+    <section data-testid="live-feed-section" className="ledger">
+      <div className="wrap">
+        <div className="ledger-head">
           <div>
-            <h2 className="text-base font-semibold leading-6 text-ink-1">
-              {t('public.live_feed.title')}
-            </h2>
-            <p className="mt-2 text-[13px] leading-5 text-ink-2">
-              {t('public.live_feed.anonymized')}
-            </p>
+            <h2 className="section-title">{t('public.live_feed.title')}</h2>
+            <p className="section-note">{t('public.live_feed.anonymized')}</p>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="ledger-tools">
             <ConnectionBadge connection={connection} />
             <button
               type="button"
@@ -463,7 +425,7 @@ export function LiveFeedSection() {
                   : t('public.live_feed.pause')
               }
               onClick={() => setPaused((value) => !value)}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-ink-2 hover:bg-surface-hover hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="icon-btn"
             >
               <PauseIcon paused={paused} />
             </button>
@@ -473,7 +435,7 @@ export function LiveFeedSection() {
         {aggregate !== null ? (
           <p
             data-testid="live-feed-window"
-            className="mt-3 text-xs font-medium tabular-nums text-ink-1"
+            className="ledger-window"
             // 完整句子只给读屏/无障碍名称；可见文本拆成三段，才能按 UI
             // 设计给「−金额」或零值单独上色。
             aria-label={
@@ -505,34 +467,37 @@ export function LiveFeedSection() {
                 ? '0'
                 : `−${formatInteger(aggregate.cost_credits, locale)}`}
             </span>
-            <span className="text-ink-2">
-              {' '}
-              {t('public.live_feed.window.credit_unit')}
-            </span>
+            <span> {t('public.live_feed.window.credit_unit')}</span>
           </p>
         ) : null}
 
         {connection === 'reconnecting' ? (
-          <p className="mt-3 text-xs text-warning" role="status">
+          <p className="ledger-hint" role="status">
             {t('public.live_feed.reconnecting_hint')}
           </p>
         ) : null}
 
         {showEmpty ? (
           connection === 'live' ? (
-            <p className="mt-6 rounded-lg border border-dashed border-brand-line px-4 py-8 text-center text-sm text-ink-2">
-              {t('public.live_feed.waiting')}
-            </p>
+            <div className="ledger-empty">
+              <span className="wait">
+                <span className="pulse-dot" aria-hidden="true" />
+                {t('public.live_feed.waiting')}
+              </span>
+              <p className="hint">{t('public.live_feed.waiting_hint')}</p>
+            </div>
           ) : connection === 'paused' ? (
-            <p className="mt-6 text-center text-sm text-ink-2">
-              {t('public.live_feed.paused_hint')}
-            </p>
+            <div className="ledger-empty">
+              <span className="wait">{t('public.live_feed.paused_hint')}</span>
+            </div>
           ) : (
             <FeedSkeleton />
           )
         ) : (
           <>
-            <DesktopTable events={events} locale={locale} />
+            <div className="ledger-table-wrap">
+              <DesktopTable events={events} locale={locale} />
+            </div>
             <MobileCards events={events} locale={locale} />
           </>
         )}

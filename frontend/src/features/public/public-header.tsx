@@ -42,33 +42,40 @@ export interface SiteBrandProps {
  * *entry* only — the logo always links back to `/` (F-09-34 special semantics).
  * The tile is `aria-hidden` because the adjacent title already names the link.
  */
+/**
+ * F-09-34 brand mark. Three upstream lanes converge on one output node; the
+ * copper node is the gateway's only piece of ornament, and it is also the
+ * mark used in the footer. Operator logos still win when configured.
+ */
+function RelayMark() {
+  return (
+    <svg className="brand-mark" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+      <path d="M2 5h5l5 9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M2 14h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      <path d="M2 23h5l5-9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M12 14h8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      <circle className="mark-dot" cx="22" cy="14" r="2.2" />
+    </svg>
+  )
+}
+
 export function SiteBrand({ site, showTitle = true, className }: SiteBrandProps) {
   const title = site?.title?.trim() || DEFAULT_SITE_TITLE
   const logo = safeLogoUrl(site?.logo_url)
-  const initial = title.slice(0, 1).toUpperCase()
 
   return (
     <a
       href="/"
-      className={['inline-flex items-center gap-2.5 text-ink-1', className]
-        .filter(Boolean)
-        .join(' ')}
+      className={['brand', className].filter(Boolean).join(' ')}
     >
       {logo !== null ? (
         // Intrinsic size is set so the header does not reflow when the image
         // arrives (F-09-06 CLS budget).
-        <img src={logo} alt="" width={32} height={32} className="size-8 rounded-lg" />
+        <img src={logo} alt="" width={30} height={30} className="brand-logo" />
       ) : (
-        <span
-          aria-hidden="true"
-          className="inline-flex size-8 items-center justify-center rounded-lg bg-brand text-[15px] font-semibold text-on-brand"
-        >
-          {initial}
-        </span>
+        <RelayMark />
       )}
-      {showTitle ? (
-        <span className="text-[15px] font-semibold leading-[22px]">{title}</span>
-      ) : null}
+      {showTitle ? <span className="brand-name">{title}</span> : null}
     </a>
   )
 }
@@ -102,7 +109,7 @@ function PrimaryNav({
   if (items.length === 0) return null
 
   return (
-    <nav aria-label={t('public.nav.primary')} className="hidden items-center gap-1 md:flex">
+    <nav aria-label={t('public.nav.primary')} className="nav">
       {items.map((item) => {
         const active = activePath === item.href
         return (
@@ -117,12 +124,7 @@ function PrimaryNav({
                 ? `${labels[item.key]} (${t('public.nav.external')})`
                 : undefined
             }
-            className={[
-              'flex h-10 items-center gap-1 rounded-lg px-3 text-sm',
-              active
-                ? 'font-medium text-brand'
-                : 'text-ink-2 hover:bg-surface-hover hover:text-ink-1',
-            ].join(' ')}
+            className="nav-link"
           >
             {labels[item.key]}
             {item.external ? <ArrowUpRightGlyph /> : null}
@@ -173,9 +175,7 @@ function AuthCluster({
   // Desktop hides these controls behind the hamburger; the drawer shows them.
   const guestLinkClass = inHeader ? 'hidden md:inline-flex' : 'inline-flex'
   const avatarWrapperClass = inHeader ? 'relative hidden md:block' : 'relative'
-  const avatarMenuClass = inHeader
-    ? 'absolute right-0 top-10 z-50 w-[200px] rounded-xl border border-border-hairline bg-surface-card p-1 shadow-xl'
-    : 'mt-2 w-full rounded-xl border border-border-hairline bg-surface-card p-1'
+  const avatarMenuClass = 'avatar-menu'
 
   // Avatar menu keyboard contract: Escape closes and returns focus to the
   // trigger. Pointer users close it by choosing an item (links navigate away).
@@ -208,14 +208,14 @@ function AuthCluster({
       <div className="flex items-center gap-2">
         <a
           href={signInTarget}
-          className={`${guestLinkClass} h-9 items-center rounded-lg px-3 text-sm text-ink-2 hover:bg-surface-hover hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none`}
+          className={`sign-in ${guestLinkClass}`}
         >
           {t('public.nav.sign_in')}
         </a>
         {signupEnabled ? (
           <a
             href="/sign-up"
-            className={`${guestLinkClass} h-9 items-center rounded-lg bg-brand px-3.5 text-sm font-medium text-on-brand hover:bg-brand-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none`}
+            className={`btn btn-sm ${guestLinkClass}`}
           >
             {t('public.nav.sign_up')}
           </a>
@@ -232,7 +232,7 @@ function AuthCluster({
         aria-haspopup="menu"
         aria-expanded={menuOpen}
         onClick={() => setMenuOpen((open) => !open)}
-        className="inline-flex size-8 items-center justify-center rounded-full border border-border-default bg-surface-subtle text-sm font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+        className="avatar-btn"
       >
         <svg aria-hidden="true" viewBox="0 0 16 16" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.5">
           <circle cx="8" cy="5.5" r="2.5" />
@@ -248,23 +248,20 @@ function AuthCluster({
             role="menuitem"
             href="/dashboard"
             aria-current={activePath === '/dashboard' ? 'page' : undefined}
-            className="flex h-9 items-center rounded-lg px-3 text-sm text-ink-1 hover:bg-surface-hover"
           >
             {t('public.nav.console')}
           </a>
           <a
             role="menuitem"
             href="/profile"
-            className="flex h-9 items-center rounded-lg px-3 text-sm text-ink-1 hover:bg-surface-hover"
           >
             {t('public.nav.profile')}
           </a>
-          <div className="my-1 border-t border-border-hairline" />
+          <div className="avatar-rule" />
           <button
             type="button"
             role="menuitem"
             onClick={() => void signOut()}
-            className="flex h-9 w-full items-center rounded-lg px-3 text-left text-sm text-ink-1 hover:bg-surface-hover"
           >
             {t('public.nav.sign_out')}
           </button>
@@ -309,20 +306,20 @@ export function PublicHeader({ activePath }: PublicHeaderProps) {
   const signupEnabled = status.data?.auth.signup_enabled !== false
 
   return (
-    <header className="sticky top-0 z-40 border-b border-border-hairline bg-surface-card">
-      <div className="mx-auto flex h-16 w-full max-w-[1200px] items-center gap-6 px-4 md:px-6">
+    <header className="site-header">
+      <div className="wrap header-row">
         <SiteBrand site={site} />
         {status.isPending ? (
           <div aria-hidden="true" className="hidden items-center gap-3 md:flex">
-            <span className="h-4 w-12 rounded bg-ink-4/40" />
-            <span className="h-4 w-16 rounded bg-ink-4/40" />
-            <span className="h-4 w-14 rounded bg-ink-4/40" />
+            <span className="nav-skeleton w-12" />
+            <span className="nav-skeleton w-16" />
+            <span className="nav-skeleton w-14" />
           </div>
         ) : (
           <PrimaryNav items={items} activePath={activePath} labels={labels} />
         )}
-        <div className="ml-auto flex items-center gap-2">
-          <LanguageSwitch />
+        <div className="header-tools">
+          <LanguageSwitch className="home-lang" />
           <AuthCluster
             isLoggedIn={isLoggedIn}
             signupEnabled={signupEnabled}
@@ -334,7 +331,7 @@ export function PublicHeader({ activePath }: PublicHeaderProps) {
             aria-label={t('public.nav.open_menu')}
             aria-expanded={drawerOpen}
             onClick={() => setDrawerOpen(true)}
-            className="inline-flex size-9 items-center justify-center rounded-lg text-ink-2 hover:bg-surface-hover hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:hidden"
+            className="menu-btn"
           >
             <Menu01Icon size={20} strokeWidth={1.5} />
           </button>

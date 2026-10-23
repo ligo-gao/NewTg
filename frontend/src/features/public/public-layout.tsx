@@ -24,11 +24,11 @@ export interface PublicLayoutProps {
  */
 export function PublicLayout({ activePath, contained = true, children }: PublicLayoutProps) {
   return (
-    <div className="flex min-h-screen flex-col bg-surface-page text-ink-1">
+    <div className="public-shell flex min-h-screen flex-col">
       <PublicHeader activePath={activePath} />
       <main id="main" className="flex-1">
         {contained ? (
-          <div className="mx-auto w-full max-w-[1200px] px-4 py-10 md:px-6">{children}</div>
+          <div className="wrap py-10">{children}</div>
         ) : (
           children
         )}

@@ -309,6 +309,42 @@ describe('homepage (F-09-01/03/04/05/06)', () => {
 })
 
 describe('homepage states (F-09-01/04/06)', () => {
+  it('sends the hero API docs button to the configured docs URL', async () => {
+    useHandlers(status())
+    const { findByRole } = await renderWithProviders(<HomePage />, ['public'])
+
+    const docs = await findByRole('link', { name: 'API docs' })
+    expect(docs.getAttribute('href')).toBe('https://docs.example.com')
+    expect(docs.getAttribute('target')).toBe('_blank')
+    expect(docs.getAttribute('rel')).toBe('noopener noreferrer')
+  })
+
+  it('keeps the API docs entry stable before a docs URL is configured', async () => {
+    useHandlers(
+      status({ site: { ...status().site, docs_url: '' } }),
+    )
+    const { findByRole } = await renderWithProviders(<HomePage />, ['public'])
+
+    // The button must exist now so the documentation can land later; until
+    // then /docs renders its documented "not configured" state.
+    const docs = await findByRole('link', { name: 'API docs' })
+    expect(docs.getAttribute('href')).toBe('/docs')
+    expect(docs.getAttribute('target')).toBeNull()
+  })
+
+  it('hides the API docs button when the operator disables the docs entry', async () => {
+    useHandlers(
+      status({
+        nav: { ...status().nav, docs: { enabled: false, require_auth: false } },
+      }),
+    )
+    const { findByRole, queryByRole } = await renderWithProviders(<HomePage />, [
+      'public',
+    ])
+    await findByRole('heading', { level: 1 })
+    expect(queryByRole('link', { name: 'API docs' })).toBeNull()
+  })
+
   it('falls back to the 24h cache when the stats request fails', async () => {
     writeHomeStatsCache(STATS)
     useHandlers(status(), () => HttpResponse.json({}, { status: 500 }))

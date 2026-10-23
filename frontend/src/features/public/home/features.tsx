@@ -21,9 +21,8 @@ interface FeatureCard {
  * capability (routes / integer billing / protocol translation / quotas /
  * stateless instances / credential hashing); no marketing-only claims.
  *
- * Copy is front-end static content: no network dependency, so a status outage
- * cannot blank this section. The layout is a single outlined grid with hairline
- * separators rather than six floating cards (UI design §0.1).
+ * Layout: a two-column register separated by hairlines, not six floating
+ * cards. The section note says explicitly that these are shipped features.
  */
 const FEATURES: readonly FeatureCard[] = [
   { id: 'multi_upstream', Icon: NeuralNetworkIcon },
@@ -38,24 +37,20 @@ export function FeaturesSection() {
   const { t } = useI18n()
 
   return (
-    <section className="bg-surface-card">
-      <div className="mx-auto w-full max-w-[1200px] px-4 py-16 md:px-6 md:py-20">
-        <h2 className="text-base font-semibold leading-6 text-ink-1">
-          {t('public.home.features.title')}
-        </h2>
-        <ul className="mt-8 grid grid-cols-1 overflow-hidden rounded-xl border border-border-default sm:grid-cols-2 lg:grid-cols-3">
+    <section className="caps">
+      <div className="wrap">
+        <div className="section-head">
+          <h2 className="section-title">{t('public.home.features.title')}</h2>
+          <p className="note">{t('public.home.features.lede')}</p>
+        </div>
+        <ul className="caps-grid">
           {FEATURES.map(({ id, Icon }) => (
-            <li
-              key={id}
-              className="border-b border-border-hairline p-5 last:border-b-0 sm:border-r sm:[&:nth-child(2n)]:border-r-0 sm:[&:nth-child(n+5)]:border-b-0 lg:[&:nth-child(2n)]:border-r lg:[&:nth-child(3n)]:border-r-0 lg:[&:nth-child(n+4)]:border-b-0"
-            >
-              <Icon size={24} strokeWidth={1.5} />
-              <h3 className="mt-3 text-[15px] font-semibold leading-[22px] text-ink-1">
-                {t(`public.home.features.${id}.title`)}
-              </h3>
-              <p className="mt-1 text-sm leading-[22px] text-ink-2">
-                {t(`public.home.features.${id}.body`)}
-              </p>
+            <li key={id} className="cap">
+              <Icon size={20} strokeWidth={1.5} />
+              <div>
+                <h3>{t(`public.home.features.${id}.title`)}</h3>
+                <p>{t(`public.home.features.${id}.body`)}</p>
+              </div>
             </li>
           ))}
         </ul>

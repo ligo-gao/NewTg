@@ -43,38 +43,40 @@ export function MobileNavDrawer({
       title={t('public.nav.menu_title')}
       closeLabel={t('public.nav.close')}
     >
-      <nav aria-label={t('public.nav.primary')}>
-        <ul className="flex flex-col">
-          {items.map((item) => {
-            const active = activePath === item.href
-            return (
-              <li key={item.key}>
-                <a
-                  href={item.href}
-                  aria-current={active ? 'page' : undefined}
-                  target={item.external ? '_blank' : undefined}
-                  rel={item.external ? 'noopener noreferrer' : undefined}
-                  aria-label={
-                    item.external
-                      ? `${labels[item.key]} (${t('public.nav.external')})`
-                      : undefined
-                  }
-                  onClick={() => onOpenChange(false)}
-                  className={[
-                    'flex min-h-12 items-center rounded-lg px-3 text-[15px]',
-                    active
-                      ? 'font-medium text-ink-1'
-                      : 'text-ink-2 hover:bg-surface-hover hover:text-ink-1',
-                  ].join(' ')}
-                >
-                  {labels[item.key]}
-                </a>
-              </li>
-            )
-          })}
-        </ul>
-      </nav>
-      <div className="mt-4 border-t border-border-hairline pt-4">{footer}</div>
+      <div className="public-shell drawer-shell">
+        <nav aria-label={t('public.nav.primary')}>
+          <ul className="flex flex-col">
+            {items.map((item) => {
+              const active = activePath === item.href
+              return (
+                <li key={item.key}>
+                  <a
+                    href={item.href}
+                    aria-current={active ? 'page' : undefined}
+                    target={item.external ? '_blank' : undefined}
+                    rel={item.external ? 'noopener noreferrer' : undefined}
+                    aria-label={
+                      item.external
+                        ? `${labels[item.key]} (${t('public.nav.external')})`
+                        : undefined
+                    }
+                    onClick={() => onOpenChange(false)}
+                    className={[
+                      'flex min-h-12 items-center rounded-lg px-3 text-[15px]',
+                      active
+                        ? 'font-medium text-ink-1'
+                        : 'text-ink-2 hover:bg-surface-hover hover:text-ink-1',
+                    ].join(' ')}
+                  >
+                    {labels[item.key]}
+                  </a>
+                </li>
+              )
+            })}
+          </ul>
+        </nav>
+        <div className="mt-4 border-t border-border-hairline pt-4">{footer}</div>
+      </div>
     </MobileSheet>
   )
 }
