@@ -6504,11 +6504,18 @@ export interface components {
             username: string;
             /** Format: email */
             email?: string | null;
+            /** @description 邮箱是否已验证（email_verified_at 非空）。 */
+            email_verified: boolean;
             role: components["schemas"]["UserRole"];
             status: components["schemas"]["UserStatus"];
             /** Format: uri */
             avatar_url?: string | null;
             display_name?: string | null;
+            /**
+             * Format: date-time
+             * @description 账户创建时间；异常数据下为空串。
+             */
+            created_at: string;
             /** @description 生效权限键。FULL/NULL 管理员为 ["*"]；role=user 或显式空集合为 []。 */
             permissions: string[];
         };
@@ -11284,7 +11291,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description OK（六字段冻结投影，零敏感字段） */
+            /** @description OK（本人身份投影，零敏感字段） */
             200: {
                 headers: {
                     [name: string]: unknown;

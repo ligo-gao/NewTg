@@ -1073,7 +1073,7 @@ paths:
         - bearerToken: []
       responses:
         '200':
-          description: OK（六字段冻结投影，零敏感字段）
+          description: OK（本人身份投影，零敏感字段）
           content:
             application/json:
               schema:
@@ -13532,8 +13532,10 @@ components:
       additionalProperties: false
       required:
         - username
+        - email_verified
         - role
         - status
+        - created_at
         - permissions
       description: |
         GET /api/me 的冻结投影：用户名/邮箱/角色/状态/头像/显示名/生效权限。
@@ -13549,6 +13551,9 @@ components:
           type: string
           format: email
           nullable: true
+        email_verified:
+          type: boolean
+          description: 邮箱是否已验证（email_verified_at 非空）。
         role:
           $ref: '#/components/schemas/UserRole'
         status:
@@ -13561,6 +13566,10 @@ components:
           type: string
           maxLength: 32
           nullable: true
+        created_at:
+          type: string
+          format: date-time
+          description: 账户创建时间；异常数据下为空串。
         permissions:
           type: array
           description: |

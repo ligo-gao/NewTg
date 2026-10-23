@@ -10,9 +10,12 @@
 const YUAN_SYMBOL = '¥'
 
 /** Formats integer cents as yuan, e.g. `¥1,000.00` (or `¥1,000` for chips). */
-export function formatYuan(cents: number, options: { decimals?: boolean } = {}): string {
+export function formatYuan(
+  cents: number,
+  options: { decimals?: boolean; locale?: string } = {},
+): string {
   const decimals = options.decimals ?? true
-  const formatted = new Intl.NumberFormat('en', {
+  const formatted = new Intl.NumberFormat(options.locale ?? 'en', {
     minimumFractionDigits: decimals ? 2 : 0,
     maximumFractionDigits: decimals ? 2 : 0,
   }).format(cents / 100)

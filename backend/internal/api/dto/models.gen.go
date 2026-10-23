@@ -6028,9 +6028,15 @@ type MarketplaceVersionApiVersion string
 // 无权限的 admin_permissions 原始列）。该字段按 M6 R-17 扩展，用于前端
 // 能力闸门（服务端仍是最终权威）。
 type MeView struct {
-	AvatarUrl   *string              `json:"avatar_url,omitempty"`
+	AvatarUrl *string `json:"avatar_url,omitempty"`
+
+	// CreatedAt 账户创建时间；异常数据下为空串。
+	CreatedAt   time.Time            `json:"created_at"`
 	DisplayName *string              `json:"display_name,omitempty"`
 	Email       *openapi_types.Email `json:"email,omitempty"`
+
+	// EmailVerified 邮箱是否已验证（email_verified_at 非空）。
+	EmailVerified bool `json:"email_verified"`
 
 	// Permissions 生效权限键。FULL/NULL 管理员为 ["*"]；role=user 或显式空集合为 []。
 	Permissions []string `json:"permissions"`

@@ -9,7 +9,7 @@ schemas:
   MeView:
     type: object
     additionalProperties: false
-    required: [username, role, status, permissions]
+    required: [username, email_verified, role, status, created_at, permissions]
     description: |
       GET /api/me 的冻结投影：用户名/邮箱/角色/状态/头像/显示名/生效权限。
       email/avatar_url/display_name 未设置时字段缺席（响应中为 null 或省略由
@@ -24,6 +24,9 @@ schemas:
         type: string
         format: email
         nullable: true
+      email_verified:
+        type: boolean
+        description: 邮箱是否已验证（email_verified_at 非空）。
       role:
         $ref: './public.yaml#/schemas/UserRole'
       status:
@@ -36,6 +39,10 @@ schemas:
         type: string
         maxLength: 32
         nullable: true
+      created_at:
+        type: string
+        format: date-time
+        description: 账户创建时间；异常数据下为空串。
       permissions:
         type: array
         description: |

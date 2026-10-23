@@ -27,8 +27,10 @@ afterAll(() => server.close())
 
 const ME: Me = {
   username: 'alice',
+  email_verified: true,
   role: 'user',
   status: 'enabled',
+  created_at: '2026-01-01T00:00:00Z',
   permissions: [],
 }
 

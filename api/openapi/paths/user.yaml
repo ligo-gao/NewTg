@@ -12,7 +12,7 @@ paths:
         - bearerToken: []
       responses:
         '200':
-          description: OK（六字段冻结投影，零敏感字段）
+          description: OK（本人身份投影，零敏感字段）
           content:
             application/json:
               schema:

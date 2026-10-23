@@ -103,6 +103,7 @@ type SelfRecord struct {
 	// DefaultModel 是用户默认模型（modules-02 §2.14）；NULL = 未设置。
 	// 空串不入库（迁移 CHECK 1..128），因此指针 nil 是唯一的「未设置」表示。
 	DefaultModel *string
+	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
 
@@ -135,7 +136,7 @@ type SelfRepo interface {
 
 // selfColumns 是 SelfRecord 的 SELECT/RETURNING 列序，供 scanSelfRecord 消费。
 const selfColumns = `username, display_name, email, role, status, avatar_url,
-	language, sidebar_modules, record_ip_log, email_verified_at, default_model, updated_at`
+	language, sidebar_modules, record_ip_log, email_verified_at, default_model, created_at, updated_at`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -150,7 +151,7 @@ func scanSelfRecord(row rowScanner) (SelfRecord, error) {
 	)
 	err := row.Scan(&rec.Username, &rec.DisplayName, &rec.Email, &rec.Role, &rec.Status,
 		&rec.AvatarURL, &rec.Language, &sidebar, &rec.RecordIPLog,
-		&rec.EmailVerifiedAt, &rec.DefaultModel, &rec.UpdatedAt)
+		&rec.EmailVerifiedAt, &rec.DefaultModel, &rec.CreatedAt, &rec.UpdatedAt)
 	if err != nil {
 		return SelfRecord{}, err
 	}
@@ -463,17 +464,20 @@ func (h *SessionHandlers) RegisterSessionRoutes(mux *http.ServeMux, wrap func(ht
 // 视图
 // ---------------------------------------------------------------------------
 
-// meView 是 GET /api/me 的冻结投影：用户名/邮箱/角色/状态/头像/显示名/生效
-// 权限。任何口令/TOTP/备用码/哈希列都不得出现（GC-6）。permissions 是 M6
-// R-17 的契约扩展：前端据此隐藏 admin-only 控件，服务端仍是最终权威。
+// meView 是 GET /api/me 的冻结投影：用户名/邮箱/邮箱验证状态/角色/状态/
+// 头像/显示名/加入时间/生效权限。任何口令/TOTP/备用码/哈希列都不得出现
+// （GC-6）。permissions 是 M6 R-17 的契约扩展：前端据此隐藏 admin-only
+// 控件，服务端仍是最终权威。
 type meView struct {
-	Username    string   `json:"username"`
-	Email       *string  `json:"email"`
-	Role        string   `json:"role"`
-	Status      string   `json:"status"`
-	AvatarURL   *string  `json:"avatar_url"`
-	DisplayName *string  `json:"display_name"`
-	Permissions []string `json:"permissions"`
+	Username      string   `json:"username"`
+	Email         *string  `json:"email"`
+	EmailVerified bool     `json:"email_verified"`
+	Role          string   `json:"role"`
+	Status        string   `json:"status"`
+	AvatarURL     *string  `json:"avatar_url"`
+	DisplayName   *string  `json:"display_name"`
+	CreatedAt     string   `json:"created_at"`
+	Permissions   []string `json:"permissions"`
 }
 
 func newMeView(rec SelfRecord, permissions []string) meView {
@@ -481,14 +485,21 @@ func newMeView(rec SelfRecord, permissions []string) meView {
 		// JSON null 会让前端把「无权限」与「未知」混在一起；空切片序列化为 []。
 		permissions = []string{}
 	}
+	verified := rec.EmailVerifiedAt != nil
+	createdAt := ""
+	if !rec.CreatedAt.IsZero() {
+		createdAt = rec.CreatedAt.UTC().Format(time.RFC3339)
+	}
 	return meView{
-		Username:    rec.Username,
-		Email:       rec.Email,
-		Role:        rec.Role,
-		Status:      rec.Status,
-		AvatarURL:   rec.AvatarURL,
-		DisplayName: rec.DisplayName,
-		Permissions: permissions,
+		Username:      rec.Username,
+		Email:         rec.Email,
+		EmailVerified: verified,
+		Role:          rec.Role,
+		Status:        rec.Status,
+		AvatarURL:     rec.AvatarURL,
+		DisplayName:   rec.DisplayName,
+		CreatedAt:     createdAt,
+		Permissions:   permissions,
 	}
 }
 
