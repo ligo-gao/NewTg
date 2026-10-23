@@ -33,11 +33,11 @@ export interface NavGroup {
 export const NAV_GROUPS: readonly NavGroup[] = [
   {
     id: 'workspace',
-    labelKey: 'nav.group.workspace',
+    labelKey: 'common.nav.group.workspace',
     items: [
       {
         id: 'overview',
-        labelKey: 'nav.dashboard',
+        labelKey: 'common.nav.dashboard',
         to: '/dashboard',
         icon: 'grid',
       },
@@ -45,18 +45,18 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   },
   {
     id: 'build',
-    labelKey: 'nav.group.build',
+    labelKey: 'common.nav.group.build',
     items: [
-      { id: 'tokens', labelKey: 'nav.tokens', to: '/tokens', icon: 'key' },
+      { id: 'tokens', labelKey: 'common.nav.tokens', to: '/tokens', icon: 'key' },
       {
         id: 'model-config',
-        labelKey: 'nav.model_config',
+        labelKey: 'common.nav.model_config',
         to: '/model-config',
         icon: 'sliders',
       },
       {
         id: 'playground',
-        labelKey: 'nav.playground',
+        labelKey: 'common.nav.playground',
         to: '/playground',
         icon: 'flask',
         requiresPlayground: true,
@@ -65,31 +65,31 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   },
   {
     id: 'usage',
-    labelKey: 'nav.group.billing',
+    labelKey: 'common.nav.group.billing',
     items: [
       {
         id: 'usage-logs',
-        labelKey: 'nav.usage_logs',
+        labelKey: 'common.nav.usage_logs',
         to: '/dashboard/usage-logs',
         icon: 'list',
       },
       {
         id: 'audit-logs',
-        labelKey: 'nav.audit_logs',
+        labelKey: 'common.nav.audit_logs',
         to: '/dashboard/audit-logs',
         icon: 'clipboard',
       },
-      { id: 'wallet', labelKey: 'nav.wallet', to: '/wallet', icon: 'wallet' },
-      { id: 'orders', labelKey: 'nav.orders', to: '/orders', icon: 'receipt' },
+      { id: 'wallet', labelKey: 'common.nav.wallet', to: '/wallet', icon: 'wallet' },
+      { id: 'orders', labelKey: 'common.nav.orders', to: '/orders', icon: 'receipt' },
     ],
   },
   {
     id: 'admin',
-    labelKey: 'nav.group.admin',
+    labelKey: 'common.nav.group.admin',
     items: [
       {
         id: 'redemption',
-        labelKey: 'nav.redemption_codes',
+        labelKey: 'common.nav.redemption_codes',
         to: '/redemption-codes',
         icon: 'ticket',
         adminOnly: true,
@@ -97,7 +97,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       },
       {
         id: 'channels',
-        labelKey: 'nav.channels',
+        labelKey: 'common.nav.channels',
         to: '/admin/channels',
         icon: 'radio',
         adminOnly: true,
@@ -105,7 +105,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       },
       {
         id: 'models',
-        labelKey: 'nav.models',
+        labelKey: 'common.nav.models',
         to: '/admin/models',
         icon: 'box',
         adminOnly: true,
@@ -113,7 +113,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       },
       {
         id: 'users',
-        labelKey: 'nav.users',
+        labelKey: 'common.nav.users',
         to: '/admin/users',
         icon: 'users',
         adminOnly: true,
@@ -121,7 +121,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       },
       {
         id: 'groups',
-        labelKey: 'nav.groups',
+        labelKey: 'common.nav.groups',
         to: '/admin/users/groups',
         icon: 'group',
         adminOnly: true,
@@ -129,7 +129,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       },
       {
         id: 'subscriptions',
-        labelKey: 'nav.subscriptions',
+        labelKey: 'common.nav.subscriptions',
         to: '/admin/subscriptions',
         icon: 'card',
         adminOnly: true,
@@ -137,7 +137,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       },
       {
         id: 'model-pricing',
-        labelKey: 'nav.model_pricing',
+        labelKey: 'common.nav.model_pricing',
         to: '/admin/pricing/model-pricing',
         icon: 'tag',
         adminOnly: true,
@@ -145,7 +145,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       },
       {
         id: 'group-pricing',
-        labelKey: 'nav.group_pricing',
+        labelKey: 'common.nav.group_pricing',
         to: '/admin/pricing/group-pricing',
         icon: 'tag',
         adminOnly: true,
@@ -155,11 +155,11 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   },
   {
     id: 'system',
-    labelKey: 'nav.group.system',
+    labelKey: 'common.nav.group.system',
     items: [
       {
         id: 'settings',
-        labelKey: 'nav.settings',
+        labelKey: 'common.nav.settings',
         to: '/admin/settings',
         icon: 'settings',
         adminOnly: true,
@@ -167,21 +167,21 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       },
       {
         id: 'status',
-        labelKey: 'nav.system_status',
+        labelKey: 'common.nav.system_status',
         to: '/admin/system/status',
         icon: 'activity',
         adminOnly: true,
       },
       {
         id: 'operation-logs',
-        labelKey: 'nav.operation_logs',
+        labelKey: 'common.nav.operation_logs',
         to: '/admin/system/audit-logs',
         icon: 'clipboard',
         adminOnly: true,
       },
       {
         id: 'deployments',
-        labelKey: 'nav.model_deployments',
+        labelKey: 'common.nav.model_deployments',
         to: '/admin/system/deployments',
         icon: 'server',
         adminOnly: true,
@@ -189,7 +189,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       },
       {
         id: 'task-plugins',
-        labelKey: 'nav.task_plugins',
+        labelKey: 'common.nav.task_plugins',
         to: '/admin/system/task-plugins',
         icon: 'puzzle',
         adminOnly: true,
@@ -197,7 +197,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       },
       {
         id: 'performance',
-        labelKey: 'nav.performance',
+        labelKey: 'common.nav.performance',
         to: '/admin/system/performance',
         icon: 'gauge',
         adminOnly: true,
@@ -207,12 +207,12 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   },
   {
     id: 'account',
-    labelKey: 'nav.group.account',
+    labelKey: 'common.nav.group.account',
     items: [
-      { id: 'profile', labelKey: 'nav.profile', to: '/profile', icon: 'user' },
+      { id: 'profile', labelKey: 'common.nav.profile', to: '/profile', icon: 'user' },
       {
         id: 'security',
-        labelKey: 'nav.security',
+        labelKey: 'common.nav.security',
         to: '/security',
         icon: 'shield',
       },
@@ -220,11 +220,11 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   },
   {
     id: 'help',
-    labelKey: 'nav.group.help',
+    labelKey: 'common.nav.group.help',
     items: [
-      { id: 'about', labelKey: 'nav.about', to: '/about', icon: 'help' },
-      { id: 'pricing', labelKey: 'nav.pricing', to: '/pricing', icon: 'tag' },
-      { id: 'docs', labelKey: 'nav.docs', to: '/docs', icon: 'book' },
+      { id: 'about', labelKey: 'common.nav.about', to: '/about', icon: 'help' },
+      { id: 'pricing', labelKey: 'common.nav.pricing', to: '/pricing', icon: 'tag' },
+      { id: 'docs', labelKey: 'common.nav.docs', to: '/docs', icon: 'book' },
     ],
   },
 ]

@@ -76,10 +76,12 @@ describe('nav-config', () => {
     >
     for (const dictionary of dictionaries) {
       for (const item of ALL_ITEMS) {
-        expect(dictionary[item.labelKey], item.labelKey).toBeTruthy()
+        const key = item.labelKey.replace(/^common\./, '')
+        expect(dictionary[key], item.labelKey).toBeTruthy()
       }
       for (const group of NAV_GROUPS) {
-        expect(dictionary[group.labelKey], group.labelKey).toBeTruthy()
+        const key = group.labelKey.replace(/^common\./, '')
+        expect(dictionary[key], group.labelKey).toBeTruthy()
       }
     }
   })
