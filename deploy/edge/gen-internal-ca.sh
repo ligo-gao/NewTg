@@ -46,7 +46,7 @@ usage() {
              签发叶证书。已存在的根 CA 默认复用，不轮换客户端信任。
   --apply    生成后备份 deploy/edge/certs/ 的 newtg.crt/newtg.key 到
              backup-<UTC 时间戳>/，再把新叶证书复制进 deploy/edge/certs/。
-             只打印 reload 命令，不自动执行。
+             只打印重启命令，不自动执行。
   --force    轮换根 CA（会覆盖 staging 根证书；所有客户端必须重新安装信任）。
   -h, --help 显示本帮助。
 
@@ -215,7 +215,7 @@ if (( APPLY == 0 )); then
 	echo "  2) 客户端信任根证书后，替换线上叶证书（会先自动备份）："
 	echo "       $SCRIPT_DIR/gen-internal-ca.sh --apply"
 fi
-echo "  3) 重载 edge 使新证书生效（脚本不会自动执行）："
-echo "       docker exec newtg-edge-1 caddy reload --config /etc/caddy/Caddyfile"
+echo "  3) 重启 edge 使新证书生效（Caddyfile 设了 admin off，reload 不可用；脚本不会自动执行）："
+echo "       docker restart newtg-edge-1"
 echo "  4) 校验："
 echo "       curl --cacert \"$ROOT_CRT\" https://10.211.55.5:8443/readyz"
