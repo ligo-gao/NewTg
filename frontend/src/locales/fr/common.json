@@ -6,6 +6,7 @@
   "action.copy": "Copier",
   "action.copied": "Copié",
   "action.retry": "Réessayer",
+  "action.refresh": "Actualiser",
   "nav.dashboard": "Tableau de bord",
   "nav.group.workspace": "Espace de travail",
   "nav.group.build": "Développement",
@@ -110,6 +111,20 @@
   },
   "dashboard": {
     "title": "Aperçu",
+    "page": {
+      "description": "Un aperçu de l'usage, du solde et de l'état des modèles du jour."
+    },
+    "quick": {
+      "title": "Actions rapides",
+      "description": "Les raccourcis habituels, sans passer par la barre latérale",
+      "create_token": "Créer un jeton",
+      "create_token_hint": "Ajouter une clé d'appel",
+      "topup": "Recharger",
+      "topup_hint": "Solde et commandes",
+      "logs": "Voir les journaux",
+      "logs_hint": "Détail des requêtes et de la consommation",
+      "playground_hint": "Tester les modèles directement"
+    },
     "error": "Impossible de charger les statistiques.",
     "range": {
       "label": "Période",
@@ -563,6 +578,10 @@
   },
   "tokens": {
     "title": "Jetons d'API",
+    "page": {
+      "description": "Créez et gérez les clés qui appellent vos modèles. Une clé n'est affichée en entier qu'une seule fois, à sa création.",
+      "count": "{count} jetons"
+    },
     "new": "Créer un jeton",
     "apiAddresses": {
       "title": "Adresses de l'API",

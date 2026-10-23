@@ -379,6 +379,26 @@ describe('DashboardPage', () => {
     })
   })
 
+  it('renders the four quick actions below the shared page header', async () => {
+    installScenario({})
+    renderWithProviders(<DashboardPage />)
+
+    const createToken = await screen.findByRole('link', { name: /Create token/ })
+    expect(createToken.getAttribute('href')).toBe('/tokens')
+    expect(screen.getByRole('link', { name: /Top up/ }).getAttribute('href')).toBe(
+      '/wallet',
+    )
+    expect(screen.getByRole('link', { name: /View logs/ }).getAttribute('href')).toBe(
+      '/dashboard/usage-logs',
+    )
+    expect(screen.getByRole('link', { name: /Playground/ }).getAttribute('href')).toBe(
+      '/playground',
+    )
+    // The old inline heading is gone: the shared header owns the page title.
+    expect(screen.getByTestId('page-header')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Overview' })).toBeTruthy()
+  })
+
   it('zero-fills the trend across the whole selected window with UTC buckets', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-10-18T12:34:00Z'))

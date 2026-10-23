@@ -6,6 +6,7 @@
   "action.copy": "Sao chép",
   "action.copied": "Đã sao chép",
   "action.retry": "Thử lại",
+  "action.refresh": "Làm mới",
   "nav.dashboard": "Bảng điều khiển",
   "nav.group.workspace": "Không gian làm việc",
   "nav.group.build": "Phát triển",
@@ -110,6 +111,20 @@
   },
   "dashboard": {
     "title": "Tổng quan",
+    "page": {
+      "description": "Tổng quan nhanh về mức sử dụng, số dư và tình trạng mô hình hôm nay."
+    },
+    "quick": {
+      "title": "Thao tác nhanh",
+      "description": "Các lối vào thường dùng, không cần tìm ở thanh bên",
+      "create_token": "Tạo token",
+      "create_token_hint": "Thêm khóa gọi API",
+      "topup": "Nạp tiền",
+      "topup_hint": "Số dư và đơn hàng",
+      "logs": "Xem nhật ký",
+      "logs_hint": "Chi tiết yêu cầu và tiêu thụ",
+      "playground_hint": "Thử mô hình trực tiếp"
+    },
     "error": "Không thể tải thống kê.",
     "range": {
       "label": "Khoảng thời gian",
@@ -563,6 +578,10 @@
   },
   "tokens": {
     "title": "API token",
+    "page": {
+      "description": "Tạo và quản lý khóa dùng để gọi mô hình. Khóa chỉ hiển thị đầy đủ một lần duy nhất khi tạo.",
+      "count": "{count} token"
+    },
     "new": "Tạo token",
     "apiAddresses": {
       "title": "Địa chỉ API",

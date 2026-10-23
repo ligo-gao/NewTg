@@ -6,6 +6,7 @@
   "action.copy": "Copy",
   "action.copied": "Copied",
   "action.retry": "Retry",
+  "action.refresh": "Refresh",
   "nav.dashboard": "Dashboard",
   "nav.group.workspace": "Workspace",
   "nav.group.build": "Build",
@@ -110,6 +111,20 @@
   },
   "dashboard": {
     "title": "Overview",
+    "page": {
+      "description": "Today's usage, balance and model health at a glance."
+    },
+    "quick": {
+      "title": "Quick actions",
+      "description": "Common entry points, without hunting the sidebar",
+      "create_token": "Create token",
+      "create_token_hint": "Add a calling key",
+      "topup": "Top up",
+      "topup_hint": "Balance and orders",
+      "logs": "View logs",
+      "logs_hint": "Request and usage detail",
+      "playground_hint": "Try models directly"
+    },
     "error": "Could not load statistics.",
     "range": {
       "label": "Time range",
@@ -563,6 +578,10 @@
   },
   "tokens": {
     "title": "API Tokens",
+    "page": {
+      "description": "Create and manage the keys that call your models. A key is shown in full only once, at creation.",
+      "count": "{count} tokens"
+    },
     "new": "Create Token",
     "apiAddresses": {
       "title": "API Addresses",

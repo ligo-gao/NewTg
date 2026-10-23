@@ -1,8 +1,9 @@
 import { useState } from 'react'
 
+import { PageHeader } from '@/features/shell/page-header'
+import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
 import { TextField } from '@/shared/ui/form'
-import { useI18n } from '@/shared/lib/i18n-context'
 
 import type { UsageRange } from './api'
 import { CheckinCard } from './checkin-card'
@@ -17,19 +18,25 @@ import {
 } from './format'
 import { ModelDistributionDonut } from './model-distribution-donut'
 import { ModelPerformance } from './model-performance'
+import { QuickActions } from './quick-actions'
 import { RangeSelector } from './range-selector'
 import { StatCard } from './stat-card'
 import { useDashboardCapabilities } from './use-dashboard-capabilities'
 import { useDashboardStats } from './use-dashboard-stats'
 
 /**
- * `/dashboard` overview (modules-05 F-05-03 + F-05-04, R-M6-12).
+ * `/dashboard` overview (modules-05 F-05-03 + F-05-04, R-M6-12, spec §7).
  *
  * One range state feeds every query (cards, ring, trend, rates) so the three
  * surfaces can never disagree about their window. The admin username filter is
  * rendered only after `logs:read` is confirmed, and the applied value — not
  * the draft input — is what enters the query keys; ordinary users therefore
  * never issue an admin-only parameter.
+ *
+ * The page is a 12-column-style stack: a shared page header, the KPI grid, the
+ * rates strip, trend + distribution, quick actions + check-in, and the
+ * performance board full width. Every block owns `mt-4` so only the first one
+ * needs the page header to sit above it.
  */
 export function DashboardPage() {
   const { t, locale } = useI18n()
@@ -65,52 +72,57 @@ export function DashboardPage() {
         })
 
   return (
-    <section className="mt-6" aria-labelledby="dashboard-title">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <h2 id="dashboard-title" className="text-lg font-semibold text-ink-1">
-          {t('common.dashboard.title')}
-        </h2>
-
-        <div className="flex flex-wrap items-end gap-3">
-          {capabilities.canFilterByUsername ? (
-            <form
-              className="flex items-end gap-2"
-              onSubmit={(event) => {
-                event.preventDefault()
-                const applied = usernameDraft.trim()
-                setUsername(applied === '' ? undefined : applied)
-              }}
-            >
-              <TextField
-                id="dashboard-username"
-                label={t('common.dashboard.filter.username')}
-                placeholder={t('common.dashboard.filter.username_placeholder')}
-                value={usernameDraft}
-                onChange={(event) => setUsernameDraft(event.target.value)}
-                className="h-9 w-44"
-              />
-              <Button type="submit" variant="secondary" className="h-9">
-                {t('common.dashboard.filter.apply')}
-              </Button>
-              {username !== undefined ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="h-9"
-                  onClick={() => {
-                    setUsername(undefined)
-                    setUsernameDraft('')
-                  }}
-                >
-                  {t('common.dashboard.filter.clear')}
+    <section className="mt-6">
+      <PageHeader
+        crumbs={[
+          { label: t('common.console.label') },
+          { label: t('common.nav.group.workspace') },
+          { label: t('common.nav.dashboard') },
+        ]}
+        title={t('common.dashboard.title')}
+        description={t('common.dashboard.page.description')}
+        actions={
+          <div className="flex flex-wrap items-end gap-3">
+            {capabilities.canFilterByUsername ? (
+              <form
+                className="flex items-end gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  const applied = usernameDraft.trim()
+                  setUsername(applied === '' ? undefined : applied)
+                }}
+              >
+                <TextField
+                  id="dashboard-username"
+                  label={t('common.dashboard.filter.username')}
+                  placeholder={t('common.dashboard.filter.username_placeholder')}
+                  value={usernameDraft}
+                  onChange={(event) => setUsernameDraft(event.target.value)}
+                  className="h-9 w-44"
+                />
+                <Button type="submit" variant="secondary" className="h-9">
+                  {t('common.dashboard.filter.apply')}
                 </Button>
-              ) : null}
-            </form>
-          ) : null}
+                {username !== undefined ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="h-9"
+                    onClick={() => {
+                      setUsername(undefined)
+                      setUsernameDraft('')
+                    }}
+                  >
+                    {t('common.dashboard.filter.clear')}
+                  </Button>
+                ) : null}
+              </form>
+            ) : null}
 
-          <RangeSelector value={range} onChange={setRange} />
-        </div>
-      </div>
+            <RangeSelector value={range} onChange={setRange} />
+          </div>
+        }
+      />
 
       {username !== undefined &&
       summaryData !== undefined &&
@@ -120,70 +132,8 @@ export function DashboardPage() {
         </p>
       ) : null}
 
-      {/* Rates strip (F-05-04). aria-live announces settled values once the
+      {/* Overview cards (F-05-03). aria-live announces settled values once the
           concurrent requests resolve, without moving focus. */}
-      <div
-        aria-live="polite"
-        className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3"
-      >
-        <StatCard
-          testId="rate-usage"
-          label={t('common.dashboard.rates.usage')}
-          unit={t('common.dashboard.rates.credits')}
-          value={
-            ratesData === undefined
-              ? ''
-              : formatCreditsValue(ratesData.cost_total, locale)
-          }
-          tooltip={ratesSpendTooltip}
-          loading={rates.isPending}
-          error={rates.isError}
-          onRetry={() => void rates.refetch()}
-          retryLabel={t('common.action.retry')}
-        />
-        <StatCard
-          testId="rate-rpm"
-          label={t('common.dashboard.rates.rpm')}
-          unit={t('common.dashboard.rates.req_per_min')}
-          value={ratesData === undefined ? '' : formatRpm(ratesData.rpm_avg, locale)}
-          tooltip={
-            ratesData === undefined
-              ? undefined
-              : ratesData.rpm_peak > 0
-                ? t('common.dashboard.rates.peak', {
-                    value: formatInteger(ratesData.rpm_peak, locale),
-                  })
-                : t('common.dashboard.rates.peak_none')
-          }
-          loading={rates.isPending}
-          error={rates.isError}
-          onRetry={() => void rates.refetch()}
-          retryLabel={t('common.action.retry')}
-        />
-        <StatCard
-          testId="rate-tpm"
-          label={t('common.dashboard.rates.tpm')}
-          unit={t('common.dashboard.rates.tokens_per_min')}
-          value={ratesData === undefined ? '' : formatTpm(ratesData.tpm_avg, locale)}
-          tooltip={
-            ratesData === undefined
-              ? undefined
-              : t('common.dashboard.rates.tpm_exact', {
-                  value: formatInteger(ratesData.tpm_avg, locale),
-                })
-          }
-          loading={rates.isPending}
-          error={rates.isError}
-          onRetry={() => void rates.refetch()}
-          retryLabel={t('common.action.retry')}
-        />
-      </div>
-
-      {/* Daily check-in card (modules-01 §3.19). It renders itself only when
-          the public status flag is on, so disabled sites see nothing. */}
-      <CheckinCard />
-
-      {/* Overview cards (F-05-03). */}
       <div
         aria-live="polite"
         className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4"
@@ -250,17 +200,66 @@ export function DashboardPage() {
         />
       </div>
 
+      {/* Rates strip (F-05-04). */}
+      <div
+        aria-live="polite"
+        className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3"
+      >
+        <StatCard
+          testId="rate-usage"
+          label={t('common.dashboard.rates.usage')}
+          unit={t('common.dashboard.rates.credits')}
+          value={
+            ratesData === undefined
+              ? ''
+              : formatCreditsValue(ratesData.cost_total, locale)
+          }
+          tooltip={ratesSpendTooltip}
+          loading={rates.isPending}
+          error={rates.isError}
+          onRetry={() => void rates.refetch()}
+          retryLabel={t('common.action.retry')}
+        />
+        <StatCard
+          testId="rate-rpm"
+          label={t('common.dashboard.rates.rpm')}
+          unit={t('common.dashboard.rates.req_per_min')}
+          value={ratesData === undefined ? '' : formatRpm(ratesData.rpm_avg, locale)}
+          tooltip={
+            ratesData === undefined
+              ? undefined
+              : ratesData.rpm_peak > 0
+                ? t('common.dashboard.rates.peak', {
+                    value: formatInteger(ratesData.rpm_peak, locale),
+                  })
+                : t('common.dashboard.rates.peak_none')
+          }
+          loading={rates.isPending}
+          error={rates.isError}
+          onRetry={() => void rates.refetch()}
+          retryLabel={t('common.action.retry')}
+        />
+        <StatCard
+          testId="rate-tpm"
+          label={t('common.dashboard.rates.tpm')}
+          unit={t('common.dashboard.rates.tokens_per_min')}
+          value={ratesData === undefined ? '' : formatTpm(ratesData.tpm_avg, locale)}
+          tooltip={
+            ratesData === undefined
+              ? undefined
+              : t('common.dashboard.rates.tpm_exact', {
+                  value: formatInteger(ratesData.tpm_avg, locale),
+                })
+          }
+          loading={rates.isPending}
+          error={rates.isError}
+          onRetry={() => void rates.refetch()}
+          retryLabel={t('common.action.retry')}
+        />
+      </div>
+
+      {/* Trend on the left, model distribution on the right (spec §7). */}
       <div className="mt-4 grid gap-4 lg:grid-cols-3">
-        <div className="lg:col-span-1">
-          <ModelDistributionDonut
-            items={byModel.data ?? []}
-            loading={byModel.isPending}
-            error={byModel.isError}
-            onRetry={() => void byModel.refetch()}
-            selectedModel={selectedModel}
-            onSelectModel={setSelectedModel}
-          />
-        </div>
         <div className="lg:col-span-2">
           <ConsumptionTrend
             items={timeseries.data ?? []}
@@ -273,6 +272,24 @@ export function DashboardPage() {
             onClearModel={() => setSelectedModel(undefined)}
           />
         </div>
+        <div className="lg:col-span-1">
+          <ModelDistributionDonut
+            items={byModel.data ?? []}
+            loading={byModel.isPending}
+            error={byModel.isError}
+            onRetry={() => void byModel.refetch()}
+            selectedModel={selectedModel}
+            onSelectModel={setSelectedModel}
+          />
+        </div>
+      </div>
+
+      {/* Quick actions + daily check-in (modules-01 §3.19, spec §7). The
+          check-in card renders itself only when the public status flag is on,
+          so disabled sites see just the quick actions. */}
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <QuickActions />
+        <CheckinCard className="" />
       </div>
 
       {/* F-05-08 模型性能看板。看板不跟随概览的 24h/7d/14d/30d 选择，因为

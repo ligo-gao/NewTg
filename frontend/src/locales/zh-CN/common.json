@@ -6,6 +6,7 @@
   "action.copy": "复制",
   "action.copied": "已复制",
   "action.retry": "重试",
+  "action.refresh": "刷新",
   "nav.dashboard": "仪表盘",
   "nav.group.workspace": "工作台",
   "nav.group.build": "开发",
@@ -110,6 +111,20 @@
   },
   "dashboard": {
     "title": "概览",
+    "page": {
+      "description": "今天的使用、余额与模型表现一览。"
+    },
+    "quick": {
+      "title": "快捷操作",
+      "description": "常用入口，不用回侧栏找",
+      "create_token": "创建令牌",
+      "create_token_hint": "新建调用密钥",
+      "topup": "充值",
+      "topup_hint": "余额与订单",
+      "logs": "查看日志",
+      "logs_hint": "请求与消耗明细",
+      "playground_hint": "直接试模型"
+    },
     "error": "无法加载统计数据。",
     "range": {
       "label": "时间范围",
@@ -563,6 +578,10 @@
   },
   "tokens": {
     "title": "API 令牌",
+    "page": {
+      "description": "创建和管理调用模型 API 的密钥；密钥只在创建时完整展示一次，其余时间一律掩码。",
+      "count": "共 {count} 个令牌"
+    },
     "new": "创建令牌",
     "apiAddresses": {
       "title": "API 地址",
