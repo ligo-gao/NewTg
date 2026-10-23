@@ -31,3 +31,10 @@ deploy/backups/
 .claude/worktrees/
 
 deploy/edge/certs/
+
+# NEWTG website (Next.js)
+website/node_modules/
+website/.next/
+website/out/
+website/next-env.d.ts
+website/*.tsbuildinfo
