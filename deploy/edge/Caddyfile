@@ -79,6 +79,8 @@
 }
 
 :80 {
+	@ip host 10.211.55.5
+	redir @ip https://10.211.55.5:8443{uri} permanent
 	import newtg_site
 }
 
