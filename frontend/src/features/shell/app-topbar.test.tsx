@@ -44,4 +44,20 @@ describe('AppTopbar', () => {
     getByTestId('command-palette-trigger').click()
     expect(onOpenCommandPalette).toHaveBeenCalledTimes(1)
   })
+
+  it('hides the notification bell when the session is restricted', async () => {
+    const { queryByRole } = await renderWithProviders(
+      <AppTopbar
+        title="Set a new password"
+        me={ADMIN}
+        showNotifications={false}
+        onOpenCommandPalette={() => {}}
+      />,
+      ['common'],
+    )
+
+    expect(
+      queryByRole('button', { name: /^Notifications/ }),
+    ).toBeNull()
+  })
 })

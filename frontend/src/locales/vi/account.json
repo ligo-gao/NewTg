@@ -31,7 +31,10 @@
     "password_error": "Không thể đổi mật khẩu. Vui lòng thử lại.",
     "force_title": "Đặt mật khẩu mới",
     "force_description": "Tài khoản của bạn đang dùng mật khẩu tạm thời. Hãy đặt mật khẩu mới để tiếp tục.",
-    "force_submit": "Lưu mật khẩu mới"
+    "force_submit": "Lưu mật khẩu mới",
+    "current_password_invalid": "Mật khẩu hiện tại không đúng.",
+    "password_rate_limited": "Quá nhiều lần thử. Hãy thử lại sau {seconds} giây.",
+    "new_password_rejected": "Mật khẩu mới không đáp ứng yêu cầu."
   },
   "sessions": {
     "title": "Phiên đăng nhập",

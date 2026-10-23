@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 
 import { apiClient } from '@/api/client'
+import { ApiError } from '@/api/errors'
 import { passwordPolicyProblem } from '@/lib/password-policy'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
@@ -73,7 +74,28 @@ export function SecurityPage({
       if (forcePasswordChange) {
         onNavigate('/dashboard')
       }
-    } catch {
+    } catch (caught) {
+      // The server returns a precise reason; collapsing every failure into
+      // "try again" left users typing the same wrong current password (often
+      // a browser-autofilled old one) or hammering a rate limit.
+      if (caught instanceof ApiError) {
+        if (caught.status === 429) {
+          setFormError(
+            t('account.security.password_rate_limited', {
+              seconds: caught.retry_after ?? 60,
+            }),
+          )
+          return
+        }
+        if (caught.type.endsWith('/invalid_current_password')) {
+          setFormError(t('account.security.current_password_invalid'))
+          return
+        }
+        if (caught.kind === 'validation') {
+          setFormError(t('account.security.new_password_rejected'))
+          return
+        }
+      }
       setFormError(t('account.security.password_error'))
     } finally {
       setSubmitting(false)

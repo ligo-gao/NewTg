@@ -31,7 +31,10 @@
     "password_error": "密碼變更失敗，請重試。",
     "force_title": "設定新密碼",
     "force_description": "您的帳號正在使用臨時密碼，請設定新密碼後繼續。",
-    "force_submit": "儲存新密碼"
+    "force_submit": "儲存新密碼",
+    "current_password_invalid": "目前密碼不正確。",
+    "password_rate_limited": "嘗試次數過多，請在 {seconds} 秒後重試。",
+    "new_password_rejected": "新密碼不符合要求，請換一個更強的密碼。"
   },
   "sessions": {
     "title": "登入工作階段",

@@ -31,7 +31,10 @@
     "password_error": "Impossible de modifier le mot de passe. Veuillez réessayer.",
     "force_title": "Définir un nouveau mot de passe",
     "force_description": "Votre compte utilise un mot de passe temporaire. Définissez un nouveau mot de passe pour continuer.",
-    "force_submit": "Enregistrer le nouveau mot de passe"
+    "force_submit": "Enregistrer le nouveau mot de passe",
+    "current_password_invalid": "Le mot de passe actuel est incorrect.",
+    "password_rate_limited": "Trop de tentatives. Réessayez dans {seconds} secondes.",
+    "new_password_rejected": "Le nouveau mot de passe ne respecte pas les exigences."
   },
   "sessions": {
     "title": "Sessions de connexion",

@@ -104,17 +104,34 @@ afterEach(() => {
 })
 afterAll(() => server.close())
 
-function installSession(): void {
+function installSession(
+  options: { notifications?: boolean; announcements?: boolean } = {},
+): void {
+  const withNotifications = options.notifications ?? true
+  const withAnnouncements = options.announcements ?? true
   server.use(
-    http.get(`${ORIGIN}/api/notifications/unread-count`, () =>
-      HttpResponse.json({ unread: 0 }),
-    ),
-    http.get(`${ORIGIN}/api/notifications`, () =>
-      HttpResponse.json({ items: [], total: 0, page: 1, page_size: 100 }),
-    ),
-    http.get(`${ORIGIN}/api/announcements/active`, () =>
-      HttpResponse.json({ items: [] }),
-    ),
+    ...(withNotifications
+      ? [
+          http.get(`${ORIGIN}/api/notifications/unread-count`, () =>
+            HttpResponse.json({ unread: 0 }),
+          ),
+          http.get(`${ORIGIN}/api/notifications`, () =>
+            HttpResponse.json({
+              items: [],
+              total: 0,
+              page: 1,
+              page_size: 100,
+            }),
+          ),
+        ]
+      : []),
+    ...(withAnnouncements
+      ? [
+          http.get(`${ORIGIN}/api/announcements/active`, () =>
+            HttpResponse.json({ items: [] }),
+          ),
+        ]
+      : []),
     http.get(`${ORIGIN}/api/me`, () =>
       HttpResponse.json({
         username: 'alice',
@@ -243,6 +260,28 @@ describe('ConsoleShell wide-screen gate', () => {
     expect(container.querySelector('#main')).not.toBeNull()
     expect(
       screen.queryByRole('heading', { name: 'Use a wide screen' }),
+    ).toBeNull()
+  })
+
+  it('does not mount blocked widgets on the forced password-change route', async () => {
+    // A restricted (temporary-password) session may only use /api/me and
+    // /api/password. Notifications and announcements answer 403, and the auth
+    // failure handler would hard-navigate back to this same route — the reload
+    // loop this test guards against. Leaving their handlers out makes any
+    // request a hard msw error.
+    installSession({ notifications: false, announcements: false })
+    installMatchMedia((query) => query === '(min-width: 1024px)')
+
+    renderConsoleAt('/security?force=password')
+
+    expect(
+      await screen.findByRole('heading', {
+        level: 2,
+        name: 'Set a new password',
+      }),
+    ).toBeTruthy()
+    expect(
+      screen.queryByRole('button', { name: /^Notifications/ }),
     ).toBeNull()
   })
 })
