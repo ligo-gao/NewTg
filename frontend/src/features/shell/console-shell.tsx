@@ -6,6 +6,7 @@ import {
 } from '@tanstack/react-router'
 import { useState } from 'react'
 
+import { isForcedPasswordChangePath } from '@/app/providers/auth-failures'
 import { AnnouncementPopup } from '@/features/shell/announcement-popup'
 import { meQueryOptions } from '@/lib/session'
 import { useI18n } from '@/shared/lib/i18n-context'
@@ -78,6 +79,9 @@ export function ConsoleShell() {
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   })
+  const searchStr = useRouterState({
+    select: (state) => state.location.searchStr,
+  })
   const meQuery = useQuery(meQueryOptions())
   const wide = useMediaQuery('(min-width: 1024px)')
   const [collapsed, setCollapsed] = useState(readCollapsed)
@@ -90,6 +94,11 @@ export function ConsoleShell() {
 
   const active = activeNavItem(pathname)
   const title = active ? t(active.labelKey) : t('common.nav.dashboard')
+  // A restricted (temporary-password) session may not call the notification or
+  // announcement endpoints. Mounting those widgets would answer 403 and bounce
+  // the user straight back here, so the only page they can complete becomes
+  // unreachable. The change-password form needs neither.
+  const restricted = isForcedPasswordChangePath(pathname, searchStr)
 
   return (
     <div className="flex h-screen bg-surface-page text-ink-1">
@@ -109,6 +118,7 @@ export function ConsoleShell() {
         <AppTopbar
           title={title}
           me={meQuery.data}
+          showNotifications={!restricted}
           onOpenCommandPalette={() => setCommandPaletteOpen(true)}
         />
         <main id="main" className="min-h-0 flex-1 overflow-y-auto p-6">
@@ -116,7 +126,7 @@ export function ConsoleShell() {
         </main>
       </div>
 
-      <AnnouncementPopup />
+      {restricted ? null : <AnnouncementPopup />}
       <CommandPalette
         open={commandPaletteOpen}
         onOpenChange={setCommandPaletteOpen}

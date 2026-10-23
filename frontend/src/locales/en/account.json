@@ -31,7 +31,10 @@
     "password_error": "Could not change the password. Please try again.",
     "force_title": "Set a new password",
     "force_description": "Your account is using a temporary password. Set a new password to continue.",
-    "force_submit": "Save new password"
+    "force_submit": "Save new password",
+    "current_password_invalid": "The current password is incorrect.",
+    "password_rate_limited": "Too many attempts. Try again in {seconds} seconds.",
+    "new_password_rejected": "The new password does not meet the requirements."
   },
   "sessions": {
     "title": "Login sessions",

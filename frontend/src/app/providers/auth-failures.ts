@@ -27,11 +27,39 @@ function currentPath(): string {
   return `${location.pathname}${location.search}${location.hash}`
 }
 
+/**
+ * True when the browser is already on the restricted-session landing page.
+ *
+ * A restricted session may only call `/api/me`, `/api/self`, `/api/logout`,
+ * `/api/password` and the 2FA endpoints; every other query answers
+ * `403 password_change_required`. The shell still mounts widgets that fetch
+ * blocked endpoints (notifications, announcements), so without this guard the
+ * handler hard-navigates back to the same URL on every mount — an endless
+ * reload loop the user cannot escape to change their password.
+ */
+export function isForcedPasswordChangePath(
+  pathname: string,
+  search: string,
+): boolean {
+  return (
+    pathname === '/security' &&
+    new URLSearchParams(search).get('force') === 'password'
+  )
+}
+
 const defaultHandlers: AuthFailureHandlers = {
   unauthorized: (path) => {
     window.location.assign(`/401?redirect=${encodeURIComponent(path)}`)
   },
   passwordChangeRequired: () => {
+    // A restricted session on the change-password page must stay put: the
+    // only useful action is submitting the form, not another full reload.
+    if (
+      typeof location !== 'undefined' &&
+      isForcedPasswordChangePath(location.pathname, location.search)
+    ) {
+      return
+    }
     // Hard navigation on purpose: a restricted session must not keep any
     // console state alive, and the reload re-runs route consumers against the
     // server-enforced whitelist.

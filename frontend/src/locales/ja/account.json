@@ -31,7 +31,10 @@
     "password_error": "パスワードを変更できませんでした。再試行してください。",
     "force_title": "新しいパスワードを設定",
     "force_description": "アカウントは一時パスワードを使用しています。続行するには新しいパスワードを設定してください。",
-    "force_submit": "新しいパスワードを保存"
+    "force_submit": "新しいパスワードを保存",
+    "current_password_invalid": "現在のパスワードが正しくありません。",
+    "password_rate_limited": "試行回数が多すぎます。{seconds} 秒後に再試行してください。",
+    "new_password_rejected": "新しいパスワードが要件を満たしていません。"
   },
   "sessions": {
     "title": "ログインセッション",

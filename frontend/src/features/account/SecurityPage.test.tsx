@@ -53,3 +53,70 @@ describe('SecurityPage sessions cache (I8)', () => {
     })
   })
 })
+
+describe('SecurityPage forced password change errors', () => {
+  async function submitWith(
+    response: () => Response | Promise<Response>,
+  ): Promise<Awaited<ReturnType<typeof renderWithProviders>>> {
+    server.use(http.post(`${ORIGIN}/api/password`, response))
+    const result = await renderWithProviders(
+      <SecurityPage forcePasswordChange />,
+      ['common', 'account', 'auth'],
+    )
+    const user = userEvent.setup()
+    await user.type(result.getByLabelText('Current password'), 'temp password 1')
+    await user.type(result.getByLabelText('New password'), 'new password 1')
+    await user.type(result.getByLabelText('Confirm new password'), 'new password 1')
+    await user.click(result.getByRole('button', { name: 'Save new password' }))
+    return result
+  }
+
+  it('names the current password when the server rejects it', async () => {
+    const { findByText } = await submitWith(() =>
+      HttpResponse.json(
+        {
+          status: 400,
+          type: 'https://newtg.dev/problems/invalid_current_password',
+          title: 'Current password is incorrect',
+        },
+        { status: 400 },
+      ),
+    )
+
+    expect(await findByText('The current password is incorrect.')).toBeTruthy()
+  })
+
+  it('shows the server retry window on a rate limit', async () => {
+    const { findByText } = await submitWith(() =>
+      HttpResponse.json(
+        {
+          status: 429,
+          type: 'https://newtg.dev/problems/too_many_requests',
+          title: 'Too many password change attempts',
+        },
+        { status: 429, headers: { 'Retry-After': '42' } },
+      ),
+    )
+
+    expect(
+      await findByText('Too many attempts. Try again in 42 seconds.'),
+    ).toBeTruthy()
+  })
+
+  it('explains that the new password was rejected', async () => {
+    const { findByText } = await submitWith(() =>
+      HttpResponse.json(
+        {
+          status: 400,
+          type: 'https://newtg.dev/problems/bad_request',
+          title: 'Password is too weak or has been compromised',
+        },
+        { status: 400 },
+      ),
+    )
+
+    expect(
+      await findByText('The new password does not meet the requirements.'),
+    ).toBeTruthy()
+  })
+})

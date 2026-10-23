@@ -8,6 +8,12 @@ export interface AppTopbarProps {
   title: string
   me?: Me | null
   onOpenCommandPalette: () => void
+  /**
+   * A restricted (temporary-password) session cannot reach the notification
+   * endpoints, and each blocked request would bounce the user back to the
+   * change-password screen. Hide the bell while the session is restricted.
+   */
+  showNotifications?: boolean
 }
 
 function isApplePlatform(): boolean {
@@ -19,7 +25,12 @@ function isApplePlatform(): boolean {
   return /mac|iphone|ipad|ipod/i.test(platform)
 }
 
-export function AppTopbar({ title, me, onOpenCommandPalette }: AppTopbarProps) {
+export function AppTopbar({
+  title,
+  me,
+  onOpenCommandPalette,
+  showNotifications = true,
+}: AppTopbarProps) {
   const { t } = useI18n()
   const shortcut = isApplePlatform()
     ? t('common.command.shortcut_mac')
@@ -52,7 +63,9 @@ export function AppTopbar({ title, me, onOpenCommandPalette }: AppTopbarProps) {
           </kbd>
         </button>
 
-        <NotificationBell signedIn={me !== null && me !== undefined} />
+        {showNotifications ? (
+          <NotificationBell signedIn={me !== null && me !== undefined} />
+        ) : null}
 
         <a
           href="/profile"

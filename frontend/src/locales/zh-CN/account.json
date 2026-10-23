@@ -31,7 +31,10 @@
     "password_error": "密码修改失败，请重试。",
     "force_title": "设置新密码",
     "force_description": "您的账号正在使用临时密码，请设置新密码后继续。",
-    "force_submit": "保存新密码"
+    "force_submit": "保存新密码",
+    "current_password_invalid": "当前密码不正确。",
+    "password_rate_limited": "尝试次数过多，请在 {seconds} 秒后重试。",
+    "new_password_rejected": "新密码不符合要求，请换一个更强的密码。"
   },
   "sessions": {
     "title": "登录会话",
