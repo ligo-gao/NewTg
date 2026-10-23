@@ -111,7 +111,7 @@ func TestPublicStatusSettingsDefaults(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatalf("JSON 非法: %v", err)
 	}
-	if body.Site.Title != "NewTG" || body.Site.Timezone != "Asia/Shanghai" {
+	if body.Site.Title != "NEWTG" || body.Site.Timezone != "Asia/Shanghai" {
 		t.Fatalf("site 默认值错误: %+v", body.Site)
 	}
 	if !body.Site.HomeBlock.Hero {

@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { DashboardPage } from './dashboard-page'
+import { formatCurrencyValue } from './format'
 import {
   type FetchRecord,
   installFetch,
@@ -55,6 +56,7 @@ function emptyRates() {
 
 interface Scenario {
   me?: object
+  status?: () => Response
   summary?: () => Response
   byModel?: () => Response
   timeseries?: () => Response
@@ -78,11 +80,27 @@ function disabledModelPerf() {
   }
 }
 
+/**
+ * Minimal `/api/status` payload carrying the billing projection the dashboard
+ * reads. `auth.turnstile` is required by CheckinCard's read, so it is present
+ * (disabled) even though these tests never exercise check-in.
+ */
+function statusWithBilling(billing: Record<string, unknown>) {
+  return jsonResponse({
+    auth: { turnstile: { enabled: false, site_key: '' } },
+    billing,
+  })
+}
+
 function installScenario(scenario: Scenario): FetchRecord[] {
   return installFetch((request) => {
     switch (request.url.pathname) {
       case '/api/me':
         return jsonResponse(scenario.me ?? ME_USER)
+      case '/api/status':
+        return scenario.status !== undefined
+          ? scenario.status()
+          : problemResponse(404, { type: 'about:blank', title: 'not found' })
       case '/api/usage-stats/summary':
         return scenario.summary?.() ?? jsonResponse(emptySummary())
       case '/api/usage-stats/by-model':
@@ -111,7 +129,7 @@ afterEach(() => {
 })
 
 describe('DashboardPage', () => {
-  it('renders zero data as 0 / -- and never NaN', async () => {
+  it('renders zero data as 0 / no-data hints and never NaN', async () => {
     installScenario({})
     renderWithProviders(<DashboardPage />)
 
@@ -122,7 +140,11 @@ describe('DashboardPage', () => {
       expect(screen.getByTestId('card-requests-value').textContent).toBe('0')
       expect(screen.getByTestId('card-input-tokens-value').textContent).toBe('0')
       expect(screen.getByTestId('card-output-tokens-value').textContent).toBe('0')
-      expect(screen.getByTestId('card-requests-subline').textContent).toContain('--')
+      // No requests means no success rate to report; the card says so instead
+      // of printing a misleading "--".
+      expect(screen.getByTestId('card-requests-subline').textContent).toBe(
+        'No data',
+      )
       expect(screen.getByTestId('rate-usage-value').textContent).toBe('0')
       expect(screen.getByTestId('rate-rpm-value').textContent).toBe('0')
       expect(screen.getByTestId('rate-tpm-value').textContent).toBe('0')
@@ -180,6 +202,137 @@ describe('DashboardPage', () => {
     expect(tooltip.textContent).toContain('1,720')
     expect(tooltip.textContent).toContain('Pre-deducted')
     expect(tooltip.textContent).toContain('Refunded')
+  })
+
+  it('keeps credit rendering when billing.display_unit is credits', async () => {
+    installScenario({
+      status: () =>
+        statusWithBilling({
+          display_unit: 'credits',
+          quota_per_unit: 100,
+          currency_symbol: '¥',
+        }),
+      summary: () =>
+        jsonResponse({ ...emptySummary(), cost_total: 12480, request_count: 10 }),
+      rates: () => jsonResponse({ ...emptyRates(), cost_total: 6400 }),
+    })
+    renderWithProviders(<DashboardPage />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('card-total-spent-value').textContent).toBe(
+        '12,480',
+      )
+      expect(screen.getByTestId('rate-usage-value').textContent).toBe('6,400')
+    })
+    expect(
+      within(screen.getByTestId('card-total-spent')).getByText('credits'),
+    ).toBeTruthy()
+    expect(
+      within(screen.getByTestId('rate-usage')).getByText('credits'),
+    ).toBeTruthy()
+    expect(
+      within(screen.getByTestId('card-total-spent')).queryByText('¥'),
+    ).toBeNull()
+  })
+
+  it('falls back to credit rendering when /api/status is unavailable', async () => {
+    installScenario({
+      status: () =>
+        problemResponse(503, {
+          type: 'about:blank',
+          title: 'Service Unavailable',
+        }),
+      summary: () =>
+        jsonResponse({ ...emptySummary(), cost_total: 12480, request_count: 10 }),
+      rates: () => jsonResponse({ ...emptyRates(), cost_total: 6400 }),
+    })
+    renderWithProviders(<DashboardPage />)
+
+    // An unknown unit must never blank the cards or crash the page: the
+    // credit presentation (and its unit label) is the safe default.
+    await waitFor(() => {
+      expect(screen.getByTestId('card-total-spent-value').textContent).toBe(
+        '12,480',
+      )
+      expect(screen.getByTestId('rate-usage-value').textContent).toBe('6,400')
+    })
+    expect(
+      within(screen.getByTestId('card-total-spent')).getByText('credits'),
+    ).toBeTruthy()
+    const rateCard = screen.getByTestId('rate-usage')
+    expect(within(rateCard).getByText('Credits used')).toBeTruthy()
+    expect(within(rateCard).queryByText('Spend')).toBeNull()
+    expect(within(rateCard).queryByText('¥')).toBeNull()
+  })
+
+  it('renders spend in the configured currency while the tooltip stays in credits', async () => {
+    const user = userEvent.setup()
+    installScenario({
+      status: () =>
+        statusWithBilling({
+          display_unit: 'cny',
+          quota_per_unit: 100,
+          currency_symbol: '¥',
+        }),
+      summary: () =>
+        jsonResponse({
+          ...emptySummary(),
+          cost_total: 12480,
+          request_count: 10,
+          pre_deducted_total: 14200,
+          refunded_total: 1720,
+        }),
+      rates: () =>
+        jsonResponse({
+          ...emptyRates(),
+          cost_total: 6400,
+          pre_deducted_total: 6400,
+        }),
+    })
+    renderWithProviders(<DashboardPage />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('card-total-spent-value').textContent).toBe(
+        '¥124.80',
+      )
+      expect(screen.getByTestId('rate-usage-value').textContent).toBe('¥64.00')
+    })
+    // The currency value carries its own symbol; the separate "credits" unit
+    // would contradict it.
+    const spendCard = screen.getByTestId('card-total-spent')
+    expect(within(spendCard).queryByText('credits')).toBeNull()
+    const rateCard = screen.getByTestId('rate-usage')
+    expect(within(rateCard).queryByText('credits')).toBeNull()
+    // "Credits used" would contradict the ¥ figure, so the rate card switches
+    // to the plain "Spend" label.
+    expect(within(rateCard).getByText('Spend')).toBeTruthy()
+    expect(within(rateCard).queryByText('Credits used')).toBeNull()
+
+    // The pre-deducted/refunded hover is a ledger fact and stays in credits.
+    await user.hover(spendCard)
+    const tooltip = await screen.findByRole('tooltip')
+    expect(tooltip.textContent).toContain('14,200')
+    expect(tooltip.textContent).toContain('1,720')
+  })
+
+  it('honours a non-default quota_per_unit and symbol', async () => {
+    installScenario({
+      status: () =>
+        statusWithBilling({
+          display_unit: 'cny',
+          quota_per_unit: 200,
+          currency_symbol: '$',
+        }),
+      summary: () => jsonResponse({ ...emptySummary(), cost_total: 10000 }),
+    })
+    renderWithProviders(<DashboardPage />)
+
+    // 10,000 credits at 200 credits/unit = 5,000 cents = 50.00.
+    await waitFor(() => {
+      expect(screen.getByTestId('card-total-spent-value').textContent).toBe(
+        '$50.00',
+      )
+    })
   })
 
   it('switches the range for every query and picks hour vs day granularity', async () => {
@@ -449,5 +602,26 @@ describe('DashboardPage', () => {
     }
     expect(within(rowFor('2026-10-18T01:00:00.000Z')).getByText('5')).toBeTruthy()
     expect(within(rowFor('2026-10-18T05:00:00.000Z')).getByText('7')).toBeTruthy()
+  })
+})
+
+describe('formatCurrencyValue', () => {
+  it('converts credits to the display amount at the configured quota per unit', () => {
+    // credits = cents * quota_per_unit / 100, so 12,480 credits at 100 = 124.80.
+    expect(formatCurrencyValue(12480, 100, '¥', 'en')).toBe('¥124.80')
+    expect(formatCurrencyValue(10000, 200, '$', 'en')).toBe('$50.00')
+    expect(formatCurrencyValue(0, 100, '¥', 'en')).toBe('¥0.00')
+  })
+
+  it('localises the decimal separator', () => {
+    expect(formatCurrencyValue(12480, 100, '¥', 'zh-CN')).toBe('¥124.80')
+    expect(formatCurrencyValue(12480, 100, '¥', 'fr')).toBe('¥124,80')
+  })
+
+  it('returns -- for values it cannot convert', () => {
+    expect(formatCurrencyValue(Number.NaN, 100, '¥', 'en')).toBe('--')
+    expect(formatCurrencyValue(-1, 100, '¥', 'en')).toBe('--')
+    expect(formatCurrencyValue(100, 0, '¥', 'en')).toBe('--')
+    expect(formatCurrencyValue(100, Number.NaN, '¥', 'en')).toBe('--')
   })
 })

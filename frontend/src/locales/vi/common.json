@@ -1,5 +1,5 @@
 {
-  "app.title": "NewTG",
+  "app.title": "NEWTG",
   "app.scaffold": "Khung M0",
   "action.cancel": "Hủy",
   "action.close": "Đóng",
@@ -7,6 +7,15 @@
   "action.copied": "Đã sao chép",
   "action.retry": "Thử lại",
   "action.refresh": "Làm mới",
+  "language.label": "Ngôn ngữ giao diện",
+  "language.saved_locally": "Đã lưu ngôn ngữ trên thiết bị này.",
+  "language.update_error": "Không thể lưu tùy chọn ngôn ngữ. Đã khôi phục ngôn ngữ trước đó.",
+  "theme.label": "Chủ đề",
+  "theme.light": "Sáng",
+  "theme.dark": "Tối",
+  "theme.system": "Theo hệ thống",
+  "site_nav.label": "Điều hướng chính",
+  "site_nav.models": "Mô hình",
   "nav.dashboard": "Bảng điều khiển",
   "nav.group.workspace": "Không gian làm việc",
   "nav.group.build": "Phát triển",
@@ -146,10 +155,12 @@
       "success_rate": "Tỷ lệ thành công {rate}",
       "input_tokens": "Token đầu vào",
       "output_tokens": "Token đầu ra",
-      "spend_tooltip": "Trừ trước Σ{pre} / Đã hoàn Σ{refunded}"
+      "spend_tooltip": "Trừ trước Σ{pre} / Đã hoàn Σ{refunded}",
+      "no_data": "Không có dữ liệu"
     },
     "rates": {
-      "usage": "Sử dụng",
+      "usage": "Tín dụng đã dùng",
+      "spend": "Chi tiêu",
       "rpm": "RPM",
       "tpm": "TPM",
       "credits": "điểm",
@@ -297,6 +308,7 @@
   "nav.model_deployments": "Triển khai mô hình",
   "channels": {
     "title": "Kênh",
+    "subtitle": "Quản lý kênh nguồn, mô hình và tình trạng định tuyến。",
     "new": "Kênh mới",
     "total": "{total} kênh",
     "filters": {
@@ -349,7 +361,12 @@
       "moreModels": "+{count}",
       "neverTested": "Chưa kiểm tra",
       "successRate24h": "Thành công (24h)",
-      "avgLatency24h": "Độ trễ (24h)"
+      "avgLatency24h": "Độ trễ (24h)",
+      "modelsCount": "Mô hình: {count}",
+      "modelsCountFor": "Mô hình: {count} · {name}",
+      "routingGroups": "Định tuyến và nhóm",
+      "health24h": "Tình trạng 24h",
+      "noHealthData": "Không có dữ liệu"
     },
     "empty": {
       "none": "Chưa có kênh",
@@ -374,7 +391,10 @@
       "test": "Kiểm tra kết nối",
       "batchTest": "Kiểm tra hàng loạt",
       "enableChannel": "Bật kênh {name}",
-      "disableChannel": "Tắt kênh {name}"
+      "disableChannel": "Tắt kênh {name}",
+      "more": "Thao tác khác",
+      "moreFor": "Thao tác khác cho {name}",
+      "performance": "Kiểm tra hiệu năng"
     },
     "bulk": {
       "toolbar": "Thao tác hàng loạt",
@@ -489,7 +509,9 @@
       "tag": "Thẻ",
       "unlimited": "Không giới hạn",
       "yes": "Có",
-      "no": "Không"
+      "no": "Không",
+      "modelsTitle": "Tất cả mô hình ({count})",
+      "infoTitle": "Thông tin kênh"
     },
     "test": {
       "title": "Kiểm tra hàng loạt · {name}",
@@ -511,6 +533,25 @@
       "network": "Lỗi mạng",
       "param": "Yêu cầu không hợp lệ",
       "unknown": "Lỗi không rõ"
+    },
+    "perf": {
+      "title": "Kiểm tra hiệu năng · {name}",
+      "subtitle": "Đo thời gian đến token đầu tiên, độ trễ và thông lượng của các mô hình đã chọn.",
+      "runs": "Số lần chạy",
+      "runsOption": "{count} lần",
+      "start": "Bắt đầu",
+      "stop": "Dừng",
+      "running": "Đang chạy…",
+      "ttft_p50": "TTFT p50 (ms)",
+      "ttft_p95": "TTFT p95 (ms)",
+      "latency_p50": "Độ trễ p50 (ms)",
+      "latency_p95": "Độ trễ p95 (ms)",
+      "tps": "TPS",
+      "success": "Tỷ lệ thành công",
+      "tokens": "Token đầu ra",
+      "noSelection": "Chọn ít nhất một mô hình.",
+      "empty": "Kênh này chưa cấu hình mô hình nào.",
+      "error": "Thất bại"
     },
     "typeGroup": {
       "openai": "Tương thích OpenAI",
@@ -549,12 +590,12 @@
       "switchLabel": "Công tắc (cài đặt trang)",
       "statusLabel": "Trạng thái công tắc",
       "status": {
-        "unknown": "Không khả dụng trong bản phát hành này.",
+        "unknown": "Sắp ra mắt.",
         "off": "Tắt — chuyển tiếp liên giao thức bị vô hiệu hóa.",
         "on": "Bật — các yêu cầu mang tiêu đề này được chuyển tiếp tới giao thức thượng nguồn đã chọn."
       },
       "defaultOff": "Công tắc mặc định tắt. Khi tắt, yêu cầu mang x-newtg-protocol sẽ thất bại với 403 thay vì được chuyển tiếp.",
-      "managedBy": "Công tắc nằm trong cài đặt trang, chưa khả dụng trong bản phát hành này, nên bảng điều khiển này không thể đọc hoặc thay đổi nó.",
+      "managedBy": "Công tắc này sắp ra mắt và chưa thể thay đổi tại đây.",
       "editableDeferred": "Công tắc có thể chỉnh sửa và ánh xạ giao thức sẽ có khi cài đặt trang khả dụng; cho đến lúc đó không hiển thị điều khiển nào ở đây."
     },
     "metrics": {

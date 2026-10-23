@@ -40,7 +40,7 @@ describe('AboutPage (F-09-07)', () => {
       'public',
     ])
 
-    expect(getByRole('heading', { level: 1 }).textContent).toContain('About NewTG')
+    expect(getByRole('heading', { level: 1 }).textContent).toContain('About NEWTG')
     expect(getByText('A commercial AI API gateway built for developers.')).toBeTruthy()
     expect(getByText('Tech stack')).toBeTruthy()
     expect(getByText('Backend')).toBeTruthy()

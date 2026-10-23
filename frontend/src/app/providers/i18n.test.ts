@@ -42,7 +42,7 @@ describe('lazy dictionary loading', () => {
     expect(translate('en', 'common.app.title')).toBe('common.app.title')
 
     await loadDictionary('en', 'common')
-    expect(translate('en', 'common.app.title')).toBe('NewTG')
+    expect(translate('en', 'common.app.title')).toBe('NEWTG')
   })
 
   it('loads domains independently', async () => {

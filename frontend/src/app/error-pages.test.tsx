@@ -27,7 +27,7 @@ import {
   ServerErrorPage,
   ServiceUnavailablePage,
 } from '@/app/error-status-page'
-import { I18nProvider } from '@/app/providers/i18n'
+import { I18nProvider, loadDictionary } from '@/app/providers/i18n'
 import { UNAUTHORIZED_REQUEST_ID_KEY } from '@/app/providers/auth-failures'
 import { createQueryClient } from '@/app/providers/query'
 import { router as appRouter } from '@/app/router'
@@ -545,7 +545,7 @@ describe('public chrome around error pages (P1-4)', () => {
     await renderWithProviders(<ServiceUnavailablePage probeIntervalMs={60_000} onRetry={() => undefined} />, ['common', 'public'])
 
     // Public header/footer mount around the error content.
-    expect((await screen.findAllByRole('link', { name: 'NewTG' })).length).toBeGreaterThan(0)
+    expect((await screen.findAllByRole('link', { name: 'NEWTG' })).length).toBeGreaterThan(0)
     expect(screen.getByRole('contentinfo')).toBeTruthy()
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(
       'Service temporarily unavailable',
@@ -576,7 +576,7 @@ describe('public chrome around error pages (P1-4)', () => {
       'Service temporarily unavailable',
     )
     expect(screen.queryByRole('navigation', { name: 'Public pages' })).toBeNull()
-    expect(screen.getByRole('contentinfo').textContent).toContain('NewTG')
+    expect(screen.getByRole('contentinfo').textContent).toContain('NEWTG')
   })
 })
 
@@ -690,5 +690,159 @@ describe('route mapping', () => {
     expect(
       await screen.findByRole('heading', { name: 'Page not found' }),
     ).toBeTruthy()
+  })
+})
+
+/**
+ * WS2 regression: an unmatched URL used to fall straight to
+ * `defaultNotFoundComponent`, so no route loader ran and `PublicHeader`
+ * rendered raw `public.*` keys.
+ *
+ * The first test resets the module registry so the dictionary cache starts
+ * empty. That makes the assertion meaningful: with only `common` preloaded, a
+ * translated header on an unmatched URL can only happen if the catch-all `/$`
+ * route matched and its loader pulled `public`. Deleting `routes/$.tsx` (and
+ * regenerating the tree) or removing its loader turns this test red.
+ */
+describe('catch-all 404 dictionary loading (WS2)', () => {
+  it('matches the splat route and runs its loader on a pristine module graph', async () => {
+    statusHandler()
+    meUnauthorized()
+
+    vi.resetModules()
+    const [
+      freshRtl,
+      freshQuery,
+      freshRouter,
+      freshRouteTree,
+      freshI18n,
+      freshQueryClient,
+    ] = await Promise.all([
+      import('@testing-library/react'),
+      import('@tanstack/react-query'),
+      import('@tanstack/react-router'),
+      import('@/routeTree.gen'),
+      import('@/app/providers/i18n'),
+      import('@/app/providers/query'),
+    ])
+
+    const queryClient = freshQueryClient.createQueryClient()
+    const router = freshRouter.createRouter({
+      routeTree: freshRouteTree.routeTree,
+      context: { queryClient },
+      history: freshRouter.createMemoryHistory({
+        initialEntries: ['/definitely-not-a-route'],
+      }),
+      scrollRestoration: false,
+    })
+
+    const view = freshRtl.render(
+      <freshQuery.QueryClientProvider client={queryClient}>
+        {/* AppProviders only preloads `common`; the unmatched route must pull
+            `public` through its own loader. */}
+        <freshI18n.I18nProvider modules={['common']}>
+          <freshRouter.RouterProvider router={router} />
+        </freshI18n.I18nProvider>
+      </freshQuery.QueryClientProvider>,
+    )
+
+    try {
+      expect(
+        await freshRtl.screen.findByRole('heading', { name: 'Page not found' }),
+      ).toBeTruthy()
+
+      // The leaf match is the catch-all route, not `__root__`'s
+      // `notFoundComponent` fallback.
+      const matches = router.state.matches
+      expect(matches[matches.length - 1]?.routeId).toBe('/$')
+
+      // A translated header link proves the `/$` loader loaded `public`.
+      expect(
+        await freshRtl.screen.findByRole('link', { name: 'Sign in' }),
+      ).toBeTruthy()
+      expect(document.body.textContent ?? '').not.toMatch(/public\.[a-zA-Z]/)
+    } finally {
+      view.unmount()
+    }
+  })
+
+  // Parity/component check only: both dictionaries are preloaded here, so this
+  // test asserts copy parity across locales — it does not prove loader wiring.
+  it.each(['zh-CN', 'fr'] as const)(
+    'renders the not-found component without raw keys (%s)',
+    async (locale) => {
+      statusHandler()
+      meUnauthorized()
+      await loadDictionary(locale, 'common')
+      await loadDictionary(locale, 'public')
+
+      render(
+        <QueryClientProvider client={createQueryClient()}>
+          <I18nProvider locale={locale} modules={['common', 'public']}>
+            <NotFoundPage />
+          </I18nProvider>
+        </QueryClientProvider>,
+      )
+
+      expect(await screen.findByRole('heading', { level: 1 })).toBeTruthy()
+      const text = document.body.textContent ?? ''
+      expect(text).not.toMatch(/public\.[a-zA-Z]/)
+      expect(text).not.toMatch(/common\.[a-zA-Z]/)
+    },
+  )
+})
+
+/**
+ * Final-review regression: the boundary path (`__root` errorComponent,
+ * `router.defaultErrorComponent`, global `ErrorBoundary`) renders
+ * `ErrorFallback` → `ErrorPageShell` → `PublicHeader`, but `AppProviders`
+ * preloads only `common`. On a console route whose loader/render throws, the
+ * header used to show literal `public.nav.*` keys.
+ *
+ * The pristine module graph makes the assertion meaningful: the module-level
+ * dictionary cache is empty except for `common`, so a translated header can
+ * only appear if the error shell itself loaded `public`. Removing the shell's
+ * loader turns this test red (the visible text contains `public.nav.*`).
+ */
+describe('error boundary public dictionary loading (final review)', () => {
+  it('renders the boundary fallback without raw public.* keys from only `common`', async () => {
+    statusHandler()
+    meUnauthorized()
+
+    vi.resetModules()
+    const [freshRtl, freshQuery, freshI18n, freshBoundary] = await Promise.all([
+      import('@testing-library/react'),
+      import('@tanstack/react-query'),
+      import('@/app/providers/i18n'),
+      import('@/app/error-boundary'),
+    ])
+
+    // AppProviders' baseline only.
+    await freshI18n.loadDictionary('en', 'common')
+
+    const queryClient = new freshQuery.QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    const view = freshRtl.render(
+      <freshQuery.QueryClientProvider client={queryClient}>
+        <freshI18n.I18nProvider modules={['common']}>
+          <freshBoundary.ErrorFallback error={new Error('render failed')} />
+        </freshI18n.I18nProvider>
+      </freshQuery.QueryClientProvider>,
+    )
+
+    try {
+      // A translated guest action proves `public` actually arrived (the loader
+      // is what makes this test fail if removed).
+      expect(
+        await freshRtl.screen.findByRole('link', { name: 'Sign in' }),
+      ).toBeTruthy()
+      // No raw dictionary key may reach the DOM.
+      const text = document.body.textContent ?? ''
+      expect(text).not.toMatch(/public\./)
+    } finally {
+      view.unmount()
+    }
   })
 })

@@ -7,7 +7,7 @@ import { usePublicStatus } from '@/lib/public-status'
 import { ME_QUERY_KEY, meQueryOptions } from '@/lib/session'
 import { useI18n } from '@/shared/lib/i18n-context'
 
-import { LanguageSwitch } from './language-switch'
+import { LanguageSwitch } from '@/shared/ui/language-switch'
 import { MobileNavDrawer } from './mobile-nav-drawer'
 import {
   currentSearch,
@@ -18,7 +18,7 @@ import {
 } from './nav-visibility'
 import { Menu01Icon } from './public-icons'
 
-const DEFAULT_SITE_TITLE = 'NewTG'
+const DEFAULT_SITE_TITLE = 'NEWTG'
 
 /** Only site-relative paths or absolute http(s) URLs may become an `<img src>`. */
 function safeLogoUrl(raw: string | undefined): string | null {
@@ -319,7 +319,10 @@ export function PublicHeader({ activePath }: PublicHeaderProps) {
           <PrimaryNav items={items} activePath={activePath} labels={labels} />
         )}
         <div className="header-tools">
-          <LanguageSwitch className="home-lang" />
+          <LanguageSwitch
+            className="home-lang"
+            label={t('public.language.label')}
+          />
           <AuthCluster
             isLoggedIn={isLoggedIn}
             signupEnabled={signupEnabled}
@@ -345,7 +348,10 @@ export function PublicHeader({ activePath }: PublicHeaderProps) {
         labels={labels}
         footer={
           <div className="flex flex-col gap-4">
-            <LanguageSwitch variant="footer" />
+            <LanguageSwitch
+              variant="footer"
+              label={t('public.language.label')}
+            />
             <AuthCluster
               isLoggedIn={isLoggedIn}
               signupEnabled={signupEnabled}

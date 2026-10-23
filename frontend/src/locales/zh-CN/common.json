@@ -1,5 +1,5 @@
 {
-  "app.title": "NewTG",
+  "app.title": "NEWTG",
   "app.scaffold": "M0 脚手架",
   "action.cancel": "取消",
   "action.close": "关闭",
@@ -7,6 +7,15 @@
   "action.copied": "已复制",
   "action.retry": "重试",
   "action.refresh": "刷新",
+  "language.label": "界面语言",
+  "language.saved_locally": "语言已保存在本设备。",
+  "language.update_error": "语言偏好保存失败，已恢复原语言。",
+  "theme.label": "主题",
+  "theme.light": "浅色",
+  "theme.dark": "深色",
+  "theme.system": "跟随系统",
+  "site_nav.label": "主导航",
+  "site_nav.models": "模型库",
   "nav.dashboard": "仪表盘",
   "nav.group.workspace": "工作台",
   "nav.group.build": "开发",
@@ -146,10 +155,12 @@
       "success_rate": "成功率 {rate}",
       "input_tokens": "输入 Token",
       "output_tokens": "输出 Token",
-      "spend_tooltip": "预扣 Σ{pre} / 已退还 Σ{refunded}"
+      "spend_tooltip": "预扣 Σ{pre} / 已退还 Σ{refunded}",
+      "no_data": "暂无数据"
     },
     "rates": {
-      "usage": "用量",
+      "usage": "积分消耗",
+      "spend": "消费",
       "rpm": "RPM",
       "tpm": "TPM",
       "credits": "积分",
@@ -297,6 +308,7 @@
   "nav.model_deployments": "模型部署",
   "channels": {
     "title": "渠道",
+    "subtitle": "管理上游渠道、模型与路由健康。",
     "new": "新建渠道",
     "total": "{total} 个渠道",
     "filters": {
@@ -349,7 +361,12 @@
       "moreModels": "+{count}",
       "neverTested": "从未测试",
       "successRate24h": "成功（24h）",
-      "avgLatency24h": "延迟（24h）"
+      "avgLatency24h": "延迟（24h）",
+      "modelsCount": "模型：{count}",
+      "modelsCountFor": "模型：{count} · {name}",
+      "routingGroups": "路由与分组",
+      "health24h": "24h 健康",
+      "noHealthData": "无数据"
     },
     "empty": {
       "none": "暂无渠道",
@@ -374,7 +391,10 @@
       "test": "测试连接",
       "batchTest": "批量测试",
       "enableChannel": "启用渠道 {name}",
-      "disableChannel": "停用渠道 {name}"
+      "disableChannel": "停用渠道 {name}",
+      "more": "更多操作",
+      "moreFor": "更多操作：{name}",
+      "performance": "性能测试"
     },
     "bulk": {
       "toolbar": "批量操作",
@@ -489,7 +509,9 @@
       "tag": "标签",
       "unlimited": "不限",
       "yes": "是",
-      "no": "否"
+      "no": "否",
+      "modelsTitle": "全部模型（{count}）",
+      "infoTitle": "渠道信息"
     },
     "test": {
       "title": "批量测试 · {name}",
@@ -511,6 +533,25 @@
       "network": "网络错误",
       "param": "请求无效",
       "unknown": "未知错误"
+    },
+    "perf": {
+      "title": "性能测试 · {name}",
+      "subtitle": "测量所选模型的首字延迟、延迟与吞吐量。",
+      "runs": "运行次数",
+      "runsOption": "{count} 次",
+      "start": "开始",
+      "stop": "停止",
+      "running": "运行中…",
+      "ttft_p50": "首字延迟 p50（毫秒）",
+      "ttft_p95": "首字延迟 p95（毫秒）",
+      "latency_p50": "延迟 p50（毫秒）",
+      "latency_p95": "延迟 p95（毫秒）",
+      "tps": "TPS",
+      "success": "成功率",
+      "tokens": "输出 tokens",
+      "noSelection": "请至少选择一个模型。",
+      "empty": "此渠道未配置模型。",
+      "error": "失败"
     },
     "typeGroup": {
       "openai": "OpenAI 兼容",
@@ -549,12 +590,12 @@
       "switchLabel": "开关（站点设置）",
       "statusLabel": "开关状态",
       "status": {
-        "unknown": "本版本不可用。",
+        "unknown": "即将上线。",
         "off": "关闭——跨协议转发已停用。",
         "on": "开启——携带该请求头的请求将转发到所选的上游协议。"
       },
       "defaultOff": "开关默认关闭。关闭期间，携带 x-newtg-protocol 的请求会以 403 失败，而不会被中继。",
-      "managedBy": "该开关位于站点设置中，本版本尚未提供，因此此控制台无法读取或修改。",
+      "managedBy": "该开关即将上线，暂不可在此修改。",
       "editableDeferred": "站点设置可用后将提供可编辑开关与协议映射；在此之前此处不显示控件。"
     },
     "metrics": {

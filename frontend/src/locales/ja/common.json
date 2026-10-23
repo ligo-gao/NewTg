@@ -1,5 +1,5 @@
 {
-  "app.title": "NewTG",
+  "app.title": "NEWTG",
   "app.scaffold": "M0 スキャフォールド",
   "action.cancel": "キャンセル",
   "action.close": "閉じる",
@@ -7,6 +7,15 @@
   "action.copied": "コピーしました",
   "action.retry": "再試行",
   "action.refresh": "更新",
+  "language.label": "表示言語",
+  "language.saved_locally": "言語はこの端末に保存されました。",
+  "language.update_error": "言語設定を保存できませんでした。元の言語に戻しました。",
+  "theme.label": "テーマ",
+  "theme.light": "ライト",
+  "theme.dark": "ダーク",
+  "theme.system": "システム",
+  "site_nav.label": "メインナビゲーション",
+  "site_nav.models": "モデル",
   "nav.dashboard": "ダッシュボード",
   "nav.group.workspace": "ワークスペース",
   "nav.group.build": "開発",
@@ -146,10 +155,12 @@
       "success_rate": "成功率 {rate}",
       "input_tokens": "入力トークン",
       "output_tokens": "出力トークン",
-      "spend_tooltip": "事前控除 Σ{pre} / 返金 Σ{refunded}"
+      "spend_tooltip": "事前控除 Σ{pre} / 返金 Σ{refunded}",
+      "no_data": "データなし"
     },
     "rates": {
-      "usage": "使用量",
+      "usage": "使用クレジット",
+      "spend": "支出",
       "rpm": "RPM",
       "tpm": "TPM",
       "credits": "クレジット",
@@ -297,6 +308,7 @@
   "nav.model_deployments": "モデルデプロイ",
   "channels": {
     "title": "チャネル",
+    "subtitle": "上流チャネル、モデル、ルーティングの状態を管理します。",
     "new": "新しいチャネル",
     "total": "{total} チャネル",
     "filters": {
@@ -349,7 +361,12 @@
       "moreModels": "+{count}",
       "neverTested": "未テスト",
       "successRate24h": "成功（24時間）",
-      "avgLatency24h": "レイテンシ（24時間）"
+      "avgLatency24h": "レイテンシ（24時間）",
+      "modelsCount": "モデル：{count}",
+      "modelsCountFor": "モデル：{count} · {name}",
+      "routingGroups": "ルーティングとグループ",
+      "health24h": "24 時間の状態",
+      "noHealthData": "データなし"
     },
     "empty": {
       "none": "チャネルはまだありません",
@@ -374,7 +391,10 @@
       "test": "接続テスト",
       "batchTest": "一括テスト",
       "enableChannel": "チャネル {name} を有効化",
-      "disableChannel": "チャネル {name} を無効化"
+      "disableChannel": "チャネル {name} を無効化",
+      "more": "その他の操作",
+      "moreFor": "その他の操作：{name}",
+      "performance": "パフォーマンステスト"
     },
     "bulk": {
       "toolbar": "一括操作",
@@ -489,7 +509,9 @@
       "tag": "タグ",
       "unlimited": "無制限",
       "yes": "はい",
-      "no": "いいえ"
+      "no": "いいえ",
+      "modelsTitle": "すべてのモデル（{count}）",
+      "infoTitle": "チャネル情報"
     },
     "test": {
       "title": "一括テスト · {name}",
@@ -511,6 +533,25 @@
       "network": "ネットワークエラー",
       "param": "無効なリクエスト",
       "unknown": "不明なエラー"
+    },
+    "perf": {
+      "title": "パフォーマンステスト · {name}",
+      "subtitle": "選択したモデルの最初のトークンまでの時間、レイテンシ、スループットを測定します。",
+      "runs": "実行回数",
+      "runsOption": "{count} 回",
+      "start": "開始",
+      "stop": "停止",
+      "running": "実行中…",
+      "ttft_p50": "TTFT p50 (ms)",
+      "ttft_p95": "TTFT p95 (ms)",
+      "latency_p50": "レイテンシ p50 (ms)",
+      "latency_p95": "レイテンシ p95 (ms)",
+      "tps": "TPS",
+      "success": "成功率",
+      "tokens": "出力トークン",
+      "noSelection": "モデルを1つ以上選択してください。",
+      "empty": "このチャネルにはモデルが設定されていません。",
+      "error": "失敗"
     },
     "typeGroup": {
       "openai": "OpenAI 互換",
@@ -549,12 +590,12 @@
       "switchLabel": "スイッチ（サイト設定）",
       "statusLabel": "スイッチの状態",
       "status": {
-        "unknown": "このリリースでは利用できません。",
+        "unknown": "近日公開予定。",
         "off": "オフ — プロトコル間転送は無効です。",
         "on": "オン — このヘッダーを持つリクエストは選択された上流プロトコルへ転送されます。"
       },
       "defaultOff": "スイッチは既定でオフです。オフの間、x-newtg-protocol を持つリクエストは中継されず 403 で失敗します。",
-      "managedBy": "このスイッチはサイト設定にあり、このリリースではまだ利用できないため、このコンソールからは読み取りも変更もできません。",
+      "managedBy": "このスイッチは近日公開予定で、ここではまだ変更できません。",
       "editableDeferred": "サイト設定が利用可能になった時点で、編集可能なスイッチとプロトコルマッピングが提供されます。それまではここにコントロールは表示されません。"
     },
     "metrics": {

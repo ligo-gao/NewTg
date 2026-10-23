@@ -3,7 +3,7 @@ import { useEffect } from 'react'
 import type { PublicSite } from '@/lib/public-status'
 import { useI18n } from '@/shared/lib/i18n-context'
 
-const DEFAULT_TITLE = 'NewTG'
+const DEFAULT_TITLE = 'NEWTG'
 
 function safeHttpUrl(raw: string | undefined): string | null {
   const value = (raw ?? '').trim()
@@ -51,7 +51,7 @@ export interface PublicSeoProps {
  * F-09-06 SEO / Open Graph for the homepage.
  *
  * The SPA has no SSR, so this hook writes the same tags a crawler would see.
- * Title precedence: `site.title` (operator branding) with `NewTG` fallback;
+ * Title precedence: `site.title` (operator branding) with `NEWTG` fallback;
  * the description/OG image fall back to `site.seo.*`, then to the i18n default
  * copy and `site.logo_url`.
  *

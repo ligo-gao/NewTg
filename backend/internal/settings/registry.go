@@ -290,7 +290,7 @@ func buildRegistry() []Setting {
 
 	return []Setting{
 		// ==== site（F-08-01/02/03/04，§3.1）====
-		def("site.title", "site", TypeString, "NewTG", public(), maxLen(64),
+		def("site.title", "site", TypeString, "NEWTG", public(), maxLen(64),
 			validate(nonEmptyTrimmed("site.title"))),
 		def("site.logo_url", "site", TypeString, "", public(), maxLen(512),
 			validate(urlOrRelative)),

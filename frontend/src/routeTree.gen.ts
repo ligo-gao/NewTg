@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as SplatRouteImport } from './routes/$'
 import { Route as ConsoleRouteImport } from './routes/_console'
 import { Route as AboutRouteImport } from './routes/about'
 import { Route as DocsRouteImport } from './routes/docs'
@@ -64,6 +65,11 @@ import { Route as ConsoleAdminSystemTaskPluginsIndexRouteImport } from './routes
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SplatRoute = SplatRouteImport.update({
+  id: '/$',
+  path: '/$',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ConsoleRoute = ConsoleRouteImport.update({
@@ -333,6 +339,7 @@ const ConsoleAdminSystemTaskPluginsIndexRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/$': typeof SplatRoute
   '/about': typeof AboutRoute
   '/docs': typeof DocsRoute
   '/forgot-password': typeof ForgotPasswordRoute
@@ -385,6 +392,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/$': typeof SplatRoute
   '/about': typeof AboutRoute
   '/docs': typeof DocsRoute
   '/forgot-password': typeof ForgotPasswordRoute
@@ -437,6 +445,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/$': typeof SplatRoute
   '/_console': typeof ConsoleRouteWithChildren
   '/about': typeof AboutRoute
   '/docs': typeof DocsRoute
@@ -492,6 +501,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/$'
     | '/about'
     | '/docs'
     | '/forgot-password'
@@ -544,6 +554,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/$'
     | '/about'
     | '/docs'
     | '/forgot-password'
@@ -595,6 +606,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/$'
     | '/_console'
     | '/about'
     | '/docs'
@@ -649,6 +661,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  SplatRoute: typeof SplatRoute
   ConsoleRoute: typeof ConsoleRouteWithChildren
   AboutRoute: typeof AboutRoute
   DocsRoute: typeof DocsRoute
@@ -677,6 +690,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/$': {
+      id: '/$'
+      path: '/$'
+      fullPath: '/$'
+      preLoaderRoute: typeof SplatRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_console': {
@@ -1119,6 +1139,7 @@ const ConsoleRouteWithChildren =
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  SplatRoute: SplatRoute,
   ConsoleRoute: ConsoleRouteWithChildren,
   AboutRoute: AboutRoute,
   DocsRoute: DocsRoute,

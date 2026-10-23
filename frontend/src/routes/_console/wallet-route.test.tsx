@@ -4,7 +4,7 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
@@ -60,6 +60,9 @@ function installSession() {
     http.get(`${ORIGIN}/api/notifications`, () =>
       HttpResponse.json({ items: [], total: 0, page: 1, page_size: 100 }),
     ),
+    http.get(`${ORIGIN}/api/notifications/unread-count`, () =>
+      HttpResponse.json({ unread: 0 }),
+    ),
     http.get(`${ORIGIN}/api/announcements/active`, () =>
       HttpResponse.json({ items: [] }),
     ),
@@ -75,7 +78,7 @@ function installSession() {
     http.get(`${ORIGIN}/api/wallet/transactions`, () =>
       HttpResponse.json({ items: [], total: 0, page: 1, page_size: 20 }),
     ),
-    // 默认 topup Tab 的子查询（本测试只验证 Tab 选择，形状保持最小）。
+    // 默认 overview Tab 的子查询（本测试只验证 Tab 选择，形状保持最小）。
     http.get(`${ORIGIN}/api/topup/config`, () =>
       HttpResponse.json({
         amount_options: [1000],
@@ -98,6 +101,20 @@ function installSession() {
         group: 'default',
       }),
     ),
+    http.get(`${ORIGIN}/api/usage-stats/summary`, () =>
+      HttpResponse.json({
+        cost_total: 0,
+        request_count: 0,
+        success_rate: 0,
+        prompt_tokens_total: 0,
+        completion_tokens_total: 0,
+        pre_deducted_total: 0,
+        refunded_total: 0,
+      }),
+    ),
+    http.get(`${ORIGIN}/api/usage-stats/timeseries`, () =>
+      HttpResponse.json([]),
+    ),
     http.get(`${ORIGIN}/api/subscription/plans`, () =>
       HttpResponse.json({ items: [] }),
     ),
@@ -114,28 +131,87 @@ function installSession() {
 }
 
 describe('/wallet route search (R-M3-01)', () => {
-  it('defaults to the top-up tab when no tab is given', async () => {
+  it('defaults to the overview tab when no tab is given', async () => {
     installSession()
-    renderAt('/wallet')
+    const { router } = renderAt('/wallet')
+    expect(
+      await screen.findByRole('tab', { name: 'Overview', selected: true }),
+    ).toBeTruthy()
+    await waitFor(() => {
+      expect(router.state.location.searchStr).not.toContain('tab=')
+    })
+  })
+
+  it('opens the top-up tab from ?tab=topup', async () => {
+    installSession()
+    const { router } = renderAt('/wallet?tab=topup')
     expect(
       await screen.findByRole('tab', { name: 'Top-up', selected: true }),
     ).toBeTruthy()
+    await waitFor(() => {
+      expect(router.state.location.searchStr).toContain('tab=topup')
+    })
+    expect(router.state.location.search).toMatchObject({ tab: 'topup' })
+  })
+
+  it('opens the subscription tab from ?tab=subscription', async () => {
+    installSession()
+    const { router } = renderAt('/wallet?tab=subscription')
+    expect(
+      await screen.findByRole('tab', { name: 'Subscription', selected: true }),
+    ).toBeTruthy()
+    await waitFor(() => {
+      expect(router.state.location.searchStr).toContain('tab=subscription')
+    })
   })
 
   it('opens the transactions tab from ?tab=transactions', async () => {
     installSession()
-    renderAt('/wallet?tab=transactions')
+    const { router } = renderAt('/wallet?tab=transactions')
     expect(
       await screen.findByRole('tab', { name: 'Transactions', selected: true }),
     ).toBeTruthy()
     expect(await screen.findByText('No transactions yet')).toBeTruthy()
+    await waitFor(() => {
+      expect(router.state.location.searchStr).toContain('tab=transactions')
+    })
   })
 
-  it('falls back to top-up for an unknown tab value', async () => {
+  it('canonicalises a redundant ?tab=overview to a tab-less URL', async () => {
     installSession()
-    renderAt('/wallet?tab=bogus')
+    const { router } = renderAt('/wallet?tab=overview')
     expect(
-      await screen.findByRole('tab', { name: 'Top-up', selected: true }),
+      await screen.findByRole('tab', { name: 'Overview', selected: true }),
     ).toBeTruthy()
+    await waitFor(() => {
+      expect(router.state.location.searchStr).not.toContain('tab=')
+    })
+  })
+
+  it('falls back to the overview and strips an unknown tab from the URL', async () => {
+    installSession()
+    const { router } = renderAt('/wallet?tab=bogus')
+    expect(
+      await screen.findByRole('tab', { name: 'Overview', selected: true }),
+    ).toBeTruthy()
+    await waitFor(() => {
+      expect(router.state.location.searchStr).not.toContain('tab=')
+    })
+    expect(router.state.location.search).not.toHaveProperty('tab')
+  })
+
+  it('preserves p/page_size while canonicalising an invalid tab', async () => {
+    installSession()
+    const { router } = renderAt('/wallet?tab=bogus&p=2&page_size=10')
+    expect(
+      await screen.findByRole('tab', { name: 'Overview', selected: true }),
+    ).toBeTruthy()
+    await waitFor(() => {
+      expect(router.state.location.searchStr).not.toContain('tab=')
+    })
+    expect(router.state.location.search).toMatchObject({
+      p: 2,
+      page_size: 10,
+    })
   })
 })

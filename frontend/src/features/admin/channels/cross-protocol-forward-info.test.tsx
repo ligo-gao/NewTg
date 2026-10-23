@@ -33,10 +33,10 @@ describe('CrossProtocolForwardInfo', () => {
     renderWithProviders(<CrossProtocolForwardInfo />)
 
     expect(screen.getByTestId('cross-protocol-status').textContent).toBe(
-      'Not available in this release.',
+      'Coming soon.',
     )
     expect(
-      screen.getByText(/this console cannot read or change it/),
+      screen.getByText(/cannot be changed here yet/),
     ).toBeTruthy()
   })
 

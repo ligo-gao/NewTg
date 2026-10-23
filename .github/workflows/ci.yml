@@ -74,6 +74,10 @@ jobs:
         run: cd frontend && bun run lint
       - name: 前端类型检查
         run: cd frontend && bun run typecheck
+      - name: 文案与品牌守卫（阶段 4.2）
+        # 用户可见词典里的内部模块编号、品牌大小写漂移与未经证实的营销数字都
+        # 不会让构建失败，只能靠机械 grep 兜住；脚本区分“无匹配”与读取错误。
+        run: bash scripts/audit-copy-guards.sh
 
   # 流水线 B（platform-02 §7.4）：契约是冻结面，独立成 job 以便分支保护单独要求红灯。
   # go build 能暴露「被引用却未定义」的契约类型，是最便宜的契约自洽检查。

@@ -5,7 +5,7 @@ import { ME_QUERY_KEY, meQueryOptions } from '@/lib/session'
 import { useI18n } from '@/shared/lib/i18n-context'
 
 import { htmlToPlainText, sanitizeHtmlFragment } from './home/custom-html'
-import { LanguageSwitch } from './language-switch'
+import { LanguageSwitch } from '@/shared/ui/language-switch'
 import { isNavEntryVisible, isSafePublicHref } from './nav-visibility'
 import { SiteBrand } from './public-header'
 
@@ -36,7 +36,7 @@ export function PublicFooter() {
   const me = useQuery({ ...meQueryOptions(), queryKey: ME_QUERY_KEY })
   const isLoggedIn = me.isSuccess
   const site = status.data?.site
-  const title = site?.title?.trim() || 'NewTG'
+  const title = site?.title?.trim() || 'NEWTG'
   const year = new Date().getFullYear()
   const docsUrl = (site?.docs_url ?? '').trim()
   const statusPageUrl = (site?.status_page_url ?? '').trim()
@@ -138,7 +138,11 @@ export function PublicFooter() {
 
           <div className="footer-col">
             <h2>{t('public.language.label')}</h2>
-            <LanguageSwitch variant="footer" className="home-lang" />
+            <LanguageSwitch
+              variant="footer"
+              className="home-lang"
+              label={t('public.language.label')}
+            />
           </div>
         </div>
 

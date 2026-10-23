@@ -23,6 +23,30 @@ export function formatCreditsValue(value: number, locale: string): string {
   return formatCredits(Math.round(value), locale)
 }
 
+/**
+ * Converts integer credits to the operator's display currency
+ * (`billing.display_unit=cny`). The server's convention is
+ * `credits = cents * quota_per_unit / 100` (same as
+ * `features/account/topup/money.ts`), so the display amount is
+ * `credits / quota_per_unit`, formatted with exactly two decimals and the
+ * configured symbol. A missing/zero quota cannot be converted and renders
+ * `--`, matching the other dashboard helpers.
+ */
+export function formatCurrencyValue(
+  credits: number,
+  quotaPerUnit: number,
+  symbol: string,
+  locale: string,
+): string {
+  if (!Number.isFinite(credits) || credits < 0) return UNAVAILABLE
+  if (!Number.isFinite(quotaPerUnit) || quotaPerUnit <= 0) return UNAVAILABLE
+  const amount = credits / quotaPerUnit
+  return `${symbol}${new Intl.NumberFormat(locale, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(amount)}`
+}
+
 export function formatTokensValue(value: number, locale: string): string {
   if (!Number.isFinite(value) || value < 0) return UNAVAILABLE
   return formatTokenAmount(value, locale)

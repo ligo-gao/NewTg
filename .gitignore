@@ -31,6 +31,8 @@ deploy/backups/
 .claude/worktrees/
 
 deploy/edge/certs/
+# 内部 CA staging 产物（gen-internal-ca.sh 生成；根证书需分发，但绝不入库）
+deploy/edge/certs-internal-ca/
 
 # NEWTG website (Next.js)
 website/node_modules/

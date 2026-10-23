@@ -1,5 +1,6 @@
 import { Fragment } from "react";
 import { CodeCard } from "@/components/landing/code-card";
+import { HeroDocsCta } from "@/components/landing/hero-docs-cta";
 import type { Copy } from "@/config/copy";
 import { site } from "@/config/site";
 import { highlightCurl } from "@/lib/highlight";
@@ -28,9 +29,7 @@ export async function Hero({ copy }: { copy: Copy }) {
             <a className="btn btn-primary" href={site.startHref}>
               {copy.hero.primaryCta}
             </a>
-            <a className="btn btn-ghost" href={site.docsHref}>
-              {copy.hero.secondaryCta}
-            </a>
+            <HeroDocsCta copy={copy} />
           </div>
 
           <div className="rise rise-3 mt-5 flex flex-wrap items-center gap-x-3.5 gap-y-2 text-[12.5px] text-faint">

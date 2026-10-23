@@ -274,8 +274,8 @@ func TestIntegrationSettingsNullResetsNonSecretToDefault(t *testing.T) {
 			if item.Value != nil {
 				t.Fatalf("清除后 value 应为 null，实际 %v", item.Value)
 			}
-			if item.Default != "NewTG" {
-				t.Fatalf("default = %v，期望 NewTG", item.Default)
+			if item.Default != "NEWTG" {
+				t.Fatalf("default = %v，期望 NEWTG", item.Default)
 			}
 		}
 	}

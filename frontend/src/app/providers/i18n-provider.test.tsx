@@ -40,7 +40,7 @@ describe('I18nProvider', () => {
     // chunk 到达后替换成真实文案。
     expect(screen.getAllByText('common.app.title').length).toBeGreaterThan(0)
     await waitFor(() => {
-      expect(screen.getByText('NewTG')).toBeTruthy()
+      expect(screen.getByText('NEWTG')).toBeTruthy()
     })
   })
 
@@ -80,7 +80,7 @@ describe('I18nProvider', () => {
       )
     })
     expect(document.documentElement.lang).toBe('ja')
-    expect(document.title).toBe('NewTG')
+    expect(document.title).toBe('NEWTG')
     // 切换写入本地记忆（web-00 §7.3），刷新后沿用。
     expect(globalThis.localStorage.getItem('newtg.language')).toBe('ja')
   })

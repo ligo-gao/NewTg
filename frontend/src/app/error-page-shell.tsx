@@ -6,7 +6,14 @@ import {
   type ReactNode,
 } from 'react'
 
-import { translate, getActiveLocale, type TranslateFn } from '@/app/providers/i18n'
+import {
+  translate,
+  getActiveLocale,
+  loadDictionary,
+  type DictionaryModule,
+  type Locale,
+  type TranslateFn,
+} from '@/app/providers/i18n'
 import { PublicFooter } from '@/features/public/public-footer'
 import { PublicHeader } from '@/features/public/public-header'
 import { useI18n } from '@/shared/lib/i18n-context'
@@ -65,6 +72,62 @@ export function useErrorPageTranslate(): TranslateFn {
   } catch {
     return (key, values) => translate(getActiveLocale(), key, values)
   }
+}
+
+/**
+ * Locale the error shell should render in. Inside `AppProviders` the provider is
+ * authoritative; outside it the module-level mirror (the same one
+ * `useErrorPageTranslate` uses) is the only source.
+ */
+function useErrorPageLocale(): Locale {
+  try {
+    return useI18n().locale
+  } catch {
+    return getActiveLocale()
+  }
+}
+
+/**
+ * The public chrome (`PublicHeader` / `PublicFooter`) renders `public.*` keys.
+ * Console routes preload only `common`, so without this the root error
+ * components and the global `ErrorBoundary` would show literal `public.nav.*`
+ * strings whenever a render throws. Load the dictionary here, at the last layer
+ * that renders chrome, and only expose the chrome once it is usable.
+ *
+ * `translate` returns the key itself while a module is unloaded, which doubles
+ * as the "is it ready?" probe (and stays correct for the en fallback: any
+ * non-key text means no raw key can reach the DOM). A failed load leaves the
+ * shell chromeless rather than rendering untranslated keys.
+ */
+const CHROME_MODULES: readonly DictionaryModule[] = ['public']
+const CHROME_PROBE_KEY = 'public.nav.primary'
+
+function useErrorPageChromeReady(): boolean {
+  const locale = useErrorPageLocale()
+  const [ready, setReady] = useState<boolean>(
+    () => translate(locale, CHROME_PROBE_KEY) !== CHROME_PROBE_KEY,
+  )
+
+  useEffect(() => {
+    if (ready) return
+    let cancelled = false
+    void Promise.all(
+      CHROME_MODULES.map((module) => loadDictionary(locale, module)),
+    )
+      .then(() => {
+        if (!cancelled) setReady(true)
+      })
+      .catch((error: unknown) => {
+        // The shell already degrades without chrome; never throw from a loader
+        // whose whole job is to keep the error page alive.
+        console.error('[i18n] failed to load public dictionary for error page', error)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [locale, ready])
+
+  return ready
 }
 
 const STATUS_ICON_PATHS: Record<ErrorStatus, ReactNode> = {
@@ -309,6 +372,7 @@ export function ErrorPageShell({
   offlineAware = true,
 }: ErrorPageShellProps) {
   const t = useErrorPageTranslate()
+  const chromeReady = useErrorPageChromeReady()
   const offlineNow = useOfflineStatus()
   const offline = offlineAware && status !== 404 && (networkFailure || offlineNow)
   const headingRef = useRef<HTMLHeadingElement>(null)
@@ -320,9 +384,11 @@ export function ErrorPageShell({
 
   return (
     <div className="flex min-h-screen flex-col bg-surface-page text-ink-1">
-      <PublicChromeBoundary>
-        <PublicHeader />
-      </PublicChromeBoundary>
+      {chromeReady ? (
+        <PublicChromeBoundary>
+          <PublicHeader />
+        </PublicChromeBoundary>
+      ) : null}
       <main
         id="main"
         className="flex flex-1 flex-col items-center justify-center px-4 py-12"
@@ -355,9 +421,11 @@ export function ErrorPageShell({
           {requestId ? <RequestIdRow requestId={requestId} t={t} /> : null}
         </div>
       </main>
-      <PublicChromeBoundary>
-        <PublicFooter />
-      </PublicChromeBoundary>
+      {chromeReady ? (
+        <PublicChromeBoundary>
+          <PublicFooter />
+        </PublicChromeBoundary>
+      ) : null}
     </div>
   )
 }

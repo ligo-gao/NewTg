@@ -1,5 +1,5 @@
 {
-  "app.title": "NewTG",
+  "app.title": "NEWTG",
   "app.scaffold": "M0 鷹架",
   "action.cancel": "取消",
   "action.close": "關閉",
@@ -7,6 +7,15 @@
   "action.copied": "已複製",
   "action.retry": "重試",
   "action.refresh": "重新整理",
+  "language.label": "介面語言",
+  "language.saved_locally": "語言已儲存在本裝置。",
+  "language.update_error": "語言偏好儲存失敗，已還原原語言。",
+  "theme.label": "主題",
+  "theme.light": "淺色",
+  "theme.dark": "深色",
+  "theme.system": "跟隨系統",
+  "site_nav.label": "主要導覽",
+  "site_nav.models": "模型庫",
   "nav.dashboard": "儀表板",
   "nav.group.workspace": "工作台",
   "nav.group.build": "開發",
@@ -146,10 +155,12 @@
       "success_rate": "成功率 {rate}",
       "input_tokens": "輸入 Token",
       "output_tokens": "輸出 Token",
-      "spend_tooltip": "預扣 Σ{pre} / 已退還 Σ{refunded}"
+      "spend_tooltip": "預扣 Σ{pre} / 已退還 Σ{refunded}",
+      "no_data": "暫無資料"
     },
     "rates": {
-      "usage": "用量",
+      "usage": "積分消耗",
+      "spend": "消費",
       "rpm": "RPM",
       "tpm": "TPM",
       "credits": "積分",
@@ -297,6 +308,7 @@
   "nav.model_deployments": "模型部署",
   "channels": {
     "title": "通道",
+    "subtitle": "管理上游渠道、模型與路由健康。",
     "new": "新增通道",
     "total": "{total} 個通道",
     "filters": {
@@ -349,7 +361,12 @@
       "moreModels": "+{count}",
       "neverTested": "從未測試",
       "successRate24h": "成功（24h）",
-      "avgLatency24h": "延遲（24h）"
+      "avgLatency24h": "延遲（24h）",
+      "modelsCount": "模型：{count}",
+      "modelsCountFor": "模型：{count} · {name}",
+      "routingGroups": "路由與分組",
+      "health24h": "24h 健康",
+      "noHealthData": "無資料"
     },
     "empty": {
       "none": "尚無通道",
@@ -374,7 +391,10 @@
       "test": "測試連線",
       "batchTest": "批次測試",
       "enableChannel": "啟用通道 {name}",
-      "disableChannel": "停用通道 {name}"
+      "disableChannel": "停用通道 {name}",
+      "more": "更多操作",
+      "moreFor": "更多操作：{name}",
+      "performance": "效能測試"
     },
     "bulk": {
       "toolbar": "批次操作",
@@ -489,7 +509,9 @@
       "tag": "標籤",
       "unlimited": "不限",
       "yes": "是",
-      "no": "否"
+      "no": "否",
+      "modelsTitle": "全部模型（{count}）",
+      "infoTitle": "渠道資訊"
     },
     "test": {
       "title": "批次測試 · {name}",
@@ -511,6 +533,25 @@
       "network": "網路錯誤",
       "param": "請求無效",
       "unknown": "未知錯誤"
+    },
+    "perf": {
+      "title": "效能測試 · {name}",
+      "subtitle": "測量所選模型的首字延遲、延遲與輸送量。",
+      "runs": "執行次數",
+      "runsOption": "{count} 次",
+      "start": "開始",
+      "stop": "停止",
+      "running": "執行中…",
+      "ttft_p50": "首字延遲 p50（毫秒）",
+      "ttft_p95": "首字延遲 p95（毫秒）",
+      "latency_p50": "延遲 p50（毫秒）",
+      "latency_p95": "延遲 p95（毫秒）",
+      "tps": "TPS",
+      "success": "成功率",
+      "tokens": "輸出 tokens",
+      "noSelection": "請至少選擇一個模型。",
+      "empty": "此通道未設定模型。",
+      "error": "失敗"
     },
     "typeGroup": {
       "openai": "OpenAI 相容",
@@ -549,12 +590,12 @@
       "switchLabel": "開關（網站設定）",
       "statusLabel": "開關狀態",
       "status": {
-        "unknown": "本版本無法使用。",
+        "unknown": "即將上線。",
         "off": "關閉——跨協定轉送已停用。",
         "on": "開啟——攜帶此標頭的請求將轉送到所選的上游協定。"
       },
       "defaultOff": "開關預設關閉。關閉期間，攜帶 x-newtg-protocol 的請求會以 403 失敗，而不會被轉送。",
-      "managedBy": "此開關位於網站設定中，本版本尚未提供，因此此控制台無法讀取或修改。",
+      "managedBy": "此開關即將上線，暫不可在此修改。",
       "editableDeferred": "網站設定可用後將提供可編輯開關與協定對應；在此之前此處不顯示控制項。"
     },
     "metrics": {

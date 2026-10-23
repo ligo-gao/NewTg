@@ -17,6 +17,12 @@
   --brand-subtle: #eff6ff;
   --brand-line: #bfdbfe;
 
+  /* Console site bar — mirrors the marketing header (website/src/app/globals.css) */
+  --site-nav-bg: rgb(250 252 255 / 0.9);
+  --site-nav-line: #dbe4ec;
+  --site-nav-ink-2: #33465a;
+  --site-nav-brand: #077486;
+
   /* Surfaces — §4.6.1 */
   --surface-page: #f7f8fa;
   --surface-card: #ffffff;
@@ -154,6 +160,12 @@
   --brand-active: #93c5fd;
   --brand-subtle: #172554;
   --brand-line: #1e40af;
+
+  /* Console site bar — dark column */
+  --site-nav-bg: rgb(7 11 18 / 0.86);
+  --site-nav-line: #1a2534;
+  --site-nav-ink-2: #b6c2d1;
+  --site-nav-brand: #4cd7e8;
 
   --surface-page: #0c111d;
   --surface-card: #161b26;

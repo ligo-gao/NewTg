@@ -1,5 +1,5 @@
 {
-  "app.title": "NewTG",
+  "app.title": "NEWTG",
   "app.scaffold": "M0 scaffold",
   "action.cancel": "Cancel",
   "action.close": "Close",
@@ -7,6 +7,15 @@
   "action.copied": "Copied",
   "action.retry": "Retry",
   "action.refresh": "Refresh",
+  "language.label": "Interface language",
+  "language.saved_locally": "Language saved on this device.",
+  "language.update_error": "Could not save the language preference. The previous language is restored.",
+  "theme.label": "Theme",
+  "theme.light": "Light",
+  "theme.dark": "Dark",
+  "theme.system": "System",
+  "site_nav.label": "Primary navigation",
+  "site_nav.models": "Models",
   "nav.dashboard": "Dashboard",
   "nav.group.workspace": "Workspace",
   "nav.group.build": "Build",
@@ -146,10 +155,12 @@
       "success_rate": "Success rate {rate}",
       "input_tokens": "Input Tokens",
       "output_tokens": "Output Tokens",
-      "spend_tooltip": "Pre-deducted Σ{pre} / Refunded Σ{refunded}"
+      "spend_tooltip": "Pre-deducted Σ{pre} / Refunded Σ{refunded}",
+      "no_data": "No data"
     },
     "rates": {
-      "usage": "Usage",
+      "usage": "Credits used",
+      "spend": "Spend",
       "rpm": "RPM",
       "tpm": "TPM",
       "credits": "credits",
@@ -297,6 +308,7 @@
   "nav.model_deployments": "Model deployments",
   "channels": {
     "title": "Channels",
+    "subtitle": "Manage upstream channels, models and routing health.",
     "new": "New Channel",
     "total": "{total} channels",
     "filters": {
@@ -349,7 +361,12 @@
       "moreModels": "+{count}",
       "neverTested": "Never tested",
       "successRate24h": "Success (24h)",
-      "avgLatency24h": "Latency (24h)"
+      "avgLatency24h": "Latency (24h)",
+      "modelsCount": "Models: {count}",
+      "modelsCountFor": "Models: {count} · {name}",
+      "routingGroups": "Routing & groups",
+      "health24h": "24h health",
+      "noHealthData": "No data"
     },
     "empty": {
       "none": "No channels yet",
@@ -374,7 +391,10 @@
       "test": "Test connection",
       "batchTest": "Batch test",
       "enableChannel": "Enable channel {name}",
-      "disableChannel": "Disable channel {name}"
+      "disableChannel": "Disable channel {name}",
+      "more": "More actions",
+      "moreFor": "More actions for {name}",
+      "performance": "Performance test"
     },
     "bulk": {
       "toolbar": "Bulk actions",
@@ -489,7 +509,9 @@
       "tag": "Tag",
       "unlimited": "Unlimited",
       "yes": "Yes",
-      "no": "No"
+      "no": "No",
+      "modelsTitle": "All models ({count})",
+      "infoTitle": "Channel info"
     },
     "test": {
       "title": "Batch test · {name}",
@@ -511,6 +533,25 @@
       "network": "Network error",
       "param": "Invalid request",
       "unknown": "Unknown error"
+    },
+    "perf": {
+      "title": "Performance test · {name}",
+      "subtitle": "Measure time to first token, latency and throughput for the selected models.",
+      "runs": "Runs",
+      "runsOption": "{count} runs",
+      "start": "Start",
+      "stop": "Stop",
+      "running": "Running…",
+      "ttft_p50": "TTFT p50 (ms)",
+      "ttft_p95": "TTFT p95 (ms)",
+      "latency_p50": "Latency p50 (ms)",
+      "latency_p95": "Latency p95 (ms)",
+      "tps": "TPS",
+      "success": "Success",
+      "tokens": "Tokens",
+      "noSelection": "Select at least one model.",
+      "empty": "No models configured for this channel.",
+      "error": "Failed"
     },
     "typeGroup": {
       "openai": "OpenAI compatible",
@@ -549,12 +590,12 @@
       "switchLabel": "Switch (site settings)",
       "statusLabel": "Switch status",
       "status": {
-        "unknown": "Not available in this release.",
+        "unknown": "Coming soon.",
         "off": "Off — cross-protocol forwarding is disabled.",
         "on": "On — requests that carry the header are forwarded to the selected upstream protocol."
       },
       "defaultOff": "The switch defaults to off. While it is off, a request that carries x-newtg-protocol fails with 403 instead of being relayed.",
-      "managedBy": "The switch lives in site settings, which are not yet available in this release, so this console cannot read or change it.",
+      "managedBy": "This switch is coming soon and cannot be changed here yet.",
       "editableDeferred": "An editable switch and protocol mapping will follow when site settings are available; no control is shown here until then."
     },
     "metrics": {

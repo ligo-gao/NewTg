@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
 import { PageHeader } from '@/features/shell/page-header'
+import { usePublicStatus } from '@/lib/public-status'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
 import { TextField } from '@/shared/ui/form'
@@ -10,6 +11,7 @@ import { CheckinCard } from './checkin-card'
 import { ConsumptionTrend } from './consumption-trend'
 import {
   formatCreditsValue,
+  formatCurrencyValue,
   formatInteger,
   formatRpm,
   formatSuccessRate,
@@ -46,11 +48,21 @@ export function DashboardPage() {
   const [selectedModel, setSelectedModel] = useState<string | undefined>(undefined)
 
   const capabilities = useDashboardCapabilities()
+  const status = usePublicStatus()
   const { summary, byModel, timeseries, rates, granularity } = useDashboardStats({
     range,
     username,
     model: selectedModel,
   })
+
+  // `billing.display_unit` is a site-wide presentation choice already honoured
+  // by the public pricing page; the dashboard must not print a different unit.
+  // Missing status (older backend, fetch failure) keeps the credit defaults.
+  const displayUnit =
+    status.data?.billing?.display_unit === 'cny' ? 'cny' : 'credits'
+  const quotaPerUnit = status.data?.billing?.quota_per_unit ?? 100
+  const currencySymbol = status.data?.billing?.currency_symbol ?? '¥'
+  const showCurrency = displayUnit === 'cny'
 
   const summaryData = summary.data
   const ratesData = rates.data
@@ -141,11 +153,20 @@ export function DashboardPage() {
         <StatCard
           testId="card-total-spent"
           label={t('common.dashboard.cards.total_spent')}
-          unit={t('common.dashboard.rates.credits')}
+          unit={
+            showCurrency ? undefined : t('common.dashboard.rates.credits')
+          }
           value={
             summaryData === undefined
               ? ''
-              : formatCreditsValue(summaryData.cost_total, locale)
+              : showCurrency
+                ? formatCurrencyValue(
+                    summaryData.cost_total,
+                    quotaPerUnit,
+                    currencySymbol,
+                    locale,
+                  )
+                : formatCreditsValue(summaryData.cost_total, locale)
           }
           tooltip={spendTooltip}
           loading={summary.isPending}
@@ -161,12 +182,19 @@ export function DashboardPage() {
               ? ''
               : formatInteger(summaryData.request_count, locale)
           }
-          subline={t('common.dashboard.cards.success_rate', {
-            rate:
-              summaryData === undefined
-                ? '--'
-                : formatSuccessRate(summaryData.success_rate, summaryData.request_count),
-          })}
+          subline={
+            summaryData !== undefined && summaryData.request_count <= 0
+              ? t('common.dashboard.cards.no_data')
+              : t('common.dashboard.cards.success_rate', {
+                  rate:
+                    summaryData === undefined
+                      ? '--'
+                      : formatSuccessRate(
+                          summaryData.success_rate,
+                          summaryData.request_count,
+                        ),
+                })
+          }
           loading={summary.isPending}
           error={summary.isError}
           onRetry={() => void summary.refetch()}
@@ -207,12 +235,27 @@ export function DashboardPage() {
       >
         <StatCard
           testId="rate-usage"
-          label={t('common.dashboard.rates.usage')}
-          unit={t('common.dashboard.rates.credits')}
+          // "Credits used" would contradict a ¥ value; in currency mode the
+          // card is a plain spend figure.
+          label={
+            showCurrency
+              ? t('common.dashboard.rates.spend')
+              : t('common.dashboard.rates.usage')
+          }
+          unit={
+            showCurrency ? undefined : t('common.dashboard.rates.credits')
+          }
           value={
             ratesData === undefined
               ? ''
-              : formatCreditsValue(ratesData.cost_total, locale)
+              : showCurrency
+                ? formatCurrencyValue(
+                    ratesData.cost_total,
+                    quotaPerUnit,
+                    currencySymbol,
+                    locale,
+                  )
+                : formatCreditsValue(ratesData.cost_total, locale)
           }
           tooltip={ratesSpendTooltip}
           loading={rates.isPending}

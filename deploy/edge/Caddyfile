@@ -67,9 +67,20 @@
 		}
 	}
 
+	# 模型库直达：营销站把模型表放在首页 #models。
+	# 必须显式写 `*` 匹配器——redir 的第一个以 `/` 开头的参数会被解析为
+	# 内联路径匹配器而非跳转目标；省略 `*` 会变成匹配 `/#models` 并把
+	# 目标误读成 "301"（实测 caddy adapt 可复现）。
+	# `handle` 只接受一个匹配器参数，因此用命名匹配器同时覆盖带斜杠的形式，
+	# 避免 /models/ 落到控制台 SPA。
+	@models path /models /models/
+	handle @models {
+		redir * "/#models" 301
+	}
+
 	# 官网首页：静态导出产物接管 `/` 与其自身资源；其余路径继续由控制台 SPA 处理。
 	# 控制台仍保留 /sign-in、/dashboard、/pricing 等原有路由，不做 base path 迁移。
-	@marketing_home path / /en /en/ /zh-TW /zh-TW/ /fr /fr/ /ru /ru/ /ja /ja/ /vi /vi/
+	@marketing_home path / /pricing /pricing/ /en /en/ /en/pricing /en/pricing/ /zh-TW /zh-TW/ /zh-TW/pricing /zh-TW/pricing/ /fr /fr/ /fr/pricing /fr/pricing/ /ru /ru/ /ru/pricing /ru/pricing/ /ja /ja/ /ja/pricing /ja/pricing/ /vi /vi/ /vi/pricing /vi/pricing/
 	handle @marketing_home {
 		encode gzip zstd
 		root * /srv/marketing

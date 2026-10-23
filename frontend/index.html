@@ -1,10 +1,39 @@
 <!doctype html>
-<html lang="en" data-theme="light">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light" />
-    <title>NewTG</title>
+    <meta name="color-scheme" content="light dark" />
+    <title>NEWTG</title>
+    <!--
+      Resolve the theme before first paint so a dark-mode visitor never sees a
+      white flash. Mirrors ThemeProvider: an explicit `light`/`dark` choice in
+      `localStorage['newtg-theme']` wins, otherwise the OS preference decides.
+    -->
+    <script>
+      (function () {
+        var theme = 'light'
+        try {
+          if (
+            window.matchMedia &&
+            window.matchMedia('(prefers-color-scheme: dark)').matches
+          ) {
+            theme = 'dark'
+          }
+        } catch (error) {
+          // matchMedia is unavailable in very old embedded webviews.
+        }
+        try {
+          var stored = localStorage.getItem('newtg-theme')
+          if (stored === 'light' || stored === 'dark') theme = stored
+        } catch (error) {
+          // Storage can be blocked; the OS preference still applies.
+        }
+        var root = document.documentElement
+        root.dataset.theme = theme
+        root.style.colorScheme = theme
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -48,7 +48,7 @@ function maskEmail(value: string): string {
 export function SetupWizard({ onNavigate = defaultNavigate }: SetupWizardProps) {
   const { t } = useI18n()
   const [step, setStep] = useState<Step>('site')
-  const [siteTitle, setSiteTitle] = useState('NewTG')
+  const [siteTitle, setSiteTitle] = useState('NEWTG')
   const [serverAddress, setServerAddress] = useState('')
   const [username, setUsername] = useState('')
   const [email, setEmail] = useState('')

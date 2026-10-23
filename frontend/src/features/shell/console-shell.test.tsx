@@ -4,7 +4,7 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import {
@@ -261,6 +261,35 @@ describe('ConsoleShell wide-screen gate', () => {
     expect(
       screen.queryByRole('heading', { name: 'Use a wide screen' }),
     ).toBeNull()
+  })
+
+  it('renders a compact topbar without the marketing navigation', async () => {
+    installSession()
+    installMatchMedia((query) => query === '(min-width: 1024px)')
+
+    const { container } = renderConsoleAt('/dashboard')
+
+    await waitFor(() => {
+      expect(container.querySelector('aside')).not.toBeNull()
+    })
+
+    // The console owns a single header; the marketing navigation (brand,
+    // Models/Pricing/Docs links) is gone.
+    expect(
+      screen.queryByRole('navigation', { name: 'Primary navigation' }),
+    ).toBeNull()
+    expect(screen.queryByRole('link', { name: 'NEWTG' })).toBeNull()
+
+    const headers = container.querySelectorAll('header')
+    expect(headers.length).toBe(1)
+    const topbar = headers[0] as HTMLElement
+    expect(
+      within(topbar).getByRole('link', { name: 'Back to home' }).getAttribute(
+        'href',
+      ),
+    ).toBe('/')
+    expect(within(topbar).getByLabelText('Interface language')).toBeTruthy()
+    expect(within(topbar).getByLabelText('Theme')).toBeTruthy()
   })
 
   it('does not mount blocked widgets on the forced password-change route', async () => {

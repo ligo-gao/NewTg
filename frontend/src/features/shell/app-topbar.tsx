@@ -1,8 +1,11 @@
+import { useTheme, type ThemeMode } from '@/app/providers/theme'
 import { NotificationBell } from '@/features/notifications/notification-bell'
 import type { Me } from '@/lib/session'
 import { useI18n } from '@/shared/lib/i18n-context'
+import { LanguageSwitch } from '@/shared/ui/language-switch'
 
 import { NavIcon } from './nav-icon'
+import { useLanguagePreference } from './use-language-preference'
 
 export interface AppTopbarProps {
   title: string
@@ -25,6 +28,15 @@ function isApplePlatform(): boolean {
   return /mac|iphone|ipad|ipod/i.test(platform)
 }
 
+function isThemeMode(value: string): value is ThemeMode {
+  return value === 'light' || value === 'dark' || value === 'system'
+}
+
+/**
+ * Console workspace header. Marketing navigation lives on the public site, so
+ * the bar only carries workspace actions: title, search, back-to-site, theme,
+ * language, notifications, and the profile avatar.
+ */
 export function AppTopbar({
   title,
   me,
@@ -32,6 +44,9 @@ export function AppTopbar({
   showNotifications = true,
 }: AppTopbarProps) {
   const { t } = useI18n()
+  const { mode, setMode } = useTheme()
+  const signedIn = me !== null && me !== undefined
+  const language = useLanguagePreference(signedIn)
   const shortcut = isApplePlatform()
     ? t('common.command.shortcut_mac')
     : t('common.command.shortcut_other')
@@ -49,6 +64,13 @@ export function AppTopbar({
       </div>
 
       <div className="ml-auto flex items-center gap-1.5">
+        <a
+          href="/"
+          className="inline-flex h-8 shrink-0 items-center rounded-lg px-2.5 text-[12px] text-ink-3 hover:bg-surface-hover hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+        >
+          {t('common.error_page.home')}
+        </a>
+
         <button
           type="button"
           data-testid="command-palette-trigger"
@@ -63,8 +85,27 @@ export function AppTopbar({
           </kbd>
         </button>
 
+        <select
+          aria-label={t('common.theme.label')}
+          value={mode}
+          onChange={(event) => {
+            const next = event.target.value
+            if (isThemeMode(next)) setMode(next)
+          }}
+          className="h-8 max-w-[110px] shrink-0 cursor-pointer rounded-lg border border-border-default bg-surface-card px-2 text-[12px] text-ink-2 hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+        >
+          <option value="system">{t('common.theme.system')}</option>
+          <option value="light">{t('common.theme.light')}</option>
+          <option value="dark">{t('common.theme.dark')}</option>
+        </select>
+
+        <LanguageSwitch
+          label={t('common.language.label')}
+          onChange={language.onChange}
+        />
+
         {showNotifications ? (
-          <NotificationBell signedIn={me !== null && me !== undefined} />
+          <NotificationBell signedIn={signedIn} />
         ) : null}
 
         <a

@@ -32,7 +32,7 @@ include scripts/openapi.env
 .PHONY: help version tidy fmt fmt-check vet lint build run-gateway run-worker \
         test test-cover test-integration \
         migrate-up migrate-down migrate-version migrate-create migrate-verify \
-        web-install web-dev web-typecheck web-lint web-test web-build \
+        web-install web-dev web-typecheck web-lint web-test web-build web-copy-guards \
         api-bundle api-gen api-lint api-validate api-check check-openapi-layout \
         image image-multiarch compose-up compose-down dev clean
 
@@ -113,6 +113,9 @@ web-test: ## Vitest（jsdom）
 
 web-build: ## 生产静态构建 → frontend/dist/
 	cd frontend && bun run build
+
+web-copy-guards: ## 文案与品牌守卫（模块编号 / 品牌大小写 / 未经证实的规模数字）
+	bash scripts/audit-copy-guards.sh
 
 check-openapi-layout: ## 校验 OpenAPI 源目录树与入口 paths 全为 $ref（仓根 api/openapi/）
 	bash scripts/check_openapi_layout.sh

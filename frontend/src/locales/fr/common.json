@@ -1,5 +1,5 @@
 {
-  "app.title": "NewTG",
+  "app.title": "NEWTG",
   "app.scaffold": "Échafaudage M0",
   "action.cancel": "Annuler",
   "action.close": "Fermer",
@@ -7,6 +7,15 @@
   "action.copied": "Copié",
   "action.retry": "Réessayer",
   "action.refresh": "Actualiser",
+  "language.label": "Langue de l'interface",
+  "language.saved_locally": "Langue enregistrée sur cet appareil.",
+  "language.update_error": "Impossible d'enregistrer la préférence de langue. La langue précédente est restaurée.",
+  "theme.label": "Thème",
+  "theme.light": "Clair",
+  "theme.dark": "Sombre",
+  "theme.system": "Système",
+  "site_nav.label": "Navigation principale",
+  "site_nav.models": "Modèles",
   "nav.dashboard": "Tableau de bord",
   "nav.group.workspace": "Espace de travail",
   "nav.group.build": "Développement",
@@ -146,10 +155,12 @@
       "success_rate": "Taux de réussite {rate}",
       "input_tokens": "Jetons d'entrée",
       "output_tokens": "Jetons de sortie",
-      "spend_tooltip": "Pré-débité Σ{pre} / Remboursé Σ{refunded}"
+      "spend_tooltip": "Pré-débité Σ{pre} / Remboursé Σ{refunded}",
+      "no_data": "Aucune donnée"
     },
     "rates": {
-      "usage": "Usage",
+      "usage": "Crédits consommés",
+      "spend": "Dépense",
       "rpm": "RPM",
       "tpm": "TPM",
       "credits": "crédits",
@@ -297,6 +308,7 @@
   "nav.model_deployments": "Déploiements de modèles",
   "channels": {
     "title": "Canaux",
+    "subtitle": "Gérez les canaux amont, les modèles et la santé du routage.",
     "new": "Nouveau canal",
     "total": "{total} canaux",
     "filters": {
@@ -349,7 +361,12 @@
       "moreModels": "+{count}",
       "neverTested": "Jamais testé",
       "successRate24h": "Succès (24 h)",
-      "avgLatency24h": "Latence (24 h)"
+      "avgLatency24h": "Latence (24 h)",
+      "modelsCount": "Modèles : {count}",
+      "modelsCountFor": "Modèles : {count} · {name}",
+      "routingGroups": "Routage et groupes",
+      "health24h": "Santé 24 h",
+      "noHealthData": "Aucune donnée"
     },
     "empty": {
       "none": "Aucun canal pour l'instant",
@@ -374,7 +391,10 @@
       "test": "Tester la connexion",
       "batchTest": "Test par lot",
       "enableChannel": "Activer le canal {name}",
-      "disableChannel": "Désactiver le canal {name}"
+      "disableChannel": "Désactiver le canal {name}",
+      "more": "Plus d'actions",
+      "moreFor": "Plus d'actions pour {name}",
+      "performance": "Test de performance"
     },
     "bulk": {
       "toolbar": "Actions groupées",
@@ -489,7 +509,9 @@
       "tag": "Étiquette",
       "unlimited": "Illimité",
       "yes": "Oui",
-      "no": "Non"
+      "no": "Non",
+      "modelsTitle": "Tous les modèles ({count})",
+      "infoTitle": "Informations du canal"
     },
     "test": {
       "title": "Test par lot · {name}",
@@ -511,6 +533,25 @@
       "network": "Erreur réseau",
       "param": "Requête invalide",
       "unknown": "Erreur inconnue"
+    },
+    "perf": {
+      "title": "Test de performance · {name}",
+      "subtitle": "Mesurez le temps jusqu'au premier jeton, la latence et le débit des modèles sélectionnés.",
+      "runs": "Exécutions",
+      "runsOption": "{count} exécutions",
+      "start": "Démarrer",
+      "stop": "Arrêter",
+      "running": "En cours…",
+      "ttft_p50": "TTFT p50 (ms)",
+      "ttft_p95": "TTFT p95 (ms)",
+      "latency_p50": "Latence p50 (ms)",
+      "latency_p95": "Latence p95 (ms)",
+      "tps": "TPS",
+      "success": "Réussite",
+      "tokens": "Jetons",
+      "noSelection": "Sélectionnez au moins un modèle.",
+      "empty": "Aucun modèle configuré pour ce canal.",
+      "error": "Échec"
     },
     "typeGroup": {
       "openai": "Compatible OpenAI",
@@ -549,12 +590,12 @@
       "switchLabel": "Interrupteur (paramètres du site)",
       "statusLabel": "État de l'interrupteur",
       "status": {
-        "unknown": "Non disponible dans cette version.",
+        "unknown": "Bientôt disponible.",
         "off": "Désactivé — le transfert inter-protocoles est désactivé.",
         "on": "Activé — les requêtes portant l'en-tête sont transférées vers le protocole amont sélectionné."
       },
       "defaultOff": "L'interrupteur est désactivé par défaut. Tant qu'il l'est, une requête portant x-newtg-protocol échoue avec 403 au lieu d'être relayée.",
-      "managedBy": "L'interrupteur se trouve dans les paramètres du site, non disponibles dans cette version ; cette console ne peut donc ni le lire ni le modifier.",
+      "managedBy": "Cet interrupteur sera bientôt disponible et ne peut pas encore être modifié ici.",
       "editableDeferred": "Un interrupteur modifiable et un mappage de protocoles suivront lorsque les paramètres du site seront disponibles ; aucun contrôle n'est affiché ici d'ici là."
     },
     "metrics": {

@@ -1,7 +1,19 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest'
 
+import { THEME_STORAGE_KEY, ThemeProvider } from '@/app/providers/theme'
 import type { Me } from '@/lib/session'
 import { renderWithProviders } from '@/test-support/providers'
 
@@ -24,7 +36,11 @@ const server = setupServer(
 )
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
-afterEach(() => server.resetHandlers())
+beforeEach(() => window.localStorage.clear())
+afterEach(() => {
+  server.resetHandlers()
+  window.localStorage.clear()
+})
 afterAll(() => server.close())
 
 describe('AppTopbar', () => {
@@ -43,6 +59,88 @@ describe('AppTopbar', () => {
     expect(getByText('Console')).toBeTruthy()
     getByTestId('command-palette-trigger').click()
     expect(onOpenCommandPalette).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders the back-to-site link, language and theme controls', async () => {
+    const { getByLabelText, getByRole } = await renderWithProviders(
+      <AppTopbar
+        title="API tokens"
+        me={ADMIN}
+        onOpenCommandPalette={() => {}}
+      />,
+      ['common'],
+    )
+
+    expect(getByRole('link', { name: 'Back to home' }).getAttribute('href')).toBe(
+      '/',
+    )
+    expect(getByLabelText('Interface language').tagName).toBe('SELECT')
+    const theme = getByLabelText('Theme') as HTMLSelectElement
+    expect(theme.tagName).toBe('SELECT')
+    expect(theme.value).toBe('system')
+  })
+
+  it('persists a language change for a signed-in session', async () => {
+    let putBody: unknown
+    server.use(
+      http.get(`${ORIGIN}/api/self`, () =>
+        HttpResponse.json({
+          language: 'en',
+          sidebar_modules: null,
+          record_ip_log: false,
+          updated_at: '2026-10-19T10:00:00Z',
+        }),
+      ),
+      http.put(`${ORIGIN}/api/self/setting`, async ({ request }) => {
+        putBody = await request.json()
+        return HttpResponse.json({
+          language: 'fr',
+          sidebar_modules: null,
+          record_ip_log: false,
+          updated_at: '2026-10-19T10:00:00Z',
+        })
+      }),
+    )
+
+    const { getByLabelText } = await renderWithProviders(
+      <AppTopbar
+        title="API tokens"
+        me={ADMIN}
+        onOpenCommandPalette={() => {}}
+      />,
+      ['common'],
+    )
+    const user = userEvent.setup()
+
+    await user.selectOptions(
+      getByLabelText('Interface language') as HTMLSelectElement,
+      'fr',
+    )
+
+    await waitFor(() => {
+      expect(putBody).toMatchObject({
+        language: 'fr',
+        updated_at: '2026-10-19T10:00:00Z',
+      })
+    })  })
+
+  it('applies and persists a theme change through the provider', async () => {
+    const { getByLabelText } = await renderWithProviders(
+      <ThemeProvider>
+        <AppTopbar
+          title="API tokens"
+          me={ADMIN}
+          onOpenCommandPalette={() => {}}
+        />
+      </ThemeProvider>,
+      ['common'],
+    )
+    const user = userEvent.setup()
+
+    await user.selectOptions(getByLabelText('Theme') as HTMLSelectElement, 'dark')
+
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe('dark')
+    expect(document.documentElement.dataset.theme).toBe('dark')
   })
 
   it('hides the notification bell when the session is restricted', async () => {

@@ -1,3 +1,4 @@
+import { useQuery } from '@tanstack/react-query'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
@@ -6,6 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
 
+import { recentTransactionsQueryOptions } from '../wallet/overview-queries'
 import { TopupPage } from './topup-page'
 
 const ORIGIN = 'http://localhost:3000'
@@ -14,6 +16,15 @@ const server = setupServer()
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 afterEach(() => server.resetHandlers())
 afterAll(() => server.close())
+
+/**
+ * Subscribes the overview's recent-ledger query so the test can observe the
+ * cache invalidation a successful top-up must trigger.
+ */
+function TransactionsProbe() {
+  useQuery(recentTransactionsQueryOptions())
+  return null
+}
 
 const CONFIG = {
   amount_options: [1000, 5000, 10000],
@@ -194,11 +205,21 @@ describe('TopupPage', () => {
 
   it('seeds the balance from /api/wallet/summary and refetches after success', async () => {
     let summaryCalls = 0
+    let transactionsCalls = 0
     server.use(
       http.get(`${ORIGIN}/api/topup/config`, () => HttpResponse.json(CONFIG)),
       http.get(`${ORIGIN}/api/wallet/summary`, () => {
         summaryCalls += 1
         return HttpResponse.json(summary(summaryCalls === 1 ? 123450 : 128450))
+      }),
+      http.get(`${ORIGIN}/api/wallet/transactions`, () => {
+        transactionsCalls += 1
+        return HttpResponse.json({
+          items: [],
+          total: 0,
+          page: 1,
+          page_size: 6,
+        })
       }),
       http.post(`${ORIGIN}/api/orders`, () =>
         HttpResponse.json(
@@ -218,11 +239,20 @@ describe('TopupPage', () => {
         ),
       ),
     )
-    await renderWithProviders(<TopupPage />, ['common', 'account'])
+    await renderWithProviders(
+      <>
+        <TopupPage />
+        <TransactionsProbe />
+      </>,
+      ['common', 'account'],
+    )
     const user = userEvent.setup()
 
     await waitFor(() => {
       expect(screen.getByTestId('balance-value').textContent).toBe('123,450')
+    })
+    await waitFor(() => {
+      expect(transactionsCalls).toBe(1)
     })
 
     await user.click(await screen.findByRole('radio', { name: 'Alipay' }))
@@ -233,6 +263,10 @@ describe('TopupPage', () => {
     await waitFor(() => {
       expect(summaryCalls).toBe(2)
       expect(screen.getByTestId('balance-value').textContent).toBe('128,450')
+    })
+    // The overview's recent ledger must not keep the pre-payment rows.
+    await waitFor(() => {
+      expect(transactionsCalls).toBe(2)
     })
   })
 
@@ -290,6 +324,46 @@ describe('TopupPage', () => {
     expect(screen.getByRole('button', { name: /^Pay ¥10\.00/ }).hasAttribute('disabled')).toBe(
       false,
     )
+  })
+
+  it('seeds the amount from the overview selection', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/topup/config`, () => HttpResponse.json(CONFIG)),
+      http.get(`${ORIGIN}/api/wallet/summary`, () => HttpResponse.json(summary(0))),
+    )
+    await renderWithProviders(
+      <TopupPage initialSelection={{ cents: 5000, custom: false }} />,
+      ['common', 'account'],
+    )
+
+    expect((await screen.findByTestId('summary-pay')).textContent).toBe(
+      '¥50.00',
+    )
+    expect(
+      screen.getByRole('radio', { name: '¥50' }).getAttribute('aria-checked'),
+    ).toBe('true')
+  })
+
+  it('seeds custom mode and the yuan text from the overview selection', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/topup/config`, () => HttpResponse.json(CONFIG)),
+      http.get(`${ORIGIN}/api/wallet/summary`, () => HttpResponse.json(summary(0))),
+    )
+    await renderWithProviders(
+      <TopupPage initialSelection={{ cents: 2500, custom: true }} />,
+      ['common', 'account'],
+    )
+
+    const input = (await screen.findByLabelText(
+      'Custom Amount',
+    )) as HTMLInputElement
+    expect(input.value).toBe('25')
+    expect(
+      screen
+        .getByRole('radio', { name: 'Custom Amount' })
+        .getAttribute('aria-checked'),
+    ).toBe('true')
+    expect(screen.getByTestId('summary-pay').textContent).toBe('¥25.00')
   })
 
   it('does not rewrite decimal custom amounts into larger integers', async () => {
