@@ -901,4 +901,46 @@ describe('reconciliation results tab', () => {
     expect(within(status).getByText('Succeeded')).toBeTruthy()
     expect(within(status).getByText(`Finished ${finished}`)).toBeTruthy()
   })
+
+  it('disables the trigger when the selected run is outside the recent list', async () => {
+    // 深链指向掉出最近 20 条窗口的运行：selectedRun 为空，绝不能因此把
+    // 一次按账号的重跑放大成全部账号的重跑。
+    installApi({ runs: [makeRun(8, '2026-10-04T02:00:00Z')], items: [] })
+    renderTab(404)
+
+    expect(
+      await screen.findByText(
+        'This run is no longer in the recent runs list, so it cannot be re-run by account. Pick a run from the list first.',
+      ),
+    ).toBeTruthy()
+    const button = screen.getByRole('button', { name: 'Reconcile again' })
+    expect((button as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('keeps the selection when a trigger starts no run', async () => {
+    // run_ids 为空 = 没有可对账的账号；视图不得跳到列表第一条无关运行。
+    installApi({
+      runs: [
+        makeRun(300, '2026-10-05T02:00:00Z'),
+        makeRun(100, '2026-10-03T02:00:00Z'),
+      ],
+      items: [],
+      triggerResult: { run_ids: [], items: 0, alerts: 0, status: 'succeeded' },
+    })
+    await renderWithProviders(<ControlledResultsTab initialRunId={100} />, [
+      'common',
+      'admin',
+    ])
+    const user = userEvent.setup()
+
+    await screen.findByRole('option', { name: /#100/ })
+    await user.click(screen.getByRole('button', { name: 'Reconcile again' }))
+
+    expect(
+      await screen.findByText('No enabled upstream account was reconciled.'),
+    ).toBeTruthy()
+    expect(
+      (screen.getByLabelText('Reconciliation run') as HTMLSelectElement).value,
+    ).toBe('100')
+  })
 })

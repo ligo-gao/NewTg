@@ -135,6 +135,11 @@ export function ResultsTab({ runId, onSelectRun, canManage }: ResultsTabProps) {
   const runs = runsQuery.data?.items ?? []
   const selectedRun =
     runId === null ? null : (runs.find((run) => run.id === runId) ?? null)
+  // 运行列表只取最近 20 条：深链指向更早的运行、或运行掉出窗口后，
+  // `selectedRun` 为空。此时不能回退成「全部账号」——那会把一次按账号的
+  // 重跑放大成全部账号的同步重跑，所以禁用按钮并说明原因。
+  const staleSelection =
+    runId !== null && runsQuery.isSuccess && selectedRun === null
 
   // 手动触发对账是同步请求，可能持续到服务端 60s 超时；按钮自身承担等待态。
   // 每次点击都生成新的幂等键：两次点击是两个意图，重放语义不能跨意图复用。
@@ -145,13 +150,16 @@ export function ResultsTab({ runId, onSelectRun, canManage }: ResultsTabProps) {
         createIdempotencyKey(),
       ),
     retry: false,
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: RUNS_QUERY_KEY }),
         queryClient.invalidateQueries({ queryKey: ITEMS_QUERY_KEY }),
       ])
-      // `run_ids` 可能为空（没有启用账号）；即使不空，也以刷新后的列表为准，
-      // 因为列表才是「最新运行」的权威顺序（服务端按 started_at 降序）。
+      // `run_ids` 为空表示没有启用账号、本次没有产生任何运行：保持当前选择，
+      // 否则视图会莫名跳到一条与被点按钮无关的既有运行上。
+      if (result.run_ids.length === 0) return
+      // 以刷新后的列表为准，因为列表才是「最新运行」的权威顺序（服务端按
+      // started_at 降序）。
       const refreshed = queryClient.getQueryData<ReconcileRunList>(RUNS_QUERY_KEY)
       const newest = refreshed?.items[0]
       if (newest === undefined) return
@@ -280,7 +288,9 @@ export function ResultsTab({ runId, onSelectRun, canManage }: ResultsTabProps) {
           <Button
             className="h-10"
             aria-busy={triggerMutation.isPending}
-            disabled={runsQuery.isPending || triggerMutation.isPending}
+            disabled={
+              runsQuery.isPending || triggerMutation.isPending || staleSelection
+            }
             onClick={() => {
               triggerMutation.mutate()
             }}
@@ -312,6 +322,14 @@ export function ResultsTab({ runId, onSelectRun, canManage }: ResultsTabProps) {
             })}
           </FormAlert>
         )
+      ) : null}
+
+      {staleSelection ? (
+        <FormAlert tone="warning">
+          {t(
+            'admin.upstream_reconciliation.results.run_again_stale_selection',
+          )}
+        </FormAlert>
       ) : null}
 
       {runsQuery.isError ? (

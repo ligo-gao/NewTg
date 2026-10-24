@@ -416,7 +416,7 @@ describe('reconciliation item sheet', () => {
 
     expect(
       screen.getByText(
-        'Refunded and estimated requests are included in the local totals. Unknown and multi-attempt requests are disclosed rather than corrected.',
+        'Refunded, failed and estimated requests are included in the local totals. Unknown and multi-attempt requests are disclosed rather than corrected.',
       ),
     ).toBeTruthy()
   })

@@ -273,6 +273,7 @@ func newReconcileRunner(deps workerTaskDeps) (*reconcile.Runner, error) {
 		Store:     store.NewReconcileRepo(deps.DB),
 		Settings:  NewReconcileSettingsReader(deps.Center, deps.Logger),
 		Retention: reconcile.DefaultRetention,
+		Logger:    deps.Logger,
 	})
 }
 
