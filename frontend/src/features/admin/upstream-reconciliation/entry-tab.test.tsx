@@ -511,6 +511,46 @@ describe('snapshot entry tab', () => {
     expect(screen.getByText('deepseek-coder')).toBeTruthy()
   })
 
+  it('clears the duplicate-model message on Load and on Reset', async () => {
+    installSnapshotApi()
+    await renderWithProviders(<EntryTab canManage />, ['common', 'admin'])
+    const user = userEvent.setup()
+    await loadDate('2026-10-23')
+    await screen.findAllByTestId('entry-model-row')
+
+    const addButton = screen.getByRole('button', { name: 'Add' })
+    await user.type(screen.getByLabelText('Add model'), 'deepseek-chat')
+    await user.click(addButton)
+    expect(
+      await screen.findByText('This model is already in the table'),
+    ).toBeTruthy()
+
+    // 提示描述的是上一次尝试，重新载入后不该还留在屏幕上。
+    await user.click(screen.getByRole('button', { name: 'Load' }))
+    await waitFor(() =>
+      expect(
+        screen.queryByText('This model is already in the table'),
+      ).toBeNull(),
+    )
+
+    // 输入框保留着重复的模型名，再点一次即可复现提示。Reset 只在有未保存
+    // 编辑时可用，所以先改一个单元格。
+    const first = screen.getAllByTestId('entry-model-row')[0]
+    if (first === undefined) throw new Error('missing first row')
+    await user.type(within(first).getByLabelText('Output tokens'), '9')
+    await user.click(addButton)
+    expect(
+      await screen.findByText('This model is already in the table'),
+    ).toBeTruthy()
+
+    await user.click(screen.getByRole('button', { name: 'Reset' }))
+    await waitFor(() =>
+      expect(
+        screen.queryByText('This model is already in the table'),
+      ).toBeNull(),
+    )
+  })
+
   it('disables Add until both an account and a date are selected', async () => {
     installSnapshotApi()
     await renderWithProviders(<EntryTab canManage />, ['common', 'admin'])
