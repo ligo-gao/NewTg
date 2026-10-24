@@ -1075,8 +1075,13 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
         <UsageStatsTab
           search={search}
           canFilterByUsername={capabilities.canFilterByUsername}
+          isAdmin={capabilities.isAdmin}
           active={tab === 'stats'}
           ready={!capabilities.loading}
+          onOpenLog={setSelectedId}
+          onViewAllFailures={() => {
+            update({ tab: 'logs', status: 'error', p: 1 })
+          }}
         />
       </div>
 
