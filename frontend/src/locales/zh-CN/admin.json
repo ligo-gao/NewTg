@@ -1555,6 +1555,21 @@
       }
     }
   },
+  "upstream_reconciliation": {
+    "page": {
+      "title": "上游对账",
+      "subtitle": "将网关用量记录与供应商控制台快照进行比对，核查差异。",
+      "tabs_label": "对账分区",
+      "tab_entry": "快照录入",
+      "tab_results": "对账结果",
+      "tab_overview": "总览",
+      "tab_accounts": "上游账号",
+      "placeholder_entry": "快照录入分区尚未开放。",
+      "placeholder_results": "对账结果分区尚未开放。",
+      "placeholder_overview": "总览分区尚未开放。",
+      "placeholder_accounts": "上游账号分区尚未开放。"
+    }
+  },
   "subscriptions": {
     "title": "订阅套餐",
     "subtitle": "可供购买的套餐。修改不会影响已购订阅。",

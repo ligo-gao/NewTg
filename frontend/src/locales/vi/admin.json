@@ -1555,6 +1555,21 @@
       }
     }
   },
+  "upstream_reconciliation": {
+    "page": {
+      "title": "Đối soát nhà cung cấp",
+      "subtitle": "So sánh dữ liệu sử dụng của cổng với ảnh chụp từ bảng điều khiển nhà cung cấp và xem xét các chênh lệch.",
+      "tabs_label": "Các mục đối soát",
+      "tab_entry": "Nhập ảnh chụp",
+      "tab_results": "Kết quả đối soát",
+      "tab_overview": "Tổng quan",
+      "tab_accounts": "Tài khoản nhà cung cấp",
+      "placeholder_entry": "Phần nhập ảnh chụp chưa khả dụng.",
+      "placeholder_results": "Kết quả đối soát chưa khả dụng.",
+      "placeholder_overview": "Tổng quan chưa khả dụng.",
+      "placeholder_accounts": "Tài khoản nhà cung cấp chưa khả dụng."
+    }
+  },
   "subscriptions": {
     "title": "Gói đăng ký",
     "subtitle": "Các gói có thể mua. Thay đổi không ảnh hưởng đến các đăng ký hiện có.",

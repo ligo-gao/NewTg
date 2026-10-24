@@ -1555,6 +1555,21 @@
       }
     }
   },
+  "upstream_reconciliation": {
+    "page": {
+      "title": "アップストリーム照合",
+      "subtitle": "ゲートウェイの利用記録とプロバイダーコンソールのスナップショットを比較し、差異を確認します。",
+      "tabs_label": "照合セクション",
+      "tab_entry": "スナップショット入力",
+      "tab_results": "照合結果",
+      "tab_overview": "概要",
+      "tab_accounts": "アップストリームアカウント",
+      "placeholder_entry": "スナップショット入力はまだ利用できません。",
+      "placeholder_results": "照合結果はまだ利用できません。",
+      "placeholder_overview": "概要はまだ利用できません。",
+      "placeholder_accounts": "アップストリームアカウントはまだ利用できません。"
+    }
+  },
   "subscriptions": {
     "title": "サブスクリプションプラン",
     "subtitle": "購入可能なプランです。変更は既存のサブスクリプションには影響しません。",

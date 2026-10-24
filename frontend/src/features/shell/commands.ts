@@ -36,6 +36,7 @@ export type CommandRoutePath =
   | '/admin/users/groups'
   | '/admin/models'
   | '/admin/channels'
+  | '/admin/upstream-reconciliation'
   | '/admin/subscriptions'
   | '/admin/pricing/model-pricing'
   | '/admin/pricing/group-pricing'
@@ -226,6 +227,17 @@ export const COMMANDS: readonly CommandDefinition[] = [
     requiredPermission: 'channels:read',
     analyticsId: 'nav.admin_channels',
     to: '/admin/channels',
+  },
+  {
+    id: 'admin-upstream-reconciliation',
+    kind: 'route',
+    group: 'pages',
+    labelKey: 'common.nav.upstream_reconciliation',
+    keywords: ['admin', 'upstream', 'reconciliation', 'usage', 'snapshots'],
+    requiredRole: 'admin',
+    requiredPermission: 'settings:manage',
+    analyticsId: 'nav.admin_upstream_reconciliation',
+    to: '/admin/upstream-reconciliation',
   },
   {
     id: 'admin-models',

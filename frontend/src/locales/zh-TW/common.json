@@ -415,6 +415,7 @@
   "toast.dismiss": "關閉通知",
   "toast.request_id": "request_id：{requestId}",
   "nav.channels": "通道",
+  "nav.upstream_reconciliation": "上游對帳",
   "nav.tokens": "API 權杖",
   "nav.model_config": "模型設定",
   "nav.skip": "跳至主要內容",

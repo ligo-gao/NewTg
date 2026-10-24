@@ -1555,6 +1555,21 @@
       }
     }
   },
+  "upstream_reconciliation": {
+    "page": {
+      "title": "上游對帳",
+      "subtitle": "將閘道用量紀錄與供應商主控台快照進行比對，檢視差異。",
+      "tabs_label": "對帳分區",
+      "tab_entry": "快照輸入",
+      "tab_results": "對帳結果",
+      "tab_overview": "總覽",
+      "tab_accounts": "上游帳號",
+      "placeholder_entry": "快照輸入分區尚未開放。",
+      "placeholder_results": "對帳結果分區尚未開放。",
+      "placeholder_overview": "總覽分區尚未開放。",
+      "placeholder_accounts": "上游帳號分區尚未開放。"
+    }
+  },
   "subscriptions": {
     "title": "訂閱方案",
     "subtitle": "可供購買的方案。修改不會影響已購訂閱。",

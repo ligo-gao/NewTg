@@ -1555,6 +1555,21 @@
       }
     }
   },
+  "upstream_reconciliation": {
+    "page": {
+      "title": "Upstream reconciliation",
+      "subtitle": "Compare gateway usage records with provider-console snapshots and review the differences.",
+      "tabs_label": "Reconciliation sections",
+      "tab_entry": "Snapshot entry",
+      "tab_results": "Reconciliation results",
+      "tab_overview": "Overview",
+      "tab_accounts": "Upstream accounts",
+      "placeholder_entry": "Snapshot entry is not available yet.",
+      "placeholder_results": "Reconciliation results are not available yet.",
+      "placeholder_overview": "The overview is not available yet.",
+      "placeholder_accounts": "Upstream accounts are not available yet."
+    }
+  },
   "subscriptions": {
     "title": "Subscription Plans",
     "subtitle": "Plans available for purchase. Changes never affect existing subscriptions.",

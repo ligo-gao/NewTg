@@ -44,6 +44,7 @@ import { Route as RankingsIndexRouteImport } from './routes/rankings/index'
 import { Route as ConsoleAdminIndexRouteImport } from './routes/_console/admin/index'
 import { Route as ConsoleAdminModelsRouteImport } from './routes/_console/admin/models'
 import { Route as ConsoleAdminSubscriptionsRouteImport } from './routes/_console/admin/subscriptions'
+import { Route as ConsoleAdminUpstreamReconciliationRouteImport } from './routes/_console/admin/upstream-reconciliation'
 import { Route as ConsoleDashboardIndexRouteImport } from './routes/_console/dashboard/index'
 import { Route as ConsoleDashboardAuditLogsRouteImport } from './routes/_console/dashboard/audit-logs'
 import { Route as ConsoleDashboardUsageLogsRouteImport } from './routes/_console/dashboard/usage-logs'
@@ -237,6 +238,12 @@ const ConsoleAdminSubscriptionsRoute =
     path: '/subscriptions',
     getParentRoute: () => ConsoleAdminRoute,
   } as any)
+const ConsoleAdminUpstreamReconciliationRoute =
+  ConsoleAdminUpstreamReconciliationRouteImport.update({
+    id: '/upstream-reconciliation',
+    path: '/upstream-reconciliation',
+    getParentRoute: () => ConsoleAdminRoute,
+  } as any)
 const ConsoleDashboardIndexRoute = ConsoleDashboardIndexRouteImport.update({
   id: '/dashboard/',
   path: '/dashboard/',
@@ -371,6 +378,7 @@ export interface FileRoutesByFullPath {
   '/rankings/': typeof RankingsIndexRoute
   '/admin/models': typeof ConsoleAdminModelsRoute
   '/admin/subscriptions': typeof ConsoleAdminSubscriptionsRoute
+  '/admin/upstream-reconciliation': typeof ConsoleAdminUpstreamReconciliationRoute
   '/dashboard/audit-logs': typeof ConsoleDashboardAuditLogsRoute
   '/dashboard/usage-logs': typeof ConsoleDashboardUsageLogsRoute
   '/admin/': typeof ConsoleAdminIndexRoute
@@ -423,6 +431,7 @@ export interface FileRoutesByTo {
   '/rankings': typeof RankingsIndexRoute
   '/admin/models': typeof ConsoleAdminModelsRoute
   '/admin/subscriptions': typeof ConsoleAdminSubscriptionsRoute
+  '/admin/upstream-reconciliation': typeof ConsoleAdminUpstreamReconciliationRoute
   '/dashboard/audit-logs': typeof ConsoleDashboardAuditLogsRoute
   '/dashboard/usage-logs': typeof ConsoleDashboardUsageLogsRoute
   '/admin': typeof ConsoleAdminIndexRoute
@@ -478,6 +487,7 @@ export interface FileRoutesById {
   '/rankings/': typeof RankingsIndexRoute
   '/_console/admin/models': typeof ConsoleAdminModelsRoute
   '/_console/admin/subscriptions': typeof ConsoleAdminSubscriptionsRoute
+  '/_console/admin/upstream-reconciliation': typeof ConsoleAdminUpstreamReconciliationRoute
   '/_console/dashboard/audit-logs': typeof ConsoleDashboardAuditLogsRoute
   '/_console/dashboard/usage-logs': typeof ConsoleDashboardUsageLogsRoute
   '/_console/admin/': typeof ConsoleAdminIndexRoute
@@ -533,6 +543,7 @@ export interface FileRouteTypes {
     | '/rankings/'
     | '/admin/models'
     | '/admin/subscriptions'
+    | '/admin/upstream-reconciliation'
     | '/dashboard/audit-logs'
     | '/dashboard/usage-logs'
     | '/admin/'
@@ -585,6 +596,7 @@ export interface FileRouteTypes {
     | '/rankings'
     | '/admin/models'
     | '/admin/subscriptions'
+    | '/admin/upstream-reconciliation'
     | '/dashboard/audit-logs'
     | '/dashboard/usage-logs'
     | '/admin'
@@ -639,6 +651,7 @@ export interface FileRouteTypes {
     | '/rankings/'
     | '/_console/admin/models'
     | '/_console/admin/subscriptions'
+    | '/_console/admin/upstream-reconciliation'
     | '/_console/dashboard/audit-logs'
     | '/_console/dashboard/usage-logs'
     | '/_console/admin/'
@@ -930,6 +943,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleAdminSubscriptionsRouteImport
       parentRoute: typeof ConsoleAdminRoute
     }
+    '/_console/admin/upstream-reconciliation': {
+      id: '/_console/admin/upstream-reconciliation'
+      path: '/upstream-reconciliation'
+      fullPath: '/admin/upstream-reconciliation'
+      preLoaderRoute: typeof ConsoleAdminUpstreamReconciliationRouteImport
+      parentRoute: typeof ConsoleAdminRoute
+    }
     '/_console/dashboard/': {
       id: '/_console/dashboard/'
       path: '/dashboard'
@@ -1055,6 +1075,7 @@ declare module '@tanstack/react-router' {
 interface ConsoleAdminRouteChildren {
   ConsoleAdminModelsRoute: typeof ConsoleAdminModelsRoute
   ConsoleAdminSubscriptionsRoute: typeof ConsoleAdminSubscriptionsRoute
+  ConsoleAdminUpstreamReconciliationRoute: typeof ConsoleAdminUpstreamReconciliationRoute
   ConsoleAdminIndexRoute: typeof ConsoleAdminIndexRoute
   ConsoleAdminPricingGroupPricingRoute: typeof ConsoleAdminPricingGroupPricingRoute
   ConsoleAdminPricingModelPricingRoute: typeof ConsoleAdminPricingModelPricingRoute
@@ -1075,6 +1096,8 @@ interface ConsoleAdminRouteChildren {
 const ConsoleAdminRouteChildren: ConsoleAdminRouteChildren = {
   ConsoleAdminModelsRoute: ConsoleAdminModelsRoute,
   ConsoleAdminSubscriptionsRoute: ConsoleAdminSubscriptionsRoute,
+  ConsoleAdminUpstreamReconciliationRoute:
+    ConsoleAdminUpstreamReconciliationRoute,
   ConsoleAdminIndexRoute: ConsoleAdminIndexRoute,
   ConsoleAdminPricingGroupPricingRoute: ConsoleAdminPricingGroupPricingRoute,
   ConsoleAdminPricingModelPricingRoute: ConsoleAdminPricingModelPricingRoute,

@@ -1555,6 +1555,21 @@
       }
     }
   },
+  "upstream_reconciliation": {
+    "page": {
+      "title": "Rapprochement des fournisseurs",
+      "subtitle": "Comparez les relevés d’utilisation de la passerelle avec les instantanés des consoles fournisseurs, puis examinez les écarts.",
+      "tabs_label": "Sections de rapprochement",
+      "tab_entry": "Saisie des instantanés",
+      "tab_results": "Résultats du rapprochement",
+      "tab_overview": "Vue d’ensemble",
+      "tab_accounts": "Comptes fournisseurs",
+      "placeholder_entry": "La saisie des instantanés n’est pas encore disponible.",
+      "placeholder_results": "Les résultats du rapprochement ne sont pas encore disponibles.",
+      "placeholder_overview": "La vue d’ensemble n’est pas encore disponible.",
+      "placeholder_accounts": "Les comptes fournisseurs ne sont pas encore disponibles."
+    }
+  },
   "subscriptions": {
     "title": "Forfaits d’abonnement",
     "subtitle": "Forfaits disponibles à l’achat. Les modifications n’affectent jamais les abonnements existants.",
