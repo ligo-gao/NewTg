@@ -38,9 +38,19 @@ WHERE c.upstream_account_id IS NULL
 --    否则管理员预建的同名账号（例如 provider = 'anthropic' 的 openai-prod）会
 --    吞掉 openai 渠道，之后拿错误的上游控制台账单参与对账。
 --    upstream_accounts_name_uq 唯一，本趟对同一渠道至多匹配一个账号。
+--
+--    NOT EXISTS 护栏：一个账号只能属于一个渠道。渠道改名后再有渠道复用旧名时
+--    （down 保留的迁移账号仍叫旧名），本趟会让新旧两个渠道同时匹配该账号；若把
+--    它同时挂给两个渠道，新渠道的用量会拿另一个渠道的账单去对账。已挂出的账号
+--    于是不再参与兜底，复用旧名的渠道保持「未归属」—— 宁可待人工处置，也不产出
+--    静默的错账。
 UPDATE channels c
 SET upstream_account_id = a.id
 FROM upstream_accounts a
 WHERE c.upstream_account_id IS NULL
   AND a.provider = c.type
-  AND a.name = c.name;
+  AND a.name = c.name
+  AND NOT EXISTS (
+    SELECT 1 FROM channels c2
+    WHERE c2.upstream_account_id = a.id
+  );

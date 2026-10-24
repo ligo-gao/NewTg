@@ -450,10 +450,15 @@ func TestUpstreamAccountBackfillDownKeepsHistory(t *testing.T) {
 }
 
 // TestUpstreamAccountBackfillKeepsProvenanceAfterRename 是「归属确定性」的
-// 回归用例：down 会保留带历史数据的迁移账号；若渠道之后改名再前滚，
-// 按名字去重挡不住第二个账号（名字已不同），一个渠道就有两个同 provider 的
-// 候选账号。此时必须靠溯源 note 挂回原账号，且不得新造账号 ——
-// 否则控制台会拿错误的上游账号对账。
+// 回归用例，覆盖两个场景：
+//
+//  1. down 会保留带历史数据的迁移账号；渠道之后改名再前滚时，按名字去重
+//     挡不住第二个账号（名字已不同），必须靠溯源 note 挂回原账号，且不得新造
+//     账号 —— 否则控制台会拿错误的上游账号对账。
+//  2. 另一个渠道复用旧名字时，同名兜底不得把**同一个账号**挂给两个渠道：
+//     那会让新渠道的用量拿旧渠道的账单去对账（静默错账）。账号一旦已挂出就
+//     不再参与兜底；这里 A 还占着旧名字（upstream_accounts_name_uq），INSERT
+//     也 mint 不出同名新账号，所以复用旧名的渠道保持「未归属」。
 func TestUpstreamAccountBackfillKeepsProvenanceAfterRename(t *testing.T) {
 	db, m := newUpstreamBackfillDB(t, "upacct_rename")
 
@@ -489,6 +494,9 @@ func TestUpstreamAccountBackfillKeepsProvenanceAfterRename(t *testing.T) {
 		t.Fatalf("down must keep the note-bearing account that has history, got %d accounts", accounts)
 	}
 
+	// 旧名字被释放后，新渠道复用它 —— 同名兜底不得把它挂到旧渠道的账号上。
+	newChannelID := insertChannel(t, db, "openai-prod", "openai")
+
 	// 重新前滚：名字已变，ON CONFLICT (name) 挡不住重复，只能靠溯源护栏。
 	if err := m.Steps(1); err != nil {
 		t.Fatalf("migrate up 1 after down: %v", err)
@@ -499,6 +507,20 @@ func TestUpstreamAccountBackfillKeepsProvenanceAfterRename(t *testing.T) {
 	}
 	if relinked != accountID {
 		t.Fatalf("re-up must relink channel %d to the note-bearing account %d, got %d", channelID, accountID, relinked)
+	}
+	var newLink sql.NullInt64
+	if err := db.QueryRow(`SELECT upstream_account_id FROM channels WHERE id = $1`, newChannelID).Scan(&newLink); err != nil {
+		t.Fatalf("read new channel link: %v", err)
+	}
+	if newLink.Valid && newLink.Int64 == accountID {
+		t.Fatalf("channel %d reusing the freed name must not inherit account %d from channel %d", newChannelID, accountID, channelID)
+	}
+	// 当前实现下新渠道保持「未归属」：A 还占着旧名字，upstream_accounts_name_uq
+	// 让 INSERT 无法再 mint 一个同名账号；pass 2 的 NOT EXISTS 又排除了已挂出的
+	// 账号。未归属在控制台可见、可人工处置，而错挂是静默错账，所以这是刻意的
+	// 保守结果 —— 若将来改为自动新建（改名）账号并挂上，这里的断言按新行为调整。
+	if newLink.Valid {
+		t.Fatalf("channel %d reusing the freed name must stay unlinked, got account %d", newChannelID, newLink.Int64)
 	}
 	if err := db.QueryRow(`SELECT count(*) FROM upstream_accounts`).Scan(&accounts); err != nil {
 		t.Fatalf("count accounts after re-up: %v", err)
@@ -513,6 +535,13 @@ func TestUpstreamAccountBackfillKeepsProvenanceAfterRename(t *testing.T) {
 	}
 	if withNote != 1 {
 		t.Fatalf("want exactly one provenance account for channel %d, got %d", channelID, withNote)
+	}
+	var sharers int
+	if err := db.QueryRow(`SELECT count(*) FROM channels WHERE upstream_account_id = $1`, accountID).Scan(&sharers); err != nil {
+		t.Fatalf("count channels linked to account %d: %v", accountID, err)
+	}
+	if sharers != 1 {
+		t.Fatalf("account %d must belong to exactly one channel, got %d", accountID, sharers)
 	}
 }
 
