@@ -49,6 +49,9 @@ type DBLogger struct {
 	// perf 是模型性能采集接缝（platform-05 §3.5）。nil = 未启用/未装配，
 	// Saturate 只多一次 nil 判断，不产生任何采样开销。
 	perf PerfMetricsRecorder
+	// rawUsage 控制是否把协议原始 usage JSON 写入 other.admin_info.usage_raw
+	// （reconcile.raw_usage_enabled，装配层在启动时解析一次）。
+	rawUsage bool
 	// now 是事件 created_at 的时钟接缝；零值使用 time.Now。
 	now func() time.Time
 }
@@ -91,6 +94,16 @@ func (l *DBLogger) WithBatchQueue(queue UsageLogQueue, logger *slog.Logger) *DBL
 // 与 usage_logs 的口径天然一致，也不会因重试链/流式路径各自采样造成双计。
 func (l *DBLogger) WithPerfMetrics(recorder PerfMetricsRecorder) *DBLogger {
 	l.perf = recorder
+	return l
+}
+
+// WithRawUsage 挂接对账原始 usage 开关并返回自身（链式装配）。
+//
+// 打开时把 contract.Usage.Raw 原样写入 other.admin_info.usage_raw。只写
+// admin_info 分区：非管理员视图会结构性剥离该分区（billing-07 §7.2），所以
+// 原始协议 JSON 不会进入 public 分区，也不改变任何既有键。
+func (l *DBLogger) WithRawUsage(enabled bool) *DBLogger {
+	l.rawUsage = enabled
 	return l
 }
 
@@ -365,7 +378,7 @@ func (l *DBLogger) Saturate(ctx context.Context, fact *contract.UsageFact,
 	if l == nil || l.logsDB == nil {
 		return errors.New("billing: DBLogger has no logs database")
 	}
-	row, err := buildUsageLogRow(fact, rc, outcome)
+	row, err := buildUsageLogRow(fact, rc, outcome, l.rawUsage)
 	if err != nil {
 		return err
 	}
@@ -570,11 +583,15 @@ func feedUpstreamFamily(kind contract.ChannelType) string {
 }
 
 // buildUsageLogRow 把用量事实/请求上下文/结算结果投影成一行日志。
+// rawUsage 为 true 时把 fact.Usage.Raw 写入 other.admin_info.usage_raw；生产
+// 路径传入 DBLogger.rawUsage（由 reconcile.raw_usage_enabled 解析），单元测试
+// 按需传 false。
 //
 // 校验失败返回 error（调用方据此不结算）：负金额、未知 status、缺 requestID
 // 都会破坏日志与账本的对账语义，不能静默落库。
 func buildUsageLogRow(fact *contract.UsageFact,
-	rc *contract.RelayContext, outcome SettlementOutcome) (usageLogRow, error) {
+	rc *contract.RelayContext, outcome SettlementOutcome,
+	rawUsage bool) (usageLogRow, error) {
 
 	if rc == nil || strings.TrimSpace(rc.RequestID) == "" {
 		return usageLogRow{}, fmt.Errorf("%w: usage log requires a request id", ErrMissingRequestID)
@@ -707,7 +724,13 @@ func buildUsageLogRow(fact *contract.UsageFact,
 		row.responseID = sql.NullString{String: truncateLogText(responseID, 128), Valid: true}
 	}
 
-	other, err := json.Marshal(buildUsageLogOther(rc, model, firstToken, outcome))
+	// worker 的退款占位 fact == nil：没有用量事实就没有原始 usage，保持不写。
+	var usageRaw map[string]any
+	if rawUsage && fact != nil {
+		usageRaw = fact.Usage.Raw
+	}
+	other, err := json.Marshal(buildUsageLogOther(rc, model, firstToken, outcome,
+		rawUsage, usageRaw))
 	if err != nil {
 		// other 只由本文件构造（字符串/数字/嵌套 map），Marshal 失败只可能
 		// 来自 QuotaClamp.Original 之类的非有限值；ClampAuditMap 已做 JSON
@@ -744,7 +767,9 @@ func usageField(fact *contract.UsageFact, pick func(*contract.Usage) int64) int6
 //     usage_semantic / billing_mode / expr_b64；
 //   - 订阅来源成功日志额外写 billing_preference 与 subscription_* 快照
 //     （billing-08 §5.3）：所有值来自结算结果，不做二次查询；
-//   - admin_info：quota_saturation（4 键 op/kind/original/clamped）。
+//   - admin_info：quota_saturation（4 键 op/kind/original/clamped），以及
+//     usage_raw（协议原始 usage JSON；仅当 rawUsage 为 true 且 usageRaw 非空
+//     时写入——生产由 reconcile.raw_usage_enabled 决定）。
 //
 // **禁止 estimated_* 键**（billing-00 §11、billing-07 §6.9）：估算值在结果
 // 缺失时复用同名键，不引入新前缀。本函数不写任何 estimated_ 前缀键。
@@ -754,8 +779,11 @@ func usageField(fact *contract.UsageFact, pick func(*contract.Usage) int64) int6
 // applied_discount；rate=0 的合法全免与「未命中」在上下文里无法区分，
 // discount_target 也无处取值。该缺口登记在 task-6-report，待契约补字段后
 // 由本函数补写（billing-04 §2.6 要求的两个 public 键）。
+// rawUsage 为 true 且 usageRaw 非空时，把原始 usage JSON 写进 admin_info
+// （非管理员视图会整体剥离该分区，billing-07 §7.2）。
 func buildUsageLogOther(rc *contract.RelayContext,
-	model string, firstToken sql.NullInt64, outcome SettlementOutcome) map[string]any {
+	model string, firstToken sql.NullInt64, outcome SettlementOutcome,
+	rawUsage bool, usageRaw map[string]any) map[string]any {
 
 	other := make(map[string]any, 14)
 
@@ -844,12 +872,17 @@ func buildUsageLogOther(rc *contract.RelayContext,
 		}
 	}
 
-	adminInfo := make(map[string]any, 1)
+	adminInfo := make(map[string]any, 2)
 	if rc.QuotaClamp != nil {
 		// 钳制标记必须只出现在 admin_info：普通用户视图会整体剥离该分区
 		// （billing-07 §7.2），这使「管理员可见、非管理员不可见」成为结构
 		// 性质而不是读取侧的额外判断。
 		adminInfo["quota_saturation"] = pricing.ClampAuditMap(rc.QuotaClamp)
+	}
+	if rawUsage && len(usageRaw) > 0 {
+		// 同样只进 admin_info：原始协议 JSON 可能包含上游细节，不能平铺到
+		// 普通用户可见的 public 分区（上游用量对账设计 §4.7）。
+		adminInfo["usage_raw"] = usageRaw
 	}
 	if len(adminInfo) > 0 {
 		other["admin_info"] = adminInfo

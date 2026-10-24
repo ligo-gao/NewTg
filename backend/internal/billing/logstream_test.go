@@ -107,7 +107,7 @@ func TestUsageLogEventRoundTrip(t *testing.T) {
 	row, err := buildUsageLogRow(testUsageFact(), testRelayContext(), SettlementOutcome{
 		Cost: 10, PreDeducted: 20, Refunded: 10, Status: UsageLogStatusSuccess,
 		ErrorClass: "upstream_timeout", ErrorMessage: "deadline exceeded",
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestSaturateEnqueueRefundHasNoFeed(t *testing.T) {
 // TestEnqueueUsageLogTimesOut 验证 XADD 有独立短超时（不让 Redis 故障拖住结算）。
 func TestEnqueueUsageLogTimesOut(t *testing.T) {
 	row, err := buildUsageLogRow(testUsageFact(), testRelayContext(),
-		SettlementOutcome{Cost: 1, Status: UsageLogStatusSuccess})
+		SettlementOutcome{Cost: 1, Status: UsageLogStatusSuccess}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow: %v", err)
 	}

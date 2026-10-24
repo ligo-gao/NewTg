@@ -283,16 +283,23 @@ func (e *reconcileE2E) insertChannel(name string) int64 {
 // prompt_tokens 里切出的命中部分，miss = prompt - cache_read。
 func (e *reconcileE2E) insertUsageLog(model string, prompt, cacheRead, completion, cost int64) string {
 	e.t.Helper()
+	return e.insertUsageLogWithStatus(model, 1, prompt, cacheRead, completion, cost)
+}
+
+// insertUsageLogWithStatus 写入一条指定状态的消费日志。status=3（refunded）
+// 正是 worker 兜底把既有成功行原位收敛后的形状（billing/saturate.go）。
+func (e *reconcileE2E) insertUsageLogWithStatus(model string, status int16, prompt, cacheRead, completion, cost int64) string {
+	e.t.Helper()
 	requestID := uuid.NewString()
 	_, err := e.logsDB.Exec(`
 		INSERT INTO usage_logs (request_id, user_id, channel_id, model,
 			prompt_tokens, completion_tokens, cache_read_tokens, cost, status,
 			upstream_model, upstream_account_id, usage_source, usage_semantic, attempts, created_at)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, 1, $9, $10, 1, 0, 1, $11)`,
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 1, 0, 1, $12)`,
 		requestID, int64(900001), e.channelID, "client-"+model,
-		prompt, completion, cacheRead, cost, model, e.accountID, e2eLogAt)
+		prompt, completion, cacheRead, cost, status, model, e.accountID, e2eLogAt)
 	if err != nil {
-		e.t.Fatalf("insert usage_log %s: %v", model, err)
+		e.t.Fatalf("insert usage_log %s (status %d): %v", model, status, err)
 	}
 	return requestID
 }
@@ -580,6 +587,65 @@ func TestReconcileEndToEnd(t *testing.T) {
 	}
 	if n := env.countAudit(admin.UserID, audit.ActionReconcileRun); n != 2 {
 		t.Fatalf("audit %s rows after re-run = %d, want 2", audit.ActionReconcileRun, n)
+	}
+}
+
+// TestReconcileRefundedDayCompletesRun 是「退款日不得让整次对账失败」的
+// 端到端验收。items 表有 CHECK (local_refunded_requests <= local_requests)，
+// 且同一账号的明细在**一个事务**里写入：聚合若把 requests 过滤成 status = 1，
+// 只有退款的一行就是 0 < 1，CHECK 拒绝整批，run 永久 failed。
+//
+// 夹具只需要一个账号、一个绑定渠道和一条 status = 3 的日志（无快照）。
+func TestReconcileRefundedDayCompletesRun(t *testing.T) {
+	env := newReconcileE2E(t)
+	admin := env.admin()
+
+	const refundedModel = "deepseek-refunded"
+	// status = 3（refunded）：worker 兜底把成功行收敛后的终态。
+	requestID := env.insertUsageLogWithStatus(refundedModel, 3, 1000, 0, 0, 1234)
+	env.logIDs = append(env.logIDs, requestID)
+
+	result := env.triggerRun(admin)
+	if len(result.RunIds) != 1 {
+		t.Fatalf("run ids = %v, want exactly one run", result.RunIds)
+	}
+	runID := result.RunIds[0]
+
+	runs := env.listRuns(admin)
+	var status dto.ReconcileRunStatus
+	found := false
+	for _, run := range runs.Items {
+		if run.Id != runID {
+			continue
+		}
+		status, found = run.Status, true
+	}
+	if !found {
+		t.Fatalf("run %d missing from run list %+v", runID, runs.Items)
+	}
+	// (i) 退款日不得让 run 变 failed（旧聚合会让 InsertItems 撞 CHECK）。
+	if status == dto.ReconcileRunStatusFailed {
+		t.Fatalf("run %d status = %s, want not failed（refunded 行 must not violate the items CHECK）",
+			runID, status)
+	}
+
+	var item *dto.ReconcileItem
+	items := env.listItems(admin, runID)
+	for i := range items {
+		if items[i].UpstreamModel == refundedModel {
+			item = &items[i]
+			break
+		}
+	}
+	if item == nil {
+		t.Fatalf("run %d has no item for %s: %+v", runID, refundedModel, items)
+	}
+	// (ii) 退款行同时计入 requests 与 refunded_requests。
+	if item.LocalRefundedRequests != 1 {
+		t.Fatalf("%s local_refunded_requests = %d, want 1", refundedModel, item.LocalRefundedRequests)
+	}
+	if item.LocalRequests < 1 {
+		t.Fatalf("%s local_requests = %d, want >= 1", refundedModel, item.LocalRequests)
 	}
 }
 

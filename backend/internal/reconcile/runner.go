@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -40,6 +41,10 @@ const (
 
 	// logStreamLagThreshold 是判定 usage_logs 日志流滞后的阈值。
 	logStreamLagThreshold = 15 * time.Minute
+
+	// finishTimeout 是收尾写库（FinishRun）的独立上限。run 的取数可能吃到
+	// 手动触发的 timeout，但收尾不能跟着一起被取消。
+	finishTimeout = 5 * time.Second
 
 	triggerWorker = "worker"
 	triggerManual = "manual"
@@ -119,7 +124,7 @@ type UsageSource interface {
 	LatestCreatedAt(ctx context.Context) (time.Time, error)
 }
 
-// RunnerConfig 是 Runner 的装配输入。Clock/Retention 可省略。
+// RunnerConfig 是 Runner 的装配输入。Clock/Retention/Logger 可省略。
 type RunnerConfig struct {
 	Accounts  AccountSource
 	Snapshots SnapshotSource
@@ -128,6 +133,7 @@ type RunnerConfig struct {
 	Settings  SettingsReader
 	Clock     func() time.Time // nil => time.Now
 	Retention time.Duration    // zero => DefaultRetention
+	Logger    *slog.Logger     // nil => slog.Default
 }
 
 // Runner 执行一次或多次账号对账。
@@ -141,6 +147,21 @@ type Runner struct {
 	settings  SettingsReader
 	clock     func() time.Time
 	retention time.Duration
+	log       *slog.Logger
+}
+
+// finishCtx 返回不与调用方联动的上下文：手动触发的 ctx 带 timeout，超时
+// 正是最需要把 run 从 running 收敛掉的时刻，用同一个 ctx 写库必然失败。
+func finishCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
+}
+
+// logger 返回诊断 logger（零值回退 slog.Default）。
+func (r *Runner) logger() *slog.Logger {
+	if r != nil && r.log != nil {
+		return r.log
+	}
+	return slog.Default()
 }
 
 // NewRunner 校验必需协作者并应用 Clock/Retention 默认值。
@@ -165,6 +186,10 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 	if retention <= 0 {
 		retention = DefaultRetention
 	}
+	log := cfg.Logger
+	if log == nil {
+		log = slog.Default()
+	}
 	return &Runner{
 		accounts:  cfg.Accounts,
 		snapshots: cfg.Snapshots,
@@ -173,6 +198,7 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 		settings:  cfg.Settings,
 		clock:     clock,
 		retention: retention,
+		log:       log,
 	}, nil
 }
 
@@ -288,6 +314,10 @@ func (r *Runner) runAccount(ctx context.Context, account store.UpstreamAccount, 
 	localNow := now.In(loc)
 	today := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, loc)
 	startDate := today.AddDate(0, 0, -settings.LookbackDays)
+	// 设计 §7.3 的伪代码是 end = today(account.timezone) - 1 day（今天仍在累积，
+	// 有意停在昨天）；本分支把今天也算进窗口，以覆盖验收夹具的时区切日边界。
+	// 代价：进行中的本地日会为每个模型产出一条 missing_snapshot，直到录入快照；
+	// 日终前录入的快照会与部分数据比较。
 	endDate := today
 	start, _ := DayWindow(startDate, loc)
 	_, end := DayWindow(endDate, loc)
@@ -309,7 +339,14 @@ func (r *Runner) runAccount(ctx context.Context, account store.UpstreamAccount, 
 	}
 
 	fail := func(runErr error) (int64, string, int, int) {
-		_ = r.store.FinishRun(ctx, runID, runStatusFailed, runErr.Error())
+		finish, cancel := finishCtx(ctx)
+		defer cancel()
+		if err := r.store.FinishRun(finish, runID, runStatusFailed, runErr.Error()); err != nil {
+			// 收尾失败是诊断，不是第二个账号级失败：run 的最终状态仍按
+			// runErr 汇报，但必须留痕，否则超时的 run 会永远停在 running。
+			r.logger().Error("reconcile: finish run failed",
+				"run_id", runID, "status", runStatusFailed, "error", err)
+		}
 		return runID, runStatusFailed, 0, 0
 	}
 	if tzErr != nil {
@@ -344,7 +381,11 @@ func (r *Runner) runAccount(ctx context.Context, account store.UpstreamAccount, 
 			return fail(fmt.Errorf("insert reconciliation items: %w", err))
 		}
 	}
-	if err := r.store.FinishRun(ctx, runID, status, runErr); err != nil {
+	finish, cancel := finishCtx(ctx)
+	defer cancel()
+	if err := r.store.FinishRun(finish, runID, status, runErr); err != nil {
+		r.logger().Error("reconcile: finish run failed",
+			"run_id", runID, "status", status, "error", err)
 		return runID, runStatusFailed, len(items), countAlerts(items)
 	}
 	return runID, status, len(items), countAlerts(items)

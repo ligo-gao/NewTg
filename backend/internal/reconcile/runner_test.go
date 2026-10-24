@@ -3,6 +3,8 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -55,10 +57,17 @@ type fakeUsage struct {
 	// 故障注入：对 errAccount 这个账号返回 aggregateErr。
 	errAccount   int64
 	aggregateErr error
+
+	// beforeAggregate 在返回前执行，用来模拟「取数失败时调用方 ctx 已被
+	// 手动触发的 timeout 取消」。
+	beforeAggregate func()
 }
 
 func (f *fakeUsage) Aggregate(_ context.Context, accountID int64, _ []int64, tz string, start, end time.Time) ([]store.LocalUsage, error) {
 	f.gotTZ, f.gotStart, f.gotEnd = tz, start, end
+	if f.beforeAggregate != nil {
+		f.beforeAggregate()
+	}
 	if f.aggregateErr != nil && accountID == f.errAccount {
 		return nil, f.aggregateErr
 	}
@@ -68,9 +77,16 @@ func (f *fakeUsage) Aggregate(_ context.Context, accountID int64, _ []int64, tz 
 func (f *fakeUsage) LatestCreatedAt(context.Context) (time.Time, error) { return f.latest, nil }
 
 type fakeRunStore struct {
-	runs     []store.ReconcileRun
-	items    [][]store.ReconcileItem
-	itemsErr error
+	runs      []store.ReconcileRun
+	items     [][]store.ReconcileItem
+	itemsErr  error
+	finishErr error
+
+	// 捕获 FinishRun 的入参：收尾必须使用不随调用方取消的上下文。
+	finishCalls      int
+	finishStatus     string
+	finishCtxErr     error
+	finishCtxHasDone bool
 }
 
 func (f *fakeRunStore) InsertRun(_ context.Context, run store.ReconcileRun) (int64, error) {
@@ -78,9 +94,13 @@ func (f *fakeRunStore) InsertRun(_ context.Context, run store.ReconcileRun) (int
 	return int64(len(f.runs)), nil
 }
 
-func (f *fakeRunStore) FinishRun(_ context.Context, id int64, status, runErr string) error {
+func (f *fakeRunStore) FinishRun(ctx context.Context, id int64, status, runErr string) error {
+	f.finishCalls++
+	f.finishStatus = status
+	f.finishCtxErr = ctx.Err()
+	f.finishCtxHasDone = ctx.Done() != nil
 	f.runs[id-1].Status, f.runs[id-1].Error = status, runErr
-	return nil
+	return f.finishErr
 }
 
 func (f *fakeRunStore) InsertItems(_ context.Context, items []store.ReconcileItem) error {
@@ -511,5 +531,66 @@ func TestRunnerFinishesRunFailedWhenItemInsertFails(t *testing.T) {
 	}
 	if len(st.items) != 0 {
 		t.Fatalf("item batches = %d, want 0 after a failed insert", len(st.items))
+	}
+}
+
+// 手动触发的 ctx 带 timeout：取数因超时失败时，收尾写库若继续用同一个
+// cancelled ctx，FinishRun 必然失败，run 会永远停在 running。收尾必须换一个
+// 与调用方取消解耦、但仍然带 deadline 的上下文。
+func TestRunnerFinishesRunWithLiveContextAfterCallerCancelled(t *testing.T) {
+	now := time.Date(2026, 10, 24, 12, 30, 0, 0, time.UTC)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	usage := &fakeUsage{
+		latest:          now.Add(-time.Minute),
+		errAccount:      1,
+		aggregateErr:    errors.New("logs db down"),
+		beforeAggregate: cancel, // 模拟 timeout：取数期间调用方 ctx 被取消
+	}
+	st := &fakeRunStore{}
+	r, err := NewRunner(RunnerConfig{
+		Accounts:  &fakeAccounts{accounts: []store.UpstreamAccount{{ID: 1, Status: 1, Timezone: "UTC"}}},
+		Snapshots: &fakeSnapshots{},
+		Usage:     usage,
+		Store:     st,
+		Settings: &fakeSettings{s: Settings{
+			Enabled: true, LookbackDays: 3, TokenBP: 100,
+			MinDeltaTokens: 1000, AmountToleranceMinor: 100, QuotaPerUnit: 100,
+		}},
+		Clock:  func() time.Time { return now },
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+
+	out, err := r.Run(ctx, "manual", nil)
+	if err != nil {
+		t.Fatalf("Run must not surface the finish failure as a global error: %v", err)
+	}
+	if st.finishCalls != 1 {
+		t.Fatalf("FinishRun calls = %d, want 1", st.finishCalls)
+	}
+	// (i) 收尾上下文必须是活的（未被调用方取消），但仍然带 Done。
+	if st.finishCtxErr != nil {
+		t.Fatalf("FinishRun ctx.Err() = %v, want nil（收尾不得复用已取消的 ctx）", st.finishCtxErr)
+	}
+	if !st.finishCtxHasDone {
+		t.Fatal("FinishRun ctx.Done() = nil, want a deadline-bearing context")
+	}
+	// (ii) 状态必须是 failed。
+	if st.finishStatus != "failed" || st.runs[0].Status != "failed" {
+		t.Fatalf("finished status = %q / run status = %q, want failed", st.finishStatus, st.runs[0].Status)
+	}
+	// (iii) run 自己记录的是账号失败，不是收尾错误。
+	if !strings.Contains(st.runs[0].Error, "logs db down") {
+		t.Fatalf("run error = %q, want the account failure", st.runs[0].Error)
+	}
+	if strings.Contains(st.runs[0].Error, "context canceled") {
+		t.Fatalf("run error = %q, must not leak the finish error", st.runs[0].Error)
+	}
+	if out.Status != "failed" {
+		t.Fatalf("outcome status = %s, want failed", out.Status)
 	}
 }

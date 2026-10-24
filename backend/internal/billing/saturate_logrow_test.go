@@ -18,7 +18,7 @@ func TestBuildUsageLogRowProjectsReconcileDimensions(t *testing.T) {
 			PromptIncludesCache: true, Source: contract.UsageUpstreamExact,
 		},
 	}
-	row, err := buildUsageLogRow(fact, rc, SettlementOutcome{Status: UsageLogStatusSuccess})
+	row, err := buildUsageLogRow(fact, rc, SettlementOutcome{Status: UsageLogStatusSuccess}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestBuildUsageLogRowProjectsReconcileDimensions(t *testing.T) {
 func TestBuildUsageLogRowLeavesUnknownAttributionNull(t *testing.T) {
 	rc := &contract.RelayContext{RequestID: "req-2"}
 	fact := &contract.UsageFact{Model: "m", Usage: contract.Usage{Source: contract.UsageEstimated}}
-	row, err := buildUsageLogRow(fact, rc, SettlementOutcome{Status: UsageLogStatusSuccess})
+	row, err := buildUsageLogRow(fact, rc, SettlementOutcome{Status: UsageLogStatusSuccess}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestBuildUsageLogRowPrefersFactAttributionOverRelayContext(t *testing.T) {
 		UpstreamModel: "fact-model", UpstreamAccountID: 42,
 		Usage: contract.Usage{Source: contract.UsageUpstreamExact},
 	}
-	row, err := buildUsageLogRow(fact, rc, SettlementOutcome{Status: UsageLogStatusSuccess})
+	row, err := buildUsageLogRow(fact, rc, SettlementOutcome{Status: UsageLogStatusSuccess}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestBuildUsageLogRowClampsNegativeReasoningTokens(t *testing.T) {
 		Model: "m",
 		Usage: contract.Usage{Reasoning: -5, Source: contract.UsageUpstreamExact},
 	}
-	row, err := buildUsageLogRow(fact, rc, SettlementOutcome{Status: UsageLogStatusSuccess})
+	row, err := buildUsageLogRow(fact, rc, SettlementOutcome{Status: UsageLogStatusSuccess}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestBuildUsageLogRowTruncatesResponseIDTo128(t *testing.T) {
 		Model: "m", ResponseID: long,
 		Usage: contract.Usage{Source: contract.UsageUpstreamExact},
 	}
-	row, err := buildUsageLogRow(fact, rc, SettlementOutcome{Status: UsageLogStatusSuccess})
+	row, err := buildUsageLogRow(fact, rc, SettlementOutcome{Status: UsageLogStatusSuccess}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow: %v", err)
 	}

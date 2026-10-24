@@ -115,7 +115,7 @@ func logStreamEvent(t *testing.T, requestID string, status int16, cost, refunded
 	row, err := buildUsageLogRow(fact, rc, SettlementOutcome{
 		Cost: cost, PreDeducted: cost, Refunded: refunded, Status: status,
 		ErrorMessage: map[bool]string{true: "request abandoned", false: ""}[status == UsageLogStatusRefunded],
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow: %v", err)
 	}

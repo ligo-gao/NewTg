@@ -8,10 +8,15 @@ package store
 //     则读取写日志时固化的 usage_logs.upstream_account_id；
 //   - 「一天」是调用方按账号时区算好的半开 UTC 区间 [start, end)，SQL 里
 //     不再做 24h 运算；分组用的本地日期由 created_at AT TIME ZONE tz 得到；
-//   - usage_semantic 为 NULL 的历史行语义未知：不参与任何 token 维度，
-//     只计入 unknown_requests（领域层据此把 item 抬升为 warn）；
+//   - usage_semantic 为 NULL 的历史行语义未知：cache_hit 与 output 仍可汇总
+//     （两套语义下含义一致），但缓存未命中无法确定，miss 记 0，并通过
+//     unknown_requests 披露（领域层据此把 item 抬升为 warn）；
 //   - 历史行没有 upstream_account_id，按 (NULL AND channel_id IN 渠道集)
-//     归属，保证切换后的首次对账不会整片 missing_local。
+//     归属，保证切换后的首次对账不会整片 missing_local；
+//   - 计数**不按 status 过滤**（设计 §7.1）：失败请求的 token 上游可能已扣费，
+//     必须计入；退款行同时计入 requests 与 refunded_requests，才能满足 items
+//     表的 CHECK (refunded_requests <= requests)。status = 0（拒绝）也计入
+//     requests——它没有 token/费用，且 requests 不参与严重度判定，只影响展示。
 
 import (
 	"context"
@@ -53,19 +58,27 @@ func NewUsageAggregateRepo(logsDB *sql.DB) *UsageAggregateRepo {
 // $4 账号时区、$5 归属该账号的渠道 id 集合（legacy 兜底）。
 //
 // 请求数用 count(DISTINCT request_id)：重试/多次尝试共享同一个 request_id，
-// 按行计数会把一次客户端请求算成多次。
+// 按行计数会把一次客户端请求算成多次。所有计数都**没有 status 过滤**
+// （设计 §7.1）：失败请求的 token 上游可能已扣费；退款行既算 requests 也算
+// refunded_requests，因此 items 表的 CHECK (refunded_requests <= requests)
+// 恒可满足。status = 0（拒绝）同样计入 requests：它没有 token/费用，且
+// requests 不参与 compare.go 的严重度规则，只影响展示。
+//
+// estimated_requests 刻意用 usage_source IN (2, 3) 而不是设计 §7.1 字面的
+// `= 2`：注册表是 0=upstream_exact、1=upstream_partial、2=estimated、
+// 3=reserved_default（contract/types.go），字面 2 会漏掉 reserved_default。
 const aggregateQuery = `
 	SELECT (created_at AT TIME ZONE $4)::date AS usage_date,
 	       COALESCE(NULLIF(upstream_model, ''), model) AS model_key,
-	       COUNT(DISTINCT request_id) FILTER (WHERE status = 1) AS requests,
-	       COUNT(DISTINCT request_id) FILTER (WHERE status = 1 AND usage_source IN (2, 3)) AS estimated_requests,
+	       COUNT(DISTINCT request_id) AS requests,
+	       COUNT(DISTINCT request_id) FILTER (WHERE usage_source IN (2, 3)) AS estimated_requests,
 	       COUNT(DISTINCT request_id) FILTER (WHERE status = 3) AS refunded_requests,
-	       COALESCE(SUM(cache_read_tokens) FILTER (WHERE status = 1 AND usage_semantic IS NOT NULL), 0) AS hit_tokens,
+	       COALESCE(SUM(cache_read_tokens), 0) AS hit_tokens,
 	       COALESCE(SUM(CASE
-	           WHEN status <> 1 OR usage_semantic IS NULL THEN 0
+	           WHEN usage_semantic IS NULL THEN 0
 	           WHEN usage_semantic = 0 THEN GREATEST(prompt_tokens - cache_read_tokens, 0)
 	           ELSE prompt_tokens END), 0) AS miss_tokens,
-	       COALESCE(SUM(completion_tokens) FILTER (WHERE status = 1 AND usage_semantic IS NOT NULL), 0) AS output_tokens,
+	       COALESCE(SUM(completion_tokens), 0) AS output_tokens,
 	       COALESCE(SUM(cost) FILTER (WHERE other->>'billing_source' = 'wallet'), 0) AS wallet_credits,
 	       COALESCE(SUM(cost) FILTER (WHERE other->>'billing_source' = 'subscription'), 0) AS subscription_credits,
 	       COALESCE(SUM(cost), 0) AS cost_credits,

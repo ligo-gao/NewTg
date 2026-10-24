@@ -334,7 +334,7 @@ func TestSessionSubscriptionSuccessLogKeys(t *testing.T) {
 	if err := s.Terminate(contract.UsageFact{Model: "m"}); err != nil {
 		t.Fatalf("Terminate: %v", err)
 	}
-	other := buildUsageLogOther(s.rc, "m", sql.NullInt64{}, sat.outcome)
+	other := buildUsageLogOther(s.rc, "m", sql.NullInt64{}, sat.outcome, false, nil)
 
 	want := map[string]any{
 		"billing_source":            "subscription",
