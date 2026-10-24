@@ -177,6 +177,77 @@ function NestedHarness() {
   )
 }
 
+interface CloseHarnessProps {
+  closeLabel?: string
+  dismissible?: boolean
+}
+
+/** Opt-in close button: callers pass `closeLabel`, nothing renders by default. */
+function CloseHarness({ closeLabel, dismissible }: CloseHarnessProps) {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}>
+        Open dialog
+      </button>
+      <Dialog
+        open={open}
+        onOpenChange={setOpen}
+        title="Closeable"
+        closeLabel={closeLabel}
+        dismissible={dismissible}
+      >
+        <button type="button">Middle</button>
+      </Dialog>
+    </>
+  )
+}
+
+describe('Dialog close button', () => {
+  it('renders an accessible close button when closeLabel is set', () => {
+    render(<CloseHarness closeLabel="Close dialog" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open dialog' }))
+    const dialog = screen.getByRole('dialog')
+
+    const close = screen.getByRole('button', { name: 'Close dialog' })
+    expect(dialog.contains(close)).toBe(true)
+    // The glyph is decorative so the accessible name is exactly the label.
+    expect(close.textContent).toBe('×')
+    expect(close.querySelector('[aria-hidden="true"]')?.textContent).toBe('×')
+
+    // Rendered before `children`: it is now the first focusable element.
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(document.activeElement).toBe(close)
+
+    fireEvent.click(close)
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('does not render a close button without closeLabel', () => {
+    render(<CloseHarness />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open dialog' }))
+    const dialog = screen.getByRole('dialog')
+
+    expect(screen.queryByRole('button', { name: 'Close dialog' })).toBeNull()
+    expect(dialog.querySelectorAll('button')).toHaveLength(1)
+
+    // Focus order is unchanged: the child is still the first focusable element.
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: 'Middle' }),
+    )
+  })
+
+  it('keeps the close button out of the DOM when dismissible is false', () => {
+    render(<CloseHarness closeLabel="Close dialog" dismissible={false} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open dialog' }))
+    const dialog = screen.getByRole('dialog')
+
+    expect(screen.queryByRole('button', { name: 'Close dialog' })).toBeNull()
+    expect(dialog.querySelectorAll('button')).toHaveLength(1)
+  })
+})
+
 describe('Dialog modal stack', () => {
   it('lets only the topmost dialog handle Tab, Escape and inertness', () => {
     render(<NestedHarness />)
