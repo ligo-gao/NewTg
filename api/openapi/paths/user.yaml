@@ -2041,6 +2041,62 @@ paths:
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
 
+  /api/usage-stats/by-token:
+    get:
+      tags: [user]
+      operationId: getUsageStatsByToken
+      summary: 令牌消费分布（top 8 + other）
+      description: 按 usage_logs.token_id 聚合；无令牌的行归入 token_id=0，第 9 名起聚合为 other；percent 合计为 100。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: range
+          in: query
+          schema:
+            type: string
+            enum: [24h, 7d, 14d, 30d]
+            default: 24h
+        - name: start
+          in: query
+          schema: { type: string, format: date-time }
+        - name: end
+          in: query
+          schema: { type: string, format: date-time }
+        - name: model
+          in: query
+          schema: { type: string, maxLength: 128 }
+        - name: group
+          in: query
+          schema: { type: string, maxLength: 32 }
+        - name: token_id
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [success, error, refunded, refused]
+        - name: username
+          in: query
+          schema: { type: string }
+          description: 仅 admin+logs:read；精确匹配
+      responses:
+        '200':
+          description: 令牌消费分布
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/UsageStatsByTokenResponse'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
   /api/usage-stats/timeseries:
     get:
       tags: [user]

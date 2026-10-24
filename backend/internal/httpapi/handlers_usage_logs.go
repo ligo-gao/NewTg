@@ -193,6 +193,7 @@ func (h *UsageLogHandlers) RegisterUsageLogRoutes(mux *http.ServeMux, wrap func(
 	register("GET /api/usage-stats/by-model", h.handleUsageStatsByModel)
 	register("GET /api/usage-stats/by-user", h.handleUsageStatsByUser)
 	register("GET /api/usage-stats/by-group", h.handleUsageStatsByGroup)
+	register("GET /api/usage-stats/by-token", h.handleUsageStatsByToken)
 	register("GET /api/usage-stats/timeseries", h.handleUsageStatsTimeseries)
 	register("GET /api/usage-stats/rates", h.handleUsageStatsRates)
 	register("GET /api/audit-logs", h.handleAuditLogList)
@@ -2109,6 +2110,13 @@ type usageSummaryResponse struct {
 	CompletionTokensTotal int64   `json:"completion_tokens_total"`
 	PreDeductedTotal      int64   `json:"pre_deducted_total"`
 	RefundedTotal         int64   `json:"refunded_total"`
+	CacheReadTokensTotal  int64   `json:"cache_read_tokens_total"`
+	// 按日志状态计数（0=refused,1=success,2=error,3=refunded）；四者之和
+	// 等于 RequestCount，前端据此给出「成功/失败/退款/拒绝」分解。
+	SuccessCount  int64 `json:"success_count"`
+	ErrorCount    int64 `json:"error_count"`
+	RefundedCount int64 `json:"refunded_count"`
+	RefusedCount  int64 `json:"refused_count"`
 	// 成功请求的延迟分位（毫秒）。只统计 status=1 且 latency_ms>0 的行；
 	// 无样本时为 0，绝不返回 NaN 或伪造值。
 	P50LatencyMS   int64 `json:"p50_latency_ms"`
@@ -2131,11 +2139,17 @@ func (h *UsageLogHandlers) handleUsageStatsSummary(w http.ResponseWriter, r *htt
 		SELECT COALESCE(SUM(cost), 0), count(*),
 		       COALESCE(SUM(CASE WHEN status = 1 THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
-		       COALESCE(SUM(pre_deducted), 0), COALESCE(SUM(refunded), 0)
+		       COALESCE(SUM(pre_deducted), 0), COALESCE(SUM(refunded), 0),
+		       COALESCE(SUM(cache_read_tokens), 0),
+		       COALESCE(SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN status = 3 THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN status = 0 THEN 1 ELSE 0 END), 0)
 		FROM usage_logs`+where, args...).Scan(
 		&out.CostTotal, &out.RequestCount, &success,
 		&out.PromptTokensTotal, &out.CompletionTokensTotal,
 		&out.PreDeductedTotal, &out.RefundedTotal,
+		&out.CacheReadTokensTotal,
+		&out.ErrorCount, &out.RefundedCount, &out.RefusedCount,
 	)
 	if err != nil {
 		h.log.Error("usage stats summary: query failed", "error", err)
@@ -2146,6 +2160,7 @@ func (h *UsageLogHandlers) handleUsageStatsSummary(w http.ResponseWriter, r *htt
 	if out.RequestCount > 0 {
 		out.SuccessRate = float64(success) / float64(out.RequestCount)
 	}
+	out.SuccessCount = success
 
 	// 延迟分位只取成功请求：失败请求的 latency 是“失败得多快”，混进来会
 	// 让 P95 看起来变好。percentile_cont 忽略 NULL，仍显式过滤 0 值。
@@ -2395,6 +2410,84 @@ func (h *UsageLogHandlers) handleUsageStatsByGroup(w http.ResponseWriter, r *htt
 		items[i].Percent = percents[i]
 	}
 	writeJSON(w, http.StatusOK, usageByGroupResponse{Items: items, Total: totalCost})
+}
+
+type usageByTokenItem struct {
+	TokenID   int64   `json:"token_id"`
+	TokenName string  `json:"token_name"`
+	Cost      int64   `json:"cost"`
+	Requests  int64   `json:"requests"`
+	Tokens    int64   `json:"tokens"`
+	Percent   float64 `json:"percent"`
+}
+
+type usageByTokenResponse struct {
+	Items []usageByTokenItem `json:"items"`
+	Total int64              `json:"total"`
+}
+
+// handleUsageStatsByToken 按 API 令牌聚合消费；无令牌的行归入 token_id=0，
+// 第 9 名起聚合为 other（token_name="other"，token_id=0）。
+func (h *UsageLogHandlers) handleUsageStatsByToken(w http.ResponseWriter, r *http.Request) {
+	_, where, args, ok := h.statsWhere(w, r, r.URL.Query())
+	if !ok {
+		return
+	}
+	// token_id 可空：NULL 与字面量 0 在 COALESCE 后同属一个桶（无令牌的行）。
+	// token_name 取组内最新快照无意义（同一 id 名称可变），用 MAX 保证确定性；
+	// 按 SUM(cost) 排序、token_id 兜底，保证同额行的顺序稳定。
+	rows, err := h.logDB.QueryContext(r.Context(), `
+		SELECT COALESCE(token_id, 0),
+		       COALESCE(MAX(token_name), ''),
+		       COALESCE(SUM(cost), 0), count(*),
+		       COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)
+		FROM usage_logs`+where+`
+		GROUP BY 1 ORDER BY SUM(cost) DESC, 1 ASC`, args...)
+	if err != nil {
+		h.log.Error("usage stats by-token: query failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
+	defer rows.Close()
+
+	all := make([]usageByTokenItem, 0, 16)
+	var totalCost int64
+	for rows.Next() {
+		var item usageByTokenItem
+		if err := rows.Scan(&item.TokenID, &item.TokenName, &item.Cost, &item.Requests, &item.Tokens); err != nil {
+			h.log.Error("usage stats by-token: scan failed", "error", err)
+			writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+			return
+		}
+		totalCost += item.Cost
+		all = append(all, item)
+	}
+	if err := rows.Err(); err != nil {
+		h.log.Error("usage stats by-token: rows failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
+
+	items := all
+	if len(all) > 8 {
+		other := usageByTokenItem{TokenName: "other"}
+		for _, item := range all[8:] {
+			other.Cost += item.Cost
+			other.Requests += item.Requests
+			other.Tokens += item.Tokens
+		}
+		items = append(append([]usageByTokenItem{}, all[:8]...), other)
+	}
+
+	costs := make([]int64, len(items))
+	for i := range items {
+		costs[i] = items[i].Cost
+	}
+	percents := percentBasisPoints(costs, totalCost)
+	for i := range items {
+		items[i].Percent = percents[i]
+	}
+	writeJSON(w, http.StatusOK, usageByTokenResponse{Items: items, Total: totalCost})
 }
 
 func assignPercentBasisPoints(items []usageByModelItem, totalCost int64) {

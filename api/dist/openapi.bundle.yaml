@@ -10752,6 +10752,81 @@ paths:
           $ref: '#/components/responses/Error422'
         '500':
           $ref: '#/components/responses/Error500'
+  /api/usage-stats/by-token:
+    get:
+      tags:
+        - user
+      operationId: getUsageStatsByToken
+      summary: 令牌消费分布（top 8 + other）
+      description: 按 usage_logs.token_id 聚合；无令牌的行归入 token_id=0，第 9 名起聚合为 other；percent 合计为 100。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: range
+          in: query
+          schema:
+            type: string
+            enum:
+              - 24h
+              - 7d
+              - 14d
+              - 30d
+            default: 24h
+        - name: start
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: model
+          in: query
+          schema:
+            type: string
+            maxLength: 128
+        - name: group
+          in: query
+          schema:
+            type: string
+            maxLength: 32
+        - name: token_id
+          in: query
+          schema:
+            type: integer
+            format: int64
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum:
+              - success
+              - error
+              - refunded
+              - refused
+        - name: username
+          in: query
+          schema:
+            type: string
+          description: 仅 admin+logs:read；精确匹配
+      responses:
+        '200':
+          description: 令牌消费分布
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageStatsByTokenResponse'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
   /api/usage-stats/timeseries:
     get:
       tags:
@@ -22394,6 +22469,26 @@ components:
           type: integer
           format: int64
           description: 窗口内去重用户数；非管理员恒为 1（0 行时为 0）
+        cache_read_tokens_total:
+          type: integer
+          format: int64
+          description: 缓存读取 tokens 合计
+        success_count:
+          type: integer
+          format: int64
+          description: status=1 的行数
+        error_count:
+          type: integer
+          format: int64
+          description: status=2 的行数
+        refunded_count:
+          type: integer
+          format: int64
+          description: status=3 的行数
+        refused_count:
+          type: integer
+          format: int64
+          description: status=0 的行数
     UsageStatsByModelItem:
       type: object
       additionalProperties: false
@@ -22495,6 +22590,51 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/UsageStatsByGroupItem'
+        total:
+          type: integer
+          format: int64
+          description: 窗口内总消费（积分）
+    UsageStatsByTokenItem:
+      type: object
+      additionalProperties: false
+      required:
+        - token_id
+        - token_name
+        - cost
+        - requests
+        - tokens
+        - percent
+      properties:
+        token_id:
+          type: integer
+          format: int64
+          description: 无令牌的行为 0；other 行也为 0
+        token_name:
+          type: string
+          description: 无令牌的行为空串；第 9 名起聚合为 other
+        cost:
+          type: integer
+          format: int64
+        requests:
+          type: integer
+          format: int64
+        tokens:
+          type: integer
+          format: int64
+        percent:
+          type: number
+          description: 十进制基点分配，合计为 100
+    UsageStatsByTokenResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UsageStatsByTokenItem'
         total:
           type: integer
           format: int64

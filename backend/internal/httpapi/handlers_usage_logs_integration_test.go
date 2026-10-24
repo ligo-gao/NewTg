@@ -202,6 +202,7 @@ type usageSeed struct {
 	Status       int16
 	PromptTokens int
 	Completion   int
+	CacheRead    int
 	Cost         int64
 	PreDeducted  *int64
 	Refunded     int64
@@ -290,12 +291,12 @@ func (env *usageTestEnv) seed(t *testing.T, s usageSeed) int64 {
 		INSERT INTO usage_logs (request_id, user_id, token_id, token_name, channel_id,
 			upstream, model, "group", prompt_tokens, completion_tokens, pre_deducted,
 			cost, refunded, latency_ms, first_token_ms, stream, status, error_class,
-			error_message, retry_chain, other, created_at)
-		VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb,$21::jsonb,$22)
+			error_message, retry_chain, other, created_at, cache_read_tokens)
+		VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb,$21::jsonb,$22,$23)
 		RETURNING id`,
 		s.RequestID, s.UserID, tokenID, tokenName, channel, upstream, s.Model, s.Group,
 		s.PromptTokens, s.Completion, pre, s.Cost, s.Refunded, latency, first,
-		s.Stream, s.Status, errClass, errMessage, retry, s.Other, s.CreatedAt,
+		s.Stream, s.Status, errClass, errMessage, retry, s.Other, s.CreatedAt, s.CacheRead,
 	).Scan(&id)
 	if err != nil {
 		t.Fatalf("seed usage log: %v", err)
@@ -711,7 +712,7 @@ func TestIntegrationUsageStatsSummary(t *testing.T) {
 	userA, nameA := ensureUsageTestUser(t, env, "st")
 	userB, _ := ensureUsageTestUser(t, env, "su")
 	pre1, pre2, pre3 := int64(120), int64(50), int64(60)
-	env.seed(t, usageSeed{UserID: userA, Status: 1, Cost: 100, PreDeducted: &pre1, Refunded: 20, PromptTokens: 10, Completion: 20})
+	env.seed(t, usageSeed{UserID: userA, Status: 1, Cost: 100, PreDeducted: &pre1, Refunded: 20, PromptTokens: 10, Completion: 20, CacheRead: 40})
 	env.seed(t, usageSeed{UserID: userA, Status: 2, Cost: 0, PreDeducted: &pre2, Refunded: 50, PromptTokens: 5, Completion: 0})
 	env.seed(t, usageSeed{UserID: userA, Status: 1, Cost: 50, PreDeducted: &pre3, Refunded: 10, PromptTokens: 1, Completion: 2})
 	env.seed(t, usageSeed{UserID: userA, Status: 0, Cost: 0, PromptTokens: 0, Completion: 0})
@@ -725,11 +726,22 @@ func TestIntegrationUsageStatsSummary(t *testing.T) {
 		CompletionTokensTotal int64   `json:"completion_tokens_total"`
 		PreDeductedTotal      int64   `json:"pre_deducted_total"`
 		RefundedTotal         int64   `json:"refunded_total"`
+		CacheReadTokensTotal  int64   `json:"cache_read_tokens_total"`
+		SuccessCount          int64   `json:"success_count"`
+		ErrorCount            int64   `json:"error_count"`
+		RefundedCount         int64   `json:"refunded_count"`
+		RefusedCount          int64   `json:"refused_count"`
 	}
 
 	rec := env.do(t, http.MethodGet, "/api/usage-stats/summary", userPrincipal(userA))
 	got := decodeUsageJSON[summary](t, rec)
-	want := summary{150, 4, 0.5, 16, 22, 230, 80}
+	want := summary{
+		CostTotal: 150, RequestCount: 4, SuccessRate: 0.5,
+		PromptTokensTotal: 16, CompletionTokensTotal: 22,
+		PreDeductedTotal: 230, RefundedTotal: 80,
+		SuccessCount: 2, ErrorCount: 1, RefundedCount: 0, RefusedCount: 1,
+		CacheReadTokensTotal: 40,
+	}
 	if got != want {
 		t.Fatalf("user summary = %+v, want %+v", got, want)
 	}
@@ -1121,6 +1133,47 @@ func TestIntegrationUsageStatsByGroup(t *testing.T) {
 		if body.Items[0].Group != tc.group || body.Items[0].Cost != tc.cost || body.Items[0].Percent != 100 {
 			t.Fatalf("by-group(%s) item = %+v", tc.group, body.Items[0])
 		}
+	}
+}
+
+func TestIntegrationUsageStatsByToken(t *testing.T) {
+	env := newUsageTestEnv(t)
+	userA, _ := ensureUsageTestUser(t, env, "btt")
+	tokenA, tokenB := int64(910001), int64(910002)
+	group := fmt.Sprintf("btt-%d", time.Now().UnixNano()%1_000_000_000)
+	env.seed(t, usageSeed{UserID: userA, Group: group, Status: 1, Cost: 70, TokenID: &tokenA, TokenName: "prod-key"})
+	env.seed(t, usageSeed{UserID: userA, Group: group, Status: 1, Cost: 30, TokenID: &tokenB, TokenName: "batch-01"})
+
+	type item struct {
+		TokenID   int64   `json:"token_id"`
+		TokenName string  `json:"token_name"`
+		Cost      int64   `json:"cost"`
+		Requests  int64   `json:"requests"`
+		Tokens    int64   `json:"tokens"`
+		Percent   float64 `json:"percent"`
+	}
+	type envelope struct {
+		Items []item `json:"items"`
+		Total int64  `json:"total"`
+	}
+
+	rec := env.do(t, http.MethodGet, "/api/usage-stats/by-token?group="+group, usageAdminPrincipal(1, rbac.PermLogsRead))
+	body := decodeUsageJSON[envelope](t, rec)
+	if rec.Code != http.StatusOK || body.Total != 100 || len(body.Items) != 2 {
+		t.Fatalf("by-token = %d total=%d items=%d body=%s", rec.Code, body.Total, len(body.Items), rec.Body.String())
+	}
+	if body.Items[0].TokenName != "prod-key" || body.Items[0].Cost != 70 || body.Items[0].Percent != 70 {
+		t.Fatalf("first by-token item = %+v", body.Items[0])
+	}
+	if body.Items[1].TokenID != tokenB || body.Items[1].Percent != 30 {
+		t.Fatalf("second by-token item = %+v", body.Items[1])
+	}
+
+	// A normal user is scoped to their own rows, and percent is re-based to 100.
+	rec = env.do(t, http.MethodGet, "/api/usage-stats/by-token?group="+group, userPrincipal(userA))
+	mine := decodeUsageJSON[envelope](t, rec)
+	if len(mine.Items) != 2 || mine.Items[0].Percent != 70 || mine.Total != 100 {
+		t.Fatalf("user by-token = %+v", mine)
 	}
 }
 

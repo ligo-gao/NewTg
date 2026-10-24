@@ -4296,6 +4296,54 @@ func (e GetUsageStatsByModelParamsStatus) Valid() bool {
 	}
 }
 
+// Defines values for GetUsageStatsByTokenParamsRange.
+const (
+	GetUsageStatsByTokenParamsRangeN14d GetUsageStatsByTokenParamsRange = "14d"
+	GetUsageStatsByTokenParamsRangeN24h GetUsageStatsByTokenParamsRange = "24h"
+	GetUsageStatsByTokenParamsRangeN30d GetUsageStatsByTokenParamsRange = "30d"
+	GetUsageStatsByTokenParamsRangeN7d  GetUsageStatsByTokenParamsRange = "7d"
+)
+
+// Valid indicates whether the value is a known member of the GetUsageStatsByTokenParamsRange enum.
+func (e GetUsageStatsByTokenParamsRange) Valid() bool {
+	switch e {
+	case GetUsageStatsByTokenParamsRangeN14d:
+		return true
+	case GetUsageStatsByTokenParamsRangeN24h:
+		return true
+	case GetUsageStatsByTokenParamsRangeN30d:
+		return true
+	case GetUsageStatsByTokenParamsRangeN7d:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetUsageStatsByTokenParamsStatus.
+const (
+	GetUsageStatsByTokenParamsStatusError    GetUsageStatsByTokenParamsStatus = "error"
+	GetUsageStatsByTokenParamsStatusRefunded GetUsageStatsByTokenParamsStatus = "refunded"
+	GetUsageStatsByTokenParamsStatusRefused  GetUsageStatsByTokenParamsStatus = "refused"
+	GetUsageStatsByTokenParamsStatusSuccess  GetUsageStatsByTokenParamsStatus = "success"
+)
+
+// Valid indicates whether the value is a known member of the GetUsageStatsByTokenParamsStatus enum.
+func (e GetUsageStatsByTokenParamsStatus) Valid() bool {
+	switch e {
+	case GetUsageStatsByTokenParamsStatusError:
+		return true
+	case GetUsageStatsByTokenParamsStatusRefunded:
+		return true
+	case GetUsageStatsByTokenParamsStatusRefused:
+		return true
+	case GetUsageStatsByTokenParamsStatusSuccess:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for GetUsageStatsByUserParamsRange.
 const (
 	GetUsageStatsByUserParamsRangeN14d GetUsageStatsByUserParamsRange = "14d"
@@ -10433,6 +10481,30 @@ type UsageStatsByModelItem struct {
 	Tokens  int64   `json:"tokens"`
 }
 
+// UsageStatsByTokenItem defines model for UsageStatsByTokenItem.
+type UsageStatsByTokenItem struct {
+	Cost int64 `json:"cost"`
+
+	// Percent 十进制基点分配，合计为 100
+	Percent  float32 `json:"percent"`
+	Requests int64   `json:"requests"`
+
+	// TokenId 无令牌的行为 0；other 行也为 0
+	TokenId int64 `json:"token_id"`
+
+	// TokenName 无令牌的行为空串；第 9 名起聚合为 other
+	TokenName string `json:"token_name"`
+	Tokens    int64  `json:"tokens"`
+}
+
+// UsageStatsByTokenResponse defines model for UsageStatsByTokenResponse.
+type UsageStatsByTokenResponse struct {
+	Items []UsageStatsByTokenItem `json:"items"`
+
+	// Total 窗口内总消费（积分）
+	Total int64 `json:"total"`
+}
+
 // UsageStatsByUserItem defines model for UsageStatsByUserItem.
 type UsageStatsByUserItem struct {
 	Cost int64 `json:"cost"`
@@ -10474,9 +10546,15 @@ type UsageStatsRates struct {
 // UsageStatsSummary defines model for UsageStatsSummary.
 type UsageStatsSummary struct {
 	// ActiveUsers 窗口内去重用户数；非管理员恒为 1（0 行时为 0）
-	ActiveUsers           int64 `json:"active_users"`
-	CompletionTokensTotal int64 `json:"completion_tokens_total"`
-	CostTotal             int64 `json:"cost_total"`
+	ActiveUsers int64 `json:"active_users"`
+
+	// CacheReadTokensTotal 缓存读取 tokens 合计
+	CacheReadTokensTotal  *int64 `json:"cache_read_tokens_total,omitempty"`
+	CompletionTokensTotal int64  `json:"completion_tokens_total"`
+	CostTotal             int64  `json:"cost_total"`
+
+	// ErrorCount status=2 的行数
+	ErrorCount *int64 `json:"error_count,omitempty"`
 
 	// LatencySamples 参与分位计算的样本数（只含 status=1 且 latency_ms>0）
 	LatencySamples int64 `json:"latency_samples"`
@@ -10488,8 +10566,17 @@ type UsageStatsSummary struct {
 	P95LatencyMs      int64 `json:"p95_latency_ms"`
 	PreDeductedTotal  int64 `json:"pre_deducted_total"`
 	PromptTokensTotal int64 `json:"prompt_tokens_total"`
-	RefundedTotal     int64 `json:"refunded_total"`
-	RequestCount      int64 `json:"request_count"`
+
+	// RefundedCount status=3 的行数
+	RefundedCount *int64 `json:"refunded_count,omitempty"`
+	RefundedTotal int64  `json:"refunded_total"`
+
+	// RefusedCount status=0 的行数
+	RefusedCount *int64 `json:"refused_count,omitempty"`
+	RequestCount int64  `json:"request_count"`
+
+	// SuccessCount status=1 的行数
+	SuccessCount *int64 `json:"success_count,omitempty"`
 
 	// SuccessRate success / total；0 行时为 0（绝不 NaN）
 	SuccessRate float32 `json:"success_rate"`
@@ -12366,6 +12453,26 @@ type GetUsageStatsByModelParamsRange string
 
 // GetUsageStatsByModelParamsStatus defines parameters for GetUsageStatsByModel.
 type GetUsageStatsByModelParamsStatus string
+
+// GetUsageStatsByTokenParams defines parameters for GetUsageStatsByToken.
+type GetUsageStatsByTokenParams struct {
+	Range   *GetUsageStatsByTokenParamsRange  `form:"range,omitempty" json:"range,omitempty"`
+	Start   *time.Time                        `form:"start,omitempty" json:"start,omitempty"`
+	End     *time.Time                        `form:"end,omitempty" json:"end,omitempty"`
+	Model   *string                           `form:"model,omitempty" json:"model,omitempty"`
+	Group   *string                           `form:"group,omitempty" json:"group,omitempty"`
+	TokenId *int64                            `form:"token_id,omitempty" json:"token_id,omitempty"`
+	Status  *GetUsageStatsByTokenParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+
+	// Username 仅 admin+logs:read；精确匹配
+	Username *string `form:"username,omitempty" json:"username,omitempty"`
+}
+
+// GetUsageStatsByTokenParamsRange defines parameters for GetUsageStatsByToken.
+type GetUsageStatsByTokenParamsRange string
+
+// GetUsageStatsByTokenParamsStatus defines parameters for GetUsageStatsByToken.
+type GetUsageStatsByTokenParamsStatus string
 
 // GetUsageStatsByUserParams defines parameters for GetUsageStatsByUser.
 type GetUsageStatsByUserParams struct {

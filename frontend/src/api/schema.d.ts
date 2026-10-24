@@ -5040,6 +5040,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/usage-stats/by-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 令牌消费分布（top 8 + other）
+         * @description 按 usage_logs.token_id 聚合；无令牌的行归入 token_id=0，第 9 名起聚合为 other；percent 合计为 100。
+         */
+        get: operations["getUsageStatsByToken"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/usage-stats/timeseries": {
         parameters: {
             query?: never;
@@ -10509,6 +10529,31 @@ export interface components {
              * @description 窗口内去重用户数；非管理员恒为 1（0 行时为 0）
              */
             active_users: number;
+            /**
+             * Format: int64
+             * @description 缓存读取 tokens 合计
+             */
+            cache_read_tokens_total?: number;
+            /**
+             * Format: int64
+             * @description status=1 的行数
+             */
+            success_count?: number;
+            /**
+             * Format: int64
+             * @description status=2 的行数
+             */
+            error_count?: number;
+            /**
+             * Format: int64
+             * @description status=3 的行数
+             */
+            refunded_count?: number;
+            /**
+             * Format: int64
+             * @description status=0 的行数
+             */
+            refused_count?: number;
         };
         UsageStatsByModelItem: {
             /** @description 第 9 名起聚合为 other */
@@ -10556,6 +10601,31 @@ export interface components {
         };
         UsageStatsByGroupResponse: {
             items: components["schemas"]["UsageStatsByGroupItem"][];
+            /**
+             * Format: int64
+             * @description 窗口内总消费（积分）
+             */
+            total: number;
+        };
+        UsageStatsByTokenItem: {
+            /**
+             * Format: int64
+             * @description 无令牌的行为 0；other 行也为 0
+             */
+            token_id: number;
+            /** @description 无令牌的行为空串；第 9 名起聚合为 other */
+            token_name: string;
+            /** Format: int64 */
+            cost: number;
+            /** Format: int64 */
+            requests: number;
+            /** Format: int64 */
+            tokens: number;
+            /** @description 十进制基点分配，合计为 100 */
+            percent: number;
+        };
+        UsageStatsByTokenResponse: {
+            items: components["schemas"]["UsageStatsByTokenItem"][];
             /**
              * Format: int64
              * @description 窗口内总消费（积分）
@@ -19985,6 +20055,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UsageStatsByGroupResponse"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getUsageStatsByToken: {
+        parameters: {
+            query?: {
+                range?: "24h" | "7d" | "14d" | "30d";
+                start?: string;
+                end?: string;
+                model?: string;
+                group?: string;
+                token_id?: number;
+                status?: "success" | "error" | "refunded" | "refused";
+                /** @description 仅 admin+logs:read；精确匹配 */
+                username?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 令牌消费分布 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageStatsByTokenResponse"];
                 };
             };
             401: components["responses"]["Error401"];
