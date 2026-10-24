@@ -317,7 +317,7 @@
   "pricing.detail.effective": "有効値",
   "pricing.detail.unlimited": "無制限",
   "pricing.detail.server_address_unset": "サーバーアドレスが未設定です。サンプルは相対パスを使用します。",
-  "pricing.detail.key_hint": "<YOUR_TOKEN> を API トークンに置き換えてください（トークンは nkt- で始まります）。",
+  "pricing.detail.key_hint": "<YOUR_TOKEN> を API トークンに置き換えてください（トークンは sk- で始まり、以前のトークンは nkt- の場合があります）。",
   "pricing.detail.create_token": "トークンを作成",
   "pricing.detail.sign_in_token": "サインインしてトークンを作成",
   "pricing.detail.copy_code": "コードサンプルをコピー",

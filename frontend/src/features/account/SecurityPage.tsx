@@ -104,12 +104,12 @@ export function SecurityPage({
 
   const passwordCard = (
     <section className="rounded-xl border border-border-hairline bg-surface-card p-5">
-      <h2 className="text-base font-semibold text-ink-1">
+      <h2 className="text-section text-ink-1">
         {forcePasswordChange
           ? t('account.security.force_title')
           : t('account.security.password_title')}
       </h2>
-      <p className="mt-1 text-[13px] text-ink-2">
+      <p className="mt-1 text-meta text-ink-2">
         {forcePasswordChange
           ? t('account.security.force_description')
           : t('account.security.password_description')}
@@ -174,7 +174,7 @@ export function SecurityPage({
   if (forcePasswordChange) {
     return (
       <div className="mx-auto flex max-w-[1520px] flex-col gap-4">
-        <h1 className="text-xl font-semibold text-ink-1">
+        <h1 className="text-page-title text-ink-1">
           {t('account.security.force_title')}
         </h1>
         {passwordCard}
@@ -184,7 +184,7 @@ export function SecurityPage({
 
   return (
     <div className="mx-auto flex max-w-[1520px] flex-col gap-4">
-      <h1 className="text-xl font-semibold text-ink-1">{t('account.security.title')}</h1>
+      <h1 className="text-page-title text-ink-1">{t('account.security.title')}</h1>
       {passwordCard}
       <TwoFaCard />
       <SessionsCard />

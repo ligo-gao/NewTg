@@ -210,7 +210,7 @@ export function WalletSpendChart({
             )
           })}
         </g>
-        <g className="fill-ink-3 text-[10px] tabular-nums">
+        <g className="fill-ink-3 text-badge tabular-nums">
           {ticks.map((fraction) => {
             const value = max * (1 - fraction)
             return (

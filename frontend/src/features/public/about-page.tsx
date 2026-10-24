@@ -72,10 +72,10 @@ export function AboutPage({ docsUrl }: AboutPageProps) {
   return (
     <article className="flex w-full flex-col gap-12">
       <header className="flex flex-col gap-2">
-        <h1 className="text-[20px] font-semibold leading-7 text-ink-1">
+        <h1 className="text-public-title font-semibold leading-7 text-ink-1">
           {t('public.about.title', { site: t('public.about.site_name') })}
         </h1>
-        <p className="text-sm text-ink-2">{t('public.about.tagline')}</p>
+        <p className="text-body text-ink-2">{t('public.about.tagline')}</p>
       </header>
 
       {/* 六态表的加载态：统计条先占位，技术栈等静态正文随首屏直出。 */}
@@ -88,10 +88,10 @@ export function AboutPage({ docsUrl }: AboutPageProps) {
       ) : languageCount !== undefined ? (
         <dl className="flex flex-wrap gap-10 rounded-xl border border-border-hairline bg-surface-card px-5 py-4">
           <div className="flex flex-col gap-1">
-            <dt className="text-xs leading-[18px] text-ink-2">
+            <dt className="text-meta leading-[18px] text-ink-2">
               {t('public.about.stats.languages')}
             </dt>
-            <dd className="text-2xl font-semibold leading-8 tabular-nums text-ink-1">
+            <dd className="text-stat font-semibold leading-8 tabular-nums text-ink-1">
               {languageCount}
             </dd>
           </div>
@@ -99,7 +99,7 @@ export function AboutPage({ docsUrl }: AboutPageProps) {
       ) : null}
 
       <section aria-labelledby="about-capabilities" className="flex flex-col gap-4">
-        <h2 id="about-capabilities" className="text-base font-semibold text-ink-1">
+        <h2 id="about-capabilities" className="text-section font-semibold text-ink-1">
           {t('public.about.capabilities')}
         </h2>
         <ul className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -108,10 +108,10 @@ export function AboutPage({ docsUrl }: AboutPageProps) {
               key={key}
               className="rounded-xl border border-border-hairline bg-surface-card p-4"
             >
-              <h3 className="text-sm font-semibold text-ink-1">
+              <h3 className="text-body font-semibold text-ink-1">
                 {t(`public.about.feature.${key}.title`)}
               </h3>
-              <p className="mt-1 text-sm text-ink-2">
+              <p className="mt-1 text-body text-ink-2">
                 {t(`public.about.feature.${key}.body`)}
               </p>
             </li>
@@ -120,16 +120,16 @@ export function AboutPage({ docsUrl }: AboutPageProps) {
       </section>
 
       <section aria-labelledby="about-techstack" className="flex flex-col gap-4">
-        <h2 id="about-techstack" className="text-base font-semibold text-ink-1">
+        <h2 id="about-techstack" className="text-section font-semibold text-ink-1">
           {t('public.about.techstack')}
         </h2>
         <dl className="flex flex-col gap-2">
           {TECH_STACK.map((group) => (
             <div key={group.key} className="flex flex-col gap-1 sm:flex-row sm:gap-4">
-              <dt className="w-24 shrink-0 text-[13px] leading-5 text-ink-2">
+              <dt className="w-24 shrink-0 text-meta leading-5 text-ink-2">
                 {t(`public.about.tech.${group.key}`)}
               </dt>
-              <dd className="text-sm leading-[22px] text-ink-1">{group.items}</dd>
+              <dd className="text-body leading-[22px] text-ink-1">{group.items}</dd>
             </div>
           ))}
         </dl>
@@ -137,10 +137,10 @@ export function AboutPage({ docsUrl }: AboutPageProps) {
 
       {docsUrl !== undefined && docsUrl !== '' ? (
         <section aria-labelledby="about-docs" className="flex flex-col gap-4">
-          <h2 id="about-docs" className="text-base font-semibold text-ink-1">
+          <h2 id="about-docs" className="text-section font-semibold text-ink-1">
             {t('public.about.docs')}
           </h2>
-          <div className="flex flex-wrap gap-6 text-sm">
+          <div className="flex flex-wrap gap-6 text-body">
             <ExternalLink href={docsUrl} label={t('public.about.docs_home')}>
               {t('public.about.docs_home')}
             </ExternalLink>

@@ -516,7 +516,7 @@ export function ModelPricingMutateSheet({
         <div className="flex min-w-0 flex-1 flex-col gap-4">
           {formError !== undefined ? <FormAlert>{formError}</FormAlert> : null}
           {detailLoading ? (
-            <p className="text-xs text-ink-3" aria-busy="true">
+            <p className="text-meta text-ink-3" aria-busy="true">
               {t('admin.pricing.strategy_loading')}
             </p>
           ) : null}
@@ -525,7 +525,7 @@ export function ModelPricingMutateSheet({
               <FormAlert>{t('admin.pricing.strategy_load_error')}</FormAlert>
               <Button
                 variant="secondary"
-                className="h-8 self-start px-2 text-[13px]"
+                className="h-8 self-start px-2 text-meta"
                 onClick={() => void detailQuery.refetch()}
               >
                 {t('common.action.retry')}
@@ -550,11 +550,11 @@ export function ModelPricingMutateSheet({
             />
           ) : (
             <div className="flex flex-col gap-1.5">
-              <span className="text-[13px] font-medium text-ink-1">
+              <span className="text-meta font-medium text-ink-1">
                 {t('admin.pricing.model')}
               </span>
-              <span className="font-mono text-sm text-ink-1">{editing?.model ?? model}</span>
-              <span className="text-xs text-ink-3">
+              <span className="font-mono text-body text-ink-1">{editing?.model ?? model}</span>
+              <span className="text-meta text-ink-3">
                 {editing?.has_strategy === true
                   ? t('admin.pricing.strategy_kind_peak_offpeak')
                   : t('admin.pricing.strategy_kind_flat')}
@@ -563,7 +563,7 @@ export function ModelPricingMutateSheet({
           )}
 
           <div className="flex flex-col gap-1.5">
-            <span className="text-[13px] font-medium text-ink-1">
+            <span className="text-meta font-medium text-ink-1">
               {t('admin.pricing.mode')}
             </span>
             <div
@@ -576,7 +576,7 @@ export function ModelPricingMutateSheet({
                   key={candidate}
                   variant={pricingMode === candidate ? 'secondary' : 'ghost'}
                   aria-pressed={pricingMode === candidate}
-                  className="h-8 px-2 text-[13px]"
+                  className="h-8 px-2 text-meta"
                   onClick={() => {
                     setPricingMode(candidate)
                     setFieldErrors((current) => withoutKey(current, 'expr'))
@@ -592,7 +592,7 @@ export function ModelPricingMutateSheet({
             <div className="flex flex-col gap-1.5">
               <label
                 htmlFor="pricing-expression"
-                className="text-[13px] font-medium text-ink-1"
+                className="text-meta font-medium text-ink-1"
               >
                 {t('admin.pricing.expression')}
               </label>
@@ -606,7 +606,7 @@ export function ModelPricingMutateSheet({
                   expressionError !== undefined ? 'pricing-expression-error' : undefined
                 }
                 className={[
-                  'w-full rounded-lg border bg-surface-card px-3 py-2 font-mono text-sm text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                  'w-full rounded-lg border bg-surface-card px-3 py-2 font-mono text-body text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
                   expressionError !== undefined
                     ? 'border-danger'
                     : 'border-border-default',
@@ -619,14 +619,14 @@ export function ModelPricingMutateSheet({
                 }}
               />
               {expressionError !== undefined ? (
-                <p id="pricing-expression-error" className="text-xs text-danger">
+                <p id="pricing-expression-error" className="text-meta text-danger">
                   {expressionError}
                 </p>
               ) : null}
-              <p className="text-xs text-ink-3">
+              <p className="text-meta text-ink-3">
                 {t('admin.pricing.expression_hint')}
               </p>
-              <p className="font-mono text-xs text-ink-3">
+              <p className="font-mono text-meta text-ink-3">
                 {t('admin.pricing.expression_variables')}
               </p>
             </div>
@@ -685,10 +685,10 @@ export function ModelPricingMutateSheet({
 
               {pricingMode === 'per_token' ? (
                 <details className="rounded-lg border border-border-hairline bg-surface-card p-3">
-                  <summary className="cursor-pointer text-sm font-semibold text-ink-1">
+                  <summary className="cursor-pointer text-body font-semibold text-ink-1">
                     {t('admin.pricing.tiers_title')}
                   </summary>
-                  <p className="mt-2 text-xs text-ink-3">
+                  <p className="mt-2 text-meta text-ink-3">
                     {t('admin.pricing.tiers_phase2')}
                   </p>
                 </details>
@@ -697,12 +697,12 @@ export function ModelPricingMutateSheet({
           )}
 
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="pricing-status" className="text-[13px] font-medium text-ink-1">
+            <label htmlFor="pricing-status" className="text-meta font-medium text-ink-1">
               {t('admin.pricing.status')}
             </label>
             <select
               id="pricing-status"
-              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
               value={status}
               onChange={(event) => {
                 setStatus(event.target.value === '2' ? 2 : 1)
@@ -786,11 +786,11 @@ function StrategySummary({
       aria-label={t('admin.pricing.summary_title')}
       className="flex flex-col gap-1 rounded-lg border border-border-hairline bg-surface-subtle p-3"
     >
-      <h3 className="text-sm font-semibold text-ink-1">
+      <h3 className="text-body font-semibold text-ink-1">
         {t('admin.pricing.summary_title')}
       </h3>
-      <p className="text-xs text-ink-3">{t('admin.pricing.summary_note')}</p>
-      <dl className="mt-1 flex flex-col gap-1 text-xs text-ink-2">
+      <p className="text-meta text-ink-3">{t('admin.pricing.summary_note')}</p>
+      <dl className="mt-1 flex flex-col gap-1 text-meta text-ink-2">
         <div className="flex justify-between gap-3">
           <dt>{t('admin.pricing.summary_base_label')}</dt>
           <dd className="text-right font-mono tabular-nums text-ink-1">{base}</dd>

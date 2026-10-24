@@ -114,7 +114,7 @@ export function EmailCodeField({
         </div>
         <Button
           variant="secondary"
-          className="h-10 w-28 shrink-0 px-2 text-[13px]"
+          className="h-10 w-28 shrink-0 px-2 text-meta"
           disabled={buttonDisabled}
           aria-live="polite"
           onClick={() => {
@@ -136,10 +136,10 @@ export function EmailCodeField({
         />
       ) : null}
       {!emailValid ? (
-        <p className="text-xs text-ink-3">{t('auth.email_code.invalid_email')}</p>
+        <p className="text-meta text-ink-3">{t('auth.email_code.invalid_email')}</p>
       ) : null}
       {error !== undefined ? (
-        <p role="alert" className="text-xs text-danger">
+        <p role="alert" className="text-meta text-danger">
           {error}
         </p>
       ) : null}

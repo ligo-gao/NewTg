@@ -116,11 +116,11 @@ export function BillingPreferenceCard({
     >
       <h2
         id="subscription-preference-title"
-        className="text-[15px] font-semibold text-ink-1"
+        className="text-card-title text-ink-1"
       >
         {t('account.subscription.preference.label')}
       </h2>
-      <p className="mt-1 text-[13px] text-ink-2">
+      <p className="mt-1 text-meta text-ink-2">
         {t('account.subscription.preference.description')}
       </p>
 
@@ -135,7 +135,7 @@ export function BillingPreferenceCard({
           <div aria-hidden="true" className="h-16 animate-pulse rounded-lg bg-surface-subtle" />
         </div>
       ) : query.isError ? (
-        <div className="mt-4 flex items-center gap-3 text-sm text-ink-2">
+        <div className="mt-4 flex items-center gap-3 text-body text-ink-2">
           <span>{t('account.subscription.preference.load_error')}</span>
           <Button variant="secondary" onClick={() => void query.refetch()}>
             {t('account.subscription.mine.retry')}
@@ -177,11 +177,11 @@ export function BillingPreferenceCard({
                       <span className="size-2 rounded-full bg-brand" />
                     ) : null}
                   </span>
-                  <span className="text-sm font-medium text-ink-1">
+                  <span className="text-body font-medium text-ink-1">
                     {t(`account.subscription.preference.${value}`)}
                   </span>
                 </span>
-                <span className="mt-1 block pl-6 text-xs text-ink-2">
+                <span className="mt-1 block pl-6 text-meta text-ink-2">
                   {t(`account.subscription.preference.${value}_desc`)}
                 </span>
               </button>

@@ -151,7 +151,7 @@ export function AnalyticsChart({ series, config }: AnalyticsChartProps) {
         data-testid="analytics-chart"
         data-kind={config.kind}
         data-empty="true"
-        className="flex min-h-40 items-center justify-center rounded-lg border border-dashed border-neutral-line text-sm text-neutral"
+        className="flex min-h-40 items-center justify-center rounded-lg border border-dashed border-neutral-line text-body text-neutral"
       >
         <p data-testid="analytics-chart-empty">{t('common.chart.empty')}</p>
       </div>
@@ -216,7 +216,7 @@ export function AnalyticsChart({ series, config }: AnalyticsChartProps) {
           x={PLOT_LEFT - 6}
           y={PLOT_TOP + 4}
           textAnchor="end"
-          className="fill-neutral text-[8px] tabular-nums"
+          className="fill-neutral text-badge tabular-nums"
         >
           {formatTick(max, locale)}
         </text>
@@ -224,7 +224,7 @@ export function AnalyticsChart({ series, config }: AnalyticsChartProps) {
           x={PLOT_LEFT - 6}
           y={BASELINE_Y}
           textAnchor="end"
-          className="fill-neutral text-[8px] tabular-nums"
+          className="fill-neutral text-badge tabular-nums"
         >
           {formatTick(min, locale)}
         </text>
@@ -239,7 +239,7 @@ export function AnalyticsChart({ series, config }: AnalyticsChartProps) {
               textAnchor={
                 index === 0 ? 'start' : index === bucketCount - 1 ? 'end' : 'middle'
               }
-              className="fill-neutral text-[8px] tabular-nums"
+              className="fill-neutral text-badge tabular-nums"
             >
               {formatAxis(new Date(bucket).toISOString(), locale)}
             </text>

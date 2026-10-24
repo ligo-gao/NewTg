@@ -32,10 +32,10 @@ export function ModelConfigPage({
   return (
     <div className="mx-auto flex max-w-[1520px] flex-col gap-6">
       <header>
-        <h1 className="text-xl font-semibold text-ink-1">
+        <h1 className="text-page-title font-semibold text-ink-1">
           {t('account.model_config.title')}
         </h1>
-        <p className="mt-1 text-[13px] text-ink-2">
+        <p className="mt-1 text-meta text-ink-2">
           {t('account.model_config.description')}
         </p>
       </header>

@@ -67,30 +67,30 @@ export function PreviewDialog({
         <div className="space-y-4" data-testid="notification-preview">
           {subjectVisible ? (
             <section>
-              <h3 className="text-xs font-medium text-ink-3">
+              <h3 className="text-meta text-ink-3">
                 {t('settings.notification_templates.preview.subject')}
               </h3>
               <p
                 data-testid="preview-subject"
-                className="mt-1 rounded-lg border border-border-hairline bg-surface-subtle px-3 py-2 text-sm text-ink-1"
+                className="mt-1 rounded-lg border border-border-hairline bg-surface-subtle px-3 py-2 text-body text-ink-1"
               >
                 {subject}
               </p>
             </section>
           ) : null}
           <section>
-            <h3 className="text-xs font-medium text-ink-3">
+            <h3 className="text-meta text-ink-3">
               {t('settings.notification_templates.preview.body')}
             </h3>
             <p
               data-testid="preview-body"
-              className="mt-1 whitespace-pre-wrap break-words rounded-lg border border-border-hairline bg-surface-subtle px-3 py-2 font-mono text-[13px] leading-6 text-ink-1"
+              className="mt-1 whitespace-pre-wrap break-words rounded-lg border border-border-hairline bg-surface-subtle px-3 py-2 font-mono text-meta leading-6 text-ink-1"
             >
               {body}
             </p>
           </section>
           {channel === 'inapp' ? (
-            <p className="text-xs text-ink-3">
+            <p className="text-meta text-ink-3">
               {t('settings.notification_templates.preview.inapp_note')}
             </p>
           ) : null}

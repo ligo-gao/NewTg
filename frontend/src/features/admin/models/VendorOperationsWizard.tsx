@@ -229,12 +229,12 @@ export function VendorOperationsWizard({
         ) : null}
 
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="vendor-op-action" className="text-[13px] font-medium text-ink-1">
+          <label htmlFor="vendor-op-action" className="text-meta font-medium text-ink-1">
             {t('admin.vendors.ops_action')}
           </label>
           <select
             id="vendor-op-action"
-            className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1"
+            className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1"
             value={action}
             disabled={apply.isPending}
             onChange={(event) => {
@@ -248,7 +248,7 @@ export function VendorOperationsWizard({
             <option value="merge">{t('admin.vendors.ops_merge')}</option>
             <option value="delete">{t('admin.vendors.ops_delete')}</option>
           </select>
-          <p className="text-xs text-ink-3">
+          <p className="text-meta text-ink-3">
             {t(`admin.vendors.ops_${action}_hint`)}
           </p>
         </div>
@@ -256,12 +256,12 @@ export function VendorOperationsWizard({
         {action === 'assign' ? (
           <>
             <div className="flex flex-col gap-1.5">
-              <label htmlFor="vendor-op-model-keyword" className="text-[13px] font-medium text-ink-1">
+              <label htmlFor="vendor-op-model-keyword" className="text-meta font-medium text-ink-1">
                 {t('admin.vendors.ops_models')}
               </label>
               <input
                 id="vendor-op-model-keyword"
-                className="h-9 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1"
+                className="h-9 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1"
                 placeholder={t('admin.vendors.ops_model_search')}
                 value={modelKeyword}
                 onChange={(event) => {
@@ -270,7 +270,7 @@ export function VendorOperationsWizard({
               />
               <div className="max-h-48 overflow-y-auto rounded-lg border border-border-hairline p-2">
                 {(modelsQuery.data?.items ?? []).map((model) => (
-                  <label key={model.id} className="flex items-center gap-2 py-0.5 text-sm">
+                  <label key={model.id} className="flex items-center gap-2 py-0.5 text-body">
                     <input
                       type="checkbox"
                       checked={modelIds.has(model.id)}
@@ -287,26 +287,26 @@ export function VendorOperationsWizard({
                     />
                     <span className="font-mono text-ink-1">{model.model_name}</span>
                     {model.display_name !== null && model.display_name !== undefined ? (
-                      <span className="text-xs text-ink-2">{model.display_name}</span>
+                      <span className="text-meta text-ink-2">{model.display_name}</span>
                     ) : null}
                   </label>
                 ))}
                 {(modelsQuery.data?.items ?? []).length === 0 ? (
-                  <p className="text-xs text-ink-3">{t('admin.vendors.ops_no_models')}</p>
+                  <p className="text-meta text-ink-3">{t('admin.vendors.ops_no_models')}</p>
                 ) : null}
               </div>
             </div>
           </>
         ) : (
           <div className="flex flex-col gap-1.5">
-            <span className="text-[13px] font-medium text-ink-1">
+            <span className="text-meta font-medium text-ink-1">
               {t('admin.vendors.ops_sources')}
             </span>
             <div className="max-h-40 overflow-y-auto rounded-lg border border-border-hairline p-2">
               {(vendorsQuery.data?.items ?? [])
                 .filter((vendor) => vendorIds.has(vendor.id))
                 .map((vendor) => (
-                  <label key={vendor.id} className="flex items-center gap-2 py-0.5 text-sm">
+                  <label key={vendor.id} className="flex items-center gap-2 py-0.5 text-body">
                     <input
                       type="checkbox"
                       checked
@@ -324,19 +324,19 @@ export function VendorOperationsWizard({
                   </label>
                 ))}
               {vendorsQuery.data === undefined || vendorIds.size === 0 ? (
-                <p className="text-xs text-ink-3">{t('admin.vendors.ops_select_vendors')}</p>
+                <p className="text-meta text-ink-3">{t('admin.vendors.ops_select_vendors')}</p>
               ) : null}
             </div>
           </div>
         )}
 
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="vendor-op-target" className="text-[13px] font-medium text-ink-1">
+          <label htmlFor="vendor-op-target" className="text-meta font-medium text-ink-1">
             {t('admin.vendors.ops_target')}
           </label>
           <select
             id="vendor-op-target"
-            className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1"
+            className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1"
             value={targetVendorId}
             disabled={action === 'delete'}
             onChange={(event) => {
@@ -368,7 +368,7 @@ export function VendorOperationsWizard({
         ) : (
           <section className="rounded-lg border border-border-hairline">
             <header className="flex items-center justify-between border-b border-border-hairline px-3 py-2">
-              <h3 className="text-[13px] font-medium text-ink-1">
+              <h3 className="text-meta font-medium text-ink-1">
                 {t('admin.vendors.ops_preview_title')}
               </h3>
               <StatusBadge variant={preview.conflict ? 'warning' : 'success'}>
@@ -377,12 +377,12 @@ export function VendorOperationsWizard({
                   : t('admin.vendors.ops_no_conflicts')}
               </StatusBadge>
             </header>
-            <div className="flex flex-col gap-2 px-3 py-2 text-sm">
+            <div className="flex flex-col gap-2 px-3 py-2 text-body">
               <p className="text-ink-1">
                 {t('admin.vendors.ops_affected', { count: preview.affected })}
               </p>
               {preview.action === 'assign' ? (
-                <p className="text-xs text-ink-2">
+                <p className="text-meta text-ink-2">
                   {t('admin.vendors.ops_preview_assign', {
                     target:
                       targetVendorId === '0'
@@ -391,20 +391,20 @@ export function VendorOperationsWizard({
                   })}
                 </p>
               ) : (
-                <p className="text-xs text-ink-2">
+                <p className="text-meta text-ink-2">
                   {t('admin.vendors.ops_preview_vendors', {
                     names: [...vendorIds].map(vendorName).join(', '),
                   })}
                 </p>
               )}
-              <div className="text-xs text-ink-3">
+              <div className="text-meta text-ink-3">
                 <span>{t('admin.vendors.ops_expected_version')}</span>{' '}
                 <code className="font-mono text-ink-2">
                   {preview.expected_version.slice(0, 16)}…
                 </code>
               </div>
               {preview.conflicts.length > 0 ? (
-                <ul className="text-xs text-warning">
+                <ul className="text-meta text-warning">
                   {preview.conflicts.map((conflict) => (
                     <li key={conflict.vendor_id}>
                       {vendorName(conflict.vendor_id)} · {conflict.current_version.slice(0, 12)}…

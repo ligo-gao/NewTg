@@ -25,7 +25,7 @@ export interface StatusBadgeProps {
 }
 
 const BASE_CLASSES =
-  'inline-flex h-[22px] items-center gap-1.5 rounded-full px-2 text-xs font-medium leading-[18px] whitespace-nowrap'
+  'inline-flex h-[22px] items-center gap-1.5 rounded-full px-2 text-badge whitespace-nowrap'
 
 const VARIANT_CLASSES: Record<StatusBadgeVariant, string> = {
   success: 'border border-success-line bg-success-bg text-success',

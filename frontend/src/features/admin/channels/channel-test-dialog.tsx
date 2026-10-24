@@ -199,7 +199,7 @@ export function ChannelTestDialog({
       }
     >
       {channel.supported_models.length === 0 ? (
-        <p className="text-sm text-ink-2">{t('common.channels.test.noModels')}</p>
+        <p className="text-body text-ink-2">{t('common.channels.test.noModels')}</p>
       ) : (
         <div className="flex flex-col gap-4">
           <ul className="max-h-40 overflow-y-auto rounded-lg border border-border-hairline">
@@ -217,13 +217,13 @@ export function ChannelTestDialog({
                     toggleModel(model)
                   }}
                 />
-                <span className="flex-1 font-mono text-xs text-ink-1">{model}</span>
+                <span className="flex-1 font-mono text-body text-ink-1">{model}</span>
                 <TestRowStatus entry={results[model]} reasonFor={reasonFor} />
               </li>
             ))}
           </ul>
 
-          <label className="flex items-center gap-2 text-sm text-ink-1">
+          <label className="flex items-center gap-2 text-body text-ink-1">
             <input
               type="checkbox"
               checked={stream}
@@ -252,12 +252,12 @@ export function ChannelTestDialog({
                 style={{ width: total === 0 ? '0%' : `${(completed / total) * 100}%` }}
               />
             </div>
-            <p className="mt-1 text-xs text-ink-2">
+            <p className="mt-1 text-meta text-ink-2">
               {t('common.channels.test.progress', { completed, total })}
             </p>
           </div>
 
-          <p className="text-sm text-ink-1" data-testid="test-summary">
+          <p className="text-body text-ink-1" data-testid="test-summary">
             {t('common.channels.test.summary', { succeeded, failed })}
           </p>
         </div>
@@ -275,23 +275,23 @@ function TestRowStatus({
 }) {
   const { t } = useI18n()
   if (entry === undefined) {
-    return <span className="text-xs text-ink-3">{t('common.channels.test.pending')}</span>
+    return <span className="text-badge text-ink-3">{t('common.channels.test.pending')}</span>
   }
   if (entry.status === 'running') {
-    return <span className="text-xs text-info">{t('common.channels.test.running')}</span>
+    return <span className="text-badge text-info">{t('common.channels.test.running')}</span>
   }
   if (entry.status === 'pending') {
-    return <span className="text-xs text-ink-3">{t('common.channels.test.pending')}</span>
+    return <span className="text-badge text-ink-3">{t('common.channels.test.pending')}</span>
   }
   if (entry.status === 'success') {
     return (
-      <span className="text-xs text-success">
+      <span className="text-badge text-success">
         ✓ {entry.latency === undefined ? '' : `${entry.latency}ms`}
       </span>
     )
   }
   return (
-    <span className="text-xs text-danger">
+    <span className="text-badge text-danger">
       ✗ {reasonFor(entry.errorClass)}
       {entry.detail === undefined ? null : (
         <span

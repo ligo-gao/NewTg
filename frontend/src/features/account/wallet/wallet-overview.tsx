@@ -204,12 +204,12 @@ export function WalletOverview({ onSelectTab, onTopup }: WalletOverviewProps) {
       {summaryQuery.isError ? (
         <div
           role="alert"
-          className="flex flex-wrap items-center gap-3 rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-sm text-danger"
+          className="flex flex-wrap items-center gap-3 rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-body text-danger"
         >
           <span>{t('account.wallet.overview.summary_error')}</span>
           <Button
             variant="secondary"
-            className="h-8 px-3 text-xs"
+            className="h-8 px-3 text-body"
             onClick={() => void summaryQuery.refetch()}
           >
             {t('account.wallet.retry')}
@@ -231,7 +231,7 @@ export function WalletOverview({ onSelectTab, onTopup }: WalletOverviewProps) {
             <>
               <Button
                 variant="primary"
-                className="h-8 px-3 text-xs"
+                className="h-8 px-3 text-body"
                 aria-label={t('account.wallet.overview.action_topup_hero')}
                 onClick={() =>
                   onTopup({ cents: quickCents, custom: false })
@@ -241,7 +241,7 @@ export function WalletOverview({ onSelectTab, onTopup }: WalletOverviewProps) {
               </Button>
               <Button
                 variant="secondary"
-                className="h-8 px-3 text-xs"
+                className="h-8 px-3 text-body"
                 aria-label={t('account.wallet.overview.action_redeem_hero')}
                 onClick={() => onSelectTab('topup')}
               >
@@ -310,10 +310,10 @@ export function WalletOverview({ onSelectTab, onTopup }: WalletOverviewProps) {
           <section className="rounded-xl border border-border-hairline bg-surface-card">
             <div className="flex flex-wrap items-center justify-between gap-2 p-5 pb-3">
               <div>
-                <h2 className="text-[15px] font-semibold text-ink-1">
+                <h2 className="text-card-title text-ink-1">
                   {t('account.wallet.overview.trend_title')}
                 </h2>
-                <p className="mt-0.5 text-xs text-ink-2">
+                <p className="mt-0.5 text-meta text-ink-2">
                   {t('account.wallet.overview.trend_sub')}
                 </p>
               </div>
@@ -329,7 +329,7 @@ export function WalletOverview({ onSelectTab, onTopup }: WalletOverviewProps) {
                     aria-pressed={range === option}
                     onClick={() => setRange(option)}
                     className={[
-                      'h-8 px-3 text-xs font-medium transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                      'h-8 px-3 text-body font-medium transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
                       option === '7d'
                         ? 'border-r border-border-hairline'
                         : '',
@@ -374,7 +374,7 @@ export function WalletOverview({ onSelectTab, onTopup }: WalletOverviewProps) {
             </div>
 
             {usageSummaryQuery.isError ? (
-              <div className="mt-1.5 flex items-center gap-2 px-5 text-xs text-ink-2">
+              <div className="mt-1.5 flex items-center gap-2 px-5 text-meta text-ink-2">
                 <span>{t('account.wallet.overview.stat_usage_error')}</span>
                 <button
                   type="button"
@@ -396,11 +396,11 @@ export function WalletOverview({ onSelectTab, onTopup }: WalletOverviewProps) {
                   className="h-[220px] animate-pulse rounded-lg bg-surface-hover motion-reduce:animate-none"
                 />
               ) : timeseriesQuery.isError ? (
-                <div className="flex min-h-[220px] flex-col items-center justify-center gap-2 text-sm text-ink-2">
+                <div className="flex min-h-[220px] flex-col items-center justify-center gap-2 text-body text-ink-2">
                   <p>{t('account.wallet.overview.trend_error')}</p>
                   <Button
                     variant="secondary"
-                    className="h-8 px-3 text-xs"
+                    className="h-8 px-3 text-body"
                     onClick={() => {
                       // The spend/request metrics come from the sibling query;
                       // retrying the trend should recover both.
@@ -412,7 +412,7 @@ export function WalletOverview({ onSelectTab, onTopup }: WalletOverviewProps) {
                   </Button>
                 </div>
               ) : series.length === 0 ? (
-                <div className="flex min-h-[220px] items-center justify-center rounded-lg border border-dashed border-neutral-line text-sm text-neutral">
+                <div className="flex min-h-[220px] items-center justify-center rounded-lg border border-dashed border-neutral-line text-body text-neutral">
                   {t('account.wallet.overview.trend_empty')}
                 </div>
               ) : (
@@ -430,16 +430,16 @@ export function WalletOverview({ onSelectTab, onTopup }: WalletOverviewProps) {
           <section className="rounded-xl border border-border-hairline bg-surface-card">
             <div className="flex flex-wrap items-center justify-between gap-2 p-5 pb-3">
               <div>
-                <h2 className="text-[15px] font-semibold text-ink-1">
+                <h2 className="text-card-title text-ink-1">
                   {t('account.wallet.overview.recent_title')}
                 </h2>
-                <p className="mt-0.5 text-xs text-ink-2">
+                <p className="mt-0.5 text-meta text-ink-2">
                   {t('account.wallet.overview.recent_sub')}
                 </p>
               </div>
               <Button
                 variant="ghost"
-                className="text-[13px] text-brand"
+                className="text-meta text-brand"
                 onClick={() => onSelectTab('transactions')}
               >
                 {t('account.wallet.overview.recent_view_all')}
@@ -461,28 +461,28 @@ export function WalletOverview({ onSelectTab, onTopup }: WalletOverviewProps) {
                 ))}
               </div>
             ) : recentQuery.isError ? (
-              <div className="flex items-center gap-3 p-5 pt-0 text-sm text-ink-2">
+              <div className="flex items-center gap-3 p-5 pt-0 text-body text-ink-2">
                 <span>{t('account.wallet.error')}</span>
                 <Button
                   variant="secondary"
-                  className="h-8 px-3 text-xs"
+                  className="h-8 px-3 text-body"
                   onClick={() => void recentQuery.refetch()}
                 >
                   {t('account.wallet.retry')}
                 </Button>
               </div>
             ) : recent.length === 0 ? (
-              <p className="p-5 pt-0 text-sm text-ink-2">
+              <p className="p-5 pt-0 text-body text-ink-2">
                 {t('account.wallet.overview.ledger_empty')}
               </p>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full border-collapse text-sm">
+                <table className="w-full border-collapse text-body">
                   <caption className="sr-only">
                     {t('account.wallet.overview.recent_sub')}
                   </caption>
                   <thead>
-                    <tr className="bg-surface-subtle text-xs text-ink-2">
+                    <tr className="bg-surface-subtle text-meta text-ink-2">
                       <th scope="col" className="h-9 px-4 text-left font-medium">
                         {t('account.wallet.column_time')}
                       </th>
@@ -575,10 +575,10 @@ export function WalletOverview({ onSelectTab, onTopup }: WalletOverviewProps) {
 
         <aside className="flex min-w-0 flex-col gap-3.5">
           <section className="rounded-xl border border-border-hairline bg-surface-card p-5">
-            <h2 className="text-[15px] font-semibold text-ink-1">
+            <h2 className="text-card-title text-ink-1">
               {t('account.wallet.overview.quick_title')}
             </h2>
-            <p className="mt-0.5 text-xs text-ink-2">
+            <p className="mt-0.5 text-meta text-ink-2">
               {t('account.wallet.overview.quick_sub')}
             </p>
 
@@ -596,7 +596,7 @@ export function WalletOverview({ onSelectTab, onTopup }: WalletOverviewProps) {
                       aria-pressed={quickCents === option}
                       onClick={() => setSelectedCents(option)}
                       className={[
-                        'h-9 min-w-16 rounded-lg border px-3.5 text-[13px] transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                        'h-9 min-w-16 rounded-lg border px-3.5 text-meta transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
                         quickCents === option
                           ? 'border-brand bg-brand-subtle font-semibold text-brand'
                           : 'border-border-default bg-surface-card text-ink-1 hover:border-brand-line',
@@ -610,12 +610,12 @@ export function WalletOverview({ onSelectTab, onTopup }: WalletOverviewProps) {
                     onClick={() =>
                       onTopup({ cents: null, custom: true })
                     }
-                    className="h-9 min-w-16 rounded-lg border border-border-default bg-surface-card px-3.5 text-[13px] text-ink-1 hover:border-brand-line focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                    className="h-9 min-w-16 rounded-lg border border-border-default bg-surface-card px-3.5 text-meta text-ink-1 hover:border-brand-line focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
                   >
                     {t('account.wallet.overview.quick_custom')}
                   </button>
                 </div>
-                <p className="mt-3 rounded-lg bg-surface-subtle px-3 py-2.5 text-xs leading-[18px] text-ink-2">
+                <p className="mt-3 rounded-lg bg-surface-subtle px-3 py-2.5 text-meta leading-[18px] text-ink-2">
                   {quickCredits === null
                     ? t('account.wallet.overview.quick_preview_empty')
                     : t('account.wallet.overview.quick_preview', {
@@ -634,18 +634,18 @@ export function WalletOverview({ onSelectTab, onTopup }: WalletOverviewProps) {
                 </Button>
                 <a
                   href="/orders"
-                  className="mt-2.5 flex items-center justify-between rounded-sm text-[12.5px] text-ink-2 transition-colors hover:text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                  className="mt-2.5 flex items-center justify-between rounded-sm text-body text-ink-2 transition-colors hover:text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
                 >
                   {t('account.wallet.overview.view_orders')}
                   <span aria-hidden="true">→</span>
                 </a>
               </>
             ) : configQuery.isError ? (
-              <div className="mt-3 flex items-center gap-3 text-sm text-ink-2">
+              <div className="mt-3 flex items-center gap-3 text-body text-ink-2">
                 <span>{t('account.topup.config_error')}</span>
                 <Button
                   variant="secondary"
-                  className="h-8 px-3 text-xs"
+                  className="h-8 px-3 text-body"
                   onClick={() => void configQuery.refetch()}
                 >
                   {t('account.topup.retry')}
@@ -662,7 +662,7 @@ export function WalletOverview({ onSelectTab, onTopup }: WalletOverviewProps) {
           </section>
 
           <section className="rounded-xl border border-border-hairline bg-surface-card p-5">
-            <h2 className="text-[15px] font-semibold text-ink-1">
+            <h2 className="text-card-title text-ink-1">
               {t('account.wallet.overview.sub_title')}
             </h2>
 
@@ -674,31 +674,31 @@ export function WalletOverview({ onSelectTab, onTopup }: WalletOverviewProps) {
                 className="mt-3 h-[150px] animate-pulse rounded-lg bg-surface-subtle motion-reduce:animate-none"
               />
             ) : subscriptionsQuery.isError ? (
-              <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-ink-2">
+              <div className="mt-3 flex flex-wrap items-center gap-3 text-body text-ink-2">
                 <span>{t('account.wallet.overview.sub_error')}</span>
                 <Button
                   variant="secondary"
-                  className="h-8 px-3 text-xs"
+                  className="h-8 px-3 text-body"
                   onClick={() => void subscriptionsQuery.refetch()}
                 >
                   {t('account.wallet.retry')}
                 </Button>
               </div>
             ) : activeSubscription === undefined ? (
-              <p className="mt-2 text-[13px] text-ink-2">
+              <p className="mt-2 text-meta text-ink-2">
                 {t('account.wallet.overview.sub_none')}
               </p>
             ) : (
               <>
-                <p className="mt-2 text-[15px] font-semibold text-ink-1">
+                <p className="mt-2 text-card-title text-ink-1">
                   {activeSubscription.plan_title_snapshot}
                 </p>
-                <p className="mt-0.5 text-xs text-ink-2">
+                <p className="mt-0.5 text-meta text-ink-2">
                   {t('account.wallet.overview.sub_until', {
                     date: formatDate(activeSubscription.end_at, locale),
                   })}
                 </p>
-                <p className="mt-2.5 text-xs text-ink-2">
+                <p className="mt-2.5 text-meta text-ink-2">
                   {activeSubscription.amount_total === 0
                     ? t('account.wallet.overview.sub_unlimited')
                     : t('account.wallet.overview.sub_remaining', {
@@ -738,13 +738,13 @@ export function WalletOverview({ onSelectTab, onTopup }: WalletOverviewProps) {
           </section>
 
           <section className="rounded-xl border border-border-hairline bg-surface-card p-5">
-            <h2 className="text-[15px] font-semibold text-ink-1">
+            <h2 className="text-card-title text-ink-1">
               {t('account.wallet.overview.bills_title')}
             </h2>
             <div className="mt-2 flex flex-col">
               <a
                 href="/orders"
-                className="flex items-center justify-between rounded-sm border-b border-border-hairline py-2 text-[12.5px] text-ink-2 transition-colors hover:text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                className="flex items-center justify-between rounded-sm border-b border-border-hairline py-2 text-body text-ink-2 transition-colors hover:text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
               >
                 {t('account.wallet.overview.bills_orders')}
                 <span aria-hidden="true">→</span>
@@ -752,14 +752,14 @@ export function WalletOverview({ onSelectTab, onTopup }: WalletOverviewProps) {
               <button
                 type="button"
                 onClick={() => onSelectTab('transactions')}
-                className="flex items-center justify-between border-b border-border-hairline py-2 text-left text-[12.5px] text-ink-2 hover:text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                className="flex items-center justify-between border-b border-border-hairline py-2 text-left text-body text-ink-2 hover:text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
               >
                 {t('account.wallet.overview.bills_ledger')}
                 <span aria-hidden="true">→</span>
               </button>
               <a
                 href="/dashboard/usage-logs"
-                className="flex items-center justify-between rounded-sm py-2 text-[12.5px] text-ink-2 transition-colors hover:text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                className="flex items-center justify-between rounded-sm py-2 text-body text-ink-2 transition-colors hover:text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
               >
                 {t('account.wallet.overview.bills_logs')}
                 <span aria-hidden="true">→</span>
@@ -783,11 +783,11 @@ function OverviewStat({
 }) {
   return (
     <div className="rounded-xl border border-border-hairline bg-surface-card p-5">
-      <div className="text-xs leading-[18px] text-ink-2">{label}</div>
-      <div className="mt-1.5 text-2xl font-semibold tabular-nums text-ink-1">
+      <div className="text-meta leading-[18px] text-ink-2">{label}</div>
+      <div className="mt-1.5 text-stat tabular-nums text-ink-1">
         {value}
       </div>
-      <div className="mt-1.5 text-xs leading-[18px] text-ink-2">{foot}</div>
+      <div className="mt-1.5 text-meta leading-[18px] text-ink-2">{foot}</div>
     </div>
   )
 }
@@ -821,8 +821,8 @@ function UsageFoot({
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col gap-0.5">
-      <span className="text-[11px] leading-4 text-ink-2">{label}</span>
-      <b className="text-[17px] font-semibold leading-6 tabular-nums text-ink-1">
+      <span className="text-badge leading-4 text-ink-2">{label}</span>
+      <b className="text-card-title leading-6 tabular-nums text-ink-1">
         {value}
       </b>
     </div>

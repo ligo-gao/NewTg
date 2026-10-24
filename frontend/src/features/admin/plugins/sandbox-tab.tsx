@@ -113,7 +113,7 @@ export function SandboxTab({ canManage, online }: SandboxTabProps) {
       <SectionCard title={t('admin.task_plugins.sandbox.config_title')}>
         {pluginsQuery.isPending ? <SkeletonRows rows={3} /> : null}
         <div className="space-y-3">
-          <label className="flex flex-col gap-1 text-xs text-ink-3">
+          <label className="flex flex-col gap-1 text-meta text-ink-3">
             {t('admin.task_plugins.sandbox.plugin')}
             <select
               value={pluginKey}
@@ -122,7 +122,7 @@ export function SandboxTab({ canManage, online }: SandboxTabProps) {
                 setVersion('')
                 setResult(null)
               }}
-              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
             >
               <option value="">{t('admin.task_plugins.sandbox.select_plugin')}</option>
               {(pluginsQuery.data?.items ?? []).map((plugin) => (
@@ -133,13 +133,13 @@ export function SandboxTab({ canManage, online }: SandboxTabProps) {
             </select>
           </label>
 
-          <label className="flex flex-col gap-1 text-xs text-ink-3">
+          <label className="flex flex-col gap-1 text-meta text-ink-3">
             {t('admin.task_plugins.sandbox.version')}
             <select
               value={version}
               onChange={(event) => setVersion(event.target.value)}
               disabled={pluginKey === ''}
-              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1 disabled:opacity-50"
+              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1 disabled:opacity-50"
             >
               <option value="">
                 {t('admin.task_plugins.sandbox.version_effective')}
@@ -153,12 +153,12 @@ export function SandboxTab({ canManage, online }: SandboxTabProps) {
             </select>
           </label>
 
-          <label className="flex flex-col gap-1 text-xs text-ink-3">
+          <label className="flex flex-col gap-1 text-meta text-ink-3">
             {t('admin.task_plugins.sandbox.endpoint')}
             <select
               value={endpoint}
               onChange={(event) => setEndpoint(event.target.value)}
-              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
             >
               {ENDPOINTS.map((entry) => (
                 <option key={entry} value={entry}>
@@ -168,25 +168,25 @@ export function SandboxTab({ canManage, online }: SandboxTabProps) {
             </select>
           </label>
 
-          <label className="flex flex-col gap-1 text-xs text-ink-3">
+          <label className="flex flex-col gap-1 text-meta text-ink-3">
             {t('admin.task_plugins.sandbox.payload')}
             <textarea
               value={payloadText}
               onChange={(event) => setPayloadText(event.target.value)}
               rows={8}
               spellCheck={false}
-              className="w-full rounded-lg border border-border-default bg-surface-card px-3 py-2 font-mono text-xs text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="w-full rounded-lg border border-border-default bg-surface-card px-3 py-2 font-mono text-meta text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             />
           </label>
 
           {payloadError !== null ? <FormAlert>{payloadError}</FormAlert> : null}
 
           <div>
-            <label className="flex items-center gap-2 text-sm text-ink-2">
+            <label className="flex items-center gap-2 text-body text-ink-2">
               <input type="checkbox" checked={false} disabled />
               {t('admin.task_plugins.sandbox.allow_outbound')}
             </label>
-            <p className="mt-1 text-xs text-ink-3">
+            <p className="mt-1 text-meta text-ink-3">
               {t('admin.task_plugins.sandbox.outbound_unavailable')}
             </p>
           </div>
@@ -201,16 +201,16 @@ export function SandboxTab({ canManage, online }: SandboxTabProps) {
                 ? t('admin.task_plugins.sandbox.running')
                 : t('admin.task_plugins.sandbox.run')}
             </Button>
-            <p className="mt-2 text-xs text-ink-3">
+            <p className="mt-2 text-meta text-ink-3">
               {t('admin.task_plugins.sandbox.zero_side_effects')}
             </p>
             {!canManage ? (
-              <p className="mt-1 text-xs text-ink-3">
+              <p className="mt-1 text-meta text-ink-3">
                 {t('admin.task_plugins.common.read_only')}
               </p>
             ) : null}
             {!online ? (
-              <p className="mt-1 text-xs text-ink-3">
+              <p className="mt-1 text-meta text-ink-3">
                 {t('admin.task_plugins.common.offline')}
               </p>
             ) : null}
@@ -220,30 +220,30 @@ export function SandboxTab({ canManage, online }: SandboxTabProps) {
 
       <SectionCard title={t('admin.task_plugins.sandbox.result_title')}>
         {pluginKey === '' ? (
-          <p className="rounded-lg border border-dashed border-border-default px-4 py-8 text-center text-sm text-ink-3">
+          <p className="rounded-lg border border-dashed border-border-default px-4 py-8 text-center text-body text-ink-3">
             {t('admin.task_plugins.sandbox.empty')}
           </p>
         ) : (
           <div className="space-y-3">
             <ResultPane title={t('admin.task_plugins.sandbox.pane_context')}>
-              <p className="text-xs text-ink-3">
+              <p className="text-meta text-ink-3">
                 {t('admin.task_plugins.sandbox.pane_context_missing')}
               </p>
             </ResultPane>
 
             <ResultPane title={t('admin.task_plugins.sandbox.pane_raw')}>
-              <pre className="max-h-56 overflow-auto rounded bg-surface-subtle p-2 font-mono text-xs text-ink-1">
+              <pre className="max-h-56 overflow-auto rounded bg-surface-subtle p-2 font-mono text-meta text-ink-1">
                 {result === null ? '—' : prettyJson(result.result)}
               </pre>
             </ResultPane>
 
             <ResultPane title={t('admin.task_plugins.sandbox.pane_parsed')}>
               {result === null ? (
-                <p className="text-xs text-ink-3">
+                <p className="text-meta text-ink-3">
                   {t('admin.task_plugins.sandbox.not_run')}
                 </p>
               ) : (
-                <div className="text-xs">
+                <div className="text-meta">
                   {parsedStatus === undefined ? (
                     <p className="text-ink-3">
                       {t('admin.task_plugins.sandbox.pane_parsed_missing')}
@@ -272,9 +272,9 @@ export function SandboxTab({ canManage, online }: SandboxTabProps) {
             {runError !== null ? (
               <ResultPane title={t('admin.task_plugins.sandbox.pane_error')}>
                 <div data-testid="sandbox-error" role="alert">
-                  <p className="text-sm text-danger">{runError.message}</p>
+                  <p className="text-body text-danger">{runError.message}</p>
                   {runError.issues.map((line) => (
-                    <p key={line} className="mt-1 font-mono text-xs text-danger">
+                    <p key={line} className="mt-1 font-mono text-meta text-danger">
                       {line}
                     </p>
                   ))}
@@ -291,7 +291,7 @@ export function SandboxTab({ canManage, online }: SandboxTabProps) {
 function ResultPane({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="rounded-lg border border-border-default p-3">
-      <h3 className="mb-1 text-xs font-medium text-ink-3">{title}</h3>
+      <h3 className="mb-1 text-meta text-ink-3">{title}</h3>
       {children}
     </section>
   )

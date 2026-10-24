@@ -331,12 +331,12 @@ export function UserMutateSheet({
           }}
         />
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="user-role" className="text-[13px] font-medium text-ink-1">
+          <label htmlFor="user-role" className="text-meta font-medium text-ink-1">
             {t('admin.user_form.role')}
           </label>
           <select
             id="user-role"
-            className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+            className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
             value={role}
             disabled={roleLocked}
             aria-describedby={roleLocked ? 'user-role-locked' : undefined}
@@ -348,7 +348,7 @@ export function UserMutateSheet({
             <option value="admin">{t('admin.users.role_admin')}</option>
           </select>
           {roleLocked ? (
-            <p id="user-role-locked" className="text-xs text-ink-3">
+            <p id="user-role-locked" className="text-meta text-ink-3">
               {isSelf
                 ? t('admin.user_form.role_locked_self')
                 : t('admin.user_form.role_locked_permission')}
@@ -387,14 +387,14 @@ export function UserMutateSheet({
 
         {mode === 'edit' && role === 'admin' ? (
           <section className="flex flex-col gap-2 border-t border-border-hairline pt-4">
-            <h3 className="text-sm font-semibold text-ink-1">
+            <h3 className="text-body font-semibold text-ink-1">
               {t('admin.user_form.section_permissions')}
             </h3>
             {permissionError !== undefined ? (
               <FormAlert>{permissionError}</FormAlert>
             ) : null}
             {roleLocked ? (
-              <p className="text-xs text-ink-3">
+              <p className="text-meta text-ink-3">
                 {t('admin.user_form.permissions_locked')}
               </p>
             ) : null}

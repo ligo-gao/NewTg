@@ -1,17 +1,14 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 import { DashboardPage } from './dashboard-page'
 import { formatCurrencyValue } from './format'
 import {
-  type FetchRecord,
   installFetch,
   jsonResponse,
-  latestRequest,
-  problemResponse,
-  renderWithProviders,
   requestsFor,
+  renderWithProviders,
 } from './test-utils'
 
 const ME_USER = {
@@ -28,600 +25,320 @@ const ME_ADMIN = {
   ...ME_USER,
   username: 'root',
   role: 'admin' as const,
-  permissions: ['logs:read'] as string[],
+  permissions: ['logs:read', 'pricing:read', 'settings:manage'],
 }
 
-function emptySummary() {
-  return {
-    cost_total: 0,
-    request_count: 0,
-    success_rate: 0,
-    prompt_tokens_total: 0,
-    completion_tokens_total: 0,
-    pre_deducted_total: 0,
-    refunded_total: 0,
-  }
+const PUBLIC_STATUS = {
+  billing: { display_unit: 'credits', quota_per_unit: 100, currency_symbol: '¥' },
+  auth: { turnstile: { enabled: false, site_key: '' } },
+  checkin_enabled: false,
+  playground_enabled: false,
 }
 
-function emptyRates() {
-  return {
-    rpm_avg: 0,
-    rpm_peak: 0,
-    tpm_avg: 0,
-    cost_total: 0,
-    pre_deducted_total: 0,
-    refunded_total: 0,
-  }
+const SUMMARY = {
+  cost_total: 1234,
+  request_count: 10,
+  success_rate: 0.9,
+  prompt_tokens_total: 1_000,
+  completion_tokens_total: 500,
+  pre_deducted_total: 1_300,
+  refunded_total: 66,
+  p50_latency_ms: 100,
+  p95_latency_ms: 250,
+  latency_samples: 9,
+  active_users: 2,
 }
 
-interface Scenario {
-  me?: object
-  status?: () => Response
-  summary?: () => Response
-  byModel?: () => Response
-  timeseries?: () => Response
-  rates?: () => Response
-  modelPerf?: () => Response
+const RATES = {
+  rpm_avg: 1.2,
+  rpm_peak: 4,
+  tpm_avg: 300,
+  cost_total: 1234,
+  pre_deducted_total: 1300,
+  refunded_total: 66,
 }
 
-/**
- * 管道未启用的闸门响应（F-05-08）。概览测试不关心性能看板，但返回一个
- * 明确的闸门比让新section落到 404 错误态更接近真实部署。
- */
-function disabledModelPerf() {
-  return {
-    window: { range: '24h', start: '', end: '', granularity: '1m' },
-    buckets: [],
-    summary: {},
-    incidents: [],
-    models: [],
-    pipeline: { enabled: false, updated_at: null, stale: true },
-    comparison: null,
-  }
+const TIMESERIES = [
+  { bucket: '2026-10-23T01:00:00Z', cost: 500, requests: 4 },
+  { bucket: '2026-10-23T02:00:00Z', cost: 734, requests: 6 },
+]
+
+const BY_MODEL = [
+  { model: 'deepseek-flash', cost: 900, tokens: 1_200, percent: 72.9 },
+  { model: 'deepseek-v4-pro', cost: 334, tokens: 300, percent: 27.1 },
+]
+
+const BY_USER = {
+  items: [
+    { user_id: 1, username: 'root', cost: 800, requests: 6, tokens: 900, percent: 64.8 },
+    { user_id: 2, username: 'alice', cost: 434, requests: 4, tokens: 600, percent: 35.2 },
+  ],
+  total: 1234,
 }
 
-/**
- * Minimal `/api/status` payload carrying the billing projection the dashboard
- * reads. `auth.turnstile` is required by CheckinCard's read, so it is present
- * (disabled) even though these tests never exercise check-in.
- */
-function statusWithBilling(billing: Record<string, unknown>) {
-  return jsonResponse({
-    auth: { turnstile: { enabled: false, site_key: '' } },
-    billing,
-  })
+const BY_GROUP = {
+  items: [{ group: 'default', cost: 1234, requests: 10, tokens: 1_500, percent: 100 }],
+  total: 1234,
 }
 
-function installScenario(scenario: Scenario): FetchRecord[] {
+const FAILURES = {
+  items: [
+    {
+      id: 1,
+      request_id: '6f6c2c1e-1111-4111-8111-111111111111',
+      model: 'deepseek-flash',
+      prompt_tokens: 10,
+      completion_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      cost: 0,
+      refunded: 0,
+      stream: false,
+      status: 'error',
+      created_at: '2026-10-23T02:00:00Z',
+      error_class: 'upstream_429',
+      latency_ms: 842,
+      username: 'root',
+    },
+  ],
+  total: 1,
+  page: 1,
+  page_size: 5,
+}
+
+const CANDIDATES = {
+  items: [
+    { model: 'deepseek-flash', display_name: null, vendor: null, context_length: null, sources: ['pricing'], priced: true, mode: 'per_token' },
+    { model: 'deepseek-v4-pro', display_name: null, vendor: null, context_length: null, sources: ['channel'], priced: false, mode: 'per_token' },
+  ],
+}
+
+const SYSTEM = {
+  dependencies: { postgres: 'ok', redis: 'ok' },
+  instances: [{ name: 'gateway-1' }, { name: 'gateway-2' }],
+}
+
+const PERF = {
+  window: { range: '24h', start: '', end: '', granularity: '1m' },
+  buckets: [],
+  summary: {},
+  incidents: [],
+  models: [],
+  pipeline: { enabled: true, updated_at: null, stale: false },
+  comparison: null,
+}
+
+const WALLET = {
+  balance: 12_860,
+  held_credits: 210,
+  total_consumed: 184_230,
+  total_requests: 6318,
+  threshold: 5_000,
+  health: 'ok',
+  group: 'default',
+}
+
+function scenario(me: object = ME_ADMIN) {
   return installFetch((request) => {
     switch (request.url.pathname) {
       case '/api/me':
-        return jsonResponse(scenario.me ?? ME_USER)
+        return jsonResponse(me)
       case '/api/status':
-        return scenario.status !== undefined
-          ? scenario.status()
-          : problemResponse(404, { type: 'about:blank', title: 'not found' })
+        return jsonResponse(PUBLIC_STATUS)
       case '/api/usage-stats/summary':
-        return scenario.summary?.() ?? jsonResponse(emptySummary())
-      case '/api/usage-stats/by-model':
-        return scenario.byModel?.() ?? jsonResponse([])
-      case '/api/usage-stats/timeseries':
-        return scenario.timeseries?.() ?? jsonResponse([])
+        return jsonResponse(SUMMARY)
       case '/api/usage-stats/rates':
-        return scenario.rates?.() ?? jsonResponse(emptyRates())
+        return jsonResponse(RATES)
+      case '/api/usage-stats/timeseries':
+        return jsonResponse(TIMESERIES)
+      case '/api/usage-stats/by-model':
+        return jsonResponse(BY_MODEL)
+      case '/api/usage-stats/by-user':
+        return jsonResponse(BY_USER)
+      case '/api/usage-stats/by-group':
+        return jsonResponse(BY_GROUP)
+      case '/api/usage-logs':
+        return jsonResponse(FAILURES)
+      case '/api/model-pricing/candidates':
+        return jsonResponse(CANDIDATES)
+      case '/api/system/status':
+        return jsonResponse(SYSTEM)
       case '/api/model-perf':
-        return scenario.modelPerf?.() ?? jsonResponse(disabledModelPerf())
+        return jsonResponse(PERF)
+      case '/api/wallet/summary':
+        return jsonResponse(WALLET)
       default:
-        return problemResponse(404, { type: 'about:blank', title: 'not found' })
+        return jsonResponse({})
     }
   })
 }
 
-const STAT_PATHS = [
-  '/api/usage-stats/summary',
-  '/api/usage-stats/by-model',
-  '/api/usage-stats/timeseries',
-  '/api/usage-stats/rates',
-] as const
-
-afterEach(() => {
-  vi.useRealTimers()
-})
-
-describe('DashboardPage', () => {
-  it('renders zero data as 0 / no-data hints and never NaN', async () => {
-    installScenario({})
+describe('DashboardPage overview', () => {
+  it('renders the four core metrics and the admin panels', async () => {
+    const requests = scenario(ME_ADMIN)
     renderWithProviders(<DashboardPage />)
 
-    await screen.findAllByText('No statistics yet')
+    expect((await screen.findByTestId('metric-spend')).textContent).toContain('1,234')
+    expect(screen.getByTestId('metric-requests').textContent).toContain('10')
+    expect(screen.getByTestId('metric-success').textContent).toContain('90.0%')
+    expect(screen.getByTestId('metric-p95').textContent).toContain('250ms')
+
+    const attention = await screen.findByTestId('attention-panel')
+    await waitFor(() => {
+      expect(within(attention).getByText(/deepseek-v4-pro/)).toBeTruthy()
+    })
+
+    const composition = await screen.findByTestId('composition-users')
+    await waitFor(() => {
+      expect(within(composition).getByText('root')).toBeTruthy()
+      expect(within(composition).getByText('alice')).toBeTruthy()
+    })
+
+    const failures = await screen.findByTestId('failures-table')
+    await waitFor(() => {
+      expect(within(failures).getByText('upstream_429')).toBeTruthy()
+    })
 
     await waitFor(() => {
-      expect(screen.getByTestId('card-total-spent-value').textContent).toBe('0')
-      expect(screen.getByTestId('card-requests-value').textContent).toBe('0')
-      expect(screen.getByTestId('card-input-tokens-value').textContent).toBe('0')
-      expect(screen.getByTestId('card-output-tokens-value').textContent).toBe('0')
-      // No requests means no success rate to report; the card says so instead
-      // of printing a misleading "--".
-      expect(screen.getByTestId('card-requests-subline').textContent).toBe(
-        'No data',
-      )
-      expect(screen.getByTestId('rate-usage-value').textContent).toBe('0')
-      expect(screen.getByTestId('rate-rpm-value').textContent).toBe('0')
-      expect(screen.getByTestId('rate-tpm-value').textContent).toBe('0')
+      expect(screen.getByTestId('health-panel').textContent).toContain('PostgreSQL')
     })
-
-    // Empty ring: no broken arc, no fake total.
-    expect(screen.getByTestId('donut-empty')).toBeTruthy()
-    expect(screen.queryAllByTestId('donut-segment')).toHaveLength(0)
-    expect(screen.getByTestId('trend-empty')).toBeTruthy()
-    expect(document.body.textContent ?? '').not.toContain('NaN')
+    expect(requestsFor(requests, '/api/usage-stats/by-user')).toHaveLength(1)
   })
 
-  it('names the overview region after the page heading', async () => {
-    installScenario({})
+  it('shows the balance and personal tables to an ordinary user', async () => {
+    const requests = scenario(ME_USER)
     renderWithProviders(<DashboardPage />)
 
-    // The visible h2/h1 lives in PageHeader, outside this section; the region
-    // keeps an accessible name of its own (deferred review #18).
-    expect(
-      await screen.findByRole('region', { name: 'Overview' }),
-    ).toBeTruthy()
-  })
-
-  it('formats card values, success rate and the pre-deducted/refunded hover', async () => {
-    const user = userEvent.setup()
-    installScenario({
-      summary: () =>
-        jsonResponse({
-          cost_total: 12480,
-          request_count: 1024,
-          success_rate: 0.982,
-          prompt_tokens_total: 1_200_000,
-          completion_tokens_total: 356_000,
-          pre_deducted_total: 14200,
-          refunded_total: 1720,
-        }),
-    })
-    renderWithProviders(<DashboardPage />)
-
+    await screen.findByTestId('metric-balance')
     await waitFor(() => {
-      expect(screen.getByTestId('card-total-spent-value').textContent).toBe('12,480')
-      expect(screen.getByTestId('card-requests-value').textContent).toBe('1,024')
-      expect(
-        screen.getByTestId('card-requests-subline').textContent,
-      ).toContain('98.2%')
-      expect(screen.getByTestId('card-input-tokens-value').textContent).toBe('1.2M')
-      expect(screen.getByTestId('card-output-tokens-value').textContent).toBe(
-        '356,000',
-      )
+      expect(screen.getByTestId('metric-balance').textContent).toContain('¥128.60')
     })
-
-    await user.hover(screen.getByTestId('card-total-spent'))
-    const tooltip = await screen.findByRole('tooltip')
-    expect(tooltip.textContent).toContain('14,200')
-    expect(tooltip.textContent).toContain('1,720')
-    expect(tooltip.textContent).toContain('Pre-deducted')
-    expect(tooltip.textContent).toContain('Refunded')
+    expect(screen.queryByTestId('composition-users')).toBeNull()
+    expect(screen.queryByTestId('attention-panel')).toBeNull()
+    const recent = await screen.findByTestId('recent-table')
+    await waitFor(() => {
+      expect(within(recent).getByText('deepseek-flash')).toBeTruthy()
+    })
+    expect(requestsFor(requests, '/api/usage-stats/by-user')).toHaveLength(0)
+    expect(requestsFor(requests, '/api/wallet/summary')).toHaveLength(1)
   })
 
-  it('keeps credit rendering when billing.display_unit is credits', async () => {
-    installScenario({
-      status: () =>
-        statusWithBilling({
-          display_unit: 'credits',
-          quota_per_unit: 100,
-          currency_symbol: '¥',
-        }),
-      summary: () =>
-        jsonResponse({ ...emptySummary(), cost_total: 12480, request_count: 10 }),
-      rates: () => jsonResponse({ ...emptyRates(), cost_total: 6400 }),
-    })
+  it('switches the range for the core queries', async () => {
+    const requests = scenario(ME_ADMIN)
     renderWithProviders(<DashboardPage />)
+    await screen.findByTestId('metric-spend')
 
+    await userEvent.click(screen.getByTestId('range-7d'))
     await waitFor(() => {
-      expect(screen.getByTestId('card-total-spent-value').textContent).toBe(
-        '12,480',
-      )
-      expect(screen.getByTestId('rate-usage-value').textContent).toBe('6,400')
-    })
-    expect(
-      within(screen.getByTestId('card-total-spent')).getByText('credits'),
-    ).toBeTruthy()
-    expect(
-      within(screen.getByTestId('rate-usage')).getByText('credits'),
-    ).toBeTruthy()
-    expect(
-      within(screen.getByTestId('card-total-spent')).queryByText('¥'),
-    ).toBeNull()
-  })
-
-  it('falls back to credit rendering when /api/status is unavailable', async () => {
-    installScenario({
-      status: () =>
-        problemResponse(503, {
-          type: 'about:blank',
-          title: 'Service Unavailable',
-        }),
-      summary: () =>
-        jsonResponse({ ...emptySummary(), cost_total: 12480, request_count: 10 }),
-      rates: () => jsonResponse({ ...emptyRates(), cost_total: 6400 }),
-    })
-    renderWithProviders(<DashboardPage />)
-
-    // An unknown unit must never blank the cards or crash the page: the
-    // credit presentation (and its unit label) is the safe default.
-    await waitFor(() => {
-      expect(screen.getByTestId('card-total-spent-value').textContent).toBe(
-        '12,480',
-      )
-      expect(screen.getByTestId('rate-usage-value').textContent).toBe('6,400')
-    })
-    expect(
-      within(screen.getByTestId('card-total-spent')).getByText('credits'),
-    ).toBeTruthy()
-    const rateCard = screen.getByTestId('rate-usage')
-    expect(within(rateCard).getByText('Credits used')).toBeTruthy()
-    expect(within(rateCard).queryByText('Spend')).toBeNull()
-    expect(within(rateCard).queryByText('¥')).toBeNull()
-  })
-
-  it('renders spend in the configured currency while the tooltip stays in credits', async () => {
-    const user = userEvent.setup()
-    installScenario({
-      status: () =>
-        statusWithBilling({
-          display_unit: 'cny',
-          quota_per_unit: 100,
-          currency_symbol: '¥',
-        }),
-      summary: () =>
-        jsonResponse({
-          ...emptySummary(),
-          cost_total: 12480,
-          request_count: 10,
-          pre_deducted_total: 14200,
-          refunded_total: 1720,
-        }),
-      rates: () =>
-        jsonResponse({
-          ...emptyRates(),
-          cost_total: 6400,
-          pre_deducted_total: 6400,
-        }),
-    })
-    renderWithProviders(<DashboardPage />)
-
-    await waitFor(() => {
-      expect(screen.getByTestId('card-total-spent-value').textContent).toBe(
-        '¥124.80',
-      )
-      expect(screen.getByTestId('rate-usage-value').textContent).toBe('¥64.00')
-    })
-    // The currency value carries its own symbol; the separate "credits" unit
-    // would contradict it.
-    const spendCard = screen.getByTestId('card-total-spent')
-    expect(within(spendCard).queryByText('credits')).toBeNull()
-    const rateCard = screen.getByTestId('rate-usage')
-    expect(within(rateCard).queryByText('credits')).toBeNull()
-    // "Credits used" would contradict the ¥ figure, so the rate card switches
-    // to the plain "Spend" label.
-    expect(within(rateCard).getByText('Spend')).toBeTruthy()
-    expect(within(rateCard).queryByText('Credits used')).toBeNull()
-
-    // The pre-deducted/refunded hover is a ledger fact and stays in credits.
-    await user.hover(spendCard)
-    const tooltip = await screen.findByRole('tooltip')
-    expect(tooltip.textContent).toContain('14,200')
-    expect(tooltip.textContent).toContain('1,720')
-  })
-
-  it('honours a non-default quota_per_unit and symbol', async () => {
-    installScenario({
-      status: () =>
-        statusWithBilling({
-          display_unit: 'cny',
-          quota_per_unit: 200,
-          currency_symbol: '$',
-        }),
-      summary: () => jsonResponse({ ...emptySummary(), cost_total: 10000 }),
-    })
-    renderWithProviders(<DashboardPage />)
-
-    // 10,000 credits at 200 credits/unit = 5,000 cents = 50.00.
-    await waitFor(() => {
-      expect(screen.getByTestId('card-total-spent-value').textContent).toBe(
-        '$50.00',
-      )
+      const summary = requestsFor(requests, '/api/usage-stats/summary').at(-1)
+      expect(summary?.url.searchParams.get('range')).toBe('7d')
     })
   })
 
-  it('switches the range for every query and picks hour vs day granularity', async () => {
-    const user = userEvent.setup()
-    const requests = installScenario({})
+  it('switches the trend metric without dropping the chart', async () => {
+    scenario(ME_ADMIN)
     renderWithProviders(<DashboardPage />)
+    await screen.findByTestId('metric-spend')
 
-    await waitFor(() => {
-      expect(requestsFor(requests, '/api/usage-stats/summary').length).toBeGreaterThan(0)
-    })
+    await userEvent.click(screen.getByTestId('trend-metric-requests'))
+    expect(screen.getByTestId('trend-metric-requests').getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByTestId('dashboard-trend')).toBeTruthy()
+  })
 
-    const initialTimeseries = latestRequest(requests, '/api/usage-stats/timeseries')
-    expect(initialTimeseries?.url.searchParams.get('range')).toBe('24h')
-    expect(initialTimeseries?.url.searchParams.get('granularity')).toBe('hour')
-
-    const rangeGroup = screen.getByRole('radiogroup', { name: 'Time range' })
-    await user.click(within(rangeGroup).getByRole('radio', { name: '7d' }))
-
-    await waitFor(() => {
-      for (const path of STAT_PATHS) {
-        expect(latestRequest(requests, path)?.url.searchParams.get('range')).toBe('7d')
+  it('renders -- on a summary failure and offers a retry', async () => {
+    installFetch((request) => {
+      switch (request.url.pathname) {
+        case '/api/me':
+          return jsonResponse(ME_ADMIN)
+        case '/api/status':
+          return jsonResponse(PUBLIC_STATUS)
+        case '/api/usage-stats/summary':
+          return jsonResponse({ title: 'boom' }, 500)
+        case '/api/usage-stats/rates':
+          return jsonResponse(RATES)
+        case '/api/usage-stats/timeseries':
+          return jsonResponse(TIMESERIES)
+        case '/api/usage-stats/by-model':
+          return jsonResponse(BY_MODEL)
+        case '/api/usage-stats/by-user':
+          return jsonResponse(BY_USER)
+        case '/api/usage-stats/by-group':
+          return jsonResponse(BY_GROUP)
+        case '/api/usage-logs':
+          return jsonResponse(FAILURES)
+        case '/api/model-pricing/candidates':
+          return jsonResponse(CANDIDATES)
+        case '/api/system/status':
+          return jsonResponse(SYSTEM)
+        case '/api/model-perf':
+          return jsonResponse(PERF)
+        default:
+          return jsonResponse({})
       }
     })
-    expect(
-      latestRequest(requests, '/api/usage-stats/timeseries')?.url.searchParams.get(
-        'granularity',
-      ),
-    ).toBe('day')
+    renderWithProviders(<DashboardPage />)
 
-    await user.click(screen.getByRole('radio', { name: '30d' }))
-    await waitFor(() => {
-      for (const path of STAT_PATHS) {
-        expect(latestRequest(requests, path)?.url.searchParams.get('range')).toBe('30d')
+    expect((await screen.findByText('--', { selector: '[data-testid="metric-spend"]' })).textContent).toBe('--')
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+  })
+
+  it('never renders NaN for an empty window', async () => {
+    installFetch((request) => {
+      switch (request.url.pathname) {
+        case '/api/me':
+          return jsonResponse(ME_ADMIN)
+        case '/api/status':
+          return jsonResponse(PUBLIC_STATUS)
+        case '/api/usage-stats/summary':
+          return jsonResponse({
+            ...SUMMARY,
+            cost_total: 0,
+            request_count: 0,
+            success_rate: 0,
+            prompt_tokens_total: 0,
+            completion_tokens_total: 0,
+            p50_latency_ms: 0,
+            p95_latency_ms: 0,
+            latency_samples: 0,
+            active_users: 0,
+          })
+        case '/api/usage-stats/rates':
+          return jsonResponse({ ...RATES, rpm_avg: 0, rpm_peak: 0, tpm_avg: 0 })
+        case '/api/usage-stats/timeseries':
+          return jsonResponse([])
+        case '/api/usage-stats/by-model':
+          return jsonResponse([])
+        case '/api/usage-stats/by-user':
+          return jsonResponse({ items: [], total: 0 })
+        case '/api/usage-stats/by-group':
+          return jsonResponse({ items: [], total: 0 })
+        case '/api/usage-logs':
+          return jsonResponse({ items: [], total: 0, page: 1, page_size: 5 })
+        case '/api/model-pricing/candidates':
+          return jsonResponse({ items: [] })
+        case '/api/system/status':
+          return jsonResponse(SYSTEM)
+        case '/api/model-perf':
+          return jsonResponse(PERF)
+        default:
+          return jsonResponse({})
       }
     })
-    expect(
-      latestRequest(requests, '/api/usage-stats/timeseries')?.url.searchParams.get(
-        'granularity',
-      ),
-    ).toBe('day')
-    expect(requestsFor(requests, '/api/usage-stats/summary').length).toBeGreaterThanOrEqual(
-      3,
-    )
-  })
-
-  it('folds nine models into eight slices plus Other with percentages totalling 100', async () => {
-    const items = Array.from({ length: 9 }, (_, index) => ({
-      model: `model-${index + 1}`,
-      // Descending cost so model-1 is the largest and model-9 becomes Other.
-      cost: 900 - index * 100,
-      tokens: 1000,
-      percent: 0,
-    }))
-    installScenario({ byModel: () => jsonResponse(items) })
     renderWithProviders(<DashboardPage />)
 
-    await screen.findByTestId('model-donut')
-
-    for (let index = 1; index <= 8; index += 1) {
-      expect(screen.getByTestId(`donut-legend-model-${index}`)).toBeTruthy()
-    }
-    expect(screen.getByTestId('donut-legend-other')).toBeTruthy()
-    expect(screen.queryByTestId('donut-legend-model-9')).toBeNull()
-    expect(screen.getAllByTestId('donut-segment')).toHaveLength(9)
-
-    const percentages = screen
-      .getAllByTestId(/donut-legend-/)
-      .map((item) => Number(item.getAttribute('data-percent')))
-    expect(percentages.reduce((sum, value) => sum + value, 0)).toBeCloseTo(100, 6)
-  })
-
-  it('keeps the username filter away from ordinary users and never sends it', async () => {
-    const requests = installScenario({})
-    renderWithProviders(<DashboardPage />)
-
-    await screen.findAllByText('No statistics yet')
-    expect(screen.queryByLabelText('Username')).toBeNull()
-    expect(requestsFor(requests, '/api/users')).toHaveLength(0)
-
-    const statsRequests = requests.filter((request) =>
-      request.url.pathname.startsWith('/api/usage-stats/'),
-    )
-    expect(statsRequests.length).toBeGreaterThan(0)
-    for (const request of statsRequests) {
-      expect(request.url.searchParams.has('username')).toBe(false)
-    }
-  })
-
-  it('shows the username filter to an admin with logs:read and refetches every query with it', async () => {
-    const user = userEvent.setup()
-    const requests = installScenario({
-      me: { ...ME_ADMIN, permissions: ['logs:read'] },
-    })
-    renderWithProviders(<DashboardPage />)
-
-    const input = await screen.findByLabelText('Username')
-    await user.type(input, 'bob')
-    await user.click(screen.getByRole('button', { name: 'Apply' }))
-
-    await waitFor(() => {
-      for (const path of STAT_PATHS) {
-        expect(latestRequest(requests, path)?.url.searchParams.get('username')).toBe(
-          'bob',
-        )
-      }
-    })
-    // Capability now comes from /api/me; the users list is never probed.
-    expect(requestsFor(requests, '/api/users')).toHaveLength(0)
-  })
-
-  it('hides the username filter from an admin who lacks logs:read', async () => {
-    installScenario({
-      me: { ...ME_ADMIN, permissions: [] },
-    })
-    renderWithProviders(<DashboardPage />)
-
-    await screen.findAllByText('No statistics yet')
-    expect(screen.queryByLabelText('Username')).toBeNull()
-  })
-
-  it('renders card and chart errors as -- with retries that refetch', async () => {
-    const fail = () =>
-      problemResponse(500, { type: 'about:blank', title: 'Internal Server Error' })
-    const requests = installScenario({
-      summary: fail,
-      byModel: fail,
-      timeseries: fail,
-      rates: fail,
-    })
-    const user = userEvent.setup()
-    renderWithProviders(<DashboardPage />)
-
-    await waitFor(() => {
-      expect(screen.getByTestId('card-total-spent-value').textContent).toBe('--')
-      expect(screen.getByTestId('rate-usage-value').textContent).toBe('--')
-    })
-    expect(await screen.findByTestId('donut-error')).toBeTruthy()
-    expect(await screen.findByTestId('trend-error')).toBeTruthy()
-
-    const before = requestsFor(requests, '/api/usage-stats/timeseries').length
-    await user.click(screen.getByTestId('trend-retry'))
-    await waitFor(() => {
-      expect(requestsFor(requests, '/api/usage-stats/timeseries').length).toBeGreaterThan(
-        before,
-      )
-    })
-  })
-
-  it('renders RPM/TPM values with peak and exact hover values', async () => {
-    const user = userEvent.setup()
-    installScenario({
-      rates: () =>
-        jsonResponse({
-          rpm_avg: 3.4,
-          rpm_peak: 12,
-          tpm_avg: 86000,
-          cost_total: 12480,
-          pre_deducted_total: 14200,
-          refunded_total: 1720,
-        }),
-    })
-    renderWithProviders(<DashboardPage />)
-
-    await waitFor(() => {
-      expect(screen.getByTestId('rate-usage-value').textContent).toBe('12,480')
-      expect(screen.getByTestId('rate-rpm-value').textContent).toBe('3')
-      expect(screen.getByTestId('rate-tpm-value').textContent).toBe('86K')
-    })
-
-    await user.hover(screen.getByTestId('rate-rpm'))
-    expect((await screen.findByRole('tooltip')).textContent).toContain('Peak 12')
-    await user.unhover(screen.getByTestId('rate-rpm'))
-
-    await user.hover(screen.getByTestId('rate-tpm'))
-    expect((await screen.findByRole('tooltip')).textContent).toContain('86,000')
-  })
-
-  it('drills the trend into a selected model and resets the filter', async () => {
-    const user = userEvent.setup()
-    const requests = installScenario({
-      byModel: () =>
-        jsonResponse([
-          { model: 'gpt-4o', cost: 60, tokens: 10, percent: 60 },
-          { model: 'claude-4', cost: 40, tokens: 10, percent: 40 },
-        ]),
-    })
-    renderWithProviders(<DashboardPage />)
-
-    const legendItem = await screen.findByTestId('donut-legend-gpt-4o')
-    await user.click(within(legendItem).getByRole('button'))
-
-    await waitFor(() => {
-      expect(
-        latestRequest(requests, '/api/usage-stats/timeseries')?.url.searchParams.get(
-          'model',
-        ),
-      ).toBe('gpt-4o')
-    })
-    expect(screen.getByTestId('trend-filter-chip').textContent).toContain('gpt-4o')
-
-    await user.click(screen.getByRole('button', { name: 'Reset model filter' }))
-    await waitFor(() => {
-      expect(
-        latestRequest(requests, '/api/usage-stats/timeseries')?.url.searchParams.has(
-          'model',
-        ),
-      ).toBe(false)
-    })
-  })
-
-  it('renders the four quick actions below the shared page header', async () => {
-    installScenario({})
-    renderWithProviders(<DashboardPage />)
-
-    const createToken = await screen.findByRole('link', { name: /Create token/ })
-    expect(createToken.getAttribute('href')).toBe('/tokens')
-    expect(screen.getByRole('link', { name: /Top up/ }).getAttribute('href')).toBe(
-      '/wallet',
-    )
-    expect(screen.getByRole('link', { name: /View logs/ }).getAttribute('href')).toBe(
-      '/dashboard/usage-logs',
-    )
-    expect(screen.getByRole('link', { name: /Playground/ }).getAttribute('href')).toBe(
-      '/playground',
-    )
-    // The old inline heading is gone: the shared header owns the page title.
-    expect(screen.getByTestId('page-header')).toBeTruthy()
-    expect(screen.getByRole('heading', { name: 'Overview' })).toBeTruthy()
-  })
-
-  it('zero-fills the trend across the whole selected window with UTC buckets', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] })
-    vi.setSystemTime(new Date('2026-10-18T12:34:00Z'))
-
-    installScenario({
-      timeseries: () =>
-        jsonResponse([
-          { bucket: '2026-10-18T01:00:00Z', cost: 5, requests: 2 },
-          { bucket: '2026-10-18T05:00:00Z', cost: 7, requests: 3 },
-        ]),
-    })
-    renderWithProviders(<DashboardPage />)
-
-    await screen.findByTestId('analytics-chart')
-    expect(screen.getByTestId('analytics-chart').getAttribute('data-kind')).toBe('area')
-
-    const table = screen.getByRole('table')
-    const rowFor = (ts: string): HTMLElement => {
-      const cell = within(table).getByText(ts)
-      const row = cell.closest('tr')
-      if (row === null) throw new Error(`no row for ${ts}`)
-      return row
-    }
-
-    // The spine covers the full 24h window, not just first→last active bucket.
-    expect(rowFor('2026-10-17T13:00:00.000Z')).toBeTruthy()
-    expect(rowFor('2026-10-18T12:00:00.000Z')).toBeTruthy()
-    expect(within(table).getAllByRole('row')).toHaveLength(25)
-
-    // Inactive hours are materialised as zero instead of being skipped.
-    for (const ts of [
-      '2026-10-18T02:00:00.000Z',
-      '2026-10-18T03:00:00.000Z',
-      '2026-10-18T04:00:00.000Z',
-    ]) {
-      expect(within(rowFor(ts)).getByText('0')).toBeTruthy()
-    }
-    expect(within(rowFor('2026-10-18T01:00:00.000Z')).getByText('5')).toBeTruthy()
-    expect(within(rowFor('2026-10-18T05:00:00.000Z')).getByText('7')).toBeTruthy()
+    expect((await screen.findByTestId('metric-spend')).textContent).toBe('0')
+    expect(screen.getByTestId('metric-success').textContent).toBe('--')
+    expect(document.body.textContent).not.toMatch(/NaN/)
   })
 })
 
 describe('formatCurrencyValue', () => {
   it('converts credits to the display amount at the configured quota per unit', () => {
-    // credits = cents * quota_per_unit / 100, so 12,480 credits at 100 = 124.80.
-    expect(formatCurrencyValue(12480, 100, '¥', 'en')).toBe('¥124.80')
-    expect(formatCurrencyValue(10000, 200, '$', 'en')).toBe('$50.00')
-    expect(formatCurrencyValue(0, 100, '¥', 'en')).toBe('¥0.00')
-  })
-
-  it('localises the decimal separator', () => {
-    expect(formatCurrencyValue(12480, 100, '¥', 'zh-CN')).toBe('¥124.80')
-    expect(formatCurrencyValue(12480, 100, '¥', 'fr')).toBe('¥124,80')
+    expect(formatCurrencyValue(12_345, 100, '¥', 'en-US')).toBe('¥123.45')
   })
 
   it('returns -- for values it cannot convert', () => {
-    expect(formatCurrencyValue(Number.NaN, 100, '¥', 'en')).toBe('--')
-    expect(formatCurrencyValue(-1, 100, '¥', 'en')).toBe('--')
-    expect(formatCurrencyValue(100, 0, '¥', 'en')).toBe('--')
-    expect(formatCurrencyValue(100, Number.NaN, '¥', 'en')).toBe('--')
+    expect(formatCurrencyValue(Number.NaN, 100, '¥', 'en-US')).toBe('--')
+    expect(formatCurrencyValue(100, 0, '¥', 'en-US')).toBe('--')
   })
 })

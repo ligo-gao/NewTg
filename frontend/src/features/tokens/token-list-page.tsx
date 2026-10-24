@@ -398,7 +398,7 @@ export function TokenListPage() {
                 keyboard behaviour native. */}
             <a
               href="/model-config"
-              className="inline-flex h-9 items-center rounded-lg border border-border-default bg-surface-card px-3 text-sm font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="inline-flex h-9 items-center rounded-lg border border-border-default bg-surface-card px-3 text-body font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             >
               {t('common.nav.model_config')}
             </a>
@@ -412,7 +412,7 @@ export function TokenListPage() {
 
       <div className="flex flex-wrap items-end gap-3 rounded-xl border border-border-hairline bg-surface-card p-3">
         <div className="flex flex-col gap-1">
-          <label htmlFor="token-filter-keyword" className="text-xs text-ink-2">
+          <label htmlFor="token-filter-keyword" className="text-meta text-ink-2">
             {t('common.tokens.filters.search')}
           </label>
           <input
@@ -424,12 +424,12 @@ export function TokenListPage() {
             onChange={(event) => {
               setKeywordInput(event.target.value)
             }}
-            className="h-10 w-64 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
+            className="h-10 w-64 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
           />
         </div>
 
         <div className="flex flex-col gap-1">
-          <label htmlFor="token-filter-status" className="text-xs text-ink-2">
+          <label htmlFor="token-filter-status" className="text-meta text-ink-2">
             {t('common.tokens.filters.status')}
           </label>
           <select
@@ -437,7 +437,7 @@ export function TokenListPage() {
             value={status}
             disabled={loading}
             onChange={handleStatusFilter}
-            className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1 disabled:opacity-50"
+            className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1 disabled:opacity-50"
           >
             <option value="">{t('common.tokens.status.all')}</option>
             {STATUS_OPTIONS.map((value) => (
@@ -449,7 +449,7 @@ export function TokenListPage() {
         </div>
 
         <div className="flex flex-col gap-1">
-          <label htmlFor="token-filter-group" className="text-xs text-ink-2">
+          <label htmlFor="token-filter-group" className="text-meta text-ink-2">
             {t('common.tokens.filters.group')}
           </label>
           <select
@@ -460,7 +460,7 @@ export function TokenListPage() {
               setGroup(event.target.value)
               setPage(1)
             }}
-            className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1 disabled:opacity-50"
+            className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1 disabled:opacity-50"
           >
             <option value="">{t('common.tokens.filters.allGroups')}</option>
             {groupOptions.map((name) => (
@@ -472,7 +472,7 @@ export function TokenListPage() {
         </div>
 
         <div className="flex flex-col gap-1">
-          <label htmlFor="token-filter-quota" className="text-xs text-ink-2">
+          <label htmlFor="token-filter-quota" className="text-meta text-ink-2">
             {t('common.tokens.filters.quota')}
           </label>
           <select
@@ -483,7 +483,7 @@ export function TokenListPage() {
               setQuota(event.target.value === '' ? '' : (event.target.value as TokenQuotaFilter))
               setPage(1)
             }}
-            className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1 disabled:opacity-50"
+            className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1 disabled:opacity-50"
           >
             <option value="">{t('common.tokens.filters.allQuotas')}</option>
             {QUOTA_OPTIONS.map((value) => (
@@ -501,11 +501,11 @@ export function TokenListPage() {
         ) : null}
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-ink-2">
+      <div className="flex flex-wrap items-center justify-between gap-3 text-meta text-ink-2">
         <p>{t('common.tokens.page.count', { count: listQuery.data?.total ?? 0 })}</p>
         <Button
           variant="ghost"
-          className="h-7 px-2 text-xs"
+          className="h-7 px-2 text-body"
           onClick={() => {
             void listQuery.refetch()
           }}
@@ -518,7 +518,7 @@ export function TokenListPage() {
         <div
           role="alert"
           data-testid="copy-key-guidance"
-          className="flex items-center justify-between gap-3 rounded-lg border-l-4 border-warning bg-warning-bg px-3 py-2 text-xs text-warning"
+          className="flex items-center justify-between gap-3 rounded-lg border-l-4 border-warning bg-warning-bg px-3 py-2 text-meta text-warning"
         >
           <span>{t('common.tokens.guidance.body')}</span>
           <span className="flex shrink-0 items-center gap-2">
@@ -543,7 +543,7 @@ export function TokenListPage() {
         <div
           role="alert"
           data-testid="batch-failures"
-          className="rounded-lg border-l-2 border-danger bg-surface-card px-3 py-2 text-xs text-ink-1"
+          className="rounded-lg border-l-2 border-danger bg-surface-card px-3 py-2 text-meta text-ink-1"
         >
           <p className="font-medium">
             {t('common.tokens.bulk.partial', {
@@ -568,7 +568,7 @@ export function TokenListPage() {
           aria-label={t('common.tokens.bulk.toolbar')}
           className="flex flex-wrap items-center gap-2 rounded-lg border border-border-hairline bg-surface-hover p-2"
         >
-          <span className="mr-2 text-sm font-medium text-ink-1">
+          <span className="mr-2 text-body font-medium text-ink-1">
             {t('common.tokens.bulk.selected', { count: selected.size })}
           </span>
           <Button
@@ -600,7 +600,7 @@ export function TokenListPage() {
             {t('common.tokens.bulk.clear')}
           </Button>
           {selected.size > MAX_BATCH ? (
-            <span className="text-xs text-danger">{t('common.tokens.bulk.limit')}</span>
+            <span className="text-meta text-danger">{t('common.tokens.bulk.limit')}</span>
           ) : null}
         </div>
       ) : null}
@@ -608,7 +608,7 @@ export function TokenListPage() {
       <div className="overflow-x-auto rounded-xl border border-border-hairline bg-surface-card">
         <table
           data-testid="tokens-table"
-          className="w-full min-w-[1080px] border-collapse text-sm"
+          className="w-full min-w-[1080px] border-collapse text-body"
         >
           <thead>
             <tr>
@@ -680,7 +680,7 @@ export function TokenListPage() {
             ) : listQuery.isError ? (
               <tr>
                 <td colSpan={11} className="px-3 py-8 text-center">
-                  <div role="alert" className="flex flex-col items-center gap-2 text-sm">
+                  <div role="alert" className="flex flex-col items-center gap-2 text-body">
                     <p className="text-danger">{t('common.tokens.error.load')}</p>
                     <Button
                       variant="secondary"
@@ -696,11 +696,11 @@ export function TokenListPage() {
             ) : sortedItems.length === 0 ? (
               <tr>
                 <td colSpan={11} className="px-3 py-10 text-center">
-                  <p className="text-sm font-medium text-ink-1">
+                  <p className="text-body font-medium text-ink-1">
                     {hasFilters ? t('common.tokens.empty.filtered') : t('common.tokens.empty.none')}
                   </p>
                   {hasFilters ? (
-                    <p className="mt-1 text-xs text-ink-2">
+                    <p className="mt-1 text-meta text-ink-2">
                       <button
                         type="button"
                         className="underline"
@@ -710,7 +710,7 @@ export function TokenListPage() {
                       </button>
                     </p>
                   ) : (
-                    <p className="mt-1 text-xs text-ink-2">
+                    <p className="mt-1 text-meta text-ink-2">
                       {t('common.tokens.empty.description')}
                     </p>
                   )}
@@ -749,7 +749,7 @@ export function TokenListPage() {
                         <code
                           data-testid="masked-key"
                           aria-label={t('common.tokens.table.maskedKey')}
-                          className="whitespace-nowrap font-mono text-[13px] text-ink-1"
+                          className="whitespace-nowrap font-mono text-meta text-ink-1"
                         >
                           {MASKED_KEY}
                         </code>
@@ -779,7 +779,7 @@ export function TokenListPage() {
                         <Tag>{token.group}</Tag>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-xs text-ink-2">
+                    <td className="px-3 py-2 text-meta text-ink-2">
                       {token.model_limits === null ||
                       token.model_limits === undefined ||
                       token.model_limits.length === 0 ? (
@@ -792,7 +792,7 @@ export function TokenListPage() {
                         </span>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-xs text-ink-2">
+                    <td className="px-3 py-2 text-meta text-ink-2">
                       {token.allow_ips === null ||
                       token.allow_ips === undefined ||
                       token.allow_ips.length === 0 ? (
@@ -803,7 +803,7 @@ export function TokenListPage() {
                         </span>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-xs text-ink-2">
+                    <td className="px-3 py-2 text-meta text-ink-2">
                       <TimeCell iso={token.created_at} />
                       <div className="text-ink-3">
                         {token.last_used_at === null ||
@@ -814,7 +814,7 @@ export function TokenListPage() {
                             })}
                       </div>
                     </td>
-                    <td className="px-3 py-2 text-xs">
+                    <td className="px-3 py-2 text-meta">
                       <ExpiresCell iso={token.expires_at ?? null} />
                     </td>
                     <td className="px-3 py-2">
@@ -880,11 +880,11 @@ export function TokenListPage() {
         >
           {t('common.tokens.pagination.previous')}
         </Button>
-        <p className="text-sm text-ink-2">
+        <p className="text-body text-ink-2">
           {t('common.tokens.pagination.page', { page, totalPages })}
         </p>
         <div className="flex items-center gap-2">
-          <label htmlFor="token-page-size" className="text-sm text-ink-2">
+          <label htmlFor="token-page-size" className="text-body text-ink-2">
             {t('common.tokens.pagination.pageSize')}
           </label>
           <select
@@ -895,7 +895,7 @@ export function TokenListPage() {
               setPageSize(Number(event.target.value))
               setPage(1)
             }}
-            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
           >
             {PAGE_SIZES.map((size) => (
               <option key={size} value={String(size)}>
@@ -974,7 +974,7 @@ interface BatchFailureState {
 }
 
 const HEADER_CLASS =
-  'border-b border-border-hairline bg-surface-subtle px-3 py-2 text-left text-xs font-medium text-ink-2'
+  'border-b border-border-hairline bg-surface-subtle px-3 py-2 text-left text-meta font-medium text-ink-2'
 
 interface SortHeaderProps {
   label: string
@@ -1037,7 +1037,7 @@ function ExpiresCell({ iso }: { iso: string | null }) {
 function QuotaCell({ token }: { token: Token }) {
   const { t, locale } = useI18n()
   if (token.unlimited_quota) {
-    return <span className="text-xs text-ink-2">{t('common.tokens.table.unlimited')}</span>
+    return <span className="text-meta text-ink-2">{t('common.tokens.table.unlimited')}</span>
   }
   const remain = token.remain_quota ?? 0
   const percent = Math.max(0, Math.min(100, token.quota_percent ?? 0))
@@ -1047,7 +1047,7 @@ function QuotaCell({ token }: { token: Token }) {
     <div className="flex flex-col gap-1">
       <span className="tabular-nums text-ink-1">
         {formatCredits(remain, locale)}{' '}
-        <span className="text-xs text-ink-3">{t('common.tokens.table.credits')}</span>
+        <span className="text-meta text-ink-3">{t('common.tokens.table.credits')}</span>
       </span>
       {token.quota_percent !== null && token.quota_percent !== undefined ? (
         <div

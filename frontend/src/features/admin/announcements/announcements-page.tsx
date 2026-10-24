@@ -231,10 +231,10 @@ export function AnnouncementsPage({
     <div className="mx-auto flex max-w-[1520px] flex-col gap-4">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-ink-1">
+          <h1 className="text-page-title font-semibold text-ink-1">
             {t('admin.announcements.page.title')}
           </h1>
-          <p className="mt-1 text-sm text-ink-2">
+          <p className="mt-1 text-body text-ink-2">
             {t('admin.announcements.page.subtitle')}
           </p>
         </div>
@@ -257,13 +257,13 @@ export function AnnouncementsPage({
         <div className="flex flex-col gap-1.5">
           <label
             htmlFor="announcement-status-filter"
-            className="text-[13px] font-medium text-ink-1"
+            className="text-meta font-medium text-ink-1"
           >
             {t('admin.announcements.filter.status_label')}
           </label>
           <select
             id="announcement-status-filter"
-            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             value={search.status ?? ''}
             onChange={(event) => {
               const value = event.target.value
@@ -289,13 +289,13 @@ export function AnnouncementsPage({
         <div className="flex flex-col gap-1.5">
           <label
             htmlFor="announcement-category-filter"
-            className="text-[13px] font-medium text-ink-1"
+            className="text-meta font-medium text-ink-1"
           >
             {t('admin.announcements.filter.category_label')}
           </label>
           <select
             id="announcement-category-filter"
-            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             value={search.category ?? ''}
             onChange={(event) => {
               const value = event.target.value
@@ -368,10 +368,10 @@ export function AnnouncementsPage({
             <path d="M34 18c6 4 8 9 8 14s-2 10-8 14" />
             <path d="M44 12c8 6 12 13 12 20s-4 14-12 20" />
           </svg>
-          <h2 className="text-[15px] font-semibold text-ink-1">
+          <h2 className="text-card-title font-semibold text-ink-1">
             {t('admin.announcements.empty.title')}
           </h2>
-          <p className="max-w-md text-sm text-ink-2">
+          <p className="max-w-md text-body text-ink-2">
             {t('admin.announcements.empty.body')}
           </p>
           <Button
@@ -387,8 +387,8 @@ export function AnnouncementsPage({
       {listQuery.isSuccess && rows.length > 0 ? (
         <>
           <div className="overflow-x-auto rounded-xl border border-border-default">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-surface-subtle text-xs text-ink-3">
+            <table className="w-full text-left text-body">
+              <thead className="bg-surface-subtle text-meta text-ink-3">
                 <tr>
                   <th scope="col" className="px-3 py-2 font-medium">
                     {t('admin.announcements.columns.title')}
@@ -437,10 +437,10 @@ export function AnnouncementsPage({
                           {t(`admin.announcements.status.${display}`)}
                         </StatusBadge>
                       </td>
-                      <td className="px-3 py-2 text-xs text-ink-2">
+                      <td className="px-3 py-2 text-meta text-ink-2">
                         {formatDateTime(row.publish_at, locale)}
                       </td>
-                      <td className="px-3 py-2 text-xs text-ink-2">
+                      <td className="px-3 py-2 text-meta text-ink-2">
                         {row.expire_at === null || row.expire_at === undefined
                           ? t('admin.announcements.no_expiry')
                           : formatDateTime(row.expire_at, locale)}
@@ -450,7 +450,7 @@ export function AnnouncementsPage({
                           {canEdit ? (
                             <Button
                               variant="ghost"
-                              className="h-7 px-2 text-xs"
+                              className="h-7 px-2 text-badge"
                               disabled={writesDisabled}
                               title={!online ? t('admin.announcements.page.offline_write_disabled') : undefined}
                               aria-label={t('admin.announcements.actions.edit_aria', {
@@ -464,7 +464,7 @@ export function AnnouncementsPage({
                           {display === 'draft' ? (
                             <Button
                               variant="ghost"
-                              className="h-7 px-2 text-xs"
+                              className="h-7 px-2 text-badge"
                               disabled={writesDisabled}
                               aria-label={t('admin.announcements.actions.publish_aria', {
                                 title: row.title,
@@ -477,7 +477,7 @@ export function AnnouncementsPage({
                           {display === 'published' || display === 'expired' ? (
                             <Button
                               variant="ghost"
-                              className="h-7 px-2 text-xs"
+                              className="h-7 px-2 text-badge"
                               disabled={writesDisabled}
                               aria-label={t('admin.announcements.actions.offline_aria', {
                                 title: row.title,
@@ -489,7 +489,7 @@ export function AnnouncementsPage({
                           ) : null}
                           <Button
                             variant="ghost"
-                            className="h-7 px-2 text-xs text-danger"
+                            className="h-7 px-2 text-badge text-danger"
                             disabled={writesDisabled}
                             aria-label={t('admin.announcements.actions.delete_aria', {
                               title: row.title,
@@ -509,7 +509,7 @@ export function AnnouncementsPage({
 
           <nav
             aria-label={t('admin.announcements.pagination.label')}
-            className="flex flex-wrap items-center justify-between gap-3 text-xs text-ink-3"
+            className="flex flex-wrap items-center justify-between gap-3 text-meta text-ink-3"
           >
             <span>
               {t('admin.announcements.pagination.summary', {
@@ -524,7 +524,7 @@ export function AnnouncementsPage({
               </label>
               <select
                 id="announcement-page-size"
-                className="h-8 rounded-md border border-border-default bg-surface-card px-2 text-xs text-ink-1"
+                className="h-8 rounded-md border border-border-default bg-surface-card px-2 text-badge text-ink-1"
                 value={pageSize}
                 onChange={(event) => {
                   onSearchChange({
@@ -543,7 +543,7 @@ export function AnnouncementsPage({
               </select>
               <Button
                 variant="secondary"
-                className="h-7 px-2 text-xs"
+                className="h-7 px-2 text-badge"
                 disabled={page <= 1 || listQuery.isFetching}
                 onClick={() => onSearchChange({ p: Math.max(1, page - 1) })}
               >
@@ -557,7 +557,7 @@ export function AnnouncementsPage({
               </span>
               <Button
                 variant="secondary"
-                className="h-7 px-2 text-xs"
+                className="h-7 px-2 text-badge"
                 disabled={page >= pages || listQuery.isFetching}
                 onClick={() => onSearchChange({ p: page + 1 })}
               >

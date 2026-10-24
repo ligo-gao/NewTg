@@ -118,7 +118,7 @@ export function UserListPage() {
 
   return (
     <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
-      <h1 className="text-xl font-semibold text-ink-1">{t('admin.users.title')}</h1>
+      <h1 className="text-page-title font-semibold text-ink-1">{t('admin.users.title')}</h1>
       <section className="rounded-xl border border-border-hairline bg-surface-subtle p-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <TextField
@@ -130,12 +130,12 @@ export function UserListPage() {
             }}
           />
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="filter-status" className="text-[13px] font-medium text-ink-1">
+            <label htmlFor="filter-status" className="text-meta font-medium text-ink-1">
               {t('admin.users.status')}
             </label>
             <select
               id="filter-status"
-              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
               value={draft.status}
               onChange={(event) => {
                 setDraft((current) => ({
@@ -150,12 +150,12 @@ export function UserListPage() {
             </select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="filter-role" className="text-[13px] font-medium text-ink-1">
+            <label htmlFor="filter-role" className="text-meta font-medium text-ink-1">
               {t('admin.users.role')}
             </label>
             <select
               id="filter-role"
-              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
               value={draft.role}
               onChange={(event) => {
                 setDraft((current) => ({
@@ -170,12 +170,12 @@ export function UserListPage() {
             </select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="filter-group" className="text-[13px] font-medium text-ink-1">
+            <label htmlFor="filter-group" className="text-meta font-medium text-ink-1">
               {t('admin.users.group')}
             </label>
             <select
               id="filter-group"
-              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
               value={draft.group}
               onChange={(event) => {
                 setDraft((current) => ({ ...current, group: event.target.value }))
@@ -203,7 +203,7 @@ export function UserListPage() {
           <Button onClick={() => setEditTarget({ mode: 'create' })}>
             {t('admin.users.add')}
           </Button>
-          <span className="text-[13px] text-ink-2">
+          <span className="text-meta text-ink-2">
             {t('admin.users.total', { count: total })}
           </span>
         </div>
@@ -215,19 +215,19 @@ export function UserListPage() {
             ))}
           </div>
         ) : usersQuery.isError ? (
-          <div className="flex items-center gap-3 p-5 text-sm text-ink-2">
+          <div className="flex items-center gap-3 p-5 text-body text-ink-2">
             <span>{t('admin.users.error')}</span>
             <Button variant="secondary" onClick={() => void usersQuery.refetch()}>
               {t('common.action.retry')}
             </Button>
           </div>
         ) : items.length === 0 ? (
-          <p className="p-5 text-sm text-ink-2">{t('admin.users.empty')}</p>
+          <p className="p-5 text-body text-ink-2">{t('admin.users.empty')}</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[960px] text-sm">
+            <table className="w-full min-w-[960px] text-body">
               <thead>
-                <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
+                <tr className="border-b border-border-hairline text-left text-meta text-ink-2">
                   <th scope="col" className="px-4 py-2 font-medium">{t('admin.users.column_id')}</th>
                   <th scope="col" className="px-4 py-2 font-medium">
                     {t('admin.users.column_username')}
@@ -247,14 +247,14 @@ export function UserListPage() {
               <tbody>
                 {items.map((user) => (
                   <tr key={user.id} className="border-b border-border-hairline last:border-0 hover:bg-surface-hover">
-                    <td className="px-4 py-3 font-mono text-xs tabular-nums text-ink-2">
+                    <td className="px-4 py-3 font-mono text-meta tabular-nums text-ink-2">
                       {user.id}
                     </td>
                     <td className="px-4 py-3">
                       {user.display_name ? (
                         <div>
                           <p className="text-ink-1">{user.display_name}</p>
-                          <p className="text-xs text-ink-2">@{user.username}</p>
+                          <p className="text-meta text-ink-2">@{user.username}</p>
                         </div>
                       ) : (
                         <span className="text-ink-1">@{user.username}</span>
@@ -283,7 +283,7 @@ export function UserListPage() {
                       </Tag>
                     </td>
                     <td
-                      className="px-4 py-3 text-xs text-ink-2"
+                      className="px-4 py-3 text-meta text-ink-2"
                       title={user.created_at}
                     >
                       {formatRelativeTime(user.created_at, locale)}
@@ -292,14 +292,14 @@ export function UserListPage() {
                       <div className="flex justify-end gap-1">
                         <Button
                           variant="ghost"
-                          className="h-8 px-2 text-[13px]"
+                          className="h-8 px-2 text-meta"
                           onClick={() => setEditTarget({ mode: 'edit', user })}
                         >
                           {t('admin.users.edit')}
                         </Button>
                         <Button
                           variant="ghost"
-                          className="h-8 px-2 text-[13px]"
+                          className="h-8 px-2 text-meta"
                           onClick={() => setQuotaUser(user)}
                         >
                           {t('admin.users.adjust_quota')}
@@ -307,21 +307,21 @@ export function UserListPage() {
                         {/* billing-08 §16.4：单用户订阅实例（只读，立即取消待 P2）。 */}
                         <Button
                           variant="ghost"
-                          className="h-8 px-2 text-[13px]"
+                          className="h-8 px-2 text-meta"
                           onClick={() => setSubscriptionsUser(user)}
                         >
                           {t('admin.users.manage_subscriptions')}
                         </Button>
                         <Button
                           variant="ghost"
-                          className="h-8 px-2 text-[13px]"
+                          className="h-8 px-2 text-meta"
                           onClick={() => setRecoveryUser(user)}
                         >
                           {t('admin.users.account_recovery')}
                         </Button>
                         <Button
                           variant="ghost"
-                          className="h-8 px-2 text-[13px] text-danger hover:bg-danger-bg"
+                          className="h-8 px-2 text-meta text-danger hover:bg-danger-bg"
                           disabled={setStatus.isPending}
                           onClick={() => {
                             // F-07-04: disabling revokes sessions and tokens, so
@@ -346,13 +346,13 @@ export function UserListPage() {
           </div>
         )}
 
-        <div className="flex items-center justify-end gap-3 border-t border-border-hairline px-5 py-3 text-[13px] text-ink-2">
+        <div className="flex items-center justify-end gap-3 border-t border-border-hairline px-5 py-3 text-meta text-ink-2">
           <label htmlFor="page-size" className="sr-only">
             {t('admin.users.page_size')}
           </label>
           <select
             id="page-size"
-            className="h-8 rounded-md border border-border-default bg-surface-card px-2 text-xs text-ink-1"
+            className="h-8 rounded-md border border-border-default bg-surface-card px-2 text-badge text-ink-1"
             value={pageSize}
             onChange={(event) => {
               setPageSize(Number(event.target.value))
@@ -367,7 +367,7 @@ export function UserListPage() {
           </select>
           <Button
             variant="secondary"
-            className="h-8 px-2 text-[13px]"
+            className="h-8 px-2 text-meta"
             disabled={page <= 1}
             onClick={() => setPage((current) => Math.max(1, current - 1))}
           >
@@ -378,7 +378,7 @@ export function UserListPage() {
           </span>
           <Button
             variant="secondary"
-            className="h-8 px-2 text-[13px]"
+            className="h-8 px-2 text-meta"
             disabled={page >= pages}
             onClick={() => setPage((current) => current + 1)}
           >

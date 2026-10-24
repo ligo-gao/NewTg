@@ -135,17 +135,17 @@ export function DefaultModelCard({
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 id="default-model-title" className="text-base font-semibold text-ink-1">
+          <h2 id="default-model-title" className="text-section font-semibold text-ink-1">
             {t('account.model_config.default.title')}
           </h2>
-          <p className="mt-1 text-[13px] text-ink-2">
+          <p className="mt-1 text-meta text-ink-2">
             {t('account.model_config.default.description')}
           </p>
-          <p className="mt-1 text-xs text-ink-3">
+          <p className="mt-1 text-meta text-ink-3">
             {t('account.model_config.default.playground_note')}
           </p>
         </div>
-        <p className="text-[13px] text-ink-2">
+        <p className="text-meta text-ink-2">
           <span className="text-ink-3">
             {t('account.model_config.default.current_label')}:
           </span>{' '}
@@ -160,7 +160,7 @@ export function DefaultModelCard({
       </div>
 
       {error ? (
-        <div className="mt-4 flex items-center gap-3 text-[13px] text-danger">
+        <div className="mt-4 flex items-center gap-3 text-meta text-danger">
           <span>{t('account.model_config.load_error')}</span>
           <Button variant="secondary" onClick={onRetry}>
             {t('account.model_config.retry')}
@@ -183,7 +183,7 @@ export function DefaultModelCard({
                   aria-selected={active}
                   onClick={() => setActiveGroupName(group.name)}
                   className={[
-                    'h-8 rounded-lg border px-3 text-[13px]',
+                    'h-8 rounded-lg border px-3 text-meta',
                     active
                       ? 'border-brand-line bg-brand-subtle text-brand'
                       : 'border-border-default bg-surface-page text-ink-2 hover:bg-surface-hover',
@@ -210,7 +210,7 @@ export function DefaultModelCard({
               ))}
             </div>
           ) : currentGroup === undefined || currentGroup.models.length === 0 ? (
-            <p className="mt-4 text-[13px] text-ink-3">
+            <p className="mt-4 text-meta text-ink-3">
               {t('account.model_config.default.empty_models')}
             </p>
           ) : (
@@ -227,7 +227,7 @@ export function DefaultModelCard({
                     key={model}
                     htmlFor={id}
                     className={[
-                      'flex min-h-9 cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-[13px] transition-colors',
+                      'flex min-h-9 cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-meta transition-colors',
                       checked
                         ? 'border-brand bg-brand-subtle text-brand'
                         : 'border-border-default bg-surface-page text-ink-1 hover:bg-surface-hover',
@@ -256,7 +256,7 @@ export function DefaultModelCard({
                         <span className="size-2 rounded-full bg-brand" />
                       ) : null}
                     </span>
-                    <span className="truncate font-mono text-xs">{model}</span>
+                    <span className="truncate font-mono text-meta">{model}</span>
                   </label>
                 )
               })}
@@ -264,12 +264,12 @@ export function DefaultModelCard({
           )}
 
           {selectedUnavailable ? (
-            <p className="mt-2 text-xs text-warning" role="status">
+            <p className="mt-2 text-meta text-warning" role="status">
               {t('account.model_config.default.unavailable_selected')}
             </p>
           ) : null}
           {fieldError !== undefined ? (
-            <p className="mt-2 text-xs text-danger" role="alert">
+            <p className="mt-2 text-meta text-danger" role="alert">
               {fieldError}
             </p>
           ) : null}

@@ -84,10 +84,10 @@ export function ModelDeploymentsPage({
     >
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-ink-1">
+          <h1 className="text-page-title font-semibold text-ink-1">
             {t('admin.deployments.page.title')}
           </h1>
-          <p className="mt-1 text-sm text-ink-2">
+          <p className="mt-1 text-body text-ink-2">
             {t('admin.deployments.page.subtitle')}
           </p>
         </div>
@@ -101,7 +101,7 @@ export function ModelDeploymentsPage({
               {t('admin.deployments.list.create')}
             </Button>
             {createDisabled && createDisabledReason !== undefined ? (
-              <p className="text-xs text-ink-3">{createDisabledReason}</p>
+              <p className="text-meta text-ink-3">{createDisabledReason}</p>
             ) : null}
           </div>
         ) : null}
@@ -132,7 +132,7 @@ export function ModelDeploymentsPage({
               tabIndex={selected ? 0 : -1}
               onClick={() => onTabChange(entry.id)}
               className={[
-                'h-10 rounded-t-lg px-3 text-[13px]',
+                'h-10 rounded-t-lg px-3 text-meta',
                 selected
                   ? 'border-b-2 border-brand font-medium text-ink-1'
                   : 'text-ink-2 hover:bg-surface-hover hover:text-ink-1',

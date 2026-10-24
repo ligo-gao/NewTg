@@ -86,13 +86,13 @@ export function TransactionDetailSheet({
       }
     >
       {transactionId === null ? null : notFound ? (
-        <p role="status" className="text-sm text-ink-2">
+        <p role="status" className="text-body text-ink-2">
           {t('account.wallet.detail_not_found')}
         </p>
       ) : detailQuery.isPending ? (
-        <p className="text-sm text-ink-2">{t('account.wallet.detail_loading')}</p>
+        <p className="text-body text-ink-2">{t('account.wallet.detail_loading')}</p>
       ) : detailQuery.isError || detail === undefined ? (
-        <div className="flex items-center gap-3 text-sm text-ink-2">
+        <div className="flex items-center gap-3 text-body text-ink-2">
           <span role="alert">{t('account.wallet.detail_error')}</span>
           <Button variant="secondary" onClick={() => void detailQuery.refetch()}>
             {t('account.wallet.retry')}
@@ -101,7 +101,7 @@ export function TransactionDetailSheet({
       ) : (
         <div className="flex flex-col gap-5">
           <header className="flex items-center justify-between gap-3">
-            <p className={`text-[28px] font-semibold tabular-nums ${amountClass}`}>
+            <p className={`text-figure-md tabular-nums ${amountClass}`}>
               {amountPrefix}
               {formatCredits(Math.abs(detail.amount), locale)}
             </p>
@@ -110,9 +110,9 @@ export function TransactionDetailSheet({
             </StatusBadge>
           </header>
 
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-body">
             <div className="flex flex-col gap-1">
-              <dt className="text-xs text-ink-2">{t('account.wallet.detail_type')}</dt>
+              <dt className="text-meta text-ink-2">{t('account.wallet.detail_type')}</dt>
               <dd>
                 <Tag variant={WALLET_TYPE_TAG_VARIANTS[detail.type]}>
                   {t(typeLabelKey(detail.type))}
@@ -120,7 +120,7 @@ export function TransactionDetailSheet({
               </dd>
             </div>
             <div className="flex flex-col gap-1">
-              <dt className="text-xs text-ink-2">{t('account.wallet.detail_time')}</dt>
+              <dt className="text-meta text-ink-2">{t('account.wallet.detail_time')}</dt>
               <dd className="text-ink-1">
                 <time dateTime={detail.created_at}>
                   {new Date(detail.created_at).toLocaleString(locale)}
@@ -128,23 +128,23 @@ export function TransactionDetailSheet({
               </dd>
             </div>
             <div className="flex flex-col gap-1">
-              <dt className="text-xs text-ink-2">{t('account.wallet.detail_balance')}</dt>
+              <dt className="text-meta text-ink-2">{t('account.wallet.detail_balance')}</dt>
               <dd className="tabular-nums text-ink-1">
                 {formatCredits(detail.balance_after, locale)}
               </dd>
             </div>
             <div className="flex flex-col gap-1">
-              <dt className="text-xs text-ink-2">{t('account.wallet.detail_status')}</dt>
+              <dt className="text-meta text-ink-2">{t('account.wallet.detail_status')}</dt>
               <dd className="text-ink-1">{t(statusLabelKey(detail.status))}</dd>
             </div>
           </dl>
 
           {detail.reference_type !== null && detail.reference_id !== null ? (
-            <div className="flex flex-col gap-1 text-sm">
-              <span className="text-xs text-ink-2">
+            <div className="flex flex-col gap-1 text-body">
+              <span className="text-meta text-ink-2">
                 {t('account.wallet.detail_reference')}
               </span>
-              <span className="break-all font-mono text-[13px] text-ink-1">
+              <span className="break-all font-mono text-meta text-ink-1">
                 {detail.reference_type} · {detail.reference_id}
               </span>
             </div>
@@ -152,32 +152,32 @@ export function TransactionDetailSheet({
 
           {detail.note !== null ? (
             <section className="flex flex-col gap-1">
-              <h3 className="text-sm font-medium text-ink-1">
+              <h3 className="text-body font-medium text-ink-1">
                 {t('account.wallet.detail_note')}
               </h3>
-              <p className="text-sm text-ink-2">{detail.note}</p>
+              <p className="text-body text-ink-2">{detail.note}</p>
             </section>
           ) : null}
 
           {detail.reference_type === 'usage_log' ? (
             <section className="flex flex-col gap-2">
-              <h3 className="text-sm font-medium text-ink-1">
+              <h3 className="text-body font-medium text-ink-1">
                 {t('account.wallet.detail_usage')}
               </h3>
               {detail.usage === null ? (
-                <p className="text-sm text-ink-2">
+                <p className="text-body text-ink-2">
                   {t('account.wallet.detail_usage_missing')}
                 </p>
               ) : (
-                <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-body">
                   <div className="flex flex-col gap-1">
-                    <dt className="text-xs text-ink-2">
+                    <dt className="text-meta text-ink-2">
                       {t('account.wallet.detail_usage_model')}
                     </dt>
                     <dd className="text-ink-1">{detail.usage.model}</dd>
                   </div>
                   <div className="flex flex-col gap-1">
-                    <dt className="text-xs text-ink-2">
+                    <dt className="text-meta text-ink-2">
                       {t('account.wallet.detail_usage_tokens')}
                     </dt>
                     <dd className="tabular-nums text-ink-1">
@@ -191,7 +191,7 @@ export function TransactionDetailSheet({
                     </dd>
                   </div>
                   <div className="flex flex-col gap-1">
-                    <dt className="text-xs text-ink-2">
+                    <dt className="text-meta text-ink-2">
                       {t('account.wallet.detail_usage_cost')}
                     </dt>
                     <dd className="tabular-nums text-ink-1">
@@ -200,7 +200,7 @@ export function TransactionDetailSheet({
                   </div>
                   {detail.usage.pre_deducted !== null ? (
                     <div className="flex flex-col gap-1">
-                      <dt className="text-xs text-ink-2">
+                      <dt className="text-meta text-ink-2">
                         {t('account.wallet.detail_segments_title')}
                       </dt>
                       <dd className="tabular-nums text-ink-1">
@@ -214,7 +214,7 @@ export function TransactionDetailSheet({
                 </dl>
               )}
               {detail.segments !== null ? (
-                <p className="text-sm text-ink-1">
+                <p className="text-body text-ink-1">
                   {t('account.wallet.detail_segments', {
                     held: formatCredits(detail.segments.held, locale),
                     charged: formatCredits(detail.segments.charged, locale),
@@ -227,19 +227,19 @@ export function TransactionDetailSheet({
 
           {detail.order !== null ? (
             <section className="flex flex-col gap-2">
-              <h3 className="text-sm font-medium text-ink-1">
+              <h3 className="text-body font-medium text-ink-1">
                 {t('account.wallet.detail_order')}
               </h3>
-              <p className="font-mono text-[13px] text-ink-1">#{detail.order.id}</p>
-              <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+              <p className="font-mono text-meta text-ink-1">#{detail.order.id}</p>
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-body">
                 <div className="flex flex-col gap-1">
-                  <dt className="text-xs text-ink-2">
+                  <dt className="text-meta text-ink-2">
                     {t('account.wallet.detail_order_status')}
                   </dt>
                   <dd className="text-ink-1">{detail.order.status}</dd>
                 </div>
                 <div className="flex flex-col gap-1">
-                  <dt className="text-xs text-ink-2">
+                  <dt className="text-meta text-ink-2">
                     {t('account.wallet.detail_order_amount')}
                   </dt>
                   <dd className="tabular-nums text-ink-1">
@@ -249,7 +249,7 @@ export function TransactionDetailSheet({
               </dl>
               <a
                 href="/orders"
-                className="text-[13px] font-medium text-brand hover:text-brand-hover"
+                className="text-meta font-medium text-brand hover:text-brand-hover"
               >
                 {t('account.wallet.detail_order_link')}
               </a>
@@ -258,12 +258,12 @@ export function TransactionDetailSheet({
 
           {detail.redemption !== null ? (
             <section className="flex flex-col gap-2">
-              <h3 className="text-sm font-medium text-ink-1">
+              <h3 className="text-body font-medium text-ink-1">
                 {t('account.wallet.detail_redemption')}
               </h3>
-              <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-body">
                 <div className="flex flex-col gap-1">
-                  <dt className="text-xs text-ink-2">
+                  <dt className="text-meta text-ink-2">
                     {t('account.wallet.detail_redemption_batch')}
                   </dt>
                   <dd className="text-ink-1">
@@ -271,7 +271,7 @@ export function TransactionDetailSheet({
                   </dd>
                 </div>
                 <div className="flex flex-col gap-1">
-                  <dt className="text-xs text-ink-2">
+                  <dt className="text-meta text-ink-2">
                     {t('account.wallet.detail_redemption_credits')}
                   </dt>
                   <dd className="tabular-nums text-ink-1">
@@ -284,10 +284,10 @@ export function TransactionDetailSheet({
 
           {detail.adjustment !== null ? (
             <section className="flex flex-col gap-1">
-              <h3 className="text-sm font-medium text-ink-1">
+              <h3 className="text-body font-medium text-ink-1">
                 {t('account.wallet.detail_adjustment')}
               </h3>
-              <p className="text-sm text-ink-2">
+              <p className="text-body text-ink-2">
                 {t('account.wallet.detail_adjustment_mode')}:{' '}
                 {t(`account.wallet.adjustment_${detail.adjustment.mode}`)}
               </p>
@@ -297,13 +297,13 @@ export function TransactionDetailSheet({
           {detail.type === 'reversal' ? (
             <section
               role="alert"
-              className="flex flex-col gap-2 rounded-lg border border-dashed border-accent-reversal p-3 text-sm text-accent-reversal"
+              className="flex flex-col gap-2 rounded-lg border border-dashed border-accent-reversal p-3 text-body text-accent-reversal"
             >
               <p>{t('account.wallet.reversal_warning')}</p>
               {detail.corrects_transaction_id !== null && onOpenCorrects ? (
                 <button
                   type="button"
-                  className="self-start text-[13px] font-medium underline"
+                  className="self-start text-meta font-medium underline"
                   onClick={() => {
                     onOpenCorrects(detail.corrects_transaction_id as number)
                   }}

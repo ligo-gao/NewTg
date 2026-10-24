@@ -241,10 +241,10 @@ export function NotificationTemplatesPage({
     <div className="mx-auto flex max-w-[1520px] flex-col gap-4" data-testid="notification-templates-page">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-ink-1">
+          <h1 className="text-page-title font-semibold text-ink-1">
             {t('settings.notification_templates.page.title')}
           </h1>
-          <p className="mt-1 text-sm text-ink-2">
+          <p className="mt-1 text-body text-ink-2">
             {t('settings.notification_templates.page.subtitle')}
           </p>
         </div>
@@ -274,7 +274,7 @@ export function NotificationTemplatesPage({
               aria-selected={selected}
               onClick={() => switchTab(entry)}
               className={[
-                'h-10 rounded-t-lg px-3 text-[13px]',
+                'h-10 rounded-t-lg px-3 text-meta',
                 selected
                   ? 'border-b-2 border-brand font-medium text-ink-1'
                   : 'text-ink-2 hover:bg-surface-hover hover:text-ink-1',
@@ -289,7 +289,7 @@ export function NotificationTemplatesPage({
       {tab === 'templates' ? (
         <section className="space-y-3" aria-label={t('settings.notification_templates.tabs.templates')}>
           <div className="flex flex-wrap items-end gap-3">
-            <label className="flex flex-col gap-1 text-xs text-ink-2">
+            <label className="flex flex-col gap-1 text-meta text-ink-2">
               {t('settings.notification_templates.filters.category')}
               <select
                 multiple
@@ -304,7 +304,7 @@ export function NotificationTemplatesPage({
                     page: undefined,
                   })
                 }}
-                className="min-w-44 rounded-lg border border-border-default bg-surface-card px-2 py-1 text-sm text-ink-1"
+                className="min-w-44 rounded-lg border border-border-default bg-surface-card px-2 py-1 text-body text-ink-1"
               >
                 {NOTIFICATION_CATEGORIES.map((category) => (
                   <option key={category.key} value={category.key}>
@@ -314,7 +314,7 @@ export function NotificationTemplatesPage({
               </select>
             </label>
 
-            <label className="flex flex-col gap-1 text-xs text-ink-2">
+            <label className="flex flex-col gap-1 text-meta text-ink-2">
               {t('settings.notification_templates.filters.channel')}
               <select
                 aria-label={t('settings.notification_templates.filters.channel')}
@@ -329,7 +329,7 @@ export function NotificationTemplatesPage({
                     page: undefined,
                   })
                 }}
-                className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+                className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
               >
                 <option value="">{t('settings.notification_templates.filters.all_channels')}</option>
                 <option value="email">{t('settings.notification_templates.channel.email')}</option>
@@ -337,7 +337,7 @@ export function NotificationTemplatesPage({
               </select>
             </label>
 
-            <label className="flex flex-col gap-1 text-xs text-ink-2">
+            <label className="flex flex-col gap-1 text-meta text-ink-2">
               {t('settings.notification_templates.filters.locale')}
               <select
                 aria-label={t('settings.notification_templates.filters.locale')}
@@ -349,7 +349,7 @@ export function NotificationTemplatesPage({
                     page: undefined,
                   })
                 }}
-                className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+                className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
               >
                 <option value="">{t('settings.notification_templates.filters.all_locales')}</option>
                 {NOTIFICATION_LOCALES.map((entry) => (
@@ -360,7 +360,7 @@ export function NotificationTemplatesPage({
               </select>
             </label>
 
-            <label className="flex h-9 items-center gap-2 text-sm text-ink-2">
+            <label className="flex h-9 items-center gap-2 text-body text-ink-2">
               <input
                 type="checkbox"
                 checked={search.modified === true}
@@ -376,7 +376,7 @@ export function NotificationTemplatesPage({
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-xs text-ink-3" role="status">
+            <p className="text-meta text-ink-3" role="status">
               {t('settings.notification_templates.toolbar.rows', {
                 count: filteredRows.length,
               })}
@@ -388,7 +388,7 @@ export function NotificationTemplatesPage({
             {canManage ? (
               <Button
                 variant="danger"
-                className="h-8 px-3 text-xs"
+                className="h-8 px-3 text-meta"
                 disabled={filteredRows.length === 0}
                 onClick={() => setRestoreAllOpen(true)}
               >
@@ -420,7 +420,7 @@ export function NotificationTemplatesPage({
 
           {templateQuery.isSuccess ? (
             filteredRows.length === 0 ? (
-              <p className="rounded-xl border border-dashed border-border-default px-4 py-10 text-center text-sm text-ink-3">
+              <p className="rounded-xl border border-dashed border-border-default px-4 py-10 text-center text-body text-ink-3">
                 {categories.length === 0 &&
                 search.channel === undefined &&
                 search.locale === undefined &&
@@ -431,8 +431,8 @@ export function NotificationTemplatesPage({
             ) : (
               <>
                 <div className="overflow-x-auto rounded-xl border border-border-default">
-                  <table className="w-full text-left text-sm">
-                    <thead className="bg-surface-subtle text-xs text-ink-3">
+                  <table className="w-full text-left text-body">
+                    <thead className="bg-surface-subtle text-meta text-ink-3">
                       <tr>
                         <th className="px-3 py-2 font-medium">
                           {t('settings.notification_templates.table.key')}
@@ -469,7 +469,7 @@ export function NotificationTemplatesPage({
                             data-testid="notification-template-row"
                             className="border-t border-border-hairline align-middle"
                           >
-                            <td className="px-3 py-2 font-mono text-xs text-ink-1">{row.key}</td>
+                            <td className="px-3 py-2 font-mono text-meta text-ink-1">{row.key}</td>
                             <td className="px-3 py-2">
                               <Tag variant="neutral">{t(categoryLabelKey(row.category))}</Tag>
                             </td>
@@ -478,10 +478,10 @@ export function NotificationTemplatesPage({
                                 {t(`settings.notification_templates.channel.${row.channel}`)}
                               </Tag>
                             </td>
-                            <td className="px-3 py-2 text-xs text-ink-2">{row.locale}</td>
+                            <td className="px-3 py-2 text-meta text-ink-2">{row.locale}</td>
                             <td className="px-3 py-2">
                               {locked ? (
-                                <span className="text-xs text-ink-2">
+                                <span className="text-meta text-ink-2">
                                   {row.enabled
                                     ? t('settings.notification_templates.drawer.locked_enabled')
                                     : t('settings.notification_templates.table.disabled')}
@@ -507,7 +507,7 @@ export function NotificationTemplatesPage({
                                 </Tag>
                               )}
                             </td>
-                            <td className="hidden px-3 py-2 text-xs text-ink-3 lg:table-cell">
+                            <td className="hidden px-3 py-2 text-meta text-ink-3 lg:table-cell">
                               {row.updated_at === null ? (
                                 '—'
                               ) : (
@@ -520,14 +520,14 @@ export function NotificationTemplatesPage({
                               <div className="flex flex-wrap gap-1">
                                 <Button
                                   variant="ghost"
-                                  className="h-7 px-2 text-xs"
+                                  className="h-7 px-2 text-meta"
                                   onClick={() => setDrawerTarget(row)}
                                 >
                                   {t('settings.notification_templates.table.edit')}
                                 </Button>
                                 <Button
                                   variant="ghost"
-                                  className="h-7 px-2 text-xs"
+                                  className="h-7 px-2 text-meta"
                                   onClick={() => setPreviewTarget(row)}
                                 >
                                   {t('settings.notification_templates.table.preview')}
@@ -535,7 +535,7 @@ export function NotificationTemplatesPage({
                                 {canManage ? (
                                   <Button
                                     variant="ghost"
-                                    className="h-7 px-2 text-xs"
+                                    className="h-7 px-2 text-meta"
                                     disabled={
                                       row.channel !== 'email' || smtpConfigured === false
                                     }
@@ -554,7 +554,7 @@ export function NotificationTemplatesPage({
                                 {canManage ? (
                                   <Button
                                     variant="ghost"
-                                    className="h-7 px-2 text-xs text-danger hover:text-danger"
+                                    className="h-7 px-2 text-meta text-danger hover:text-danger"
                                     onClick={() => setRestoreTarget(row)}
                                   >
                                     {t('settings.notification_templates.table.restore')}
@@ -571,7 +571,7 @@ export function NotificationTemplatesPage({
 
                 <nav
                   aria-label={t('settings.notification_templates.pagination.label')}
-                  className="flex items-center justify-between text-xs text-ink-3"
+                  className="flex items-center justify-between text-meta text-ink-3"
                 >
                   <span>
                     {t('settings.notification_templates.pagination.summary', {
@@ -583,7 +583,7 @@ export function NotificationTemplatesPage({
                   <span className="flex items-center gap-2">
                     <Button
                       variant="secondary"
-                      className="h-7 px-2 text-xs"
+                      className="h-7 px-2 text-meta"
                       disabled={page <= 1}
                       onClick={() => templatePageHref(page - 1)}
                     >
@@ -597,7 +597,7 @@ export function NotificationTemplatesPage({
                     </span>
                     <Button
                       variant="secondary"
-                      className="h-7 px-2 text-xs"
+                      className="h-7 px-2 text-meta"
                       disabled={page >= pageCount}
                       onClick={() => templatePageHref(page + 1)}
                     >
@@ -612,7 +612,7 @@ export function NotificationTemplatesPage({
       ) : (
         <section className="space-y-3" aria-label={t('settings.notification_templates.tabs.deliveries')}>
           <div className="flex flex-wrap items-end gap-3">
-            <label className="flex flex-col gap-1 text-xs text-ink-2">
+            <label className="flex flex-col gap-1 text-meta text-ink-2">
               {t('settings.notification_templates.filters.category')}
               <select
                 aria-label={t('settings.notification_templates.filters.category')}
@@ -626,7 +626,7 @@ export function NotificationTemplatesPage({
                     d_page: undefined,
                   })
                 }}
-                className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+                className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
               >
                 <option value="">{t('settings.notification_templates.filters.all_categories')}</option>
                 {NOTIFICATION_CATEGORIES.map((category) => (
@@ -637,7 +637,7 @@ export function NotificationTemplatesPage({
               </select>
             </label>
 
-            <label className="flex flex-col gap-1 text-xs text-ink-2">
+            <label className="flex flex-col gap-1 text-meta text-ink-2">
               {t('settings.notification_templates.filters.channel')}
               <select
                 aria-label={t('settings.notification_templates.filters.channel')}
@@ -652,7 +652,7 @@ export function NotificationTemplatesPage({
                     d_page: undefined,
                   })
                 }}
-                className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+                className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
               >
                 <option value="">{t('settings.notification_templates.filters.all_channels')}</option>
                 <option value="email">{t('settings.notification_templates.channel.email')}</option>
@@ -660,7 +660,7 @@ export function NotificationTemplatesPage({
               </select>
             </label>
 
-            <label className="flex flex-col gap-1 text-xs text-ink-2">
+            <label className="flex flex-col gap-1 text-meta text-ink-2">
               {t('settings.notification_templates.deliveries.status')}
               <select
                 aria-label={t('settings.notification_templates.deliveries.status')}
@@ -674,7 +674,7 @@ export function NotificationTemplatesPage({
                     d_page: undefined,
                   })
                 }}
-                className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+                className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
               >
                 <option value="">{t('settings.notification_templates.deliveries.all_statuses')}</option>
                 {DELIVERY_STATUSES.map((entry) => (
@@ -685,7 +685,7 @@ export function NotificationTemplatesPage({
               </select>
             </label>
 
-            <label className="flex flex-col gap-1 text-xs text-ink-2">
+            <label className="flex flex-col gap-1 text-meta text-ink-2">
               {t('settings.notification_templates.deliveries.time_range')}
               <select
                 aria-label={t('settings.notification_templates.deliveries.time_range')}
@@ -704,7 +704,7 @@ export function NotificationTemplatesPage({
                     d_page: undefined,
                   })
                 }}
-                className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+                className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
               >
                 <option value="">{t('settings.notification_templates.deliveries.range_all')}</option>
                 <option value="24h">{t('settings.notification_templates.deliveries.range_24h')}</option>
@@ -716,7 +716,7 @@ export function NotificationTemplatesPage({
 
             {search.d_range === 'custom' ? (
               <>
-                <label className="flex flex-col gap-1 text-xs text-ink-2">
+                <label className="flex flex-col gap-1 text-meta text-ink-2">
                   {t('settings.notification_templates.deliveries.from')}
                   <input
                     type="date"
@@ -725,10 +725,10 @@ export function NotificationTemplatesPage({
                     onChange={(event) =>
                       onSearchChange({ d_from: event.target.value || undefined, d_page: undefined })
                     }
-                    className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+                    className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
                   />
                 </label>
-                <label className="flex flex-col gap-1 text-xs text-ink-2">
+                <label className="flex flex-col gap-1 text-meta text-ink-2">
                   {t('settings.notification_templates.deliveries.to')}
                   <input
                     type="date"
@@ -737,7 +737,7 @@ export function NotificationTemplatesPage({
                     onChange={(event) =>
                       onSearchChange({ d_to: event.target.value || undefined, d_page: undefined })
                     }
-                    className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+                    className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
                   />
                 </label>
               </>
@@ -775,14 +775,14 @@ export function NotificationTemplatesPage({
 
           {deliveryQuery.isSuccess ? (
             deliveries.length === 0 ? (
-              <p className="rounded-xl border border-dashed border-border-default px-4 py-10 text-center text-sm text-ink-3">
+              <p className="rounded-xl border border-dashed border-border-default px-4 py-10 text-center text-body text-ink-3">
                 {t('settings.notification_templates.deliveries.empty')}
               </p>
             ) : (
               <>
                 <div className="overflow-x-auto rounded-xl border border-border-default">
-                  <table className="w-full text-left text-sm">
-                    <thead className="bg-surface-subtle text-xs text-ink-3">
+                  <table className="w-full text-left text-body">
+                    <thead className="bg-surface-subtle text-meta text-ink-3">
                       <tr>
                         <th className="px-3 py-2 font-medium">
                           {t('settings.notification_templates.deliveries.time')}
@@ -820,7 +820,7 @@ export function NotificationTemplatesPage({
                           data-testid="notification-delivery-row"
                           className="border-t border-border-hairline align-top"
                         >
-                          <td className="whitespace-nowrap px-3 py-2 text-xs text-ink-3">
+                          <td className="whitespace-nowrap px-3 py-2 text-meta text-ink-3">
                             <span title={delivery.created_at}>
                               {formatRelativeTime(delivery.created_at, uiLocale)}
                             </span>
@@ -833,10 +833,10 @@ export function NotificationTemplatesPage({
                               {t(`settings.notification_templates.channel.${delivery.channel}`)}
                             </Tag>
                           </td>
-                          <td className="px-3 py-2 text-xs text-ink-2">
+                          <td className="px-3 py-2 text-meta text-ink-2">
                             {maskRecipient(delivery.recipient)}
                           </td>
-                          <td className="px-3 py-2 text-xs text-ink-2">{delivery.locale ?? '—'}</td>
+                          <td className="px-3 py-2 text-meta text-ink-2">{delivery.locale ?? '—'}</td>
                           <td className="px-3 py-2">
                             <StatusBadge variant={DELIVERY_STATUS_VARIANTS[delivery.status]}>
                               {t(
@@ -846,14 +846,14 @@ export function NotificationTemplatesPage({
                               )}
                             </StatusBadge>
                           </td>
-                          <td className="px-3 py-2 text-xs text-ink-2">{delivery.attempt}</td>
-                          <td className="max-w-64 truncate px-3 py-2 font-mono text-xs text-ink-3">
+                          <td className="px-3 py-2 text-meta text-ink-2">{delivery.attempt}</td>
+                          <td className="max-w-64 truncate px-3 py-2 font-mono text-meta text-ink-3">
                             {delivery.error ?? '—'}
                           </td>
                           <td className="px-3 py-2">
                             <Button
                               variant="ghost"
-                              className="h-7 px-2 text-xs"
+                              className="h-7 px-2 text-meta"
                               onClick={() => setDeliveryTarget(delivery)}
                             >
                               {t('settings.notification_templates.deliveries.details')}
@@ -867,7 +867,7 @@ export function NotificationTemplatesPage({
 
                 <nav
                   aria-label={t('settings.notification_templates.pagination.label')}
-                  className="flex items-center justify-between text-xs text-ink-3"
+                  className="flex items-center justify-between text-meta text-ink-3"
                 >
                   <span>
                     {t('settings.notification_templates.pagination.summary', {
@@ -879,7 +879,7 @@ export function NotificationTemplatesPage({
                   <span className="flex items-center gap-2">
                     <Button
                       variant="secondary"
-                      className="h-7 px-2 text-xs"
+                      className="h-7 px-2 text-meta"
                       disabled={deliveryPage <= 1}
                       onClick={() =>
                         onSearchChange({
@@ -897,7 +897,7 @@ export function NotificationTemplatesPage({
                     </span>
                     <Button
                       variant="secondary"
-                      className="h-7 px-2 text-xs"
+                      className="h-7 px-2 text-meta"
                       disabled={deliveryPage >= deliveryPageCount}
                       onClick={() =>
                         onSearchChange({ d_page: deliveryPage + 1 })

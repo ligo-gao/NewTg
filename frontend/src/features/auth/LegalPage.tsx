@@ -64,8 +64,8 @@ export function LegalPage({ doc }: LegalPageProps) {
     <div className="min-h-screen bg-surface-card text-ink-1">
       <header className="border-b border-border-hairline px-6 py-4">
         <div className="mx-auto flex max-w-[960px] items-center justify-between">
-          <span className="text-sm font-semibold">{t('auth.shell.brand')}</span>
-          <a className="text-[13px] text-ink-2 hover:text-ink-1" href="/">
+          <span className="text-body font-semibold">{t('auth.shell.brand')}</span>
+          <a className="text-meta text-ink-2 hover:text-ink-1" href="/">
             {t('auth.legal.back')}
           </a>
         </div>
@@ -73,8 +73,8 @@ export function LegalPage({ doc }: LegalPageProps) {
 
       <main id="main" className="mx-auto flex max-w-[960px] gap-10 px-6 py-10">
         <article className="max-w-[720px] flex-1">
-          <h1 className="text-[28px] font-semibold leading-9">{title}</h1>
-          <p className="mt-1 font-mono text-xs text-ink-3">
+          <h1 className="text-page-title leading-9">{title}</h1>
+          <p className="mt-1 font-mono text-meta text-ink-3">
             {t('auth.legal.last_updated', { date: LEGAL_LAST_UPDATED })}
           </p>
           <div className="mt-8 flex flex-col gap-6">
@@ -83,21 +83,21 @@ export function LegalPage({ doc }: LegalPageProps) {
                 <h2
                   id={`legal-${section.id}`}
                   tabIndex={-1}
-                  className="text-lg font-semibold leading-7"
+                  className="text-section leading-7"
                 >
                   {t(section.headingKey)}
                 </h2>
-                <p className="mt-2 text-sm leading-6 text-ink-2">{t(section.bodyKey)}</p>
+                <p className="mt-2 text-body leading-6 text-ink-2">{t(section.bodyKey)}</p>
               </section>
             ))}
           </div>
         </article>
 
         <nav aria-label={t('auth.legal.toc')} className="hidden w-[200px] shrink-0 xl:block">
-          <p className="text-xs font-medium uppercase tracking-wide text-ink-3">
+          <p className="text-badge uppercase tracking-wide text-ink-3">
             {t('auth.legal.toc')}
           </p>
-          <ul className="mt-3 flex flex-col gap-2 text-[13px]">
+          <ul className="mt-3 flex flex-col gap-2 text-meta">
             {sections.map((section) => (
               <li key={section.id}>
                 <a className="text-ink-2 hover:text-brand" href={`#legal-${section.id}`}>

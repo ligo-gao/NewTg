@@ -92,7 +92,7 @@ export function RestoreSingleDialog({
     >
       <div className="space-y-3">
         {error !== null ? <FormAlert tone="danger">{error}</FormAlert> : null}
-        <p className="text-sm text-ink-2">
+        <p className="text-body text-ink-2">
           {t('settings.notification_templates.restore.single_body')}
         </p>
       </div>
@@ -190,11 +190,11 @@ export function RestoreAllDialog({
     >
       <div className="space-y-3">
         {error !== null ? <FormAlert tone="danger">{error}</FormAlert> : null}
-        <p className="text-sm text-ink-2">
+        <p className="text-body text-ink-2">
           {t('settings.notification_templates.restore.all_body', { count })}
         </p>
         <label className="flex flex-col gap-1.5">
-          <span className="text-[13px] font-medium text-ink-1">
+          <span className="text-meta font-medium text-ink-1">
             {t('settings.notification_templates.restore.all_input_label')}
           </span>
           <input
@@ -203,11 +203,11 @@ export function RestoreAllDialog({
             disabled={busy}
             onChange={(event) => setTyped(event.target.value)}
             aria-label={t('settings.notification_templates.restore.all_input_label')}
-            className="h-10 w-32 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
+            className="h-10 w-32 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
           />
         </label>
         {typed !== '' && !matches ? (
-          <p role="alert" className="text-xs text-danger">
+          <p role="alert" className="text-meta text-danger">
             {t('settings.notification_templates.restore.all_input_mismatch', { count })}
           </p>
         ) : null}

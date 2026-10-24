@@ -59,7 +59,7 @@ export function SegmentedControl<T extends string>({
               if (option.disabled !== true) onChange(option.value)
             }}
             className={[
-              'rounded-md px-2.5 py-0.5 text-[13px] font-medium leading-5 transition-colors duration-150 motion-reduce:transition-none',
+              'rounded-md px-2.5 py-0.5 text-meta font-medium leading-5 transition-colors duration-150 motion-reduce:transition-none',
               selected
                 ? 'bg-surface-card text-ink-1 shadow-sm'
                 : 'text-ink-2 hover:text-ink-1',
@@ -101,7 +101,7 @@ export function SwitchControl({
   return (
     <label
       className={[
-        'inline-flex items-center gap-2 text-[13px] leading-5 text-ink-2',
+        'inline-flex items-center gap-2 text-meta leading-5 text-ink-2',
         disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
       ].join(' ')}
       title={disabled ? disabledHint : undefined}

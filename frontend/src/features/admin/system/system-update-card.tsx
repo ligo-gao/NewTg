@@ -214,16 +214,16 @@ export function SystemUpdateCard({ currentVersion }: { currentVersion?: string }
         </Button>
       }
     >
-      <p className="text-xs text-ink-3">{t('settings.status.update_no_auto_refresh')}</p>
+      <p className="text-meta text-ink-3">{t('settings.status.update_no_auto_refresh')}</p>
 
-      <dl className="mt-3 grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+      <dl className="mt-3 grid grid-cols-1 gap-3 text-body sm:grid-cols-2">
         <div>
-          <dt className="text-xs text-ink-3">{t('settings.status.update_current')}</dt>
+          <dt className="text-meta text-ink-3">{t('settings.status.update_current')}</dt>
           <dd className="font-mono text-ink-1">{current}</dd>
         </div>
         {result?.latest ? (
           <div>
-            <dt className="text-xs text-ink-3">{t('settings.status.update_latest')}</dt>
+            <dt className="text-meta text-ink-3">{t('settings.status.update_latest')}</dt>
             <dd className="flex flex-wrap items-center gap-2 font-mono text-ink-1">
               <span data-testid="system-update-latest">{result.latest}</span>
               {result.prerelease ? (
@@ -237,7 +237,7 @@ export function SystemUpdateCard({ currentVersion }: { currentVersion?: string }
       </dl>
 
       {query.isPending && !result ? (
-        <p className="mt-3 text-sm text-ink-2" role="status">
+        <p className="mt-3 text-body text-ink-2" role="status">
           {t('settings.status.update_loading')}
         </p>
       ) : null}
@@ -256,7 +256,7 @@ export function SystemUpdateCard({ currentVersion }: { currentVersion?: string }
 
       {result ? (
         <div className="mt-3 space-y-2">
-          <p className="flex items-center gap-2 text-sm text-ink-1">
+          <p className="flex items-center gap-2 text-body text-ink-1">
             <span data-testid="system-update-state">{message}</span>
             {result.cached ? (
               <StatusBadge variant="neutral">{t('settings.status.update_cached')}</StatusBadge>
@@ -264,28 +264,28 @@ export function SystemUpdateCard({ currentVersion }: { currentVersion?: string }
           </p>
 
           {result.state === 'incomparable' ? (
-            <p className="text-xs text-ink-3">{t('settings.status.update_not_injected')}</p>
+            <p className="text-meta text-ink-3">{t('settings.status.update_not_injected')}</p>
           ) : null}
 
           {result.prerelease_skipped ? (
-            <p className="text-xs text-ink-3">{t('settings.status.update_prerelease_skipped')}</p>
+            <p className="text-meta text-ink-3">{t('settings.status.update_prerelease_skipped')}</p>
           ) : null}
 
           {result.state === 'error' ? (
-            <p className="text-sm text-danger" data-testid="system-update-error">
+            <p className="text-body text-danger" data-testid="system-update-error">
               {t(errorKey(result.error_kind))}
             </p>
           ) : null}
 
           {result.published_at ? (
-            <p className="text-xs text-ink-3">
+            <p className="text-meta text-ink-3">
               {t('settings.status.update_published_at', {
                 time: formatTimestamp(result.published_at, locale),
               })}
             </p>
           ) : null}
           {result.checked_at ? (
-            <p className="text-xs text-ink-3">
+            <p className="text-meta text-ink-3">
               {t('settings.status.update_checked_at', {
                 time: formatTimestamp(result.checked_at, locale),
               })}
@@ -293,7 +293,7 @@ export function SystemUpdateCard({ currentVersion }: { currentVersion?: string }
           ) : null}
 
           {result.last_success && result.state === 'error' ? (
-            <p className="text-xs text-ink-3">
+            <p className="text-meta text-ink-3">
               {t('settings.status.update_last_success', {
                 version: result.last_success.latest,
                 time: formatTimestamp(result.last_success.checked_at, locale),
@@ -302,9 +302,9 @@ export function SystemUpdateCard({ currentVersion }: { currentVersion?: string }
           ) : null}
 
           {result.notes ? (
-            <div className="text-sm text-ink-2">
-              <p className="text-xs text-ink-3">{t('settings.status.update_notes')}</p>
-              <p className="mt-1 whitespace-pre-wrap break-words font-mono text-xs">
+            <div className="text-body text-ink-2">
+              <p className="text-meta text-ink-3">{t('settings.status.update_notes')}</p>
+              <p className="mt-1 whitespace-pre-wrap break-words font-mono text-meta">
                 {result.notes}
               </p>
             </div>
@@ -315,23 +315,23 @@ export function SystemUpdateCard({ currentVersion }: { currentVersion?: string }
               href={result.notes_url}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-sm text-brand underline-offset-2 hover:underline"
+              className="text-body text-brand underline-offset-2 hover:underline"
             >
               {t('settings.status.update_view_notes')}
             </a>
           ) : null}
 
           {countdown.running ? (
-            <p className="text-xs text-ink-3" role="status">
+            <p className="text-meta text-ink-3" role="status">
               {t('settings.status.update_retry_in', { seconds: countdown.seconds })}
             </p>
           ) : null}
 
           {result.state === 'disabled' ? (
-            <p className="text-xs text-ink-3">{t('settings.status.update_disabled_hint')}</p>
+            <p className="text-meta text-ink-3">{t('settings.status.update_disabled_hint')}</p>
           ) : null}
           {result.state === 'source_unset' ? (
-            <p className="text-xs text-ink-3">{t('settings.status.update_source_unset_hint')}</p>
+            <p className="text-meta text-ink-3">{t('settings.status.update_source_unset_hint')}</p>
           ) : null}
         </div>
       ) : null}

@@ -6,6 +6,13 @@
 
    Colour tokens live in styles/tokens.css (--home-*). This file only maps
    them to the public surfaces; no raw colour value belongs here.
+
+   Type scale (2026-10-24 全量统一, docs/modules-00 §4.7): 本站字号只取
+   12/18 (徽章与 mono 小件) · 13/20 (辅助与 mono 数据) · 14/22 (正文) ·
+   16/24 600 (区块标题) · 18/28 (Hero 导语/品牌字) · 24/32 600 (区块大标题
+   clamp(1.5rem,2.4vw,2rem) 与统计数值) · display-1 clamp(2.5rem,4.6vw,3rem)
+   (Hero 主标题)。代码块一律等宽 13/20 (§4.6.6)。低于 12px 的字号已被
+   取缔,新增样式不得重新引入。
    ========================================================================== */
 
 /* Archivo and IBM Plex Mono are self-hosted so a private deployment never
@@ -152,7 +159,8 @@
 }
 
 .public-shell .brand-name {
-  font-size: 17px;
+  font-size: 18px;
+  line-height: 28px;
   font-weight: 600;
   letter-spacing: -0.025em;
 }
@@ -174,6 +182,7 @@
   color: var(--home-muted);
   text-decoration: none;
   font-size: 14px;
+  line-height: 22px;
   font-weight: 500;
 }
 
@@ -211,6 +220,7 @@
   color: var(--home-muted);
   font-family: var(--font-public);
   font-size: 13px;
+  line-height: 20px;
   cursor: pointer;
 }
 .public-shell .home-lang select:hover {
@@ -235,6 +245,7 @@
   color: var(--home-paper);
   font-family: var(--font-public);
   font-size: 14px;
+  line-height: 22px;
   font-weight: 600;
   letter-spacing: -0.005em;
   text-decoration: none;
@@ -261,7 +272,7 @@
   color: var(--home-ink);
 }
 
-.public-shell .btn-sm { height: 34px; padding: 0 13px; font-size: 13px; }
+.public-shell .btn-sm { height: 34px; padding: 0 13px; font-size: 13px; line-height: 20px; }
 
 .public-shell .sign-in {
   display: inline-flex;
@@ -271,6 +282,7 @@
   border-radius: 6px;
   color: var(--home-muted);
   font-size: 14px;
+  line-height: 22px;
   font-weight: 500;
   text-decoration: none;
 }
@@ -328,6 +340,7 @@
   background: transparent;
   color: var(--home-ink);
   font-size: 14px;
+  line-height: 22px;
   text-align: left;
   text-decoration: none;
   cursor: pointer;
@@ -351,8 +364,8 @@
 
 .public-shell .home-hero-title {
   margin: 0;
-  font-size: clamp(2.5rem, 4.6vw, 3.6rem);
-  line-height: 1.03;
+  font-size: clamp(2.5rem, 4.6vw, 3rem);
+  line-height: 1.05;
   font-weight: 600;
   letter-spacing: -0.038em;
   max-width: 15ch;
@@ -364,8 +377,8 @@
   margin: 26px 0 0;
   max-width: 52ch;
   color: var(--home-muted);
-  font-size: 17px;
-  line-height: 1.62;
+  font-size: 18px;
+  line-height: 28px;
 }
 
 .public-shell .home-hero-actions {
@@ -386,7 +399,8 @@
   list-style: none;
   color: var(--home-muted);
   font-family: var(--font-public-mono);
-  font-size: 11.5px;
+  font-size: 12px;
+  line-height: 18px;
   letter-spacing: 0.02em;
 }
 
@@ -395,7 +409,8 @@
 
 .public-shell .home-hero-failed {
   margin-top: 22px;
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 20px;
   color: var(--home-muted);
 }
 
@@ -404,7 +419,8 @@
   border: 0;
   background: transparent;
   color: var(--home-muted);
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 20px;
   text-decoration: underline;
   text-underline-offset: 3px;
   cursor: pointer;
@@ -454,7 +470,8 @@
   align-items: center;
   gap: 8px;
   font-family: var(--font-public-mono);
-  font-size: 11.5px;
+  font-size: 12px;
+  line-height: 18px;
   letter-spacing: 0.03em;
   color: var(--home-panel-muted);
 }
@@ -479,7 +496,8 @@
   border-radius: 4px;
   color: var(--home-panel-muted);
   font-family: var(--font-public-mono);
-  font-size: 10.5px;
+  font-size: 12px;
+  line-height: 18px;
   letter-spacing: 0.04em;
 }
 
@@ -495,6 +513,7 @@
   gap: 10px;
   font-family: var(--font-public-mono);
   font-size: 13px;
+  line-height: 20px;
   color: var(--home-panel-ink);
 }
 
@@ -509,7 +528,8 @@
   border-radius: 4px;
   color: var(--home-panel-muted);
   font-family: var(--font-public-mono);
-  font-size: 10.5px;
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .public-shell .trace-meta {
@@ -519,7 +539,8 @@
   margin: 9px 0 0;
   color: var(--home-panel-muted);
   font-family: var(--font-public-mono);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 18px;
 }
 .public-shell .trace-meta b { color: var(--home-panel-ink); font-weight: 400; }
 
@@ -566,7 +587,8 @@
   padding-top: 1px;
   color: var(--home-signal-bright);
   font-family: var(--font-public-mono);
-  font-size: 11.5px;
+  font-size: 12px;
+  line-height: 18px;
   letter-spacing: 0.02em;
 }
 
@@ -574,7 +596,7 @@
   display: block;
   color: var(--home-panel-muted);
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 20px;
 }
 
 .public-shell .trace-channels {
@@ -590,7 +612,8 @@
   border-radius: 4px;
   color: var(--home-panel-muted);
   font-family: var(--font-public-mono);
-  font-size: 10px;
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .public-shell .trace-foot {
@@ -603,7 +626,8 @@
   background: var(--home-panel-2);
   color: var(--home-panel-muted);
   font-family: var(--font-public-mono);
-  font-size: 10.5px;
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .public-shell .trace-pulse-dot {
@@ -631,7 +655,8 @@
   margin: 12px 2px 0;
   color: var(--home-muted);
   font-family: var(--font-public-mono);
-  font-size: 10.5px;
+  font-size: 12px;
+  line-height: 18px;
   letter-spacing: 0.02em;
 }
 
@@ -653,7 +678,7 @@
 
 .public-shell .section-title {
   margin: 0;
-  font-size: clamp(1.6rem, 2.4vw, 2rem);
+  font-size: clamp(1.5rem, 2.4vw, 2rem);
   line-height: 1.15;
   font-weight: 600;
   letter-spacing: -0.028em;
@@ -664,6 +689,7 @@
   max-width: 62ch;
   color: var(--home-muted);
   font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .ledger-tools {
@@ -678,7 +704,8 @@
   gap: 7px;
   color: var(--success-fg);
   font-family: var(--font-public-mono);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 18px;
   letter-spacing: 0.03em;
 }
 
@@ -714,13 +741,15 @@
   margin: 20px 0 0;
   color: var(--home-muted);
   font-family: var(--font-public-mono);
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 20px;
 }
 
 .public-shell .ledger-hint {
   margin: 10px 0 0;
   color: var(--warning-fg);
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 20px;
 }
 
 .public-shell .live-badge.is-warning { color: var(--warning-fg); }
@@ -747,6 +776,7 @@
   border-collapse: collapse;
   table-layout: fixed;
   font-size: 13px;
+  line-height: 20px;
 }
 
 .public-shell .ledger-table caption {
@@ -763,8 +793,9 @@
   border-bottom: 1px solid var(--home-rule);
   color: var(--home-muted);
   font-family: var(--font-public-mono);
-  font-size: 10.5px;
-  font-weight: 400;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
   letter-spacing: 0.03em;
   text-align: left;
   white-space: nowrap;
@@ -792,7 +823,7 @@
 }
 
 .public-shell .ledger-table td.model { font-weight: 500; }
-.public-shell .ledger-table td.status-cell { font-size: 12px; }
+.public-shell .ledger-table td.status-cell { font-size: 12px; line-height: 18px; font-weight: 500; }
 
 .public-shell .status-ok { color: var(--success-fg); }
 .public-shell .status-error { color: var(--danger-fg); }
@@ -814,13 +845,15 @@
   gap: 9px;
   color: var(--home-ink);
   font-family: var(--font-public-mono);
-  font-size: 12.5px;
+  font-size: 13px;
+  line-height: 20px;
 }
 
 .public-shell .ledger-empty .hint {
   margin: 0;
   color: var(--home-muted);
   font-size: 13px;
+  line-height: 20px;
 }
 
 .public-shell .feed-skeleton {
@@ -862,12 +895,14 @@
 .public-shell .ledger-card .time {
   color: var(--home-muted);
   font-family: var(--font-public-mono);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .public-shell .ledger-card .model {
   margin-top: 4px;
   font-size: 14px;
+  line-height: 22px;
   font-weight: 600;
 }
 
@@ -878,7 +913,8 @@
   margin-top: 6px;
   color: var(--home-muted);
   font-family: var(--font-public-mono);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 18px;
 }
 .public-shell .ledger-card .meta b { color: var(--home-ink); font-weight: 400; }
 
@@ -900,6 +936,7 @@
   margin: 0;
   color: var(--home-muted);
   font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .caps-grid {
@@ -935,7 +972,7 @@
 .public-shell .cap h3 {
   margin: 0;
   font-size: 16px;
-  line-height: 1.35;
+  line-height: 1.5;
   font-weight: 600;
   letter-spacing: -0.01em;
 }
@@ -944,7 +981,7 @@
   max-width: 46ch;
   margin: 6px 0 0;
   color: var(--home-muted);
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.6;
 }
 
@@ -966,7 +1003,8 @@
 .public-shell .stat { display: flex; flex-direction: column; gap: 2px; }
 
 .public-shell .stat-n {
-  font-size: 44px;
+  font-size: 24px;
+  line-height: 32px;
   line-height: 1;
   font-weight: 600;
   letter-spacing: -0.035em;
@@ -976,7 +1014,8 @@
 .public-shell .stat-l {
   color: var(--home-muted);
   font-family: var(--font-public-mono);
-  font-size: 10.5px;
+  font-size: 12px;
+  line-height: 18px;
   letter-spacing: 0.03em;
 }
 
@@ -987,6 +1026,7 @@
   border-bottom: 1px solid var(--home-signal);
   color: var(--home-ink);
   font-size: 13px;
+  line-height: 20px;
   font-weight: 500;
   text-decoration: none;
 }
@@ -1040,12 +1080,14 @@
   background: var(--home-paper);
   color: var(--home-muted);
   font-family: var(--font-public-mono);
-  font-size: 10.5px;
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .public-shell .step h3 {
   margin: 4px 0 0;
-  font-size: 17px;
+  font-size: 16px;
+  line-height: 24px;
   font-weight: 600;
   letter-spacing: -0.012em;
 }
@@ -1055,6 +1097,7 @@
   margin: 6px 0 0;
   color: var(--home-muted);
   font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .step .btn-sm { margin-top: 14px; }
@@ -1062,7 +1105,8 @@
 .public-shell .step-hint {
   margin: 8px 0 0;
   color: var(--home-muted);
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 20px;
 }
 
 .public-shell .baseurl {
@@ -1081,7 +1125,8 @@
   background: var(--home-card);
   color: var(--home-ink);
   font-family: var(--font-public-mono);
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 20px;
   overflow-x: auto;
   white-space: nowrap;
 }
@@ -1131,7 +1176,8 @@
   background: transparent;
   color: var(--home-panel-muted);
   font-family: var(--font-public-mono);
-  font-size: 11.5px;
+  font-size: 12px;
+  line-height: 18px;
   cursor: pointer;
 }
 .public-shell .term-tab:hover { color: var(--home-panel-ink); }
@@ -1153,7 +1199,8 @@
   background: transparent;
   color: var(--home-panel-muted);
   font-family: var(--font-public-mono);
-  font-size: 10.5px;
+  font-size: 12px;
+  line-height: 18px;
   cursor: pointer;
 }
 .public-shell .term-copy:hover { color: var(--home-panel-ink); border-color: var(--home-panel-muted); }
@@ -1164,8 +1211,8 @@
   overflow-x: auto;
   color: var(--home-panel-ink);
   font-family: var(--font-public-mono);
-  font-size: 12.5px;
-  line-height: 1.75;
+  font-size: 13px;
+  line-height: 20px;
   tab-size: 2;
 }
 
@@ -1180,7 +1227,8 @@
   border-top: 1px solid var(--home-panel-line);
   color: var(--home-panel-muted);
   font-family: var(--font-public-mono);
-  font-size: 10.5px;
+  font-size: 12px;
+  line-height: 18px;
 }
 
 /* ---------- Footer ---------- */
@@ -1199,7 +1247,7 @@
 }
 
 .public-shell .site-footer .brand { color: var(--home-panel-ink); }
-.public-shell .site-footer .brand-name { font-size: 16px; }
+.public-shell .site-footer .brand-name { font-size: 16px; line-height: 24px; }
 
 .public-shell .footer-tag {
   max-width: 36ch;
@@ -1213,8 +1261,9 @@
   margin: 0 0 12px;
   color: var(--home-panel-muted);
   font-family: var(--font-public-mono);
-  font-size: 10.5px;
-  font-weight: 400;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
   letter-spacing: 0.03em;
 }
 
@@ -1229,6 +1278,7 @@
 .public-shell .footer-col a {
   color: var(--home-panel-ink);
   font-size: 13px;
+  line-height: 20px;
   text-decoration: none;
   opacity: 0.82;
 }
@@ -1238,6 +1288,7 @@
   display: grid;
   gap: 9px;
   font-size: 13px;
+  line-height: 20px;
   line-height: 1.6;
 }
 .public-shell .footer-operator a { color: var(--home-panel-ink); opacity: 0.82; text-decoration: none; }
@@ -1263,7 +1314,8 @@
   border-top: 1px solid var(--home-panel-line);
   color: var(--home-panel-muted);
   font-family: var(--font-public-mono);
-  font-size: 10.5px;
+  font-size: 12px;
+  line-height: 18px;
 }
 
 /* Visible keyboard focus on every public control (the new shell does not use
@@ -1319,8 +1371,7 @@
     padding-right: max(16px, env(safe-area-inset-right, 0px));
   }
   .public-shell .home-hero { padding-block: 40px 52px; }
-  .public-shell .home-hero-title { font-size: 2.35rem; letter-spacing: -0.03em; }
-  .public-shell .home-hero-lead { font-size: 15.5px; }
+  .public-shell .home-hero-title { letter-spacing: -0.03em; }
   .public-shell .home-hero-actions { flex-direction: column; }
   .public-shell .home-hero-actions .btn { width: 100%; }
   .public-shell .home-specs { gap: 5px 18px; }
@@ -1335,13 +1386,11 @@
   .public-shell .ledger { padding-block: 34px 40px; }
   .public-shell .ledger-head { gap: 12px; }
   .public-shell .ledger-tools { width: 100%; justify-content: space-between; }
-  .public-shell .section-note { font-size: 13px; }
   .public-shell .caps { padding-block: 56px; }
   .public-shell .cap { padding: 22px 0; }
-  .public-shell .stat-n { font-size: 38px; }
   .public-shell .stats-row { gap: 24px 40px; }
   .public-shell .start { padding-block: 56px 64px; }
-  .public-shell .terminal pre { padding: 16px 16px 18px; font-size: 11.5px; }
+  .public-shell .terminal pre { padding: 16px 16px 18px; }
   .public-shell .term-foot { padding: 9px 16px; }
   .public-shell .footer-grid { grid-template-columns: minmax(0, 1fr); gap: 30px; }
   .public-shell .footer-bottom { flex-direction: column; }

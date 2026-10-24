@@ -45,7 +45,7 @@ export function InlineError({
   return (
     <div
       role="alert"
-      className="flex flex-wrap items-center gap-3 p-5 text-sm text-ink-2"
+      className="flex flex-wrap items-center gap-3 p-5 text-body text-ink-2"
     >
       <span>{message}</span>
       <Button variant="secondary" onClick={onRetry}>
@@ -65,9 +65,9 @@ export function EmptyState({
   action?: ReactNode
 }) {
   return (
-    <div className="flex flex-col items-center gap-2 p-10 text-center text-sm text-ink-2">
+    <div className="flex flex-col items-center gap-2 p-10 text-center text-body text-ink-2">
       <p className="font-medium text-ink-1">{title}</p>
-      {hint !== undefined ? <p className="text-[13px] text-ink-3">{hint}</p> : null}
+      {hint !== undefined ? <p className="text-meta text-ink-3">{hint}</p> : null}
       {action}
     </div>
   )
@@ -100,7 +100,7 @@ export function PaginationFooter({
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
   return (
-    <div className="flex flex-wrap items-center justify-end gap-3 border-t border-border-hairline px-4 py-3 text-sm text-ink-2">
+    <div className="flex flex-wrap items-center justify-end gap-3 border-t border-border-hairline px-4 py-3 text-body text-ink-2">
       <span data-testid="pagination-page">
         {t(`logs.${namespace}.page`, { page, pages: totalPages })}
       </span>
@@ -132,7 +132,7 @@ export function PaginationFooter({
           onChange={(event) => {
             onPageSizeChange(Number(event.target.value))
           }}
-          className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+          className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
         >
           {PAGE_SIZE_OPTIONS.map((size) => (
             <option key={size} value={size}>

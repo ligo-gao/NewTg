@@ -128,7 +128,7 @@ export function ResetPasswordPage({
   if (phase === 'invalid') {
     return (
       <AuthPageShell title={t('auth.reset.invalid_title')}>
-        <p className="text-sm text-ink-2">{t('auth.reset.invalid_body')}</p>
+        <p className="text-body text-ink-2">{t('auth.reset.invalid_body')}</p>
         <Button className="mt-4 h-11 w-full" onClick={() => onNavigate('/sign-in')}>
           {t('auth.reset.back')}
         </Button>
@@ -139,7 +139,7 @@ export function ResetPasswordPage({
   if (phase === 'unavailable') {
     return (
       <AuthPageShell title={t('auth.reset.unavailable_title')}>
-        <p className="text-sm text-ink-2">{t('auth.reset.unavailable_body')}</p>
+        <p className="text-body text-ink-2">{t('auth.reset.unavailable_body')}</p>
         <Button className="mt-4 h-11 w-full" onClick={retryValidation}>
           {t('auth.reset.retry')}
         </Button>
@@ -157,7 +157,7 @@ export function ResetPasswordPage({
   if (phase === 'success') {
     return (
       <AuthPageShell title={t('auth.reset.success_title')}>
-        <p className="text-sm text-ink-2">{t('auth.reset.success_body')}</p>
+        <p className="text-body text-ink-2">{t('auth.reset.success_body')}</p>
         <Button className="mt-4 h-11 w-full" onClick={() => onNavigate('/sign-in')}>
           {t('auth.reset.go_to_sign_in')}
         </Button>

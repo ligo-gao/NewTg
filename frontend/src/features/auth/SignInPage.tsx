@@ -206,7 +206,7 @@ export function SignInPage({
           <div className="-mt-2 flex justify-end">
             <a
               href="/forgot-password"
-              className="text-[13px] font-medium text-brand hover:underline"
+              className="text-meta font-medium text-brand hover:underline"
             >
               {t('auth.sign_in.forgot')}
             </a>
@@ -237,7 +237,7 @@ export function SignInPage({
                 : t('auth.sign_in.submit')}
           </Button>
 
-          <p className="text-center text-[13px] text-ink-2">
+          <p className="text-center text-meta text-ink-2">
             {t('auth.sign_in.no_account')}{' '}
             <a className="font-medium text-brand hover:underline" href="/sign-up">
               {t('auth.sign_in.sign_up')}

@@ -72,7 +72,7 @@ export function OrderListPage() {
 
   return (
     <section className="mx-auto flex max-w-[1520px] flex-col gap-4">
-      <h1 className="text-xl font-semibold text-ink-1">{t('account.orders.title')}</h1>
+      <h1 className="text-page-title text-ink-1">{t('account.orders.title')}</h1>
 
       <div className="flex flex-wrap items-center gap-3">
         <input
@@ -84,9 +84,9 @@ export function OrderListPage() {
           onChange={(event) => {
             setSearchInput(event.target.value)
           }}
-          className="h-10 w-[300px] rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="h-10 w-[300px] rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         />
-        <label className="flex items-center gap-2 text-sm text-ink-2">
+        <label className="flex items-center gap-2 text-body text-ink-2">
           {t('account.orders.status_label')}
           <select
             value={status}
@@ -94,7 +94,7 @@ export function OrderListPage() {
               setStatus(event.target.value as StatusFilter)
               setPage(1)
             }}
-            className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+            className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
           >
             <option value="all">{t('account.orders.status_all')}</option>
             {ORDER_STATUSES.map((value) => (
@@ -108,16 +108,16 @@ export function OrderListPage() {
 
       <div className="rounded-xl border border-border-hairline bg-surface-card">
         {listQuery.isPending ? (
-          <p className="p-5 text-sm text-ink-2">{t('account.orders.loading')}</p>
+          <p className="p-5 text-body text-ink-2">{t('account.orders.loading')}</p>
         ) : listQuery.isError ? (
-          <div className="flex items-center gap-3 p-5 text-sm text-ink-2">
+          <div className="flex items-center gap-3 p-5 text-body text-ink-2">
             <span>{t('account.orders.error')}</span>
             <Button variant="secondary" onClick={() => void listQuery.refetch()}>
               {t('account.orders.retry')}
             </Button>
           </div>
         ) : items.length === 0 ? (
-          <div className="flex flex-col items-center gap-2 p-8 text-sm text-ink-2">
+          <div className="flex flex-col items-center gap-2 p-8 text-body text-ink-2">
             <p>{q !== '' ? t('account.orders.empty_search') : t('account.orders.empty')}</p>
             {q !== '' ? (
               <Button
@@ -133,16 +133,16 @@ export function OrderListPage() {
             ) : (
               <a
                 href="/wallet"
-                className="text-[13px] font-medium text-brand hover:text-brand-hover"
+                className="text-meta font-medium text-brand hover:text-brand-hover"
               >
                 {t('account.topup.title')}
               </a>
             )}
           </div>
         ) : (
-          <table className="w-full text-sm">
+          <table className="w-full text-body">
             <thead>
-              <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
+              <tr className="border-b border-border-hairline text-left text-meta text-ink-2">
                 <th className="px-4 py-2 font-medium">{t('account.orders.column_id')}</th>
                 <th className="px-4 py-2 font-medium">
                   {t('account.orders.column_provider')}
@@ -176,7 +176,7 @@ export function OrderListPage() {
                 >
                   <td className="px-4 py-2">
                     <div className="flex items-center gap-2">
-                      <span className="font-mono text-[13px]">#{order.id}</span>
+                      <span className="font-mono text-meta">#{order.id}</span>
                       <Button
                         variant="ghost"
                         aria-label={t('account.checkout.copy')}
@@ -189,7 +189,7 @@ export function OrderListPage() {
                       </Button>
                     </div>
                     <div
-                      className="text-xs text-ink-3"
+                      className="text-meta text-ink-3"
                       title={new Date(order.created_at).toISOString()}
                     >
                       {formatRelativeTime(order.created_at, locale)}
@@ -220,7 +220,7 @@ export function OrderListPage() {
         )}
       </div>
 
-      <div className="flex items-center justify-end gap-3 text-sm text-ink-2">
+      <div className="flex items-center justify-end gap-3 text-body text-ink-2">
         <span>
           {t('account.orders.page', { page, pages: totalPages })}
         </span>
@@ -252,7 +252,7 @@ export function OrderListPage() {
               setPageSize(Number(event.target.value))
               setPage(1)
             }}
-            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm"
+            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body"
           >
             {PAGE_SIZES.map((size) => (
               <option key={size} value={size}>

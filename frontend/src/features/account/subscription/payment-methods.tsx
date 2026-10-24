@@ -69,10 +69,10 @@ export function PaymentMethodsSection({ offline }: PaymentMethodsSectionProps) {
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 id="payment-methods-title" className="text-[15px] font-semibold text-ink-1">
+          <h2 id="payment-methods-title" className="text-card-title text-ink-1">
             {t('account.subscription.payment_methods.title')}
           </h2>
-          <p className="mt-1 text-[13px] text-ink-2">
+          <p className="mt-1 text-meta text-ink-2">
             {t('account.subscription.payment_methods.subtitle')}
           </p>
         </div>
@@ -89,14 +89,14 @@ export function PaymentMethodsSection({ offline }: PaymentMethodsSectionProps) {
           className="mt-4 h-14 animate-pulse rounded-lg bg-surface-subtle"
         />
       ) : methodsQuery.isError ? (
-        <div className="mt-4 flex items-center gap-3 text-sm text-ink-2">
+        <div className="mt-4 flex items-center gap-3 text-body text-ink-2">
           <span>{t('account.subscription.payment_methods.error')}</span>
           <Button variant="secondary" onClick={() => void methodsQuery.refetch()}>
             {t('account.subscription.payment_methods.retry')}
           </Button>
         </div>
       ) : (methodsQuery.data?.items.length ?? 0) === 0 ? (
-        <p className="mt-4 text-sm text-ink-2">
+        <p className="mt-4 text-body text-ink-2">
           {t('account.subscription.payment_methods.empty')}
         </p>
       ) : (
@@ -107,13 +107,13 @@ export function PaymentMethodsSection({ offline }: PaymentMethodsSectionProps) {
               className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border-hairline bg-surface-page px-3 py-2"
             >
               <div className="flex flex-col">
-                <span className="text-sm font-medium text-ink-1">
+                <span className="text-body font-medium text-ink-1">
                   {t('account.subscription.payment_methods.card_ending', {
                     brand: method.brand,
                     last4: method.last4,
                   })}
                 </span>
-                <span className="text-xs text-ink-2">
+                <span className="text-meta text-ink-2">
                   {t('account.subscription.payment_methods.expires', {
                     month: String(method.exp_month).padStart(2, '0'),
                     year: method.exp_year,
@@ -221,11 +221,11 @@ function AddPaymentMethodDialog({ open, onOpenChange, onSaved }: AddPaymentMetho
       footer={footer}
     >
       {configQuery.isSuccess && publishableKey === '' ? (
-        <p className="text-sm text-ink-2">
+        <p className="text-body text-ink-2">
           {t('account.subscription.payment_methods.unavailable')}
         </p>
       ) : loadFailed || configQuery.isError ? (
-        <p role="alert" className="text-sm text-danger">
+        <p role="alert" className="text-body text-danger">
           {t('account.subscription.payment_methods.unavailable')}
         </p>
       ) : stripe === null ? (
@@ -286,7 +286,7 @@ function AddCardForm({
 
   return (
     <form id="add-payment-method-form" onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-2">
-      <span className="text-[13px] font-medium text-ink-1">
+      <span className="text-meta font-medium text-ink-1">
         {t('account.subscription.payment_methods.card_label')}
       </span>
       <div
@@ -297,7 +297,7 @@ function AddCardForm({
         <CardElement options={{ hidePostalCode: true }} />
       </div>
       {error ? (
-        <p role="alert" className="text-xs text-danger">
+        <p role="alert" className="text-meta text-danger">
           {t('account.subscription.payment_methods.save_error')}
         </p>
       ) : null}

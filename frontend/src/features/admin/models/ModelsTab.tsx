@@ -315,12 +315,12 @@ export function ModelsTab({ search, onSearchChange, permissions }: ModelsTabProp
             }}
           />
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="models-filter-vendor" className="text-[13px] font-medium text-ink-1">
+            <label htmlFor="models-filter-vendor" className="text-meta font-medium text-ink-1">
               {t('admin.models.field_vendor')}
             </label>
             <select
               id="models-filter-vendor"
-              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1"
+              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1"
               value={draft.vendorId}
               onChange={(event) => {
                 setDraft((current) => ({ ...current, vendorId: event.target.value }))
@@ -335,12 +335,12 @@ export function ModelsTab({ search, onSearchChange, permissions }: ModelsTabProp
             </select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="models-filter-status" className="text-[13px] font-medium text-ink-1">
+            <label htmlFor="models-filter-status" className="text-meta font-medium text-ink-1">
               {t('admin.models.field_status')}
             </label>
             <select
               id="models-filter-status"
-              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1"
+              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1"
               value={draft.status}
               onChange={(event) => {
                 setDraft((current) => ({
@@ -355,12 +355,12 @@ export function ModelsTab({ search, onSearchChange, permissions }: ModelsTabProp
             </select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="models-filter-square" className="text-[13px] font-medium text-ink-1">
+            <label htmlFor="models-filter-square" className="text-meta font-medium text-ink-1">
               {t('admin.models.column_square')}
             </label>
             <select
               id="models-filter-square"
-              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1"
+              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1"
               value={draft.squareState}
               onChange={(event) => {
                 setDraft((current) => ({
@@ -378,12 +378,12 @@ export function ModelsTab({ search, onSearchChange, permissions }: ModelsTabProp
             </select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="models-filter-sort" className="text-[13px] font-medium text-ink-1">
+            <label htmlFor="models-filter-sort" className="text-meta font-medium text-ink-1">
               {t('admin.models.sort')}
             </label>
             <select
               id="models-filter-sort"
-              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1"
+              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1"
               value={draft.sort}
               onChange={(event) => {
                 setDraft((current) => ({
@@ -424,7 +424,7 @@ export function ModelsTab({ search, onSearchChange, permissions }: ModelsTabProp
             <Button variant="secondary" onClick={() => setMissingOpen(true)}>
               {t('admin.models.missing_models')}
               {missingCount > 0 ? (
-                <span className="ml-1 rounded-full bg-surface-subtle px-1.5 font-mono text-xs tabular-nums">
+                <span className="ml-1 rounded-full bg-surface-subtle px-1.5 font-mono text-badge tabular-nums">
                   {missingCount}
                 </span>
               ) : null}
@@ -432,7 +432,7 @@ export function ModelsTab({ search, onSearchChange, permissions }: ModelsTabProp
             {canSensitive ? (
               <Button
                 variant="danger"
-                className="h-8 px-3 text-[13px]"
+                className="h-8 px-3 text-meta"
                 disabled={selectedRows.length === 0}
                 onClick={() => {
                   setRemoveFromChannels(false)
@@ -445,7 +445,7 @@ export function ModelsTab({ search, onSearchChange, permissions }: ModelsTabProp
               </Button>
             ) : null}
           </div>
-          <span className="text-[13px] text-ink-2" aria-live="polite">
+          <span className="text-meta text-ink-2" aria-live="polite">
             {selectedRows.length > 0
               ? `${t('admin.models.selected', { count: selectedRows.length })} · `
               : ''}
@@ -460,7 +460,7 @@ export function ModelsTab({ search, onSearchChange, permissions }: ModelsTabProp
             ))}
           </div>
         ) : listQuery.isError ? (
-          <div className="flex items-center gap-3 p-5 text-sm text-ink-2">
+          <div className="flex items-center gap-3 p-5 text-body text-ink-2">
             <span>{t('admin.models.error')}</span>
             <Button variant="secondary" onClick={() => void listQuery.refetch()}>
               {t('common.action.retry')}
@@ -468,7 +468,7 @@ export function ModelsTab({ search, onSearchChange, permissions }: ModelsTabProp
           </div>
         ) : items.length === 0 ? (
           <div className="flex flex-col items-start gap-2 p-5">
-            <p className="text-sm text-ink-2">
+            <p className="text-body text-ink-2">
               {hasModelFilters(search)
                 ? t('admin.models.empty_filtered')
                 : t('admin.models.empty')}
@@ -485,9 +485,9 @@ export function ModelsTab({ search, onSearchChange, permissions }: ModelsTabProp
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1160px] text-sm">
+            <table className="w-full min-w-[1160px] text-body">
               <thead>
-                <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
+                <tr className="border-b border-border-hairline text-left text-meta text-ink-2">
                   <th scope="col" className="px-4 py-2">
                     <input
                       type="checkbox"
@@ -547,7 +547,7 @@ export function ModelsTab({ search, onSearchChange, permissions }: ModelsTabProp
                     <td className="px-4 py-3">
                       <span className="font-mono text-ink-1">{row.model_name}</span>
                       {row.display_name !== null && row.display_name !== undefined ? (
-                        <span className="block text-xs text-ink-2">{row.display_name}</span>
+                        <span className="block text-meta text-ink-2">{row.display_name}</span>
                       ) : null}
                     </td>
                     <td className="px-4 py-3 text-ink-1">{row.vendor_name ?? '—'}</td>
@@ -574,7 +574,7 @@ export function ModelsTab({ search, onSearchChange, permissions }: ModelsTabProp
                     <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-1">
                       {row.configured_channel_count}
                     </td>
-                    <td className="px-4 py-3 text-xs text-ink-2" title={row.updated_at}>
+                    <td className="px-4 py-3 text-meta text-ink-2" title={row.updated_at}>
                       {formatRelativeTime(row.updated_at, locale)}
                     </td>
                     <td className="px-4 py-3">
@@ -582,14 +582,14 @@ export function ModelsTab({ search, onSearchChange, permissions }: ModelsTabProp
                         <div className="flex justify-end gap-1">
                           <Button
                             variant="ghost"
-                            className="h-8 px-2 text-[13px]"
+                            className="h-8 px-2 text-meta"
                             onClick={() => setEditTarget({ mode: 'edit', model: row })}
                           >
                             {t('admin.models.edit')}
                           </Button>
                           <Button
                             variant="ghost"
-                            className="h-8 px-2 text-[13px] text-danger hover:bg-danger-bg"
+                            className="h-8 px-2 text-meta text-danger hover:bg-danger-bg"
                             onClick={() => setDeleteTarget(row)}
                           >
                             {t('admin.models.delete')}
@@ -682,7 +682,7 @@ export function ModelsTab({ search, onSearchChange, permissions }: ModelsTabProp
         <div className="flex flex-col gap-4">
           {batchError !== undefined ? <FormAlert tone="danger">{batchError}</FormAlert> : null}
 
-          <label className="flex items-start gap-2 text-sm text-ink-1">
+          <label className="flex items-start gap-2 text-body text-ink-1">
             <input
               type="checkbox"
               className="mt-0.5"
@@ -694,7 +694,7 @@ export function ModelsTab({ search, onSearchChange, permissions }: ModelsTabProp
             />
             <span>
               {t('admin.models.batch_remove_channels')}
-              <span className="block text-xs text-ink-3">
+              <span className="block text-meta text-ink-3">
                 {anyInexactRule
                   ? t('admin.models.batch_remove_channels_blocked')
                   : t('admin.models.batch_remove_channels_hint')}
@@ -702,7 +702,7 @@ export function ModelsTab({ search, onSearchChange, permissions }: ModelsTabProp
             </span>
           </label>
 
-          <label className="flex items-start gap-2 text-sm text-ink-1">
+          <label className="flex items-start gap-2 text-body text-ink-1">
             <input
               type="checkbox"
               className="mt-0.5"
@@ -714,7 +714,7 @@ export function ModelsTab({ search, onSearchChange, permissions }: ModelsTabProp
             />
             <span>
               {t('admin.models.batch_clear_pricing')}
-              <span className="block text-xs text-ink-3">
+              <span className="block text-meta text-ink-3">
                 {canPrice
                   ? t('admin.models.batch_clear_pricing_hint')
                   : t('admin.models.batch_clear_pricing_blocked')}

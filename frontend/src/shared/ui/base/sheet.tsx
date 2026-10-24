@@ -152,15 +152,15 @@ export function Sheet({
         tabIndex={-1}
         className={`relative flex h-full w-full ${widthClassName} flex-col overflow-y-auto border-l border-border-hairline bg-surface-card p-5 text-ink-1 shadow-xl`}
       >
-        <h2 id={titleId} className="text-[15px] font-semibold leading-[22px]">
+        <h2 id={titleId} className="text-card-title">
           {title}
         </h2>
         {description ? (
-          <p id={descriptionId} className="mt-1 text-sm text-ink-2">
+          <p id={descriptionId} className="mt-1 text-body text-ink-2">
             {description}
           </p>
         ) : null}
-        {children ? <div className="mt-4 flex-1 text-sm text-ink-2">{children}</div> : null}
+        {children ? <div className="mt-4 flex-1 text-body text-ink-2">{children}</div> : null}
         {footer ? <div className="mt-5 flex justify-end gap-2">{footer}</div> : null}
       </div>
     </div>,

@@ -1,345 +1,371 @@
 import { useState } from 'react'
 
+import type { components } from '@/api/schema'
+import { CheckinCard } from '@/features/dashboard/checkin-card'
 import { PageHeader } from '@/features/shell/page-header'
 import { usePublicStatus } from '@/lib/public-status'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
-import { TextField } from '@/shared/ui/form'
 
+import { AttentionPanel, type AttentionItem } from './attention-panel'
 import type { UsageRange } from './api'
-import { CheckinCard } from './checkin-card'
-import { ConsumptionTrend } from './consumption-trend'
-import {
-  formatCreditsValue,
-  formatCurrencyValue,
-  formatInteger,
-  formatRpm,
-  formatSuccessRate,
-  formatTpm,
-  formatTokensValue,
-} from './format'
-import { ModelDistributionDonut } from './model-distribution-donut'
-import { ModelPerformance } from './model-performance'
+import { Composition, type CompositionMode } from './composition'
+import { CoreMetrics } from './core-metrics'
+import { DashboardTrend, type TrendMetric } from './dashboard-trend'
+import { FailuresTable } from './failures-table'
+import { HealthPanel } from './health-panel'
 import { QuickActions } from './quick-actions'
 import { RangeSelector } from './range-selector'
-import { StatCard } from './stat-card'
-import { useDashboardCapabilities } from './use-dashboard-capabilities'
+import { useDashboardExtra, useDashboardPermissions } from './use-dashboard-extra'
 import { useDashboardStats } from './use-dashboard-stats'
+import { formatCurrencyValue } from './format'
 
 /**
- * `/dashboard` overview (modules-05 F-05-03 + F-05-04, R-M6-12, spec §7).
+ * `/dashboard` — 角色化运营总览。
  *
- * One range state feeds every query (cards, ring, trend, rates) so the three
- * surfaces can never disagree about their window. The admin username filter is
- * rendered only after `logs:read` is confirmed, and the applied value — not
- * the draft input — is what enters the query keys; ordinary users therefore
- * never issue an admin-only parameter.
- *
- * The page is a 12-column-style stack: a shared page header, the KPI grid, the
- * rates strip, trend + distribution, quick actions + check-in, and the
- * performance board full width. Every block owns `mt-4` so only the first one
- * needs the page header to sit above it.
+ * 管理员（admin + logs:read）先看消费、请求、成功率、P95 延迟，再看
+ * 按模型/按用户构成、待办、系统健康和最近失败请求；其他用户看余额、
+ * 个人用量、签到和最近请求。所有数据都来自现有聚合端点，权限不足的
+ * 面板直接隐藏，不让整页因为一个 403 失败。
  */
 export function DashboardPage() {
   const { t, locale } = useI18n()
   const [range, setRange] = useState<UsageRange>('24h')
-  const [usernameDraft, setUsernameDraft] = useState('')
-  const [username, setUsername] = useState<string | undefined>(undefined)
+  const [metric, setMetric] = useState<TrendMetric>('cost')
+  const [compositionMode, setCompositionMode] = useState<CompositionMode>('users')
   const [selectedModel, setSelectedModel] = useState<string | undefined>(undefined)
 
-  const capabilities = useDashboardCapabilities()
-  const status = usePublicStatus()
-  const { summary, byModel, timeseries, rates, granularity } = useDashboardStats({
-    range,
-    username,
-    model: selectedModel,
-  })
+  const permissions = useDashboardPermissions()
+  const stats = useDashboardStats({ range, model: selectedModel })
+  const extra = useDashboardExtra({ range, permissions })
 
-  // `billing.display_unit` is a site-wide presentation choice already honoured
-  // by the public pricing page; the dashboard must not print a different unit.
-  // Missing status (older backend, fetch failure) keeps the credit defaults.
-  const displayUnit =
-    status.data?.billing?.display_unit === 'cny' ? 'cny' : 'credits'
+  const status = usePublicStatus()
+  const showCurrency = status.data?.billing?.display_unit === 'cny'
   const quotaPerUnit = status.data?.billing?.quota_per_unit ?? 100
   const currencySymbol = status.data?.billing?.currency_symbol ?? '¥'
-  const showCurrency = displayUnit === 'cny'
 
-  const summaryData = summary.data
-  const ratesData = rates.data
+  const adminView = permissions.canLogsRead
+  const summary = stats.summary.data
+  const rates = stats.rates.data
 
-  const spendTooltip =
-    summaryData === undefined
-      ? undefined
-      : t('common.dashboard.cards.spend_tooltip', {
-          pre: formatCreditsValue(summaryData.pre_deducted_total, locale),
-          refunded: formatCreditsValue(summaryData.refunded_total, locale),
-        })
+  const unpriced = (extra.candidates.data?.items ?? []).filter((item) => !item.priced)
+  const perfUnavailable =
+    extra.perf.isError || extra.perf.data?.pipeline?.enabled === false
+  const attention: AttentionItem[] = []
+  if (unpriced.length > 0) {
+    attention.push({
+      id: 'unpriced',
+      severity: 'warn',
+      title: t('common.dashboard.overview.attention.unpriced', {
+        count: unpriced.length,
+      }),
+      detail: t('common.dashboard.overview.attention.unpriced_detail', {
+        models: unpriced
+          .slice(0, 3)
+          .map((item) => item.model)
+          .join('、'),
+      }),
+      href: '/admin/pricing/model-pricing',
+      action: t('common.dashboard.overview.attention.go_pricing'),
+    })
+  }
+  if (adminView && perfUnavailable) {
+    attention.push({
+      id: 'perf',
+      severity: 'info',
+      title: t('common.dashboard.overview.attention.perf'),
+      detail: t('common.dashboard.overview.attention.perf_detail'),
+      href: '/admin/system/performance',
+      action: t('common.dashboard.overview.attention.go_perf'),
+    })
+  }
 
-  const ratesSpendTooltip =
-    ratesData === undefined
-      ? undefined
-      : t('common.dashboard.cards.spend_tooltip', {
-          pre: formatCreditsValue(ratesData.pre_deducted_total, locale),
-          refunded: formatCreditsValue(ratesData.refunded_total, locale),
-        })
+  const composition =
+    compositionMode === 'users'
+      ? { data: extra.byUser, label: 'users' }
+      : { data: extra.byGroup, label: 'groups' }
+
+  const wallet = extra.wallet.data as components['schemas']['WalletSummary'] | undefined
+
+  function refresh() {
+    void stats.summary.refetch()
+    void stats.rates.refetch()
+    void stats.timeseries.refetch()
+    void stats.byModel.refetch()
+    if (adminView) {
+      void extra.byUser.refetch()
+      void extra.byGroup.refetch()
+      void extra.failures.refetch()
+    } else {
+      void extra.recent.refetch()
+      void extra.wallet.refetch()
+    }
+  }
 
   return (
-    <section className="mt-6" aria-label={t('common.dashboard.title')}>
+    <section className="mt-6" aria-label={t('common.dashboard.overview.title')}>
       <PageHeader
         crumbs={[
           { label: t('common.console.label') },
           { label: t('common.nav.group.workspace') },
           { label: t('common.nav.dashboard') },
         ]}
-        title={t('common.dashboard.title')}
-        description={t('common.dashboard.page.description')}
+        title={
+          adminView
+            ? t('common.dashboard.overview.admin_title')
+            : t('common.dashboard.overview.user_title')
+        }
+        description={
+          adminView
+            ? t('common.dashboard.overview.admin_description')
+            : t('common.dashboard.overview.user_description')
+        }
         actions={
-          <div className="flex flex-wrap items-end gap-3">
-            {capabilities.canFilterByUsername ? (
-              <form
-                className="flex items-end gap-2"
-                onSubmit={(event) => {
-                  event.preventDefault()
-                  const applied = usernameDraft.trim()
-                  setUsername(applied === '' ? undefined : applied)
-                }}
-              >
-                <TextField
-                  id="dashboard-username"
-                  label={t('common.dashboard.filter.username')}
-                  placeholder={t('common.dashboard.filter.username_placeholder')}
-                  value={usernameDraft}
-                  onChange={(event) => setUsernameDraft(event.target.value)}
-                  className="h-9 w-44"
-                />
-                <Button type="submit" variant="secondary" className="h-9">
-                  {t('common.dashboard.filter.apply')}
-                </Button>
-                {username !== undefined ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    className="h-9"
-                    onClick={() => {
-                      setUsername(undefined)
-                      setUsernameDraft('')
-                    }}
-                  >
-                    {t('common.dashboard.filter.clear')}
-                  </Button>
-                ) : null}
-              </form>
-            ) : null}
-
+          <div className="flex flex-wrap items-center gap-2">
             <RangeSelector value={range} onChange={setRange} />
+            <Button type="button" variant="secondary" className="h-9" onClick={refresh}>
+              {t('common.dashboard.overview.refresh')}
+            </Button>
           </div>
         }
       />
 
-      {username !== undefined &&
-      summaryData !== undefined &&
-      summaryData.request_count === 0 ? (
-        <p data-testid="dashboard-user-empty" className="mt-3 text-sm text-ink-2">
-          {t('common.dashboard.filter.no_usage', { username })}
-        </p>
-      ) : null}
+      <CoreMetrics
+        role={adminView ? 'admin' : 'user'}
+        summary={summary}
+        rates={rates}
+        wallet={wallet}
+        timeseries={stats.timeseries.data}
+        loading={stats.summary.isPending}
+        error={stats.summary.isError}
+        showCurrency={showCurrency}
+        quotaPerUnit={quotaPerUnit}
+        currencySymbol={currencySymbol}
+        locale={locale}
+        onRetry={() => void stats.summary.refetch()}
+      />
 
-      {/* Overview cards (F-05-03). aria-live announces settled values once the
-          concurrent requests resolve, without moving focus. */}
-      <div
-        aria-live="polite"
-        className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4"
-      >
-        <StatCard
-          testId="card-total-spent"
-          label={t('common.dashboard.cards.total_spent')}
-          unit={
-            showCurrency ? undefined : t('common.dashboard.rates.credits')
-          }
-          value={
-            summaryData === undefined
-              ? ''
-              : showCurrency
-                ? formatCurrencyValue(
-                    summaryData.cost_total,
-                    quotaPerUnit,
-                    currencySymbol,
-                    locale,
-                  )
-                : formatCreditsValue(summaryData.cost_total, locale)
-          }
-          tooltip={spendTooltip}
-          loading={summary.isPending}
-          error={summary.isError}
-          onRetry={() => void summary.refetch()}
-          retryLabel={t('common.action.retry')}
-        />
-        <StatCard
-          testId="card-requests"
-          label={t('common.dashboard.cards.requests')}
-          value={
-            summaryData === undefined
-              ? ''
-              : formatInteger(summaryData.request_count, locale)
-          }
-          subline={
-            summaryData !== undefined && summaryData.request_count <= 0
-              ? t('common.dashboard.cards.no_data')
-              : t('common.dashboard.cards.success_rate', {
-                  rate:
-                    summaryData === undefined
-                      ? '--'
-                      : formatSuccessRate(
-                          summaryData.success_rate,
-                          summaryData.request_count,
-                        ),
-                })
-          }
-          loading={summary.isPending}
-          error={summary.isError}
-          onRetry={() => void summary.refetch()}
-          retryLabel={t('common.action.retry')}
-        />
-        <StatCard
-          testId="card-input-tokens"
-          label={t('common.dashboard.cards.input_tokens')}
-          value={
-            summaryData === undefined
-              ? ''
-              : formatTokensValue(summaryData.prompt_tokens_total, locale)
-          }
-          loading={summary.isPending}
-          error={summary.isError}
-          onRetry={() => void summary.refetch()}
-          retryLabel={t('common.action.retry')}
-        />
-        <StatCard
-          testId="card-output-tokens"
-          label={t('common.dashboard.cards.output_tokens')}
-          value={
-            summaryData === undefined
-              ? ''
-              : formatTokensValue(summaryData.completion_tokens_total, locale)
-          }
-          loading={summary.isPending}
-          error={summary.isError}
-          onRetry={() => void summary.refetch()}
-          retryLabel={t('common.action.retry')}
-        />
-      </div>
-
-      {/* Rates strip (F-05-04). */}
-      <div
-        aria-live="polite"
-        className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3"
-      >
-        <StatCard
-          testId="rate-usage"
-          // "Credits used" would contradict a ¥ value; in currency mode the
-          // card is a plain spend figure.
-          label={
-            showCurrency
-              ? t('common.dashboard.rates.spend')
-              : t('common.dashboard.rates.usage')
-          }
-          unit={
-            showCurrency ? undefined : t('common.dashboard.rates.credits')
-          }
-          value={
-            ratesData === undefined
-              ? ''
-              : showCurrency
-                ? formatCurrencyValue(
-                    ratesData.cost_total,
-                    quotaPerUnit,
-                    currencySymbol,
-                    locale,
-                  )
-                : formatCreditsValue(ratesData.cost_total, locale)
-          }
-          tooltip={ratesSpendTooltip}
-          loading={rates.isPending}
-          error={rates.isError}
-          onRetry={() => void rates.refetch()}
-          retryLabel={t('common.action.retry')}
-        />
-        <StatCard
-          testId="rate-rpm"
-          label={t('common.dashboard.rates.rpm')}
-          unit={t('common.dashboard.rates.req_per_min')}
-          value={ratesData === undefined ? '' : formatRpm(ratesData.rpm_avg, locale)}
-          tooltip={
-            ratesData === undefined
-              ? undefined
-              : ratesData.rpm_peak > 0
-                ? t('common.dashboard.rates.peak', {
-                    value: formatInteger(ratesData.rpm_peak, locale),
-                  })
-                : t('common.dashboard.rates.peak_none')
-          }
-          loading={rates.isPending}
-          error={rates.isError}
-          onRetry={() => void rates.refetch()}
-          retryLabel={t('common.action.retry')}
-        />
-        <StatCard
-          testId="rate-tpm"
-          label={t('common.dashboard.rates.tpm')}
-          unit={t('common.dashboard.rates.tokens_per_min')}
-          value={ratesData === undefined ? '' : formatTpm(ratesData.tpm_avg, locale)}
-          tooltip={
-            ratesData === undefined
-              ? undefined
-              : t('common.dashboard.rates.tpm_exact', {
-                  value: formatInteger(ratesData.tpm_avg, locale),
-                })
-          }
-          loading={rates.isPending}
-          error={rates.isError}
-          onRetry={() => void rates.refetch()}
-          retryLabel={t('common.action.retry')}
-        />
-      </div>
-
-      {/* Trend on the left, model distribution on the right (spec §7). */}
-      <div className="mt-4 grid gap-4 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <ConsumptionTrend
-            items={timeseries.data ?? []}
+      <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-12">
+        <div className="xl:col-span-8">
+          <DashboardTrend
+            items={stats.timeseries.data ?? []}
             range={range}
-            granularity={granularity}
-            loading={timeseries.isPending}
-            error={timeseries.isError}
-            onRetry={() => void timeseries.refetch()}
+            granularity={stats.granularity}
+            metric={metric}
+            onMetricChange={setMetric}
+            loading={stats.timeseries.isPending}
+            error={stats.timeseries.isError}
+            onRetry={() => void stats.timeseries.refetch()}
             selectedModel={selectedModel}
             onClearModel={() => setSelectedModel(undefined)}
           />
         </div>
-        <div className="lg:col-span-1">
-          <ModelDistributionDonut
-            items={byModel.data ?? []}
-            loading={byModel.isPending}
-            error={byModel.isError}
-            onRetry={() => void byModel.refetch()}
-            selectedModel={selectedModel}
-            onSelectModel={setSelectedModel}
+
+        <aside className="flex flex-col gap-4 xl:col-span-4" aria-label={t('common.dashboard.overview.side')}>
+          {adminView ? (
+            <>
+              <AttentionPanel items={attention} />
+              {permissions.canSettingsManage ? (
+                <HealthPanel
+                  system={extra.system.data}
+                  perfEnabled={
+                    extra.perf.isError
+                      ? false
+                      : extra.perf.data?.pipeline?.enabled
+                  }
+                  loading={extra.system.isPending}
+                  error={extra.system.isError}
+                />
+              ) : null}
+            </>
+          ) : (
+            <>
+              <section className="rounded-xl border border-border-hairline bg-surface-card p-4">
+                <div className="flex items-baseline justify-between gap-2">
+                  <h2 className="text-body font-semibold text-ink-1">
+                    {t('common.dashboard.overview.account.title')}
+                  </h2>
+                  <span className="text-badge text-ink-3">
+                    {t('common.dashboard.overview.account.unit')}
+                  </span>
+                </div>
+                <p className="mt-2 font-mono text-figure-md tabular-nums tracking-[-0.03em] text-ink-1">
+                  {wallet === undefined
+                    ? '--'
+                    : formatCurrencyValue(
+                        wallet.balance,
+                        quotaPerUnit,
+                        currencySymbol,
+                        locale,
+                      )}
+                </p>
+                <p className="text-badge text-ink-3">
+                  {t('common.dashboard.overview.account.available')}
+                  {wallet === undefined
+                    ? ''
+                    : ` · ${t('common.dashboard.overview.account.held', {
+                        value: formatCurrencyValue(
+                          wallet.held_credits,
+                          quotaPerUnit,
+                          currencySymbol,
+                          locale,
+                        ),
+                      })}`}
+                </p>
+                <dl className="mt-3 grid grid-cols-2 gap-2 border-t border-border-hairline pt-2 text-badge">
+                  <div>
+                    <dt className="text-ink-3">
+                      {t('common.dashboard.overview.account.consumed')}
+                    </dt>
+                    <dd className="font-mono tabular-nums text-ink-1">
+                      {wallet === undefined
+                        ? '--'
+                        : formatCurrencyValue(
+                            wallet.total_consumed,
+                            quotaPerUnit,
+                            currencySymbol,
+                            locale,
+                          )}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-ink-3">
+                      {t('common.dashboard.overview.account.threshold')}
+                    </dt>
+                    <dd className="font-mono tabular-nums text-ink-1">
+                      {wallet === undefined
+                        ? '--'
+                        : formatCurrencyValue(
+                            wallet.threshold,
+                            quotaPerUnit,
+                            currencySymbol,
+                            locale,
+                          )}
+                    </dd>
+                  </div>
+                </dl>
+                <a
+                  href="/wallet"
+                  className="mt-3 inline-flex h-8 items-center rounded-lg bg-brand px-3 text-badge font-medium text-on-brand hover:bg-brand-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                >
+                  {t('common.dashboard.overview.account.topup')}
+                </a>
+              </section>
+              <CheckinCard className="" />
+            </>
+          )}
+        </aside>
+
+        {adminView ? (
+          <>
+            <div className="xl:col-span-6">
+              <Composition
+                variant="audience"
+                role="admin"
+                mode={compositionMode}
+                onModeChange={setCompositionMode}
+                byUser={extra.byUser.data}
+                byGroup={extra.byGroup.data}
+                byModel={undefined}
+                loading={composition.data.isPending}
+                error={composition.data.isError}
+                onRetry={() => void composition.data.refetch()}
+                onSelectModel={setSelectedModel}
+                showCurrency={showCurrency}
+                quotaPerUnit={quotaPerUnit}
+                currencySymbol={currencySymbol}
+                locale={locale}
+              />
+            </div>
+            <div className="xl:col-span-6">
+              <Composition
+                variant="model"
+                role="admin"
+                mode="users"
+                onModeChange={setCompositionMode}
+                byUser={undefined}
+                byGroup={undefined}
+                byModel={stats.byModel.data}
+                loading={stats.byModel.isPending}
+                error={stats.byModel.isError}
+                onRetry={() => void stats.byModel.refetch()}
+                selectedModel={selectedModel}
+                onSelectModel={setSelectedModel}
+                showCurrency={showCurrency}
+                quotaPerUnit={quotaPerUnit}
+                currencySymbol={currencySymbol}
+                locale={locale}
+              />
+            </div>
+          </>
+        ) : (
+          <div className="xl:col-span-12">
+            <Composition
+              variant="model"
+              role="user"
+              mode="users"
+              onModeChange={setCompositionMode}
+              byUser={undefined}
+              byGroup={undefined}
+              byModel={stats.byModel.data}
+              loading={stats.byModel.isPending}
+              error={stats.byModel.isError}
+              onRetry={() => void stats.byModel.refetch()}
+              selectedModel={selectedModel}
+              onSelectModel={setSelectedModel}
+              showCurrency={showCurrency}
+              quotaPerUnit={quotaPerUnit}
+              currencySymbol={currencySymbol}
+              locale={locale}
+            />
+          </div>
+        )}
+
+        <div className="xl:col-span-12">
+          <FailuresTable
+            title={
+              adminView
+                ? t('common.dashboard.overview.failures.title')
+                : t('common.dashboard.overview.recent.title')
+            }
+            subtitle={
+              adminView
+                ? t('common.dashboard.overview.failures.subtitle')
+                : t('common.dashboard.overview.recent.subtitle')
+            }
+            items={
+              adminView
+                ? (extra.failures.data?.items ?? [])
+                : (extra.recent.data?.items ?? [])
+            }
+            loading={
+              adminView ? extra.failures.isPending : extra.recent.isPending
+            }
+            error={adminView ? extra.failures.isError : extra.recent.isError}
+            onRetry={() => {
+              if (adminView) void extra.failures.refetch()
+              else void extra.recent.refetch()
+            }}
+            showUser={adminView}
+            emptyLabel={
+              adminView
+                ? t('common.dashboard.overview.failures.empty')
+                : t('common.dashboard.overview.recent.empty')
+            }
+            testId={adminView ? 'failures-table' : 'recent-table'}
+            showCurrency={showCurrency}
+            quotaPerUnit={quotaPerUnit}
+            currencySymbol={currencySymbol}
+            locale={locale}
           />
         </div>
-      </div>
 
-      {/* Quick actions + daily check-in (modules-01 §3.19, spec §7). The
-          check-in card renders itself only when the public status flag is on,
-          so disabled sites see just the quick actions. */}
-      <div className="mt-4 grid gap-4 lg:grid-cols-2">
-        <QuickActions />
-        <CheckinCard className="" />
+        {!adminView ? (
+          <div className="xl:col-span-12">
+            <QuickActions />
+          </div>
+        ) : null}
       </div>
-
-      {/* F-05-08 模型性能看板。看板不跟随概览的 24h/7d/14d/30d 选择，因为
-          采集管道只承诺 24h/7d 两个窗口；两者混用会让「口径偏差」提示失真。 */}
-      <ModelPerformance
-        canViewDimension={capabilities.canFilterByUsername}
-      />
     </section>
   )
 }

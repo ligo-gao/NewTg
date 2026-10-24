@@ -66,12 +66,12 @@ export function PriceFields({
   return (
     <section className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-ink-1">{t('admin.pricing.price_section')}</h3>
+        <h3 className="text-body font-semibold text-ink-1">{t('admin.pricing.price_section')}</h3>
         <div role="group" aria-label={t('admin.pricing.price_unit')} className="flex gap-1">
           <Button
             variant={unit === 'credits' ? 'secondary' : 'ghost'}
             aria-pressed={unit === 'credits'}
-            className="h-7 px-2 text-xs"
+            className="h-7 px-2 text-meta"
             onClick={() => {
               onUnitChange('credits')
             }}
@@ -81,7 +81,7 @@ export function PriceFields({
           <Button
             variant={unit === 'yuan' ? 'secondary' : 'ghost'}
             aria-pressed={unit === 'yuan'}
-            className="h-7 px-2 text-xs"
+            className="h-7 px-2 text-meta"
             onClick={() => {
               onUnitChange('yuan')
             }}
@@ -91,7 +91,7 @@ export function PriceFields({
         </div>
       </div>
 
-      <p className="text-xs text-ink-3">
+      <p className="text-meta text-ink-3">
         {context === 'group'
           ? perRequest
             ? t('admin.pricing.price_hint_group_request')
@@ -132,7 +132,7 @@ export function PriceFields({
                 error={errors[field.key]}
               />
               {unit === 'yuan' && raw.trim() !== '' ? (
-                <p className="text-xs text-ink-3">{conversion}</p>
+                <p className="text-meta text-ink-3">{conversion}</p>
               ) : null}
             </div>
           )
@@ -140,7 +140,7 @@ export function PriceFields({
       </div>
 
       {unit === 'yuan' ? (
-        <p className="text-xs text-ink-3">
+        <p className="text-meta text-ink-3">
           {t('admin.pricing.unit_yuan_hint', { rate: creditsToYuanInput(1, quotaPerUnit) })}
         </p>
       ) : null}

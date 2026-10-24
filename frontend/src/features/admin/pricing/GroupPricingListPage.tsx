@@ -219,7 +219,7 @@ export function GroupPricingListPage() {
   if (capabilities.loading) {
     return (
       <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
-        <h1 className="text-xl font-semibold text-ink-1">
+        <h1 className="text-page-title font-semibold text-ink-1">
           {t('admin.pricing.group_title')}
         </h1>
         <section className="rounded-xl border border-border-hairline bg-surface-card">
@@ -236,15 +236,15 @@ export function GroupPricingListPage() {
   if (capabilities.known && !capabilities.canRead) {
     return (
       <div className="mx-auto max-w-[1520px] rounded-xl border border-border-hairline bg-surface-card p-8">
-        <h1 className="text-xl font-semibold text-ink-1">{t('common.error403.title')}</h1>
-        <p className="mt-2 text-sm text-ink-2">{t('common.error403.body')}</p>
+        <h1 className="text-page-title font-semibold text-ink-1">{t('common.error403.title')}</h1>
+        <p className="mt-2 text-body text-ink-2">{t('common.error403.body')}</p>
       </div>
     )
   }
 
   return (
     <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
-      <h1 className="text-xl font-semibold text-ink-1">{t('admin.pricing.group_title')}</h1>
+      <h1 className="text-page-title font-semibold text-ink-1">{t('admin.pricing.group_title')}</h1>
 
       <div role="tablist" aria-label={t('admin.pricing.group_title')} className="flex gap-1">
         <Button
@@ -275,14 +275,14 @@ export function GroupPricingListPage() {
         <section className="rounded-xl border border-border-hairline bg-surface-card">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-hairline px-5 py-3">
             <div>
-              <h2 className="text-sm font-semibold text-ink-1">
+              <h2 className="text-body font-semibold text-ink-1">
                 {t('admin.pricing.group_tab_directory')}
               </h2>
-              <p className="text-xs text-ink-3">{t('admin.pricing.directory_note')}</p>
+              <p className="text-meta text-ink-3">{t('admin.pricing.directory_note')}</p>
             </div>
             <a
               href="/admin/users/groups"
-              className="text-[13px] font-medium text-brand hover:underline"
+              className="text-meta font-medium text-brand hover:underline"
             >
               {t('admin.pricing.manage_groups')}
             </a>
@@ -295,7 +295,7 @@ export function GroupPricingListPage() {
               ))}
             </div>
           ) : directoryQuery.isError ? (
-            <div className="flex items-center gap-3 p-5 text-sm text-ink-2">
+            <div className="flex items-center gap-3 p-5 text-body text-ink-2">
               <span>
                 {directoryQuery.error instanceof ApiError &&
                 directoryQuery.error.kind === 'forbidden'
@@ -307,11 +307,11 @@ export function GroupPricingListPage() {
               </Button>
             </div>
           ) : directoryItems.length === 0 ? (
-            <p className="p-5 text-sm text-ink-2">{t('admin.pricing.directory_empty')}</p>
+            <p className="p-5 text-body text-ink-2">{t('admin.pricing.directory_empty')}</p>
           ) : (
             <>
               {hasNoCustomGroups ? (
-                <div className="flex items-center justify-between gap-2 border-b border-border-hairline px-5 py-2 text-xs text-ink-3">
+                <div className="flex items-center justify-between gap-2 border-b border-border-hairline px-5 py-2 text-meta text-ink-3">
                   <span>{t('admin.pricing.directory_empty')}</span>
                   <a href="/admin/users/groups" className="text-brand hover:underline">
                     {t('admin.pricing.manage_groups')}
@@ -319,9 +319,9 @@ export function GroupPricingListPage() {
                 </div>
               ) : null}
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[760px] text-sm">
+                <table className="w-full min-w-[760px] text-body">
                   <thead>
-                    <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
+                    <tr className="border-b border-border-hairline text-left text-meta text-ink-2">
                       <th scope="col" className="px-4 py-2 font-medium">
                         {t('admin.pricing.group_name')}
                       </th>
@@ -402,13 +402,13 @@ export function GroupPricingListPage() {
               <div className="flex flex-col gap-1.5">
                 <label
                   htmlFor="override-filter-group"
-                  className="text-[13px] font-medium text-ink-1"
+                  className="text-meta font-medium text-ink-1"
                 >
                   {t('admin.pricing.group')}
                 </label>
                 <select
                   id="override-filter-group"
-                  className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                  className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
                   value={draft.group}
                   onChange={(event) => {
                     setDraft((current) => ({ ...current, group: event.target.value }))
@@ -433,13 +433,13 @@ export function GroupPricingListPage() {
               <div className="flex flex-col gap-1.5">
                 <label
                   htmlFor="override-filter-status"
-                  className="text-[13px] font-medium text-ink-1"
+                  className="text-meta font-medium text-ink-1"
                 >
                   {t('admin.pricing.status')}
                 </label>
                 <select
                   id="override-filter-status"
-                  className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                  className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
                   value={draft.status}
                   onChange={(event) => {
                     setDraft((current) => ({
@@ -485,7 +485,7 @@ export function GroupPricingListPage() {
               ) : (
                 <span />
               )}
-              <span className="text-[13px] text-ink-2">
+              <span className="text-meta text-ink-2">
                 {t('admin.pricing.override_total', { count: total })}
               </span>
             </div>
@@ -497,7 +497,7 @@ export function GroupPricingListPage() {
                 ))}
               </div>
             ) : overridesQuery.isError ? (
-              <div className="flex items-center gap-3 p-5 text-sm text-ink-2">
+              <div className="flex items-center gap-3 p-5 text-body text-ink-2">
                 <span>{t('admin.pricing.override_error')}</span>
                 <Button variant="secondary" onClick={() => void overridesQuery.refetch()}>
                   {t('common.action.retry')}
@@ -505,7 +505,7 @@ export function GroupPricingListPage() {
               </div>
             ) : items.length === 0 ? (
               <div className="flex flex-col items-start gap-2 p-5">
-                <p className="text-sm text-ink-2">
+                <p className="text-body text-ink-2">
                   {hasFilters
                     ? t('admin.pricing.empty_filtered')
                     : t('admin.pricing.override_empty')}
@@ -525,9 +525,9 @@ export function GroupPricingListPage() {
               </div>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[1080px] text-sm">
+                <table className="w-full min-w-[1080px] text-body">
                   <thead>
-                    <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
+                    <tr className="border-b border-border-hairline text-left text-meta text-ink-2">
                       <th scope="col" rowSpan={2} className="px-4 py-2 font-medium">
                         {t('admin.pricing.group')}
                       </th>
@@ -554,7 +554,7 @@ export function GroupPricingListPage() {
                         {t('admin.pricing.actions')}
                       </th>
                     </tr>
-                    <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
+                    <tr className="border-b border-border-hairline text-left text-meta text-ink-2">
                       <th scope="col" className="border-l border-border-hairline px-4 py-2 text-right font-medium">
                         {t('admin.pricing.column_prompt')}
                       </th>
@@ -610,7 +610,7 @@ export function GroupPricingListPage() {
                                 : t('admin.pricing.status_disabled')}
                             </StatusBadge>
                           </td>
-                          <td className="px-4 py-3 text-xs text-ink-2" title={row.updated_at}>
+                          <td className="px-4 py-3 text-meta text-ink-2" title={row.updated_at}>
                             {formatRelativeTime(row.updated_at, locale)}
                           </td>
                           <td className="px-4 py-3">
@@ -618,7 +618,7 @@ export function GroupPricingListPage() {
                               <div className="flex justify-end gap-1">
                                 <Button
                                   variant="ghost"
-                                  className="h-8 px-2 text-[13px]"
+                                  className="h-8 px-2 text-meta"
                                   onClick={() =>
                                     setEditTarget({ mode: 'edit', override: row })
                                   }
@@ -627,7 +627,7 @@ export function GroupPricingListPage() {
                                 </Button>
                                 <Button
                                   variant="ghost"
-                                  className="h-8 px-2 text-[13px]"
+                                  className="h-8 px-2 text-meta"
                                   disabled={setStatus.isPending}
                                   onClick={() => {
                                     if (row.status === 1) {
@@ -643,7 +643,7 @@ export function GroupPricingListPage() {
                                 </Button>
                                 <Button
                                   variant="ghost"
-                                  className="h-8 px-2 text-[13px] text-danger hover:bg-danger-bg"
+                                  className="h-8 px-2 text-meta text-danger hover:bg-danger-bg"
                                   onClick={() => setDeleteTarget(row)}
                                 >
                                   {t('admin.pricing.delete')}

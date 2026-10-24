@@ -18,7 +18,7 @@ export interface WalletPageProps {
 }
 
 const TAB_BASE =
-  '-mb-px h-9 rounded-t-lg px-3.5 text-[13px] font-medium transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none'
+  '-mb-px h-9 rounded-t-lg px-3.5 text-meta font-medium transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none'
 const TAB_SELECTED = 'border-b-2 border-brand font-semibold text-brand'
 const TAB_IDLE = 'text-ink-2 hover:text-ink-1'
 
@@ -67,18 +67,18 @@ export function WalletPage({ search, onSearchChange }: WalletPageProps) {
           <>
             <Button
               variant="secondary"
-              className="h-8 px-3 text-xs"
+              className="h-8 px-3 text-body"
               onClick={() => select('topup')}
             >
               {t('account.wallet.overview.action_redeem')}
             </Button>
             <a
               href="/orders"
-              className="inline-flex h-8 items-center justify-center rounded-lg border border-border-default bg-surface-card px-3 text-xs font-medium text-ink-1 transition-colors hover:bg-surface-hover"
+              className="inline-flex h-8 items-center justify-center rounded-lg border border-border-default bg-surface-card px-3 text-body font-medium text-ink-1 transition-colors hover:bg-surface-hover"
             >
               {t('account.wallet.overview.action_orders')}
             </a>
-            <Button className="h-8 px-3 text-xs" onClick={() => startTopup()}>
+            <Button className="h-8 px-3 text-body" onClick={() => startTopup()}>
               {t('account.wallet.overview.action_topup')}
             </Button>
           </>

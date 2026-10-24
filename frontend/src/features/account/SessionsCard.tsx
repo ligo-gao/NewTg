@@ -65,10 +65,10 @@ export function SessionsCard({ className }: SessionsCardProps) {
     >
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 id="sessions-title" className="text-base font-semibold text-ink-1">
+          <h2 id="sessions-title" className="text-section text-ink-1">
             {t('account.sessions.title')}
           </h2>
-          <p className="mt-1 text-[13px] text-ink-2">
+          <p className="mt-1 text-meta text-ink-2">
             {t('account.sessions.description')}
           </p>
         </div>
@@ -93,7 +93,7 @@ export function SessionsCard({ className }: SessionsCardProps) {
           ))}
         </div>
       ) : sessionsQuery.isError ? (
-        <div className="mt-4 flex items-center gap-3 text-sm text-ink-2">
+        <div className="mt-4 flex items-center gap-3 text-body text-ink-2">
           <span>{t('account.sessions.error')}</span>
           <Button variant="secondary" onClick={() => void sessionsQuery.refetch()}>
             {t('common.action.retry')}
@@ -101,7 +101,7 @@ export function SessionsCard({ className }: SessionsCardProps) {
         </div>
       ) : sessions.length === 0 ? (
         <div className="mt-4 flex flex-col items-start gap-3">
-          <p className="text-sm text-ink-2">{t('account.sessions.empty')}</p>
+          <p className="text-body text-ink-2">{t('account.sessions.empty')}</p>
           <Button
             onClick={() => {
               window.location.assign('/sign-in')
@@ -119,7 +119,7 @@ export function SessionsCard({ className }: SessionsCardProps) {
             >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="truncate text-sm font-medium text-ink-1">
+                  <span className="truncate text-body font-medium text-ink-1">
                     {session.user_agent.slice(0, 48)}
                   </span>
                   {session.current ? (
@@ -128,7 +128,7 @@ export function SessionsCard({ className }: SessionsCardProps) {
                     </StatusBadge>
                   ) : null}
                 </div>
-                <p className="mt-0.5 font-mono text-xs tabular-nums text-ink-3">
+                <p className="mt-0.5 font-mono text-meta tabular-nums text-ink-3">
                   {session.ip} ·{' '}
                   {t('account.sessions.last_active', {
                     time: formatRelativeTime(session.last_seen_at, locale),

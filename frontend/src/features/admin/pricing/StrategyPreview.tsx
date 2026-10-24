@@ -125,16 +125,16 @@ export function StrategyPreview({
       className="flex flex-col gap-3 rounded-lg border border-border-hairline bg-surface-subtle p-3"
     >
       <div className="flex flex-col gap-1">
-        <h3 className="text-sm font-semibold text-ink-1">
+        <h3 className="text-body font-semibold text-ink-1">
           {t('admin.pricing.strategy_preview_title')}
         </h3>
-        <p className="text-xs text-ink-3">{t('admin.pricing.strategy_preview_hint')}</p>
+        <p className="text-meta text-ink-3">{t('admin.pricing.strategy_preview_hint')}</p>
       </div>
 
       <div className="flex flex-col gap-1.5">
         <label
           htmlFor="strategy-preview-at"
-          className="text-[13px] font-medium text-ink-1"
+          className="text-meta font-medium text-ink-1"
         >
           {t('admin.pricing.preview_at')}
         </label>
@@ -142,12 +142,12 @@ export function StrategyPreview({
           id="strategy-preview-at"
           type="datetime-local"
           value={at}
-          className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           onChange={(event) => {
             onAtChange(event.target.value)
           }}
         />
-        <div className="flex flex-wrap items-center gap-2 text-xs text-ink-2">
+        <div className="flex flex-wrap items-center gap-2 text-meta text-ink-2">
           <Tag variant="info">{ruleLabel}</Tag>
           <Tag variant="neutral">{kindTag}</Tag>
           <span className="font-mono tabular-nums">
@@ -186,19 +186,19 @@ export function StrategyPreview({
         aria-live="polite"
         className="flex flex-wrap items-baseline justify-between gap-2 rounded-lg border border-border-hairline bg-surface-card px-3 py-2"
       >
-        <span className="text-xs text-ink-3">
+        <span className="text-meta text-ink-3">
           {t('admin.pricing.strategy_preview_total')}
         </span>
         <span className="flex items-baseline gap-2">
           <span
             data-testid="strategy-preview-total-credits"
-            className="font-mono text-sm tabular-nums text-ink-1"
+            className="font-mono text-body tabular-nums text-ink-1"
           >
             {t('admin.pricing.preview_credits', { credits: credits4(total) })}
           </span>
           <span
             data-testid="strategy-preview-total-yuan"
-            className="font-mono text-sm tabular-nums text-ink-1"
+            className="font-mono text-body tabular-nums text-ink-1"
           >
             {t('admin.pricing.preview_yuan4', {
               amount: yuan4(total, quotaPerUnit),
@@ -208,7 +208,7 @@ export function StrategyPreview({
       </div>
 
       <div className="flex flex-col gap-1">
-        <h4 className="text-[13px] font-medium text-ink-1">
+        <h4 className="text-meta font-medium text-ink-1">
           {t('admin.pricing.preview_breakdown')}
         </h4>
         {mode === 'per_request' ? (
@@ -246,7 +246,7 @@ export function StrategyPreview({
       </div>
 
       {mode !== 'per_request' ? (
-        <div className="grid grid-cols-1 gap-1 text-xs text-ink-2 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-1 text-meta text-ink-2 sm:grid-cols-2">
           <span>
             {t('admin.pricing.preview_effective', {
               rate: credits4(prompt * match.multiplier),
@@ -261,7 +261,7 @@ export function StrategyPreview({
       ) : null}
 
       {config.enabled && config.holidayPolicy === 'cn_offpeak' ? (
-        <p className="text-xs text-ink-3">
+        <p className="text-meta text-ink-3">
           {t('admin.pricing.preview_holiday_note')}
         </p>
       ) : null}
@@ -280,14 +280,14 @@ function TokenField({
 }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-[13px] font-medium text-ink-1">{label}</span>
+      <span className="text-meta font-medium text-ink-1">{label}</span>
       <input
         type="number"
         min={0}
         step={1}
         inputMode="numeric"
         value={value}
-        className="h-9 w-full rounded-lg border border-border-default bg-surface-card px-2 text-sm tabular-nums text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+        className="h-9 w-full rounded-lg border border-border-default bg-surface-card px-2 text-body tabular-nums text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         onChange={(event) => {
           onChange(event.target.value)
         }}
@@ -298,7 +298,7 @@ function TokenField({
 
 function BreakdownRow({ label, amount }: { label: string; amount: string }) {
   return (
-    <div className="flex items-baseline justify-between gap-2 text-xs text-ink-2">
+    <div className="flex items-baseline justify-between gap-2 text-meta text-ink-2">
       <span>{label}</span>
       <span className="font-mono tabular-nums text-ink-1">{amount}</span>
     </div>

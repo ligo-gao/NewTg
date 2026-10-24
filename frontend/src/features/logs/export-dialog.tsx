@@ -223,7 +223,7 @@ export function ExportDialog({
       }
     >
       <fieldset className="flex flex-col gap-2">
-        <legend className="text-[13px] font-semibold text-ink-1">
+        <legend className="text-meta font-semibold text-ink-1">
           {t('logs.usage.export.scope')}
         </legend>
         <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border-default p-2.5">
@@ -239,10 +239,10 @@ export function ExportDialog({
             }}
           />
           <span>
-            <span className="block text-sm text-ink-1">
+            <span className="block text-body text-ink-1">
               {t('logs.usage.export.scope_filtered')}
             </span>
-            <span className="block text-xs text-ink-2">
+            <span className="block text-meta text-ink-2">
               {t('logs.usage.export.scope_filtered_summary', {
                 total: new Intl.NumberFormat(locale).format(filteredTotal),
               })}
@@ -262,10 +262,10 @@ export function ExportDialog({
             }}
           />
           <span>
-            <span className="block text-sm text-ink-1">
+            <span className="block text-body text-ink-1">
               {t('logs.usage.export.scope_all')}
             </span>
-            <span className="block text-xs text-ink-2">
+            <span className="block text-meta text-ink-2">
               {t('logs.usage.export.scope_all_summary')}
             </span>
           </span>
@@ -273,10 +273,10 @@ export function ExportDialog({
       </fieldset>
 
       <fieldset className="mt-4 flex flex-col gap-2">
-        <legend className="text-[13px] font-semibold text-ink-1">
+        <legend className="text-meta font-semibold text-ink-1">
           {t('logs.usage.export.format')}
         </legend>
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-ink-1">
+        <label className="flex cursor-pointer items-center gap-2 text-body text-ink-1">
           <input
             type="radio"
             name="export-format"
@@ -290,7 +290,7 @@ export function ExportDialog({
           />
           {t('logs.usage.export.format_txt')}
         </label>
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-ink-1">
+        <label className="flex cursor-pointer items-center gap-2 text-body text-ink-1">
           <input
             type="radio"
             name="export-format"
@@ -306,12 +306,12 @@ export function ExportDialog({
         </label>
       </fieldset>
 
-      <p className="mt-4 text-xs text-ink-3">
+      <p className="mt-4 text-meta text-ink-3">
         {t('logs.usage.export.fields')}
       </p>
 
       {canRevealSensitive ? (
-        <label className="mt-3 flex items-start gap-2 rounded-lg bg-warning-bg p-2.5 text-sm text-ink-1">
+        <label className="mt-3 flex items-start gap-2 rounded-lg bg-warning-bg p-2.5 text-body text-ink-1">
           <input
             type="checkbox"
             data-testid="export-sensitive"
@@ -326,24 +326,24 @@ export function ExportDialog({
               {t('logs.usage.export.sensitive')}
             </span>
             {includeSensitive ? (
-              <span className="block text-xs text-warning">
+              <span className="block text-meta text-warning">
                 {t('logs.usage.export.sensitive_notice')}
               </span>
             ) : (
-              <span className="block text-xs text-ink-2">
+              <span className="block text-meta text-ink-2">
                 {t('logs.usage.export.sensitive_off')}
               </span>
             )}
           </span>
         </label>
       ) : (
-        <p className="mt-3 text-xs text-ink-3">
+        <p className="mt-3 text-meta text-ink-3">
           {t('logs.usage.export.sensitive_unavailable')}
         </p>
       )}
 
       {scope === 'filtered' && filteredTotal === 0 ? (
-        <p className="mt-2 text-xs text-ink-3">
+        <p className="mt-2 text-meta text-ink-3">
           {t('logs.usage.export.empty')}
         </p>
       ) : null}
@@ -353,7 +353,7 @@ export function ExportDialog({
           <p
             data-testid="export-error"
             role={offline && error === null ? 'status' : 'alert'}
-            className="text-sm text-danger"
+            className="text-body text-danger"
           >
             {statusMessage}
             {error !== 'row_limit' && error !== 'empty' && !offline ? (
@@ -370,7 +370,7 @@ export function ExportDialog({
             ) : null}
           </p>
         ) : submitting ? (
-          <p className="text-sm text-ink-2">
+          <p className="text-body text-ink-2">
             {t('logs.usage.export.generating')}
           </p>
         ) : null}

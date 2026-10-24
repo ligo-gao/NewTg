@@ -162,10 +162,10 @@ export function TwoFaSetupDialog({
           <p className="text-ink-3">{t('auth.two_fa_setup.loading')}</p>
         ) : step === 'scan' ? (
           <>
-            <h3 className="text-sm font-semibold text-ink-1">
+            <h3 className="text-body font-semibold text-ink-1">
               {t('auth.two_fa_setup.scan_title')}
             </h3>
-            <p className="text-[13px] text-ink-2">
+            <p className="text-meta text-ink-2">
               {t('auth.two_fa_setup.scan_description')}
             </p>
             <div className="flex items-center gap-4">
@@ -178,11 +178,11 @@ export function TwoFaSetupDialog({
                   title={t('auth.two_fa_setup.scan_title')}
                 />
               </div>
-              <p className="text-[13px] text-ink-2">
+              <p className="text-meta text-ink-2">
                 {t('auth.two_fa_setup.scan_manual_hint')}
               </p>
             </div>
-            <label className="text-[13px] font-medium text-ink-1" htmlFor="twofa-secret">
+            <label className="text-meta font-medium text-ink-1" htmlFor="twofa-secret">
               {t('auth.two_fa_setup.secret')}
             </label>
             <div className="flex items-center gap-2">
@@ -190,20 +190,20 @@ export function TwoFaSetupDialog({
                 id="twofa-secret"
                 readOnly
                 value={secret}
-                className="h-10 w-full rounded-lg border border-border-default bg-surface-subtle px-3 font-mono text-[13px] text-ink-1"
+                className="h-10 w-full rounded-lg border border-border-default bg-surface-subtle px-3 font-mono text-meta text-ink-1"
               />
               <Button variant="secondary" onClick={() => void copy(secret)}>
                 {t('common.action.copy')}
               </Button>
             </div>
-            <p className="break-all font-mono text-[11px] text-ink-3">{otpauthUrl}</p>
+            <p className="break-all font-mono text-badge text-ink-3">{otpauthUrl}</p>
           </>
         ) : step === 'verify' ? (
           <>
-            <h3 className="text-sm font-semibold text-ink-1">
+            <h3 className="text-body font-semibold text-ink-1">
               {t('auth.two_fa_setup.verify_title')}
             </h3>
-            <p className="text-[13px] text-ink-2">
+            <p className="text-meta text-ink-2">
               {t('auth.two_fa_setup.verify_description')}
             </p>
             <OtpInput
@@ -215,13 +215,13 @@ export function TwoFaSetupDialog({
           </>
         ) : (
           <>
-            <h3 className="text-sm font-semibold text-ink-1">
+            <h3 className="text-body font-semibold text-ink-1">
               {t('auth.two_fa_setup.codes_title')}
             </h3>
-            <p className="text-[13px] text-ink-2">
+            <p className="text-meta text-ink-2">
               {t('auth.two_fa_setup.codes_description')}
             </p>
-            <ul className="grid grid-cols-2 gap-2 rounded-lg bg-surface-subtle p-3 font-mono text-[13px]">
+            <ul className="grid grid-cols-2 gap-2 rounded-lg bg-surface-subtle p-3 font-mono text-meta">
               {backupCodes.map((value, index) => (
                 <li key={value}>
                   <button
@@ -235,7 +235,7 @@ export function TwoFaSetupDialog({
                 </li>
               ))}
             </ul>
-            <label className="flex items-start gap-2 text-[13px] text-ink-2">
+            <label className="flex items-start gap-2 text-meta text-ink-2">
               <input
                 type="checkbox"
                 className="mt-0.5 size-4 accent-brand"

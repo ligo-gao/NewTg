@@ -28,11 +28,11 @@ export function SectionCard({
     >
       {title !== undefined ? (
         <header className="mb-3">
-          <h2 className="text-[15px] font-semibold leading-[22px] text-ink-1">
+          <h2 className="text-card-title font-semibold leading-[22px] text-ink-1">
             {title}
           </h2>
           {description !== undefined ? (
-            <p className="mt-0.5 text-xs text-ink-3">{description}</p>
+            <p className="mt-0.5 text-meta text-ink-3">{description}</p>
           ) : null}
         </header>
       ) : null}
@@ -55,7 +55,7 @@ export function EmptyState({
       data-testid={testId}
       className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-border-default px-4 py-10 text-center"
     >
-      <p className="text-sm text-ink-3">{title}</p>
+      <p className="text-body text-ink-3">{title}</p>
       {action}
     </div>
   )
@@ -75,11 +75,11 @@ export function ErrorState({
     <div
       data-testid={testId}
       role="alert"
-      className="flex flex-wrap items-center gap-3 rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-sm text-danger"
+      className="flex flex-wrap items-center gap-3 rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-body text-danger"
     >
       <span>{message}</span>
       {onRetry !== undefined ? (
-        <Button variant="ghost" className="h-7 px-2 text-xs" onClick={onRetry}>
+        <Button variant="ghost" className="h-7 px-2 text-body" onClick={onRetry}>
           {t('admin.task_plugins.common.retry')}
         </Button>
       ) : null}
@@ -130,8 +130,8 @@ export function PluginIcon({
 }) {
   const classes =
     size === 'sm'
-      ? 'size-7 rounded-lg text-xs'
-      : 'size-12 rounded-[8px] text-base'
+      ? 'size-7 rounded-lg text-badge'
+      : 'size-12 rounded-[8px] text-section'
   return (
     <span
       aria-hidden="true"
@@ -184,7 +184,7 @@ export function Switch({
 export function OfflineNote({ visible }: { visible: boolean }) {
   const { t } = useI18n()
   if (!visible) return null
-  return <p className="text-xs text-ink-3">{t('admin.task_plugins.common.offline')}</p>
+  return <p className="text-meta text-ink-3">{t('admin.task_plugins.common.offline')}</p>
 }
 
 export function Pagination({
@@ -208,7 +208,7 @@ export function Pagination({
     <nav
       data-testid={testId}
       aria-label={t('admin.task_plugins.common.pagination_label')}
-      className="flex flex-wrap items-center justify-between gap-3 text-xs text-ink-3"
+      className="flex flex-wrap items-center justify-between gap-3 text-meta text-ink-3"
     >
       <span>
         {t('admin.task_plugins.common.page_summary', { from, to, total })}
@@ -217,7 +217,7 @@ export function Pagination({
         <span>{t('admin.task_plugins.common.page_of', { page, pages })}</span>
         <Button
           variant="secondary"
-          className="h-7 px-2 text-xs"
+          className="h-7 px-2 text-body"
           disabled={page <= 1}
           onClick={() => onPageChange(page - 1)}
         >
@@ -225,7 +225,7 @@ export function Pagination({
         </Button>
         <Button
           variant="secondary"
-          className="h-7 px-2 text-xs"
+          className="h-7 px-2 text-body"
           disabled={page >= pages}
           onClick={() => onPageChange(page + 1)}
         >

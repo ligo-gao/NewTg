@@ -72,7 +72,7 @@ export function ChannelTypeSelect({
         disabled={disabled}
         aria-describedby={describedBy}
         aria-invalid={ariaInvalid}
-        className="h-9 w-full rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+        className="h-9 w-full rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
       >
         {CHANNEL_TYPE_GROUP_ORDER.map((group) => (
           <optgroup key={group} label={t(`common.channels.typeGroup.${group}`)}>
@@ -88,7 +88,7 @@ export function ChannelTypeSelect({
         ))}
       </select>
       {nativeInfo === undefined ? null : (
-        <p id={descriptionId} className="text-xs text-ink-3">
+        <p id={descriptionId} className="text-meta text-ink-3">
           {t(nativeInfo.descriptionKey)}
         </p>
       )}

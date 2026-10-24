@@ -184,7 +184,7 @@ export function RenewDialog({
         panelClassName="max-w-[480px]"
         footer={footer}
       >
-        <dl className="flex flex-col gap-2 text-sm">
+        <dl className="flex flex-col gap-2 text-body">
           <div className="flex items-center justify-between gap-4">
             <dt className="text-ink-2">{t('account.subscription.plan.label')}</dt>
             <dd className="font-medium text-ink-1">
@@ -213,17 +213,17 @@ export function RenewDialog({
 
         {activated ? (
           <div aria-live="polite" className="mt-4">
-            <p className="text-[15px] font-semibold text-success">
+            <p className="text-card-title text-success">
               {t('account.subscription.renew.success')}
             </p>
-            <p className="mt-1 text-sm text-ink-2">
+            <p className="mt-1 text-body text-ink-2">
               {t('account.subscription.renew.success_body', {
                 days: subscription.period_days,
               })}
             </p>
           </div>
         ) : isFree ? (
-          <p className="mt-4 rounded-lg border border-info-line bg-info-bg px-3 py-2 text-sm text-info">
+          <p className="mt-4 rounded-lg border border-info-line bg-info-bg px-3 py-2 text-body text-info">
             {t('account.subscription.renew.free_hint')}
           </p>
         ) : (
@@ -238,7 +238,7 @@ export function RenewDialog({
         )}
 
         {error !== null ? (
-          <p role="alert" className="mt-3 text-sm text-danger">
+          <p role="alert" className="mt-3 text-body text-danger">
             {t(error.key, error.values)}
           </p>
         ) : null}

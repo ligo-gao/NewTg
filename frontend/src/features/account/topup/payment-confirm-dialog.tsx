@@ -129,7 +129,7 @@ export function PaymentConfirmDialog({
           label={t('account.topup.credits_received')}
           value={formatCredits(credits)}
         />
-        <div className="flex items-center justify-between gap-4 text-sm">
+        <div className="flex items-center justify-between gap-4 text-body">
           <dt className="text-ink-2">{t('account.topup.payment_method')}</dt>
           <dd className="font-medium text-ink-1">{providerLabel}</dd>
         </div>
@@ -140,7 +140,7 @@ export function PaymentConfirmDialog({
 
 function LedgerRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-end gap-2 text-sm">
+    <div className="flex items-end gap-2 text-body">
       <dt className="text-ink-2">{label}</dt>
       <span
         aria-hidden="true"

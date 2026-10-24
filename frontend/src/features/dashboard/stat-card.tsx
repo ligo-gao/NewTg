@@ -53,7 +53,7 @@ export function StatCard({
       onBlur={() => setTooltipOpen(false)}
       className="relative min-h-24 rounded-xl border border-border-default bg-surface-card p-4 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
     >
-      <p className="text-[13px] text-ink-2">{label}</p>
+      <p className="text-meta text-ink-2">{label}</p>
 
       {loading ? (
         <div
@@ -62,7 +62,7 @@ export function StatCard({
         />
       ) : error ? (
         <div className="mt-1 flex items-center gap-2">
-          <p data-testid={`${testId}-value`} className="text-2xl font-semibold text-ink-3">
+          <p data-testid={`${testId}-value`} className="text-stat font-semibold text-ink-3">
             {UNAVAILABLE}
           </p>
           {onRetry !== undefined ? (
@@ -70,7 +70,7 @@ export function StatCard({
               type="button"
               data-testid={`${testId}-retry`}
               onClick={onRetry}
-              className="rounded border border-border-default px-2 py-0.5 text-xs text-ink-2 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="rounded border border-border-default px-2 py-0.5 text-badge text-ink-2 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             >
               {retryLabel}
             </button>
@@ -80,15 +80,15 @@ export function StatCard({
         <>
           <p
             data-testid={`${testId}-value`}
-            className="mt-1 text-2xl font-semibold leading-8 text-ink-1"
+            className="mt-1 text-stat font-semibold leading-8 text-ink-1"
           >
             {value}
           </p>
           {unit !== undefined ? (
-            <p className="text-[13px] text-ink-2">{unit}</p>
+            <p className="text-meta text-ink-2">{unit}</p>
           ) : null}
           {subline !== undefined ? (
-            <p data-testid={`${testId}-subline`} className="text-[13px] text-ink-2">
+            <p data-testid={`${testId}-subline`} className="text-meta text-ink-2">
               {subline}
             </p>
           ) : null}
@@ -99,7 +99,7 @@ export function StatCard({
         <div
           role="tooltip"
           id={tooltipId}
-          className="absolute left-3 top-full z-10 mt-1 whitespace-nowrap rounded-lg bg-ink-1 px-2.5 py-1.5 text-xs text-surface-card"
+          className="absolute left-3 top-full z-10 mt-1 whitespace-nowrap rounded-lg bg-ink-1 px-2.5 py-1.5 text-meta text-surface-card"
         >
           {tooltip}
         </div>

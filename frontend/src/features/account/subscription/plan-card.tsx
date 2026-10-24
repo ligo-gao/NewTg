@@ -33,23 +33,23 @@ export function PlanCard({ plan, disabled, onSubscribe }: PlanCardProps) {
       data-testid="subscription-plan-card"
       className="flex flex-col rounded-xl border border-border-hairline bg-surface-card p-4"
     >
-      <h3 className="text-[15px] font-semibold text-ink-1">{plan.title}</h3>
+      <h3 className="text-card-title text-ink-1">{plan.title}</h3>
       {plan.description !== null && plan.description !== undefined ? (
-        <p className="mt-1 line-clamp-2 text-[13px] text-ink-2">
+        <p className="mt-1 line-clamp-2 text-meta text-ink-2">
           {plan.description}
         </p>
       ) : null}
 
-      <p className="mt-3 text-2xl font-semibold tabular-nums text-ink-1">
+      <p className="mt-3 text-stat tabular-nums text-ink-1">
         {plan.price_amount === 0
           ? t('account.subscription.plan.free')
           : formatYuan(plan.price_amount)}
-        <span className="ml-1 text-[13px] font-normal text-ink-2">
+        <span className="ml-1 text-meta font-normal text-ink-2">
           / {t('account.subscription.plan.period', { days: plan.period_days })}
         </span>
       </p>
 
-      <dl className="mt-3 flex flex-col gap-1.5 text-[13px]">
+      <dl className="mt-3 flex flex-col gap-1.5 text-meta">
         <div className="flex items-baseline justify-between gap-3">
           <dt className="text-ink-2">
             {t('account.subscription.plan.grant_credits')}

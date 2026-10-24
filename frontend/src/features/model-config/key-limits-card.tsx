@@ -204,10 +204,10 @@ export function KeyLimitsCard({ groups, groupsError }: KeyLimitsCardProps) {
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 id="key-limits-title" className="text-base font-semibold text-ink-1">
+          <h2 id="key-limits-title" className="text-section font-semibold text-ink-1">
             {t('account.model_config.keys.title')}
           </h2>
-          <p className="mt-1 text-[13px] text-ink-2">
+          <p className="mt-1 text-meta text-ink-2">
             {t('account.model_config.keys.description')}
           </p>
         </div>
@@ -221,7 +221,7 @@ export function KeyLimitsCard({ groups, groupsError }: KeyLimitsCardProps) {
             value={keyword}
             onChange={(event) => setKeyword(event.target.value)}
             placeholder={t('account.model_config.keys.search_placeholder')}
-            className="h-9 rounded-lg border border-border-default bg-surface-page px-3 text-sm text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="h-9 rounded-lg border border-border-default bg-surface-page px-3 text-body text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           />
           <Button
             variant="secondary"
@@ -249,14 +249,14 @@ export function KeyLimitsCard({ groups, groupsError }: KeyLimitsCardProps) {
           ))}
         </div>
       ) : tokensQuery.isError ? (
-        <div className="mt-4 flex items-center gap-3 text-[13px] text-danger">
+        <div className="mt-4 flex items-center gap-3 text-meta text-danger">
           <span>{t('account.model_config.keys.load_error')}</span>
           <Button variant="secondary" onClick={() => void tokensQuery.refetch()}>
             {t('account.model_config.retry')}
           </Button>
         </div>
       ) : tokens.length === 0 ? (
-        <div className="mt-4 flex items-center gap-3 text-[13px] text-ink-2">
+        <div className="mt-4 flex items-center gap-3 text-meta text-ink-2">
           <span>{t('account.model_config.keys.empty')}</span>
           <a
             href="/tokens"
@@ -267,9 +267,9 @@ export function KeyLimitsCard({ groups, groupsError }: KeyLimitsCardProps) {
         </div>
       ) : (
         <div className="mt-4 overflow-x-auto">
-          <table className="w-full min-w-[720px] border-collapse text-[13px]">
+          <table className="w-full min-w-[720px] border-collapse text-meta">
             <thead>
-              <tr className="border-b border-border-hairline text-left text-xs text-ink-3">
+              <tr className="border-b border-border-hairline text-left text-meta text-ink-3">
                 <th scope="col" className="w-8 px-2 py-2">
                   <span className="sr-only">
                     {t('account.model_config.keys.selected_count', {
@@ -366,12 +366,12 @@ export function KeyLimitsCard({ groups, groupsError }: KeyLimitsCardProps) {
           />
           {batchOutcome !== null && batchOutcome.failed.length > 0 ? (
             <div className="rounded-lg border border-danger-line bg-danger-bg p-3">
-              <p className="text-[13px] font-medium text-danger">
+              <p className="text-meta font-medium text-danger">
                 {t('account.model_config.keys.batch_partial', {
                   count: batchOutcome.failed.length,
                 })}
               </p>
-              <table className="mt-2 w-full text-left text-xs">
+              <table className="mt-2 w-full text-left text-meta">
                 <thead>
                   <tr className="text-ink-3">
                     <th scope="col" className="py-1">
@@ -458,14 +458,14 @@ function TokenRows({
         </td>
         <td className="px-2 py-2 font-medium text-ink-1">{token.name}</td>
         <td className="px-2 py-2 text-ink-2">
-          <span className="rounded border border-border-hairline bg-surface-subtle px-1.5 py-0.5 text-xs">
+          <span className="rounded border border-border-hairline bg-surface-subtle px-1.5 py-0.5 text-badge">
             {token.group}
           </span>
         </td>
-        <td className="px-2 py-2 font-mono text-xs text-ink-2" data-testid="masked-key">
+        <td className="px-2 py-2 font-mono text-meta text-ink-2" data-testid="masked-key">
           {token.key_masked}
         </td>
-        <td className="px-2 py-2 text-xs text-ink-2">
+        <td className="px-2 py-2 text-meta text-ink-2">
           {summary.unlimited ? (
             <span className="text-ink-3">
               {t('account.model_config.keys.unlimited')}
@@ -478,7 +478,7 @@ function TokenRows({
             </span>
           )}
           {notice !== undefined ? (
-            <p className="mt-1 text-xs text-warning" role="status">
+            <p className="mt-1 text-meta text-warning" role="status">
               {notice}
             </p>
           ) : null}
@@ -493,7 +493,7 @@ function TokenRows({
         <tr className="border-b border-border-hairline bg-surface-page">
           <td colSpan={6} className="px-4 py-3">
             <div className="max-w-2xl space-y-3">
-              <p className="text-[13px] font-medium text-ink-1">
+              <p className="text-meta font-medium text-ink-1">
                 {t('account.model_config.keys.editor_label', {
                   name: token.name,
                 })}

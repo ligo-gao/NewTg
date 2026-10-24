@@ -631,14 +631,14 @@ export function SettingsSectionForm({
     >
       <header className="flex items-start justify-between gap-4 border-b border-border-hairline pb-3">
         <div>
-          <h2 id={titleId} className="text-[15px] font-semibold leading-[22px] text-ink-1">
+          <h2 id={titleId} className="text-card-title font-semibold leading-[22px] text-ink-1">
             {sectionTitle}
           </h2>
           {config.descriptionKey !== undefined ? (
-            <p className="mt-0.5 text-xs text-ink-3">{t(config.descriptionKey)}</p>
+            <p className="mt-0.5 text-meta text-ink-3">{t(config.descriptionKey)}</p>
           ) : null}
         </div>
-        <span className="font-mono text-[11px] text-ink-3" aria-hidden="true">
+        <span className="font-mono text-badge text-ink-3" aria-hidden="true">
           {config.id}.*
         </span>
         {dirty ? (
@@ -705,7 +705,7 @@ export function SettingsSectionForm({
               )
             })}
             {fields.length === 0 ? (
-              <p className="text-sm text-ink-3">{t('settings.shell.load_error')}</p>
+              <p className="text-body text-ink-3">{t('settings.shell.load_error')}</p>
             ) : null}
           </div>
 
@@ -894,7 +894,7 @@ function WebhookTestPanel({ disabled, urlConfigured }: WebhookTestPanelProps) {
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p id="webhook-test-hint" className="text-xs text-ink-3">
+        <p id="webhook-test-hint" className="text-meta text-ink-3">
           {urlConfigured
             ? t('settings.webhook.test.hint')
             : t('settings.webhook.test.url_required')}
@@ -955,7 +955,7 @@ function FieldRow({
     return (
       <div className="flex flex-col gap-1">
         <div className="flex items-center justify-between gap-6">
-          <label htmlFor={inputId} className="text-[13px] font-medium text-ink-1">
+          <label htmlFor={inputId} className="text-meta font-medium text-ink-1">
             {label}
           </label>
           <input
@@ -973,10 +973,10 @@ function FieldRow({
           />
         </div>
         {hint !== undefined && error === undefined ? (
-          <p id={hintId} className="text-xs text-ink-3">{hint}</p>
+          <p id={hintId} className="text-meta text-ink-3">{hint}</p>
         ) : null}
         {error !== undefined ? (
-          <p id={errorId} className="text-xs text-danger">{error}</p>
+          <p id={errorId} className="text-meta text-danger">{error}</p>
         ) : null}
       </div>
     )
@@ -985,7 +985,7 @@ function FieldRow({
   if (field.control === 'select') {
     return (
       <div className="flex flex-col gap-1.5">
-        <label htmlFor={inputId} className="text-[13px] font-medium text-ink-1">
+        <label htmlFor={inputId} className="text-meta font-medium text-ink-1">
           {label}
         </label>
         <select
@@ -996,7 +996,7 @@ function FieldRow({
           aria-describedby={describedBy}
           aria-errormessage={error !== undefined ? errorId : undefined}
           onChange={(event) => onChange(event.target.value)}
-          className="h-10 w-full rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+          className="h-10 w-full rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
         >
           <option value="">—</option>
           {(field.options ?? []).map((option) => (
@@ -1011,10 +1011,10 @@ function FieldRow({
           ) : null}
         </select>
         {hint !== undefined && error === undefined ? (
-          <p id={hintId} className="text-xs text-ink-3">{hint}</p>
+          <p id={hintId} className="text-meta text-ink-3">{hint}</p>
         ) : null}
         {error !== undefined ? (
-          <p id={errorId} className="text-xs text-danger">{error}</p>
+          <p id={errorId} className="text-meta text-danger">{error}</p>
         ) : null}
       </div>
     )
@@ -1046,12 +1046,12 @@ function FieldRow({
         aria-describedby={describedBy}
         aria-errormessage={error !== undefined ? errorId : undefined}
       >
-        <legend className="text-[13px] font-medium text-ink-1">{label}</legend>
+        <legend className="text-meta font-medium text-ink-1">{label}</legend>
         <div className="flex flex-wrap gap-x-5 gap-y-2">
           {toggles.map((entry) => {
             const toggleId = `${inputId}-${entry.key}`
             return (
-              <label key={entry.key} htmlFor={toggleId} className="flex items-center gap-2 text-sm text-ink-2">
+              <label key={entry.key} htmlFor={toggleId} className="flex items-center gap-2 text-body text-ink-2">
                 <input
                   id={toggleId}
                   type="checkbox"
@@ -1065,10 +1065,10 @@ function FieldRow({
           })}
         </div>
         {hint !== undefined && error === undefined ? (
-          <p id={hintId} className="text-xs text-ink-3">{hint}</p>
+          <p id={hintId} className="text-meta text-ink-3">{hint}</p>
         ) : null}
         {error !== undefined ? (
-          <p id={errorId} className="text-xs text-danger">{error}</p>
+          <p id={errorId} className="text-meta text-danger">{error}</p>
         ) : null}
       </fieldset>
     )
@@ -1085,7 +1085,7 @@ function FieldRow({
         aria-describedby={describedBy}
         aria-errormessage={error !== undefined ? errorId : undefined}
       >
-        <legend className="text-[13px] font-medium text-ink-1">{label}</legend>
+        <legend className="text-meta font-medium text-ink-1">{label}</legend>
         <div className="flex flex-wrap gap-x-5 gap-y-2">
           {options.map((option) => {
             const optionId = `${inputId}-${String(option.value)}`
@@ -1094,7 +1094,7 @@ function FieldRow({
               <label
                 key={String(option.value)}
                 htmlFor={optionId}
-                className="flex items-center gap-2 text-sm text-ink-2"
+                className="flex items-center gap-2 text-body text-ink-2"
               >
                 <input
                   id={optionId}
@@ -1122,13 +1122,13 @@ function FieldRow({
           })}
         </div>
         {selected.length === 0 && field.emptyHintKey !== undefined && error === undefined ? (
-          <p role="status" className="text-xs text-warning">{t(field.emptyHintKey)}</p>
+          <p role="status" className="text-meta text-warning">{t(field.emptyHintKey)}</p>
         ) : null}
         {hint !== undefined && error === undefined ? (
-          <p id={hintId} className="text-xs text-ink-3">{hint}</p>
+          <p id={hintId} className="text-meta text-ink-3">{hint}</p>
         ) : null}
         {error !== undefined ? (
-          <p id={errorId} className="text-xs text-danger">{error}</p>
+          <p id={errorId} className="text-meta text-danger">{error}</p>
         ) : null}
       </fieldset>
     )
@@ -1145,7 +1145,7 @@ function FieldRow({
           : ''
     return (
       <div className="flex flex-col gap-1.5">
-        <label htmlFor={inputId} className="text-[13px] font-medium text-ink-1">
+        <label htmlFor={inputId} className="text-meta font-medium text-ink-1">
           {label}
         </label>
         <textarea
@@ -1162,13 +1162,13 @@ function FieldRow({
               ? () => onChange(parseJson(text))
               : undefined
           }
-          className="w-full rounded-lg border border-border-default bg-surface-card px-3 py-2 font-mono text-[13px] text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+          className="w-full rounded-lg border border-border-default bg-surface-card px-3 py-2 font-mono text-meta text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
         />
         {hint !== undefined && error === undefined ? (
-          <p id={hintId} className="text-xs text-ink-3">{hint}</p>
+          <p id={hintId} className="text-meta text-ink-3">{hint}</p>
         ) : null}
         {error !== undefined ? (
-          <p id={errorId} className="text-xs text-danger">{error}</p>
+          <p id={errorId} className="text-meta text-danger">{error}</p>
         ) : null}
       </div>
     )
@@ -1181,7 +1181,7 @@ function FieldRow({
     const text = typeof value === 'string' ? value : Array.isArray(value) ? value.map(String).join('\n') : ''
     return (
       <div className="flex flex-col gap-1.5">
-        <label htmlFor={inputId} className="text-[13px] font-medium text-ink-1">
+        <label htmlFor={inputId} className="text-meta font-medium text-ink-1">
           {label}
         </label>
         <textarea
@@ -1194,13 +1194,13 @@ function FieldRow({
           aria-errormessage={error !== undefined ? errorId : undefined}
           onChange={(event) => onChange(event.target.value)}
           onBlur={() => onChange(parseLines(text))}
-          className="w-full rounded-lg border border-border-default bg-surface-card px-3 py-2 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+          className="w-full rounded-lg border border-border-default bg-surface-card px-3 py-2 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
         />
         {hint !== undefined && error === undefined ? (
-          <p id={hintId} className="text-xs text-ink-3">{hint}</p>
+          <p id={hintId} className="text-meta text-ink-3">{hint}</p>
         ) : null}
         {error !== undefined ? (
-          <p id={errorId} className="text-xs text-danger">{error}</p>
+          <p id={errorId} className="text-meta text-danger">{error}</p>
         ) : null}
       </div>
     )
@@ -1334,14 +1334,14 @@ function SecretField({
     onChange: (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
       onChange(event.target.value),
     className:
-      'w-full rounded-lg border bg-surface-card px-3 text-sm text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 ' +
+      'w-full rounded-lg border bg-surface-card px-3 text-body text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 ' +
       (error !== undefined ? 'border-danger' : 'border-border-default'),
   }
 
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between gap-3">
-        <label htmlFor={id} className="text-[13px] font-medium text-ink-1">
+        <label htmlFor={id} className="text-meta font-medium text-ink-1">
           {label}
         </label>
         <span className="flex items-center gap-2">
@@ -1353,7 +1353,7 @@ function SecretField({
           {configured && !clearRequested && !disabled ? (
             <button
               type="button"
-              className="text-xs text-danger underline"
+              className="text-meta text-danger underline"
               onClick={() => {
                 if (globalThis.confirm(t('settings.shell.secret_clear_confirm'))) onChange(null)
               }}
@@ -1389,10 +1389,10 @@ function SecretField({
         </button>
       </div>
       {error === undefined ? (
-        <p id={hintId} className="text-xs text-ink-3">{hint ?? t('settings.shell.secret_hint')}</p>
+        <p id={hintId} className="text-meta text-ink-3">{hint ?? t('settings.shell.secret_hint')}</p>
       ) : null}
       {error !== undefined ? (
-        <p id={errorId} className="text-xs text-danger">{error}</p>
+        <p id={errorId} className="text-meta text-danger">{error}</p>
       ) : null}
     </div>
   )
@@ -1430,7 +1430,7 @@ function TagInput({ id, label, hint, error, disabled, values, onChange }: TagInp
 
   return (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor={id} className="text-[13px] font-medium text-ink-1">
+      <label htmlFor={id} className="text-meta font-medium text-ink-1">
         {label}
       </label>
       {values.length > 0 ? (
@@ -1438,7 +1438,7 @@ function TagInput({ id, label, hint, error, disabled, values, onChange }: TagInp
           {values.map((entry) => (
             <li
               key={entry}
-              className="inline-flex items-center gap-1 rounded-md border border-border-hairline bg-surface-subtle px-2 py-0.5 text-xs text-ink-1"
+              className="inline-flex items-center gap-1 rounded-md border border-border-hairline bg-surface-subtle px-2 py-0.5 text-badge text-ink-1"
             >
               <span className="font-mono">{entry}</span>
               <button
@@ -1474,13 +1474,13 @@ function TagInput({ id, label, hint, error, disabled, values, onChange }: TagInp
             commit(pending)
           }
         }}
-        className="h-10 w-full rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+        className="h-10 w-full rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
       />
       {hint !== undefined && error === undefined ? (
-        <p id={hintId} className="text-xs text-ink-3">{hint}</p>
+        <p id={hintId} className="text-meta text-ink-3">{hint}</p>
       ) : null}
       {error !== undefined ? (
-        <p id={errorId} className="text-xs text-danger">{error}</p>
+        <p id={errorId} className="text-meta text-danger">{error}</p>
       ) : null}
     </div>
   )

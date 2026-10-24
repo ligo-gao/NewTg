@@ -150,10 +150,10 @@ export function CheckinCard({ className = 'mt-4' }: CheckinCardProps = {}) {
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 id="checkin-title" className="text-[15px] font-semibold text-ink-1">
+          <h3 id="checkin-title" className="text-card-title font-semibold text-ink-1">
             {t('common.dashboard.checkin.title')}
           </h3>
-          <p className="mt-1 text-[13px] text-ink-2">
+          <p className="mt-1 text-meta text-ink-2">
             {t('common.dashboard.checkin.description')}
           </p>
         </div>
@@ -194,7 +194,7 @@ export function CheckinCard({ className = 'mt-4' }: CheckinCardProps = {}) {
         <p
           data-testid="checkin-feedback"
           role="status"
-          className="mt-3 text-sm text-ink-1"
+          className="mt-3 text-body text-ink-1"
         >
           {feedback === 'success'
             ? t('common.dashboard.checkin.success', {
@@ -205,13 +205,13 @@ export function CheckinCard({ className = 'mt-4' }: CheckinCardProps = {}) {
       ) : null}
 
       {offline ? (
-        <p data-testid="checkin-offline" role="alert" className="mt-3 text-sm text-danger">
+        <p data-testid="checkin-offline" role="alert" className="mt-3 text-body text-danger">
           {t('common.dashboard.checkin.offline')}
         </p>
       ) : null}
 
       {mutationError !== undefined && !offline ? (
-        <p data-testid="checkin-mutation-error" role="alert" className="mt-3 text-sm text-danger">
+        <p data-testid="checkin-mutation-error" role="alert" className="mt-3 text-body text-danger">
           {t('common.dashboard.checkin.action_error')}
         </p>
       ) : null}
@@ -223,21 +223,21 @@ export function CheckinCard({ className = 'mt-4' }: CheckinCardProps = {}) {
         />
       ) : calendar.isError ? (
         <div className="mt-3 flex items-center gap-3">
-          <p data-testid="checkin-error" className="text-sm text-ink-2">
+          <p data-testid="checkin-error" className="text-body text-ink-2">
             {t('common.dashboard.checkin.error')}
           </p>
           <button
             type="button"
             data-testid="checkin-retry"
             onClick={() => void calendar.refetch()}
-            className="rounded border border-border-default px-2 py-0.5 text-xs text-ink-2 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="rounded border border-border-default px-2 py-0.5 text-badge text-ink-2 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
             {t('common.action.retry')}
           </button>
         </div>
       ) : data !== undefined && grid !== undefined ? (
         <>
-          <dl className="mt-3 grid grid-cols-1 gap-2 text-[13px] text-ink-2 sm:grid-cols-3">
+          <dl className="mt-3 grid grid-cols-1 gap-2 text-meta text-ink-2 sm:grid-cols-3">
             <div>
               <dt>{t('common.dashboard.checkin.streak_label')}</dt>
               <dd data-testid="checkin-streak" className="text-ink-1">
@@ -259,7 +259,7 @@ export function CheckinCard({ className = 'mt-4' }: CheckinCardProps = {}) {
           </dl>
 
           {data.days.length === 0 ? (
-            <p data-testid="checkin-empty" className="mt-3 text-[13px] text-ink-2">
+            <p data-testid="checkin-empty" className="mt-3 text-meta text-ink-2">
               {t('common.dashboard.checkin.empty')}
             </p>
           ) : null}
@@ -277,7 +277,7 @@ export function CheckinCard({ className = 'mt-4' }: CheckinCardProps = {}) {
                 <div
                   key={`${label}-${index}`}
                   role="columnheader"
-                  className="text-center text-[11px] text-ink-3"
+                  className="text-center text-badge text-ink-3"
                 >
                   {label}
                 </div>
@@ -310,7 +310,7 @@ export function CheckinCard({ className = 'mt-4' }: CheckinCardProps = {}) {
                             })
                       }
                       className={[
-                        'flex h-8 items-center justify-center rounded text-xs',
+                        'flex h-8 items-center justify-center rounded text-badge',
                         cell.awarded === undefined
                           ? 'text-ink-3'
                           : 'bg-surface-hover font-semibold text-ink-1',
@@ -328,7 +328,7 @@ export function CheckinCard({ className = 'mt-4' }: CheckinCardProps = {}) {
           </div>
 
           {todayAward !== undefined ? (
-            <p data-testid="checkin-today-award" className="mt-2 text-[13px] text-ink-2">
+            <p data-testid="checkin-today-award" className="mt-2 text-meta text-ink-2">
               {t('common.dashboard.checkin.today_award', {
                 amount: formatCreditsValue(todayAward, locale),
               })}

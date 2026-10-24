@@ -8,7 +8,7 @@ function ChannelsRoute() {
 
   return (
     <section className="mx-auto mt-6 max-w-[1520px]">
-      <h1 className="text-xl font-semibold text-ink-1">{t('common.channels.title')}</h1>
+      <h1 className="text-page-title text-ink-1">{t('common.channels.title')}</h1>
       <div className="mt-4">
         <ChannelListPage />
       </div>

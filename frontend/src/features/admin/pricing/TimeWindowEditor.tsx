@@ -24,7 +24,7 @@ export interface TimeWindowEditorProps {
 const ALL_DAYS = [1, 2, 3, 4, 5, 6, 7]
 
 const SELECT_CLASSES =
-  'h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50'
+  'h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50'
 
 /**
  * 时段价格编辑器（F-06-14）：启用开关、IANA 时区、节假日策略、默认倍率
@@ -89,12 +89,12 @@ export function TimeWindowEditor({
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-col">
-          <h3 className="text-sm font-semibold text-ink-1">
+          <h3 className="text-body font-semibold text-ink-1">
             {t('admin.pricing.time_section')}
           </h3>
-          <p className="text-xs text-ink-3">{t('admin.pricing.time_section_hint')}</p>
+          <p className="text-meta text-ink-3">{t('admin.pricing.time_section_hint')}</p>
         </div>
-        <label className="flex items-center gap-2 text-[13px] font-medium text-ink-1">
+        <label className="flex items-center gap-2 text-meta font-medium text-ink-1">
           <input
             type="checkbox"
             className="size-4 rounded border-border-default accent-[var(--brand)]"
@@ -111,7 +111,7 @@ export function TimeWindowEditor({
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="pricing-time-timezone" className="text-[13px] font-medium text-ink-1">
+          <label htmlFor="pricing-time-timezone" className="text-meta font-medium text-ink-1">
             {t('admin.pricing.time_timezone')}
           </label>
           <select
@@ -131,12 +131,12 @@ export function TimeWindowEditor({
             ))}
           </select>
           {errors.timezone !== undefined ? (
-            <p className="text-xs text-danger">{errors.timezone}</p>
+            <p className="text-meta text-danger">{errors.timezone}</p>
           ) : null}
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="pricing-holiday-policy" className="text-[13px] font-medium text-ink-1">
+          <label htmlFor="pricing-holiday-policy" className="text-meta font-medium text-ink-1">
             {t('admin.pricing.time_holiday')}
           </label>
           <select
@@ -151,7 +151,7 @@ export function TimeWindowEditor({
             <option value="none">{t('admin.pricing.holiday_none')}</option>
             <option value="cn_offpeak">{t('admin.pricing.holiday_cn_offpeak')}</option>
           </select>
-          <p className="text-xs text-ink-3">{t('admin.pricing.time_holiday_hint')}</p>
+          <p className="text-meta text-ink-3">{t('admin.pricing.time_holiday_hint')}</p>
         </div>
       </div>
 
@@ -170,17 +170,17 @@ export function TimeWindowEditor({
                 }}
               />
             </div>
-            <p className="pb-2 text-xs text-ink-3">{t('admin.pricing.time_default_hint')}</p>
+            <p className="pb-2 text-meta text-ink-3">{t('admin.pricing.time_default_hint')}</p>
           </div>
 
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
-              <h4 className="text-[13px] font-medium text-ink-1">
+              <h4 className="text-meta font-medium text-ink-1">
                 {t('admin.pricing.time_windows')}
               </h4>
               <Button
                 variant="secondary"
-                className="h-8 px-2 text-[13px]"
+                className="h-8 px-2 text-meta"
                 disabled={disabled}
                 onClick={addWindow}
               >
@@ -189,7 +189,7 @@ export function TimeWindowEditor({
             </div>
 
             {value.windows.length === 0 ? (
-              <p className="text-xs text-ink-3">{t('admin.pricing.time_windows_empty')}</p>
+              <p className="text-meta text-ink-3">{t('admin.pricing.time_windows_empty')}</p>
             ) : (
               <ul className="flex flex-col gap-2">
                 {value.windows.map((window, index) => {
@@ -221,7 +221,7 @@ export function TimeWindowEditor({
                         <div className="flex w-28 flex-col gap-1.5">
                           <label
                             htmlFor={`pricing-window-start-${index}`}
-                            className="text-[13px] font-medium text-ink-1"
+                            className="text-meta font-medium text-ink-1"
                           >
                             {t('admin.pricing.time_start')} {label}
                           </label>
@@ -242,7 +242,7 @@ export function TimeWindowEditor({
                         <div className="flex w-28 flex-col gap-1.5">
                           <label
                             htmlFor={`pricing-window-end-${index}`}
-                            className="text-[13px] font-medium text-ink-1"
+                            className="text-meta font-medium text-ink-1"
                           >
                             {t('admin.pricing.time_end')} {label}
                           </label>
@@ -274,7 +274,7 @@ export function TimeWindowEditor({
                         </div>
                         <Button
                           variant="ghost"
-                          className="h-9 px-2 text-[13px] text-danger hover:bg-danger-bg"
+                          className="h-9 px-2 text-meta text-danger hover:bg-danger-bg"
                           disabled={disabled}
                           aria-label={`${t('admin.pricing.time_remove_window')} ${label}`}
                           onClick={() => {
@@ -300,7 +300,7 @@ export function TimeWindowEditor({
                               aria-label={t(weekdayLongKey(day))}
                               disabled={disabled}
                               className={[
-                                'h-7 min-w-9 rounded-md border px-1.5 text-xs font-medium',
+                                'h-7 min-w-9 rounded-md border px-1.5 text-badge',
                                 'focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
                                 pressed
                                   ? 'border-brand-line bg-brand-subtle text-brand'
@@ -317,18 +317,18 @@ export function TimeWindowEditor({
                       </div>
 
                       {errors[`windows.${index}.start`] !== undefined ? (
-                        <p className="text-xs text-danger">
+                        <p className="text-meta text-danger">
                           {errors[`windows.${index}.start`]}
                         </p>
                       ) : null}
                       {errors[`windows.${index}.end`] !== undefined ? (
-                        <p className="text-xs text-danger">
+                        <p className="text-meta text-danger">
                           {errors[`windows.${index}.end`]}
                         </p>
                       ) : null}
 
                       {overnight ? (
-                        <p className="text-xs text-ink-3">
+                        <p className="text-meta text-ink-3">
                           {t('admin.pricing.time_overnight_hint', {
                             startDay:
                               window.days.length > 0
@@ -351,7 +351,7 @@ export function TimeWindowEditor({
           </div>
         </>
       ) : (
-        <p className="text-xs text-ink-3">{t('admin.pricing.time_disabled_hint')}</p>
+        <p className="text-meta text-ink-3">{t('admin.pricing.time_disabled_hint')}</p>
       )}
     </section>
   )

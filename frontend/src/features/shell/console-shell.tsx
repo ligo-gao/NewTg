@@ -58,10 +58,10 @@ export function ConsoleWideScreenGate() {
         <div className="mx-auto mb-4 grid size-11 place-items-center rounded-xl bg-brand-subtle text-brand">
           <NavIcon name="panel" className="size-5" />
         </div>
-        <h1 className="text-lg font-semibold text-ink-1">
+        <h1 className="text-card-title text-ink-1">
           {t('common.console.gate.title')}
         </h1>
-        <p className="mt-2 text-sm leading-6 text-ink-2">
+        <p className="mt-2 text-body leading-6 text-ink-2">
           {t('common.console.gate.body')}
         </p>
       </div>

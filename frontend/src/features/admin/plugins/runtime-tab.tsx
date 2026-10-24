@@ -48,7 +48,7 @@ export function RuntimeTab() {
             : t('admin.task_plugins.runtime.refresh')}
         </Button>
         {statusQuery.dataUpdatedAt > 0 ? (
-          <span className="text-xs text-ink-3" data-testid="runtime-refreshed-at">
+          <span className="text-meta text-ink-3" data-testid="runtime-refreshed-at">
             {t('admin.task_plugins.runtime.last_refreshed', {
               time: formatRelativeTime(
                 new Date(statusQuery.dataUpdatedAt).toISOString(),
@@ -80,14 +80,14 @@ export function RuntimeTab() {
       {aggregate?.aggregate_unavailable === true ? (
         <p
           data-testid="runtime-aggregate-unavailable"
-          className="rounded-lg border border-warning-line bg-warning-bg px-3 py-2 text-xs text-warning"
+          className="rounded-lg border border-warning-line bg-warning-bg px-3 py-2 text-meta text-warning"
         >
           {t('admin.task_plugins.runtime.aggregate_unavailable')}
         </p>
       ) : null}
 
       {aggregate !== undefined && instances.length === 0 ? (
-        <p className="rounded-xl border border-border-hairline bg-surface-subtle px-4 py-6 text-center text-sm text-ink-3">
+        <p className="rounded-xl border border-border-hairline bg-surface-subtle px-4 py-6 text-center text-body text-ink-3">
           {t('admin.task_plugins.runtime.empty_replicas')}
         </p>
       ) : null}
@@ -97,7 +97,7 @@ export function RuntimeTab() {
       ))}
 
       {instances.length > 0 ? (
-        <p className="text-xs text-ink-3">
+        <p className="text-meta text-ink-3">
           {t('admin.task_plugins.runtime.generation_hint')}
         </p>
       ) : null}
@@ -118,21 +118,21 @@ function RuntimeInstanceCard({ instance }: { instance: PluginRuntimeInstance }) 
       className="rounded-xl border border-border-default bg-surface-card p-5"
     >
       <header className="flex flex-wrap items-center gap-3">
-        <h2 className="font-mono text-sm font-semibold text-ink-1">
+        <h2 className="font-mono text-body font-semibold text-ink-1">
           {instance.instance_id}
         </h2>
         {instance.node !== '' && instance.node !== instance.instance_id ? (
-          <span className="font-mono text-xs text-ink-3">{instance.node}</span>
+          <span className="font-mono text-meta text-ink-3">{instance.node}</span>
         ) : null}
         {instance.local ? (
           <span
             data-testid="runtime-local-badge"
-            className="rounded-full border border-border-default px-2 py-0.5 text-xs text-ink-2"
+            className="rounded-full border border-border-default px-2 py-0.5 text-badge text-ink-2"
           >
             {t('admin.task_plugins.runtime.local_replica')}
           </span>
         ) : null}
-        <span className="font-mono text-xs text-ink-3">
+        <span className="font-mono text-meta text-ink-3">
           {instance.role} · v{instance.version}
         </span>
         <StatusBadge variant={instance.reload_error ? 'danger' : 'success'}>
@@ -140,34 +140,34 @@ function RuntimeInstanceCard({ instance }: { instance: PluginRuntimeInstance }) 
             ? t('admin.task_plugins.runtime.rebuild_failed')
             : t('admin.task_plugins.runtime.rebuild_ok')}
         </StatusBadge>
-        <span className="text-xs text-ink-2">
+        <span className="text-meta text-ink-2">
           {t('admin.task_plugins.runtime.generation', { n: instance.generation })}
         </span>
-        <span className="text-xs text-ink-2">
+        <span className="text-meta text-ink-2">
           {t('admin.task_plugins.runtime.reloaded', {
             time: formatRelativeTime(instance.reloaded_at, locale),
           })}
         </span>
-        <span className="text-xs text-ink-3">
+        <span className="text-meta text-ink-3">
           {t('admin.task_plugins.runtime.last_seen', {
             time: formatRelativeTime(instance.last_seen, locale),
           })}
         </span>
       </header>
 
-      <p className="mt-1 font-mono text-xs text-ink-3">
+      <p className="mt-1 font-mono text-meta text-ink-3">
         revision {instance.revision}
       </p>
 
       {instance.reload_error !== undefined && instance.reload_error !== '' ? (
-        <p className="mt-2 whitespace-pre-wrap rounded bg-danger-bg px-2 py-1 font-mono text-xs text-danger">
+        <p className="mt-2 whitespace-pre-wrap rounded bg-danger-bg px-2 py-1 font-mono text-meta text-danger">
           {instance.reload_error}
         </p>
       ) : null}
 
       <div className="mt-3 border-t border-border-hairline pt-3">
         {errorPlugins.length === 0 ? (
-          <p className="text-xs text-ink-3">
+          <p className="text-meta text-ink-3">
             {t('admin.task_plugins.runtime.no_errors')}
           </p>
         ) : (
@@ -180,12 +180,12 @@ function RuntimeInstanceCard({ instance }: { instance: PluginRuntimeInstance }) 
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <PluginIcon size="sm" pluginKey={plugin.key} />
-                  <span className="font-mono text-xs font-medium text-ink-1">
+                  <span className="font-mono text-meta text-ink-1">
                     {plugin.key}
                   </span>
                   <RuntimeStatusBadge status={plugin.status} />
                   {plugin.version !== undefined ? (
-                    <span className="font-mono text-xs text-ink-3">
+                    <span className="font-mono text-meta text-ink-3">
                       v{plugin.version}
                     </span>
                   ) : null}
@@ -194,7 +194,7 @@ function RuntimeInstanceCard({ instance }: { instance: PluginRuntimeInstance }) 
                   {(plugin.errors ?? []).map((issue) => (
                     <li
                       key={`${issue.fieldPath}-${issue.rule}-${issue.message}`}
-                      className="font-mono text-xs text-danger"
+                      className="font-mono text-meta text-danger"
                     >
                       {issue.fieldPath === '' ? issue.key : `${issue.fieldPath}: `}
                       {issue.message}

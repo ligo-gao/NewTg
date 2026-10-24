@@ -54,17 +54,17 @@ function PriceLine({
 }) {
   const { t } = useI18n()
   return (
-    <div className="grid grid-cols-[64px_88px_1fr] items-center gap-2 text-[13px] leading-6">
-      <span className="text-xs font-medium text-ink-2">{label}</span>
+    <div className="grid grid-cols-[64px_88px_1fr] items-center gap-2 text-meta leading-6">
+      <span className="text-badge text-ink-2">{label}</span>
       <span
         className={[
-          'text-right font-mono text-[15px] font-semibold tabular-nums',
+          'text-right font-mono text-card-title font-semibold tabular-nums',
           zero ? 'text-amount-zero' : 'text-ink-1',
         ].join(' ')}
       >
         {value}
       </span>
-      <span className="flex items-center gap-1.5 text-xs text-ink-2">
+      <span className="flex items-center gap-1.5 text-meta text-ink-2">
         {unit}
         {converted ? (
           <Tag variant="neutral">{t('public.pricing.unit_converted')}</Tag>
@@ -89,7 +89,7 @@ export function PriceRegister({
     return (
       <div className="flex min-h-[128px] flex-col justify-center gap-2 border-y border-border-hairline py-3">
         <Tag variant="success">{t('public.pricing.free')}</Tag>
-        <p className="text-[13px] leading-5 text-ink-2">
+        <p className="text-meta leading-5 text-ink-2">
           {t('public.pricing.free_note')}
         </p>
       </div>
@@ -161,8 +161,8 @@ export function PriceRegister({
       )}
 
       {card.group_price !== null ? (
-        <div className="mt-1 grid grid-cols-[64px_88px_1fr] items-center gap-2 border-t border-border-hairline pt-1 text-[13px] leading-6">
-          <span className="flex min-w-0 items-center gap-1 border-l-2 border-brand pl-1.5 text-xs font-medium text-brand">
+        <div className="mt-1 grid grid-cols-[64px_88px_1fr] items-center gap-2 border-t border-border-hairline pt-1 text-meta leading-6">
+          <span className="flex min-w-0 items-center gap-1 border-l-2 border-brand pl-1.5 text-badge text-brand">
             <span className="truncate">
               {isOwnGroup
                 ? t('public.pricing.your_group_label', {
@@ -173,16 +173,16 @@ export function PriceRegister({
                   })}
             </span>
           </span>
-          <span className="text-right font-mono text-[15px] font-semibold tabular-nums text-ink-1">
+          <span className="text-right font-mono text-card-title font-semibold tabular-nums text-ink-1">
             {display(card.group_price.prompt).text}
           </span>
-          <span className="flex items-center gap-1.5 text-xs text-ink-2">
+          <span className="flex items-center gap-1.5 text-meta text-ink-2">
             {unit}
             {formatRatio(card.group_price.ratio) !== null ? (
               <Tag variant="neutral">{formatRatio(card.group_price.ratio)}</Tag>
             ) : null}
             {card.group_price.source === 'override' ? (
-              <span title={t('public.pricing.override')} className="text-xs text-ink-3">
+              <span title={t('public.pricing.override')} className="text-meta text-ink-3">
                 {t('public.pricing.override')}
               </span>
             ) : null}
@@ -191,7 +191,7 @@ export function PriceRegister({
       ) : null}
 
       {reference !== null || recharge !== null ? (
-        <div className="mt-auto flex flex-col gap-0.5 pt-1.5 text-xs leading-5 text-ink-2">
+        <div className="mt-auto flex flex-col gap-0.5 pt-1.5 text-meta leading-5 text-ink-2">
           {reference !== null ? (
             <p>
               {reference.usd === null
@@ -218,7 +218,7 @@ export function PriceRegister({
       ) : null}
 
       {card.group_price !== null && !isOwnGroup ? (
-        <p className="pt-1 text-xs leading-5 text-ink-3">
+        <p className="pt-1 text-meta leading-5 text-ink-3">
           {t('public.pricing.preview_note')}
         </p>
       ) : null}

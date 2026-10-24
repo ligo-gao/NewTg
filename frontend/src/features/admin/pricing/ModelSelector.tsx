@@ -67,12 +67,12 @@ export function ModelSelector({
 
   return (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor={id} className="text-[13px] font-medium text-ink-1">
+      <label htmlFor={id} className="text-meta font-medium text-ink-1">
         {label}
       </label>
       <select
         id={id}
-        className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+        className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
         value={value}
         disabled={disabled || modelsQuery.isPending}
         aria-invalid={error !== undefined ? true : undefined}
@@ -97,11 +97,11 @@ export function ModelSelector({
         ))}
       </select>
       {modelsQuery.isError ? (
-        <div className="flex items-center gap-2 text-xs text-danger">
+        <div className="flex items-center gap-2 text-meta text-danger">
           <span>{t('admin.pricing.models_error')}</span>
           <Button
             variant="ghost"
-            className="h-6 px-1 text-xs"
+            className="h-6 px-1 text-meta"
             onClick={() => void modelsQuery.refetch()}
           >
             {t('common.action.retry')}
@@ -109,15 +109,15 @@ export function ModelSelector({
         </div>
       ) : null}
       {error !== undefined ? (
-        <p id={errorId} className="text-xs text-danger">
+        <p id={errorId} className="text-meta text-danger">
           {error}
         </p>
       ) : null}
       {currentOption !== undefined && currentOption.status === 2 ? (
-        <p className="text-xs text-warning">{t('admin.pricing.models_source_disabled')}</p>
+        <p className="text-meta text-warning">{t('admin.pricing.models_source_disabled')}</p>
       ) : null}
       {currentOption !== undefined && currentOption.mode === 'tiered_expr' ? (
-        <p className="text-xs text-warning">{t('admin.pricing.models_source_expression')}</p>
+        <p className="text-meta text-warning">{t('admin.pricing.models_source_expression')}</p>
       ) : null}
     </div>
   )

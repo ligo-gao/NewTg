@@ -47,8 +47,8 @@ const TAB_LABEL_KEYS: Record<PluginDetailTab, string> = {
 function Field({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <dt className="text-xs text-ink-3">{label}</dt>
-      <dd className="break-words font-mono text-sm text-ink-1">{value}</dd>
+      <dt className="text-meta text-ink-3">{label}</dt>
+      <dd className="break-words font-mono text-body text-ink-1">{value}</dd>
     </div>
   )
 }
@@ -74,7 +74,7 @@ export function SourceViewer({
       style={{ maxHeight: 420 }}
     >
       <div className="flex items-center justify-between border-b border-border-hairline px-3 py-1.5">
-        <span className="text-xs text-ink-3">
+        <span className="text-meta text-ink-3">
           {t('admin.task_plugins.detail.source_viewer')}
         </span>
         <Tag variant="neutral">{t('admin.task_plugins.detail.readonly')}</Tag>
@@ -82,7 +82,7 @@ export function SourceViewer({
       <table
         aria-readonly="true"
         aria-label={t('admin.task_plugins.detail.source_viewer')}
-        className="w-full border-collapse font-mono text-xs"
+        className="w-full border-collapse font-mono text-meta"
       >
         <tbody>
           {lines.map((line, index) => (
@@ -120,12 +120,12 @@ function VersionDiff({
   }
   return (
     <div data-testid="plugin-source-diff" className="mt-3">
-      <div className="grid grid-cols-2 gap-2 text-xs font-medium text-ink-3">
+      <div className="grid grid-cols-2 gap-2 text-meta text-ink-3">
         <span>{leftVersion}</span>
         <span>{rightVersion}</span>
       </div>
       <div className="mt-1 overflow-auto rounded-lg border border-border-default" style={{ maxHeight: 360 }}>
-        <table aria-label={t('admin.task_plugins.detail.compare_title', { version: leftVersion })} className="w-full border-collapse font-mono text-xs">
+        <table aria-label={t('admin.task_plugins.detail.compare_title', { version: leftVersion })} className="w-full border-collapse font-mono text-meta">
           <tbody>
             {rows.map((row, index) => (
               <tr key={index}>
@@ -347,7 +347,7 @@ export function PluginDetailDrawer({
                   tabIndex={selected ? 0 : -1}
                   onClick={() => setTab(entry)}
                   className={[
-                    'inline-flex h-9 items-center gap-1 rounded-t-lg px-2.5 text-[13px]',
+                    'inline-flex h-9 items-center gap-1 rounded-t-lg px-2.5 text-meta',
                     selected
                       ? 'border-b-2 border-brand font-medium text-ink-1'
                       : 'text-ink-2 hover:bg-surface-hover hover:text-ink-1',
@@ -355,7 +355,7 @@ export function PluginDetailDrawer({
                 >
                   {t(TAB_LABEL_KEYS[entry])}
                   {count > 0 ? (
-                    <span className="rounded-full bg-surface-subtle px-1.5 text-[11px] text-ink-3">
+                    <span className="rounded-full bg-surface-subtle px-1.5 text-badge text-ink-3">
                       {count}
                     </span>
                   ) : null}
@@ -370,7 +370,7 @@ export function PluginDetailDrawer({
             className="mt-3"
           >
             {notice !== null ? (
-              <p role="status" className="mb-2 text-xs text-success">
+              <p role="status" className="mb-2 text-meta text-success">
                 {notice}
               </p>
             ) : null}
@@ -412,7 +412,7 @@ export function PluginDetailDrawer({
             ) : null}
 
             {tab === 'endpoints' || tab === 'models' || tab === 'usage' ? (
-              <p className="rounded-lg border border-dashed border-border-default px-4 py-8 text-center text-sm text-ink-3">
+              <p className="rounded-lg border border-dashed border-border-default px-4 py-8 text-center text-body text-ink-3">
                 {t('admin.task_plugins.detail.not_exposed')}
               </p>
             ) : null}
@@ -429,7 +429,7 @@ export function PluginDetailDrawer({
                         })}
                       </span>
                       {detail.plugin.runtime_errors?.map((issue) => (
-                        <span key={`${issue.key}-${issue.fieldPath}-${issue.message}`} className="mt-1 block font-mono text-xs">
+                        <span key={`${issue.key}-${issue.fieldPath}-${issue.message}`} className="mt-1 block font-mono text-meta">
                           {issue.fieldPath === '' ? issue.key : `${issue.fieldPath}: `}
                           {issue.message}
                         </span>
@@ -469,7 +469,7 @@ export function PluginDetailDrawer({
                     text={detail.source_text}
                   />
                 ) : (
-                  <p className="mt-3 text-sm text-ink-3">
+                  <p className="mt-3 text-body text-ink-3">
                     {t('admin.task_plugins.detail.no_source')}
                   </p>
                 )}
@@ -479,13 +479,13 @@ export function PluginDetailDrawer({
             {tab === 'history' ? (
               <div>
                 {detail.versions.length === 0 ? (
-                  <p className="rounded-lg border border-dashed border-border-default px-4 py-8 text-center text-sm text-ink-3">
+                  <p className="rounded-lg border border-dashed border-border-default px-4 py-8 text-center text-body text-ink-3">
                     {t('admin.task_plugins.detail.no_versions')}
                   </p>
                 ) : (
                   <div className="overflow-x-auto rounded-xl border border-border-default">
-                    <table className="w-full text-left text-sm">
-                      <thead className="bg-surface-subtle text-xs text-ink-3">
+                    <table className="w-full text-left text-body">
+                      <thead className="bg-surface-subtle text-meta text-ink-3">
                         <tr>
                           <th className="px-3 py-2 font-medium">
                             {t('admin.task_plugins.detail.version')}
@@ -521,11 +521,11 @@ export function PluginDetailDrawer({
                                 </Tag>
                               ) : null}
                             </td>
-                            <td className="px-3 py-2 text-xs text-ink-2">
+                            <td className="px-3 py-2 text-meta text-ink-2">
                               {formatRelativeTime(version.created_at, locale)}
                             </td>
                             <td
-                              className="px-3 py-2 font-mono text-xs"
+                              className="px-3 py-2 font-mono text-meta"
                               title={version.source_hash}
                             >
                               {shortHash(version.source_hash)}
@@ -535,7 +535,7 @@ export function PluginDetailDrawer({
                                 {canManage && !version.active ? (
                                   <Button
                                     variant="ghost"
-                                    className="h-7 px-2 text-xs"
+                                    className="h-7 px-2 text-badge"
                                     disabled={!online || activateMutation.isPending}
                                     onClick={() => {
                                       setActionError(null)
@@ -547,7 +547,7 @@ export function PluginDetailDrawer({
                                 ) : null}
                                 <Button
                                   variant="ghost"
-                                  className="h-7 px-2 text-xs"
+                                  className="h-7 px-2 text-badge"
                                   onClick={() =>
                                     setCompareVersion((current) =>
                                       current === version.version ? null : version.version,
@@ -559,7 +559,7 @@ export function PluginDetailDrawer({
                                 {canManage ? (
                                   <Button
                                     variant="ghost"
-                                    className="h-7 px-2 text-xs"
+                                    className="h-7 px-2 text-badge"
                                     disabled={
                                       !online ||
                                       detail.versions.length <= 1 ||
@@ -588,7 +588,7 @@ export function PluginDetailDrawer({
                 )}
 
                 {detail.versions.length <= 1 ? (
-                  <p className="mt-2 text-xs text-ink-3">
+                  <p className="mt-2 text-meta text-ink-3">
                     {t('admin.task_plugins.detail.delete_unique')}
                   </p>
                 ) : null}

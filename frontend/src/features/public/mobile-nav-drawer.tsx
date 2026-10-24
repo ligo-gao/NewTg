@@ -62,7 +62,7 @@ export function MobileNavDrawer({
                     }
                     onClick={() => onOpenChange(false)}
                     className={[
-                      'flex min-h-12 items-center rounded-lg px-3 text-[15px]',
+                      'flex min-h-12 items-center rounded-lg px-3 text-body',
                       active
                         ? 'font-medium text-ink-1'
                         : 'text-ink-2 hover:bg-surface-hover hover:text-ink-1',

@@ -54,21 +54,21 @@ export function CrossProtocolForwardInfo({
       className="flex flex-col gap-3 rounded-xl border border-border-hairline bg-surface-subtle px-4 py-3"
     >
       <div className="flex flex-col gap-1">
-        <h2 id={headingId} className="text-sm font-semibold text-ink-1">
+        <h2 id={headingId} className="text-body font-semibold text-ink-1">
           {t('common.channels.crossProtocol.title')}
         </h2>
-        <p className="text-xs text-ink-2">
+        <p className="text-meta text-ink-2">
           {t('common.channels.crossProtocol.intro', {
             header: CROSS_PROTOCOL_HEADER,
             values: headerValues,
           })}
         </p>
-        <p className="text-xs text-ink-2">
+        <p className="text-meta text-ink-2">
           {t('common.channels.crossProtocol.selectionRules')}
         </p>
       </div>
 
-      <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-xs sm:grid-cols-2">
+      <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-meta sm:grid-cols-2">
         <div>
           <dt className="text-ink-3">
             {t('common.channels.crossProtocol.headerLabel')}
@@ -95,13 +95,13 @@ export function CrossProtocolForwardInfo({
         </div>
       </dl>
 
-      <p className="text-xs text-ink-2">
+      <p className="text-meta text-ink-2">
         {t('common.channels.crossProtocol.defaultOff')}
       </p>
-      <p className="text-xs text-ink-2">
+      <p className="text-meta text-ink-2">
         {t('common.channels.crossProtocol.managedBy')}
       </p>
-      <p className="text-xs text-ink-3">
+      <p className="text-meta text-ink-3">
         {t('common.channels.crossProtocol.editableDeferred')}
       </p>
     </section>

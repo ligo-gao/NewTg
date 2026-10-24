@@ -111,8 +111,8 @@ export function RefundDialog({
       footer={footer}
     >
       {result !== null ? (
-        <div aria-live="polite" className="flex flex-col gap-2 text-sm">
-          <p className="text-[15px] font-semibold text-success">
+        <div aria-live="polite" className="flex flex-col gap-2 text-body">
+          <p className="text-card-title text-success">
             {t('account.subscription.refund.success_title')}
           </p>
           <p className="text-ink-2">
@@ -128,21 +128,21 @@ export function RefundDialog({
         </div>
       ) : (
         <div className="flex flex-col gap-3">
-          <p className="text-sm text-ink-2">
+          <p className="text-body text-ink-2">
             {t('account.subscription.refund.reason_hint')}
           </p>
-          <label className="flex flex-col gap-1 text-[13px] text-ink-2">
+          <label className="flex flex-col gap-1 text-meta text-ink-2">
             <span>{t('account.subscription.refund.reason')}</span>
             <textarea
               value={reason}
               maxLength={REFUND_REASON_MAX}
               disabled={submitting || !eligible}
               onChange={(event) => setReason(event.target.value)}
-              className="min-h-24 rounded-lg border border-border-default bg-surface-page px-3 py-2 text-sm text-ink-1 disabled:opacity-50"
+              className="min-h-24 rounded-lg border border-border-default bg-surface-page px-3 py-2 text-body text-ink-1 disabled:opacity-50"
               aria-describedby="refund-reason-count"
             />
           </label>
-          <span id="refund-reason-count" className="text-xs text-ink-3 tabular-nums">
+          <span id="refund-reason-count" className="text-meta tabular-nums">
             {t('account.subscription.refund.reason_count', {
               count: reason.length,
               max: REFUND_REASON_MAX,
@@ -152,7 +152,7 @@ export function RefundDialog({
       )}
 
       {error !== null ? (
-        <p role="alert" className="mt-3 text-sm text-danger">
+        <p role="alert" className="mt-3 text-body text-danger">
           {t(error.key, error.values)}
         </p>
       ) : null}

@@ -92,7 +92,7 @@ export function TerminateDialog({
       }
     >
       <div className="space-y-3">
-        <p className="text-sm text-ink-2">
+        <p className="text-body text-ink-2">
           {t('admin.deployments.terminate.type_name')}
         </p>
         <TextField
@@ -100,7 +100,7 @@ export function TerminateDialog({
           value={typed}
           onChange={(event) => setTyped(event.target.value)}
         />
-        <p className="font-mono text-xs text-ink-3">{target?.name}</p>
+        <p className="font-mono text-meta text-ink-3">{target?.name}</p>
         {error !== null ? (
           <FormAlert tone="danger">
             {isUnknownResult(error)

@@ -64,7 +64,7 @@ export function SignOutOthersDialog({ count, trigger }: SignOutOthersDialogProps
           </>
         }
       >
-        <p className="text-sm text-ink-2">
+        <p className="text-body text-ink-2">
           {t('account.sessions.others_body')} ({count})
         </p>
       </Dialog>

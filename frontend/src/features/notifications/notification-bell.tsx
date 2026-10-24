@@ -88,7 +88,7 @@ export function NotificationBell({
         {unread > 0 ? (
           <span
             aria-hidden="true"
-            className="absolute -right-1 -top-1 inline-flex min-w-4 items-center justify-center rounded-full bg-danger px-1 text-[10px] font-semibold leading-4 text-on-brand"
+            className="absolute -right-1 -top-1 inline-flex min-w-4 items-center justify-center rounded-full bg-danger px-1 text-badge font-semibold leading-4 text-on-brand"
           >
             {displayCount}
           </span>

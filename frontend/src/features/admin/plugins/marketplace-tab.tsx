@@ -84,12 +84,12 @@ export function MarketplaceTab({ canManage, online, enabled }: MarketplaceTabPro
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <label className="flex items-center gap-2 text-xs text-ink-3">
+        <label className="flex items-center gap-2 text-meta text-ink-3">
           {t('admin.task_plugins.marketplace.source_filter')}
           <select
             value={sourceFilter}
             onChange={(event) => setSourceFilter(event.target.value)}
-            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
           >
             <option value="">{t('admin.task_plugins.marketplace.all_sources')}</option>
             {sources.map((source) => (
@@ -116,7 +116,7 @@ export function MarketplaceTab({ canManage, online, enabled }: MarketplaceTabPro
           {t('admin.task_plugins.marketplace.manage_sources')}
         </Button>
         {home !== undefined ? (
-          <span className="ml-auto text-xs text-ink-3">
+          <span className="ml-auto text-meta text-ink-3">
             {t('admin.task_plugins.marketplace.cached_at', {
               time: new Date(home.cached_at).toLocaleTimeString(locale),
             })}
@@ -189,14 +189,14 @@ export function MarketplaceTab({ canManage, online, enabled }: MarketplaceTabPro
                   <PluginIcon icon={null} pluginKey={plugin.key} />
                   <div className="min-w-0">
                     <p className="truncate font-medium text-ink-1">{plugin.name}</p>
-                    <p className="truncate font-mono text-xs text-ink-3">{plugin.key}</p>
+                    <p className="truncate font-mono text-meta text-ink-3">{plugin.key}</p>
                   </div>
                 </div>
-                <p className="mt-1 line-clamp-2 text-xs text-ink-2">
+                <p className="mt-1 line-clamp-2 text-meta text-ink-2">
                   {plugin.description}
                 </p>
                 <div className="mt-auto flex items-center justify-between gap-2">
-                  <span className="font-mono text-xs text-ink-2">
+                  <span className="font-mono text-meta text-ink-2">
                     v{plugin.latest_version}
                   </span>
                   <span className="flex items-center gap-1">
@@ -217,7 +217,7 @@ export function MarketplaceTab({ canManage, online, enabled }: MarketplaceTabPro
                     ) : null}
                     {state !== 'installed' ? (
                       <Button
-                        className="h-7 px-2 text-xs"
+                        className="h-7 px-2 text-badge"
                         disabled={!canManage || !online}
                         onClick={() => {
                           setInstallTarget(plugin)

@@ -134,21 +134,21 @@ export function PricePreview({
       className="flex flex-col gap-2 rounded-lg border border-border-hairline bg-surface-subtle p-3"
     >
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-ink-1">
+        <h3 className="text-body font-semibold text-ink-1">
           {t('admin.pricing.preview_title')}
         </h3>
-        <span className="text-xs text-ink-3">{t('admin.pricing.preview_sample')}</span>
+        <span className="text-meta text-ink-3">{t('admin.pricing.preview_sample')}</span>
       </div>
 
       {specJson === null ? (
-        <p className="text-xs text-ink-3">{t('admin.pricing.preview_wait')}</p>
+        <p className="text-meta text-ink-3">{t('admin.pricing.preview_wait')}</p>
       ) : previewQuery.isPending || settledJson === null ? (
-        <p className="text-xs text-ink-3" aria-busy="true">
+        <p className="text-meta text-ink-3" aria-busy="true">
           {t('admin.pricing.preview_loading')}
         </p>
       ) : previewQuery.isError ? (
         <div className="flex flex-col gap-2" role="alert">
-          <p className="text-sm text-danger">
+          <p className="text-body text-danger">
             {validationError
               ? mode === 'tiered_expr'
                 ? t('admin.pricing.expression_invalid')
@@ -158,7 +158,7 @@ export function PricePreview({
           {validationError ? null : (
             <Button
               variant="secondary"
-              className="h-7 self-start px-2 text-xs"
+              className="h-7 self-start px-2 text-meta"
               onClick={() => void previewQuery.refetch()}
             >
               {t('admin.pricing.preview_retry')}
@@ -166,7 +166,7 @@ export function PricePreview({
           )}
         </div>
       ) : previewQuery.data !== undefined ? (
-        <div className="flex flex-wrap items-center gap-2 text-sm text-ink-1">
+        <div className="flex flex-wrap items-center gap-2 text-body text-ink-1">
           <span className="font-mono tabular-nums" data-testid="pricing-preview-quota">
             {t('admin.pricing.preview_quota', {
               quota: formatCredits(previewQuery.data.quota),

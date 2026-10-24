@@ -482,7 +482,7 @@ export function ChannelListPage() {
 
       <div className="flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1">
-          <label htmlFor="channel-filter-keyword" className="text-xs text-ink-2">
+          <label htmlFor="channel-filter-keyword" className="text-meta text-ink-2">
             {t('common.channels.filters.keyword')}
           </label>
           <input
@@ -493,12 +493,12 @@ export function ChannelListPage() {
             onChange={(event) => {
               setKeywordInput(event.target.value)
             }}
-            className="h-9 w-56 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
+            className="h-9 w-56 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
           />
         </div>
 
         <div className="flex flex-col gap-1">
-          <label htmlFor="channel-filter-status" className="text-xs text-ink-2">
+          <label htmlFor="channel-filter-status" className="text-meta text-ink-2">
             {t('common.channels.filters.status')}
           </label>
           <select
@@ -506,7 +506,7 @@ export function ChannelListPage() {
             value={status === null ? '' : String(status)}
             disabled={loading}
             onChange={handleStatusFilter}
-            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
+            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
           >
             <option value="">{t('common.channels.status.all')}</option>
             <option value="1">{t('common.channels.status.enabled')}</option>
@@ -516,7 +516,7 @@ export function ChannelListPage() {
         </div>
 
         <details className="relative flex flex-col gap-1">
-          <summary className="cursor-pointer text-xs text-ink-2">
+          <summary className="cursor-pointer text-meta text-ink-2">
             {types.length === 0
               ? t('common.channels.filters.allTypes')
               : `${t('common.channels.filters.type')} (${types.length})`}
@@ -524,13 +524,13 @@ export function ChannelListPage() {
           <div className="absolute top-7 z-10 max-h-72 w-64 overflow-y-auto rounded-lg border border-border-hairline bg-surface-card p-2 shadow-lg">
             {CHANNEL_TYPE_GROUP_ORDER.map((groupName) => (
               <fieldset key={groupName} className="mb-2">
-                <legend className="px-1 text-xs font-medium text-ink-3">
+                <legend className="px-1 text-badge text-ink-3">
                   {t(`common.channels.typeGroup.${groupName}`)}
                 </legend>
                 {channelTypesInGroup(groupName).map((type) => (
                   <label
                     key={type}
-                    className="flex items-center gap-2 rounded px-1 py-0.5 text-xs text-ink-1 hover:bg-surface-hover"
+                    className="flex items-center gap-2 rounded px-1 py-0.5 text-meta text-ink-1 hover:bg-surface-hover"
                   >
                     <input
                       type="checkbox"
@@ -549,7 +549,7 @@ export function ChannelListPage() {
         </details>
 
         <div className="flex flex-col gap-1">
-          <label htmlFor="channel-filter-group" className="text-xs text-ink-2">
+          <label htmlFor="channel-filter-group" className="text-meta text-ink-2">
             {t('common.channels.filters.group')}
           </label>
           <input
@@ -560,12 +560,12 @@ export function ChannelListPage() {
             onChange={(event) => {
               setGroupInput(event.target.value)
             }}
-            className="h-9 w-40 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
+            className="h-9 w-40 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
           />
         </div>
 
         <div className="flex flex-col gap-1">
-          <label htmlFor="channel-filter-model" className="text-xs text-ink-2">
+          <label htmlFor="channel-filter-model" className="text-meta text-ink-2">
             {t('common.channels.filters.model')}
           </label>
           <input
@@ -576,7 +576,7 @@ export function ChannelListPage() {
             onChange={(event) => {
               setModelInput(event.target.value)
             }}
-            className="h-9 w-40 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
+            className="h-9 w-40 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
           />
         </div>
 
@@ -588,7 +588,7 @@ export function ChannelListPage() {
       </div>
 
       <div className="flex justify-end">
-        <p className="text-sm text-ink-2" data-testid="channels-total">
+        <p className="text-body text-ink-2" data-testid="channels-total">
           {loading ? '—' : t('common.channels.total', { total })}
         </p>
       </div>
@@ -597,7 +597,7 @@ export function ChannelListPage() {
         <table
           data-testid="channels-table"
           aria-busy={loading}
-          className="w-full min-w-[1080px] border-collapse text-sm"
+          className="w-full min-w-[1080px] border-collapse text-body"
         >
           <thead>
             <tr>
@@ -617,10 +617,10 @@ export function ChannelListPage() {
                 sort={sort}
                 onSort={changeSort}
               />
-              <th scope="col" className="whitespace-nowrap border-b border-border-hairline bg-surface-subtle px-3 py-2 text-left text-xs font-medium text-ink-2">
+              <th scope="col" className="whitespace-nowrap border-b border-border-hairline bg-surface-subtle px-3 py-2 text-left text-meta text-ink-2">
                 {t('common.channels.table.status')}
               </th>
-              <th scope="col" className="whitespace-nowrap border-b border-border-hairline bg-surface-subtle px-3 py-2 text-left text-xs font-medium text-ink-2">
+              <th scope="col" className="whitespace-nowrap border-b border-border-hairline bg-surface-subtle px-3 py-2 text-left text-meta text-ink-2">
                 {t('common.channels.table.models')}
               </th>
               <SortHeader
@@ -629,10 +629,10 @@ export function ChannelListPage() {
                 sort={sort}
                 onSort={changeSort}
               />
-              <th scope="col" className="hidden whitespace-nowrap border-b border-border-hairline bg-surface-subtle px-3 py-2 text-left text-xs font-medium text-ink-2 xl:table-cell">
+              <th scope="col" className="hidden whitespace-nowrap border-b border-border-hairline bg-surface-subtle px-3 py-2 text-left text-meta text-ink-2 xl:table-cell">
                 {t('common.channels.table.health24h')}
               </th>
-              <th scope="col" className="whitespace-nowrap border-b border-border-hairline bg-surface-subtle px-3 py-2 text-right text-xs font-medium text-ink-2">
+              <th scope="col" className="whitespace-nowrap border-b border-border-hairline bg-surface-subtle px-3 py-2 text-right text-meta text-ink-2">
                 {t('common.channels.table.actions')}
               </th>
             </tr>
@@ -649,7 +649,7 @@ export function ChannelListPage() {
             ) : channelsQuery.isError ? (
               <tr>
                 <td colSpan={7} className="px-3 py-8 text-center">
-                  <div role="alert" className="flex flex-col items-center gap-2 text-sm text-danger">
+                  <div role="alert" className="flex flex-col items-center gap-2 text-body text-danger">
                     <p>{t('common.channels.error.load')}</p>
                     <Button
                       variant="secondary"
@@ -665,7 +665,7 @@ export function ChannelListPage() {
             ) : items.length === 0 ? (
               <tr>
                 <td colSpan={7} className="px-3 py-10 text-center">
-                  <p className="text-sm text-ink-2">
+                  <p className="text-body text-ink-2">
                     {hasFilters
                       ? t('common.channels.empty.filtered')
                       : t('common.channels.empty.none')}
@@ -736,7 +736,7 @@ export function ChannelListPage() {
                               {channel.name}
                             </button>
                           </div>
-                          <span className="text-xs text-ink-3">{channel.type}</span>
+                          <span className="text-meta text-ink-3">{channel.type}</span>
                         </div>
                       </td>
                       <td className="border-b border-border-hairline px-3 py-3">
@@ -760,7 +760,7 @@ export function ChannelListPage() {
                       <td className="border-b border-border-hairline px-3 py-3">
                         <div className="flex flex-col gap-1">
                           <GroupsCell groups={channel.group_tags} />
-                          <span className="flex items-center gap-3 whitespace-nowrap text-xs text-ink-2">
+                          <span className="flex items-center gap-3 whitespace-nowrap text-meta text-ink-2">
                             <span>
                               {t('common.channels.table.priority')}{' '}
                               <span className="tabular-nums text-ink-1">{channel.priority}</span>
@@ -838,11 +838,11 @@ export function ChannelListPage() {
         >
           {t('common.channels.pagination.previous')}
         </Button>
-        <p className="text-sm text-ink-2" data-testid="channels-page-indicator">
+        <p className="text-body text-ink-2" data-testid="channels-page-indicator">
           {loading ? '—' : t('common.channels.pagination.page', { page, totalPages })}
         </p>
         <div className="flex items-center gap-2">
-          <label htmlFor="channel-page-size" className="text-sm text-ink-2">
+          <label htmlFor="channel-page-size" className="text-body text-ink-2">
             {t('common.channels.pagination.pageSize')}
           </label>
           <select
@@ -850,7 +850,7 @@ export function ChannelListPage() {
             value={String(pageSize)}
             disabled={loading}
             onChange={changePageSize}
-            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
+            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
           >
             {PAGE_SIZES.map((size) => (
               <option key={size} value={String(size)}>
@@ -878,7 +878,7 @@ export function ChannelListPage() {
           data-testid="bulk-bar"
           className="sticky bottom-4 flex flex-wrap items-center gap-2 rounded-xl border border-border-hairline bg-surface-card p-3 shadow-lg"
         >
-          <span className="mr-2 text-sm font-medium text-ink-1">
+          <span className="mr-2 text-body font-medium text-ink-1">
             {t('common.channels.bulk.selected', { count: selected.size })}
           </span>
           <Button
@@ -992,7 +992,7 @@ function SortHeader({ label, column, sort, onSort, align = 'left' }: SortHeaderP
       scope="col"
       aria-sort={ariaSort}
       className={[
-        'whitespace-nowrap border-b border-border-hairline bg-surface-subtle px-3 py-2 text-xs font-medium text-ink-2',
+        'whitespace-nowrap border-b border-border-hairline bg-surface-subtle px-3 py-2 text-meta text-ink-2',
         align === 'right' ? 'text-right' : 'text-left',
       ].join(' ')}
     >
@@ -1015,7 +1015,7 @@ function SortHeader({ label, column, sort, onSort, align = 'left' }: SortHeaderP
 function GroupsCell({ groups }: { groups: string[] | null }) {
   const { t } = useI18n()
   if (groups === null || groups.length === 0) {
-    return <span className="text-xs text-ink-2">{t('common.channels.table.allGroups')}</span>
+    return <span className="text-meta text-ink-2">{t('common.channels.table.allGroups')}</span>
   }
   return (
     <span className="flex flex-wrap gap-1">
@@ -1054,12 +1054,12 @@ function MetricsSuccessCell({ channel }: { channel: Channel }) {
       <span
         data-testid={`channel-metrics-rate-${channel.id}`}
         aria-label={`${t('common.channels.table.successRate24h')}: ${text}`}
-        className={`text-xs font-semibold tabular-nums ${tone}`}
+        className={`text-meta font-semibold tabular-nums ${tone}`}
       >
         {text}
       </span>
       {noData ? (
-        <span className="text-[11px] text-ink-3">
+        <span className="text-badge text-ink-3">
           {t('common.channels.table.noHealthData')}
         </span>
       ) : null}
@@ -1081,7 +1081,7 @@ function MetricsLatencyCell({ channel }: { channel: Channel }) {
       data-testid={`channel-metrics-latency-${channel.id}`}
       aria-label={`${t('common.channels.table.avgLatency24h')}: ${text}`}
       className={[
-        'text-xs tabular-nums text-ink-2',
+        'text-meta tabular-nums text-ink-2',
         hasAnyMetrics ? '' : 'hidden',
       ].join(' ')}
     >

@@ -153,8 +153,8 @@ export async function listAutoGroups(): Promise<TokenAutoGroupsResponse> {
   return requireData(await apiClient.GET('/api/token/auto-groups'))
 }
 
-/** Masked key shape frozen by modules-02 §0.4 / 02-5 (`nkt-` + 24 `•`). */
-export const MASKED_KEY = `nkt-${'•'.repeat(24)}`
+/** Masked key shape: `sk-` + 24 `•` (legacy `nkt-` tokens remain valid). */
+export const MASKED_KEY = `sk-${'•'.repeat(24)}`
 
 export const MAX_BATCH = 100
 export const MAX_QUANTITY = 100

@@ -204,8 +204,8 @@ export function TransactionsSection({
 
   return (
     <section className="flex flex-col gap-4" aria-label={t('account.wallet.tab_transactions')}>
-      <div className="flex flex-wrap items-end gap-3 text-sm">
-        <label className="flex flex-col gap-1 text-xs text-ink-2">
+      <div className="flex flex-wrap items-end gap-3 text-body">
+        <label className="flex flex-col gap-1 text-meta text-ink-2">
           {t('account.wallet.filter_type')}
           <select
             aria-label={t('account.wallet.filter_type')}
@@ -217,7 +217,7 @@ export function TransactionsSection({
                 type: value === '' ? undefined : (value as WalletTransactionType),
               })
             }}
-            className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+            className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
           >
             <option value="">{t('account.wallet.filter_all')}</option>
             {WALLET_TRANSACTION_TYPES.map((type) => (
@@ -228,7 +228,7 @@ export function TransactionsSection({
           </select>
         </label>
 
-        <label className="flex flex-col gap-1 text-xs text-ink-2">
+        <label className="flex flex-col gap-1 text-meta text-ink-2">
           {t('account.wallet.filter_status')}
           <select
             aria-label={t('account.wallet.filter_status')}
@@ -241,7 +241,7 @@ export function TransactionsSection({
                   value === '' ? undefined : (value as WalletTransactionStatus),
               })
             }}
-            className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+            className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
           >
             <option value="">{t('account.wallet.filter_all')}</option>
             {WALLET_TRANSACTION_STATUSES.map((status) => (
@@ -252,7 +252,7 @@ export function TransactionsSection({
           </select>
         </label>
 
-        <label className="flex flex-col gap-1 text-xs text-ink-2">
+        <label className="flex flex-col gap-1 text-meta text-ink-2">
           {t('account.wallet.filter_dir')}
           <select
             aria-label={t('account.wallet.filter_dir')}
@@ -262,7 +262,7 @@ export function TransactionsSection({
               const value = event.target.value
               apply({ dir: value === '' ? undefined : (value as 'in' | 'out') })
             }}
-            className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+            className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
           >
             <option value="">{t('account.wallet.filter_all')}</option>
             <option value="in">{t('account.wallet.dir_in')}</option>
@@ -270,7 +270,7 @@ export function TransactionsSection({
           </select>
         </label>
 
-        <label className="flex flex-col gap-1 text-xs text-ink-2">
+        <label className="flex flex-col gap-1 text-meta text-ink-2">
           {t('account.wallet.filter_from')}
           <input
             type="datetime-local"
@@ -279,11 +279,11 @@ export function TransactionsSection({
             disabled={controlsDisabled}
             onChange={(event) => setFromDraft(event.target.value)}
             onBlur={commitRange}
-            className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+            className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
           />
         </label>
 
-        <label className="flex flex-col gap-1 text-xs text-ink-2">
+        <label className="flex flex-col gap-1 text-meta text-ink-2">
           {t('account.wallet.filter_to')}
           <input
             type="datetime-local"
@@ -292,11 +292,11 @@ export function TransactionsSection({
             disabled={controlsDisabled}
             onChange={(event) => setToDraft(event.target.value)}
             onBlur={commitRange}
-            className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+            className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
           />
         </label>
 
-        <label className="flex flex-col gap-1 text-xs text-ink-2">
+        <label className="flex flex-col gap-1 text-meta text-ink-2">
           {t('account.wallet.filter_min')}
           <input
             type="number"
@@ -307,11 +307,11 @@ export function TransactionsSection({
             disabled={controlsDisabled}
             onChange={(event) => setMinDraft(event.target.value)}
             onBlur={commitAmounts}
-            className="h-10 w-28 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+            className="h-10 w-28 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
           />
         </label>
 
-        <label className="flex flex-col gap-1 text-xs text-ink-2">
+        <label className="flex flex-col gap-1 text-meta text-ink-2">
           {t('account.wallet.filter_max')}
           <input
             type="number"
@@ -322,11 +322,11 @@ export function TransactionsSection({
             disabled={controlsDisabled}
             onChange={(event) => setMaxDraft(event.target.value)}
             onBlur={commitAmounts}
-            className="h-10 w-28 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+            className="h-10 w-28 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
           />
         </label>
 
-        <label className="flex flex-col gap-1 text-xs text-ink-2">
+        <label className="flex flex-col gap-1 text-meta text-ink-2">
           {t('account.wallet.filter_ref')}
           <input
             type="search"
@@ -340,7 +340,7 @@ export function TransactionsSection({
             onKeyDown={(event) => {
               if (event.key === 'Enter') commitRef()
             }}
-            className="h-10 w-52 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 placeholder:text-ink-3"
+            className="h-10 w-52 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 placeholder:text-ink-3"
           />
         </label>
 
@@ -361,14 +361,14 @@ export function TransactionsSection({
       </div>
 
       {draftRangeError !== null ? (
-        <p role="alert" className="text-xs text-danger">
+        <p role="alert" className="text-meta text-danger">
           {draftRangeError === 'too_long'
             ? t('account.wallet.range_error')
             : t('account.wallet.range_order')}
         </p>
       ) : null}
       {draftAmountError !== null ? (
-        <p role="alert" className="text-xs text-danger">
+        <p role="alert" className="text-meta text-danger">
           {draftAmountError === 'order'
             ? t('account.wallet.amount_error')
             : t('account.wallet.amount_invalid')}
@@ -376,17 +376,17 @@ export function TransactionsSection({
       ) : null}
 
       {rateLimitError !== null ? (
-        <p role="alert" className="rounded-lg border border-warning-line bg-warning-bg px-3 py-2 text-sm text-warning">
+        <p role="alert" className="rounded-lg border border-warning-line bg-warning-bg px-3 py-2 text-body text-warning">
           {t('account.wallet.rate_limited', { seconds: cooldown })}
         </p>
       ) : null}
       {offlineError ? (
-        <p role="status" className="rounded-lg border border-neutral-line bg-neutral-bg px-3 py-2 text-sm text-ink-2">
+        <p role="status" className="rounded-lg border border-neutral-line bg-neutral-bg px-3 py-2 text-body text-ink-2">
           {t('account.wallet.offline')}
         </p>
       ) : null}
 
-      <div className="flex items-center justify-between text-sm text-ink-2">
+      <div className="flex items-center justify-between text-body text-ink-2">
         <span>{t('account.wallet.total', { count: total })}</span>
         <Button
           variant="secondary"
@@ -405,14 +405,14 @@ export function TransactionsSection({
             ))}
           </div>
         ) : listQuery.isError && rateLimitError === null && !offlineError ? (
-          <div className="flex items-center gap-3 p-5 text-sm text-ink-2">
+          <div className="flex items-center gap-3 p-5 text-body text-ink-2">
             <span role="alert">{t('account.wallet.error')}</span>
             <Button variant="secondary" onClick={() => void listQuery.refetch()}>
               {t('account.wallet.retry')}
             </Button>
           </div>
         ) : items.length === 0 && rateLimitError === null && !offlineError ? (
-          <div className="flex flex-col items-center gap-2 p-8 text-sm text-ink-2">
+          <div className="flex flex-col items-center gap-2 p-8 text-body text-ink-2">
             <p>{activeFilters ? t('account.wallet.empty_filtered') : t('account.wallet.empty')}</p>
             {activeFilters ? (
               <Button
@@ -431,7 +431,7 @@ export function TransactionsSection({
             ) : (
               <button
                 type="button"
-                className="text-[13px] font-medium text-brand hover:text-brand-hover"
+                className="text-meta font-medium text-brand hover:text-brand-hover"
                 onClick={() => {
                   onSearchChange({ ...search, tab: 'topup', p: 1 })
                 }}
@@ -441,9 +441,9 @@ export function TransactionsSection({
             )}
           </div>
         ) : rateLimitError !== null ? null : (
-          <table className="w-full text-sm">
+          <table className="w-full text-body">
             <thead>
-              <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
+              <tr className="border-b border-border-hairline text-left text-meta text-ink-2">
                 <th scope="col" className="px-4 py-2 font-medium">{t('account.wallet.column_time')}</th>
                 <th scope="col" className="px-4 py-2 font-medium">{t('account.wallet.column_type')}</th>
                 <th scope="col" className="px-4 py-2 font-medium">{t('account.wallet.column_dir')}</th>
@@ -524,7 +524,7 @@ export function TransactionsSection({
         )}
       </div>
 
-      <div className="flex items-center justify-end gap-3 text-sm text-ink-2">
+      <div className="flex items-center justify-end gap-3 text-body text-ink-2">
         <span>{t('account.wallet.page', { page: currentPage, pages: totalPages })}</span>
         <Button
           variant="secondary"
@@ -559,7 +559,7 @@ export function TransactionsSection({
                 page_size: Number(event.target.value),
               })
             }}
-            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm"
+            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body"
           >
             {WALLET_PAGE_SIZES.map((size) => (
               <option key={size} value={size}>

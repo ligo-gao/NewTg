@@ -113,11 +113,11 @@ export function TopupPage({ initialSelection }: TopupPageProps) {
   }, [config])
 
   if (configQuery.isPending) {
-    return <p className="text-sm text-ink-2">{t('account.topup.loading')}</p>
+    return <p className="text-body text-ink-2">{t('account.topup.loading')}</p>
   }
   if (configQuery.isError || config === undefined) {
     return (
-      <div className="flex items-center gap-3 text-sm text-ink-2">
+      <div className="flex items-center gap-3 text-body text-ink-2">
         <span>{t('account.topup.config_error')}</span>
         <Button variant="secondary" onClick={() => void configQuery.refetch()}>
           {t('account.topup.retry')}
@@ -199,23 +199,23 @@ export function TopupPage({ initialSelection }: TopupPageProps) {
 
       <section className="rounded-xl border border-border-hairline bg-surface-card p-5">
         <div className="flex items-center justify-between gap-3">
-          <h1 className="text-[15px] font-semibold text-ink-1">
+          <h1 className="text-page-title text-ink-1">
             {t('account.topup.title')}
           </h1>
           <a
             href="/orders"
-            className="text-[13px] font-medium text-brand hover:text-brand-hover"
+            className="text-meta font-medium text-brand hover:text-brand-hover"
           >
             {t('account.topup.order_history')}
           </a>
         </div>
 
         {noProviders ? (
-          <p className="mt-4 text-sm text-ink-2">{t('account.topup.no_providers')}</p>
+          <p className="mt-4 text-body text-ink-2">{t('account.topup.no_providers')}</p>
         ) : (
           <>
             <fieldset className="mt-5">
-              <legend className="mb-2 text-[13px] font-medium text-ink-1">
+              <legend className="mb-2 text-meta font-medium text-ink-1">
                 {t('account.topup.amount_section')}
               </legend>
               <div
@@ -260,7 +260,7 @@ export function TopupPage({ initialSelection }: TopupPageProps) {
                   />
                 </div>
               ) : amountError !== undefined ? (
-                <p className="mt-2 text-xs text-danger">{amountError}</p>
+                <p className="mt-2 text-meta text-danger">{amountError}</p>
               ) : null}
             </fieldset>
 
@@ -282,7 +282,7 @@ export function TopupPage({ initialSelection }: TopupPageProps) {
             </dl>
 
             <fieldset className="mt-5">
-              <legend className="mb-2 text-[13px] font-medium text-ink-1">
+              <legend className="mb-2 text-meta font-medium text-ink-1">
                 {t('account.topup.payment_method')}
               </legend>
               <div
@@ -369,7 +369,7 @@ export function TopupPage({ initialSelection }: TopupPageProps) {
 
 function chipClass(selected: boolean): string {
   return [
-    'inline-flex h-10 items-center justify-center rounded-lg border px-4 text-sm font-medium transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+    'inline-flex h-10 items-center justify-center rounded-lg border px-4 text-body font-medium transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
     selected
       ? 'border-[1.5px] border-brand bg-brand-subtle text-brand'
       : 'border-border-default bg-surface-subtle text-ink-1 hover:bg-surface-hover',
@@ -447,14 +447,14 @@ function ProviderRadio({
       aria-label={label}
       onClick={onSelect}
       className={[
-        'flex h-12 items-center justify-between rounded-lg border px-4 text-sm focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+        'flex h-12 items-center justify-between rounded-lg border px-4 text-body focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
         selected
           ? 'border-[1.5px] border-brand bg-brand-subtle'
           : 'border-border-default bg-surface-card hover:bg-surface-hover',
       ].join(' ')}
     >
       <span className="font-medium text-ink-1">{label}</span>
-      <span className="text-xs text-ink-2">
+      <span className="text-meta text-ink-2">
         {t('account.topup.provider_min', { min: formatYuan(minTopup) })}
       </span>
     </button>
@@ -473,7 +473,7 @@ function SummaryRow({
   emphasize?: boolean
 }) {
   return (
-    <div className="flex items-end gap-2 text-sm">
+    <div className="flex items-end gap-2 text-body">
       <dt className="text-ink-2">{label}</dt>
       <span
         aria-hidden="true"
@@ -483,7 +483,7 @@ function SummaryRow({
         data-testid={testId}
         className={[
           'tabular-nums text-ink-1',
-          emphasize ? 'text-[28px] font-semibold leading-9' : 'font-medium',
+          emphasize ? 'text-figure-md leading-9' : 'font-medium',
         ].join(' ')}
       >
         {value}

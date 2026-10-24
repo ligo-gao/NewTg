@@ -55,7 +55,7 @@ describe('TokenListPage', () => {
     expect(within(screen.getByTestId('token-row-1')).getByText('Enabled')).toBeTruthy()
     expect(within(screen.getByTestId('token-row-2')).getByText('Disabled')).toBeTruthy()
     expect(screen.getAllByTestId('masked-key')[0]?.textContent).toBe(
-      `nkt-${'•'.repeat(24)}`,
+      `sk-${'•'.repeat(24)}`,
     )
     // No raw i18n keys may reach the UI (an object-node key renders verbatim).
     expect(document.body.textContent ?? '').not.toMatch(/common\.tokens\./)
@@ -64,9 +64,9 @@ describe('TokenListPage', () => {
     expect(
       screen.getByRole('link', { name: 'Model Config' }).getAttribute('href'),
     ).toBe('/model-config')
-    // The projection can never contain a plaintext key: no `nkt-` followed by
-    // the 48-character Base62 payload from the contract is present.
-    expect(document.body.textContent ?? '').not.toMatch(/nkt-[A-Za-z0-9]{20,}/)
+    // The projection can never contain a plaintext key: no `sk-`/`nkt-`
+    // followed by the 48-character Base62 payload is present.
+    expect(document.body.textContent ?? '').not.toMatch(/(?:nkt|sk)-[A-Za-z0-9]{20,}/)
     expect(findRequest(requests, 'GET', '/api/tokens')?.url.searchParams.get('p')).toBe(
       '1',
     )

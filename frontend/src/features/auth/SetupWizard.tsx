@@ -131,7 +131,7 @@ export function SetupWizard({ onNavigate = defaultNavigate }: SetupWizardProps) 
   if (alreadyInitialized) {
     return (
       <AuthPageShell title={t('auth.setup.already_title')} variant="setup">
-        <p className="text-sm text-ink-2">{t('auth.setup.already_body')}</p>
+        <p className="text-body text-ink-2">{t('auth.setup.already_body')}</p>
         <Button className="mt-4 h-11 w-full" onClick={() => onNavigate('/sign-in')}>
           {t('auth.setup.sign_in')}
         </Button>
@@ -142,7 +142,7 @@ export function SetupWizard({ onNavigate = defaultNavigate }: SetupWizardProps) 
   return (
     <AuthPageShell title={t('auth.setup.title')} variant="setup">
       <ol
-        className="mb-6 flex items-center gap-2 text-[13px]"
+        className="mb-6 flex items-center gap-2 text-meta"
         aria-label={t('auth.setup.title')}
       >
         {STEP_ORDER.map((value, index) => {
@@ -157,7 +157,7 @@ export function SetupWizard({ onNavigate = defaultNavigate }: SetupWizardProps) 
               <span
                 aria-hidden="true"
                 className={[
-                  'flex size-6 items-center justify-center rounded-full text-xs font-semibold',
+                  'flex size-6 items-center justify-center rounded-full text-badge',
                   current
                     ? 'bg-brand text-on-brand'
                     : done
@@ -272,7 +272,7 @@ export function SetupWizard({ onNavigate = defaultNavigate }: SetupWizardProps) 
         </div>
       ) : (
         <form className="flex flex-col gap-4" onSubmit={(event) => void finish(event)}>
-          <div className="flex flex-col gap-2 rounded-lg bg-surface-subtle p-4 text-[13px] text-ink-2">
+          <div className="flex flex-col gap-2 rounded-lg bg-surface-subtle p-4 text-meta text-ink-2">
             <p>{t('auth.setup.review_site', { value: siteTitle.trim() })}</p>
             <p>{t('auth.setup.review_server', { value: serverAddress.trim() })}</p>
             <p>{t('auth.setup.review_admin', { value: username.trim() })}</p>

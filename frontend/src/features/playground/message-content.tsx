@@ -71,7 +71,7 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
       return (
         <code
           key={`${keyPrefix}-${index}`}
-          className="rounded bg-surface-subtle px-1 py-0.5 font-mono text-[0.9em]"
+          className="rounded bg-surface-subtle px-1 py-0.5 font-mono text-meta"
         >
           {part.slice(1, -1)}
         </code>
@@ -86,7 +86,7 @@ export function MessageContent({ text }: { text: string }) {
   const blocks = parseBlocks(text)
 
   return (
-    <div className="space-y-2 whitespace-pre-wrap break-words text-sm text-ink-1">
+    <div className="space-y-2 whitespace-pre-wrap break-words text-body text-ink-1">
       {blocks.map((block, index) =>
         block.kind === 'code' ? (
           <CodeBlock
@@ -119,7 +119,7 @@ function CodeBlock({
 
   return (
     <div className="relative rounded-lg border border-border-hairline bg-surface-subtle">
-      <div className="flex items-center justify-between border-b border-border-hairline px-3 py-1 text-[11px] text-ink-3">
+      <div className="flex items-center justify-between border-b border-border-hairline px-3 py-1 text-badge text-ink-3">
         <span>{language ?? ''}</span>
         <button
           type="button"
@@ -131,7 +131,7 @@ function CodeBlock({
           {copied ? copiedLabel : copyLabel}
         </button>
       </div>
-      <pre className="overflow-x-auto px-3 py-2 font-mono text-xs text-ink-1">
+      <pre className="overflow-x-auto px-3 py-2 font-mono text-meta text-ink-1">
         <code>{text}</code>
       </pre>
     </div>

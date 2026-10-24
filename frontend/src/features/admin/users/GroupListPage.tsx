@@ -81,7 +81,7 @@ export function GroupListPage() {
     <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
       <section className="rounded-xl border border-border-hairline bg-surface-card">
         <div className="flex items-center justify-between border-b border-border-hairline px-5 py-3">
-          <h1 className="text-xl font-semibold text-ink-1">{t('admin.groups.title')}</h1>
+          <h1 className="text-page-title font-semibold text-ink-1">{t('admin.groups.title')}</h1>
           <Button onClick={() => setCreating(true)}>{t('admin.groups.add')}</Button>
         </div>
 
@@ -92,19 +92,19 @@ export function GroupListPage() {
             ))}
           </div>
         ) : groupsQuery.isError ? (
-          <div className="flex items-center gap-3 p-5 text-sm text-ink-2">
+          <div className="flex items-center gap-3 p-5 text-body text-ink-2">
             <span>{t('admin.groups.error')}</span>
             <Button variant="secondary" onClick={() => void groupsQuery.refetch()}>
               {t('common.action.retry')}
             </Button>
           </div>
         ) : items.length === 0 ? (
-          <p className="p-5 text-sm text-ink-2">{t('admin.groups.empty')}</p>
+          <p className="p-5 text-body text-ink-2">{t('admin.groups.empty')}</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[720px] text-sm">
+            <table className="w-full min-w-[720px] text-body">
               <thead>
-                <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
+                <tr className="border-b border-border-hairline text-left text-meta text-ink-2">
                   <th scope="col" className="px-4 py-2 font-medium">{t('admin.groups.name')}</th>
                   <th scope="col" className="px-4 py-2 font-medium">{t('admin.groups.description')}</th>
                   <th scope="col" className="px-4 py-2 text-right font-medium">
@@ -141,14 +141,14 @@ export function GroupListPage() {
                       <div className="flex justify-end gap-1">
                         <Button
                           variant="ghost"
-                          className="h-8 px-2 text-[13px]"
+                          className="h-8 px-2 text-meta"
                           onClick={() => setEditing(group)}
                         >
                           {t('admin.groups.edit')}
                         </Button>
                         <Button
                           variant="ghost"
-                          className="h-8 px-2 text-[13px] text-danger hover:bg-danger-bg"
+                          className="h-8 px-2 text-meta text-danger hover:bg-danger-bg"
                           disabled={group.is_system || isReferenced(group)}
                           title={
                             group.is_system
@@ -170,10 +170,10 @@ export function GroupListPage() {
           </div>
         )}
 
-        <div className="flex items-center justify-end gap-3 border-t border-border-hairline px-5 py-3 text-[13px] text-ink-2">
+        <div className="flex items-center justify-end gap-3 border-t border-border-hairline px-5 py-3 text-meta text-ink-2">
           <Button
             variant="secondary"
-            className="h-8 px-2 text-[13px]"
+            className="h-8 px-2 text-meta"
             disabled={page <= 1}
             onClick={() => setPage((current) => Math.max(1, current - 1))}
           >
@@ -184,7 +184,7 @@ export function GroupListPage() {
           </span>
           <Button
             variant="secondary"
-            className="h-8 px-2 text-[13px]"
+            className="h-8 px-2 text-meta"
             disabled={page >= pages}
             onClick={() => setPage((current) => current + 1)}
           >

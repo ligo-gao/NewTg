@@ -63,6 +63,32 @@ export default tseslint.config(
           message:
             'Use an i18n key from src/locales instead of a CJK string literal.',
         },
+        // Type-scale drift (docs/modules-00 §4.7): px-sized text utilities and
+        // the legacy Tailwind default scale are banned. The semantic tokens in
+        // styles/tailwind.css (text-body/meta/badge/page-title/section/
+        // card-title/stat/lead/display-*) carry size + line-height + weight.
+        {
+          selector: 'Literal[value=/text-\\[\\d/]',
+          message:
+            'Use a §4.7 type token (text-body/text-meta/text-badge/…) instead of a px-sized text-[Npx] utility.',
+        },
+        {
+          selector: 'TemplateElement[value.raw=/text-\\[\\d/]',
+          message:
+            'Use a §4.7 type token (text-body/text-meta/text-badge/…) instead of a px-sized text-[Npx] utility.',
+        },
+        {
+          selector:
+            'Literal[value=/\\btext-(xs|sm|base|lg|xl|[2-9]xl)\\b/]',
+          message:
+            'Use a §4.7 type token (text-body/text-meta/text-badge/text-page-title/…) instead of the default text-xs–9xl scale.',
+        },
+        {
+          selector:
+            'TemplateElement[value.raw=/\\btext-(xs|sm|base|lg|xl|[2-9]xl)\\b/]',
+          message:
+            'Use a §4.7 type token (text-body/text-meta/text-badge/text-page-title/…) instead of the default text-xs–9xl scale.',
+        },
       ],
     },
   },

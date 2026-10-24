@@ -369,7 +369,7 @@ export function TemplateDrawer({
   }
 
   const fieldClass =
-    'w-full rounded-lg border bg-surface-card px-3 py-2 text-sm text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50'
+    'w-full rounded-lg border bg-surface-card px-3 py-2 text-body text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50'
 
   const variables = variablesFor(key, channel)
 
@@ -414,12 +414,12 @@ export function TemplateDrawer({
       >
         <div className="space-y-4" data-testid="notification-template-drawer">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-mono text-xs text-ink-2">
+            <span className="font-mono text-meta text-ink-2">
               {t('settings.notification_templates.drawer.category')}: {key}
             </span>
             <Tag variant="neutral">{t(categoryLabelKey(key))}</Tag>
             <Tag variant="neutral">{t(`settings.notification_templates.channel.${channel}`)}</Tag>
-            <label className="ml-auto flex items-center gap-2 text-xs text-ink-2">
+            <label className="ml-auto flex items-center gap-2 text-meta text-ink-2">
               {t('settings.notification_templates.drawer.locale')}
               <select
                 aria-label={t('settings.notification_templates.drawer.locale')}
@@ -438,7 +438,7 @@ export function TemplateDrawer({
                     requestLocaleChange(next)
                   }
                 }}
-                className="h-8 rounded-lg border border-border-default bg-surface-card px-2 text-xs text-ink-1"
+                className="h-8 rounded-lg border border-border-default bg-surface-card px-2 text-meta text-ink-1"
               >
                 {NOTIFICATION_LOCALES.map((entry) => (
                   <option key={entry} value={entry}>
@@ -478,18 +478,18 @@ export function TemplateDrawer({
                 </FormAlert>
               ) : null}
               {!online ? (
-                <p className="text-xs text-ink-3">
+                <p className="text-meta text-ink-3">
                   {t('settings.notification_templates.drawer.offline')}
                 </p>
               ) : null}
 
               <div className="flex items-center justify-between gap-6">
-                <span className="text-[13px] font-medium text-ink-1">
+                <span className="text-meta font-medium text-ink-1">
                   {t('settings.notification_templates.drawer.enabled')}
                 </span>
                 {locked ? (
                   <span
-                    className="text-xs text-ink-2"
+                    className="text-meta text-ink-2"
                     title={t('settings.notification_templates.drawer.locked')}
                   >
                     {t('settings.notification_templates.drawer.locked_enabled')}
@@ -514,17 +514,17 @@ export function TemplateDrawer({
                 )}
               </div>
               {locked ? (
-                <p className="text-xs text-ink-3">
+                <p className="text-meta text-ink-3">
                   {t('settings.notification_templates.drawer.locked')}
                 </p>
               ) : null}
               {fieldErrors.enabled !== undefined ? (
-                <p className="text-xs text-danger">{fieldErrors.enabled}</p>
+                <p className="text-meta text-danger">{fieldErrors.enabled}</p>
               ) : null}
 
               {channel === 'email' ? (
                 <label className="flex flex-col gap-1.5">
-                  <span className="text-[13px] font-medium text-ink-1">
+                  <span className="text-meta font-medium text-ink-1">
                     {t('settings.notification_templates.drawer.subject')}
                   </span>
                   <input
@@ -538,7 +538,7 @@ export function TemplateDrawer({
                     onChange={(event) => updateField('subject', event.target.value)}
                     className={`${fieldClass} h-10 ${fieldErrors.subject !== undefined ? 'border-danger' : 'border-border-default'}`}
                   />
-                  <span className="flex justify-between text-xs text-ink-3">
+                  <span className="flex justify-between text-meta text-ink-3">
                     <span>
                       {t('settings.notification_templates.drawer.subject_hint', {
                         max: SUBJECT_MAX_LENGTH,
@@ -552,13 +552,13 @@ export function TemplateDrawer({
                     </span>
                   </span>
                   {fieldErrors.subject !== undefined ? (
-                    <span className="text-xs text-danger">{fieldErrors.subject}</span>
+                    <span className="text-meta text-danger">{fieldErrors.subject}</span>
                   ) : null}
                 </label>
               ) : null}
 
               <label className="flex flex-col gap-1.5">
-                <span className="text-[13px] font-medium text-ink-1">
+                <span className="text-meta font-medium text-ink-1">
                   {t('settings.notification_templates.drawer.body')}
                 </span>
                 <textarea
@@ -570,9 +570,9 @@ export function TemplateDrawer({
                   aria-invalid={fieldErrors.body !== undefined}
                   onFocus={() => setActiveField('body')}
                   onChange={(event) => updateField('body', event.target.value)}
-                  className={`${fieldClass} font-mono text-[13px] ${fieldErrors.body !== undefined ? 'border-danger' : 'border-border-default'}`}
+                  className={`${fieldClass} font-mono text-meta ${fieldErrors.body !== undefined ? 'border-danger' : 'border-border-default'}`}
                 />
-                <span className="flex justify-between text-xs text-ink-3">
+                <span className="flex justify-between text-meta text-ink-3">
                   <span>
                     {t('settings.notification_templates.drawer.body_hint', {
                       max: BODY_MAX_LENGTH,
@@ -586,13 +586,13 @@ export function TemplateDrawer({
                   </span>
                 </span>
                 {fieldErrors.body !== undefined ? (
-                  <span className="text-xs text-danger">{fieldErrors.body}</span>
+                  <span className="text-meta text-danger">{fieldErrors.body}</span>
                 ) : null}
               </label>
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="flex flex-col gap-1.5">
-                  <span className="text-[13px] font-medium text-ink-1">
+                  <span className="text-meta font-medium text-ink-1">
                     {t('settings.notification_templates.drawer.cta_text')}
                   </span>
                   <input
@@ -607,11 +607,11 @@ export function TemplateDrawer({
                     className={`${fieldClass} h-10 ${fieldErrors.cta_text !== undefined ? 'border-danger' : 'border-border-default'}`}
                   />
                   {fieldErrors.cta_text !== undefined ? (
-                    <span className="text-xs text-danger">{fieldErrors.cta_text}</span>
+                    <span className="text-meta text-danger">{fieldErrors.cta_text}</span>
                   ) : null}
                 </label>
                 <label className="flex flex-col gap-1.5">
-                  <span className="text-[13px] font-medium text-ink-1">
+                  <span className="text-meta font-medium text-ink-1">
                     {t('settings.notification_templates.drawer.cta_url')}
                   </span>
                   <input
@@ -625,13 +625,13 @@ export function TemplateDrawer({
                     className={`${fieldClass} h-10 ${fieldErrors.cta_url !== undefined ? 'border-danger' : 'border-border-default'}`}
                   />
                   {fieldErrors.cta_url !== undefined ? (
-                    <span className="text-xs text-danger">{fieldErrors.cta_url}</span>
+                    <span className="text-meta text-danger">{fieldErrors.cta_url}</span>
                   ) : null}
                 </label>
               </div>
 
               <section className="space-y-2" aria-labelledby={`${key}-variables`}>
-                <h3 id={`${key}-variables`} className="text-[13px] font-medium text-ink-1">
+                <h3 id={`${key}-variables`} className="text-meta font-medium text-ink-1">
                   {t('settings.notification_templates.drawer.variables')}
                 </h3>
                 <div className="flex flex-wrap gap-1.5">
@@ -644,10 +644,10 @@ export function TemplateDrawer({
                         name: variable.name,
                       })}
                       onClick={() => insertVariable(variable.name)}
-                      className="inline-flex items-center gap-1 rounded-md border border-border-hairline bg-surface-subtle px-2 py-0.5 font-mono text-xs text-ink-1 hover:bg-surface-hover disabled:opacity-50"
+                      className="inline-flex items-center gap-1 rounded-md border border-border-hairline bg-surface-subtle px-2 py-0.5 font-mono text-badge text-ink-1 hover:bg-surface-hover disabled:opacity-50"
                     >
                       {variable.name}
-                      <span className="text-[10px] text-ink-3">
+                      <span className="text-badge text-ink-3">
                         {variable.required
                           ? t('settings.notification_templates.drawer.required')
                           : t('settings.notification_templates.drawer.optional')}
@@ -656,19 +656,19 @@ export function TemplateDrawer({
                   ))}
                 </div>
                 {issues.unknown.map((name) => (
-                  <p key={name} role="alert" className="text-xs text-danger">
+                  <p key={name} role="alert" className="text-meta text-danger">
                     {t('settings.notification_templates.drawer.unknown_variable', { name })}
                   </p>
                 ))}
                 {issues.invalid.map((construct) => (
-                  <p key={construct} role="alert" className="text-xs text-danger">
+                  <p key={construct} role="alert" className="text-meta text-danger">
                     {t('settings.notification_templates.drawer.unknown_construct', {
                       construct,
                     })}
                   </p>
                 ))}
                 {fieldErrors.variables !== undefined ? (
-                  <p className="text-xs text-danger">{fieldErrors.variables}</p>
+                  <p className="text-meta text-danger">{fieldErrors.variables}</p>
                 ) : null}
               </section>
             </>

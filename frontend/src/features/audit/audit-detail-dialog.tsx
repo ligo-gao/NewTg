@@ -68,8 +68,8 @@ function renderValue(value: unknown): string {
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="contents">
-      <dt className="text-[13px] text-ink-3">{label}</dt>
-      <dd className="min-w-0 break-words text-sm text-ink-1">{children}</dd>
+      <dt className="text-meta text-ink-3">{label}</dt>
+      <dd className="min-w-0 break-words text-body text-ink-1">{children}</dd>
     </div>
   )
 }
@@ -147,7 +147,7 @@ function CategoryFields({
     <dl className="grid grid-cols-[150px_1fr] gap-x-4 gap-y-2">
       {visible.map((row) => (
         <Field key={row.key} label={row.label}>
-          <span className="font-mono text-[13px]">{row.value}</span>
+          <span className="font-mono text-meta">{row.value}</span>
         </Field>
       ))}
     </dl>
@@ -172,12 +172,12 @@ function BeforeAfterDiff({
 
   return (
     <div className="mt-4">
-      <p className="mb-2 text-[13px] font-medium text-ink-1">
+      <p className="mb-2 text-meta font-medium text-ink-1">
         {t('logs.audit.detail.changed')}
       </p>
-      <table className="w-full text-sm">
+      <table className="w-full text-body">
         <thead>
-          <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
+          <tr className="border-b border-border-hairline text-left text-meta text-ink-2">
             <th scope="col" className="py-1.5 pr-3 font-medium">
               {t('logs.audit.detail.field')}
             </th>
@@ -192,13 +192,13 @@ function BeforeAfterDiff({
         <tbody>
           {keys.map((key) => (
             <tr key={key} className="border-b border-border-hairline last:border-0">
-              <th scope="row" className="py-1.5 pr-3 text-left font-mono text-[12px] font-normal text-ink-3">
+              <th scope="row" className="py-1.5 pr-3 text-left font-mono text-meta font-normal text-ink-3">
                 {key}
               </th>
-              <td className="py-1.5 pr-3 font-mono text-[13px] text-ink-2">
+              <td className="py-1.5 pr-3 font-mono text-meta text-ink-2">
                 <del className="no-underline">{renderValue(before?.[key])}</del>
               </td>
-              <td className="py-1.5 font-mono text-[13px] text-ink-1">
+              <td className="py-1.5 font-mono text-meta text-ink-1">
                 <ins className="no-underline">{renderValue(after?.[key])}</ins>
               </td>
             </tr>
@@ -245,7 +245,7 @@ export function AuditDetailDialog({
       {item !== null ? (
         <div className="flex flex-col gap-4">
           <section>
-            <h3 className="mb-2 text-[15px] font-semibold text-ink-1">
+            <h3 className="mb-2 text-card-title text-ink-1">
               {t('logs.audit.detail.general')}
             </h3>
             <dl className="grid grid-cols-[150px_1fr] gap-x-4 gap-y-2">
@@ -261,16 +261,16 @@ export function AuditDetailDialog({
                 </Field>
               ) : null}
               <Field label={t('logs.audit.detail.ip')}>
-                <span className="font-mono text-[13px]">{item.ip ?? '—'}</span>
+                <span className="font-mono text-meta">{item.ip ?? '—'}</span>
               </Field>
               <Field label={t('logs.audit.detail.user_agent')}>
                 {item.user_agent ?? '—'}
               </Field>
               <Field label={t('logs.audit.detail.method')}>
-                <span className="font-mono text-[13px]">{item.method ?? '—'}</span>
+                <span className="font-mono text-meta">{item.method ?? '—'}</span>
               </Field>
               <Field label={t('logs.audit.detail.route')}>
-                <span className="font-mono text-[13px]">{item.route ?? '—'}</span>
+                <span className="font-mono text-meta">{item.route ?? '—'}</span>
               </Field>
               <Field label={t('logs.audit.detail.status_code')}>
                 {item.status_code ?? '—'}
@@ -286,7 +286,7 @@ export function AuditDetailDialog({
           </section>
 
           <section className="border-t border-border-hairline pt-3">
-            <h3 className="mb-2 text-[15px] font-semibold text-ink-1">
+            <h3 className="mb-2 text-card-title text-ink-1">
               {t('logs.audit.detail.category_fields')}
             </h3>
             <Tag variant="neutral">

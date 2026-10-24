@@ -319,8 +319,8 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
   if (!wideEnough) {
     return (
       <div className="mx-auto max-w-[1520px] rounded-xl border border-border-hairline bg-surface-card p-8">
-        <h1 className="text-xl font-semibold text-ink-1">{t('admin.redemption.title')}</h1>
-        <p className="mt-2 text-sm text-ink-2">{t('admin.redemption.desktop_only')}</p>
+        <h1 className="text-page-title font-semibold text-ink-1">{t('admin.redemption.title')}</h1>
+        <p className="mt-2 text-body text-ink-2">{t('admin.redemption.desktop_only')}</p>
       </div>
     )
   }
@@ -328,19 +328,19 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
   return (
     <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-ink-1">{t('admin.redemption.title')}</h1>
+        <h1 className="text-page-title font-semibold text-ink-1">{t('admin.redemption.title')}</h1>
         <Button onClick={() => setCreateOpen(true)}>{t('admin.redemption.generate')}</Button>
       </div>
 
       <section className="rounded-xl border border-border-hairline bg-surface-subtle p-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="redemption-filter-status" className="text-[13px] font-medium text-ink-1">
+            <label htmlFor="redemption-filter-status" className="text-meta font-medium text-ink-1">
               {t('admin.redemption.filter_status')}
             </label>
             <select
               id="redemption-filter-status"
-              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
               value={draft.status}
               onChange={(event) => {
                 setDraft((current) => ({
@@ -393,8 +393,8 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
       <section className="rounded-xl border border-border-hairline bg-surface-card">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-hairline px-5 py-3">
           <div className="flex items-center gap-3">
-            <span className="text-[13px] text-ink-2">{t('admin.redemption.total', { count: total })}</span>
-            <span aria-live="polite" className="text-[13px] text-ink-2">
+            <span className="text-meta text-ink-2">{t('admin.redemption.total', { count: total })}</span>
+            <span aria-live="polite" className="text-meta text-ink-2">
               {selectedIds.length > 0
                 ? t('admin.redemption.selected', { count: selectedIds.length })
                 : ''}
@@ -403,7 +403,7 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
           <div className="flex items-center gap-2">
             <Button
               variant="secondary"
-              className="h-8 px-3 text-[13px]"
+              className="h-8 px-3 text-meta"
               disabled={selectedIds.length === 0}
               onClick={() => setExportOpen(true)}
             >
@@ -411,7 +411,7 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
             </Button>
             <Button
               variant="danger"
-              className="h-8 px-3 text-[13px]"
+              className="h-8 px-3 text-meta"
               disabled={selectedIds.length === 0 || batchRemove.isPending}
               onClick={() => setBulkDeleteOpen(true)}
             >
@@ -427,7 +427,7 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
             ))}
           </div>
         ) : listQuery.isError ? (
-          <div className="flex items-center gap-3 p-5 text-sm text-ink-2">
+          <div className="flex items-center gap-3 p-5 text-body text-ink-2">
             <span>
               {listQuery.error instanceof ApiError && listQuery.error.kind === 'forbidden'
                 ? t('common.error403.body')
@@ -439,7 +439,7 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
           </div>
         ) : items.length === 0 ? (
           <div className="flex flex-col items-start gap-2 p-5">
-            <p className="text-sm text-ink-2">
+            <p className="text-body text-ink-2">
               {hasRedemptionFilters(search)
                 ? t('admin.redemption.empty_filtered')
                 : t('admin.redemption.empty')}
@@ -454,9 +454,9 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1120px] text-sm">
+            <table className="w-full min-w-[1120px] text-body">
               <thead>
-                <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
+                <tr className="border-b border-border-hairline text-left text-meta text-ink-2">
                   <th scope="col" className="px-4 py-2">
                     <input
                       type="checkbox"
@@ -507,10 +507,10 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
                       <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-1">
                         {formatCredits(row.credits, locale)}
                       </td>
-                      <td className="px-4 py-3 text-xs text-ink-2" title={row.created_at}>
+                      <td className="px-4 py-3 text-meta text-ink-2" title={row.created_at}>
                         {formatRelativeTime(row.created_at, locale)}
                       </td>
-                      <td className="px-4 py-3 text-xs text-ink-2" title={row.expires_at ?? undefined}>
+                      <td className="px-4 py-3 text-meta text-ink-2" title={row.expires_at ?? undefined}>
                         {row.expires_at === null || row.expires_at === undefined
                           ? t('admin.redemption.never_expires')
                           : formatRelativeTime(row.expires_at, locale)}
@@ -518,7 +518,7 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
                       <td className="px-4 py-3 font-mono tabular-nums text-ink-2">
                         {row.used_by === null || row.used_by === undefined ? '—' : `#${row.used_by}`}
                       </td>
-                      <td className="px-4 py-3 text-xs text-ink-2" title={row.used_at ?? undefined}>
+                      <td className="px-4 py-3 text-meta text-ink-2" title={row.used_at ?? undefined}>
                         {row.used_at === null || row.used_at === undefined
                           ? '—'
                           : formatRelativeTime(row.used_at, locale)}
@@ -527,7 +527,7 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
                         <div className="flex justify-end gap-1">
                           <Button
                             variant="ghost"
-                            className="h-8 px-2 text-[13px]"
+                            className="h-8 px-2 text-meta"
                             disabled={terminal || setStatus.isPending}
                             title={terminal ? t('admin.redemption.terminal_row') : undefined}
                             onClick={() => {
@@ -546,7 +546,7 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
                           </Button>
                           <Button
                             variant="ghost"
-                            className="h-8 px-2 text-[13px] text-danger hover:bg-danger-bg"
+                            className="h-8 px-2 text-meta text-danger hover:bg-danger-bg"
                             disabled={terminal}
                             title={terminal ? t('admin.redemption.terminal_row') : undefined}
                             onClick={() => setDeleteTarget(row)}
@@ -563,13 +563,13 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
           </div>
         )}
 
-        <div className="flex items-center justify-end gap-3 border-t border-border-hairline px-5 py-3 text-[13px] text-ink-2">
+        <div className="flex items-center justify-end gap-3 border-t border-border-hairline px-5 py-3 text-meta text-ink-2">
           <label htmlFor="redemption-page-size" className="sr-only">
             {t('admin.redemption.pagination_page_size')}
           </label>
           <select
             id="redemption-page-size"
-            className="h-8 rounded-md border border-border-default bg-surface-card px-2 text-xs text-ink-1"
+            className="h-8 rounded-md border border-border-default bg-surface-card px-2 text-body text-ink-1"
             value={pageSize}
             disabled={listQuery.isFetching}
             onChange={(event) => {
@@ -586,7 +586,7 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
           </select>
           <Button
             variant="secondary"
-            className="h-8 px-2 text-[13px]"
+            className="h-8 px-2 text-meta"
             disabled={listQuery.isFetching || search.p <= 1}
             onClick={() => onSearchChange({ ...search, p: search.p - 1 }, { replace: true })}
           >
@@ -597,7 +597,7 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
           </span>
           <Button
             variant="secondary"
-            className="h-8 px-2 text-[13px]"
+            className="h-8 px-2 text-meta"
             disabled={listQuery.isFetching || search.p >= pages}
             onClick={() => onSearchChange({ ...search, p: search.p + 1 }, { replace: true })}
           >
@@ -638,11 +638,11 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
       >
         <div className="flex flex-col gap-4">
           <fieldset className="flex flex-col gap-2">
-            <legend className="text-[13px] font-medium text-ink-1">
+            <legend className="text-meta font-medium text-ink-1">
               {t('admin.redemption.export_format')}
             </legend>
             {(['txt', 'markdown'] as const).map((format) => (
-              <label key={format} className="flex items-center gap-2 text-sm text-ink-1">
+              <label key={format} className="flex items-center gap-2 text-body text-ink-1">
                 <input
                   type="radio"
                   name="redemption-export-format"
@@ -653,7 +653,7 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
               </label>
             ))}
           </fieldset>
-          <div className="flex flex-col gap-2 text-sm text-ink-1">
+          <div className="flex flex-col gap-2 text-body text-ink-1">
             {(
               [
                 ['batch', exportIncludeBatch, setExportIncludeBatch],
@@ -668,7 +668,7 @@ export function RedemptionCodesPage({ search, onSearchChange }: RedemptionCodesP
             ))}
           </div>
           {canReadUsers ? null : (
-            <p className="text-xs text-ink-3">{t('admin.redemption.export_used_by_hidden')}</p>
+            <p className="text-meta text-ink-3">{t('admin.redemption.export_used_by_hidden')}</p>
           )}
         </div>
       </Dialog>

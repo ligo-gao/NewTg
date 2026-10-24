@@ -57,11 +57,11 @@ export function ApiAddressesDialog({ open, onOpenChange }: ApiAddressesDialogPro
       <div className="flex flex-col gap-3">
         {rows.map((row) => (
           <div key={row.protocol} className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-ink-2">{row.protocol}</span>
+            <span className="text-badge text-ink-2">{row.protocol}</span>
             <div className="flex items-center gap-2">
               <code
                 title={row.url}
-                className="min-w-0 flex-1 truncate rounded-md bg-surface-subtle px-2 py-1.5 font-mono text-[13px] text-ink-1"
+                className="min-w-0 flex-1 truncate rounded-md bg-surface-subtle px-2 py-1.5 font-mono text-meta text-ink-1"
               >
                 {row.url}
               </code>
@@ -79,7 +79,7 @@ export function ApiAddressesDialog({ open, onOpenChange }: ApiAddressesDialogPro
             </div>
           </div>
         ))}
-        <p className="text-xs text-ink-3">{t('common.tokens.apiAddresses.hint')}</p>
+        <p className="text-meta text-ink-3">{t('common.tokens.apiAddresses.hint')}</p>
       </div>
     </Dialog>
   )

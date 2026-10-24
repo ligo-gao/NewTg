@@ -67,35 +67,35 @@ function RowMenu({
 
   return (
     <div className="flex flex-wrap gap-1">
-      <Button variant="ghost" className="h-7 px-2 text-xs" onClick={onDetail}>
+      <Button variant="ghost" className="h-7 px-2 text-body" onClick={onDetail}>
         {t('admin.deployments.actions.detail')}
       </Button>
       {writable ? (
         <>
           <Button
             variant="ghost"
-            className="h-7 px-2 text-xs"
+            className="h-7 px-2 text-body"
             onClick={() => onAction(target('extend'))}
           >
             {t('admin.deployments.actions.extend')}
           </Button>
           <Button
             variant="ghost"
-            className="h-7 px-2 text-xs"
+            className="h-7 px-2 text-body"
             onClick={() => onAction(target('rename'))}
           >
             {t('admin.deployments.actions.rename')}
           </Button>
           <Button
             variant="ghost"
-            className="h-7 px-2 text-xs"
+            className="h-7 px-2 text-body"
             onClick={() => onAction(target('update'))}
           >
             {t('admin.deployments.actions.update')}
           </Button>
           <Button
             variant="ghost"
-            className="h-7 px-2 text-xs text-danger"
+            className="h-7 px-2 text-badge text-danger"
             onClick={() => onAction(target('terminate'))}
           >
             {t('admin.deployments.actions.terminate')}
@@ -187,7 +187,7 @@ export function DeploymentsTab({
                 ? t('admin.deployments.list.banner_disabled')
                 : t('admin.deployments.list.banner_no_secret')}
             </span>
-            <Button variant="secondary" className="h-7 px-2 text-xs" onClick={goSettings}>
+            <Button variant="secondary" className="h-7 px-2 text-body" onClick={goSettings}>
               {t('admin.deployments.list.go_settings')}
             </Button>
           </div>
@@ -202,20 +202,20 @@ export function DeploymentsTab({
             applySearch()
           }}
         >
-          <label className="flex flex-col gap-1 text-xs text-ink-2">
+          <label className="flex flex-col gap-1 text-meta text-ink-2">
             {t('admin.deployments.list.search_label')}
             <input
               aria-label={t('admin.deployments.list.search_label')}
               value={keywordInput}
               onChange={(event) => setKeywordInput(event.target.value)}
               placeholder={t('admin.deployments.list.search_placeholder')}
-              className="h-9 w-56 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="h-9 w-56 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             />
           </label>
           {keyword !== '' ? (
             <Button
               variant="ghost"
-              className="h-9 px-2 text-xs"
+              className="h-9 px-2 text-badge"
               onClick={() => {
                 setKeywordInput('')
                 setKeyword('')
@@ -225,13 +225,13 @@ export function DeploymentsTab({
               {t('admin.deployments.common.clear')}
             </Button>
           ) : null}
-          <label className="flex flex-col gap-1 text-xs text-ink-2">
+          <label className="flex flex-col gap-1 text-meta text-ink-2">
             {t('admin.deployments.list.status_filter')}
             <select
               aria-label={t('admin.deployments.list.status_filter')}
               value={status}
               onChange={(event) => selectStatus(event.target.value)}
-              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
             >
               <option value="">{t('admin.deployments.list.all_statuses')}</option>
               {DEPLOYMENT_STATUSES.map((entry) => (
@@ -245,7 +245,7 @@ export function DeploymentsTab({
             {t('admin.deployments.common.search')}
           </Button>
         </form>
-        <p className="text-xs text-ink-3" role="status">
+        <p className="text-meta text-ink-3" role="status">
           {t('admin.deployments.list.total', { total })}
         </p>
       </div>
@@ -261,7 +261,7 @@ export function DeploymentsTab({
                 aria-pressed={selected}
                 onClick={() => selectStatus(entry.value)}
                 className={[
-                  'rounded-full border px-2.5 py-1 text-xs',
+                  'rounded-full border px-2.5 py-1 text-badge',
                   selected
                     ? 'border-brand bg-brand-subtle text-brand'
                     : 'border-border-default text-ink-2 hover:bg-surface-hover',
@@ -297,7 +297,7 @@ export function DeploymentsTab({
               : `${t('admin.deployments.list.load_error')} ${errorMessage(query.error)}`}
           </FormAlert>
           {data !== undefined ? (
-            <p className="text-xs text-warning" role="status">
+            <p className="text-meta text-warning" role="status">
               {t('admin.deployments.list.provider_stale')}
             </p>
           ) : null}
@@ -308,13 +308,13 @@ export function DeploymentsTab({
       ) : null}
 
       {enabled === false ? (
-        <p className="rounded-xl border border-dashed border-border-default px-4 py-10 text-center text-sm text-ink-3">
+        <p className="rounded-xl border border-dashed border-border-default px-4 py-10 text-center text-body text-ink-3">
           {t('admin.deployments.list.empty')}
         </p>
       ) : null}
 
       {query.isSuccess && rows.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-border-default px-4 py-10 text-center text-sm text-ink-3">
+        <div className="rounded-xl border border-dashed border-border-default px-4 py-10 text-center text-body text-ink-3">
           <p>
             {keyword !== '' || status !== ''
               ? t('admin.deployments.list.empty_filtered')
@@ -323,7 +323,7 @@ export function DeploymentsTab({
           {keyword !== '' || status !== '' ? (
             <Button
               variant="secondary"
-              className="mt-3 h-7 px-2 text-xs"
+              className="mt-3 h-7 px-2 text-badge"
               onClick={() => {
                 setKeywordInput('')
                 setKeyword('')
@@ -349,8 +349,8 @@ export function DeploymentsTab({
       {query.isSuccess && rows.length > 0 ? (
         <>
           <div className="overflow-x-auto rounded-xl border border-border-default">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-surface-subtle text-xs text-ink-3">
+            <table className="w-full text-left text-body">
+              <thead className="bg-surface-subtle text-meta text-ink-3">
                 <tr>
                   <th className="sticky left-0 bg-surface-subtle px-3 py-2 font-medium">
                     {t('admin.deployments.list.col_name')}
@@ -387,29 +387,29 @@ export function DeploymentsTab({
                   >
                     <td className="sticky left-0 bg-surface-card px-3 py-2">
                       <span className="font-medium text-ink-1">{row.name}</span>
-                      <span className="ml-2 font-mono text-[11px] text-ink-3">
+                      <span className="ml-2 font-mono text-badge text-ink-3">
                         {row.id}
                       </span>
                     </td>
                     <td className="px-3 py-2">
                       <DeploymentStatusBadge status={row.status} />
                     </td>
-                    <td className="px-3 py-2 font-mono text-xs text-ink-2">
+                    <td className="px-3 py-2 font-mono text-meta text-ink-2">
                       {row.brand_name !== undefined && row.brand_name !== ''
                         ? `${row.brand_name} ${row.hardware_name ?? ''}`.trim()
                         : (row.hardware_name ?? '—')}
                     </td>
-                    <td className="px-3 py-2 font-mono text-xs text-ink-2">
+                    <td className="px-3 py-2 font-mono text-meta text-ink-2">
                       {row.gpu_count}/{row.replica_count}
                     </td>
-                    <td className="hidden px-3 py-2 text-xs text-ink-3 xl:table-cell">
+                    <td className="hidden px-3 py-2 text-meta text-ink-3 xl:table-cell">
                       {/* 列表契约无地域字段（T4 冻结形状）；详情抽屉里展示。 */}
                       —
                     </td>
-                    <td className="px-3 py-2 font-mono text-xs text-ink-2">
+                    <td className="px-3 py-2 font-mono text-meta text-ink-2">
                       {formatRemainingMinutes(row.compute_minutes_remaining)}
                     </td>
-                    <td className="hidden px-3 py-2 text-xs text-ink-3 xl:table-cell">
+                    <td className="hidden px-3 py-2 text-meta text-ink-3 xl:table-cell">
                       {formatDateTime(row.created_at, locale)}
                     </td>
                     <td className="px-3 py-2">
@@ -429,12 +429,12 @@ export function DeploymentsTab({
           </div>
 
           {disabledReason !== null ? (
-            <p className="text-xs text-ink-3">{disabledReason}</p>
+            <p className="text-meta text-ink-3">{disabledReason}</p>
           ) : null}
 
           <nav
             aria-label={t('admin.deployments.list.pagination_label')}
-            className="flex items-center justify-between text-xs text-ink-3"
+            className="flex items-center justify-between text-meta text-ink-3"
           >
             <span>
               {t('admin.deployments.list.page_summary', {
@@ -446,7 +446,7 @@ export function DeploymentsTab({
             <span className="flex items-center gap-2">
               <Button
                 variant="secondary"
-                className="h-7 px-2 text-xs"
+                className="h-7 px-2 text-body"
                 disabled={currentPage <= 1 || query.isFetching}
                 onClick={() => setPage(Math.max(1, currentPage - 1))}
               >
@@ -460,7 +460,7 @@ export function DeploymentsTab({
               </span>
               <Button
                 variant="secondary"
-                className="h-7 px-2 text-xs"
+                className="h-7 px-2 text-body"
                 disabled={currentPage >= pageCount || query.isFetching}
                 onClick={() => setPage(currentPage + 1)}
               >

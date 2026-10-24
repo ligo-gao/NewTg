@@ -57,11 +57,11 @@ export function AppSidebar({
             href="/dashboard"
             title={t('settings.shell.back')}
             className={cn(
-              'flex min-h-[34px] items-center gap-2 rounded-lg px-2 text-[13px] leading-5 text-ink-2 transition-colors hover:bg-surface-hover hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+              'flex min-h-[34px] items-center gap-2 rounded-lg px-2 text-meta leading-5 text-ink-2 transition-colors hover:bg-surface-hover hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
               collapsed && 'justify-center px-0',
             )}
           >
-            <span aria-hidden="true" className="shrink-0 text-[15px] leading-none">
+            <span aria-hidden="true" className="shrink-0 text-body leading-none">
               ←
             </span>
             {collapsed ? null : (
@@ -85,7 +85,7 @@ export function AppSidebar({
           {groups.map((group) => (
             <div key={group.id} className="mt-3 first:mt-0">
               {collapsed ? null : (
-                <div className="px-2 pb-1 text-[12px] font-semibold uppercase leading-[18px] tracking-[0.02em] text-ink-2">
+                <div className="px-2 pb-1 text-badge font-semibold uppercase leading-[18px] tracking-[0.02em] text-ink-2">
                   {t(group.labelKey)}
                 </div>
               )}
@@ -99,7 +99,7 @@ export function AppSidebar({
                       title={t(item.labelKey)}
                       aria-current={current ? 'page' : undefined}
                       className={cn(
-                        'flex min-h-[34px] items-center gap-2 rounded-lg px-2 text-[13px] leading-5 transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                        'flex min-h-[34px] items-center gap-2 rounded-lg px-2 text-meta leading-5 transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
                         current
                           ? 'bg-brand-subtle font-semibold text-brand'
                           : 'text-ink-2 hover:bg-surface-hover hover:text-ink-1',
@@ -116,7 +116,7 @@ export function AppSidebar({
                         </span>
                       )}
                       {collapsed || item.badge === undefined ? null : (
-                        <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-surface-subtle px-1 text-[10px] text-ink-3">
+                        <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-surface-subtle px-1 text-badge text-ink-3">
                           {item.badge}
                         </span>
                       )}
@@ -136,7 +136,7 @@ export function AppSidebar({
         )}
       >
         {collapsed ? null : (
-          <span className="min-w-0 flex-1 truncate text-[10.5px] text-ink-3">
+          <span className="min-w-0 flex-1 truncate text-badge text-ink-3">
             {t('common.console.label')}
           </span>
         )}

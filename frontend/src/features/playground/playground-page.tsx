@@ -333,7 +333,7 @@ export function PlaygroundPage() {
   return (
     <div className="mx-auto flex max-w-[1520px] flex-col gap-4">
       <header className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold text-ink-1">
+        <h1 className="text-page-title font-semibold text-ink-1">
           {t('account.playground.title')}
         </h1>
         <div className="flex flex-wrap items-center gap-2">
@@ -347,7 +347,7 @@ export function PlaygroundPage() {
             <p
               role="alert"
               data-testid="playground-group-unknown"
-              className="max-w-[260px] text-[13px] text-danger"
+              className="max-w-[260px] text-meta text-danger"
             >
               {t('account.playground.group_unknown')}
             </p>
@@ -364,7 +364,7 @@ export function PlaygroundPage() {
                   pickedModelRef.current = true
                   setModel(event.target.value)
                 }}
-                className="h-9 min-w-[220px] rounded-lg border border-border-default bg-surface-page px-2 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-60"
+                className="h-9 min-w-[220px] rounded-lg border border-border-default bg-surface-page px-2 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-60"
               >
                 {noModels ? (
                   <option value="">{t('account.playground.no_models')}</option>
@@ -382,7 +382,7 @@ export function PlaygroundPage() {
 
           <a
             href="/wallet"
-            className="inline-flex h-9 items-center gap-1 rounded-lg border border-border-default bg-surface-card px-3 text-[13px] text-ink-2 hover:bg-surface-hover hover:text-ink-1"
+            className="inline-flex h-9 items-center gap-1 rounded-lg border border-border-default bg-surface-card px-3 text-meta text-ink-2 hover:bg-surface-hover hover:text-ink-1"
             aria-label={t('account.playground.balance_link')}
           >
             <span className="text-ink-3">{t('account.playground.balance')}:</span>
@@ -404,13 +404,13 @@ export function PlaygroundPage() {
             type="button"
             aria-pressed={announceReplies}
             onClick={() => setAnnounceReplies((value) => !value)}
-            className="rounded-lg border border-border-default bg-surface-card px-2 py-1 text-xs text-ink-2 hover:bg-surface-hover hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="rounded-lg border border-border-default bg-surface-card px-2 py-1 text-badge text-ink-2 hover:bg-surface-hover hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
             {t('account.playground.announce_toggle')}
           </button>
           <a
             href="/model-config?focus=default-model"
-            className="text-[13px] text-brand underline-offset-2 hover:underline"
+            className="text-meta text-brand underline-offset-2 hover:underline"
           >
             {t('account.playground.default_model_link')}
           </a>
@@ -419,7 +419,7 @@ export function PlaygroundPage() {
 
       <div
         role="note"
-        className="rounded-lg border border-info-line bg-info-bg px-3 py-2 text-xs text-ink-2"
+        className="rounded-lg border border-info-line bg-info-bg px-3 py-2 text-meta text-ink-2"
       >
         <p>{t('account.playground.billing_notice')}</p>
         <p>{t('account.playground.billing_quota')}</p>
@@ -456,7 +456,7 @@ export function PlaygroundPage() {
                   : 'mr-auto max-w-full bg-surface-card text-ink-1',
               ].join(' ')}
             >
-              <p className="mb-1 text-[11px] font-medium text-ink-3">
+              <p className="mb-1 text-badge font-medium text-ink-3">
                 {message.role === 'user'
                   ? t('account.playground.user_label')
                   : t('account.playground.assistant_label')}
@@ -467,22 +467,22 @@ export function PlaygroundPage() {
               {message.role === 'assistant' ? (
                 <MessageContent text={message.content} />
               ) : (
-                <p className="whitespace-pre-wrap break-words text-sm text-ink-1">
+                <p className="whitespace-pre-wrap break-words text-body text-ink-1">
                   {message.content}
                 </p>
               )}
               {message.stopped === true ? (
-                <p className="mt-1 text-xs text-warning">
+                <p className="mt-1 text-meta text-warning">
                   {t('account.playground.stopped')}
                 </p>
               ) : null}
               {message.interrupted === true ? (
-                <p className="mt-1 text-xs text-warning">
+                <p className="mt-1 text-meta text-warning">
                   {t('account.playground.interrupted')}
                 </p>
               ) : null}
               {message.usage !== undefined ? (
-                <p className="mt-1 font-mono text-[11px] text-ink-3">
+                <p className="mt-1 font-mono text-badge text-ink-3">
                   {t('account.playground.usage_prompt', {
                     count: message.usage.promptTokens,
                   })}
@@ -504,7 +504,7 @@ export function PlaygroundPage() {
           ))
         )}
         {streaming ? (
-          <p className="text-xs text-ink-3" data-testid="playground-streaming">
+          <p className="text-meta text-ink-3" data-testid="playground-streaming">
             {t('account.playground.streaming')}
             <span
               aria-hidden="true"
@@ -523,7 +523,7 @@ export function PlaygroundPage() {
       <section className="rounded-xl border border-border-hairline bg-surface-card p-3">
         <label
           htmlFor="playground-input"
-          className="text-[13px] font-medium text-ink-1"
+          className="text-meta font-medium text-ink-1"
         >
           {t('account.playground.input_label')}
         </label>
@@ -547,10 +547,10 @@ export function PlaygroundPage() {
                 : t('account.playground.input_placeholder')
           }
           aria-describedby="playground-input-hint"
-          className="mt-1 min-h-[72px] w-full resize-y rounded-lg border border-border-default bg-surface-page px-3 py-2 text-sm text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="mt-1 min-h-[72px] w-full resize-y rounded-lg border border-border-default bg-surface-page px-3 py-2 text-body text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         />
         <div className="mt-2 flex items-center justify-between gap-2">
-          <p id="playground-input-hint" className="text-xs text-ink-3">
+          <p id="playground-input-hint" className="text-meta text-ink-3">
             {t('account.playground.input_hint')}
           </p>
           <div className="flex gap-2">
@@ -578,13 +578,13 @@ function EmptyState({ onPick }: { onPick: (prompt: string) => void }) {
   ]
   return (
     <div className="mx-auto max-w-xl py-8 text-center" data-testid="playground-welcome">
-      <h2 className="text-base font-semibold text-ink-1">
+      <h2 className="text-section font-semibold text-ink-1">
         {t('account.playground.welcome_title')}
       </h2>
-      <p className="mt-1 text-[13px] text-ink-2">
+      <p className="mt-1 text-meta text-ink-2">
         {t('account.playground.welcome_description')}
       </p>
-      <p className="mt-4 text-xs font-medium text-ink-3">
+      <p className="mt-4 text-meta text-ink-3">
         {t('account.playground.example_label')}
       </p>
       <div className="mt-2 flex flex-col gap-2">
@@ -593,7 +593,7 @@ function EmptyState({ onPick }: { onPick: (prompt: string) => void }) {
             key={example}
             type="button"
             onClick={() => onPick(example)}
-            className="rounded-lg border border-border-default bg-surface-page px-3 py-2 text-left text-[13px] text-ink-2 hover:bg-surface-hover hover:text-ink-1"
+            className="rounded-lg border border-border-default bg-surface-page px-3 py-2 text-left text-meta text-ink-2 hover:bg-surface-hover hover:text-ink-1"
           >
             {example}
           </button>
@@ -608,7 +608,7 @@ function FailureCard({ failure }: { failure: PlaygroundFailure }) {
 
   if (failure.kind === 'quota') {
     return (
-      <div role="alert" className="rounded-lg border border-warning-line bg-warning-bg p-3 text-[13px]">
+      <div role="alert" className="rounded-lg border border-warning-line bg-warning-bg p-3 text-meta">
         <p className="font-medium text-ink-1">
           {t('account.playground.insufficient')}
         </p>
@@ -623,11 +623,11 @@ function FailureCard({ failure }: { failure: PlaygroundFailure }) {
   }
   if (failure.kind === 'forbidden') {
     return (
-      <div role="alert" className="rounded-lg border border-warning-line bg-warning-bg p-3 text-[13px]">
+      <div role="alert" className="rounded-lg border border-warning-line bg-warning-bg p-3 text-meta">
         <p className="font-medium text-ink-1">
           {t('account.playground.unavailable')}
         </p>
-        <p className="mt-1 text-xs text-ink-2">
+        <p className="mt-1 text-meta text-ink-2">
           {t('account.playground.no_bill')}
         </p>
       </div>
@@ -635,7 +635,7 @@ function FailureCard({ failure }: { failure: PlaygroundFailure }) {
   }
   if (failure.kind === 'auth') {
     return (
-      <div role="alert" className="rounded-lg border border-danger-line bg-danger-bg p-3 text-[13px]">
+      <div role="alert" className="rounded-lg border border-danger-line bg-danger-bg p-3 text-meta">
         <p className="font-medium text-ink-1">
           {t('common.error401.title')}
         </p>
@@ -650,7 +650,7 @@ function FailureCard({ failure }: { failure: PlaygroundFailure }) {
   }
   if (failure.kind === 'session') {
     return (
-      <div role="alert" className="rounded-lg border border-danger-line bg-danger-bg p-3 text-[13px]">
+      <div role="alert" className="rounded-lg border border-danger-line bg-danger-bg p-3 text-meta">
         <p className="font-medium text-ink-1">
           {t('account.playground.session_required')}
         </p>
@@ -659,7 +659,7 @@ function FailureCard({ failure }: { failure: PlaygroundFailure }) {
   }
   if (failure.kind === 'csrf') {
     return (
-      <div role="alert" className="rounded-lg border border-danger-line bg-danger-bg p-3 text-[13px]">
+      <div role="alert" className="rounded-lg border border-danger-line bg-danger-bg p-3 text-meta">
         <p className="font-medium text-ink-1">
           {t('account.playground.csrf_failed')}
         </p>
@@ -667,21 +667,21 @@ function FailureCard({ failure }: { failure: PlaygroundFailure }) {
     )
   }
   return (
-    <div role="alert" className="rounded-lg border border-danger-line bg-danger-bg p-3 text-[13px]">
+    <div role="alert" className="rounded-lg border border-danger-line bg-danger-bg p-3 text-meta">
       <p className="font-medium text-ink-1">
         {t('account.playground.error_title')}
       </p>
       {failure.kind === 'other' && failure.message !== undefined ? (
-        <p className="mt-1 text-xs text-ink-2">{failure.message}</p>
+        <p className="mt-1 text-meta text-ink-2">{failure.message}</p>
       ) : null}
       {failure.requestId !== undefined ? (
-        <p className="mt-1 font-mono text-[11px] text-ink-3">
+        <p className="mt-1 font-mono text-badge text-ink-3">
           {t('account.playground.request_id', { id: failure.requestId })}
         </p>
       ) : null}
       <a
         href="/wallet"
-        className="mt-2 inline-block text-[13px] text-brand underline-offset-2 hover:underline"
+        className="mt-2 inline-block text-meta text-brand underline-offset-2 hover:underline"
       >
         {t('account.playground.balance_link')}
       </a>

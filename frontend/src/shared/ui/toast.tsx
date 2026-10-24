@@ -157,7 +157,7 @@ export function ToastViewport() {
           data-testid="toast"
           data-tone={toast.tone}
           className={[
-            'pointer-events-auto flex items-start gap-2 rounded-xl border bg-surface-card p-3 text-sm text-ink-1 shadow-[0_12px_32px_var(--overlay)]',
+            'pointer-events-auto flex items-start gap-2 rounded-xl border bg-surface-card p-3 text-body text-ink-1 shadow-[0_12px_32px_var(--overlay)]',
             TONE_CLASSES[toast.tone],
           ].join(' ')}
         >
@@ -173,7 +173,7 @@ export function ToastViewport() {
             {toast.requestId !== undefined ? (
               <p
                 data-testid="toast-request-id"
-                className="mt-1 font-mono text-[11px] leading-4 text-ink-3"
+                className="mt-1 font-mono text-badge leading-4 text-ink-3"
               >
                 {t('common.toast.request_id', { requestId: toast.requestId })}
               </p>

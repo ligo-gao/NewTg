@@ -39,7 +39,7 @@ export function RangeSelector({ value, onChange }: RangeSelectorProps) {
             data-testid={`range-${range}`}
             onClick={() => onChange(range)}
             className={[
-              'rounded-md px-2.5 py-1 text-[13px] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+              'rounded-md px-2.5 py-1 text-meta focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
               active
                 ? 'bg-surface-hover font-medium text-ink-1'
                 : 'text-ink-2 hover:text-ink-1',

@@ -156,7 +156,7 @@ export function PermissionMatrix({
 
   return (
     <div className="flex flex-col gap-3">
-      <label className="flex items-center gap-2 rounded-lg bg-surface-subtle px-3 py-2 text-sm text-ink-1">
+      <label className="flex items-center gap-2 rounded-lg bg-surface-subtle px-3 py-2 text-body text-ink-1">
         <input
           type="checkbox"
           className="size-4 accent-brand"
@@ -165,13 +165,13 @@ export function PermissionMatrix({
           onChange={(event) => toggleFull(event.target.checked)}
         />
         <span className="font-medium">{t('admin.permissions.full_access')}</span>
-        <code className="font-mono text-xs text-ink-2">*</code>
+        <code className="font-mono text-meta text-ink-2">*</code>
       </label>
 
       <div className="flex flex-col gap-3">
         {PERMISSION_GROUPS.map((group) => (
           <fieldset key={group.key} className="rounded-lg border border-border-hairline p-3">
-            <legend className="px-1 text-[13px] font-medium text-ink-1">
+            <legend className="px-1 text-meta font-medium text-ink-1">
               {t(group.labelKey)}
             </legend>
             <div className="grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-2">
@@ -184,7 +184,7 @@ export function PermissionMatrix({
                 return (
                   <label
                     key={permission.key}
-                    className="flex items-start gap-2 text-[13px] text-ink-2"
+                    className="flex items-start gap-2 text-meta text-ink-2"
                     title={
                       notGranted ? t('admin.permissions.not_held') : undefined
                     }
@@ -200,11 +200,11 @@ export function PermissionMatrix({
                     />
                     <span>
                       <span className="text-ink-1">{t(permission.labelKey)}</span>{' '}
-                      <code className="font-mono text-xs text-ink-2">
+                      <code className="font-mono text-meta text-ink-2">
                         {permission.key}
                       </code>
                       {permission.key === 'settings:manage' ? (
-                        <span className="ml-1 text-xs font-medium text-warning">
+                        <span className="ml-1 text-badge text-warning">
                           {t('admin.permissions.sensitive')}
                         </span>
                       ) : null}
@@ -217,7 +217,7 @@ export function PermissionMatrix({
         ))}
       </div>
 
-      <p className="text-xs text-ink-3">{t('admin.permissions.hint')}</p>
+      <p className="text-meta text-ink-3">{t('admin.permissions.hint')}</p>
     </div>
   )
 }

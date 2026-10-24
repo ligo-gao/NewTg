@@ -317,7 +317,7 @@
   "pricing.detail.effective": "Действующее",
   "pricing.detail.unlimited": "Без ограничений",
   "pricing.detail.server_address_unset": "Адрес сервера не настроен; в примере используется относительный путь.",
-  "pricing.detail.key_hint": "Замените <YOUR_TOKEN> на ваш API-токен (токены начинаются с nkt-).",
+  "pricing.detail.key_hint": "Замените <YOUR_TOKEN> на ваш API-токен (токены начинаются с sk-; старые токены могут начинаться с nkt-).",
   "pricing.detail.create_token": "Создать токен",
   "pricing.detail.sign_in_token": "Войдите, чтобы создать токен",
   "pricing.detail.copy_code": "Скопировать пример кода",

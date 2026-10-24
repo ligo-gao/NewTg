@@ -131,9 +131,9 @@ export function OrderDetailSheet({ orderId, onOpenChange }: OrderDetailSheetProp
         title={t('account.orders.detail_title')}
       >
         {detailQuery.isPending ? (
-          <p className="text-sm text-ink-2">{t('account.orders.loading')}</p>
+          <p className="text-body text-ink-2">{t('account.orders.loading')}</p>
         ) : detailQuery.isError || order === undefined ? (
-          <div className="flex items-center gap-3 text-sm text-ink-2">
+          <div className="flex items-center gap-3 text-body text-ink-2">
             <span>{t('account.orders.error')}</span>
             <Button variant="secondary" onClick={() => void detailQuery.refetch()}>
               {t('account.orders.retry')}
@@ -143,7 +143,7 @@ export function OrderDetailSheet({ orderId, onOpenChange }: OrderDetailSheetProp
           <div className="flex flex-col gap-4">
             <div className="flex items-center gap-2">
               <OrderStatusBadge status={order.status} />
-              <span className="text-sm text-ink-2">{t('account.orders.detail_type')}</span>
+              <span className="text-body text-ink-2">{t('account.orders.detail_type')}</span>
             </div>
 
             <dl className="flex flex-col">
@@ -195,17 +195,17 @@ export function OrderDetailSheet({ orderId, onOpenChange }: OrderDetailSheetProp
             {order.status === 'pending' ? (
               <div className="flex flex-col gap-2 border-t border-border-hairline pt-4">
                 {verifyResult === 'not_found' ? (
-                  <p role="status" className="text-[13px] text-info">
+                  <p role="status" className="text-meta text-info">
                     {t('account.orders.verify_not_found')}
                   </p>
                 ) : null}
                 {verifyResult === 'failed' ? (
-                  <p role="alert" className="text-[13px] text-danger">
+                  <p role="alert" className="text-meta text-danger">
                     {t('account.orders.verify_failed')}
                   </p>
                 ) : null}
                 {rateLimitSeconds > 0 ? (
-                  <p role="alert" className="text-[13px] text-danger">
+                  <p role="alert" className="text-meta text-danger">
                     {t('account.orders.verify_rate_limited', {
                       seconds: rateLimitSeconds,
                     })}
@@ -274,12 +274,12 @@ function FieldRow({
   mono?: boolean
 }) {
   return (
-    <div className="flex h-8 items-center justify-between gap-4 text-sm">
+    <div className="flex h-8 items-center justify-between gap-4 text-body">
       <dt className="text-ink-2">{label}</dt>
       <dd
         className={[
           'text-right text-ink-1',
-          mono ? 'font-mono text-[13px]' : 'tabular-nums',
+          mono ? 'font-mono text-meta' : 'tabular-nums',
         ].join(' ')}
       >
         {value}

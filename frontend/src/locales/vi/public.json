@@ -317,7 +317,7 @@
   "pricing.detail.effective": "Giá trị hiệu lực",
   "pricing.detail.unlimited": "Không giới hạn",
   "pricing.detail.server_address_unset": "Chưa cấu hình địa chỉ máy chủ; ví dụ dùng đường dẫn tương đối.",
-  "pricing.detail.key_hint": "Thay <YOUR_TOKEN> bằng token API của bạn (token bắt đầu bằng nkt-).",
+  "pricing.detail.key_hint": "Thay <YOUR_TOKEN> bằng token API của bạn (token bắt đầu bằng sk-; token cũ có thể bắt đầu bằng nkt-).",
   "pricing.detail.create_token": "Tạo token",
   "pricing.detail.sign_in_token": "Đăng nhập để tạo token",
   "pricing.detail.copy_code": "Sao chép đoạn mã",

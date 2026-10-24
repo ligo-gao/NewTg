@@ -348,7 +348,7 @@ export function SubscriptionPlanDrawer({
         {formError !== undefined ? <FormAlert>{formError}</FormAlert> : null}
 
         <section className="flex flex-col gap-3">
-          <h3 className="text-[13px] font-semibold text-ink-1">
+          <h3 className="text-meta font-semibold text-ink-1">
             {t('admin.subscriptions.drawer.section_basic')}
           </h3>
           <TextField
@@ -380,7 +380,7 @@ export function SubscriptionPlanDrawer({
           <div className="flex flex-col gap-1.5">
             <label
               htmlFor="subscription-plan-description"
-              className="text-[13px] font-medium text-ink-1"
+              className="text-meta font-medium text-ink-1"
             >
               {t('admin.subscriptions.drawer.description')}
             </label>
@@ -396,7 +396,7 @@ export function SubscriptionPlanDrawer({
                   : undefined
               }
               className={[
-                'w-full rounded-lg border bg-surface-card px-3 py-2 text-sm text-ink-1',
+                'w-full rounded-lg border bg-surface-card px-3 py-2 text-body text-ink-1',
                 'focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
                 fieldErrors.description !== undefined
                   ? 'border-danger'
@@ -408,7 +408,7 @@ export function SubscriptionPlanDrawer({
               }}
             />
             {fieldErrors.description !== undefined ? (
-              <p id="subscription-plan-description-error" className="text-xs text-danger">
+              <p id="subscription-plan-description-error" className="text-meta text-danger">
                 {fieldErrors.description}
               </p>
             ) : null}
@@ -416,7 +416,7 @@ export function SubscriptionPlanDrawer({
         </section>
 
         <section className="flex flex-col gap-3 border-t border-border-hairline pt-4">
-          <h3 className="text-[13px] font-semibold text-ink-1">
+          <h3 className="text-meta font-semibold text-ink-1">
             {t('admin.subscriptions.drawer.section_period')}
           </h3>
           <div className="grid grid-cols-2 gap-3">
@@ -460,7 +460,7 @@ export function SubscriptionPlanDrawer({
               setFieldErrors((current) => withoutKey(current, 'grant_credits'))
             }}
           />
-          <label className="flex items-start gap-2 text-sm text-ink-1">
+          <label className="flex items-start gap-2 text-body text-ink-1">
             <input
               type="checkbox"
               className="mt-0.5 size-4 accent-brand"
@@ -469,12 +469,12 @@ export function SubscriptionPlanDrawer({
             />
             <span>
               {t('admin.subscriptions.drawer.reset_on_renew')}
-              <span className="block text-xs text-ink-3">
+              <span className="block text-meta text-ink-3">
                 {t('admin.subscriptions.drawer.reset_on_renew_hint')}
               </span>
             </span>
           </label>
-          <label className="flex items-start gap-2 text-sm text-ink-1">
+          <label className="flex items-start gap-2 text-body text-ink-1">
             <input
               type="checkbox"
               className="mt-0.5 size-4 accent-brand"
@@ -483,7 +483,7 @@ export function SubscriptionPlanDrawer({
             />
             <span>
               {t('admin.subscriptions.drawer.allow_wallet_overflow')}
-              <span className="block text-xs text-ink-3">
+              <span className="block text-meta text-ink-3">
                 {t('admin.subscriptions.drawer.allow_wallet_overflow_hint')}
               </span>
             </span>
@@ -491,17 +491,17 @@ export function SubscriptionPlanDrawer({
         </section>
 
         <section className="flex flex-col gap-3 border-t border-border-hairline pt-4">
-          <h3 className="text-[13px] font-semibold text-ink-1">
+          <h3 className="text-meta font-semibold text-ink-1">
             {t('admin.subscriptions.drawer.section_scope')}
           </h3>
           <div className="flex flex-col gap-1.5">
-            <span className="text-[13px] font-medium text-ink-1">
+            <span className="text-meta font-medium text-ink-1">
               {t('admin.subscriptions.drawer.model_scope')}
             </span>
-            <p className="text-xs text-ink-3">
+            <p className="text-meta text-ink-3">
               {t('admin.subscriptions.drawer.model_scope_hint')}
             </p>
-            <label className="flex items-start gap-2 text-sm text-ink-1">
+            <label className="flex items-start gap-2 text-body text-ink-1">
               <input
                 type="checkbox"
                 className="mt-0.5 size-4 accent-brand"
@@ -513,7 +513,7 @@ export function SubscriptionPlanDrawer({
               />
               <span>
                 {t('admin.subscriptions.drawer.all_models_toggle')}
-                <span className="block text-xs text-ink-3">
+                <span className="block text-meta text-ink-3">
                   {t('admin.subscriptions.drawer.all_models_toggle_hint')}
                 </span>
               </span>
@@ -529,7 +529,7 @@ export function SubscriptionPlanDrawer({
                   value={entry}
                   maxLength={128}
                   placeholder={t('admin.subscriptions.drawer.model_scope_placeholder')}
-                  className="h-10 w-full rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                  className="h-10 w-full rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
                   onChange={(event) => {
                     const value = event.target.value
                     setModelScope((current) =>
@@ -543,7 +543,7 @@ export function SubscriptionPlanDrawer({
                 <Button
                   type="button"
                   variant="ghost"
-                  className="h-8 px-2 text-[13px] text-danger hover:bg-danger-bg"
+                  className="h-8 px-2 text-meta text-danger hover:bg-danger-bg"
                   aria-label={t('admin.subscriptions.drawer.remove_model', {
                     index: index + 1,
                   })}
@@ -561,7 +561,7 @@ export function SubscriptionPlanDrawer({
                   <Button
                     type="button"
                     variant="secondary"
-                    className="h-8 px-2 text-[13px]"
+                    className="h-8 px-2 text-meta"
                     onClick={() => setModelScope((current) => [...current, ''])}
                   >
                     {t('admin.subscriptions.drawer.add_model')}
@@ -570,7 +570,7 @@ export function SubscriptionPlanDrawer({
               </>
             ) : null}
             {fieldErrors.model_scope !== undefined ? (
-              <p className="text-xs text-danger">{fieldErrors.model_scope}</p>
+              <p className="text-meta text-danger">{fieldErrors.model_scope}</p>
             ) : null}
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -601,19 +601,19 @@ export function SubscriptionPlanDrawer({
         </section>
 
         <section className="flex flex-col gap-3 border-t border-border-hairline pt-4">
-          <h3 className="text-[13px] font-semibold text-ink-1">
+          <h3 className="text-meta font-semibold text-ink-1">
             {t('admin.subscriptions.drawer.section_status')}
           </h3>
           <div className="flex flex-col gap-1.5">
             <label
               htmlFor="subscription-plan-status"
-              className="text-[13px] font-medium text-ink-1"
+              className="text-meta font-medium text-ink-1"
             >
               {t('admin.subscriptions.drawer.status_field')}
             </label>
             <select
               id="subscription-plan-status"
-              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
               value={status}
               onChange={(event) => setStatus(event.target.value as PlanStatus)}
             >
@@ -621,7 +621,7 @@ export function SubscriptionPlanDrawer({
               <option value="disabled">{t('admin.subscriptions.status_disabled')}</option>
             </select>
             {fieldErrors.status !== undefined ? (
-              <p className="text-xs text-danger">{fieldErrors.status}</p>
+              <p className="text-meta text-danger">{fieldErrors.status}</p>
             ) : null}
           </div>
           <TextField

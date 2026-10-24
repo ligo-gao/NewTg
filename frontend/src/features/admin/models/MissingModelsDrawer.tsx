@@ -53,24 +53,24 @@ export function MissingModelsDrawer({
           ))}
         </div>
       ) : query.isError ? (
-        <div className="flex items-center gap-3 text-sm text-ink-2">
+        <div className="flex items-center gap-3 text-body text-ink-2">
           <span>{t('admin.models.missing_error')}</span>
           <Button variant="secondary" onClick={() => void query.refetch()}>
             {t('common.action.retry')}
           </Button>
         </div>
       ) : items.length === 0 ? (
-        <p className="text-sm text-ink-2">{t('admin.models.missing_empty')}</p>
+        <p className="text-body text-ink-2">{t('admin.models.missing_empty')}</p>
       ) : (
         <>
           {data !== undefined && data.skipped_channels > 0 ? (
-            <p className="mb-2 text-xs text-warning">
+            <p className="mb-2 text-meta text-warning">
               {t('admin.models.missing_skipped', { count: data.skipped_channels })}
             </p>
           ) : null}
-          <table className="w-full text-sm">
+          <table className="w-full text-body">
             <thead>
-              <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
+              <tr className="border-b border-border-hairline text-left text-meta text-ink-2">
                 <th scope="col" className="py-2 pr-3 font-medium">
                   {t('admin.models.missing_column_model')}
                 </th>
@@ -92,7 +92,7 @@ export function MissingModelsDrawer({
                   <td className="py-2 pr-3 text-right font-mono tabular-nums text-ink-1">
                     {item.channel_count}
                   </td>
-                  <td className="py-2 pr-3 text-xs text-ink-2">
+                  <td className="py-2 pr-3 text-meta text-ink-2">
                     {item.has_pricing
                       ? t('admin.models.missing_has_pricing')
                       : t('admin.models.missing_no_pricing')}
@@ -101,7 +101,7 @@ export function MissingModelsDrawer({
                     {canManage ? (
                       <Button
                         variant="ghost"
-                        className="h-8 px-2 text-[13px]"
+                        className="h-8 px-2 text-meta"
                         onClick={() => {
                           onCreateRecord(item.model_name)
                         }}

@@ -22,7 +22,7 @@ function RootLayout() {
     <>
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-lg focus:bg-surface-card focus:px-3 focus:py-2 focus:text-sm focus:text-ink-1 focus:shadow-[var(--focus-ring)]"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-lg focus:bg-surface-card focus:px-3 focus:py-2 focus:text-body focus:text-ink-1 focus:shadow-[var(--focus-ring)]"
       >
         {t('common.nav.skip')}
       </a>

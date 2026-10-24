@@ -404,12 +404,12 @@ export function ModelMutateSheet({
           }}
         />
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="model-field-description" className="text-[13px] font-medium text-ink-1">
+          <label htmlFor="model-field-description" className="text-meta font-medium text-ink-1">
             {t('admin.models.field_description')}
           </label>
           <textarea
             id="model-field-description"
-            className="min-h-[88px] rounded-lg border border-border-default bg-surface-card px-3 py-2 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="min-h-[88px] rounded-lg border border-border-default bg-surface-card px-3 py-2 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             maxLength={DESCRIPTION_MAX}
             aria-invalid={fieldErrors.description !== undefined ? true : undefined}
             value={description}
@@ -417,14 +417,14 @@ export function ModelMutateSheet({
               setDescription(event.target.value)
             }}
           />
-          <p className="text-right text-xs text-ink-3">
+          <p className="text-right text-meta text-ink-3">
             {t('admin.models.description_count', {
               count: description.length,
               max: DESCRIPTION_MAX,
             })}
           </p>
           {fieldErrors.description !== undefined ? (
-            <p className="text-xs text-danger">{fieldErrors.description}</p>
+            <p className="text-meta text-danger">{fieldErrors.description}</p>
           ) : null}
         </div>
 
@@ -440,12 +440,12 @@ export function ModelMutateSheet({
         />
 
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="model-field-vendor" className="text-[13px] font-medium text-ink-1">
+          <label htmlFor="model-field-vendor" className="text-meta font-medium text-ink-1">
             {t('admin.models.field_vendor')}
           </label>
           <select
             id="model-field-vendor"
-            className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1"
+            className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1"
             value={vendorId}
             onChange={(event) => {
               setVendorId(event.target.value)
@@ -459,17 +459,17 @@ export function ModelMutateSheet({
             ))}
           </select>
           {fieldErrors.vendor_id !== undefined ? (
-            <p className="text-xs text-danger">{fieldErrors.vendor_id}</p>
+            <p className="text-meta text-danger">{fieldErrors.vendor_id}</p>
           ) : null}
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <span className="text-[13px] font-medium text-ink-1">{t('admin.models.field_tags')}</span>
+          <span className="text-meta font-medium text-ink-1">{t('admin.models.field_tags')}</span>
           <div className="flex flex-wrap gap-1.5">
             {tags.map((tag) => (
               <span
                 key={tag}
-                className="inline-flex h-6 items-center gap-1 rounded-[6px] border border-neutral-line bg-neutral-bg px-2 text-xs text-neutral"
+                className="inline-flex h-6 items-center gap-1 rounded-[6px] border border-neutral-line bg-neutral-bg px-2 text-badge text-neutral"
               >
                 {tag}
                 <button
@@ -488,7 +488,7 @@ export function ModelMutateSheet({
           <div className="flex gap-2">
             <input
               aria-label={t('admin.models.field_tags')}
-              className="h-10 flex-1 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1"
+              className="h-10 flex-1 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1"
               maxLength={TAG_MAX_RUNES}
               value={tagDraft}
               onChange={(event) => {
@@ -505,14 +505,14 @@ export function ModelMutateSheet({
               {t('admin.models.tag_add')}
             </Button>
           </div>
-          <p className="text-xs text-ink-3">{t('admin.models.tags_hint', { count: TAGS_MAX })}</p>
+          <p className="text-meta text-ink-3">{t('admin.models.tags_hint', { count: TAGS_MAX })}</p>
           {fieldErrors.tags !== undefined ? (
-            <p className="text-xs text-danger">{fieldErrors.tags}</p>
+            <p className="text-meta text-danger">{fieldErrors.tags}</p>
           ) : null}
         </div>
 
         <fieldset className="rounded-lg border border-border-hairline p-3">
-          <legend className="px-1 text-[13px] font-medium text-ink-1">
+          <legend className="px-1 text-meta font-medium text-ink-1">
             {t('admin.models.field_endpoints')}
           </legend>
           <div className="flex flex-col gap-2">
@@ -522,7 +522,7 @@ export function ModelMutateSheet({
                   <input
                     aria-label={t('admin.models.endpoint_path')}
                     placeholder="/v1/chat/completions"
-                    className="h-9 flex-1 rounded-lg border border-border-default bg-surface-card px-2 font-mono text-sm text-ink-1"
+                    className="h-9 flex-1 rounded-lg border border-border-default bg-surface-card px-2 font-mono text-body text-ink-1"
                     value={row.path}
                     onChange={(event) => {
                       const path = event.target.value
@@ -536,7 +536,7 @@ export function ModelMutateSheet({
                   <Button
                     type="button"
                     variant="ghost"
-                    className="h-9 px-2 text-[13px] text-danger hover:bg-danger-bg"
+                    className="h-9 px-2 text-meta text-danger hover:bg-danger-bg"
                     onClick={() => {
                       setEndpoints((current) => current.filter((_, itemIndex) => itemIndex !== index))
                     }}
@@ -546,7 +546,7 @@ export function ModelMutateSheet({
                 </div>
                 <div className="flex flex-wrap gap-3">
                   {METHODS.map((method) => (
-                    <label key={method} className="flex items-center gap-1 text-xs text-ink-2">
+                    <label key={method} className="flex items-center gap-1 text-meta text-ink-2">
                       <input
                         type="checkbox"
                         checked={row.methods.includes(method)}
@@ -573,7 +573,7 @@ export function ModelMutateSheet({
               <Button
                 type="button"
                 variant="secondary"
-                className="h-8 px-2 text-[13px]"
+                className="h-8 px-2 text-meta"
                 onClick={() => {
                   setEndpoints((current) => [...current, { path: '', methods: ['POST'] }])
                 }}
@@ -582,19 +582,19 @@ export function ModelMutateSheet({
               </Button>
             </div>
             {fieldErrors.endpoints !== undefined ? (
-              <p className="text-xs text-danger">{fieldErrors.endpoints}</p>
+              <p className="text-meta text-danger">{fieldErrors.endpoints}</p>
             ) : null}
           </div>
         </fieldset>
 
         <div className="grid grid-cols-2 gap-3">
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="model-field-status" className="text-[13px] font-medium text-ink-1">
+            <label htmlFor="model-field-status" className="text-meta font-medium text-ink-1">
               {t('admin.models.field_status')}
             </label>
             <select
               id="model-field-status"
-              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1"
+              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1"
               value={status}
               onChange={(event) => {
                 setStatus(Number(event.target.value) === 2 ? 2 : 1)
@@ -605,12 +605,12 @@ export function ModelMutateSheet({
             </select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="model-field-name-rule" className="text-[13px] font-medium text-ink-1">
+            <label htmlFor="model-field-name-rule" className="text-meta font-medium text-ink-1">
               {t('admin.models.field_name_rule')}
             </label>
             <select
               id="model-field-name-rule"
-              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1"
+              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1"
               value={nameRule}
               onChange={(event) => {
                 const value = Number(event.target.value)
@@ -629,7 +629,7 @@ export function ModelMutateSheet({
           </div>
         </div>
 
-        <label className="flex items-start gap-2 text-sm text-ink-1">
+        <label className="flex items-start gap-2 text-body text-ink-1">
           <input
             type="checkbox"
             className="mt-0.5"
@@ -640,19 +640,19 @@ export function ModelMutateSheet({
           />
           <span>
             {t('admin.models.field_sync_official')}
-            <span className="block text-xs text-ink-3">
+            <span className="block text-meta text-ink-3">
               {t('admin.models.field_sync_official_hint')}
             </span>
           </span>
         </label>
 
         <fieldset className="rounded-lg border border-border-hairline p-3">
-          <legend className="px-1 text-[13px] font-medium text-ink-1">
+          <legend className="px-1 text-meta font-medium text-ink-1">
             {t('admin.models.field_capabilities')}
           </legend>
           <div className="grid grid-cols-2 gap-1">
             {CAPABILITIES.map((capability) => (
-              <label key={capability} className="flex items-center gap-1.5 text-xs text-ink-2">
+              <label key={capability} className="flex items-center gap-1.5 text-meta text-ink-2">
                 <input
                   type="checkbox"
                   checked={capabilities.includes(capability)}
@@ -693,12 +693,12 @@ export function ModelMutateSheet({
         </div>
 
         <fieldset className="rounded-lg border border-border-hairline p-3">
-          <legend className="px-1 text-[13px] font-medium text-ink-1">
+          <legend className="px-1 text-meta font-medium text-ink-1">
             {t('admin.models.field_modalities')}
           </legend>
           <div className="flex flex-wrap gap-4">
             {MODALITIES.map((modality) => (
-              <label key={modality} className="flex items-center gap-1.5 text-xs text-ink-2">
+              <label key={modality} className="flex items-center gap-1.5 text-meta text-ink-2">
                 <input
                   type="checkbox"
                   checked={modalities.includes(modality)}
@@ -738,7 +738,7 @@ export function ModelMutateSheet({
         </div>
 
         <fieldset className="rounded-lg border border-border-hairline p-3">
-          <legend className="px-1 text-[13px] font-medium text-ink-1">
+          <legend className="px-1 text-meta font-medium text-ink-1">
             {t('admin.models.field_parameters')}
           </legend>
           <div className="flex flex-col gap-2">
@@ -747,7 +747,7 @@ export function ModelMutateSheet({
                 <input
                   aria-label={t('admin.models.param_name')}
                   placeholder={t('admin.models.param_name')}
-                  className="h-9 rounded-lg border border-border-default bg-surface-card px-2 font-mono text-sm text-ink-1"
+                  className="h-9 rounded-lg border border-border-default bg-surface-card px-2 font-mono text-body text-ink-1"
                   value={row.name}
                   onChange={(event) => {
                     const name = event.target.value
@@ -760,7 +760,7 @@ export function ModelMutateSheet({
                 />
                 <select
                   aria-label={t('admin.models.param_type')}
-                  className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+                  className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
                   value={row.type}
                   onChange={(event) => {
                     const type = event.target.value as ParameterType
@@ -780,7 +780,7 @@ export function ModelMutateSheet({
                 <input
                   aria-label={t('admin.models.param_default')}
                   placeholder={t('admin.models.param_default')}
-                  className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+                  className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
                   value={row.defaultValue}
                   onChange={(event) => {
                     const defaultValue = event.target.value
@@ -794,7 +794,7 @@ export function ModelMutateSheet({
                 <input
                   aria-label={t('admin.models.param_description')}
                   placeholder={t('admin.models.param_description')}
-                  className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+                  className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
                   value={row.description}
                   onChange={(event) => {
                     const description = event.target.value
@@ -806,7 +806,7 @@ export function ModelMutateSheet({
                   }}
                 />
                 <div className="col-span-2 flex items-center justify-between">
-                  <label className="flex items-center gap-1.5 text-xs text-ink-2">
+                  <label className="flex items-center gap-1.5 text-meta text-ink-2">
                     <input
                       type="checkbox"
                       checked={row.required}
@@ -824,7 +824,7 @@ export function ModelMutateSheet({
                   <Button
                     type="button"
                     variant="ghost"
-                    className="h-8 px-2 text-[13px] text-danger hover:bg-danger-bg"
+                    className="h-8 px-2 text-meta text-danger hover:bg-danger-bg"
                     onClick={() => {
                       setParameters((current) => current.filter((_, itemIndex) => itemIndex !== index))
                     }}
@@ -838,7 +838,7 @@ export function ModelMutateSheet({
               <Button
                 type="button"
                 variant="secondary"
-                className="h-8 px-2 text-[13px]"
+                className="h-8 px-2 text-meta"
                 onClick={() => {
                   setParameters((current) => [
                     ...current,

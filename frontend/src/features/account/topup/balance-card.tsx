@@ -81,7 +81,7 @@ export function BalanceCard({
       ].join(' ')}
     >
       <div className="flex items-start justify-between gap-4">
-        <h2 className="text-[13px] font-medium text-ink-2">
+        <h2 className="text-meta font-medium text-ink-2">
           {t('account.topup.balance_title')}
         </h2>
         <div
@@ -106,7 +106,7 @@ export function BalanceCard({
                   setUnit(option)
                 }}
                 className={[
-                  'h-6 rounded-md px-2 text-xs font-medium transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                  'h-6 rounded-md px-2 text-badge transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
                   selected
                     ? 'bg-brand-subtle text-brand'
                     : 'text-ink-2 hover:text-ink-1',
@@ -127,15 +127,15 @@ export function BalanceCard({
         className={[
           'mt-2 tabular-nums',
           hero
-            ? 'text-[34px] font-bold leading-[42px] tracking-[-0.02em]'
-            : 'text-[28px] font-semibold leading-9 tracking-[-0.01em]',
+            ? 'text-figure-lg leading-[42px] tracking-[-0.02em]'
+            : 'text-figure-md leading-9 tracking-[-0.01em]',
         ].join(' ')}
       >
         {value}
       </p>
 
       {health !== undefined ? (
-        <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-ink-2">
+        <div className="mt-1.5 flex flex-wrap items-center gap-2 text-meta text-ink-2">
           <StatusBadge variant={HEALTH_VARIANTS[health]}>
             {t(`account.wallet.overview.health_${health}`)}
           </StatusBadge>

@@ -43,7 +43,7 @@ export function ModelDistributionDonut({
 
   return (
     <section className="rounded-xl border border-border-hairline bg-surface-card p-4">
-      <h3 className="text-sm font-semibold text-ink-1">
+      <h3 className="text-body font-semibold text-ink-1">
         {t('common.dashboard.donut.title')}
       </h3>
 
@@ -54,13 +54,13 @@ export function ModelDistributionDonut({
           className="mt-4 h-60 animate-pulse rounded-lg bg-surface-hover motion-reduce:animate-none"
         />
       ) : error ? (
-        <div data-testid="donut-error" className="mt-4 rounded-lg border border-danger-line bg-danger-bg p-3 text-sm text-danger">
+        <div data-testid="donut-error" className="mt-4 rounded-lg border border-danger-line bg-danger-bg p-3 text-body text-danger">
           <p>{t('common.dashboard.error')}</p>
           <button
             type="button"
             data-testid="donut-retry"
             onClick={onRetry}
-            className="mt-2 rounded border border-danger-line px-2 py-0.5 text-xs focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="mt-2 rounded border border-danger-line px-2 py-0.5 text-badge focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
             {t('common.action.retry')}
           </button>
@@ -68,7 +68,7 @@ export function ModelDistributionDonut({
       ) : slices.length === 0 ? (
         <div
           data-testid="donut-empty"
-          className="mt-4 flex min-h-60 items-center justify-center rounded-lg border border-dashed border-neutral-line text-sm text-neutral"
+          className="mt-4 flex min-h-60 items-center justify-center rounded-lg border border-dashed border-neutral-line text-body text-neutral"
         >
           {t('common.dashboard.donut.empty')}
         </div>
@@ -128,7 +128,7 @@ export function ModelDistributionDonut({
               x={CENTER}
               y={CENTER - 2}
               textAnchor="middle"
-              className="fill-ink-1 text-sm font-semibold"
+              className="fill-ink-1 text-body font-semibold"
             >
               {formatCreditsValue(total, locale)}
             </text>
@@ -136,7 +136,7 @@ export function ModelDistributionDonut({
               x={CENTER}
               y={CENTER + 14}
               textAnchor="middle"
-              className="fill-ink-2 text-[8px]"
+              className="fill-ink-2 text-badge"
             >
               {t('common.dashboard.rates.credits')}
             </text>
@@ -154,13 +154,13 @@ export function ModelDistributionDonut({
                     className="h-2.5 w-2.5 shrink-0 rounded-full"
                     style={{ backgroundColor: slice.color }}
                   />
-                  <span className="min-w-0 flex-1 truncate text-left text-[13px] text-ink-1">
+                  <span className="min-w-0 flex-1 truncate text-left text-meta text-ink-1">
                     {label}
                   </span>
-                  <span className="tabular-nums text-[13px] text-ink-2">
+                  <span className="tabular-nums text-meta text-ink-2">
                     {formatCreditsValue(slice.cost, locale)}
                   </span>
-                  <span className="w-14 text-right tabular-nums text-[13px] text-ink-2">
+                  <span className="w-14 text-right tabular-nums text-meta text-ink-2">
                     {slice.percent.toFixed(1)}%
                   </span>
                 </>

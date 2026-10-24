@@ -62,10 +62,10 @@ export function QuickActions(): JSX.Element {
 
   return (
     <section className="rounded-xl border border-border-hairline bg-surface-card p-4">
-      <h3 className="text-sm font-semibold text-ink-1">
+      <h3 className="text-body font-semibold text-ink-1">
         {t('common.dashboard.quick.title')}
       </h3>
-      <p className="mt-1 text-[13px] text-ink-2">
+      <p className="mt-1 text-meta text-ink-2">
         {t('common.dashboard.quick.description')}
       </p>
       <div className="mt-3 grid grid-cols-2 gap-2.5">
@@ -80,10 +80,10 @@ export function QuickActions(): JSX.Element {
               <NavIcon name={action.icon} />
             </span>
             <span className="min-w-0">
-              <span className="block text-[12.5px] leading-[17px] font-semibold">
+              <span className="block text-badge leading-[17px] font-semibold">
                 {action.title}
               </span>
-              <span className="block text-[10.5px] leading-[15px] text-ink-2">
+              <span className="block text-badge leading-[15px] text-ink-2">
                 {action.hint}
               </span>
             </span>

@@ -98,7 +98,7 @@ export function SignUpPage({
         <FormAlert tone="warning">{t('auth.sign_up.disabled')}</FormAlert>
         <a
           href="/sign-in"
-          className="mt-4 inline-block text-[13px] font-medium text-brand hover:underline"
+          className="mt-4 inline-block text-meta font-medium text-brand hover:underline"
         >
           {t('auth.sign_in.title', { site: t('auth.shell.brand') })}
         </a>
@@ -229,7 +229,7 @@ export function SignUpPage({
               }}
             />
             {errors.emailCode !== undefined ? (
-              <p className="-mt-2 text-xs text-danger">{errors.emailCode}</p>
+              <p className="-mt-2 text-meta text-danger">{errors.emailCode}</p>
             ) : null}
           </>
         ) : null}
@@ -260,7 +260,7 @@ export function SignUpPage({
           required
         />
 
-        <label className="flex items-start gap-2 text-[13px] text-ink-2">
+        <label className="flex items-start gap-2 text-meta text-ink-2">
           <input
             type="checkbox"
             className="mt-0.5 size-4 accent-brand"
@@ -291,7 +291,7 @@ export function SignUpPage({
           </span>
         </label>
         {errors.agree !== undefined ? (
-          <p className="text-xs text-danger">{errors.agree}</p>
+          <p className="text-meta text-danger">{errors.agree}</p>
         ) : null}
 
         {turnstileEnabled ? (

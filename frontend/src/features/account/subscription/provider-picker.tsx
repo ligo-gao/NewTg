@@ -63,11 +63,11 @@ export function ChannelProviderPicker({
 
   return (
     <fieldset>
-      <legend className="mb-2 text-[13px] font-medium text-ink-1">
+      <legend className="mb-2 text-meta font-medium text-ink-1">
         {t('account.subscription.purchase.payment_method')}
       </legend>
       {providers.length === 0 ? (
-        <p className="text-sm text-ink-2">
+        <p className="text-body text-ink-2">
           {isPending
             ? t('account.subscription.purchase.loading_providers')
             : t('account.subscription.purchase.no_providers')}
@@ -77,7 +77,7 @@ export function ChannelProviderPicker({
           {providers.map((option) => (
             <label
               key={option}
-              className="flex cursor-pointer items-center gap-2 rounded-lg border border-border-default bg-surface-page px-3 py-2 text-sm text-ink-1"
+              className="flex cursor-pointer items-center gap-2 rounded-lg border border-border-default bg-surface-page px-3 py-2 text-body text-ink-1"
             >
               <input
                 type="radio"

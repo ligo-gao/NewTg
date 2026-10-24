@@ -157,26 +157,26 @@ export function VendorMutateSheet({
         />
 
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="vendor-field-description" className="text-[13px] font-medium text-ink-1">
+          <label htmlFor="vendor-field-description" className="text-meta font-medium text-ink-1">
             {t('admin.vendors.field_description')}
           </label>
           <textarea
             id="vendor-field-description"
-            className="min-h-[88px] rounded-lg border border-border-default bg-surface-card px-3 py-2 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="min-h-[88px] rounded-lg border border-border-default bg-surface-card px-3 py-2 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             maxLength={DESCRIPTION_MAX}
             value={description}
             onChange={(event) => {
               setDescription(event.target.value)
             }}
           />
-          <p className="text-right text-xs text-ink-3">
+          <p className="text-right text-meta text-ink-3">
             {t('admin.models.description_count', {
               count: description.length,
               max: DESCRIPTION_MAX,
             })}
           </p>
           {fieldErrors.description !== undefined ? (
-            <p className="text-xs text-danger">{fieldErrors.description}</p>
+            <p className="text-meta text-danger">{fieldErrors.description}</p>
           ) : null}
         </div>
 
@@ -191,12 +191,12 @@ export function VendorMutateSheet({
         />
 
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="vendor-field-status" className="text-[13px] font-medium text-ink-1">
+          <label htmlFor="vendor-field-status" className="text-meta font-medium text-ink-1">
             {t('admin.vendors.field_status')}
           </label>
           <select
             id="vendor-field-status"
-            className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1"
+            className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1"
             value={status}
             onChange={(event) => {
               setStatus(Number(event.target.value) === 2 ? 2 : 1)
@@ -208,7 +208,7 @@ export function VendorMutateSheet({
         </div>
 
         {mode === 'edit' && vendor !== undefined ? (
-          <div className="flex flex-col gap-1 text-xs text-ink-3">
+          <div className="flex flex-col gap-1 text-meta text-ink-3">
             <span>{t('admin.vendors.field_version')}</span>
             <code className="break-all font-mono text-ink-2">{vendor.version}</code>
             <span>{t('admin.vendors.field_version_hint')}</span>

@@ -51,11 +51,11 @@ export function NotifyEntryCard({ canManage, onManage }: NotifyEntryCardProps) {
       <header className="border-b border-border-hairline pb-3">
         <h2
           id="settings-notify-entry-title"
-          className="text-[15px] font-semibold leading-[22px] text-ink-1"
+          className="text-card-title font-semibold leading-[22px] text-ink-1"
         >
           {t('settings.notification_templates.entry.title')}
         </h2>
-        <p className="mt-0.5 text-xs text-ink-3">
+        <p className="mt-0.5 text-meta text-ink-3">
           {t('settings.notification_templates.entry.description')}
         </p>
       </header>
@@ -81,21 +81,21 @@ export function NotifyEntryCard({ canManage, onManage }: NotifyEntryCardProps) {
 
       {query.isSuccess ? (
         <div className="flex flex-wrap items-center justify-between gap-3 pt-4">
-          <dl className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-ink-2">
+          <dl className="flex flex-wrap gap-x-6 gap-y-1 text-body text-ink-2">
             <div>
-              <dt className="text-xs text-ink-3">
+              <dt className="text-meta text-ink-3">
                 {t('settings.notification_templates.entry.categories_label')}
               </dt>
               <dd className="font-medium text-ink-1">{NOTIFICATION_CATEGORIES.length}</dd>
             </div>
             <div>
-              <dt className="text-xs text-ink-3">
+              <dt className="text-meta text-ink-3">
                 {t('settings.notification_templates.entry.modified_label')}
               </dt>
               <dd className="font-medium text-ink-1">{modified}</dd>
             </div>
             <div>
-              <dt className="text-xs text-ink-3">
+              <dt className="text-meta text-ink-3">
                 {t('settings.notification_templates.entry.locales_label')}
               </dt>
               <dd className="font-medium text-ink-1">{locales}</dd>

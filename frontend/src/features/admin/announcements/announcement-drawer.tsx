@@ -32,9 +32,9 @@ import {
 } from './utils'
 
 const SELECT_CLASSES =
-  'h-10 w-full rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50'
+  'h-10 w-full rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50'
 const TEXTAREA_CLASSES =
-  'min-h-[200px] w-full rounded-lg border bg-surface-card px-3 py-2 font-mono text-[13px] leading-5 text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50'
+  'min-h-[200px] w-full rounded-lg border bg-surface-card px-3 py-2 font-mono text-meta leading-5 text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50'
 
 /** 稳定 id：提交失败时按表单顺序聚焦第一个错误字段。 */
 const FIELD_IDS = {
@@ -424,7 +424,7 @@ export function AnnouncementDrawer({
               <div className="flex flex-col gap-1.5">
                 <label
                   htmlFor="announcement-category"
-                  className="text-[13px] font-medium text-ink-1"
+                  className="text-meta font-medium text-ink-1"
                 >
                   {t('admin.announcements.drawer.category_label')}
                 </label>
@@ -451,7 +451,7 @@ export function AnnouncementDrawer({
               <div className="flex flex-col gap-1.5">
                 <label
                   htmlFor="announcement-content"
-                  className="text-[13px] font-medium text-ink-1"
+                  className="text-meta font-medium text-ink-1"
                 >
                   {t('admin.announcements.drawer.content_label')}
                 </label>
@@ -478,7 +478,7 @@ export function AnnouncementDrawer({
                     }))
                   }}
                 />
-                <div className="flex items-center justify-between gap-2 text-xs text-ink-3">
+                <div className="flex items-center justify-between gap-2 text-meta text-ink-3">
                   <span>{t('admin.announcements.drawer.content_hint')}</span>
                   <span
                     data-testid="announcement-content-counter"
@@ -498,7 +498,7 @@ export function AnnouncementDrawer({
                 {fieldError('content') !== undefined ? (
                   <p
                     id={`${FIELD_IDS.content}-error`}
-                    className="text-xs text-danger"
+                    className="text-meta text-danger"
                   >
                     {fieldError('content')}
                   </p>
@@ -507,16 +507,16 @@ export function AnnouncementDrawer({
 
               {values.publishAtLocked ? (
                 <div className="flex flex-col gap-1.5">
-                  <span className="text-[13px] font-medium text-ink-1">
+                  <span className="text-meta font-medium text-ink-1">
                     {t('admin.announcements.drawer.publish_at_label')}
                   </span>
                   <p
                     data-testid="announcement-publish-at-locked"
-                    className="h-10 rounded-lg border border-border-hairline bg-surface-subtle px-3 py-2 text-sm text-ink-2"
+                    className="h-10 rounded-lg border border-border-hairline bg-surface-subtle px-3 py-2 text-body text-ink-2"
                   >
                     {formatDateTime(detail?.publish_at, locale)}
                   </p>
-                  <p className="text-xs text-ink-3">
+                  <p className="text-meta text-ink-3">
                     {t('admin.announcements.drawer.publish_at_readonly')}
                   </p>
                 </div>

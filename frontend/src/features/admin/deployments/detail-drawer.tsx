@@ -32,8 +32,8 @@ const LOG_STREAMS = ['', 'stdout', 'stderr']
 function Field({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <dt className="text-xs text-ink-3">{label}</dt>
-      <dd className="font-mono text-sm text-ink-1">{value}</dd>
+      <dt className="text-meta text-ink-3">{label}</dt>
+      <dd className="font-mono text-body text-ink-1">{value}</dd>
     </div>
   )
 }
@@ -85,10 +85,10 @@ function Overview({ detail }: { detail: DeployDeploymentDetail }) {
       </dl>
 
       <div className="rounded-lg border border-border-default bg-surface-subtle p-3">
-        <p className="text-xs font-medium text-ink-3">
+        <p className="text-meta text-ink-3">
           {t('admin.deployments.detail.container_config')}
         </p>
-        <dl className="mt-2 grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
+        <dl className="mt-2 grid grid-cols-1 gap-2 text-body sm:grid-cols-2">
           <Field
             label={t('admin.deployments.detail.image')}
             value={config?.image_url ?? '—'}
@@ -115,7 +115,7 @@ function Overview({ detail }: { detail: DeployDeploymentDetail }) {
           />
         </dl>
         {/* 秘密环境变量永不返回（§3.20.5）：这里只给出口径提示。 */}
-        <p className="mt-2 text-xs text-ink-3">
+        <p className="mt-2 text-meta text-ink-3">
           {t('admin.deployments.detail.secrets_hidden')}
         </p>
       </div>
@@ -133,15 +133,15 @@ function ContainerTable({
   const { t } = useI18n()
   if (containers.length === 0) {
     return (
-      <p className="rounded-xl border border-dashed border-border-default px-4 py-8 text-center text-sm text-ink-3">
+      <p className="rounded-xl border border-dashed border-border-default px-4 py-8 text-center text-body text-ink-3">
         {t('admin.deployments.detail.no_containers')}
       </p>
     )
   }
   return (
     <div className="overflow-x-auto rounded-xl border border-border-default">
-      <table className="w-full text-left text-sm">
-        <thead className="bg-surface-subtle text-xs text-ink-3">
+      <table className="w-full text-left text-body">
+        <thead className="bg-surface-subtle text-meta text-ink-3">
           <tr>
             <th className="px-3 py-2 font-medium">
               {t('admin.deployments.detail.container_id')}
@@ -172,7 +172,7 @@ function ContainerTable({
               <td className="px-3 py-2">
                 <button
                   type="button"
-                  className="font-mono text-xs text-brand underline"
+                  className="font-mono text-meta text-brand underline"
                   onClick={() => onOpen(container.container_id)}
                 >
                   {container.container_id}
@@ -181,13 +181,13 @@ function ContainerTable({
               <td className="px-3 py-2">
                 <DeploymentStatusBadge status={container.status} />
               </td>
-              <td className="px-3 py-2 text-xs text-ink-2">
+              <td className="px-3 py-2 text-meta text-ink-2">
                 {container.hardware ?? '—'}
               </td>
-              <td className="px-3 py-2 font-mono text-xs text-ink-2">
+              <td className="px-3 py-2 font-mono text-meta text-ink-2">
                 {container.gpus_per_container}
               </td>
-              <td className="px-3 py-2 font-mono text-xs text-ink-2">
+              <td className="px-3 py-2 font-mono text-meta text-ink-2">
                 {formatRuntimeSeconds(container.runtime_seconds)}
               </td>
               <td className="px-3 py-2">
@@ -197,7 +197,7 @@ function ContainerTable({
                     target="_blank"
                     rel="noopener noreferrer"
                     title={t('admin.deployments.detail.open_url')}
-                    className="text-xs text-brand underline"
+                    className="text-meta text-brand underline"
                   >
                     {t('admin.deployments.detail.container_url')}
                   </a>
@@ -289,13 +289,13 @@ function LogViewer({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-end gap-2">
-        <label className="flex flex-col gap-1 text-xs text-ink-2">
+        <label className="flex flex-col gap-1 text-meta text-ink-2">
           {t('admin.deployments.detail.log_container')}
           <select
             aria-label={t('admin.deployments.detail.log_container')}
             value={containerId}
             onChange={(event) => setContainerId(event.target.value)}
-            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
           >
             {containers.map((container) => (
               <option key={container.container_id} value={container.container_id}>
@@ -304,13 +304,13 @@ function LogViewer({
             ))}
           </select>
         </label>
-        <label className="flex flex-col gap-1 text-xs text-ink-2">
+        <label className="flex flex-col gap-1 text-meta text-ink-2">
           {t('admin.deployments.detail.log_level')}
           <select
             aria-label={t('admin.deployments.detail.log_level')}
             value={level}
             onChange={(event) => setLevel(event.target.value)}
-            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
           >
             {LOG_LEVELS.map((entry) => (
               <option key={entry === '' ? 'all' : entry} value={entry}>
@@ -319,13 +319,13 @@ function LogViewer({
             ))}
           </select>
         </label>
-        <label className="flex flex-col gap-1 text-xs text-ink-2">
+        <label className="flex flex-col gap-1 text-meta text-ink-2">
           {t('admin.deployments.detail.log_stream')}
           <select
             aria-label={t('admin.deployments.detail.log_stream')}
             value={stream}
             onChange={(event) => setStream(event.target.value)}
-            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
           >
             {LOG_STREAMS.map((entry) => (
               <option key={entry === '' ? 'all' : entry} value={entry}>
@@ -344,7 +344,7 @@ function LogViewer({
         </Button>
       </div>
 
-      <p className="text-xs text-warning" role="note">
+      <p className="text-meta text-warning" role="note">
         {t('admin.deployments.detail.log_warning')}
       </p>
 
@@ -353,13 +353,13 @@ function LogViewer({
       ) : null}
 
       {loading ? (
-        <p className="text-sm text-ink-2" role="status">
+        <p className="text-body text-ink-2" role="status">
           {t('admin.deployments.common.loading')}
         </p>
       ) : null}
 
       {!loading && logs.length === 0 && error === null ? (
-        <p className="rounded-xl border border-dashed border-border-default px-4 py-8 text-center text-sm text-ink-3">
+        <p className="rounded-xl border border-dashed border-border-default px-4 py-8 text-center text-body text-ink-3">
           {t('admin.deployments.detail.empty_logs')}
         </p>
       ) : null}
@@ -371,7 +371,7 @@ function LogViewer({
           role="log"
           aria-live="off"
           data-testid="deployment-log"
-          className="max-h-[420px] overflow-auto rounded-lg border border-border-default bg-surface-subtle p-3 font-mono text-xs text-ink-1"
+          className="max-h-[420px] overflow-auto rounded-lg border border-border-default bg-surface-subtle p-3 font-mono text-meta text-ink-1"
         >
           {logs.map((line, index) => (
             <div key={index} className="whitespace-pre-wrap break-all">
@@ -390,7 +390,7 @@ function LogViewer({
           {t('admin.deployments.detail.load_more')}
         </Button>
       ) : logs.length > 0 ? (
-        <p className="text-xs text-ink-3">{t('admin.deployments.detail.no_more')}</p>
+        <p className="text-meta text-ink-3">{t('admin.deployments.detail.no_more')}</p>
       ) : null}
     </div>
   )
@@ -426,7 +426,7 @@ function ContainerDetailDialog({
       panelClassName="max-w-[640px] lg:max-w-[600px]"
     >
       {query.isPending ? (
-        <p className="text-sm text-ink-2" role="status">
+        <p className="text-body text-ink-2" role="status">
           {t('admin.deployments.common.loading')}
         </p>
       ) : null}
@@ -449,27 +449,27 @@ function ContainerDetailDialog({
             <Field label={t('admin.deployments.detail.created')} value={formatDateTime(container.created_at, locale)} />
           </dl>
           <div>
-            <p className="text-xs text-ink-3">{t('admin.deployments.detail.container_url')}</p>
+            <p className="text-meta text-ink-3">{t('admin.deployments.detail.container_url')}</p>
             {container.public_url !== undefined && container.public_url !== '' ? (
               <a
                 href={container.public_url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="break-all text-sm text-brand underline"
+                className="break-all text-body text-brand underline"
               >
                 {container.public_url}
               </a>
             ) : (
-              <p className="text-sm text-ink-2">—</p>
+              <p className="text-body text-ink-2">—</p>
             )}
-            <p className="text-xs text-ink-3">{t('admin.deployments.detail.open_url')}</p>
+            <p className="text-meta text-ink-3">{t('admin.deployments.detail.open_url')}</p>
           </div>
           <div>
-            <p className="text-xs text-ink-3">{t('admin.deployments.detail.container_events')}</p>
+            <p className="text-meta text-ink-3">{t('admin.deployments.detail.container_events')}</p>
             {(container.events ?? []).length === 0 ? (
-              <p className="text-sm text-ink-3">—</p>
+              <p className="text-body text-ink-3">—</p>
             ) : (
-              <ul className="space-y-1 text-xs text-ink-2">
+              <ul className="space-y-1 text-meta text-ink-2">
                 {(container.events ?? []).map((event, index) => (
                   <li key={index} className="font-mono">
                     {event.time !== undefined
@@ -572,22 +572,22 @@ export function DeploymentDetailDrawer({
           <div className="flex flex-wrap items-center justify-between gap-2">
             {detail !== undefined ? <DeploymentStatusBadge status={detail.status} /> : <span />}
             {!online && canManage ? (
-              <p className="text-xs text-ink-3">
+              <p className="text-meta text-ink-3">
                 {t('admin.deployments.common.offline')}
               </p>
             ) : null}
             {writable ? (
               <div className="flex flex-wrap gap-1">
-                <Button variant="secondary" className="h-7 px-2 text-xs" onClick={() => trigger('extend')}>
+                <Button variant="secondary" className="h-7 px-2 text-body" onClick={() => trigger('extend')}>
                   {t('admin.deployments.actions.extend')}
                 </Button>
-                <Button variant="ghost" className="h-7 px-2 text-xs" onClick={() => trigger('rename')}>
+                <Button variant="ghost" className="h-7 px-2 text-body" onClick={() => trigger('rename')}>
                   {t('admin.deployments.actions.rename')}
                 </Button>
-                <Button variant="ghost" className="h-7 px-2 text-xs" onClick={() => trigger('update')}>
+                <Button variant="ghost" className="h-7 px-2 text-body" onClick={() => trigger('update')}>
                   {t('admin.deployments.actions.update')}
                 </Button>
-                <Button variant="ghost" className="h-7 px-2 text-xs text-danger" onClick={() => trigger('terminate')}>
+                <Button variant="ghost" className="h-7 px-2 text-body text-danger" onClick={() => trigger('terminate')}>
                   {t('admin.deployments.actions.terminate')}
                 </Button>
               </div>
@@ -609,7 +609,7 @@ export function DeploymentDetailDrawer({
                   aria-selected={selected}
                   onClick={() => setTab(entry.id)}
                   className={[
-                    'h-9 rounded-t-lg px-3 text-[13px]',
+                    'h-9 rounded-t-lg px-3 text-meta',
                     selected
                       ? 'border-b-2 border-brand font-medium text-ink-1'
                       : 'text-ink-2 hover:bg-surface-hover hover:text-ink-1',
@@ -644,7 +644,7 @@ export function DeploymentDetailDrawer({
           {detail !== undefined && tab === 'overview' ? <Overview detail={detail} /> : null}
           {tab === 'containers' ? (
             containersQuery.isPending ? (
-              <p className="text-sm text-ink-2" role="status">
+              <p className="text-body text-ink-2" role="status">
                 {t('admin.deployments.common.loading')}
               </p>
             ) : containersQuery.isError ? (
@@ -660,11 +660,11 @@ export function DeploymentDetailDrawer({
           ) : null}
           {tab === 'logs' ? (
             containersQuery.isPending ? (
-              <p className="text-sm text-ink-2" role="status">
+              <p className="text-body text-ink-2" role="status">
                 {t('admin.deployments.common.loading')}
               </p>
             ) : containers.length === 0 ? (
-              <p className="rounded-xl border border-dashed border-border-default px-4 py-8 text-center text-sm text-ink-3">
+              <p className="rounded-xl border border-dashed border-border-default px-4 py-8 text-center text-body text-ink-3">
                 {t('admin.deployments.detail.no_containers')}
               </p>
             ) : deploymentId !== null ? (

@@ -21,7 +21,7 @@ export interface TextFieldProps
 }
 
 const INPUT_CLASSES =
-  'h-10 w-full rounded-lg border bg-surface-card px-3 text-sm text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50'
+  'h-10 w-full rounded-lg border bg-surface-card px-3 text-body text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50'
 
 export function TextField({
   label,
@@ -42,7 +42,7 @@ export function TextField({
 
   return (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor={fieldId} className="text-[13px] font-medium text-ink-1">
+      <label htmlFor={fieldId} className="text-body font-medium text-ink-1">
         {label}
       </label>
       <input
@@ -59,12 +59,12 @@ export function TextField({
         {...props}
       />
       {hint !== undefined && error === undefined ? (
-        <p id={hintId} className="text-xs text-ink-3">
+        <p id={hintId} className="text-meta text-ink-3">
           {hint}
         </p>
       ) : null}
       {error !== undefined ? (
-        <p id={errorId} className="text-xs text-danger">
+        <p id={errorId} className="text-meta text-danger">
           {error}
         </p>
       ) : null}
@@ -98,7 +98,7 @@ export function PasswordField({
 
   return (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor={fieldId} className="text-[13px] font-medium text-ink-1">
+      <label htmlFor={fieldId} className="text-body font-medium text-ink-1">
         {label}
       </label>
       <div className="relative">
@@ -143,12 +143,12 @@ export function PasswordField({
         </button>
       </div>
       {hint !== undefined && error === undefined ? (
-        <p id={hintId} className="text-xs text-ink-3">
+        <p id={hintId} className="text-meta text-ink-3">
           {hint}
         </p>
       ) : null}
       {error !== undefined ? (
-        <p id={errorId} className="text-xs text-danger">
+        <p id={errorId} className="text-meta text-danger">
           {error}
         </p>
       ) : null}
@@ -176,7 +176,7 @@ export function FormAlert({ tone = 'danger', children }: FormAlertProps) {
     <div
       role="alert"
       className={[
-        'rounded-lg border px-3 py-2 text-sm leading-5',
+        'rounded-lg border px-3 py-2 text-body leading-5',
         ALERT_CLASSES[tone],
       ].join(' ')}
     >

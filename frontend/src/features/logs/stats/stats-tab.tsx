@@ -258,7 +258,7 @@ export function UsageStatsTab({
       </section>
 
       <section className="rounded-xl border border-border-hairline bg-surface-card p-4">
-        <h3 className="text-sm font-semibold text-ink-1">
+        <h3 className="text-body font-semibold text-ink-1">
           {t('logs.usage.stats.by_model')}
         </h3>
         {byModelQuery.isPending ? (
@@ -284,10 +284,10 @@ export function UsageStatsTab({
 
       <section className="rounded-xl border border-border-hairline bg-surface-card p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold text-ink-1">
+          <h3 className="text-body font-semibold text-ink-1">
             {t('logs.usage.stats.trend')}
           </h3>
-          <span className="rounded-md border border-border-hairline bg-surface-subtle px-2 py-0.5 text-xs text-ink-2">
+          <span className="rounded-md border border-border-hairline bg-surface-subtle px-2 py-0.5 text-badge text-ink-2">
             {t(
               granularity === 'hour'
                 ? 'logs.usage.stats.granularity_hour'
@@ -323,25 +323,25 @@ export function UsageStatsTab({
                 component's own sr-only table is the screen-reader path; this
                 visible disclosure is the sighted-reader path (UI §3.8). */}
             <details className="mt-3">
-              <summary className="cursor-pointer text-[13px] font-medium text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none">
+              <summary className="cursor-pointer text-meta font-medium text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none">
                 {t('logs.usage.stats.view_table')}
               </summary>
               <table
                 data-testid="stats-trend-table"
-                className="mt-2 w-full text-sm"
+                className="mt-2 w-full text-body"
               >
                 <caption className="sr-only">
                   {t('logs.usage.stats.trend_table_caption')}
                 </caption>
                 <thead>
-                  <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
-                    <th scope="col" className="px-2 py-2 font-medium">
+                  <tr className="border-b border-border-hairline text-left text-meta font-medium text-ink-2">
+                    <th scope="col" className="px-2 py-2">
                       {t('logs.usage.stats.columns.time')}
                     </th>
-                    <th scope="col" className="px-2 py-2 text-right font-medium">
+                    <th scope="col" className="px-2 py-2 text-right">
                       {t('logs.usage.stats.columns.cost')}
                     </th>
-                    <th scope="col" className="px-2 py-2 text-right font-medium">
+                    <th scope="col" className="px-2 py-2 text-right">
                       {t('logs.usage.stats.columns.requests')}
                     </th>
                   </tr>
@@ -352,10 +352,10 @@ export function UsageStatsTab({
                       key={row.bucket}
                       className="border-b border-border-hairline last:border-0"
                     >
-                      <td className="px-2 py-1.5 font-mono text-[13px]">
+                      <td className="px-2 py-1.5 font-mono text-meta">
                         {formatAxis(row.bucket, locale)}
                       </td>
-                      <td className="px-2 py-1.5 text-right font-mono text-[13px] tabular-nums">
+                      <td className="px-2 py-1.5 text-right font-mono text-meta tabular-nums">
                         {formatCredits(row.cost, locale)}
                       </td>
                       <td className="px-2 py-1.5 text-right tabular-nums">
@@ -398,10 +398,10 @@ function StatCard({
       title={title}
       className="flex h-24 flex-col justify-center gap-1 rounded-xl border border-border-hairline bg-surface-card px-4"
     >
-      <p className="text-[13px] text-ink-2">{label}</p>
-      <p className="text-2xl font-semibold text-ink-1">{value}</p>
+      <p className="text-meta text-ink-2">{label}</p>
+      <p className="text-stat text-ink-1">{value}</p>
       {hint !== undefined ? (
-        <p className="text-[13px] text-ink-3">{hint}</p>
+        <p className="text-meta text-ink-3">{hint}</p>
       ) : null}
     </div>
   )
@@ -418,21 +418,21 @@ function ModelDistributionTable({ items }: { items: UsageStatsByModelItem[] }) {
   return (
     <table
       data-testid="stats-model-table"
-      className="mt-2 w-full text-sm"
+      className="mt-2 w-full text-body"
     >
       <caption className="sr-only">{t('logs.usage.stats.by_model')}</caption>
       <thead>
-        <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
-          <th scope="col" className="px-2 py-2 font-medium">
+        <tr className="border-b border-border-hairline text-left text-meta font-medium text-ink-2">
+          <th scope="col" className="px-2 py-2">
             {t('logs.usage.stats.columns.model')}
           </th>
-          <th scope="col" className="px-2 py-2 text-right font-medium">
+          <th scope="col" className="px-2 py-2 text-right">
             {t('logs.usage.stats.columns.cost')}
           </th>
-          <th scope="col" className="px-2 py-2 text-right font-medium">
+          <th scope="col" className="px-2 py-2 text-right">
             {t('logs.usage.stats.columns.tokens')}
           </th>
-          <th scope="col" className="px-2 py-2 text-right font-medium">
+          <th scope="col" className="px-2 py-2 text-right">
             {t('logs.usage.stats.columns.percent')}
           </th>
         </tr>
@@ -447,7 +447,7 @@ function ModelDistributionTable({ items }: { items: UsageStatsByModelItem[] }) {
               className="border-b border-border-hairline last:border-0"
             >
               <th scope="row" className="px-2 py-2 font-normal">
-                <span className="font-mono text-[13px]">
+                <span className="font-mono text-meta">
                   {item.model === 'other' ? t('logs.usage.stats.other') : item.model}
                 </span>
                 {/* The bar is decorative; the percentage column is the text
@@ -462,10 +462,10 @@ function ModelDistributionTable({ items }: { items: UsageStatsByModelItem[] }) {
                   />
                 </span>
               </th>
-              <td className="px-2 py-2 text-right font-mono text-[13px] tabular-nums">
+              <td className="px-2 py-2 text-right font-mono text-meta tabular-nums">
                 {formatCredits(item.cost, locale)}
               </td>
-              <td className="px-2 py-2 text-right font-mono text-[13px] tabular-nums">
+              <td className="px-2 py-2 text-right font-mono text-meta tabular-nums">
                 {formatTokenAmount(item.tokens, locale)}
               </td>
               <td className="px-2 py-2 text-right tabular-nums">
@@ -491,7 +491,7 @@ function RatesStrip({ rates }: { rates: UsageStatsRates }) {
     <section
       data-testid="stats-rates"
       aria-label={t('logs.usage.stats.rates.title')}
-      className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-border-hairline bg-surface-subtle px-4 py-2 text-[13px]"
+      className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-border-hairline bg-surface-subtle px-4 py-2 text-meta"
     >
       <span className="font-medium text-ink-1">
         {t('logs.usage.stats.rates.title')}

@@ -553,7 +553,7 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
                 update({ tab: value === 'stats' ? 'stats' : undefined })
               }}
               className={[
-                'rounded-md px-3 py-1 text-[13px] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                'rounded-md px-3 py-1 text-meta focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
                 active
                   ? 'bg-surface-hover font-medium text-ink-1'
                   : 'text-ink-2 hover:text-ink-1',
@@ -588,7 +588,7 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
                     changeRange(option.value)
                   }}
                   className={[
-                    'rounded-md px-2.5 py-1 text-[13px] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                    'rounded-md px-2.5 py-1 text-meta focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
                     active
                       ? 'bg-surface-hover font-medium text-ink-1'
                       : 'text-ink-2 hover:text-ink-1',
@@ -653,7 +653,7 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
             />
           ) : null}
 
-          <label className="flex flex-col gap-1.5 text-[13px] font-medium text-ink-1">
+          <label className="flex flex-col gap-1.5 text-meta font-medium text-ink-1">
             {t('logs.usage.filters.status')}
             <select
               aria-label={t('logs.usage.filters.status')}
@@ -666,7 +666,7 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
                   p: 1,
                 })
               }}
-              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
             >
               <option value="all">{t('logs.usage.filters.status_all')}</option>
               {USAGE_STATUSES.map((status) => (
@@ -732,7 +732,7 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
               className="h-9 w-52"
             />
             {customError !== null ? (
-              <p role="alert" className="pb-2 text-xs text-danger">
+              <p role="alert" className="pb-2 text-meta text-danger">
                 {customErrorMessage(customError, t)}
               </p>
             ) : null}
@@ -781,7 +781,7 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
             <button
               type="button"
               onClick={clearFilters}
-              className="text-[13px] font-medium text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="text-meta font-medium text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             >
               {t('logs.usage.filters.reset')}
             </button>
@@ -799,7 +799,7 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
         hidden={tab !== 'logs'}
         className="flex flex-col gap-4"
       >
-      <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-ink-2">
+      <div className="flex flex-wrap items-center justify-between gap-3 text-body text-ink-2">
         {errorMessage === null ? (
           <span data-testid="logs-total">
             {total > 10_000
@@ -819,7 +819,7 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
           onClick={() => {
             setExportOpen(true)
           }}
-          className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border-default bg-surface-card px-3 text-[13px] font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border-default bg-surface-card px-3 text-meta font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         >
           <span aria-hidden="true">↓</span>
           {t('logs.usage.export.button')}
@@ -852,7 +852,7 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
                 <button
                   type="button"
                   onClick={clearFilters}
-                  className="text-[13px] font-medium text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                  className="text-meta font-medium text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
                 >
                   {t('logs.usage.empty.clear')}
                 </button>
@@ -860,37 +860,37 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
             }
           />
         ) : (
-          <table className="w-full text-sm">
+          <table className="w-full text-body">
             <thead>
-              <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
-                <th scope="col" className="px-4 py-2 font-medium">
+              <tr className="border-b border-border-hairline text-left text-meta font-medium text-ink-2">
+                <th scope="col" className="px-4 py-2">
                   {t('logs.usage.columns.time')}
                 </th>
-                <th scope="col" className="px-4 py-2 font-medium">
+                <th scope="col" className="px-4 py-2">
                   {t('logs.usage.columns.status')}
                 </th>
-                <th scope="col" className="px-4 py-2 font-medium">
+                <th scope="col" className="px-4 py-2">
                   {t('logs.usage.columns.model')}
                 </th>
-                <th scope="col" className="px-4 py-2 font-medium">
+                <th scope="col" className="px-4 py-2">
                   {t('logs.usage.columns.token')}
                 </th>
-                <th scope="col" className="px-4 py-2 text-right font-medium">
+                <th scope="col" className="px-4 py-2 text-right">
                   {t('logs.usage.columns.tokens')}
                 </th>
-                <th scope="col" className="px-4 py-2 text-right font-medium">
+                <th scope="col" className="px-4 py-2 text-right">
                   {t('logs.usage.columns.cost')}
                 </th>
-                <th scope="col" className="px-4 py-2 font-medium">
+                <th scope="col" className="px-4 py-2">
                   {t('logs.usage.columns.timing')}
                 </th>
                 {capabilities.isAdmin ? (
-                  <th scope="col" className="px-4 py-2 font-medium">
+                  <th scope="col" className="px-4 py-2">
                     {t('logs.usage.columns.channel')}
                   </th>
                 ) : null}
                 {capabilities.canFilterByUsername ? (
-                  <th scope="col" className="px-4 py-2 font-medium">
+                  <th scope="col" className="px-4 py-2">
                     {t('logs.usage.columns.user')}
                   </th>
                 ) : null}
@@ -927,7 +927,7 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
                       <UsageStatusBadge status={row.status} />
                     </td>
                     <td className="px-4 py-2">
-                      <span className="font-mono text-[13px]">{row.model}</span>
+                      <span className="font-mono text-meta">{row.model}</span>
                       <button
                         type="button"
                         aria-label={t('logs.usage.copy.model')}
@@ -941,13 +941,13 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
                       </button>
                     </td>
                     <td className="px-4 py-2 text-ink-2">{row.token_name ?? '—'}</td>
-                    <td className="px-4 py-2 text-right font-mono text-[13px] tabular-nums">
+                    <td className="px-4 py-2 text-right font-mono text-meta tabular-nums">
                       <span>{formatTokenAmount(row.prompt_tokens, locale)}</span>
                       {' / '}
                       <span>{formatTokenAmount(row.completion_tokens, locale)}</span>
                       {row.cache_read_tokens > 0 ? (
                         <span
-                          className="ml-2 text-[12px] text-ink-2"
+                          className="ml-2 text-badge text-ink-2"
                           title={t('logs.usage.cache_read_full')}
                         >
                           {t('logs.usage.cache_read', {
@@ -957,38 +957,38 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
                       ) : null}
                     </td>
                     <td className="px-4 py-2 text-right tabular-nums">
-                      <span className="font-mono text-[13px]">
+                      <span className="font-mono text-meta">
                         {formatCredits(row.cost, locale)}
                       </span>
-                      <span className="ml-1 text-[12px] text-ink-3">
+                      <span className="ml-1 text-badge text-ink-3">
                         {t('logs.usage.credits')}
                       </span>
                       {row.refunded > 0 ? (
-                        <div className="text-[12px] text-warning">
+                        <div className="text-badge text-warning">
                           {t('logs.usage.refunded', {
                             value: formatCredits(row.refunded, locale),
                           })}
                         </div>
                       ) : null}
                     </td>
-                    <td className="px-4 py-2 font-mono text-[13px] tabular-nums">
+                    <td className="px-4 py-2 font-mono text-meta tabular-nums">
                       {formatSeconds(row.latency_ms)}
                       {row.stream ? (
-                        <div className="text-[12px] text-ink-2">
+                        <div className="text-badge text-ink-2">
                           {t('logs.usage.ttft', {
                             value: formatSeconds(row.ttft),
                           })}
                         </div>
                       ) : null}
                       {retries > 0 ? (
-                        <div className="text-[12px] text-ink-3">
+                        <div className="text-badge text-ink-3">
                           {t('logs.usage.retries', { count: retries })}
                         </div>
                       ) : null}
                     </td>
                     {capabilities.isAdmin ? (
                       <td className="px-4 py-2">
-                        <span className="text-[13px] text-ink-2">
+                        <span className="text-meta text-ink-2">
                           {row.upstream ?? '—'}
                         </span>
                         {row.upstream !== null && row.upstream !== undefined ? (
@@ -1082,7 +1082,7 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
               onClick={() => {
                 setSensitiveConfirmOpen(false)
               }}
-              className="rounded-lg border border-border-default px-3 py-1.5 text-sm font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="rounded-lg border border-border-default px-3 py-1.5 text-body font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             >
               {t('common.action.cancel')}
             </button>
@@ -1095,7 +1095,7 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
               }}
               // 隐私边界用 warning 而非 brand/danger：不是破坏性操作，但
               // 需要用户停下来确认（UI §6.7）。
-              className="rounded-lg bg-warning px-3 py-1.5 text-sm font-medium text-surface-card focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="rounded-lg bg-warning px-3 py-1.5 text-body font-medium text-surface-card focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             >
               {t('logs.usage.sensitive.confirm_action')}
             </button>
@@ -1137,10 +1137,10 @@ function UsageHeader({
   return (
     <div className="flex flex-wrap items-baseline justify-between gap-3">
       <div>
-        <h1 className="text-xl font-semibold text-ink-1">
+        <h1 className="text-page-title text-ink-1">
           {t('logs.usage.title')}
         </h1>
-        <p className="mt-1 text-[13px] text-ink-3">
+        <p className="mt-1 text-meta text-ink-3">
           {t('logs.usage.retention')}
         </p>
       </div>
@@ -1148,7 +1148,7 @@ function UsageHeader({
         <button
           type="button"
           onClick={onClear}
-          className="text-[13px] font-medium text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="text-meta font-medium text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         >
           {clearLabel}
         </button>
@@ -1174,7 +1174,7 @@ function FilterChip({
   onRemove: () => void
 }): ReactNode {
   return (
-    <span className="inline-flex h-6 items-center gap-1 rounded-full bg-surface-subtle px-2 text-xs text-ink-2">
+    <span className="inline-flex h-6 items-center gap-1 rounded-full bg-surface-subtle px-2 text-badge text-ink-2">
       {label}
       <button
         type="button"
@@ -1214,7 +1214,7 @@ function SensitiveSwitch({
       onClick={() => {
         onChange(!checked)
       }}
-      className="flex h-9 items-center gap-2 rounded-lg border border-border-default bg-surface-card px-2.5 text-[13px] font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+      className="flex h-9 items-center gap-2 rounded-lg border border-border-default bg-surface-card px-2.5 text-meta font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
     >
       <span>{label}</span>
       <span

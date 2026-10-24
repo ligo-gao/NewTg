@@ -125,7 +125,7 @@ export function PaymentComplianceGate({
         />
       </div>
       {error !== null ? (
-        <p role="alert" className="mt-3 text-sm text-danger">
+        <p role="alert" className="mt-3 text-body text-danger">
           {error}
         </p>
       ) : null}

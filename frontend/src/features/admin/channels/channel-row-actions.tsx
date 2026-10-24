@@ -49,7 +49,7 @@ const MENU_CLASSES =
   'fixed z-50 flex w-44 flex-col gap-0.5 rounded-lg border border-border-default bg-surface-card p-1 shadow-[0_12px_32px_var(--overlay)] focus-visible:outline-none'
 
 const ITEM_BASE =
-  'flex h-9 w-full items-center rounded-md px-3 text-left text-sm focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50'
+  'flex h-9 w-full items-center rounded-md px-3 text-left text-body focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50'
 
 const ITEM_CLASSES = `${ITEM_BASE} text-ink-2 hover:bg-surface-hover hover:text-ink-1 focus-visible:bg-surface-hover focus-visible:text-ink-1`
 

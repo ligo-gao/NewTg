@@ -141,7 +141,7 @@ export function makeToken(overrides: Partial<Token> = {}): Token {
     id: 1,
     name: 'alpha',
     status: 'enabled',
-    key_masked: `nkt-${'•'.repeat(24)}`,
+    key_masked: `sk-${'•'.repeat(24)}`,
     remain_quota: null,
     unlimited_quota: true,
     quota_percent: null,

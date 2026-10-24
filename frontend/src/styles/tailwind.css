@@ -85,6 +85,61 @@
   --color-code-string: var(--code-string);
   --color-code-number: var(--code-number);
   --color-code-comment: var(--code-comment);
+
+  /* Type scale — modules-00 §4.7 字阶的唯一实现。每档同时落定字号 /
+     行高 / 字重；调用点需要变体时用 font-* / leading-* 覆盖（v4 排序保证
+     单属性工具类胜出）。控制台只用 page-title 及以下；display / lead 级
+     仅限公开页。语义命名，禁止再用 text-[Npx] 或默认阶 text-xs/sm/…。 */
+  --text-display-1: 40px;
+  --text-display-1--line-height: 48px;
+  --text-display-1--font-weight: 700;
+  --text-display-2: 48px;
+  --text-display-2--line-height: 56px;
+  --text-display-2--font-weight: 700;
+  --text-public-title: 24px;
+  --text-public-title--line-height: 32px;
+  --text-public-title--font-weight: 600;
+  --text-lead: 18px;
+  --text-lead--line-height: 28px;
+  --text-auth-title: 22px;
+  --text-auth-title--line-height: 30px;
+  --text-auth-title--font-weight: 600;
+  --text-page-title: 20px;
+  --text-page-title--line-height: 28px;
+  --text-page-title--font-weight: 600;
+  --text-section: 16px;
+  --text-section--line-height: 24px;
+  --text-section--font-weight: 600;
+  --text-card-title: 15px;
+  --text-card-title--line-height: 22px;
+  --text-card-title--font-weight: 600;
+  --text-body: 14px;
+  --text-body--line-height: 22px;
+  --text-body--font-weight: 400;
+  --text-meta: 13px;
+  --text-meta--line-height: 20px;
+  --text-meta--font-weight: 400;
+  --text-badge: 12px;
+  --text-badge--line-height: 18px;
+  --text-badge--font-weight: 500;
+  --text-stat: 24px;
+  --text-stat--line-height: 32px;
+  --text-stat--font-weight: 600;
+  /* 唯一大数字（§4.7）：每屏至多一个，与 display 级互斥同屏 */
+  --text-figure-lg: 36px;
+  --text-figure-lg--line-height: 44px;
+  --text-figure-lg--font-weight: 700;
+  --text-figure-md: 28px;
+  --text-figure-md--line-height: 36px;
+  --text-figure-md--font-weight: 600;
+}
+
+@layer base {
+  /* 正文基线（§4.7）：未显式定字号的文本回落到 body 档。 */
+  body {
+    font-size: 14px;
+    line-height: 22px;
+  }
 }
 
 /* UI-5：系统开启“减少动态效果”时，全局关闭非必要动画与平滑滚动。

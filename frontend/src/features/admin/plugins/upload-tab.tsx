@@ -219,10 +219,10 @@ export function UploadTab({ canManage, online }: UploadTabProps) {
           onDragOver={(event) => event.preventDefault()}
           onDrop={handleDrop}
         >
-          <p className="text-sm font-medium text-ink-1">
+          <p className="text-body font-medium text-ink-1">
             {t('admin.task_plugins.upload.dropzone_title')}
           </p>
-          <p className="text-xs text-ink-3">
+          <p className="text-meta text-ink-3">
             {t('admin.task_plugins.upload.dropzone_hint')}
           </p>
           <Button
@@ -253,8 +253,8 @@ export function UploadTab({ canManage, online }: UploadTabProps) {
         ) : null}
 
         {source !== null ? (
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border-default bg-surface-subtle px-3 py-2 text-sm">
-            <span className="font-mono text-xs text-ink-1">
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border-default bg-surface-subtle px-3 py-2 text-body">
+            <span className="font-mono text-meta text-ink-1">
               {source.name} · {Math.ceil(source.size / 1024)} KiB
             </span>
             <span className="flex gap-2">
@@ -273,13 +273,13 @@ export function UploadTab({ canManage, online }: UploadTabProps) {
             </span>
           </div>
         ) : (
-          <p className="mt-3 text-xs text-ink-3">
+          <p className="mt-3 text-meta text-ink-3">
             {t('admin.task_plugins.upload.empty_preview')}
           </p>
         )}
 
         {!online ? (
-          <p className="mt-2 text-xs text-ink-3">
+          <p className="mt-2 text-meta text-ink-3">
             {t('admin.task_plugins.common.offline')}
           </p>
         ) : null}
@@ -308,7 +308,7 @@ export function UploadTab({ canManage, online }: UploadTabProps) {
             onChange={(event) => setImportSHA256(event.target.value)}
           />
         </div>
-        <p className="mt-2 text-xs text-ink-3">
+        <p className="mt-2 text-meta text-ink-3">
           {t('admin.task_plugins.upload.import_hint')}
         </p>
         {importError !== null ? (
@@ -332,7 +332,7 @@ export function UploadTab({ canManage, online }: UploadTabProps) {
       {submitError !== null ? (
         <div data-testid="plugin-compile-error" role="alert">
           {compileFailed ? (
-            <div className="rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-sm text-danger">
+            <div className="rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-body text-danger">
               <p className="font-medium">
                 {t('admin.task_plugins.upload.compile_failed_title', {
                   error: submitError.issues[0] ?? submitError.message,
@@ -340,7 +340,7 @@ export function UploadTab({ canManage, online }: UploadTabProps) {
               </p>
               {submitError.issues.length > 1
                 ? submitError.issues.slice(1).map((line) => (
-                    <p key={line} className="mt-1 font-mono text-xs">
+                    <p key={line} className="mt-1 font-mono text-meta">
                       {line}
                     </p>
                   ))
@@ -361,27 +361,27 @@ export function UploadTab({ canManage, online }: UploadTabProps) {
           testId="plugin-upload-preview"
           title={t('admin.task_plugins.upload.preview_title')}
         >
-          <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+          <dl className="grid grid-cols-1 gap-3 text-body sm:grid-cols-2">
             <div>
-              <dt className="text-xs text-ink-3">
+              <dt className="text-meta text-ink-3">
                 {t('admin.task_plugins.detail.key')}
               </dt>
               <dd className="font-mono">{result.plugin.key}</dd>
             </div>
             <div>
-              <dt className="text-xs text-ink-3">
+              <dt className="text-meta text-ink-3">
                 {t('admin.task_plugins.detail.name')}
               </dt>
               <dd>{result.plugin.name}</dd>
             </div>
             <div>
-              <dt className="text-xs text-ink-3">
+              <dt className="text-meta text-ink-3">
                 {t('admin.task_plugins.detail.version')}
               </dt>
               <dd className="font-mono">{result.version.version}</dd>
             </div>
             <div>
-              <dt className="text-xs text-ink-3">
+              <dt className="text-meta text-ink-3">
                 {t('admin.task_plugins.detail.hash')}
               </dt>
               <dd className="font-mono" title={result.version.source_hash}>
@@ -389,7 +389,7 @@ export function UploadTab({ canManage, online }: UploadTabProps) {
               </dd>
             </div>
           </dl>
-          <p className="mt-3 text-xs text-ink-3">
+          <p className="mt-3 text-meta text-ink-3">
             {t('admin.task_plugins.upload.not_activated')}
           </p>
         </SectionCard>

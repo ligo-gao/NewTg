@@ -77,7 +77,7 @@ function SearchInput({
         onChange={(event) => setText(event.target.value.slice(0, SEARCH_MAX_LENGTH))}
         placeholder={t('public.pricing.search_placeholder')}
         aria-label={t('public.pricing.search_label')}
-        className="h-10 w-full rounded-lg border border-border-default bg-surface-card pl-9 pr-9 text-sm text-ink-1 placeholder:text-ink-3 focus:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+        className="h-10 w-full rounded-lg border border-border-default bg-surface-card pl-9 pr-9 text-body text-ink-1 placeholder:text-ink-3 focus:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
       />
       {text !== '' ? (
         <button
@@ -121,13 +121,13 @@ export function PricingToolbar({
     <div className="sticky top-0 z-20 flex flex-wrap items-center gap-2 border-b border-border-hairline bg-surface-card py-2">
       <SearchInput value={value.search} onCommit={(search) => onChange({ search })} />
 
-      <label className="inline-flex items-center gap-1.5 text-[13px] text-ink-2">
+      <label className="inline-flex items-center gap-1.5 text-meta text-ink-2">
         <span className="sr-only">{t('public.pricing.sort_label')}</span>
         <select
           value={value.sort}
           onChange={(event) => onChange({ sort: event.target.value as PricingSort })}
           aria-label={t('public.pricing.sort_label')}
-          className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-[13px] text-ink-1 focus:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-meta text-ink-1 focus:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         >
           {sortOptions.map((option) => (
             <option key={option.value} value={option.value}>
@@ -141,7 +141,7 @@ export function PricingToolbar({
         <button
           type="button"
           onClick={onOpenFilters}
-          className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border-default bg-surface-card px-3 text-[13px] font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none xl:hidden"
+          className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border-default bg-surface-card px-3 text-meta font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none xl:hidden"
         >
           <svg aria-hidden="true" viewBox="0 0 16 16" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.5">
             <path d="M2 4h12M4 8h8M6 12h4" strokeLinecap="round" />
@@ -177,7 +177,7 @@ export function PricingToolbar({
         {dualCurrencyForced ? (
           // Visible explanation, not just a tooltip: the disabled switch
           // otherwise looks broken when a shared URL asked for it to be off.
-          <span className="text-xs leading-5 text-ink-3">
+          <span className="text-meta leading-5 text-ink-3">
             {t('public.pricing.dual_currency_forced')}
           </span>
         ) : null}

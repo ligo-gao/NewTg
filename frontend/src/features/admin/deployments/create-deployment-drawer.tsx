@@ -468,7 +468,7 @@ export function CreateDeploymentDrawer({
                   goTo(next)
                 }}
                 className={[
-                  'h-9 rounded-t-lg px-3 text-[13px]',
+                  'h-9 rounded-t-lg px-3 text-meta',
                   selected
                     ? 'border-b-2 border-brand font-medium text-ink-1'
                     : 'text-ink-2 hover:bg-surface-hover hover:text-ink-1',
@@ -497,7 +497,7 @@ export function CreateDeploymentDrawer({
               disabled={submitting}
             />
             {nameState === 'checking' ? (
-              <p className="text-xs text-ink-3" role="status">
+              <p className="text-meta text-ink-3" role="status">
                 {t('admin.deployments.create.name_checking')}
               </p>
             ) : null}
@@ -568,7 +568,7 @@ export function CreateDeploymentDrawer({
         {step === 1 ? (
           <div className="space-y-3">
             {hardwareQuery.isPending ? (
-              <p className="text-sm text-ink-2" role="status">
+              <p className="text-body text-ink-2" role="status">
                 {t('admin.deployments.common.loading')}
               </p>
             ) : null}
@@ -581,11 +581,11 @@ export function CreateDeploymentDrawer({
               </div>
             ) : null}
             {hardware.length === 0 && hardwareQuery.isSuccess ? (
-              <p className="text-sm text-ink-3">
+              <p className="text-body text-ink-3">
                 {t('admin.deployments.resources.empty')}
               </p>
             ) : null}
-            <label className="flex flex-col gap-1 text-[13px] font-medium text-ink-1">
+            <label className="flex flex-col gap-1 text-meta font-medium text-ink-1">
               {t('admin.deployments.create.hardware')}
               <select
                 id={`${idPrefix}-hardware`}
@@ -596,7 +596,7 @@ export function CreateDeploymentDrawer({
                   setHardwareId(event.target.value)
                   setLocationIds([])
                 }}
-                className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+                className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
               >
                 <option value="">{t('admin.deployments.resources.select_hardware')}</option>
                 {hardware.map((entry) => (
@@ -606,7 +606,7 @@ export function CreateDeploymentDrawer({
                 ))}
               </select>
               {errors.hardware !== undefined ? (
-                <span className="text-xs text-danger">{errors.hardware}</span>
+                <span className="text-meta text-danger">{errors.hardware}</span>
               ) : null}
             </label>
             <TextField
@@ -624,17 +624,17 @@ export function CreateDeploymentDrawer({
               disabled={submitting}
             />
             <div className="flex flex-col gap-1" id={`${idPrefix}-locations`} tabIndex={-1}>
-              <p className="text-[13px] font-medium text-ink-1">
+              <p className="text-meta font-medium text-ink-1">
                 {t('admin.deployments.create.locations')}
               </p>
-              <p className="text-xs text-ink-3">
+              <p className="text-meta text-ink-3">
                 {t('admin.deployments.create.locations_hint')}
               </p>
               {errors.locations !== undefined ? (
-                <span className="text-xs text-danger">{errors.locations}</span>
+                <span className="text-meta text-danger">{errors.locations}</span>
               ) : null}
               {replicasQuery.isPending && hardwareNumber !== null ? (
-                <p className="text-xs text-ink-3" role="status">
+                <p className="text-meta text-ink-3" role="status">
                   {t('admin.deployments.common.loading')}
                 </p>
               ) : null}
@@ -647,7 +647,7 @@ export function CreateDeploymentDrawer({
                   <label
                     key={String(location.id)}
                     className={[
-                      'flex items-center justify-between gap-2 text-sm',
+                      'flex items-center justify-between gap-2 text-body',
                       insufficient ? 'text-ink-3' : 'text-ink-1',
                     ].join(' ')}
                   >
@@ -666,14 +666,14 @@ export function CreateDeploymentDrawer({
                       />
                       {location.name ?? String(location.id)}
                     </span>
-                    <span className="font-mono text-xs">
+                    <span className="font-mono text-meta">
                       {replicaMap.get(id)?.available ?? 0}
                     </span>
                   </label>
                 )
               })}
               {locations.length === 0 && locationsQuery.isSuccess ? (
-                <p className="text-sm text-ink-3">
+                <p className="text-body text-ink-3">
                   {t('admin.deployments.resources.empty')}
                 </p>
               ) : null}
@@ -716,17 +716,17 @@ export function CreateDeploymentDrawer({
 
         {step === 3 ? (
           <div className="space-y-3">
-            <dl className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
+            <dl className="grid grid-cols-1 gap-2 text-body sm:grid-cols-2">
               <div>
-                <dt className="text-xs text-ink-3">{t('admin.deployments.create.name')}</dt>
+                <dt className="text-meta text-ink-3">{t('admin.deployments.create.name')}</dt>
                 <dd className="font-mono text-ink-1">{name}</dd>
               </div>
               <div>
-                <dt className="text-xs text-ink-3">{t('admin.deployments.create.image_url')}</dt>
-                <dd className="break-all font-mono text-xs text-ink-1">{imageUrl}</dd>
+                <dt className="text-meta text-ink-3">{t('admin.deployments.create.image_url')}</dt>
+                <dd className="break-all font-mono text-meta text-ink-1">{imageUrl}</dd>
               </div>
               <div>
-                <dt className="text-xs text-ink-3">{t('admin.deployments.create.hardware')}</dt>
+                <dt className="text-meta text-ink-3">{t('admin.deployments.create.hardware')}</dt>
                 <dd className="text-ink-1">
                   {[anyProviderField(selectedHardware ?? {}, ['brand_name', 'brand']), selectedHardware?.name]
                     .filter(Boolean)
@@ -734,21 +734,21 @@ export function CreateDeploymentDrawer({
                 </dd>
               </div>
               <div>
-                <dt className="text-xs text-ink-3">{t('admin.deployments.create.locations')}</dt>
+                <dt className="text-meta text-ink-3">{t('admin.deployments.create.locations')}</dt>
                 <dd className="text-ink-1">{locationNames || '—'}</dd>
               </div>
               <div>
-                <dt className="text-xs text-ink-3">{t('admin.deployments.create.replicas')}</dt>
+                <dt className="text-meta text-ink-3">{t('admin.deployments.create.replicas')}</dt>
                 <dd className="font-mono text-ink-1">
                   {replicaCount} × {gpuCount}
                 </dd>
               </div>
               <div>
-                <dt className="text-xs text-ink-3">{t('admin.deployments.create.duration_hours')}</dt>
+                <dt className="text-meta text-ink-3">{t('admin.deployments.create.duration_hours')}</dt>
                 <dd className="font-mono text-ink-1">{durationHours}</dd>
               </div>
               <div className="sm:col-span-2">
-                <dt className="text-xs text-ink-3">{t('admin.deployments.price.title')}</dt>
+                <dt className="text-meta text-ink-3">{t('admin.deployments.price.title')}</dt>
                 <dd className="font-mono text-ink-1">
                   {estimate === null
                     ? t('admin.deployments.price.unavailable')
@@ -761,7 +761,7 @@ export function CreateDeploymentDrawer({
               loading={estimating}
               error={estimateError}
             />
-            <label className="flex items-start gap-2 text-sm text-ink-2">
+            <label className="flex items-start gap-2 text-body text-ink-2">
               <input
                 id={`${idPrefix}-consent`}
                 type="checkbox"
@@ -772,10 +772,10 @@ export function CreateDeploymentDrawer({
               <span>{t('admin.deployments.create.consent')}</span>
             </label>
             {errors.consent !== undefined ? (
-              <p className="text-xs text-danger">{errors.consent}</p>
+              <p className="text-meta text-danger">{errors.consent}</p>
             ) : null}
             {estimate === null && estimateError !== null ? (
-              <label className="flex items-start gap-2 text-sm text-ink-2">
+              <label className="flex items-start gap-2 text-body text-ink-2">
                 <input
                   type="checkbox"
                   checked={allowWithoutPrice}
@@ -785,7 +785,7 @@ export function CreateDeploymentDrawer({
               </label>
             ) : null}
             {errors.price !== undefined ? (
-              <p className="text-xs text-danger">{errors.price}</p>
+              <p className="text-meta text-danger">{errors.price}</p>
             ) : null}
           </div>
         ) : null}

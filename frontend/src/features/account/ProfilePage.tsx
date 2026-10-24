@@ -39,9 +39,9 @@ const CHANNELS: NotificationChannel[] = ['email', 'webhook', 'bark', 'gotify']
 
 const cardClass = 'rounded-xl border border-border-hairline bg-surface-card'
 const selectClass =
-  'h-8 rounded-md border border-border-default bg-surface-card px-2 text-[12.5px] text-ink-1'
+  'h-8 rounded-md border border-border-default bg-surface-card px-2 text-badge text-ink-1'
 const inputClass =
-  'h-8 rounded-md border border-border-default bg-surface-card px-2 text-[12.5px] text-ink-1'
+  'h-8 rounded-md border border-border-default bg-surface-card px-2 text-badge text-ink-1'
 
 function formatJoined(value: string, locale: string): string {
   if (value === '') return '—'
@@ -85,8 +85,8 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
   return (
     <div className="grid flex-1 gap-2 border-t border-border-hairline px-5 py-3.5 first:border-t-0 min-[760px]:grid-cols-[minmax(0,1fr)_auto] min-[760px]:items-center">
       <div>
-        <div className="text-[12.5px] text-ink-2">{label}</div>
-        {hint !== undefined ? <div className="mt-0.5 text-[11px] text-ink-3">{hint}</div> : null}
+        <div className="text-badge text-ink-2">{label}</div>
+        {hint !== undefined ? <div className="mt-0.5 text-badge text-ink-3">{hint}</div> : null}
       </div>
       <div className="flex flex-wrap items-center justify-end gap-2">{children}</div>
     </div>
@@ -268,11 +268,11 @@ export function ProfilePage() {
   }
 
   if (meQuery.isPending) {
-    return <p className="text-sm text-ink-2">{t('account.profile.loading')}</p>
+    return <p className="text-body text-ink-2">{t('account.profile.loading')}</p>
   }
   if (meQuery.isError || me === undefined) {
     return (
-      <div className="flex items-center gap-3 text-sm text-ink-2">
+      <div className="flex items-center gap-3 text-body text-ink-2">
         <span>{t('account.profile.error')}</span>
         <Button variant="secondary" onClick={() => void meQuery.refetch()}>
           {t('common.action.retry')}
@@ -298,21 +298,21 @@ export function ProfilePage() {
     <div className="mx-auto flex w-full max-w-[1520px] flex-col gap-4">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold text-ink-1">{t('account.profile.center_title')}</h1>
-          <p className="mt-1 max-w-[48em] text-[13px] text-ink-2">
+          <h1 className="text-page-title text-ink-1">{t('account.profile.center_title')}</h1>
+          <p className="mt-1 max-w-[48em] text-meta text-ink-2">
             {t('account.profile.center_subtitle')}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button
             variant="secondary"
-            className="h-8 px-3 text-[12px]"
+            className="h-8 px-3 text-body"
             onClick={() => window.location.assign('/wallet')}
           >
             {t('account.profile.quick_wallet')}
           </Button>
           <Button
-            className="h-8 px-3 text-[12px]"
+            className="h-8 px-3 text-body"
             onClick={() => window.location.assign('/security')}
           >
             {t('account.profile.full_security')}
@@ -335,14 +335,14 @@ export function ProfilePage() {
             ) : (
               <span
                 aria-hidden="true"
-                className="flex size-12 flex-none items-center justify-center rounded-full bg-brand-subtle text-lg font-semibold text-brand"
+                className="flex size-12 flex-none items-center justify-center rounded-full bg-brand-subtle text-section text-brand"
               >
                 {initial}
               </span>
             )}
             <div className="min-w-0">
-              <h2 className="truncate text-[17px] font-semibold text-ink-1">{displayName}</h2>
-              <p className="truncate font-mono text-[11.5px] text-ink-3">@{me.username}</p>
+              <h2 className="truncate text-section text-ink-1">{displayName}</h2>
+              <p className="truncate font-mono text-badge text-ink-3">@{me.username}</p>
               <div className="mt-1.5 flex flex-wrap gap-1">
                 <StatusBadge variant={me.status === 'enabled' ? 'success' : 'neutral'}>
                   {me.status === 'enabled'
@@ -357,17 +357,17 @@ export function ProfilePage() {
               </div>
             </div>
           </div>
-          <dl className="flex flex-wrap gap-x-8 gap-y-3 text-[12px] min-[760px]:ml-auto">
+          <dl className="flex flex-wrap gap-x-8 gap-y-3 text-badge min-[760px]:ml-auto">
             <div className="flex min-w-0 flex-col gap-0.5">
-              <dt className="text-[11px] text-ink-3">{t('account.profile.email')}</dt>
+              <dt className="text-badge text-ink-3">{t('account.profile.email')}</dt>
               <dd className="min-w-0 truncate text-ink-1">{me.email ?? '—'}</dd>
             </div>
             <div className="flex flex-col gap-0.5">
-              <dt className="text-[11px] text-ink-3">{t('account.profile.joined_at')}</dt>
-              <dd className="font-mono text-[11px] text-ink-1">{joined}</dd>
+              <dt className="text-badge text-ink-3">{t('account.profile.joined_at')}</dt>
+              <dd className="font-mono text-badge text-ink-1">{joined}</dd>
             </div>
             <div className="flex flex-col gap-0.5">
-              <dt className="text-[11px] text-ink-3">{t('account.language.label')}</dt>
+              <dt className="text-badge text-ink-3">{t('account.language.label')}</dt>
               <dd className="text-ink-1">
                 {t(`account.language.name_${(settings?.language ?? locale).toLowerCase().replace(/-/g, '_')}`)}
               </dd>
@@ -414,11 +414,11 @@ export function ProfilePage() {
                 index === 3 ? 'border-l border-border-hairline max-[899px]:border-t' : ''
               }`}
             >
-              <div className="text-[11px] text-ink-3">{stat.label}</div>
-              <div className="mt-1 font-mono text-xl font-medium tracking-[-.02em] text-ink-1">
+              <div className="text-badge text-ink-3">{stat.label}</div>
+              <div className="mt-1 font-mono text-stat tracking-[-.02em] text-ink-1">
                 {stat.value}
               </div>
-              {stat.note !== '' ? <div className="mt-0.5 text-[10.5px] text-ink-4">{stat.note}</div> : null}
+              {stat.note !== '' ? <div className="mt-0.5 text-badge text-ink-4">{stat.note}</div> : null}
             </div>
           ))}
         </section>
@@ -426,10 +426,10 @@ export function ProfilePage() {
         <div className="flex flex-col gap-4">
           <section className={`${cardClass} flex flex-col`} aria-labelledby="profile-basic-title">
             <div className="border-b border-border-hairline px-5 py-4">
-              <h2 id="profile-basic-title" className="text-base font-semibold text-ink-1">
+              <h2 id="profile-basic-title" className="text-section text-ink-1">
                 {t('account.profile.basic_title')}
               </h2>
-              <p className="mt-0.5 text-[12px] text-ink-3">{t('account.profile.basic_desc')}</p>
+              <p className="mt-0.5 text-badge text-ink-3">{t('account.profile.basic_desc')}</p>
             </div>
             <Row label={t('account.profile.display_name')} hint={t('account.profile.display_name_hint')}>
               {editingName ? (
@@ -442,13 +442,13 @@ export function ProfilePage() {
                     onChange={(event) => setNameDraft(event.target.value)}
                     aria-label={t('account.profile.display_name')}
                   />
-                  <Button type="submit" className="h-8 px-3 text-[12px]" disabled={updateName.isPending}>
+                  <Button type="submit" className="h-8 px-3 text-body" disabled={updateName.isPending}>
                     {updateName.isPending ? t('account.profile.saving') : t('account.profile.save')}
                   </Button>
                   <Button
                     variant="secondary"
                     type="button"
-                    className="h-8 px-3 text-[12px]"
+                    className="h-8 px-3 text-body"
                     onClick={() => setEditingName(false)}
                   >
                     {t('account.profile.cancel')}
@@ -456,24 +456,24 @@ export function ProfilePage() {
                 </form>
               ) : (
                 <>
-                  <span className="text-[12.5px] text-ink-1">{displayName}</span>
-                  <Button variant="secondary" className="h-8 px-3 text-[12px]" onClick={startEditingName}>
+                  <span className="text-badge text-ink-1">{displayName}</span>
+                  <Button variant="secondary" className="h-8 px-3 text-body" onClick={startEditingName}>
                     {t('account.profile.edit')}
                   </Button>
                 </>
               )}
             </Row>
             <Row label={t('account.profile.username')}>
-              <span className="font-mono text-[12px] text-ink-1">@{me.username}</span>
+              <span className="font-mono text-badge text-ink-1">@{me.username}</span>
             </Row>
             <Row label={t('account.profile.email')}>
-              <span className="text-[12.5px] text-ink-1">{me.email ?? '—'}</span>
+              <span className="text-badge text-ink-1">{me.email ?? '—'}</span>
               <Tag variant={emailVerified ? 'success' : 'neutral'}>
                 {emailVerified
                   ? t('account.profile.email_verified')
                   : t('account.profile.email_unverified')}
               </Tag>
-              <Button variant="secondary" className="h-8 px-3 text-[12px]" onClick={() => setEmailOpen(true)}>
+              <Button variant="secondary" className="h-8 px-3 text-body" onClick={() => setEmailOpen(true)}>
                 {t('account.profile.change_email')}
               </Button>
             </Row>
@@ -493,10 +493,10 @@ export function ProfilePage() {
 
           <section className={`${cardClass} flex flex-col`} aria-labelledby="profile-prefs-title">
             <div className="border-b border-border-hairline px-5 py-4">
-              <h2 id="profile-prefs-title" className="text-base font-semibold text-ink-1">
+              <h2 id="profile-prefs-title" className="text-section text-ink-1">
                 {t('account.profile.prefs_title')}
               </h2>
-              <p className="mt-0.5 text-[12px] text-ink-3">{t('account.profile.prefs_desc')}</p>
+              <p className="mt-0.5 text-badge text-ink-3">{t('account.profile.prefs_desc')}</p>
             </div>
             <Row label={t('account.language.label')} hint={t('account.profile.language_help')}>
               <select
@@ -537,17 +537,17 @@ export function ProfilePage() {
                 onChange={(next) => updateSetting.mutate({ record_ip_log: next })}
               />
             </Row>
-            <div className="flex items-center justify-between gap-3 border-t border-border-hairline px-5 py-3 text-[10.5px] text-ink-4">
+            <div className="flex items-center justify-between gap-3 border-t border-border-hairline px-5 py-3 text-badge text-ink-4">
               <span>{t('account.profile.prefs_note')}</span>
             </div>
           </section>
 
           <section className={`${cardClass} flex flex-col`} aria-labelledby="profile-notify-title">
             <div className="border-b border-border-hairline px-5 py-4">
-              <h2 id="profile-notify-title" className="text-base font-semibold text-ink-1">
+              <h2 id="profile-notify-title" className="text-section text-ink-1">
                 {t('account.profile.notify_title')}
               </h2>
-              <p className="mt-0.5 text-[12px] text-ink-3">{t('account.profile.notify_desc')}</p>
+              <p className="mt-0.5 text-badge text-ink-3">{t('account.profile.notify_desc')}</p>
             </div>
             <Row label={t('account.profile.balance_warning')} hint={t('account.profile.balance_warning_help')}>
               <Toggle
@@ -562,11 +562,11 @@ export function ProfilePage() {
                 aria-label={t('account.profile.threshold')}
                 inputMode="numeric"
               />
-              <span className="font-mono text-[11px] text-ink-3">{t('account.profile.threshold')}</span>
+              <span className="font-mono text-badge text-ink-3">{t('account.profile.threshold')}</span>
             </Row>
             <Row label={t('account.profile.channels')}>
               {CHANNELS.map((channel) => (
-                <label key={channel} className="inline-flex items-center gap-1.5 text-[11.5px] text-ink-2">
+                <label key={channel} className="inline-flex items-center gap-1.5 text-badge text-ink-2">
                   <input
                     type="checkbox"
                     className="size-3.5 accent-[var(--brand)]"
@@ -586,11 +586,11 @@ export function ProfilePage() {
             </Row>
             <Row label={t('account.profile.security_alert')} hint={t('account.profile.security_alert_help')}>
               <Toggle checked label={t('account.profile.security_alert')} onChange={() => undefined} disabled />
-              <span className="text-[11px] text-ink-4">{t('account.profile.forced')}</span>
+              <span className="text-badge text-ink-4">{t('account.profile.forced')}</span>
             </Row>
             <Row label={t('account.profile.webhook_url')} hint={t('account.profile.webhook_url_help')}>
               <input
-                className={`${inputClass} w-full max-w-[320px] font-mono text-[11px]`}
+                className={`${inputClass} w-full max-w-[320px] font-mono text-badge`}
                 value={notify.webhook}
                 onChange={(event) => setNotify((current) => ({ ...current, webhook: event.target.value }))}
                 placeholder="https://example.com/hooks/newtg"
@@ -598,9 +598,9 @@ export function ProfilePage() {
               />
             </Row>
             <div className="flex items-center justify-between gap-3 border-t border-border-hairline bg-surface-hover px-5 py-3">
-              <span className="text-[10.5px] text-ink-4">{t('account.profile.notify_desc')}</span>
+              <span className="text-badge text-ink-4">{t('account.profile.notify_desc')}</span>
               <Button
-                className="h-8 px-3 text-[12px]"
+                className="h-8 px-3 text-body"
                 disabled={saveNotifications.isPending}
                 onClick={() => saveNotifications.mutate()}
               >
@@ -612,26 +612,26 @@ export function ProfilePage() {
           <section className={`${cardClass} flex flex-col`} aria-labelledby="profile-security-title">
             <div className="flex items-start justify-between gap-3 border-b border-border-hairline px-5 py-4">
               <div>
-                <h2 id="profile-security-title" className="text-base font-semibold text-ink-1">
+                <h2 id="profile-security-title" className="text-section text-ink-1">
                   {t('account.profile.security_title')}
                 </h2>
-                <p className="mt-0.5 text-[12px] text-ink-3">{t('account.profile.security_desc')}</p>
+                <p className="mt-0.5 text-badge text-ink-3">{t('account.profile.security_desc')}</p>
               </div>
               <Button
                 variant="secondary"
-                className="h-8 px-3 text-[12px]"
+                className="h-8 px-3 text-body"
                 onClick={() => window.location.assign('/security')}
               >
                 {t('account.profile.full_security')}
               </Button>
             </div>
             <Row label={t('account.profile.password')}>
-              <Button variant="secondary" className="h-8 px-3 text-[12px]" onClick={() => window.location.assign('/security')}>
+              <Button variant="secondary" className="h-8 px-3 text-body" onClick={() => window.location.assign('/security')}>
                 {t('account.profile.change_password')}
               </Button>
             </Row>
             <Row label={t('account.profile.two_fa')}>
-              <Button variant="secondary" className="h-8 px-3 text-[12px]" onClick={() => window.location.assign('/security')}>
+              <Button variant="secondary" className="h-8 px-3 text-body" onClick={() => window.location.assign('/security')}>
                 {t('account.profile.manage')}
               </Button>
             </Row>
@@ -643,12 +643,12 @@ export function ProfilePage() {
                   : t('account.profile.sessions_help', { count: String(sessionsCount) })
               }
             >
-              <Button variant="secondary" className="h-8 px-3 text-[12px]" onClick={() => window.location.assign('/security')}>
+              <Button variant="secondary" className="h-8 px-3 text-body" onClick={() => window.location.assign('/security')}>
                 {t('account.profile.manage_sessions')}
               </Button>
               <Button
                 variant="ghost"
-                className="h-8 px-3 text-[12px]"
+                className="h-8 px-3 text-body"
                 disabled={signOutOthers.isPending}
                 onClick={() => signOutOthers.mutate()}
               >

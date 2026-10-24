@@ -158,7 +158,7 @@ export function SyncUpstreamDialog({
       description={t('admin.models.sync_source_hint')}
     >
       <div className="flex flex-col gap-4">
-        <div className="rounded-lg border border-border-hairline bg-surface-subtle px-3 py-2 text-xs text-ink-2">
+        <div className="rounded-lg border border-border-hairline bg-surface-subtle px-3 py-2 text-meta text-ink-2">
           <code className="font-mono text-ink-1">model_sync.source_url</code>
           <span className="ml-2">{t('admin.models.sync_source_value_hint')}</span>
         </div>
@@ -178,7 +178,7 @@ export function SyncUpstreamDialog({
           </div>
         ) : preview.isError ? (
           <div className="flex flex-col items-start gap-2">
-            <p className="text-sm text-ink-2">
+            <p className="text-body text-ink-2">
               {preview.error instanceof ApiError && preview.error.status === 503
                 ? t('admin.models.sync_unconfigured')
                 : t('admin.models.sync_preview_error')}
@@ -189,14 +189,14 @@ export function SyncUpstreamDialog({
           </div>
         ) : data === undefined ? null : (
           <>
-            <div className="flex items-center gap-2 text-xs text-ink-2">
+            <div className="flex items-center gap-2 text-meta text-ink-2">
               <span>{t('admin.models.sync_version')}</span>
               <code className="font-mono text-ink-1">{data.source_version.slice(0, 16)}…</code>
             </div>
 
             <SyncGroup title={t('admin.models.sync_group_create')} count={data.groups.create.length}>
               {data.groups.create.map((item) => (
-                <label key={item.model_name} className="flex items-center gap-2 text-sm">
+                <label key={item.model_name} className="flex items-center gap-2 text-body">
                   <input
                     type="checkbox"
                     checked={selectedModels.has(item.model_name)}
@@ -212,7 +212,7 @@ export function SyncUpstreamDialog({
             <SyncGroup title={t('admin.models.sync_group_update')} count={data.groups.update.length}>
               {data.groups.update.map((item) => (
                 <div key={item.model_name} className="flex flex-col gap-1">
-                  <label className="flex items-center gap-2 text-sm">
+                  <label className="flex items-center gap-2 text-body">
                     <input
                       type="checkbox"
                       checked={selectedModels.has(item.model_name)}
@@ -222,7 +222,7 @@ export function SyncUpstreamDialog({
                     />
                     <span className="font-mono text-ink-1">{item.model_name}</span>
                   </label>
-                  <table className="ml-6 text-xs">
+                  <table className="ml-6 text-meta">
                     <tbody>
                       {Object.entries(item.changes ?? {}).map(([field, change]) => (
                         <tr key={field}>
@@ -240,7 +240,7 @@ export function SyncUpstreamDialog({
 
             <SyncGroup title={t('admin.models.sync_group_blocked')} count={data.groups.blocked.length}>
               {data.groups.blocked.map((name) => (
-                <label key={name} className="flex items-center gap-2 text-sm text-ink-3">
+                <label key={name} className="flex items-center gap-2 text-body text-ink-3">
                   <input type="checkbox" disabled checked={false} readOnly />
                   <span className="font-mono">{name}</span>
                   <StatusBadge variant="neutral">{t('admin.models.sync_blocked_tag')}</StatusBadge>
@@ -249,7 +249,7 @@ export function SyncUpstreamDialog({
             </SyncGroup>
 
             <SyncGroup title={t('admin.models.sync_group_unchanged')} count={data.groups.unchanged.length}>
-              <p className="text-xs text-ink-3">
+              <p className="text-meta text-ink-3">
                 {data.groups.unchanged.length === 0
                   ? t('admin.models.sync_none')
                   : data.groups.unchanged.map((name) => (
@@ -264,7 +264,7 @@ export function SyncUpstreamDialog({
               title={t('admin.models.sync_group_missing_upstream')}
               count={data.groups.missing_upstream.length}
             >
-              <p className="text-xs text-ink-3">
+              <p className="text-meta text-ink-3">
                 {data.groups.missing_upstream.length === 0
                   ? t('admin.models.sync_none')
                   : data.groups.missing_upstream.join(', ')}
@@ -275,7 +275,7 @@ export function SyncUpstreamDialog({
               title={t('admin.models.sync_group_missing_vendor')}
               count={data.groups.missing_vendor.length}
             >
-              <p className="text-xs text-ink-3">
+              <p className="text-meta text-ink-3">
                 {data.groups.missing_vendor.length === 0
                   ? t('admin.models.sync_none')
                   : data.groups.missing_vendor.join(', ')}
@@ -287,7 +287,7 @@ export function SyncUpstreamDialog({
               count={data.groups.vendors.create.length + data.groups.vendors.update.length}
             >
               {data.groups.vendors.create.map((name) => (
-                <label key={name} className="flex items-center gap-2 text-sm">
+                <label key={name} className="flex items-center gap-2 text-body">
                   <input
                     type="checkbox"
                     checked={selectedVendors.has(name)}
@@ -300,7 +300,7 @@ export function SyncUpstreamDialog({
                 </label>
               ))}
               {data.groups.vendors.update.map((item) => (
-                <label key={item.name} className="flex items-center gap-2 text-sm">
+                <label key={item.name} className="flex items-center gap-2 text-body">
                   <input
                     type="checkbox"
                     checked={selectedVendors.has(item.name)}
@@ -315,7 +315,7 @@ export function SyncUpstreamDialog({
             </SyncGroup>
 
             {data.groups.missing_vendor.length > 0 ? (
-              <p className="text-xs text-warning">{t('admin.models.sync_missing_vendor_hint')}</p>
+              <p className="text-meta text-warning">{t('admin.models.sync_missing_vendor_hint')}</p>
             ) : null}
 
             {conflict ? (
@@ -360,8 +360,8 @@ function SyncGroup({
   return (
     <section className="rounded-lg border border-border-hairline">
       <header className="flex items-center justify-between border-b border-border-hairline px-3 py-2">
-        <h3 className="text-[13px] font-medium text-ink-1">{title}</h3>
-        <span className="font-mono text-xs tabular-nums text-ink-3">{count}</span>
+        <h3 className="text-meta font-medium text-ink-1">{title}</h3>
+        <span className="font-mono text-meta tabular-nums text-ink-3">{count}</span>
       </header>
       <div className="flex flex-col gap-2 px-3 py-2">{children}</div>
     </section>

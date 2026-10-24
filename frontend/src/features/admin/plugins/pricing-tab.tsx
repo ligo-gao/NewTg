@@ -56,8 +56,8 @@ export function PricingTab() {
       {items.length > 0 ? (
         <>
           <div className="overflow-x-auto rounded-xl border border-border-default">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-surface-subtle text-xs text-ink-3">
+            <table className="w-full text-left text-body">
+              <thead className="bg-surface-subtle text-meta text-ink-3">
                 <tr>
                   <th className="px-3 py-2 font-medium">
                     {t('admin.task_plugins.pricing.col_plugin')}
@@ -88,7 +88,7 @@ export function PricingTab() {
                         <PluginIcon size="sm" icon={plugin.icon} pluginKey={plugin.key} />
                         <span className="flex flex-col">
                           <span className="font-medium text-ink-1">{plugin.name}</span>
-                          <span className="font-mono text-xs text-ink-3">
+                          <span className="font-mono text-meta text-ink-3">
                             {plugin.key}
                           </span>
                         </span>
@@ -108,7 +108,7 @@ export function PricingTab() {
                       <Link
                         to="/admin/pricing/model-pricing"
                         search={{ plugin: plugin.key }}
-                        className="inline-flex items-center gap-1 text-xs text-brand underline"
+                        className="inline-flex items-center gap-1 text-meta text-brand underline"
                       >
                         {t('admin.task_plugins.pricing.goto')}
                         <span aria-hidden="true">↗</span>
@@ -119,7 +119,7 @@ export function PricingTab() {
               </tbody>
             </table>
           </div>
-          <p className="mt-2 text-xs text-ink-3">
+          <p className="mt-2 text-meta text-ink-3">
             {t('admin.task_plugins.pricing.aggregation_pending')}
           </p>
         </>

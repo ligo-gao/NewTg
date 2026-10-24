@@ -317,7 +317,7 @@
   "pricing.detail.effective": "Effective",
   "pricing.detail.unlimited": "Unlimited",
   "pricing.detail.server_address_unset": "Server address not configured; the sample uses a relative path.",
-  "pricing.detail.key_hint": "Replace <YOUR_TOKEN> with your API token (tokens start with nkt-).",
+  "pricing.detail.key_hint": "Replace <YOUR_TOKEN> with your API token (tokens start with sk-; legacy tokens may start with nkt-).",
   "pricing.detail.create_token": "Create a token",
   "pricing.detail.sign_in_token": "Sign in to create a token",
   "pricing.detail.copy_code": "Copy code sample",

@@ -234,11 +234,11 @@ export function SubscriptionPlansPage() {
   if (meQuery.isError) {
     return (
       <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
-        <h1 className="text-xl font-semibold text-ink-1">
+        <h1 className="text-page-title font-semibold text-ink-1">
           {t('admin.subscriptions.title')}
         </h1>
         <section className="rounded-xl border border-border-hairline bg-surface-card p-5">
-          <div className="flex items-center gap-3 text-sm text-ink-2">
+          <div className="flex items-center gap-3 text-body text-ink-2">
             <span>{t('admin.subscriptions.error')}</span>
             <Button variant="secondary" onClick={() => void meQuery.refetch()}>
               {t('common.action.retry')}
@@ -252,10 +252,10 @@ export function SubscriptionPlansPage() {
   if (!canManage) {
     return (
       <div className="mx-auto max-w-[1520px] rounded-xl border border-border-hairline bg-surface-card p-8">
-        <h1 className="text-xl font-semibold text-ink-1">
+        <h1 className="text-page-title font-semibold text-ink-1">
           {t('common.error403.title')}
         </h1>
-        <p className="mt-2 text-sm text-ink-2">{t('admin.subscriptions.load_forbidden')}</p>
+        <p className="mt-2 text-body text-ink-2">{t('admin.subscriptions.load_forbidden')}</p>
       </div>
     )
   }
@@ -266,10 +266,10 @@ export function SubscriptionPlansPage() {
     <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h1 className="text-xl font-semibold text-ink-1">
+          <h1 className="text-page-title font-semibold text-ink-1">
             {t('admin.subscriptions.title')}
           </h1>
-          <p className="mt-1 text-sm text-ink-2">{t('admin.subscriptions.subtitle')}</p>
+          <p className="mt-1 text-body text-ink-2">{t('admin.subscriptions.subtitle')}</p>
         </div>
         <Button
           disabled={writeDisabled}
@@ -283,7 +283,7 @@ export function SubscriptionPlansPage() {
       {offline ? (
         <p
           role="status"
-          className="rounded-lg border border-warning-line bg-warning-bg px-3 py-2 text-sm text-warning"
+          className="rounded-lg border border-warning-line bg-warning-bg px-3 py-2 text-body text-warning"
         >
           {t('admin.subscriptions.offline_notice')}
         </p>
@@ -302,13 +302,13 @@ export function SubscriptionPlansPage() {
           <div className="flex flex-col gap-1.5">
             <label
               htmlFor="subscription-filter-status"
-              className="text-[13px] font-medium text-ink-1"
+              className="text-meta font-medium text-ink-1"
             >
               {t('admin.subscriptions.status')}
             </label>
             <select
               id="subscription-filter-status"
-              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
               value={draft.status}
               onChange={(event) => {
                 setDraft((current) => ({
@@ -347,7 +347,7 @@ export function SubscriptionPlansPage() {
 
       <section className="rounded-xl border border-border-hairline bg-surface-card">
         <div className="flex items-center justify-between border-b border-border-hairline px-5 py-3">
-          <span className="text-[13px] text-ink-2">
+          <span className="text-meta text-ink-2">
             {t('admin.subscriptions.total', { count: total })}
           </span>
         </div>
@@ -359,7 +359,7 @@ export function SubscriptionPlansPage() {
             ))}
           </div>
         ) : plansQuery.isError ? (
-          <div className="flex items-center gap-3 p-5 text-sm text-ink-2">
+          <div className="flex items-center gap-3 p-5 text-body text-ink-2">
             <span>
               {plansQuery.error instanceof ApiError &&
               plansQuery.error.kind === 'offline'
@@ -382,7 +382,7 @@ export function SubscriptionPlansPage() {
           </div>
         ) : items.length === 0 ? (
           <div className="flex flex-col items-start gap-2 p-5">
-            <p className="text-sm text-ink-2">
+            <p className="text-body text-ink-2">
               {hasFilters
                 ? t('admin.subscriptions.empty_filtered')
                 : t('admin.subscriptions.empty')}
@@ -402,9 +402,9 @@ export function SubscriptionPlansPage() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1180px] text-sm">
+            <table className="w-full min-w-[1180px] text-body">
               <thead>
-                <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
+                <tr className="border-b border-border-hairline text-left text-meta text-ink-2">
                   <th scope="col" className="px-4 py-2 font-medium">
                     {t('admin.subscriptions.column_plan_key')}
                   </th>
@@ -488,14 +488,14 @@ export function SubscriptionPlansPage() {
                     <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-2">
                       {plan.sort_order}
                     </td>
-                    <td className="px-4 py-3 text-xs text-ink-2" title={plan.updated_at}>
+                    <td className="px-4 py-3 text-meta text-ink-2" title={plan.updated_at}>
                       {formatDateTime(plan.updated_at, locale)}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-1">
                         <Button
                           variant="ghost"
-                          className="h-8 px-2 text-[13px]"
+                          className="h-8 px-2 text-meta"
                           disabled={offline}
                           onClick={() => setEditTarget({ mode: 'edit', plan })}
                         >
@@ -503,7 +503,7 @@ export function SubscriptionPlansPage() {
                         </Button>
                         <Button
                           variant="ghost"
-                          className="h-8 px-2 text-[13px]"
+                          className="h-8 px-2 text-meta"
                           disabled={writeDisabled}
                           onClick={() => {
                             setResetError(undefined)
@@ -515,7 +515,7 @@ export function SubscriptionPlansPage() {
                         </Button>
                         <Button
                           variant="ghost"
-                          className="h-8 px-2 text-[13px]"
+                          className="h-8 px-2 text-meta"
                           disabled={writeDisabled}
                           onClick={() => {
                             setStatusError(undefined)
@@ -528,7 +528,7 @@ export function SubscriptionPlansPage() {
                         </Button>
                         <Button
                           variant="ghost"
-                          className="h-8 px-2 text-[13px] text-danger hover:bg-danger-bg"
+                          className="h-8 px-2 text-meta text-danger hover:bg-danger-bg"
                           disabled={writeDisabled}
                           onClick={() => {
                             setDeleteError(undefined)
@@ -546,13 +546,13 @@ export function SubscriptionPlansPage() {
           </div>
         )}
 
-        <div className="flex items-center justify-end gap-3 border-t border-border-hairline px-5 py-3 text-[13px] text-ink-2">
+        <div className="flex items-center justify-end gap-3 border-t border-border-hairline px-5 py-3 text-meta text-ink-2">
           <label htmlFor="subscription-page-size" className="sr-only">
             {t('admin.subscriptions.page_size')}
           </label>
           <select
             id="subscription-page-size"
-            className="h-8 rounded-md border border-border-default bg-surface-card px-2 text-xs text-ink-1"
+            className="h-8 rounded-md border border-border-default bg-surface-card px-2 text-badge text-ink-1"
             value={pageSize}
             onChange={(event) => {
               setPageSize(Number(event.target.value))
@@ -567,7 +567,7 @@ export function SubscriptionPlansPage() {
           </select>
           <Button
             variant="secondary"
-            className="h-8 px-2 text-[13px]"
+            className="h-8 px-2 text-meta"
             disabled={page <= 1}
             onClick={() => setPage((current) => Math.max(1, current - 1))}
           >
@@ -578,7 +578,7 @@ export function SubscriptionPlansPage() {
           </span>
           <Button
             variant="secondary"
-            className="h-8 px-2 text-[13px]"
+            className="h-8 px-2 text-meta"
             disabled={page >= pages}
             onClick={() => setPage((current) => current + 1)}
           >
@@ -625,7 +625,7 @@ export function SubscriptionPlansPage() {
         }
       >
         <div className="flex flex-col gap-3">
-          <label className="flex items-start gap-2 text-sm text-ink-1">
+          <label className="flex items-start gap-2 text-body text-ink-1">
             <input
               type="checkbox"
               className="mt-0.5 size-4 accent-brand"
@@ -634,7 +634,7 @@ export function SubscriptionPlansPage() {
             />
             <span>
               {t('admin.subscriptions.reset_advance')}
-              <span className="block text-xs text-ink-3">
+              <span className="block text-meta text-ink-3">
                 {t('admin.subscriptions.reset_advance_hint')}
               </span>
             </span>
@@ -726,7 +726,7 @@ export function SubscriptionPlansPage() {
 function PageSkeleton({ title }: { title: string }) {
   return (
     <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
-      <h1 className="text-xl font-semibold text-ink-1">{title}</h1>
+      <h1 className="text-page-title font-semibold text-ink-1">{title}</h1>
       <section className="rounded-xl border border-border-hairline bg-surface-card">
         <div className="space-y-2 p-5" aria-busy="true">
           {[0, 1, 2, 3, 4].map((index) => (

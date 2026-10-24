@@ -41,8 +41,8 @@ export function PricingTable({
 
   return (
     <div className="w-full overflow-x-auto rounded-xl border border-border-default bg-surface-card">
-      <table className="w-full min-w-[1080px] border-collapse text-[13px] leading-5">
-        <thead className="bg-surface-subtle text-left text-xs font-medium text-ink-2">
+      <table className="w-full min-w-[1080px] border-collapse text-meta leading-5">
+        <thead className="bg-surface-subtle text-left text-meta text-ink-2">
           <tr className="h-9">
             <th scope="col" aria-sort={nameSort} className="sticky left-0 z-10 bg-surface-subtle px-4 py-2">
               {t('public.pricing.table_model')}

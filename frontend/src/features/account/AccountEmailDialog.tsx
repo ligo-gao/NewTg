@@ -237,7 +237,7 @@ export function AccountEmailDialog({
           }}
         />
 
-        <p className="text-xs leading-5 text-ink-3">
+        <p className="text-meta leading-5 text-ink-3">
           {t('account.profile.email_notice')}
         </p>
       </form>

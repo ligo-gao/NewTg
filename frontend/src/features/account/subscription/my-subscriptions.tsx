@@ -147,7 +147,7 @@ export function MySubscriptions({
       >
         <h2
           id="subscription-mine-title"
-          className="text-[15px] font-semibold text-ink-1"
+          className="text-card-title text-ink-1"
         >
           {t('account.subscription.mine.title')}
         </h2>
@@ -163,14 +163,14 @@ export function MySubscriptions({
             <div aria-hidden="true" className="h-24 animate-pulse rounded-lg bg-surface-subtle" />
           </div>
         ) : isError ? (
-          <div className="mt-4 flex items-center gap-3 text-sm text-ink-2">
+          <div className="mt-4 flex items-center gap-3 text-body text-ink-2">
             <span>{t('account.subscription.mine.error')}</span>
             <Button variant="secondary" onClick={onRetry}>
               {t('account.subscription.mine.retry')}
             </Button>
           </div>
         ) : data === undefined || data.items.length === 0 ? (
-          <p className="mt-4 text-sm text-ink-2">
+          <p className="mt-4 text-body text-ink-2">
             {t('account.subscription.mine.empty')}
           </p>
         ) : (
@@ -337,22 +337,22 @@ function SubscriptionRow({
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <h3 className="text-sm font-semibold text-ink-1">
+          <h3 className="text-body font-semibold text-ink-1">
             {item.plan_title_snapshot}
           </h3>
           <StatusBadge variant={STATUS_VARIANT[item.status]}>
             {t(`account.subscription.status.${item.status}`)}
           </StatusBadge>
         </div>
-        <span className="text-[13px] text-ink-2">{timeText}</span>
+        <span className="text-meta text-ink-2">{timeText}</span>
       </div>
 
-      <p className="mt-1 text-xs text-ink-3">
+      <p className="mt-1 text-meta text-ink-3">
         {t('account.subscription.mine.period', { days: item.period_days })}
       </p>
 
       <div className="mt-3">
-        <dl className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[13px]">
+        <dl className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-meta">
           <div className="flex items-baseline gap-1.5">
             <dt className="text-ink-2">{t('account.subscription.mine.total')}</dt>
             <dd className="font-medium tabular-nums text-ink-1">
@@ -403,18 +403,18 @@ function SubscriptionRow({
       <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-col gap-1">
           {item.next_reset_at !== null && item.next_reset_at !== undefined ? (
-            <span className="text-xs text-ink-2">
+            <span className="text-meta text-ink-2">
               {t('account.subscription.mine.next_reset')}:{' '}
               {formatSubscriptionTime(item.next_reset_at, locale)}
             </span>
           ) : null}
           {cancelError ? (
-            <span role="alert" className="text-xs text-danger">
+            <span role="alert" className="text-meta text-danger">
               {t('account.subscription.mine.cancel_error')}
             </span>
           ) : null}
           {pending ? (
-            <span role="status" className="text-xs text-ink-2">
+            <span role="status" className="text-meta text-ink-2">
               {t('account.subscription.mine.cancelling')}
             </span>
           ) : null}
@@ -424,11 +424,11 @@ function SubscriptionRow({
           {item.status === 'active' ? (
             <div className="flex flex-col gap-1">
               <div className="flex items-center gap-2">
-                <label className="text-xs text-ink-2" htmlFor={`auto-renew-method-${item.id}`}>
+                <label className="text-meta text-ink-2" htmlFor={`auto-renew-method-${item.id}`}>
                   {t('account.subscription.mine.auto_renew')}
                 </label>
                 {item.auto_renew && item.auto_renew_failures > 0 ? (
-                  <span className="text-xs text-danger">
+                  <span className="text-meta text-danger">
                     {t('account.subscription.mine.auto_renew_failures', {
                       count: item.auto_renew_failures,
                     })}
@@ -437,13 +437,13 @@ function SubscriptionRow({
                 {!item.auto_renew && item.auto_renew_failures >= 3 ? (
                   // P-16：第 3 次失败后服务端关闭开关。只显示禁用状态会让
                   // 用户以为是自己关的；这里必须说明原因与恢复方式。
-                  <span className="text-xs text-danger">
+                  <span className="text-meta text-danger">
                     {t('account.subscription.mine.auto_renew_failed_hint')}
                   </span>
                 ) : null}
                 {ended ? (
                   // R-54：合同期已结束（含立即取消后的宽限期）。
-                  <span className="text-xs text-ink-2">
+                  <span className="text-meta text-ink-2">
                     {t('account.subscription.mine.auto_renew_ended_hint')}
                   </span>
                 ) : null}
@@ -452,7 +452,7 @@ function SubscriptionRow({
                 <select
                   id={`auto-renew-method-${item.id}`}
                   aria-label={`${t('account.subscription.mine.auto_renew_method')}: ${item.plan_title_snapshot}`}
-                  className="h-8 rounded-lg border border-border-default bg-surface-card px-2 text-xs text-ink-1 disabled:opacity-50"
+                  className="h-8 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1 disabled:opacity-50"
                   value={chosenMethodId ?? ''}
                   disabled={autoRenewDisabled}
                   onChange={(event) => {
@@ -472,17 +472,17 @@ function SubscriptionRow({
                   ))}
                 </select>
               ) : (
-                <span className="text-xs text-ink-3">
+                <span className="text-meta text-ink-3">
                   {t('account.subscription.mine.auto_renew_requires_method')}
                 </span>
               )}
               {autoRenewError ? (
-                <span role="alert" className="text-xs text-danger">
+                <span role="alert" className="text-meta text-danger">
                   {t('account.subscription.mine.auto_renew_error')}
                 </span>
               ) : null}
               {autoRenewPending ? (
-                <span role="status" className="text-xs text-ink-2">
+                <span role="status" className="text-meta text-ink-2">
                   {t('account.subscription.mine.auto_renew_saving')}
                 </span>
               ) : null}
@@ -550,7 +550,7 @@ function SubscriptionRow({
         {item.status !== 'cancelled' ? (
           <Button
             variant="secondary"
-            className="h-8 px-2.5 text-xs"
+            className="h-8 px-2.5 text-body"
             disabled={offline}
             aria-label={`${t('account.subscription.mine.renew')}: ${item.plan_title_snapshot}`}
             onClick={onRenew}
@@ -561,7 +561,7 @@ function SubscriptionRow({
         {item.status === 'active' ? (
           <Button
             variant="secondary"
-            className="h-8 px-2.5 text-xs"
+            className="h-8 px-2.5 text-body"
             disabled={offline}
             aria-label={`${t('account.subscription.mine.change_plan')}: ${item.plan_title_snapshot}`}
             onClick={onChangePlan}
@@ -571,7 +571,7 @@ function SubscriptionRow({
         ) : null}
         <Button
           variant="ghost"
-          className="h-8 px-2.5 text-xs"
+          className="h-8 px-2.5 text-body"
           aria-label={`${t('account.subscription.mine.events')}: ${item.plan_title_snapshot}`}
           onClick={onShowEvents}
         >
@@ -581,7 +581,7 @@ function SubscriptionRow({
           <span className="flex flex-wrap items-center gap-2">
             <Button
               variant="ghost"
-              className="h-8 px-2.5 text-xs"
+              className="h-8 px-2.5 text-body"
               disabled={offline || refundKey !== null}
               aria-label={`${t('account.subscription.mine.refund')}: ${item.plan_title_snapshot}`}
               onClick={onRefund}
@@ -589,7 +589,7 @@ function SubscriptionRow({
               {t('account.subscription.mine.refund')}
             </Button>
             {refundKey !== null ? (
-              <span className="text-xs text-ink-3">{t(refundKey)}</span>
+              <span className="text-meta text-ink-3">{t(refundKey)}</span>
             ) : null}
           </span>
         ) : null}

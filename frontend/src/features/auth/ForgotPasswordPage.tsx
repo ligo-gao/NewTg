@@ -124,11 +124,11 @@ export function ForgotPasswordPage({
       {sent ? (
         <div className="flex flex-col gap-4" aria-live="polite">
           {formError !== undefined ? <FormAlert>{formError}</FormAlert> : null}
-          <p className="text-sm font-medium text-success">
+          <p className="text-body font-medium text-success">
             {t('auth.forgot.sent_title')}
           </p>
-          <p className="text-sm text-ink-2">{t('auth.forgot.sent_description')}</p>
-          <p className="text-[13px] text-ink-3">
+          <p className="text-body text-ink-2">{t('auth.forgot.sent_description')}</p>
+          <p className="text-meta text-ink-3">
             {t('auth.forgot.sent_enumeration')}
           </p>
           {turnstileEnabled ? (
@@ -158,7 +158,7 @@ export function ForgotPasswordPage({
         </div>
       ) : (
         <form className="flex flex-col gap-4" onSubmit={handleSubmit} noValidate>
-          <p className="text-[13px] text-ink-2">{t('auth.forgot.description')}</p>
+          <p className="text-meta text-ink-2">{t('auth.forgot.description')}</p>
           {formError !== undefined ? <FormAlert>{formError}</FormAlert> : null}
           <TextField
             label={t('auth.forgot.email')}

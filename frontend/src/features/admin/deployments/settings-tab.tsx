@@ -143,7 +143,7 @@ export function SettingsTab({ canManage }: { canManage: boolean }) {
         description={t('admin.deployments.settings.subtitle')}
       >
         {query.isPending ? (
-          <p className="text-sm text-ink-2" role="status">
+          <p className="text-body text-ink-2" role="status">
             {t('admin.deployments.common.loading')}
           </p>
         ) : null}
@@ -164,10 +164,10 @@ export function SettingsTab({ canManage }: { canManage: boolean }) {
           <div className="space-y-4">
             <div className="flex items-center justify-between gap-4 rounded-lg border border-border-default p-3">
               <div>
-                <p className="text-[13px] font-medium text-ink-1">
+                <p className="text-meta font-medium text-ink-1">
                   {t('admin.deployments.settings.enabled')}
                 </p>
-                <p className="text-xs text-ink-3">
+                <p className="text-meta text-ink-3">
                   {t('admin.deployments.settings.enabled_hint')}
                 </p>
               </div>
@@ -214,7 +214,7 @@ export function SettingsTab({ canManage }: { canManage: boolean }) {
                     : t('admin.deployments.settings.test')}
               </Button>
               {testResult !== null ? (
-                <p className="text-sm text-success" role="status">
+                <p className="text-body text-success" role="status">
                   {t('admin.deployments.settings.test_ok', {
                     hardware: testResult.hardware_count,
                     available: testResult.total_available,
@@ -231,7 +231,7 @@ export function SettingsTab({ canManage }: { canManage: boolean }) {
               ) : null}
             </div>
 
-            <div className="rounded-lg border border-border-hairline bg-surface-subtle p-3 text-xs text-ink-2">
+            <div className="rounded-lg border border-border-hairline bg-surface-subtle p-3 text-meta text-ink-2">
               <p>
                 <span className="font-medium text-ink-1">
                   {t('admin.deployments.settings.egress')}:
@@ -267,12 +267,12 @@ export function SettingsTab({ canManage }: { canManage: boolean }) {
               </Button>
             ) : null}
             {savedNotice ? (
-              <p className="text-sm text-success" role="status">
+              <p className="text-body text-success" role="status">
                 {t('admin.deployments.settings.saved')}
               </p>
             ) : null}
             {!online ? (
-              <p className="text-xs text-ink-3">{t('admin.deployments.common.offline')}</p>
+              <p className="text-meta text-ink-3">{t('admin.deployments.common.offline')}</p>
             ) : null}
 
             {canManage ? (
@@ -294,7 +294,7 @@ export function SettingsTab({ canManage }: { canManage: boolean }) {
                 </Button>
               </div>
             ) : (
-              <p className="text-xs text-ink-3">{t('admin.deployments.common.read_only')}</p>
+              <p className="text-meta text-ink-3">{t('admin.deployments.common.read_only')}</p>
             )}
           </div>
         ) : null}

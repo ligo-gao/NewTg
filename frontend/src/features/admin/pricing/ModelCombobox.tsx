@@ -106,10 +106,10 @@ export function ModelCombobox({
           className="flex flex-col gap-1.5 rounded-lg border border-border-hairline bg-surface-subtle p-2"
         >
           <div className="flex items-center justify-between px-1">
-            <span className="text-xs font-medium text-ink-2">
+            <span className="text-meta text-ink-2">
               {t('admin.pricing.model_suggestions')}
             </span>
-            <span className="text-xs text-ink-3">
+            <span className="text-meta text-ink-3">
               {candidatesQuery.isSuccess
                 ? t('admin.pricing.model_suggestions_count', {
                     count: candidatesQuery.data.items.length,
@@ -119,22 +119,22 @@ export function ModelCombobox({
           </div>
 
           {candidatesQuery.isPending ? (
-            <p className="px-1 py-2 text-xs text-ink-3" aria-busy="true">
+            <p className="px-1 py-2 text-meta text-ink-3" aria-busy="true">
               {t('admin.pricing.model_suggestions_loading')}
             </p>
           ) : candidatesQuery.isError ? (
-            <div className="flex items-center gap-2 px-1 py-2 text-xs text-danger">
+            <div className="flex items-center gap-2 px-1 py-2 text-meta text-danger">
               <span>{t('admin.pricing.model_suggestions_error')}</span>
               <Button
                 variant="ghost"
-                className="h-6 px-1 text-xs"
+                className="h-6 px-1 text-meta"
                 onClick={() => void candidatesQuery.refetch()}
               >
                 {t('common.action.retry')}
               </Button>
             </div>
           ) : suggestions.length === 0 ? (
-            <p className="px-1 py-2 text-xs text-ink-3">
+            <p className="px-1 py-2 text-meta text-ink-3">
               {query === ''
                 ? t('admin.pricing.model_suggestions_empty')
                 : t('admin.pricing.model_suggestions_no_match')}
@@ -159,10 +159,10 @@ export function ModelCombobox({
                       }}
                     >
                       <span className="flex min-w-0 flex-col">
-                        <span className="truncate font-mono text-[13px] text-ink-1">
+                        <span className="truncate font-mono text-meta text-ink-1">
                           {candidate.model}
                         </span>
-                        <span className="truncate text-xs text-ink-3">
+                        <span className="truncate text-meta text-ink-3">
                           {formatMetadata(
                             candidate,
                             locale,
@@ -198,7 +198,7 @@ export function ModelCombobox({
           )}
 
           {query !== '' && isValidModelName(query) ? (
-            <p className="px-1 text-xs text-ink-3">
+            <p className="px-1 text-meta text-ink-3">
               {t('admin.pricing.model_suggestions_manual', { model: value.trim() })}
             </p>
           ) : null}

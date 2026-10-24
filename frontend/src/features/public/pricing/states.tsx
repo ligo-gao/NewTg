@@ -48,12 +48,12 @@ export function InlineError({
 }) {
   const { t } = useI18n()
   return (
-    <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-sm text-danger">
+    <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-body text-danger">
       <span>{message}</span>
       <button
         type="button"
         onClick={onRetry}
-        className="rounded-md border border-danger-line px-2 py-0.5 text-[13px] font-medium hover:bg-surface-card focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+        className="rounded-md border border-danger-line px-2 py-0.5 text-meta font-medium hover:bg-surface-card focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
       >
         {t('public.pricing.retry')}
       </button>
@@ -94,12 +94,12 @@ export function EmptyState({
           </>
         )}
       </svg>
-      <h2 className="text-base font-semibold text-ink-1">
+      <h2 className="text-section font-semibold text-ink-1">
         {filtered
           ? t('public.pricing.empty')
           : t('public.pricing.global_empty')}
       </h2>
-      <p className="max-w-[480px] text-[13px] leading-5 text-ink-2">
+      <p className="max-w-[480px] text-meta leading-5 text-ink-2">
         {filtered
           ? t('public.pricing.empty_hint')
           : t('public.pricing.global_empty_hint')}
@@ -108,7 +108,7 @@ export function EmptyState({
         <button
           type="button"
           onClick={onClearFilters}
-          className="mt-1 inline-flex h-9 items-center rounded-lg bg-brand px-4 text-sm font-medium text-white hover:bg-brand-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="mt-1 inline-flex h-9 items-center rounded-lg bg-brand px-4 text-body font-medium text-white hover:bg-brand-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         >
           {t('public.pricing.clear_filters')}
         </button>
@@ -135,15 +135,15 @@ export function DetailNotFound() {
         <path d="M6 3h8l4 4v14H6z" />
         <path d="M14 3v4h4M12 11v4" strokeLinecap="round" />
       </svg>
-      <h1 className="text-base font-semibold text-ink-1">
+      <h1 className="text-section font-semibold text-ink-1">
         {t('public.pricing.detail.not_found')}
       </h1>
-      <p className="max-w-[480px] text-[13px] leading-5 text-ink-2">
+      <p className="max-w-[480px] text-meta leading-5 text-ink-2">
         {t('public.pricing.detail.not_found_hint')}
       </p>
       <a
         href="/pricing"
-        className="mt-1 inline-flex h-9 items-center rounded-lg bg-brand px-4 text-sm font-medium text-white hover:bg-brand-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+        className="mt-1 inline-flex h-9 items-center rounded-lg bg-brand px-4 text-body font-medium text-white hover:bg-brand-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
       >
         {t('public.pricing.detail.back')}
       </a>

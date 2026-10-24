@@ -168,7 +168,7 @@ export function AccountRecoveryDialogs({
             <div className="flex items-center gap-2">
               <code
                 aria-label={t('admin.recovery.result_title')}
-                className="flex-1 select-all rounded-lg bg-surface-subtle px-3 py-2 font-mono text-base text-ink-1"
+                className="flex-1 select-all rounded-lg bg-surface-subtle px-3 py-2 font-mono text-body text-ink-1"
               >
                 {tempPassword}
               </code>
@@ -176,10 +176,10 @@ export function AccountRecoveryDialogs({
                 {copied ? t('common.action.copied') : t('common.action.copy')}
               </Button>
             </div>
-            <p className="text-xs text-warning">{t('admin.recovery.only_once')}</p>
+            <p className="text-meta text-warning">{t('admin.recovery.only_once')}</p>
           </>
         ) : (
-          <p className="text-sm text-ink-2">
+          <p className="text-body text-ink-2">
             {stage === 'confirm-2fa'
               ? t('admin.recovery.reset_2fa_body', { username: user.username })
               : t('admin.recovery.reset_password_body', { username: user.username })}

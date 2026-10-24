@@ -76,7 +76,7 @@ export function SecretField({
         {configured && !clearRequested && !disabled ? (
           <button
             type="button"
-            className="text-xs text-danger underline"
+            className="text-meta text-danger underline"
             onClick={() => {
               if (onRequestClear === undefined) onChange(null)
               else onRequestClear()
@@ -90,13 +90,13 @@ export function SecretField({
   }, [clearRequested, configured, disabled, onChange, onRequestClear, showBadge, t])
 
   const inputClasses =
-    'w-full rounded-lg border bg-surface-card px-3 text-sm text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 ' +
+    'w-full rounded-lg border bg-surface-card px-3 text-body text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 ' +
     (error !== undefined ? 'border-danger' : 'border-border-default')
 
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between gap-3">
-        <label htmlFor={id} className="text-[13px] font-medium text-ink-1">
+        <label htmlFor={id} className="text-meta font-medium text-ink-1">
           {label}
         </label>
         {badge}
@@ -139,12 +139,12 @@ export function SecretField({
         </button>
       </div>
       {error === undefined ? (
-        <p id={hintId} className="text-xs text-ink-3">
+        <p id={hintId} className="text-meta text-ink-3">
           {hint ?? t('admin.deployments.secret.hint')}
         </p>
       ) : null}
       {error !== undefined ? (
-        <p id={errorId} className="text-xs text-danger">
+        <p id={errorId} className="text-meta text-danger">
           {error}
         </p>
       ) : null}

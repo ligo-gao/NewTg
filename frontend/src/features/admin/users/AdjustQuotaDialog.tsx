@@ -212,7 +212,7 @@ export function AdjustQuotaDialog({
       {stage === 'form' ? (
         <form id="quota-form" className="flex flex-col gap-3" onSubmit={handleSubmit}>
           {error !== undefined ? <FormAlert>{error}</FormAlert> : null}
-          <p className="font-mono text-[13px] tabular-nums text-ink-2">
+          <p className="font-mono text-meta tabular-nums text-ink-2">
             {t('admin.quota.current', {
               balance: formatCredits(currentBalance),
             })}
@@ -232,7 +232,7 @@ export function AdjustQuotaDialog({
                 // (WAI-ARIA radio-group pattern).
                 tabIndex={mode === value ? 0 : -1}
                 className={[
-                  'h-9 rounded-lg border text-[13px] font-medium focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                  'h-9 rounded-lg border text-meta font-medium focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
                   mode === value
                     ? 'border-brand bg-brand-subtle text-brand'
                     : 'border-border-default bg-surface-card text-ink-2 hover:bg-surface-hover',
@@ -271,7 +271,7 @@ export function AdjustQuotaDialog({
             }
           />
 
-          <div className="rounded-lg bg-surface-subtle px-3 py-2 text-[13px] text-ink-2" aria-live="polite">
+          <div className="rounded-lg bg-surface-subtle px-3 py-2 text-meta text-ink-2" aria-live="polite">
             {result === undefined
               ? t('admin.quota.preview_placeholder')
               : mode === 'add'
@@ -291,13 +291,13 @@ export function AdjustQuotaDialog({
                     })}
           </div>
           {mode === 'override' && parsed === 0 ? (
-            <p className="text-xs text-warning">{t('admin.quota.override_zero')}</p>
+            <p className="text-meta text-warning">{t('admin.quota.override_zero')}</p>
           ) : null}
         </form>
       ) : (
         <div className="flex flex-col gap-3">
           {error !== undefined ? <FormAlert>{error}</FormAlert> : null}
-          <p className="text-sm text-ink-2">{confirmBody}</p>
+          <p className="text-body text-ink-2">{confirmBody}</p>
         </div>
       )}
     </Dialog>

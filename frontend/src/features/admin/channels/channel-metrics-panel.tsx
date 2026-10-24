@@ -58,7 +58,7 @@ function SuccessSparkline({ points }: { points: ChannelMetricsPoint[] }) {
   const path = useMemo(() => successPath(points), [points])
   return (
     <div className="rounded-lg border border-border-hairline bg-surface-card p-3">
-      <p className="mb-2 text-xs text-ink-2">{t('common.channels.metrics.trend')}</p>
+      <p className="mb-2 text-meta text-ink-2">{t('common.channels.metrics.trend')}</p>
       <svg
         data-testid="channel-metrics-sparkline"
         role="img"
@@ -97,8 +97,8 @@ function SuccessSparkline({ points }: { points: ChannelMetricsPoint[] }) {
 function SummaryCell({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <dt className="text-xs text-ink-2">{label}</dt>
-      <dd className="mt-0.5 text-sm text-ink-1 tabular-nums">{value}</dd>
+      <dt className="text-meta text-ink-2">{label}</dt>
+      <dd className="mt-0.5 text-body text-ink-1 tabular-nums">{value}</dd>
     </div>
   )
 }
@@ -131,7 +131,7 @@ export function ChannelMetricsPanel({ channel }: { channel: Channel }) {
       aria-label={t('common.channels.metrics.title')}
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h3 className="text-[11px] font-semibold tracking-[0.02em] text-ink-2">
+        <h3 className="text-card-title tracking-[0.02em] text-ink-2">
           {t('common.channels.metrics.title')}
         </h3>
         <div className="flex items-center gap-1" role="tablist">
@@ -145,7 +145,7 @@ export function ChannelMetricsPanel({ channel }: { channel: Channel }) {
                 setWindow(value)
               }}
               className={[
-                'rounded-md px-2.5 py-1 text-xs font-medium focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                'rounded-md px-2.5 py-1 text-badge focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
                 window === value
                   ? 'bg-brand-subtle text-brand'
                   : 'text-ink-2 hover:bg-surface-hover',
@@ -176,7 +176,7 @@ export function ChannelMetricsPanel({ channel }: { channel: Channel }) {
           ))}
         </div>
       ) : metricsQuery.isError ? (
-        <div role="alert" className="mt-3 flex flex-col items-start gap-2 text-sm">
+        <div role="alert" className="mt-3 flex flex-col items-start gap-2 text-body">
           <p className="text-danger">
             {offline
               ? t('common.channels.metrics.offline')
@@ -192,7 +192,7 @@ export function ChannelMetricsPanel({ channel }: { channel: Channel }) {
           </Button>
         </div>
       ) : noUsage ? (
-        <p data-testid="channel-metrics-empty" className="mt-3 text-sm text-ink-2">
+        <p data-testid="channel-metrics-empty" className="mt-3 text-body text-ink-2">
           {t('common.channels.metrics.empty')}
         </p>
       ) : data !== undefined && summary !== undefined ? (

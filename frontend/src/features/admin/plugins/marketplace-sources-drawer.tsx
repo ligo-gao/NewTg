@@ -172,7 +172,7 @@ export function MarketplaceSourcesDrawer({
         ) : null}
 
         {sourcesQuery.data !== undefined && sources.length === 0 ? (
-          <p className="rounded-lg border border-dashed border-border-default px-4 py-8 text-center text-sm text-ink-3">
+          <p className="rounded-lg border border-dashed border-border-default px-4 py-8 text-center text-body text-ink-3">
             {t('admin.task_plugins.marketplace.empty_sources')}
           </p>
         ) : null}
@@ -190,7 +190,7 @@ export function MarketplaceSourcesDrawer({
                   <StatusBadge variant={CHECK_VARIANTS[source.last_check_status]}>
                     {t(`admin.task_plugins.sources.check_${source.last_check_status}`)}
                   </StatusBadge>
-                  <label className="ml-auto flex items-center gap-1 text-xs text-ink-2">
+                  <label className="ml-auto flex items-center gap-1 text-meta text-ink-2">
                     <input
                       type="checkbox"
                       checked={source.enabled}
@@ -211,10 +211,10 @@ export function MarketplaceSourcesDrawer({
                     {t('admin.task_plugins.sources.enabled')}
                   </label>
                 </div>
-                <p className="mt-0.5 break-all font-mono text-xs text-ink-3">
+                <p className="mt-0.5 break-all font-mono text-meta text-ink-3">
                   {source.url}
                 </p>
-                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-meta">
                   {source.last_check_at !== null &&
                   source.last_check_at !== undefined ? (
                     <span className="text-ink-3">
@@ -236,7 +236,7 @@ export function MarketplaceSourcesDrawer({
                   ) : null}
                   <Button
                     variant="ghost"
-                    className="h-6 px-2 text-xs"
+                    className="h-6 px-2 text-badge"
                     disabled={!canWrite || checkMutation.isPending}
                     onClick={() => checkMutation.mutate(source.id)}
                   >
@@ -244,7 +244,7 @@ export function MarketplaceSourcesDrawer({
                   </Button>
                   <Button
                     variant="ghost"
-                    className="h-6 px-2 text-xs text-danger"
+                    className="h-6 px-2 text-badge text-danger"
                     disabled={!canWrite}
                     onClick={() => setRemoveTarget(source)}
                   >
@@ -252,7 +252,7 @@ export function MarketplaceSourcesDrawer({
                   </Button>
                 </div>
                 {expanded === source.id ? (
-                  <p className="mt-1 overflow-x-auto whitespace-pre-wrap rounded bg-surface-subtle px-2 py-1 font-mono text-xs text-danger">
+                  <p className="mt-1 overflow-x-auto whitespace-pre-wrap rounded bg-surface-subtle px-2 py-1 font-mono text-meta text-danger">
                     {(source.last_error ?? source.error ?? t('admin.task_plugins.sources.no_error')).slice(0, 512)}
                   </p>
                 ) : null}
@@ -262,7 +262,7 @@ export function MarketplaceSourcesDrawer({
         ) : null}
 
         <div className="rounded-lg border border-border-default p-3">
-          <p className="text-[13px] font-medium text-ink-1">
+          <p className="text-meta font-medium text-ink-1">
             {t('admin.task_plugins.sources.add_title')}
           </p>
           <div className="mt-2 flex flex-col gap-2">
@@ -272,7 +272,7 @@ export function MarketplaceSourcesDrawer({
               aria-label={t('admin.task_plugins.sources.name')}
               placeholder={t('admin.task_plugins.sources.name')}
               onChange={(event) => setName(event.target.value)}
-              className="h-9 rounded-lg border border-border-default bg-surface-card px-3 text-sm"
+              className="h-9 rounded-lg border border-border-default bg-surface-card px-3 text-body"
             />
             <input
               type="url"
@@ -281,9 +281,9 @@ export function MarketplaceSourcesDrawer({
               aria-label={t('admin.task_plugins.sources.url')}
               placeholder="https://"
               onChange={(event) => setUrl(event.target.value)}
-              className="h-9 rounded-lg border border-border-default bg-surface-card px-3 font-mono text-sm"
+              className="h-9 rounded-lg border border-border-default bg-surface-card px-3 font-mono text-body"
             />
-            <p className="text-xs text-ink-3">
+            <p className="text-meta text-ink-3">
               {t('admin.task_plugins.sources.https_hint')}
             </p>
             <div className="flex justify-end">
@@ -303,7 +303,7 @@ export function MarketplaceSourcesDrawer({
 
         {formError !== null ? <FormAlert>{formError}</FormAlert> : null}
         {!online ? (
-          <p className="text-xs text-ink-3">{t('admin.task_plugins.common.offline')}</p>
+          <p className="text-meta text-ink-3">{t('admin.task_plugins.common.offline')}</p>
         ) : null}
       </div>
 

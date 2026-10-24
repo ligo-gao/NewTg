@@ -137,7 +137,7 @@ export function AnnouncementPopup() {
          */}
         <div
           data-testid="announcement-popup-content"
-          className="break-words text-sm leading-6 text-ink-1 [&_a]:text-brand [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-border-default [&_blockquote]:pl-3 [&_code]:rounded [&_code]:bg-surface-subtle [&_code]:px-1 [&_h1]:text-lg [&_h1]:font-semibold [&_h2]:text-base [&_h2]:font-semibold [&_li]:ml-5 [&_li]:list-disc [&_ol_li]:list-decimal [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-surface-subtle [&_pre]:p-2"
+          className="break-words text-body leading-6 text-ink-1 [&_a]:text-brand [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-border-default [&_blockquote]:pl-3 [&_code]:rounded [&_code]:bg-surface-subtle [&_code]:px-1 [&_h1]:text-page-title [&_h1]:font-semibold [&_h2]:text-section [&_h2]:font-semibold [&_li]:ml-5 [&_li]:list-disc [&_ol_li]:list-decimal [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-surface-subtle [&_pre]:p-2"
           dangerouslySetInnerHTML={{ __html: current.content_html }}
         />
       </div>

@@ -78,7 +78,9 @@ export function CcSwitchDialog({
   function buildDeepLink(key: string): string {
     const origin = typeof location !== 'undefined' ? location.origin : ''
     const endpoint = app === 'codex' ? `${origin}/v1` : origin
-    const apiKey = key.startsWith('sk-') ? key : `sk-${key}`
+    // 新令牌明文以 `sk-` 开头；历史令牌可能是 `nkt-`。两者都按完整明文
+    // 哈希校验，深链接直接使用原始 key，不要再拼前缀。
+    const apiKey = key
     const params = new URLSearchParams({
       resource: 'provider',
       app,
@@ -90,9 +92,11 @@ export function CcSwitchDialog({
       model: primary,
     })
     if (app === 'claude') {
-      if (haiku !== '') params.set('haikuModel', haiku)
-      if (sonnet !== '') params.set('sonnetModel', sonnet)
-      if (opus !== '') params.set('opusModel', opus)
+      // Claude Code 还会用小模型处理后台任务；留空会回落到 cc-switch 的
+      // 默认 Claude 模型，而本网关没有该渠道（503）。未填时统一回落到主模型。
+      params.set('haikuModel', haiku !== '' ? haiku : primary)
+      params.set('sonnetModel', sonnet !== '' ? sonnet : primary)
+      params.set('opusModel', opus !== '' ? opus : primary)
     }
     return `ccswitch://v1/import?${params.toString()}`
   }
@@ -132,12 +136,12 @@ export function CcSwitchDialog({
     >
       <div className="flex flex-col gap-3">
         <fieldset className="flex flex-col gap-2">
-          <legend className="text-[13px] font-medium text-ink-1">
+          <legend className="text-meta font-medium text-ink-1">
             {t('common.tokens.ccSwitch.application')}
           </legend>
           <div className="flex gap-4">
             {APPS.map((value) => (
-              <label key={value} className="flex items-center gap-1.5 text-sm">
+              <label key={value} className="flex items-center gap-1.5 text-body">
                 <input
                   type="radio"
                   name="cc-switch-app"
@@ -189,14 +193,14 @@ export function CcSwitchDialog({
         ) : null}
 
         <div className="flex items-center gap-2">
-          <span className="text-xs text-ink-2">{t('common.tokens.form.key')}</span>
-          <code className="rounded bg-surface-subtle px-2 py-1 font-mono text-xs text-ink-2">
+          <span className="text-meta text-ink-2">{t('common.tokens.form.key')}</span>
+          <code className="rounded bg-surface-subtle px-2 py-1 font-mono text-meta text-ink-2">
             {MASKED_KEY}
           </code>
         </div>
         <div
           role="note"
-          className="rounded-md border-l-4 border-warning bg-warning-bg px-3 py-2 text-xs text-warning"
+          className="rounded-md border-l-4 border-warning bg-warning-bg px-3 py-2 text-meta text-warning"
         >
           <p>{t('common.tokens.ccSwitch.warning')}</p>
           <p className="mt-1">{t('common.tokens.ccSwitch.notInstalled')}</p>

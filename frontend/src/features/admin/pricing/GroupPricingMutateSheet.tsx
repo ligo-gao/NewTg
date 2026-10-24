@@ -304,12 +304,12 @@ export function GroupPricingMutateSheet({
         {formError !== undefined ? <FormAlert>{formError}</FormAlert> : null}
 
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="override-group" className="text-[13px] font-medium text-ink-1">
+          <label htmlFor="override-group" className="text-meta font-medium text-ink-1">
             {t('admin.pricing.group')}
           </label>
           <select
             id="override-group"
-            className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+            className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
             value={group}
             disabled={mode === 'edit'}
             aria-invalid={fieldErrors.group !== undefined ? true : undefined}
@@ -330,14 +330,14 @@ export function GroupPricingMutateSheet({
             ))}
           </select>
           {fieldErrors.group !== undefined ? (
-            <p className="text-xs text-danger">{fieldErrors.group}</p>
+            <p className="text-meta text-danger">{fieldErrors.group}</p>
           ) : null}
           {groupsQuery.isError ? (
-            <div className="flex items-center gap-2 text-xs text-danger">
+            <div className="flex items-center gap-2 text-meta text-danger">
               <span>{t('admin.pricing.group_load_error')}</span>
               <Button
                 variant="ghost"
-                className="h-6 px-1 text-xs"
+                className="h-6 px-1 text-meta"
                 onClick={() => void groupsQuery.refetch()}
               >
                 {t('common.action.retry')}
@@ -387,12 +387,12 @@ export function GroupPricingMutateSheet({
         />
 
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="override-status" className="text-[13px] font-medium text-ink-1">
+          <label htmlFor="override-status" className="text-meta font-medium text-ink-1">
             {t('admin.pricing.status')}
           </label>
           <select
             id="override-status"
-            className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             value={status}
             onChange={(event) => {
               setStatus(event.target.value === '2' ? 2 : 1)

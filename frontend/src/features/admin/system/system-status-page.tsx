@@ -238,12 +238,12 @@ export function SystemStatusPage() {
     <div className="mx-auto flex max-w-[1520px] flex-col gap-4" data-testid="system-status-page">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-ink-1">{t('settings.status.title')}</h1>
-          <p className="mt-1 text-sm text-ink-2">{t('settings.status.subtitle')}</p>
+          <h1 className="text-page-title font-semibold text-ink-1">{t('settings.status.title')}</h1>
+          <p className="mt-1 text-body text-ink-2">{t('settings.status.subtitle')}</p>
         </div>
         <div className="flex items-center gap-3">
           {lastUpdated !== null ? (
-            <span className="text-xs text-ink-3">
+            <span className="text-meta text-ink-3">
               {t('settings.status.last_updated', { time: lastUpdated })}
             </span>
           ) : null}
@@ -259,7 +259,7 @@ export function SystemStatusPage() {
       </header>
 
       {query.isPending ? (
-        <p className="text-sm text-ink-2" role="status">
+        <p className="text-body text-ink-2" role="status">
           {t('settings.status.loading')}
         </p>
       ) : null}
@@ -279,13 +279,13 @@ export function SystemStatusPage() {
       {query.isSuccess ? (
         <>
           <SystemCard title={t('settings.status.version_title')} testId="system-status-version">
-            <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+            <dl className="grid grid-cols-1 gap-3 text-body sm:grid-cols-2">
               <div>
-                <dt className="text-xs text-ink-3">{t('settings.status.version')}</dt>
+                <dt className="text-meta text-ink-3">{t('settings.status.version')}</dt>
                 <dd className="font-mono text-ink-1">{data?.version ?? '—'}</dd>
               </div>
               <div>
-                <dt className="text-xs text-ink-3">{t('settings.status.uptime')}</dt>
+                <dt className="text-meta text-ink-3">{t('settings.status.uptime')}</dt>
                 <dd className="font-mono text-ink-1">
                   {formatUptime(data?.uptime, {
                     days: t('settings.status.uptime_value'),
@@ -301,7 +301,7 @@ export function SystemStatusPage() {
           <SystemUpdateCard currentVersion={data?.version} />
 
           <SystemCard title={t('settings.status.polling_title')} testId="system-status-polling">
-            <ul className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
+            <ul className="flex flex-wrap gap-x-6 gap-y-2 text-body">
               <li className="flex items-center gap-2">
                 <span className="text-ink-2">{t('settings.status.polling_interval')}</span>
                 <span className="font-mono text-ink-1">
@@ -338,7 +338,7 @@ export function SystemStatusPage() {
                 </StatusBadge>
               </li>
             </ul>
-            <p className="mt-2 text-xs text-ink-3">{t('settings.status.polling_note')}</p>
+            <p className="mt-2 text-meta text-ink-3">{t('settings.status.polling_note')}</p>
           </SystemCard>
 
           <SystemCard title={t('settings.status.dependencies_title')} testId="system-status-dependencies">
@@ -346,7 +346,7 @@ export function SystemStatusPage() {
               {(['db', 'redis', 'worker'] as const).map((dependency) => {
                 const state = dependencyState(dependencies[dependency])
                 return (
-                  <li key={dependency} className="flex items-center gap-2 text-sm">
+                  <li key={dependency} className="flex items-center gap-2 text-body">
                     <span className="text-ink-2">{t(`settings.status.dependency_${dependency}`)}</span>
                     <StatusBadge variant={badgeVariant(state)}>
                       {t(`settings.status.${state}`)}
@@ -361,11 +361,11 @@ export function SystemStatusPage() {
               时给出黄色提示（不展示任何用户标识或种子）。 */}
           <SystemCard title={t('settings.status.mfa_title')} testId="system-status-mfa">
             {!mfaAvailable ? (
-              <p className="text-sm text-ink-3">{t('settings.status.mfa_unavailable')}</p>
+              <p className="text-body text-ink-3">{t('settings.status.mfa_unavailable')}</p>
             ) : (
-              <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-4 text-body sm:grid-cols-2">
                 <div>
-                  <p className="text-xs text-ink-3">{t('settings.status.mfa_global')}</p>
+                  <p className="text-meta text-ink-3">{t('settings.status.mfa_global')}</p>
                   <p className="mt-1 flex items-center gap-2">
                     <span className="font-mono text-ink-1">{mfaPct.toFixed(1)}%</span>
                     <span className="text-ink-2">
@@ -376,13 +376,13 @@ export function SystemStatusPage() {
                     </span>
                   </p>
                   {mfaMissingUsers > 0 ? (
-                    <p className="mt-1 text-xs text-warning">
+                    <p className="mt-1 text-meta text-warning">
                       {t('settings.status.mfa_warning_users', { count: mfaMissingUsers })}
                     </p>
                   ) : null}
                 </div>
                 <div>
-                  <p className="text-xs text-ink-3">{t('settings.status.mfa_admin')}</p>
+                  <p className="text-meta text-ink-3">{t('settings.status.mfa_admin')}</p>
                   <p className="mt-1 flex items-center gap-2">
                     <span className="font-mono text-ink-1">{mfaAdminPct.toFixed(1)}%</span>
                     <span className="text-ink-2">
@@ -395,7 +395,7 @@ export function SystemStatusPage() {
                     </span>
                   </p>
                   {mfaMissingAdmins > 0 ? (
-                    <p className="mt-1 text-xs text-warning">
+                    <p className="mt-1 text-meta text-warning">
                       {t('settings.status.mfa_warning_admins', { count: mfaMissingAdmins })}
                       {' '}
                       <a
@@ -414,11 +414,11 @@ export function SystemStatusPage() {
           {!instancesForbidden ? (
             <SystemCard title={t('settings.status.instances_title')} testId="system-status-instances">
             {instances.length === 0 ? (
-              <p className="text-sm text-ink-3">{t('settings.status.instances_empty')}</p>
+              <p className="text-body text-ink-3">{t('settings.status.instances_empty')}</p>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[640px] text-left text-sm">
-                  <thead className="text-xs text-ink-3">
+                <table className="w-full min-w-[640px] text-left text-body">
+                  <thead className="text-meta text-ink-3">
                     <tr>
                       <th scope="col" className="py-2 pr-4 font-medium">
                         {t('settings.status.instance_name')}

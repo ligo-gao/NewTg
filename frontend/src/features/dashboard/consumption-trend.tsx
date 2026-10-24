@@ -63,14 +63,14 @@ export function ConsumptionTrend({
   return (
     <section className="rounded-xl border border-border-hairline bg-surface-card p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-ink-1">
+        <h3 className="text-body font-semibold text-ink-1">
           {t('common.dashboard.trend.title')}
         </h3>
         <div className="flex flex-wrap items-center gap-2">
           {selectedModel !== undefined ? (
             <span
               data-testid="trend-filter-chip"
-              className="inline-flex items-center gap-1 rounded-md border border-brand-line bg-brand-subtle px-2 py-0.5 text-xs text-brand"
+              className="inline-flex items-center gap-1 rounded-md border border-brand-line bg-brand-subtle px-2 py-0.5 text-badge text-brand"
             >
               {t('common.dashboard.trend.filter_chip', { model: selectedModel })}
               <button
@@ -83,7 +83,7 @@ export function ConsumptionTrend({
               </button>
             </span>
           ) : null}
-          <span className="rounded-md bg-surface-subtle px-2 py-0.5 text-xs text-ink-2">
+          <span className="rounded-md bg-surface-subtle px-2 py-0.5 text-badge text-ink-2">
             {granularity === 'hour'
               ? t('common.dashboard.trend.aggregated_hour')
               : t('common.dashboard.trend.aggregated_day')}
@@ -98,13 +98,13 @@ export function ConsumptionTrend({
           className="mt-4 h-60 animate-pulse rounded-lg bg-surface-hover motion-reduce:animate-none"
         />
       ) : error ? (
-        <div data-testid="trend-error" className="mt-4 rounded-lg border border-danger-line bg-danger-bg p-3 text-sm text-danger">
+        <div data-testid="trend-error" className="mt-4 rounded-lg border border-danger-line bg-danger-bg p-3 text-body text-danger">
           <p>{t('common.dashboard.error')}</p>
           <button
             type="button"
             data-testid="trend-retry"
             onClick={onRetry}
-            className="mt-2 rounded border border-danger-line px-2 py-0.5 text-xs focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="mt-2 rounded border border-danger-line px-2 py-0.5 text-badge focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
             {t('common.action.retry')}
           </button>
@@ -112,7 +112,7 @@ export function ConsumptionTrend({
       ) : !hasPoints ? (
         <div
           data-testid="trend-empty"
-          className="mt-4 flex min-h-60 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-neutral-line text-sm text-neutral"
+          className="mt-4 flex min-h-60 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-neutral-line text-body text-neutral"
         >
           <p>{t('common.chart.empty')}</p>
           <a href="/tokens" className="text-brand underline">

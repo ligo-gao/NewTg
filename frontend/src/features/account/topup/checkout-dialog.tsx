@@ -320,7 +320,7 @@ export function CheckoutDialog({
         <>
           <a
             href="/orders"
-            className="inline-flex h-9 items-center justify-center rounded-lg border border-border-default bg-surface-card px-3.5 text-sm font-medium text-ink-1 hover:bg-surface-hover"
+            className="inline-flex h-9 items-center justify-center rounded-lg border border-border-default bg-surface-card px-3.5 text-body font-medium text-ink-1 hover:bg-surface-hover"
           >
             {t('account.checkout.view_order')}
           </a>
@@ -351,7 +351,7 @@ export function CheckoutDialog({
         <>
           <a
             href="/orders"
-            className="inline-flex h-9 items-center justify-center rounded-lg border border-border-default bg-surface-card px-3.5 text-sm font-medium text-ink-1 hover:bg-surface-hover"
+            className="inline-flex h-9 items-center justify-center rounded-lg border border-border-default bg-surface-card px-3.5 text-body font-medium text-ink-1 hover:bg-surface-hover"
           >
             {t('account.checkout.view_order')}
           </a>
@@ -402,7 +402,7 @@ export function CheckoutDialog({
 
       {view === 'success' && settled !== null ? (
         <div aria-live="polite" className="mt-4">
-          <p className="flex items-center gap-2 text-[15px] font-semibold text-success">
+          <p className="flex items-center gap-2 text-card-title text-success">
             <span aria-hidden="true">✓</span>
             {isSubscription
               ? t('account.subscription.checkout.success')
@@ -432,24 +432,24 @@ export function CheckoutDialog({
 
       {view === 'waiting' ? (
         <div aria-live="polite" className="mt-4">
-          <p className="text-[15px] font-semibold text-info">
+          <p className="text-card-title text-info">
             {t('account.checkout.processing')}
           </p>
-          <p className="mt-1 text-sm text-ink-2">
+          <p className="mt-1 text-body text-ink-2">
             {t('account.checkout.processing_body')}
           </p>
           {pollTimedOut ? (
-            <p className="mt-2 text-sm text-ink-2">{t('account.checkout.timeout')}</p>
+            <p className="mt-2 text-body text-ink-2">{t('account.checkout.timeout')}</p>
           ) : null}
         </div>
       ) : null}
 
       {view === 'terminal' && terminalStatus !== null ? (
         <div aria-live="polite" className="mt-4">
-          <p className="text-[15px] font-semibold text-danger">
+          <p className="text-card-title text-danger">
             {t(`account.orders.status_${terminalStatus}`)}
           </p>
-          <p className="mt-1 text-sm text-ink-2">
+          <p className="mt-1 text-body text-ink-2">
             {t(`account.checkout.${terminalStatus}_body`)}
           </p>
         </div>
@@ -457,10 +457,10 @@ export function CheckoutDialog({
 
       {view === 'checkout' && !hasPayload ? (
         <div aria-live="polite" className="mt-4">
-          <p className="text-[15px] font-semibold text-warning">
+          <p className="text-card-title text-warning">
             {t('account.checkout.replay_title')}
           </p>
-          <p className="mt-1 text-sm text-ink-2">
+          <p className="mt-1 text-body text-ink-2">
             {t('account.checkout.replay_pending')}
           </p>
         </div>
@@ -480,7 +480,7 @@ export function CheckoutDialog({
             />
             {countdownReady && countdown.seconds === 0 ? (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-lg bg-overlay">
-                <p className="text-sm font-medium text-ink-1">
+                <p className="text-body font-medium text-ink-1">
                   {t('account.checkout.qr_expired')}
                 </p>
                 {onRefresh !== undefined ? (
@@ -491,10 +491,10 @@ export function CheckoutDialog({
               </div>
             ) : null}
           </div>
-          <p className="mt-3 text-center text-sm text-ink-2">
+          <p className="mt-3 text-center text-body text-ink-2">
             {t('account.checkout.alipay_scan')}
           </p>
-          <div className="mt-3 flex items-center justify-between text-sm">
+          <div className="mt-3 flex items-center justify-between text-body">
             <span className="text-ink-2">{t('account.checkout.time_remaining')}</span>
             <span
               className={[
@@ -510,11 +510,11 @@ export function CheckoutDialog({
 
       {view === 'checkout' && !isAlipay && clientSecret !== undefined ? (
         <div className="mt-4">
-          <p className="text-xs text-ink-3">
+          <p className="text-meta text-ink-3">
             {t('account.checkout.powered_by')}
           </p>
           {stripeError ? (
-            <div className="mt-3 rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-sm text-danger">
+            <div className="mt-3 rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-body text-danger">
               {t('account.checkout.checkout_failed')}
               <Button
                 variant="secondary"
@@ -533,7 +533,7 @@ export function CheckoutDialog({
               <div className="h-11 rounded-lg bg-surface-subtle" />
             </div>
           ) : clientSecret === undefined ? (
-            <p className="mt-3 text-sm text-danger">
+            <p className="mt-3 text-body text-danger">
               {t('account.checkout.init_failed')}
             </p>
           ) : (
@@ -595,7 +595,7 @@ function StripeCardForm({
         <CardElement options={{ hidePostalCode: true }} />
       </div>
       {error !== null ? (
-        <p role="alert" className="text-sm text-danger">
+        <p role="alert" className="text-body text-danger">
           {t('account.checkout.card_error', { message: error })}
         </p>
       ) : null}
@@ -617,9 +617,9 @@ function OrderMetaRow({
 }) {
   const { t } = useI18n()
   return (
-    <div className="flex items-center justify-between gap-3 text-sm">
+    <div className="flex items-center justify-between gap-3 text-body">
       <span className="text-ink-2">{t('account.checkout.order_id')}</span>
-      <span className="font-mono text-[13px] text-ink-1">#{orderId}</span>
+      <span className="font-mono text-meta text-ink-1">#{orderId}</span>
       <Button
         variant="ghost"
         aria-label={t('account.checkout.copy')}
@@ -644,7 +644,7 @@ function SummaryRow({
   testId?: string
 }) {
   return (
-    <div className="flex items-end gap-2 text-sm">
+    <div className="flex items-end gap-2 text-body">
       <dt className="text-ink-2">{label}</dt>
       <span
         aria-hidden="true"

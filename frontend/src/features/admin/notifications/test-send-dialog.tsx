@@ -197,7 +197,7 @@ export function TestSendDialog({
           </FormAlert>
         ) : null}
         {!online ? (
-          <p className="text-xs text-ink-3">
+          <p className="text-meta text-ink-3">
             {t('settings.notification_templates.page.offline')}
           </p>
         ) : null}

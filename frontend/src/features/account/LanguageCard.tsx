@@ -74,13 +74,13 @@ export function LanguageCard() {
 
   return (
     <section className="rounded-xl border border-border-hairline bg-surface-card p-5">
-      <h2 className="text-base font-semibold text-ink-1">
+      <h2 className="text-section text-ink-1">
         {t('account.language.title')}
       </h2>
-      <p className="mt-1 text-[13px] text-ink-2">
+      <p className="mt-1 text-meta text-ink-2">
         {t('account.language.description')}
       </p>
-      <label className="mt-4 flex max-w-[320px] flex-col gap-1.5 text-[13px] text-ink-2">
+      <label className="mt-4 flex max-w-[320px] flex-col gap-1.5 text-meta text-ink-2">
         <span>{t('account.language.label')}</span>
         <select
           value={locale}
@@ -88,7 +88,7 @@ export function LanguageCard() {
           onChange={(event) => {
             void handleChange(event.target.value as Locale)
           }}
-          className="h-9 rounded-lg border border-border-default bg-surface-page px-2 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-60"
+          className="h-9 rounded-lg border border-border-default bg-surface-page px-2 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-60"
         >
           {locales.map((item) => (
             <option key={item} value={item}>

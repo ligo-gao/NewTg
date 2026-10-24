@@ -510,7 +510,7 @@ export function TokenMutateSheet({
           {conflict !== null ? (
             <div
               role="alert"
-              className="flex items-center justify-between gap-2 rounded-md border border-danger bg-danger-bg px-3 py-2 text-xs text-danger"
+              className="flex items-center justify-between gap-2 rounded-md border border-danger bg-danger-bg px-3 py-2 text-meta text-danger"
             >
               <span>
                 {conflict === 'create'
@@ -544,7 +544,7 @@ export function TokenMutateSheet({
           {mode === 'edit' && detailQuery.isError ? (
             <div
               role="alert"
-              className="flex items-center justify-between gap-2 rounded-md border border-danger bg-danger-bg px-3 py-2 text-xs text-danger"
+              className="flex items-center justify-between gap-2 rounded-md border border-danger bg-danger-bg px-3 py-2 text-meta text-danger"
             >
               <span>{t('common.tokens.error.load')}</span>
               <Button
@@ -559,7 +559,7 @@ export function TokenMutateSheet({
           ) : null}
 
           <section className="flex flex-col gap-3">
-            <h3 className="text-base font-semibold text-ink-1">
+            <h3 className="text-section text-ink-1">
               {t('common.tokens.form.basic')}
             </h3>
             <TextField
@@ -570,14 +570,14 @@ export function TokenMutateSheet({
             />
             {mode === 'edit' ? (
               <div className="flex flex-col gap-1">
-                <span className="text-[13px] font-medium text-ink-1">
+                <span className="text-meta font-medium text-ink-1">
                   {t('common.tokens.form.key')}
                 </span>
                 <div className="flex items-center gap-2">
                   <code
                     aria-readonly="true"
                     aria-label={t('common.tokens.form.keyReadonly')}
-                    className="flex-1 rounded-md bg-surface-subtle px-2 py-2 font-mono text-[13px] text-ink-1"
+                    className="flex-1 rounded-md bg-surface-subtle px-2 py-2 font-mono text-meta text-ink-1"
                   >
                     {MASKED_KEY}
                   </code>
@@ -597,12 +597,12 @@ export function TokenMutateSheet({
               />
             )}
             <div className="flex flex-col gap-1.5">
-              <label htmlFor="token-group" className="text-[13px] font-medium text-ink-1">
+              <label htmlFor="token-group" className="text-meta font-medium text-ink-1">
                 {t('common.tokens.form.group')}
               </label>
               <select
                 id="token-group"
-                className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+                className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
                 {...register('group')}
               >
                 <option value="">{t('common.tokens.form.selectGroup')}</option>
@@ -616,10 +616,10 @@ export function TokenMutateSheet({
                 </option>
               </select>
               {errors.group?.message !== undefined ? (
-                <p className="text-xs text-danger">{errors.group.message}</p>
+                <p className="text-meta text-danger">{errors.group.message}</p>
               ) : null}
               {mode === 'edit' && originalGroup !== undefined && group !== originalGroup ? (
-                <p className="text-xs text-warning">{t('common.tokens.form.groupSwitchHint')}</p>
+                <p className="text-meta text-warning">{t('common.tokens.form.groupSwitchHint')}</p>
               ) : null}
             </div>
 
@@ -638,13 +638,13 @@ export function TokenMutateSheet({
             <div className="flex flex-col gap-1.5">
               <label
                 htmlFor="token-expiration"
-                className="text-[13px] font-medium text-ink-1"
+                className="text-meta font-medium text-ink-1"
               >
                 {t('common.tokens.form.expiration')}
               </label>
               <select
                 id="token-expiration"
-                className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+                className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
                 {...register('expiration')}
               >
                 <option value="never">{t('common.tokens.form.never')}</option>
@@ -665,10 +665,10 @@ export function TokenMutateSheet({
           </section>
 
           <section className="flex flex-col gap-3 border-t border-border-hairline pt-4">
-            <h3 className="text-base font-semibold text-ink-1">
+            <h3 className="text-section text-ink-1">
               {t('common.tokens.form.quotaSection')}
             </h3>
-            <label className="flex items-center gap-2 text-sm text-ink-1">
+            <label className="flex items-center gap-2 text-body text-ink-1">
               <input type="checkbox" {...register('unlimited')} />
               {t('common.tokens.form.unlimited')}
             </label>
@@ -684,7 +684,7 @@ export function TokenMutateSheet({
           </section>
 
           <details className="border-t border-border-hairline pt-4">
-            <summary className="cursor-pointer text-base font-semibold text-ink-1">
+            <summary className="cursor-pointer text-section text-ink-1">
               {t('common.tokens.form.advanced')}
             </summary>
             <div className="mt-3 flex flex-col gap-3">
@@ -702,11 +702,11 @@ export function TokenMutateSheet({
               />
               {group === 'auto' ? (
                 <div className="flex flex-col gap-1">
-                  <label className="flex items-center gap-2 text-sm text-ink-1">
+                  <label className="flex items-center gap-2 text-body text-ink-1">
                     <input type="checkbox" {...register('crossGroupRetry')} />
                     {t('common.tokens.form.crossGroupRetry')}
                   </label>
-                  <p className="text-xs text-warning">
+                  <p className="text-meta text-warning">
                     {t('common.tokens.form.crossGroupRetryHint')}
                   </p>
                 </div>

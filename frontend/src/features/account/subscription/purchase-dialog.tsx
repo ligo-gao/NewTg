@@ -241,16 +241,16 @@ export function SubscriptionPurchaseDialog({
   }
 
   const providerSection = isFree ? (
-    <p className="mt-4 rounded-lg border border-info-line bg-info-bg px-3 py-2 text-sm text-info">
+    <p className="mt-4 rounded-lg border border-info-line bg-info-bg px-3 py-2 text-body text-info">
       {t('account.subscription.purchase.free_hint')}
     </p>
   ) : (
     <fieldset className="mt-4">
-      <legend className="mb-2 text-[13px] font-medium text-ink-1">
+      <legend className="mb-2 text-meta font-medium text-ink-1">
         {t('account.subscription.purchase.payment_method')}
       </legend>
       {providers.length === 0 ? (
-        <p className="text-sm text-ink-2">
+        <p className="text-body text-ink-2">
           {configQuery.isPending || walletQuery.isPending
             ? t('account.subscription.purchase.loading_providers')
             : t('account.subscription.purchase.no_providers')}
@@ -260,7 +260,7 @@ export function SubscriptionPurchaseDialog({
           {providers.map((option) => (
             <label
               key={option}
-              className="flex cursor-pointer items-center justify-between gap-2 rounded-lg border border-border-default bg-surface-page px-3 py-2 text-sm text-ink-1"
+              className="flex cursor-pointer items-center justify-between gap-2 rounded-lg border border-border-default bg-surface-page px-3 py-2 text-body text-ink-1"
             >
               <span className="flex items-center gap-2">
                 <input
@@ -277,7 +277,7 @@ export function SubscriptionPurchaseDialog({
                 {t(providerLabelKey(option))}
               </span>
               {option === 'wallet' && walletBalance !== undefined ? (
-                <span className="text-xs tabular-nums text-ink-2">
+                <span className="text-meta tabular-nums text-ink-2">
                   {t('account.subscription.purchase.wallet_balance', {
                     balance: formatCredits(walletBalance),
                   })}
@@ -336,7 +336,7 @@ export function SubscriptionPurchaseDialog({
         panelClassName="max-w-[480px]"
         footer={footer}
       >
-        <dl className="flex flex-col gap-2 text-sm">
+        <dl className="flex flex-col gap-2 text-body">
           <div className="flex items-center justify-between gap-4">
             <dt className="text-ink-2">{t('account.subscription.plan.label')}</dt>
             <dd className="font-medium text-ink-1">{plan.title}</dd>
@@ -367,10 +367,10 @@ export function SubscriptionPurchaseDialog({
 
         {activated ? (
           <div aria-live="polite" className="mt-4">
-            <p className="text-[15px] font-semibold text-success">
+            <p className="text-card-title text-success">
               {t('account.subscription.purchase.activated_title')}
             </p>
-            <p className="mt-1 text-sm text-ink-2">
+            <p className="mt-1 text-body text-ink-2">
               {t('account.subscription.purchase.activated_body')}
             </p>
           </div>
@@ -379,7 +379,7 @@ export function SubscriptionPurchaseDialog({
         )}
 
         {error !== null ? (
-          <p role="alert" className="mt-3 text-sm text-danger">
+          <p role="alert" className="mt-3 text-body text-danger">
             {t(error.key, error.values)}
           </p>
         ) : null}

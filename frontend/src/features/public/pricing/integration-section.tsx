@@ -42,7 +42,7 @@ export function IntegrationSection({
 
   return (
     <section aria-labelledby={`${panelId}-title`} className="flex flex-col gap-4">
-      <h2 id={`${panelId}-title`} className="text-base font-semibold leading-6 text-ink-1">
+      <h2 id={`${panelId}-title`} className="text-section font-semibold leading-6 text-ink-1">
         {t('public.pricing.detail.integration')}
       </h2>
 
@@ -60,7 +60,7 @@ export function IntegrationSection({
               tabIndex={selected ? 0 : -1}
               onClick={() => setTab(option)}
               className={[
-                'rounded-md px-3 py-1 text-[13px] font-medium leading-5',
+                'rounded-md px-3 py-1 text-meta font-medium leading-5',
                 selected ? 'bg-surface-card text-ink-1 shadow-sm' : 'text-ink-2 hover:text-ink-1',
                 'focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
               ].join(' ')}
@@ -87,17 +87,17 @@ export function IntegrationSection({
             <path d="M11 5V4a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h1" />
           </svg>
         </button>
-        <pre tabIndex={0} className="overflow-x-auto p-4 pr-12 text-[13px] leading-5 text-ink-1">
+        <pre tabIndex={0} className="overflow-x-auto p-4 pr-12 text-meta leading-5 text-ink-1">
           <code>{code}</code>
         </pre>
         {target.configured ? null : (
-          <p className="border-t border-warning-line bg-warning-bg px-4 py-2 text-xs text-warning">
+          <p className="border-t border-warning-line bg-warning-bg px-4 py-2 text-meta text-warning">
             {t('public.pricing.detail.server_address_unset')}
           </p>
         )}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-info-line bg-info-bg px-3 py-2 text-[13px] text-info">
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-info-line bg-info-bg px-3 py-2 text-meta text-info">
         <span>{t('public.pricing.detail.key_hint')}</span>
         <a
           href={isLoggedIn ? '/tokens' : '/sign-in?redirect=%2Ftokens'}
@@ -111,12 +111,12 @@ export function IntegrationSection({
 
       {detail.rate_limits.length > 0 ? (
         <div className="flex flex-col gap-2">
-          <h3 className="text-[13px] font-semibold text-ink-1">
+          <h3 className="text-meta font-semibold text-ink-1">
             {t('public.pricing.detail.rate_limits')}
           </h3>
           <div className="overflow-x-auto rounded-lg border border-border-default">
-            <table className="w-full min-w-[420px] text-[13px]">
-              <thead className="bg-surface-subtle text-left text-xs text-ink-2">
+            <table className="w-full min-w-[420px] text-meta">
+              <thead className="bg-surface-subtle text-left text-meta text-ink-2">
                 <tr className="h-9">
                   <th scope="col" className="px-3">{t('public.pricing.detail.group')}</th>
                   <th scope="col" className="px-3 text-right">{t('public.pricing.detail.rpm')}</th>
@@ -140,10 +140,10 @@ export function IntegrationSection({
       ) : null}
 
       <div className="flex flex-col gap-2">
-        <h3 className="text-[13px] font-semibold text-ink-1">
+        <h3 className="text-meta font-semibold text-ink-1">
           {t('public.pricing.detail.auth')}
         </h3>
-        <pre className="overflow-x-auto rounded-lg border border-border-default bg-surface-card p-4 text-[13px] leading-5 text-ink-1">
+        <pre className="overflow-x-auto rounded-lg border border-border-default bg-surface-card p-4 text-meta leading-5 text-ink-1">
           <code>{`Authorization: Bearer <YOUR_TOKEN>
 x-api-key: <YOUR_TOKEN>
 anthropic-version: 2023-06-01`}</code>
@@ -152,12 +152,12 @@ anthropic-version: 2023-06-01`}</code>
 
       {detail.parameters.length > 0 ? (
         <div className="flex flex-col gap-2">
-          <h3 className="text-[13px] font-semibold text-ink-1">
+          <h3 className="text-meta font-semibold text-ink-1">
             {t('public.pricing.detail.parameters')}
           </h3>
           <div className="overflow-x-auto rounded-lg border border-border-default">
-            <table className="w-full min-w-[640px] text-[13px]">
-              <thead className="bg-surface-subtle text-left text-xs text-ink-2">
+            <table className="w-full min-w-[640px] text-meta">
+              <thead className="bg-surface-subtle text-left text-meta text-ink-2">
                 <tr className="h-9">
                   <th scope="col" className="px-3">{t('public.pricing.detail.param_name')}</th>
                   <th scope="col" className="px-3">{t('public.pricing.detail.param_required')}</th>

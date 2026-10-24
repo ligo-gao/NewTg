@@ -181,7 +181,7 @@ export function InstalledTab({
       {factoryDisabledKeys.length > 0 ? (
         <div
           data-testid="factory-disabled-banner"
-          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning-line bg-warning-bg px-3 py-2 text-sm text-warning"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning-line bg-warning-bg px-3 py-2 text-body text-warning"
         >
           <span>
             {t('admin.task_plugins.installed.factory_banner', {
@@ -191,7 +191,7 @@ export function InstalledTab({
           {canManage ? (
             <Button
               variant="ghost"
-              className="h-7 px-2 text-xs"
+              className="h-7 px-2 text-badge"
               onClick={() => setFactoryOpen(true)}
             >
               {t('admin.task_plugins.installed.factory_manage')}
@@ -202,7 +202,7 @@ export function InstalledTab({
 
       <SectionCard>
         <div className="flex flex-wrap items-end gap-2">
-          <label className="flex flex-col gap-1 text-xs text-ink-3">
+          <label className="flex flex-col gap-1 text-meta text-ink-3">
             {t('admin.task_plugins.installed.search')}
             <input
               type="search"
@@ -212,10 +212,10 @@ export function InstalledTab({
                 setPage(1)
               }}
               placeholder={t('admin.task_plugins.installed.search_placeholder')}
-              className="h-9 w-56 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="h-9 w-56 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             />
           </label>
-          <label className="flex flex-col gap-1 text-xs text-ink-3">
+          <label className="flex flex-col gap-1 text-meta text-ink-3">
             {t('admin.task_plugins.installed.filter_source')}
             <select
               value={source}
@@ -223,14 +223,14 @@ export function InstalledTab({
                 setSource(event.target.value as typeof source)
                 setPage(1)
               }}
-              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
             >
               <option value="">{t('admin.task_plugins.installed.all_sources')}</option>
               <option value="builtin">{t('admin.task_plugins.source.builtin')}</option>
               <option value="upload">{t('admin.task_plugins.source.upload')}</option>
             </select>
           </label>
-          <label className="flex flex-col gap-1 text-xs text-ink-3">
+          <label className="flex flex-col gap-1 text-meta text-ink-3">
             {t('admin.task_plugins.installed.filter_enabled')}
             <select
               value={enabled}
@@ -238,14 +238,14 @@ export function InstalledTab({
                 setEnabled(event.target.value as typeof enabled)
                 setPage(1)
               }}
-              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
             >
               <option value="">{t('admin.task_plugins.installed.all_enabled')}</option>
               <option value="true">{t('admin.task_plugins.installed.enabled_only')}</option>
               <option value="false">{t('admin.task_plugins.installed.disabled_only')}</option>
             </select>
           </label>
-          <label className="flex flex-col gap-1 text-xs text-ink-3">
+          <label className="flex flex-col gap-1 text-meta text-ink-3">
             {t('admin.task_plugins.installed.filter_runtime')}
             <select
               value={runtimeStatus}
@@ -253,7 +253,7 @@ export function InstalledTab({
                 setRuntimeStatus(event.target.value as typeof runtimeStatus)
                 setPage(1)
               }}
-              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
             >
               <option value="">{t('admin.task_plugins.installed.all_runtime')}</option>
               {RUNTIME_STATUSES.map((status) => (
@@ -286,8 +286,8 @@ export function InstalledTab({
 
           {data !== undefined && data.items.length > 0 ? (
             <div className="overflow-x-auto rounded-xl border border-border-default">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-surface-subtle text-xs text-ink-3">
+              <table className="w-full text-left text-body">
+                <thead className="bg-surface-subtle text-meta text-ink-3">
                   <tr>
                     <th className="px-3 py-2 font-medium">
                       {t('admin.task_plugins.installed.col_plugin')}
@@ -327,7 +327,7 @@ export function InstalledTab({
                           <PluginIcon size="sm" icon={plugin.icon} pluginKey={plugin.key} />
                           <span className="flex flex-col">
                             <span className="font-medium text-ink-1">{plugin.name}</span>
-                            <span className="font-mono text-xs text-ink-3">
+                            <span className="font-mono text-meta text-ink-3">
                               {plugin.key}
                             </span>
                           </span>
@@ -336,7 +336,7 @@ export function InstalledTab({
                       <td className="px-3 py-2">
                         <SourceTag source={plugin.source} />
                       </td>
-                      <td className="px-3 py-2 font-mono text-xs">
+                      <td className="px-3 py-2 font-mono text-meta">
                         {plugin.active_version ?? '—'}
                       </td>
                       <td className="px-3 py-2">
@@ -350,7 +350,7 @@ export function InstalledTab({
                             onChange={() => requestToggle(plugin)}
                           />
                         ) : (
-                          <span className="text-xs text-ink-2">
+                          <span className="text-meta text-ink-2">
                             {t(
                               plugin.enabled
                                 ? 'admin.task_plugins.installed.enabled_yes'
@@ -362,19 +362,19 @@ export function InstalledTab({
                       <td className="px-3 py-2">
                         <RuntimeStatusBadge status={plugin.runtime_status} />
                       </td>
-                      <td className="hidden px-3 py-2 text-xs text-ink-2 xl:table-cell">
+                      <td className="hidden px-3 py-2 text-meta text-ink-2 xl:table-cell">
                         <span title={t('admin.task_plugins.installed.bound_hint')}>
                           {plugin.bound_channels}
                         </span>
                       </td>
-                      <td className="hidden px-3 py-2 text-xs text-ink-2 xl:table-cell">
+                      <td className="hidden px-3 py-2 text-meta text-ink-2 xl:table-cell">
                         {formatRelativeTime(plugin.updated_at, locale)}
                       </td>
                       <td className="px-3 py-2">
                         <span className="flex flex-wrap gap-1">
                           <Button
                             variant="ghost"
-                            className="h-7 px-2 text-xs"
+                            className="h-7 px-2 text-badge"
                             onClick={() =>
                               setDrawer({ key: plugin.key, tab: 'metadata' })
                             }
@@ -384,7 +384,7 @@ export function InstalledTab({
                           {plugin.runtime_status === 'compile_failed' ? (
                             <Button
                               variant="ghost"
-                              className="h-7 px-2 text-xs text-danger"
+                              className="h-7 px-2 text-badge text-danger"
                               onClick={() =>
                                 setDrawer({ key: plugin.key, tab: 'integrity' })
                               }
@@ -458,7 +458,7 @@ export function InstalledTab({
           ) : null}
 
           {/* 绑定列尚未落地：可见说明代替把「恒 0」藏进 tooltip。 */}
-          <p className="text-xs text-ink-3">
+          <p className="text-meta text-ink-3">
             {t('admin.task_plugins.installed.bound_hint')}
           </p>
         </div>
@@ -639,12 +639,12 @@ function FactoryDisableDialog({
                   checked={selected.includes(plugin.key)}
                   onChange={() => toggleKey(plugin.key)}
                 />
-                <label htmlFor={`factory-disable-${plugin.key}`} className="text-sm text-ink-1">
+                <label htmlFor={`factory-disable-${plugin.key}`} className="text-body text-ink-1">
                   {plugin.name}{' '}
-                  <span className="font-mono text-xs text-ink-3">{plugin.key}</span>
+                  <span className="font-mono text-meta text-ink-3">{plugin.key}</span>
                 </label>
                 {plugin.runtime_status === 'disabled_fallback' ? (
-                  <span className="text-xs text-warning">
+                  <span className="text-meta text-warning">
                     {t('admin.task_plugins.factory.has_override')}
                   </span>
                 ) : null}

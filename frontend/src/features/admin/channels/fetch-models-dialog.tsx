@@ -140,13 +140,13 @@ export function FetchModelsDialog({
       panelClassName="max-w-[640px]"
     >
       {state === 'loading' ? (
-        <div className="flex min-h-[200px] items-center justify-center gap-2 text-sm text-ink-2">
+        <div className="flex min-h-[200px] items-center justify-center gap-2 text-body text-ink-2">
           <span className="size-4 animate-spin rounded-full border-2 border-border-default border-t-brand" />
           {t('common.channels.fetchModels.loading')}
         </div>
       ) : state === 'error' ? (
         <div className="flex min-h-[200px] flex-col items-center justify-center gap-3 text-center">
-          <p className="text-sm text-danger">{errorMessage}</p>
+          <p className="text-body text-danger">{errorMessage}</p>
           <Button variant="secondary" onClick={() => setNonce((value) => value + 1)}>
             {t('common.channels.fetchModels.retry')}
           </Button>
@@ -158,7 +158,7 @@ export function FetchModelsDialog({
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder={t('common.channels.fetchModels.searchPlaceholder')}
-              className="h-9 min-w-0 flex-1 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="h-9 min-w-0 flex-1 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             />
             <Button variant="ghost" onClick={selectVisible}>
               {t('common.channels.fetchModels.selectAll')}
@@ -168,27 +168,27 @@ export function FetchModelsDialog({
             </Button>
           </div>
 
-          <p className="text-xs text-ink-3">
+          <p className="text-meta text-ink-3">
             {t('common.channels.fetchModels.selectedCount', { count: selected.size })}
           </p>
 
           <div className="max-h-[320px] overflow-y-auto rounded-lg border border-border-hairline">
             {filtered.length === 0 ? (
-              <p className="px-4 py-8 text-center text-sm text-ink-3">
+              <p className="px-4 py-8 text-center text-body text-ink-3">
                 {t('common.channels.fetchModels.empty')}
               </p>
             ) : (
               <ul className="divide-y divide-border-hairline">
                 {filtered.map((model) => (
                   <li key={model}>
-                    <label className="flex cursor-pointer items-center gap-3 px-4 py-2.5 text-sm text-ink-1 hover:bg-surface-hover">
+                    <label className="flex cursor-pointer items-center gap-3 px-4 py-2.5 text-body text-ink-1 hover:bg-surface-hover">
                       <input
                         type="checkbox"
                         checked={selected.has(model)}
                         onChange={() => toggle(model)}
                         className="size-4 rounded border-border-default"
                       />
-                      <span className="truncate font-mono text-[13px]">{model}</span>
+                      <span className="truncate font-mono text-meta">{model}</span>
                     </label>
                   </li>
                 ))}

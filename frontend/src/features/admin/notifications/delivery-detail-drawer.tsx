@@ -41,8 +41,8 @@ function absoluteTime(value: string, locale: string): string {
 function DetailRow({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="grid grid-cols-[9rem_1fr] gap-2 py-1.5">
-      <dt className="text-xs text-ink-3">{label}</dt>
-      <dd className="break-all text-sm text-ink-1">{children}</dd>
+      <dt className="text-meta text-ink-3">{label}</dt>
+      <dd className="break-all text-body text-ink-1">{children}</dd>
     </div>
   )
 }
@@ -125,18 +125,18 @@ export function DeliveryDetailDrawer({
             {data.next_retry_at === null ? '—' : <span title={data.next_retry_at}>{absoluteTime(data.next_retry_at, locale)}</span>}
           </DetailRow>
           <DetailRow label={t('settings.notification_templates.deliveries.detail_dedupe_key')}>
-            <code className="font-mono text-xs">{data.dedupe_key}</code>
+            <code className="font-mono text-meta">{data.dedupe_key}</code>
           </DetailRow>
           <DetailRow label={t('settings.notification_templates.deliveries.detail_provider_message_id')}>
             {data.provider_message_id === undefined || data.provider_message_id === ''
               ? '—'
-              : <code className="font-mono text-xs">{data.provider_message_id}</code>}
+              : <code className="font-mono text-meta">{data.provider_message_id}</code>}
           </DetailRow>
           <DetailRow label={t('settings.notification_templates.deliveries.error')}>
             {data.error === undefined || data.error === '' ? (
               '—'
             ) : (
-              <span className="whitespace-pre-wrap font-mono text-xs text-ink-2">
+              <span className="whitespace-pre-wrap font-mono text-meta text-ink-2">
                 {data.error}
               </span>
             )}

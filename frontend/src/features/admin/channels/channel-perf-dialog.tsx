@@ -57,7 +57,7 @@ function formatTokens(value: number | null | undefined): string {
 const CELL =
   'border-b border-border-hairline px-2 py-2 text-right tabular-nums text-ink-1'
 const HEAD =
-  'border-b border-border-hairline px-2 py-2 text-right text-[11px] font-semibold text-ink-2'
+  'border-b border-border-hairline px-2 py-2 text-right text-badge font-semibold text-ink-2'
 
 export interface ChannelPerformanceDialogProps {
   open: boolean
@@ -197,11 +197,11 @@ export function ChannelPerformanceDialog({
       }
     >
       {channel.supported_models.length === 0 ? (
-        <p className="text-sm text-ink-2">{t('common.channels.perf.empty')}</p>
+        <p className="text-body text-ink-2">{t('common.channels.perf.empty')}</p>
       ) : (
         <div className="flex flex-col gap-4">
           <div className="flex items-center gap-2">
-            <label htmlFor="channel-perf-runs" className="text-sm text-ink-1">
+            <label htmlFor="channel-perf-runs" className="text-body text-ink-1">
               {t('common.channels.perf.runs')}
             </label>
             <select
@@ -211,7 +211,7 @@ export function ChannelPerformanceDialog({
               onChange={(event) => {
                 setRuns(Number(event.target.value))
               }}
-              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
+              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
             >
               {RUN_OPTIONS.map((count) => (
                 <option key={count} value={count}>
@@ -220,7 +220,7 @@ export function ChannelPerformanceDialog({
               ))}
             </select>
             {selectedModels.length === 0 ? (
-              <p className="text-xs text-ink-2">
+              <p className="text-meta text-ink-2">
                 {t('common.channels.perf.noSelection')}
               </p>
             ) : null}
@@ -229,7 +229,7 @@ export function ChannelPerformanceDialog({
           <div className="overflow-x-auto rounded-lg border border-border-hairline">
             <table
               data-testid="perf-results"
-              className="w-full border-collapse text-xs"
+              className="w-full border-collapse text-meta"
             >
               <thead>
                 <tr>

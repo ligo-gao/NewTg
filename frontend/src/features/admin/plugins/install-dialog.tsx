@@ -128,12 +128,12 @@ export function InstallDialog({
       }
     >
       <div className="space-y-3">
-        <label className="flex flex-col gap-1 text-xs text-ink-3">
+        <label className="flex flex-col gap-1 text-meta text-ink-3">
           {t('admin.task_plugins.marketplace.version_label')}
           <select
             value={selected?.version ?? ''}
             onChange={(event) => setVersion(event.target.value)}
-            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
           >
             {available.map((entry) => (
               <option key={`${entry.source_id}-${entry.version}`} value={entry.version}>
@@ -147,15 +147,15 @@ export function InstallDialog({
         </label>
 
         {selected !== undefined ? (
-          <dl className="grid grid-cols-1 gap-2 rounded-lg bg-surface-subtle p-3 text-sm sm:grid-cols-2">
+          <dl className="grid grid-cols-1 gap-2 rounded-lg bg-surface-subtle p-3 text-body sm:grid-cols-2">
             <div>
-              <dt className="text-xs text-ink-3">
+              <dt className="text-meta text-ink-3">
                 {t('admin.task_plugins.marketplace.summary_version')}
               </dt>
               <dd className="font-mono">{selected.version}</dd>
             </div>
             <div>
-              <dt className="text-xs text-ink-3">
+              <dt className="text-meta text-ink-3">
                 {t('admin.task_plugins.marketplace.summary_hash')}
               </dt>
               <dd className="font-mono" title={selected.source_hash}>
@@ -163,16 +163,16 @@ export function InstallDialog({
               </dd>
             </div>
             <div className="sm:col-span-2">
-              <dt className="text-xs text-ink-3">
+              <dt className="text-meta text-ink-3">
                 {t('admin.task_plugins.marketplace.summary_source')}
               </dt>
-              <dd className="break-all font-mono text-xs">{selected.source_url}</dd>
+              <dd className="break-all font-mono text-meta">{selected.source_url}</dd>
             </div>
           </dl>
         ) : null}
 
         <div>
-          <label className="flex items-center gap-2 text-sm text-ink-1">
+          <label className="flex items-center gap-2 text-body text-ink-1">
             <input
               type="checkbox"
               checked={activate}
@@ -180,7 +180,7 @@ export function InstallDialog({
             />
             {t('admin.task_plugins.marketplace.activate_now')}
           </label>
-          <p className="mt-1 text-xs text-ink-3">
+          <p className="mt-1 text-meta text-ink-3">
             {t('admin.task_plugins.marketplace.activate_hint')}
           </p>
         </div>
@@ -194,7 +194,7 @@ export function InstallDialog({
         ) : null}
 
         {!online ? (
-          <p className="text-xs text-ink-3">{t('admin.task_plugins.common.offline')}</p>
+          <p className="text-meta text-ink-3">{t('admin.task_plugins.common.offline')}</p>
         ) : null}
       </div>
     </Dialog>

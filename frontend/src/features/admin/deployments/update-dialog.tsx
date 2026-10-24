@@ -180,7 +180,7 @@ export function UpdateDialog({
       >
         <div className="space-y-4">
           {detailQuery.isPending ? (
-            <p className="text-sm text-ink-2" role="status">
+            <p className="text-body text-ink-2" role="status">
               {t('admin.deployments.common.loading')}
             </p>
           ) : null}
@@ -215,7 +215,7 @@ export function UpdateDialog({
                   setClearRegistrySecret(false)
                 }}
               />
-              <label className="flex items-center gap-2 text-sm text-ink-2">
+              <label className="flex items-center gap-2 text-body text-ink-2">
                 <input
                   type="checkbox"
                   checked={clearRegistrySecret}
@@ -263,7 +263,7 @@ export function UpdateDialog({
                 secret
                 hint={t('admin.deployments.update.secret_blank_hint')}
               />
-              <label className="flex items-center gap-2 text-sm text-ink-2">
+              <label className="flex items-center gap-2 text-body text-ink-2">
                 <input
                   type="checkbox"
                   checked={clearSecretEnv}

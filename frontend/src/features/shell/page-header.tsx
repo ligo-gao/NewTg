@@ -35,7 +35,7 @@ export function PageHeader({
     >
       <div className="min-w-0">
         <nav aria-label={t('common.console.label')}>
-          <ol className="mb-[7px] flex flex-wrap items-center gap-[6px] text-[11.5px]">
+          <ol className="mb-[7px] flex flex-wrap items-center gap-[6px] text-badge">
             {crumbs.map((crumb, index) => {
               // Only the final crumb is the current page (spec §6). Ancestors
               // stay plain text even when they carry no link — marking every
@@ -69,11 +69,11 @@ export function PageHeader({
             })}
           </ol>
         </nav>
-        <h1 className="text-[21px] leading-7 font-semibold tracking-[-0.01em] text-ink-1">
+        <h1 className="text-page-title tracking-[-0.01em] text-ink-1">
           {title}
         </h1>
         {description === undefined ? null : (
-          <p className="mt-[3px] max-w-[80ch] text-[13px] leading-5 text-ink-2">
+          <p className="mt-[3px] max-w-[80ch] text-meta text-ink-2">
             {description}
           </p>
         )}

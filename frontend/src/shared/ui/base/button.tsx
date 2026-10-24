@@ -7,7 +7,7 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const BASE_CLASSES =
-  'inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-transparent px-3.5 text-sm font-medium transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50'
+  'inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-transparent px-3.5 text-body font-medium transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50'
 
 const VARIANT_CLASSES: Record<ButtonVariant, string> = {
   primary: 'bg-brand text-on-brand hover:bg-brand-hover active:bg-brand-active',

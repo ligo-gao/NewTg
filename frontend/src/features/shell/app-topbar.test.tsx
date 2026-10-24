@@ -1,6 +1,6 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
-import { waitFor } from '@testing-library/react'
+import { waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import {
   afterAll,
@@ -15,6 +15,7 @@ import {
 
 import { THEME_STORAGE_KEY, ThemeProvider } from '@/app/providers/theme'
 import type { Me } from '@/lib/session'
+import { useToastStore } from '@/shared/ui/toast'
 import { renderWithProviders } from '@/test-support/providers'
 
 import { AppTopbar } from './app-topbar'
@@ -59,6 +60,70 @@ describe('AppTopbar', () => {
     expect(getByText('Console')).toBeTruthy()
     getByTestId('command-palette-trigger').click()
     expect(onOpenCommandPalette).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens the account menu from the avatar and closes it with Escape', async () => {
+    const { getByRole, queryByRole } = await renderWithProviders(
+      <AppTopbar
+        title="API tokens"
+        me={ADMIN}
+        onOpenCommandPalette={() => {}}
+      />,
+      ['common'],
+    )
+    const user = userEvent.setup()
+    const trigger = getByRole('button', { name: 'Account menu' })
+
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    expect(queryByRole('menu')).toBeNull()
+
+    await user.click(trigger)
+
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    const menu = getByRole('menu')
+    expect(
+      within(menu).getByRole('menuitem', { name: 'Profile' }).getAttribute('href'),
+    ).toBe('/profile')
+    expect(within(menu).getByRole('menuitem', { name: 'Sign out' })).toBeTruthy()
+
+    await user.keyboard('{Escape}')
+
+    expect(queryByRole('menu')).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+  })
+
+  it('reports a failed sign-out and stays on the page', async () => {
+    useToastStore.setState({ toasts: [] })
+    let calls = 0
+    server.use(
+      http.post(`${ORIGIN}/api/logout`, () => {
+        calls += 1
+        return HttpResponse.json(
+          { title: 'Service Unavailable', status: 503 },
+          { status: 503 },
+        )
+      }),
+    )
+    const { getByRole, queryByRole } = await renderWithProviders(
+      <AppTopbar
+        title="API tokens"
+        me={ADMIN}
+        onOpenCommandPalette={() => {}}
+      />,
+      ['common'],
+    )
+    const user = userEvent.setup()
+
+    await user.click(getByRole('button', { name: 'Account menu' }))
+    await user.click(getByRole('menuitem', { name: 'Sign out' }))
+
+    await waitFor(() => expect(calls).toBe(1))
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.at(-1)?.message).toBe(
+        'Could not sign out. Please try again.',
+      )
+    })
+    expect(queryByRole('menu')).toBeNull()
   })
 
   it('renders the back-to-site link, language and theme controls', async () => {

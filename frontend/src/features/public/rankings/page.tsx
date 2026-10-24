@@ -110,7 +110,7 @@ function PeriodTabs({
           tabIndex={period === entry ? 0 : -1}
           onClick={() => onChange(entry)}
           onKeyDown={(event) => onKeyDown(event, index)}
-          className={`h-9 shrink-0 rounded-md px-4 text-sm font-medium focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none ${
+          className={`h-9 shrink-0 rounded-md px-4 text-body font-medium focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none ${
             period === entry
               ? 'bg-surface-card text-brand shadow-sm'
               : 'text-ink-2 hover:bg-surface-hover hover:text-ink-1'
@@ -171,7 +171,7 @@ function RateLimitBanner({ seconds }: { seconds: number }) {
   return (
     <div
       role="status"
-      className="mt-4 rounded-lg border border-warning-line bg-warning-bg px-4 py-3 text-sm text-ink-1"
+      className="mt-4 rounded-lg border border-warning-line bg-warning-bg px-4 py-3 text-body text-ink-1"
     >
       {t('public.rankings.rate_limited', { seconds })}
     </div>
@@ -197,11 +197,11 @@ function RankingsError({
       role="alert"
       className="rounded-lg border border-border-hairline bg-surface-card px-4 py-8 text-center"
     >
-      <p className="text-sm text-ink-1">{message}</p>
+      <p className="text-body text-ink-1">{message}</p>
       <button
         type="button"
         onClick={onRetry}
-        className="mt-4 rounded-lg border border-border-default px-4 py-2 text-sm font-medium text-ink-1 hover:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+        className="mt-4 rounded-lg border border-border-default px-4 py-2 text-body font-medium text-ink-1 hover:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
       >
         {t('public.rankings.retry')}
       </button>
@@ -226,16 +226,16 @@ function ColdStartGuide({
       data-testid="rankings-cold-start"
       className="rounded-xl border border-border-hairline bg-surface-card p-6 md:p-8"
     >
-      <h2 className="text-lg font-semibold text-ink-1">
+      <h2 className="text-section font-semibold text-ink-1">
         {t('public.rankings.cold_start.title')}
       </h2>
-      <p className="mt-2 max-w-[640px] text-sm leading-6 text-ink-2">
+      <p className="mt-2 max-w-[640px] text-body leading-6 text-ink-2">
         {t('public.rankings.cold_start.body', { count: data.sample_threshold })}
       </p>
       <div className="mt-5 flex flex-wrap gap-3">
         <a
           href="/pricing"
-          className="inline-flex h-10 items-center rounded-lg bg-brand px-4 text-sm font-medium text-on-brand hover:bg-brand-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="inline-flex h-10 items-center rounded-lg bg-brand px-4 text-body font-medium text-on-brand hover:bg-brand-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         >
           {t('public.rankings.cold_start.pricing')}
         </a>
@@ -244,7 +244,7 @@ function ColdStartGuide({
             href={docsUrl}
             target={/^https?:\/\//i.test(docsUrl) ? '_blank' : undefined}
             rel={/^https?:\/\//i.test(docsUrl) ? 'noopener noreferrer' : undefined}
-            className="inline-flex h-10 items-center rounded-lg border border-border-default px-4 text-sm font-medium text-ink-1 hover:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="inline-flex h-10 items-center rounded-lg border border-border-default px-4 text-body font-medium text-ink-1 hover:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
             {t('public.rankings.cold_start.quick_start')}
           </a>
@@ -252,7 +252,7 @@ function ColdStartGuide({
         {signupEnabled && !isLoggedIn ? (
           <a
             href="/sign-up"
-            className="inline-flex h-10 items-center rounded-lg border border-border-default px-4 text-sm font-medium text-ink-1 hover:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="inline-flex h-10 items-center rounded-lg border border-border-default px-4 text-body font-medium text-ink-1 hover:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
             {t('public.rankings.cold_start.sign_up')}
           </a>
@@ -352,10 +352,10 @@ export function RankingsPage({ period, onPeriodChange }: RankingsPageProps) {
       <header className="border-b border-border-hairline pb-6 pt-10">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-semibold leading-8 text-ink-1 md:text-[32px] md:leading-10">
+            <h1 className="text-public-title font-semibold leading-8 text-ink-1">
               {t('public.rankings.title')}
             </h1>
-            <p className="mt-2 max-w-[640px] text-sm leading-6 text-ink-2">
+            <p className="mt-2 max-w-[640px] text-body leading-6 text-ink-2">
               {t('public.rankings.subtitle')}
             </p>
           </div>
@@ -363,7 +363,7 @@ export function RankingsPage({ period, onPeriodChange }: RankingsPageProps) {
             type="button"
             onClick={() => void query.refetch()}
             disabled={query.isFetching}
-            className="inline-flex h-9 items-center gap-2 rounded-lg border border-border-default px-3 text-sm font-medium text-ink-1 hover:border-brand disabled:cursor-not-allowed disabled:opacity-50 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="inline-flex h-9 items-center gap-2 rounded-lg border border-border-default px-3 text-body font-medium text-ink-1 hover:border-brand disabled:cursor-not-allowed disabled:opacity-50 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
             <RefreshIcon />
             {t('public.rankings.refresh')}
@@ -374,7 +374,7 @@ export function RankingsPage({ period, onPeriodChange }: RankingsPageProps) {
           <PeriodTabs period={period} onChange={onPeriodChange} />
           {data !== null && data !== undefined && data.status !== 'empty' ? (
             <p
-              className="text-xs leading-5 text-ink-3"
+              className="text-meta leading-5 text-ink-3"
               title={
                 data.computed_at !== null
                   ? absoluteTime(data.computed_at, locale, data.timezone)
@@ -404,7 +404,7 @@ export function RankingsPage({ period, onPeriodChange }: RankingsPageProps) {
       {stale ? (
         <div
           role="status"
-          className="mt-4 rounded-lg border border-warning-line bg-warning-bg px-4 py-3 text-sm text-ink-1"
+          className="mt-4 rounded-lg border border-warning-line bg-warning-bg px-4 py-3 text-body text-ink-1"
         >
           {t('public.rankings.delayed')}
         </div>

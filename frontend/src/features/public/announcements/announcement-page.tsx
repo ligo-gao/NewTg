@@ -168,22 +168,22 @@ export function AnnouncementPage({ id }: AnnouncementPageProps) {
           className="mx-auto flex min-h-[320px] w-full max-w-[760px] flex-col items-center justify-center gap-3 rounded-xl border border-border-hairline bg-surface-card px-6 text-center"
         >
           <StateIcon kind="not_found" />
-          <h1 className="text-base font-semibold text-ink-1">
+          <h1 className="text-section font-semibold text-ink-1">
             {t('public.announcements.not_found_title')}
           </h1>
-          <p className="max-w-[480px] text-[13px] leading-5 text-ink-2">
+          <p className="max-w-[480px] text-meta leading-5 text-ink-2">
             {t('public.announcements.not_found_hint')}
           </p>
           <div className="mt-1 flex flex-wrap items-center justify-center gap-2">
             <a
               href="/"
-              className="inline-flex h-9 items-center rounded-lg bg-brand px-4 text-sm font-medium text-on-brand hover:bg-brand-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="inline-flex h-9 items-center rounded-lg bg-brand px-4 text-body font-medium text-on-brand hover:bg-brand-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             >
               {t('public.announcements.back_home')}
             </a>
             <a
               href="/pricing"
-              className="inline-flex h-9 items-center rounded-lg border border-border-default px-4 text-sm font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="inline-flex h-9 items-center rounded-lg border border-border-default px-4 text-body font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             >
               {t('public.announcements.back_pricing')}
             </a>
@@ -206,15 +206,15 @@ export function AnnouncementPage({ id }: AnnouncementPageProps) {
         className="flex w-full flex-col items-start gap-3 rounded-xl border border-danger-line bg-danger-bg px-5 py-4 text-danger"
       >
         <StateIcon kind="error" />
-        <h1 className="text-base font-semibold text-ink-1">
+        <h1 className="text-section font-semibold text-ink-1">
           {t('public.announcements.error_title')}
         </h1>
-        <p className="text-sm leading-[22px] text-ink-1">{message}</p>
+        <p className="text-body leading-[22px] text-ink-1">{message}</p>
         <button
           type="button"
           disabled={rateLimited && running}
           onClick={() => void query.refetch()}
-          className="inline-flex h-9 items-center rounded-lg border border-border-default bg-surface-card px-4 text-sm font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex h-9 items-center rounded-lg border border-border-default bg-surface-card px-4 text-body font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
         >
           {t('public.announcements.retry')}
         </button>
@@ -231,7 +231,7 @@ export function AnnouncementPage({ id }: AnnouncementPageProps) {
       className="flex w-full flex-col gap-6"
     >
       <header className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px] leading-5 text-ink-2">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-meta leading-5 text-ink-2">
           <Tag
             variant={CATEGORY_VARIANTS[announcement.category] ?? 'neutral'}
             ariaLabel={t('public.announcements.category_label')}
@@ -255,7 +255,7 @@ export function AnnouncementPage({ id }: AnnouncementPageProps) {
         </div>
         <h1
           id="announcement-title"
-          className="text-xl font-semibold leading-7 text-ink-1"
+          className="text-public-title font-semibold leading-7 text-ink-1"
         >
           {announcement.title.trim() === ''
             ? t('public.announcements.untitled')
@@ -266,10 +266,10 @@ export function AnnouncementPage({ id }: AnnouncementPageProps) {
       {expired ? (
         <div
           role="status"
-          className="flex flex-col gap-1 rounded-lg border border-warning-line bg-warning-bg px-4 py-3 text-sm text-warning"
+          className="flex flex-col gap-1 rounded-lg border border-warning-line bg-warning-bg px-4 py-3 text-body text-warning"
         >
           <span className="font-medium">{t('public.announcements.ended')}</span>
-          <span className="text-[13px] leading-5 text-ink-2">
+          <span className="text-meta leading-5 text-ink-2">
             {t('public.announcements.ended_hint')}
           </span>
         </div>
@@ -281,11 +281,11 @@ export function AnnouncementPage({ id }: AnnouncementPageProps) {
         // 限制。这是全页**唯一**允许注入 HTML 的字段；不要用它渲染
         // 客户端拼接的字符串。
         <div
-          className="flex flex-col text-sm leading-[22px] text-ink-1 [&_a]:text-brand [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-border-default [&_blockquote]:pl-3 [&_blockquote]:text-ink-2 [&_code]:rounded [&_code]:bg-surface-subtle [&_code]:px-1 [&_h1]:mt-6 [&_h1]:text-xl [&_h1]:font-semibold [&_h2]:mt-6 [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:text-base [&_h3]:font-semibold [&_h4]:mt-4 [&_h4]:font-semibold [&_hr]:my-4 [&_hr]:border-border-hairline [&_li]:mt-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:mt-3 [&_pre]:mt-3 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-surface-subtle [&_pre]:p-3 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5"
+          className="flex flex-col text-body leading-[22px] text-ink-1 [&_a]:text-brand [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-border-default [&_blockquote]:pl-3 [&_blockquote]:text-ink-2 [&_code]:rounded [&_code]:bg-surface-subtle [&_code]:px-1 [&_h1]:mt-6 [&_h1]:text-page-title [&_h1]:font-semibold [&_h2]:mt-6 [&_h2]:text-page-title [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:text-section [&_h3]:font-semibold [&_h4]:mt-4 [&_h4]:font-semibold [&_hr]:my-4 [&_hr]:border-border-hairline [&_li]:mt-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:mt-3 [&_pre]:mt-3 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-surface-subtle [&_pre]:p-3 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5"
           dangerouslySetInnerHTML={{ __html: announcement.content_html }}
         />
       ) : (
-        <p className="text-sm leading-[22px] text-ink-2">
+        <p className="text-body leading-[22px] text-ink-2">
           {t('public.announcements.empty_content')}
         </p>
       )}

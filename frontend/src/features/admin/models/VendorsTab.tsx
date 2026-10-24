@@ -222,12 +222,12 @@ export function VendorsTab({ search, onSearchChange, permissions }: VendorsTabPr
             }}
           />
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="vendors-filter-status" className="text-[13px] font-medium text-ink-1">
+            <label htmlFor="vendors-filter-status" className="text-meta font-medium text-ink-1">
               {t('admin.vendors.field_status')}
             </label>
             <select
               id="vendors-filter-status"
-              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1"
+              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1"
               value={draft.status}
               onChange={(event) => {
                 setDraft((current) => ({
@@ -242,12 +242,12 @@ export function VendorsTab({ search, onSearchChange, permissions }: VendorsTabPr
             </select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="vendors-filter-attached" className="text-[13px] font-medium text-ink-1">
+            <label htmlFor="vendors-filter-attached" className="text-meta font-medium text-ink-1">
               {t('admin.vendors.filter_attached')}
             </label>
             <select
               id="vendors-filter-attached"
-              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1"
+              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1"
               value={draft.attached}
               onChange={(event) => {
                 setDraft((current) => ({
@@ -262,12 +262,12 @@ export function VendorsTab({ search, onSearchChange, permissions }: VendorsTabPr
             </select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="vendors-filter-sort" className="text-[13px] font-medium text-ink-1">
+            <label htmlFor="vendors-filter-sort" className="text-meta font-medium text-ink-1">
               {t('admin.models.sort')}
             </label>
             <select
               id="vendors-filter-sort"
-              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1"
+              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1"
               value={draft.sort}
               onChange={(event) => {
                 setDraft((current) => ({
@@ -309,7 +309,7 @@ export function VendorsTab({ search, onSearchChange, permissions }: VendorsTabPr
               </Button>
             ) : null}
           </div>
-          <span className="text-[13px] text-ink-2" aria-live="polite">
+          <span className="text-meta text-ink-2" aria-live="polite">
             {selectedRows.length > 0
               ? `${t('admin.vendors.selected', { count: selectedRows.length })} · `
               : ''}
@@ -324,7 +324,7 @@ export function VendorsTab({ search, onSearchChange, permissions }: VendorsTabPr
             ))}
           </div>
         ) : listQuery.isError ? (
-          <div className="flex items-center gap-3 p-5 text-sm text-ink-2">
+          <div className="flex items-center gap-3 p-5 text-body text-ink-2">
             <span>{t('admin.vendors.error')}</span>
             <Button variant="secondary" onClick={() => void listQuery.refetch()}>
               {t('common.action.retry')}
@@ -332,7 +332,7 @@ export function VendorsTab({ search, onSearchChange, permissions }: VendorsTabPr
           </div>
         ) : items.length === 0 ? (
           <div className="flex flex-col items-start gap-2 p-5">
-            <p className="text-sm text-ink-2">
+            <p className="text-body text-ink-2">
               {hasVendorFilters(search)
                 ? t('admin.vendors.empty_filtered')
                 : t('admin.vendors.empty')}
@@ -349,9 +349,9 @@ export function VendorsTab({ search, onSearchChange, permissions }: VendorsTabPr
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[960px] text-sm">
+            <table className="w-full min-w-[960px] text-body">
               <thead>
-                <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
+                <tr className="border-b border-border-hairline text-left text-meta text-ink-2">
                   <th scope="col" className="px-4 py-2">
                     <input
                       type="checkbox"
@@ -422,7 +422,7 @@ export function VendorsTab({ search, onSearchChange, permissions }: VendorsTabPr
                           : t('admin.models.status_disabled')}
                       </StatusBadge>
                     </td>
-                    <td className="px-4 py-3 text-xs text-ink-2" title={vendor.updated_at}>
+                    <td className="px-4 py-3 text-meta text-ink-2" title={vendor.updated_at}>
                       {formatRelativeTime(vendor.updated_at, locale)}
                     </td>
                     <td className="px-4 py-3">
@@ -430,14 +430,14 @@ export function VendorsTab({ search, onSearchChange, permissions }: VendorsTabPr
                         <div className="flex justify-end gap-1">
                           <Button
                             variant="ghost"
-                            className="h-8 px-2 text-[13px]"
+                            className="h-8 px-2 text-meta"
                             onClick={() => setEditTarget({ mode: 'edit', vendor })}
                           >
                             {t('admin.models.edit')}
                           </Button>
                           <Button
                             variant="ghost"
-                            className="h-8 px-2 text-[13px] text-danger hover:bg-danger-bg"
+                            className="h-8 px-2 text-meta text-danger hover:bg-danger-bg"
                             onClick={() => setDeleteTarget(vendor)}
                           >
                             {t('admin.models.delete')}

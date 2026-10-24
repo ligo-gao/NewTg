@@ -31,7 +31,7 @@ export interface TagProps {
 }
 
 const BASE_CLASSES =
-  'inline-flex h-5 items-center rounded-[6px] px-2 text-xs font-medium leading-[18px] whitespace-nowrap'
+  'inline-flex h-5 items-center rounded-[6px] px-2 text-badge whitespace-nowrap'
 
 const VARIANT_CLASSES: Record<TagVariant, string> = {
   neutral: 'border border-neutral-line bg-neutral-bg text-neutral',

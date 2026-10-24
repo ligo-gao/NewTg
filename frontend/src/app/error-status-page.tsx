@@ -334,7 +334,7 @@ export function ServiceUnavailablePage({
           <div
             role="status"
             aria-live="polite"
-            className="mb-6 flex items-center justify-center gap-2 rounded-lg border border-success-line bg-success-bg px-4 py-3 text-sm text-success"
+            className="mb-6 flex items-center justify-center gap-2 rounded-lg border border-success-line bg-success-bg px-4 py-3 text-body text-success"
           >
             <svg
               aria-hidden="true"
@@ -355,7 +355,7 @@ export function ServiceUnavailablePage({
               <Button
                 type="button"
                 variant="secondary"
-                className="h-8 px-3 text-xs"
+                className="h-8 px-3 text-body"
                 onClick={() => void retry()}
                 disabled={offline || retrying}
                 aria-busy={retrying}

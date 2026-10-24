@@ -193,7 +193,7 @@ function StatusIcon({ status }: { status: ErrorStatus }) {
 
 /** 与 `shared/ui/base/button` 同一套 token 的手动样式，供 `<a>` 复用。 */
 const ACTION_BASE =
-  'inline-flex h-11 w-full items-center justify-center gap-1.5 rounded-lg border border-transparent px-6 text-sm font-medium transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto'
+  'inline-flex h-11 w-full items-center justify-center gap-1.5 rounded-lg border border-transparent px-6 text-body font-medium transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto'
 
 const ACTION_VARIANT = {
   primary: 'bg-brand text-on-brand hover:bg-brand-hover active:bg-brand-active',
@@ -278,7 +278,7 @@ function RequestIdRow({ requestId, t }: RequestIdRowProps) {
   return (
     <div className="mt-6">
       <div className="flex items-center gap-2 rounded-lg bg-surface-subtle px-3 py-2">
-        <span className="shrink-0 text-xs text-ink-3">
+        <span className="shrink-0 text-meta text-ink-3">
           {t('common.error_page.request_id_label')}
         </span>
         <input
@@ -286,14 +286,14 @@ function RequestIdRow({ requestId, t }: RequestIdRowProps) {
           readOnly
           value={requestId}
           aria-label={t('common.error_page.request_id_label')}
-          className="min-w-0 flex-1 bg-transparent font-mono text-[13px] leading-5 tabular-nums text-ink-2 outline-none"
+          className="min-w-0 flex-1 bg-transparent font-mono text-meta leading-5 tabular-nums text-ink-2 outline-none"
         />
         <Button
           type="button"
           variant="secondary"
           onClick={() => void copy()}
           aria-label={t('common.error_page.copy_request_id')}
-          className="h-8 shrink-0 px-2 text-xs"
+          className="h-8 shrink-0 px-2 text-body"
         >
           {t('common.action.copy')}
         </Button>
@@ -400,17 +400,17 @@ export function ErrorPageShell({
             状态码是页面在 0.5 秒内自我标识的主体（UI §8 图形策略），
             移动端降为 36/44（00 §5 三档），保留 tabular-nums 防止位数跳动。
           */}
-          <p className="mt-4 font-mono text-[48px] font-semibold leading-[56px] tabular-nums text-ink-2 max-[767px]:text-[36px] max-[767px]:leading-[44px]">
+          <p className="mt-4 font-mono text-display-2 leading-[56px] tabular-nums text-ink-2 max-[767px]:text-figure-lg max-[767px]:leading-[44px]">
             {status}
           </p>
           <h1
             ref={headingRef}
             tabIndex={-1}
-            className="mt-4 text-xl font-semibold leading-7 text-ink-1 outline-none"
+            className="mt-4 text-page-title leading-7 text-ink-1 outline-none"
           >
             {offline ? t('common.error_page.offline.title') : title}
           </h1>
-          <div className="mx-auto mt-2 max-w-[80ch] text-sm leading-[22px] text-ink-2">
+          <div className="mx-auto mt-2 max-w-[80ch] text-body leading-[22px] text-ink-2">
             {offline ? t('common.error_page.offline.body') : body}
           </div>
           {actions ? (

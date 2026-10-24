@@ -166,7 +166,7 @@ function EventDetail({
 
   if (rows.length === 0) return null
   return (
-    <dl className="mt-1 flex flex-col gap-0.5 text-xs">
+    <dl className="mt-1 flex flex-col gap-0.5 text-meta">
       {rows.map((row) => (
         <DetailRow key={`${row.label}:${row.value}`} label={row.label} value={row.value} />
       ))}
@@ -234,18 +234,18 @@ export function SubscriptionEventsDialog({
       }
     >
       {query.isPending ? (
-        <p role="status" aria-busy="true" className="text-sm text-ink-2">
+        <p role="status" aria-busy="true" className="text-body text-ink-2">
           {t('account.subscription.events.loading')}
         </p>
       ) : query.isError ? (
-        <div className="flex items-center gap-3 text-sm text-ink-2">
+        <div className="flex items-center gap-3 text-body text-ink-2">
           <span role="alert">{t('account.subscription.events.error')}</span>
           <Button variant="secondary" onClick={() => void query.refetch()}>
             {t('account.subscription.events.retry')}
           </Button>
         </div>
       ) : events.length === 0 ? (
-        <p className="text-sm text-ink-2">
+        <p className="text-body text-ink-2">
           {t('account.subscription.events.empty')}
         </p>
       ) : (
@@ -262,12 +262,12 @@ export function SubscriptionEventsDialog({
                   className="border-l-2 border-border-hairline pl-3"
                 >
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <span className="text-sm font-medium text-ink-1">
+                    <span className="text-body font-medium text-ink-1">
                       {kindKey === undefined ? event.kind : t(kindKey)}
                     </span>
                     <time
                       dateTime={event.created_at}
-                      className="text-xs tabular-nums text-ink-3"
+                      className="text-meta tabular-nums text-ink-3"
                     >
                       {formatSubscriptionTime(event.created_at, locale)}
                     </time>

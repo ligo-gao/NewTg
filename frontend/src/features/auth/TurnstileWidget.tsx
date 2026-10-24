@@ -90,7 +90,7 @@ export function TurnstileWidget({
     <div className="flex flex-col gap-1.5">
       <div ref={containerRef} />
       {failure !== undefined ? (
-        <p role="alert" className="text-xs text-danger">
+        <p role="alert" className="text-meta text-danger">
           {failure === 'load'
             ? t('auth.turnstile.unavailable')
             : t('auth.turnstile.failed')}

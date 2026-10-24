@@ -122,12 +122,12 @@ export function ResourcesTab() {
           </div>
         ) : null}
         {hardwareQuery.isSuccess && hardware.length === 0 ? (
-          <p className="text-sm text-ink-3">{t('admin.deployments.resources.empty')}</p>
+          <p className="text-body text-ink-3">{t('admin.deployments.resources.empty')}</p>
         ) : null}
         {hardware.length > 0 ? (
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead className="text-xs text-ink-3">
+            <table className="w-full text-left text-body">
+              <thead className="text-meta text-ink-3">
                 <tr>
                   <th className="px-2 py-1 font-medium">{t('admin.deployments.resources.col_brand')}</th>
                   <th className="px-2 py-1 font-medium">{t('admin.deployments.resources.col_model')}</th>
@@ -143,19 +143,19 @@ export function ResourcesTab() {
                     <td className="px-2 py-1.5 text-ink-1">
                       {anyProviderField(entry, ['brand_name', 'brand']) ?? '—'}
                     </td>
-                    <td className="px-2 py-1.5 font-mono text-xs text-ink-2">
+                    <td className="px-2 py-1.5 font-mono text-meta text-ink-2">
                       {entry.name ?? '—'}
                     </td>
-                    <td className="px-2 py-1.5 font-mono text-xs text-ink-2">
+                    <td className="px-2 py-1.5 font-mono text-meta text-ink-2">
                       {anyProviderField(entry, ['gpu_count', 'gpus', 'gpu']) ?? '—'}
                     </td>
-                    <td className="px-2 py-1.5 font-mono text-xs text-ink-2">
+                    <td className="px-2 py-1.5 font-mono text-meta text-ink-2">
                       {anyProviderField(entry, ['vram', 'vram_gb', 'memory_gb']) ?? '—'}
                     </td>
-                    <td className="px-2 py-1.5 font-mono text-xs text-ink-2">
+                    <td className="px-2 py-1.5 font-mono text-meta text-ink-2">
                       {entry.available_replicas ?? 0}
                     </td>
-                    <td className="px-2 py-1.5 font-mono text-xs text-ink-2">
+                    <td className="px-2 py-1.5 font-mono text-meta text-ink-2">
                       {anyProviderField(entry, ['location_count', 'locations_count']) ?? '—'}
                     </td>
                   </tr>
@@ -186,12 +186,12 @@ export function ResourcesTab() {
           </div>
         ) : null}
         {locationsQuery.isSuccess && locations.length === 0 ? (
-          <p className="text-sm text-ink-3">{t('admin.deployments.resources.empty')}</p>
+          <p className="text-body text-ink-3">{t('admin.deployments.resources.empty')}</p>
         ) : null}
         {locations.length > 0 ? (
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead className="text-xs text-ink-3">
+            <table className="w-full text-left text-body">
+              <thead className="text-meta text-ink-3">
                 <tr>
                   <th className="px-2 py-1 font-medium">{t('admin.deployments.resources.col_location_id')}</th>
                   <th className="px-2 py-1 font-medium">{t('admin.deployments.resources.col_location_name')}</th>
@@ -202,14 +202,14 @@ export function ResourcesTab() {
               <tbody>
                 {locations.map((entry) => (
                   <tr key={String(entry.id)} className="border-t border-border-hairline">
-                    <td className="px-2 py-1.5 font-mono text-xs text-ink-2">
+                    <td className="px-2 py-1.5 font-mono text-meta text-ink-2">
                       {entry.id ?? '—'}
                     </td>
                     <td className="px-2 py-1.5 text-ink-1">{entry.name ?? '—'}</td>
-                    <td className="px-2 py-1.5 text-xs text-ink-3">
+                    <td className="px-2 py-1.5 text-meta text-ink-3">
                       {anyProviderField(entry, ['hardware', 'hardware_name']) ?? '—'}
                     </td>
-                    <td className="px-2 py-1.5 font-mono text-xs text-ink-2">
+                    <td className="px-2 py-1.5 font-mono text-meta text-ink-2">
                       {anyProviderField(entry, ['available_replicas', 'replicas']) ?? '—'}
                     </td>
                   </tr>
@@ -233,13 +233,13 @@ export function ResourcesTab() {
             if (id !== null && gpu !== null) setQueryParams({ hardwareId: id, gpu })
           }}
         >
-          <label className="flex flex-col gap-1 text-xs text-ink-2">
+          <label className="flex flex-col gap-1 text-meta text-ink-2">
             {t('admin.deployments.resources.hardware')}
             <select
               aria-label={t('admin.deployments.resources.hardware')}
               value={queryHardware}
               onChange={(event) => setQueryHardware(event.target.value)}
-              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
             >
               <option value="">{t('admin.deployments.resources.select_hardware')}</option>
               {hardware.map((entry) => (
@@ -273,12 +273,12 @@ export function ResourcesTab() {
         ) : null}
         {replicasQuery.isSuccess ? (
           (replicasQuery.data?.replicas ?? []).length === 0 ? (
-            <p className="mt-3 text-sm text-ink-3">
+            <p className="mt-3 text-body text-ink-3">
               {t('admin.deployments.resources.empty')}
             </p>
           ) : (
-            <table className="mt-3 w-full text-left text-sm" data-testid="replica-result">
-              <thead className="text-xs text-ink-3">
+            <table className="mt-3 w-full text-left text-body" data-testid="replica-result">
+              <thead className="text-meta text-ink-3">
                 <tr>
                   <th className="px-2 py-1 font-medium">{t('admin.deployments.resources.col_location_name')}</th>
                   <th className="px-2 py-1 font-medium">{t('admin.deployments.resources.col_replicas')}</th>
@@ -289,10 +289,10 @@ export function ResourcesTab() {
                 {(replicasQuery.data?.replicas ?? []).map((entry) => (
                   <tr key={entry.location_id} className="border-t border-border-hairline">
                     <td className="px-2 py-1.5 text-ink-1">{entry.location_name}</td>
-                    <td className="px-2 py-1.5 font-mono text-xs text-ink-2">
+                    <td className="px-2 py-1.5 font-mono text-meta text-ink-2">
                       {entry.available_count}
                     </td>
-                    <td className="px-2 py-1.5 font-mono text-xs text-ink-2">
+                    <td className="px-2 py-1.5 font-mono text-meta text-ink-2">
                       {entry.max_gpus}
                     </td>
                   </tr>
@@ -308,7 +308,7 @@ export function ResourcesTab() {
         testId="price-estimator"
       >
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <label className="flex flex-col gap-1 text-xs text-ink-2">
+          <label className="flex flex-col gap-1 text-meta text-ink-2">
             {t('admin.deployments.resources.hardware')}
             <select
               aria-label={t('admin.deployments.resources.hardware')}
@@ -317,7 +317,7 @@ export function ResourcesTab() {
                 setEstimatorHardware(event.target.value)
                 setEstimate(null)
               }}
-              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
             >
               <option value="">{t('admin.deployments.resources.select_hardware')}</option>
               {hardware.map((entry) => (
@@ -362,7 +362,7 @@ export function ResourcesTab() {
           />
         </div>
         <fieldset className="mt-3">
-          <legend className="text-xs text-ink-2">
+          <legend className="text-meta text-ink-2">
             {t('admin.deployments.resources.location_multi')}
           </legend>
           <div className="mt-1 flex flex-wrap gap-3">
@@ -370,7 +370,7 @@ export function ResourcesTab() {
               const id = typeof entry.id === 'number' ? entry.id : Number(entry.id)
               const checked = estimatorLocations.includes(id)
               return (
-                <label key={String(entry.id)} className="flex items-center gap-1.5 text-sm text-ink-2">
+                <label key={String(entry.id)} className="flex items-center gap-1.5 text-body text-ink-2">
                   <input
                     type="checkbox"
                     checked={checked}

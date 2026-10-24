@@ -40,7 +40,7 @@ export function PricingBand({ config, selected, onSelect }: PricingBandProps) {
 
   if (!config.enabled) {
     return (
-      <p className="text-xs text-ink-3" data-testid="pricing-band-disabled">
+      <p className="text-meta text-ink-3" data-testid="pricing-band-disabled">
         {t('admin.pricing.band_disabled')}
       </p>
     )
@@ -63,7 +63,7 @@ export function PricingBand({ config, selected, onSelect }: PricingBandProps) {
           {ALL_HOURS.map((hour) => (
             <div
               key={`head-${hour}`}
-              className="text-center text-[10px] tabular-nums text-ink-3"
+              className="text-center text-badge tabular-nums text-ink-3"
             >
               {hour % 3 === 0 ? hour : ''}
             </div>
@@ -89,7 +89,7 @@ export function PricingBand({ config, selected, onSelect }: PricingBandProps) {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 text-xs text-ink-3">
+      <div className="flex flex-wrap items-center gap-3 text-meta text-ink-3">
         <span className="flex items-center gap-1">
           <span aria-hidden="true" className="size-3 rounded-sm bg-warning-bg" />
           {t('admin.pricing.band_legend_peak')}
@@ -137,7 +137,7 @@ function BandRow({
 }: BandRowProps) {
   return (
     <>
-      <div className="flex items-center text-[11px] font-medium text-ink-2">{dayLabel}</div>
+      <div className="flex items-center text-badge font-medium text-ink-2">{dayLabel}</div>
       {ALL_HOURS.map((hour) => {
         const match = matchLocalTimeRule(config, day, hour * 60)
         const kind = kindFor(match.multiplier, defaultMultiplier)

@@ -93,7 +93,7 @@ export function ModelMagnitudeChart({
                   x={x}
                   y={12}
                   textAnchor={exponent === maxExponent ? 'end' : 'middle'}
-                  className="fill-ink-3 text-[9px] tabular-nums"
+                  className="fill-ink-3 text-badge tabular-nums"
                 >
                   {formatCompact(10 ** exponent, locale)}
                 </text>
@@ -123,18 +123,18 @@ export function ModelMagnitudeChart({
               <text
                 x={4}
                 y={top_y + 22}
-                className="fill-ink-3 text-[11px] tabular-nums"
+                className="fill-ink-3 text-badge tabular-nums"
               >
                 {model.rank}
               </text>
               <text
                 x={26}
                 y={top_y + 22}
-                className="fill-ink-1 text-[12px] font-semibold"
+                className="fill-ink-1 text-badge font-semibold"
               >
                 {model.display_name}
               </text>
-              <text x={26} y={top_y + 38} className="fill-ink-2 text-[10px]">
+              <text x={26} y={top_y + 38} className="fill-ink-2 text-badge">
                 {model.author}
               </text>
               <rect
@@ -150,7 +150,7 @@ export function ModelMagnitudeChart({
                 x={MODEL_VIEW_WIDTH - 4}
                 y={top_y + 27}
                 textAnchor="end"
-                className="fill-ink-1 text-[11px] font-semibold tabular-nums"
+                className="fill-ink-1 text-badge font-semibold tabular-nums"
               >
                 {formatCompact(model.total_tokens, locale)}
               </text>
@@ -219,7 +219,7 @@ export function TrendStackedChart({
                 x={TREND_LEFT - 6}
                 y={y + 3}
                 textAnchor="end"
-                className="fill-ink-3 text-[9px] tabular-nums"
+                className="fill-ink-3 text-badge tabular-nums"
               >
                 {formatCompact(maxTotal * (1 - fraction), locale)}
               </text>
@@ -275,7 +275,7 @@ export function TrendStackedChart({
                     ? 'end'
                     : 'middle'
               }
-              className="fill-ink-3 text-[9px] tabular-nums"
+              className="fill-ink-3 text-badge tabular-nums"
             >
               {formatBucketLabel(bucket, granularity)}
             </text>

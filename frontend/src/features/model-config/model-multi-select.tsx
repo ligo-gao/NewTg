@@ -69,7 +69,7 @@ export function ModelMultiSelect({
     <div className="flex flex-col gap-2">
       <label
         htmlFor={`${prefix}-search`}
-        className="text-[13px] font-medium text-ink-1"
+        className="text-meta font-medium text-ink-1"
       >
         {t('account.model_config.keys.search_models')}
       </label>
@@ -79,7 +79,7 @@ export function ModelMultiSelect({
         value={query}
         onChange={(event) => setQuery(event.target.value)}
         placeholder={t('account.model_config.keys.search_models_placeholder')}
-        className="h-9 w-full rounded-lg border border-border-default bg-surface-page px-3 text-sm text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+        className="h-9 w-full rounded-lg border border-border-default bg-surface-page px-3 text-body text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
       />
       <div
         role="group"
@@ -87,11 +87,11 @@ export function ModelMultiSelect({
         className="max-h-72 overflow-y-auto rounded-lg border border-border-hairline bg-surface-page p-3"
       >
         {visibleGroups.length === 0 ? (
-          <p className="text-[13px] text-ink-3">{emptyLabel}</p>
+          <p className="text-meta text-ink-3">{emptyLabel}</p>
         ) : (
           visibleGroups.map((group) => (
             <fieldset key={group.name} className="mb-3 last:mb-0">
-              <legend className="mb-1 text-xs font-semibold text-ink-3">
+              <legend className="mb-1 text-meta text-ink-3">
                 {group.name}
               </legend>
               <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
@@ -101,7 +101,7 @@ export function ModelMultiSelect({
                     <label
                       key={model}
                       htmlFor={id}
-                      className="flex items-center gap-2 rounded px-1 py-0.5 text-[13px] text-ink-1 hover:bg-surface-hover"
+                      className="flex items-center gap-2 rounded px-1 py-0.5 text-meta text-ink-1 hover:bg-surface-hover"
                     >
                       <input
                         id={id}
@@ -112,7 +112,7 @@ export function ModelMultiSelect({
                         }
                         className="size-4 accent-brand"
                       />
-                      <span className="truncate font-mono text-xs">{model}</span>
+                      <span className="truncate font-mono text-meta">{model}</span>
                     </label>
                   )
                 })}
@@ -121,7 +121,7 @@ export function ModelMultiSelect({
           ))
         )}
       </div>
-      <p className="text-xs text-ink-3">
+      <p className="text-meta text-ink-3">
         {t('account.model_config.keys.unlimited_hint')}
       </p>
     </div>

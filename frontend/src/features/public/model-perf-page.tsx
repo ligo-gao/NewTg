@@ -46,10 +46,10 @@ export function ModelPerfPage({ modelId }: ModelPerfPageProps) {
     <section className="flex flex-col gap-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-[20px] font-semibold leading-7 text-ink-1">
+          <h1 className="text-public-title font-semibold leading-7 text-ink-1">
             {t('public.perf.title')}
           </h1>
-          <p className="mt-1 text-sm text-ink-2">{modelId}</p>
+          <p className="mt-1 text-body text-ink-2">{modelId}</p>
         </div>
         <fieldset className="flex items-center gap-1 rounded-lg border border-border-hairline bg-surface-subtle p-1">
           <legend className="sr-only">{t('public.perf.range_label')}</legend>
@@ -57,7 +57,7 @@ export function ModelPerfPage({ modelId }: ModelPerfPageProps) {
             <label
               key={option}
               className={[
-                'cursor-pointer rounded-md px-3 py-1 text-[13px] font-medium',
+                'cursor-pointer rounded-md px-3 py-1 text-meta font-medium',
                 range === option
                   ? 'bg-surface-card text-ink-1 shadow-sm'
                   : 'text-ink-2 hover:text-ink-1',
@@ -126,7 +126,7 @@ function PerformanceError({
   return (
     <div
       role="alert"
-      className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-danger-line bg-danger-bg p-4 text-sm text-danger"
+      className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-danger-line bg-danger-bg p-4 text-body text-danger"
     >
       <span>{message}</span>
       <Button variant="secondary" onClick={onRetry}>
@@ -180,7 +180,7 @@ function PerformanceBody({ data, locale }: { data: ModelMetrics; locale: string 
   return (
     <div className="flex flex-col gap-6">
       {isEmpty ? (
-        <p className="text-sm text-ink-2">{t('public.perf.empty')}</p>
+        <p className="text-body text-ink-2">{t('public.perf.empty')}</p>
       ) : null}
 
       <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -189,12 +189,12 @@ function PerformanceBody({ data, locale }: { data: ModelMetrics; locale: string 
             key={stat.key}
             className="flex flex-col gap-1 rounded-xl border border-border-hairline bg-surface-card p-4"
           >
-            <dt className="text-xs leading-[18px] text-ink-2">{stat.label}</dt>
-            <dd className="text-2xl font-semibold leading-8 tabular-nums text-ink-1">
+            <dt className="text-meta leading-[18px] text-ink-2">{stat.label}</dt>
+            <dd className="text-stat font-semibold leading-8 tabular-nums text-ink-1">
               {stat.value}
             </dd>
             {stat.key === 'tps' ? (
-              <span className="text-[13px] leading-5 text-ink-2">
+              <span className="text-meta leading-5 text-ink-2">
                 {t('public.perf.approximate')}
               </span>
             ) : null}
@@ -211,10 +211,10 @@ function PerformanceBody({ data, locale }: { data: ModelMetrics; locale: string 
       <div className="overflow-x-auto">
         <table
           aria-label={t('public.perf.group_table')}
-          className="w-full min-w-[520px] border-collapse text-sm"
+          className="w-full min-w-[520px] border-collapse text-body"
         >
           <thead>
-            <tr className="border-b border-border-hairline bg-surface-subtle text-left text-xs text-ink-2">
+            <tr className="border-b border-border-hairline bg-surface-subtle text-left text-meta text-ink-2">
               <th scope="col" className="px-3 py-2 font-medium">
                 {t('public.perf.group')}
               </th>

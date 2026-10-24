@@ -317,7 +317,7 @@
   "pricing.detail.effective": "生效值",
   "pricing.detail.unlimited": "不限",
   "pricing.detail.server_address_unset": "站点地址未配置，示例使用相对路径。",
-  "pricing.detail.key_hint": "将 <YOUR_TOKEN> 替换为你的 API 令牌（令牌以 nkt- 开头）。",
+  "pricing.detail.key_hint": "将 <YOUR_TOKEN> 替换为你的 API 令牌（令牌以 sk- 开头，历史令牌可能为 nkt-）。",
   "pricing.detail.create_token": "去创建令牌",
   "pricing.detail.sign_in_token": "登录以创建令牌",
   "pricing.detail.copy_code": "复制代码片段",

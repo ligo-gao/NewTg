@@ -77,7 +77,7 @@ export function RedeemPage({ enabled = true, onBalance }: RedeemPageProps) {
 
   return (
     <section className="rounded-xl border border-border-hairline bg-surface-card p-5">
-      <h2 className="text-[15px] font-semibold text-ink-1">
+      <h2 className="text-card-title text-ink-1">
         {t('account.redeem.title')}
       </h2>
       <form className="mt-3" onSubmit={(event) => void handleSubmit(event)}>

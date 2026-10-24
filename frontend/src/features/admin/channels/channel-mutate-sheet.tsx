@@ -91,7 +91,7 @@ export function ChannelMutateSheet({
     // form — and the administrator's unsaved edits — because "Reload latest"
     // failed. The reload path reports its own error inline instead.
     body = (
-      <div role="alert" className="flex flex-col gap-2 text-sm text-danger">
+      <div role="alert" className="flex flex-col gap-2 text-body text-danger">
         <p>{t('common.channels.error.load')}</p>
         <Button variant="secondary" onClick={() => void detailQuery.refetch()}>
           {t('common.channels.error.retry')}
@@ -286,15 +286,15 @@ interface FieldProps {
 function Field({ id, label, error, hint, children }: FieldProps) {
   return (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor={id} className="text-[13px] text-ink-2">
+      <label htmlFor={id} className="text-meta text-ink-2">
         {label}
       </label>
       {children}
       {hint === undefined ? null : (
-        <p className="text-xs text-ink-3">{hint}</p>
+        <p className="text-meta text-ink-3">{hint}</p>
       )}
       {error === undefined ? null : (
-        <p id={`${id}-error`} className="text-xs text-danger">
+        <p id={`${id}-error`} className="text-meta text-danger">
           {error}
         </p>
       )}
@@ -303,7 +303,7 @@ function Field({ id, label, error, hint, children }: FieldProps) {
 }
 
 const INPUT_CLASSES =
-  'h-9 w-full rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50'
+  'h-9 w-full rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50'
 
 interface ChannelFormProps {
   mode: 'create' | 'edit'
@@ -721,7 +721,7 @@ function ChannelForm({
       className="flex flex-col gap-8 pb-2"
     >
       {formError === null ? null : (
-        <p role="alert" className="rounded-lg bg-danger-bg px-3 py-2 text-sm text-danger">
+        <p role="alert" className="rounded-lg bg-danger-bg px-3 py-2 text-body text-danger">
           {formError}
         </p>
       )}
@@ -729,7 +729,7 @@ function ChannelForm({
       {detailRefetchFailed === true && versionConflict === null ? (
         // Non-fatal: the form stays mounted with the cached detail, but a
         // silent failure would let the administrator edit stale data.
-        <p role="alert" className="rounded-lg bg-danger-bg px-3 py-2 text-sm text-danger">
+        <p role="alert" className="rounded-lg bg-danger-bg px-3 py-2 text-body text-danger">
           {t('common.channels.error.refresh')}
         </p>
       ) : null}
@@ -737,10 +737,10 @@ function ChannelForm({
       {versionConflict === null ? null : (
         <div
           role="alert"
-          className="flex flex-col gap-2 rounded-lg bg-danger-bg px-3 py-2 text-sm text-danger"
+          className="flex flex-col gap-2 rounded-lg bg-danger-bg px-3 py-2 text-body text-danger"
         >
           <p>{versionConflict}</p>
-          <p className="text-xs text-ink-2">
+          <p className="text-meta text-ink-2">
             {t('common.channels.errors.conflictReloadHint')}
           </p>
           <div className="flex items-center gap-2">
@@ -756,14 +756,14 @@ function ChannelForm({
                 : t('common.channels.errors.reloadLatest')}
             </Button>
             {reloadError === null ? null : (
-              <span className="text-xs text-danger">{reloadError}</span>
+              <span className="text-meta text-danger">{reloadError}</span>
             )}
           </div>
         </div>
       )}
 
       <section className="flex flex-col gap-4">
-        <h3 className="text-[15px] font-semibold text-ink-1">
+        <h3 className="text-card-title font-semibold text-ink-1">
           {t('common.channels.form.basics')}
         </h3>
 
@@ -792,7 +792,7 @@ function ChannelForm({
           />
         </Field>
         {credentialNotice === null ? null : (
-          <p aria-live="polite" className="text-xs text-ink-3">
+          <p aria-live="polite" className="text-meta text-ink-3">
             {credentialNotice}
           </p>
         )}
@@ -941,7 +941,7 @@ function ChannelForm({
 
       <section className="flex flex-col gap-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <h3 className="text-[15px] font-semibold text-ink-1">
+          <h3 className="text-card-title font-semibold text-ink-1">
             {t('common.channels.form.modelsSection')}
           </h3>
           <Button
@@ -959,7 +959,7 @@ function ChannelForm({
               {form.models.map((model) => (
                 <span
                   key={model}
-                  className="inline-flex items-center gap-1 rounded-md border border-border-default bg-surface-subtle px-2 py-0.5 text-xs text-ink-1"
+                  className="inline-flex items-center gap-1 rounded-md border border-border-default bg-surface-subtle px-2 py-0.5 text-badge text-ink-1"
                 >
                   {model}
                   <button
@@ -1004,7 +1004,7 @@ function ChannelForm({
           </div>
         </Field>
 
-        <label className="flex items-center gap-2 text-sm text-ink-1">
+        <label className="flex items-center gap-2 text-body text-ink-1">
           <input
             type="checkbox"
             checked={form.allGroups}
@@ -1039,7 +1039,7 @@ function ChannelForm({
       </section>
 
       <section className="flex flex-col gap-4">
-        <h3 className="text-[15px] font-semibold text-ink-1">
+        <h3 className="text-card-title font-semibold text-ink-1">
           {t('common.channels.form.routing')}
         </h3>
 
@@ -1102,7 +1102,7 @@ function ChannelForm({
           </Field>
         </div>
 
-        <label className="flex items-center gap-2 text-sm text-ink-1">
+        <label className="flex items-center gap-2 text-body text-ink-1">
           <input
             type="checkbox"
             checked={form.autoBan}
@@ -1149,7 +1149,7 @@ function ChannelForm({
             disabled={submitting}
             aria-invalid={errorFor('remark') !== undefined}
             aria-describedby={errorFor('remark') === undefined ? undefined : `${idFor('remark')}-error`}
-            className="min-h-20 w-full rounded-lg border border-border-default bg-surface-card px-3 py-2 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+            className="min-h-20 w-full rounded-lg border border-border-default bg-surface-card px-3 py-2 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
           />
         </Field>
 

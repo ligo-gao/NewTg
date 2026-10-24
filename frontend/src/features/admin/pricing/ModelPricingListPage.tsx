@@ -334,7 +334,7 @@ export function ModelPricingListPage({
   if (capabilities.loading) {
     return (
       <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
-        <h1 className="text-xl font-semibold text-ink-1">{t('admin.pricing.title')}</h1>
+        <h1 className="text-page-title font-semibold text-ink-1">{t('admin.pricing.title')}</h1>
         <section className="rounded-xl border border-border-hairline bg-surface-card">
           <div className="space-y-2 p-5" aria-busy="true">
             {[0, 1, 2, 3, 4].map((index) => (
@@ -349,25 +349,25 @@ export function ModelPricingListPage({
   if (capabilities.known && !capabilities.canRead) {
     return (
       <div className="mx-auto max-w-[1520px] rounded-xl border border-border-hairline bg-surface-card p-8">
-        <h1 className="text-xl font-semibold text-ink-1">{t('common.error403.title')}</h1>
-        <p className="mt-2 text-sm text-ink-2">{t('common.error403.body')}</p>
+        <h1 className="text-page-title font-semibold text-ink-1">{t('common.error403.title')}</h1>
+        <p className="mt-2 text-body text-ink-2">{t('common.error403.body')}</p>
       </div>
     )
   }
 
   return (
     <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
-      <h1 className="text-xl font-semibold text-ink-1">{t('admin.pricing.title')}</h1>
+      <h1 className="text-page-title font-semibold text-ink-1">{t('admin.pricing.title')}</h1>
 
       {pluginActive ? (
         <section className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border-hairline bg-surface-subtle px-4 py-3">
           <div className="flex flex-col gap-1">
-            <span className="text-sm text-ink-1">
+            <span className="text-body text-ink-1">
               {t('admin.pricing.plugin_filter_active', { plugin: pluginKey })}
             </span>
-            <span className="text-xs text-ink-3">{t('admin.pricing.plugin_filter_hint')}</span>
+            <span className="text-meta text-ink-3">{t('admin.pricing.plugin_filter_hint')}</span>
           </div>
-          <Button variant="secondary" className="h-8 px-3 text-[13px]" onClick={onClearPlugin}>
+          <Button variant="secondary" className="h-8 px-3 text-meta" onClick={onClearPlugin}>
             {t('admin.pricing.plugin_filter_clear')}
           </Button>
         </section>
@@ -384,12 +384,12 @@ export function ModelPricingListPage({
             }}
           />
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="pricing-filter-mode" className="text-[13px] font-medium text-ink-1">
+            <label htmlFor="pricing-filter-mode" className="text-meta font-medium text-ink-1">
               {t('admin.pricing.mode')}
             </label>
             <select
               id="pricing-filter-mode"
-              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
               value={draft.mode}
               onChange={(event) => {
                 setDraft((current) => ({
@@ -405,12 +405,12 @@ export function ModelPricingListPage({
             </select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="pricing-filter-status" className="text-[13px] font-medium text-ink-1">
+            <label htmlFor="pricing-filter-status" className="text-meta font-medium text-ink-1">
               {t('admin.pricing.status')}
             </label>
             <select
               id="pricing-filter-status"
-              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
               value={draft.status}
               onChange={(event) => {
                 setDraft((current) => ({
@@ -425,12 +425,12 @@ export function ModelPricingListPage({
             </select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="pricing-filter-sort" className="text-[13px] font-medium text-ink-1">
+            <label htmlFor="pricing-filter-sort" className="text-meta font-medium text-ink-1">
               {t('admin.pricing.sort')}
             </label>
             <select
               id="pricing-filter-sort"
-              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
               value={draft.sort}
               onChange={(event) => {
                 setDraft((current) => ({
@@ -465,7 +465,7 @@ export function ModelPricingListPage({
           ) : (
             <span />
           )}
-          <span className="text-[13px] text-ink-2">
+          <span className="text-meta text-ink-2">
             {t('admin.pricing.total', { count: total })}
           </span>
         </div>
@@ -477,7 +477,7 @@ export function ModelPricingListPage({
             ))}
           </div>
         ) : listQuery.isError ? (
-          <div className="flex items-center gap-3 p-5 text-sm text-ink-2">
+          <div className="flex items-center gap-3 p-5 text-body text-ink-2">
             <span>
               {listQuery.error instanceof ApiError && listQuery.error.kind === 'forbidden'
                 ? t('common.error403.body')
@@ -489,7 +489,7 @@ export function ModelPricingListPage({
           </div>
         ) : items.length === 0 ? (
           <div className="flex flex-col items-start gap-2 p-5">
-            <p className="text-sm text-ink-2">{emptyMessage}</p>
+            <p className="text-body text-ink-2">{emptyMessage}</p>
             {hasFilters ? (
               <Button
                 variant="secondary"
@@ -504,7 +504,7 @@ export function ModelPricingListPage({
               </Button>
             ) : (
               <>
-                <p className="text-xs text-ink-3">{t('admin.pricing.empty_hint')}</p>
+                <p className="text-meta text-ink-3">{t('admin.pricing.empty_hint')}</p>
                 {capabilities.canManage ? (
                   <Button onClick={() => setEditTarget({ mode: 'create' })}>
                     {t('admin.pricing.new')}
@@ -515,9 +515,9 @@ export function ModelPricingListPage({
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1080px] text-sm">
+            <table className="w-full min-w-[1080px] text-body">
               <thead>
-                <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
+                <tr className="border-b border-border-hairline text-left text-meta text-ink-2">
                   <th scope="col" rowSpan={2} className="px-4 py-2 font-medium">
                     {t('admin.pricing.column_model')}
                   </th>
@@ -541,7 +541,7 @@ export function ModelPricingListPage({
                     {t('admin.pricing.actions')}
                   </th>
                 </tr>
-                <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
+                <tr className="border-b border-border-hairline text-left text-meta text-ink-2">
                   <th scope="col" className="border-l border-border-hairline px-4 py-2 text-right font-medium">
                     {t('admin.pricing.column_prompt')}
                   </th>
@@ -604,7 +604,7 @@ export function ModelPricingListPage({
                             : t('admin.pricing.status_disabled')}
                         </StatusBadge>
                       </td>
-                      <td className="px-4 py-3 text-xs text-ink-2" title={row.updated_at}>
+                      <td className="px-4 py-3 text-meta text-ink-2" title={row.updated_at}>
                         {formatRelativeTime(row.updated_at, locale)}
                       </td>
                       <td className="px-4 py-3">
@@ -612,14 +612,14 @@ export function ModelPricingListPage({
                           <div className="flex justify-end gap-1">
                             <Button
                               variant="ghost"
-                              className="h-8 px-2 text-[13px]"
+                              className="h-8 px-2 text-meta"
                               onClick={() => setEditTarget({ mode: 'edit', pricing: row })}
                             >
                               {t('admin.pricing.edit')}
                             </Button>
                             <Button
                               variant="ghost"
-                              className="h-8 px-2 text-[13px]"
+                              className="h-8 px-2 text-meta"
                               disabled={setStatus.isPending}
                               onClick={() => {
                                 // 停用会让用户无法请求该模型，因此需要确认；
@@ -637,7 +637,7 @@ export function ModelPricingListPage({
                             </Button>
                             <Button
                               variant="ghost"
-                              className="h-8 px-2 text-[13px] text-danger hover:bg-danger-bg"
+                              className="h-8 px-2 text-meta text-danger hover:bg-danger-bg"
                               onClick={() => setDeleteTarget(row)}
                             >
                               {t('admin.pricing.delete')}

@@ -234,7 +234,7 @@ export function CommandPalette({
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={handleKeyDown}
-          className="w-full rounded-lg border border-border-default bg-surface-page px-3 py-2 text-sm text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="w-full rounded-lg border border-border-default bg-surface-page px-3 py-2 text-body text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         />
 
         <p aria-live="polite" className="sr-only">
@@ -248,7 +248,7 @@ export function CommandPalette({
           className="mt-3 max-h-[320px] overflow-y-auto"
         >
           {flatItems.length === 0 ? (
-            <p role="status" className="px-1 py-6 text-sm text-ink-2">
+            <p role="status" className="px-1 py-6 text-body text-ink-2">
               {t('common.command.no_results')}
             </p>
           ) : (
@@ -261,7 +261,7 @@ export function CommandPalette({
                 >
                   <p
                     id={`command-group-${group.id}`}
-                    className="px-1 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-ink-3"
+                    className="px-1 pb-1 pt-2 text-badge font-medium uppercase tracking-wide text-ink-3"
                   >
                     {t(COMMAND_GROUP_LABEL_KEYS[group.id])}
                   </p>
@@ -292,7 +292,7 @@ export function CommandPalette({
                           void execute(item)
                         }}
                         className={[
-                          'cursor-pointer rounded-lg px-2 py-1.5 text-sm',
+                          'cursor-pointer rounded-lg px-2 py-1.5 text-body',
                           isActive
                             ? 'bg-surface-hover text-ink-1'
                             : 'text-ink-2 hover:bg-surface-hover hover:text-ink-1',

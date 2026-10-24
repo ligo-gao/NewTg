@@ -259,13 +259,13 @@ export function AuditLogsPage({ search, onSearchChange }: AuditLogsPageProps) {
   return (
     <section className="mx-auto flex max-w-[1520px] flex-col gap-4">
       <div className="flex flex-wrap items-baseline justify-between gap-3">
-        <h1 className="text-xl font-semibold text-ink-1">
+        <h1 className="text-page-title text-ink-1">
           {t('logs.audit.title')}
         </h1>
         <button
           type="button"
           onClick={clearFilters}
-          className="text-[13px] font-medium text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="text-meta font-medium text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           hidden={!hasActiveFilters}
         >
           {t('logs.audit.filters.clear')}
@@ -294,7 +294,7 @@ export function AuditLogsPage({ search, onSearchChange }: AuditLogsPageProps) {
                     update({ range: option.value, p: 1 })
                   }}
                   className={[
-                    'rounded-md px-2.5 py-1 text-[13px] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                    'rounded-md px-2.5 py-1 text-meta focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
                     active
                       ? 'bg-surface-hover font-medium text-ink-1'
                       : 'text-ink-2 hover:text-ink-1',
@@ -306,7 +306,7 @@ export function AuditLogsPage({ search, onSearchChange }: AuditLogsPageProps) {
             })}
           </div>
 
-          <label className="flex flex-col gap-1.5 text-[13px] font-medium text-ink-1">
+          <label className="flex flex-col gap-1.5 text-meta font-medium text-ink-1">
             {t('logs.audit.filters.category')}
             <select
               aria-label={t('logs.audit.filters.category')}
@@ -319,7 +319,7 @@ export function AuditLogsPage({ search, onSearchChange }: AuditLogsPageProps) {
                   p: 1,
                 })
               }}
-              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
             >
               <option value="all">{t('logs.audit.filters.category_all')}</option>
               {CATEGORIES.map((category) => (
@@ -330,7 +330,7 @@ export function AuditLogsPage({ search, onSearchChange }: AuditLogsPageProps) {
             </select>
           </label>
 
-          <label className="flex flex-col gap-1.5 text-[13px] font-medium text-ink-1">
+          <label className="flex flex-col gap-1.5 text-meta font-medium text-ink-1">
             {t('logs.audit.filters.result')}
             <select
               aria-label={t('logs.audit.filters.result')}
@@ -342,7 +342,7 @@ export function AuditLogsPage({ search, onSearchChange }: AuditLogsPageProps) {
                   p: 1,
                 })
               }}
-              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+              className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
             >
               <option value="all">{t('logs.audit.filters.result_all')}</option>
               {RESULTS.map((result) => (
@@ -368,7 +368,7 @@ export function AuditLogsPage({ search, onSearchChange }: AuditLogsPageProps) {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-ink-2">
+      <div className="flex flex-wrap items-center justify-between gap-3 text-body text-ink-2">
         {errorMessage === null ? (
           <span data-testid="audit-total">
             {t('logs.audit.total', {
@@ -399,9 +399,9 @@ export function AuditLogsPage({ search, onSearchChange }: AuditLogsPageProps) {
             }
           />
         ) : (
-          <table className="w-full text-sm">
+          <table className="w-full text-body">
             <thead>
-              <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
+              <tr className="border-b border-border-hairline text-left text-meta text-ink-2">
                 <th scope="col" className="px-4 py-2 font-medium">
                   {t('logs.audit.columns.time')}
                 </th>
@@ -466,23 +466,23 @@ export function AuditLogsPage({ search, onSearchChange }: AuditLogsPageProps) {
                       </div>
                     </td>
                     <td className="px-4 py-2">
-                      <div className="font-mono text-[13px] text-ink-1">
+                      <div className="font-mono text-meta text-ink-1">
                         {row.ip ?? '—'}
                       </div>
-                      <div className="text-[12px] text-ink-2">
+                      <div className="text-badge text-ink-2">
                         {summarizeUserAgent(row.user_agent)}
                       </div>
                     </td>
                     <td className="px-4 py-2">
-                      <span className="font-mono text-[12px] font-semibold text-ink-1">
+                      <span className="font-mono text-badge font-semibold text-ink-1">
                         {row.method ?? '—'}
                       </span>
-                      <span className="ml-2 font-mono text-[12px] text-ink-2">
+                      <span className="ml-2 font-mono text-badge text-ink-2">
                         {row.route ?? '—'}
                       </span>
                     </td>
                     <td className="px-4 py-2">
-                      <div className="font-mono text-[13px]">
+                      <div className="font-mono text-meta">
                         {row.status_code ?? '—'}
                       </div>
                       <StatusBadge
@@ -499,7 +499,7 @@ export function AuditLogsPage({ search, onSearchChange }: AuditLogsPageProps) {
                         onClick={() => {
                           setSelected(row)
                         }}
-                        className="text-[13px] font-medium text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                        className="text-meta font-medium text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
                       >
                         {t('logs.audit.view')}
                       </button>

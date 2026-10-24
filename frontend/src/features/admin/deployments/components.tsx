@@ -25,11 +25,11 @@ export function SectionCard({
       className="rounded-xl border border-border-default bg-surface-card p-5"
     >
       <header className="mb-3">
-        <h2 className="text-[15px] font-semibold leading-[22px] text-ink-1">
+        <h2 className="text-card-title font-semibold leading-[22px] text-ink-1">
           {title}
         </h2>
         {description !== undefined ? (
-          <p className="mt-0.5 text-xs text-ink-3">{description}</p>
+          <p className="mt-0.5 text-meta text-ink-3">{description}</p>
         ) : null}
       </header>
       {children}
@@ -148,23 +148,23 @@ export function PriceEstimateCard({
       role="status"
       aria-live="polite"
     >
-      <p className="text-xs font-medium text-ink-3">
+      <p className="text-meta text-ink-3">
         {t('admin.deployments.price.title')}
       </p>
       {loading ? (
-        <p className="mt-1 text-sm text-ink-2">
+        <p className="mt-1 text-body text-ink-2">
           {t('admin.deployments.price.estimating')}
         </p>
       ) : null}
       {error !== null && !loading ? (
         <div className="mt-1 flex flex-wrap items-center gap-2">
-          <p className="text-sm text-danger">
+          <p className="text-body text-danger">
             {t('admin.deployments.price.unavailable')}
           </p>
           {onRetry !== undefined ? (
             <Button
               variant="ghost"
-              className="h-7 px-2 text-xs"
+              className="h-7 px-2 text-badge"
               onClick={onRetry}
             >
               {t('admin.deployments.price.retry')}
@@ -174,11 +174,11 @@ export function PriceEstimateCard({
       ) : null}
       {estimate !== null && !loading ? (
         <div className="mt-1">
-          <p className="font-mono text-lg font-semibold text-ink-1">
+          <p className="font-mono text-stat font-semibold text-ink-1">
             {formatAmount(estimate.estimated_cost, estimate.currency)}
           </p>
           {items.length > 0 ? (
-            <dl className="mt-2 grid grid-cols-1 gap-1 text-xs text-ink-2 sm:grid-cols-2">
+            <dl className="mt-2 grid grid-cols-1 gap-1 text-meta text-ink-2 sm:grid-cols-2">
               {items.map((item) => (
                 <div key={item.key} className="flex justify-between gap-2">
                   <dt>{t(item.labelKey)}</dt>
@@ -192,7 +192,7 @@ export function PriceEstimateCard({
         </div>
       ) : null}
       {/* 常驻提示：估算金额不是用户扣费，无论是否拿到报价都要显示。 */}
-      <p className="mt-1 text-xs text-ink-3">
+      <p className="mt-1 text-meta text-ink-3">
         {t('admin.deployments.price.provider_hint')}
       </p>
     </div>
@@ -224,19 +224,19 @@ export function EnvEditor({
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-[13px] font-medium text-ink-1">{label}</p>
+        <p className="text-meta font-medium text-ink-1">{label}</p>
         <Button
           variant="ghost"
-          className="h-7 px-2 text-xs"
+          className="h-7 px-2 text-badge"
           disabled={disabled}
           onClick={() => onChange([...rows, { key: '', value: '' }])}
         >
           {t('admin.deployments.env.add')}
         </Button>
       </div>
-      {hint !== undefined ? <p className="text-xs text-ink-3">{hint}</p> : null}
+      {hint !== undefined ? <p className="text-meta text-ink-3">{hint}</p> : null}
       {rows.length === 0 ? (
-        <p className="text-xs text-ink-3">{t('admin.deployments.env.empty')}</p>
+        <p className="text-meta text-ink-3">{t('admin.deployments.env.empty')}</p>
       ) : null}
       {rows.map((row, index) => (
         <div key={index} className="flex items-start gap-2">
@@ -249,7 +249,7 @@ export function EnvEditor({
               next[index] = { ...row, key: event.target.value }
               onChange(next)
             }}
-            className="h-10 w-1/3 rounded-lg border border-border-default bg-surface-card px-3 font-mono text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
+            className="h-10 w-1/3 rounded-lg border border-border-default bg-surface-card px-3 font-mono text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
             placeholder="KEY"
           />
           <div className="flex-1">
@@ -276,14 +276,14 @@ export function EnvEditor({
                   next[index] = { ...row, value: event.target.value }
                   onChange(next)
                 }}
-                className="h-10 w-full rounded-lg border border-border-default bg-surface-card px-3 font-mono text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
+                className="h-10 w-full rounded-lg border border-border-default bg-surface-card px-3 font-mono text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
                 placeholder="value"
               />
             )}
           </div>
           <Button
             variant="ghost"
-            className="h-10 px-2 text-xs"
+            className="h-10 px-2 text-badge"
             disabled={disabled}
             aria-label={t('admin.deployments.env.remove')}
             onClick={() => onChange(rows.filter((_, i) => i !== index))}

@@ -84,7 +84,7 @@ export function LanguageSwitch({
           setLocale?.(next as Locale)
           onChange?.(next as Locale)
         }}
-        className="h-8 max-w-[150px] cursor-pointer rounded-lg border border-border-default bg-surface-card px-2 text-[13px] text-ink-2 hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+        className="h-8 max-w-[150px] cursor-pointer rounded-lg border border-border-default bg-surface-card px-2 text-meta text-ink-2 hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
       >
         {locales.map((item) => (
           <option key={item} value={item}>

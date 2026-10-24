@@ -188,7 +188,7 @@ describe('token creation', () => {
     const cc = await screen.findByRole('dialog', { name: 'Import to CC Switch' })
     const importButton = within(cc).getByRole('button', { name: 'Import' })
     expect((importButton as HTMLButtonElement).disabled).toBe(false)
-    expect(within(cc).getByText(`nkt-${'•'.repeat(24)}`)).toBeTruthy()
+    expect(within(cc).getByText(`sk-${'•'.repeat(24)}`)).toBeTruthy()
   })
 
   it('shows a retryable conflict on create without touching token detail', async () => {

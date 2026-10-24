@@ -189,7 +189,7 @@ export function ExtendDialog({
           onRetry={() => void runEstimate()}
         />
         {estimate !== null && durationValue !== null ? (
-          <p className="text-sm text-ink-2">
+          <p className="text-body text-ink-2">
             {t('admin.deployments.extend.confirm_text', {
               n: durationValue,
               amount: estimate.estimated_cost,

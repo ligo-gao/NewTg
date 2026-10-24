@@ -60,11 +60,11 @@ export function AutoGroupEditor({
 
   return (
     <div className="rounded-lg border border-border-default bg-surface-subtle p-3">
-      <p className="text-[13px] font-medium text-ink-1">{t('common.tokens.autoGroups.title')}</p>
-      <p className="mt-0.5 text-xs text-ink-3">{t('common.tokens.autoGroups.hint')}</p>
+      <p className="text-meta font-medium text-ink-1">{t('common.tokens.autoGroups.title')}</p>
+      <p className="mt-0.5 text-meta text-ink-3">{t('common.tokens.autoGroups.hint')}</p>
 
       {candidates.length === 0 ? (
-        <p role="alert" className="mt-2 text-xs text-warning">
+        <p role="alert" className="mt-2 text-meta text-warning">
           {t('common.tokens.autoGroups.empty')}
         </p>
       ) : null}
@@ -96,12 +96,12 @@ export function AutoGroupEditor({
             >
               ⠿
             </span>
-            <span className="w-6 text-right text-xs tabular-nums text-ink-3">
+            <span className="w-6 text-right text-meta tabular-nums text-ink-3">
               {index + 1}
             </span>
             <Tag>{name}</Tag>
             {ratioOf(name) !== undefined ? (
-              <span className="text-xs tabular-nums text-warning">×{ratioOf(name)}</span>
+              <span className="text-meta tabular-nums text-warning">×{ratioOf(name)}</span>
             ) : null}
             <span className="ml-auto flex items-center gap-1">
               <button
@@ -111,7 +111,7 @@ export function AutoGroupEditor({
                 onClick={() => {
                   move(index, index - 1)
                 }}
-                className="px-1 text-xs text-ink-2 disabled:opacity-40"
+                className="px-1 text-body text-ink-2 disabled:opacity-40"
               >
                 ↑
               </button>
@@ -122,7 +122,7 @@ export function AutoGroupEditor({
                 onClick={() => {
                   move(index, index + 1)
                 }}
-                className="px-1 text-xs text-ink-2 disabled:opacity-40"
+                className="px-1 text-body text-ink-2 disabled:opacity-40"
               >
                 ↓
               </button>
@@ -133,7 +133,7 @@ export function AutoGroupEditor({
                 onClick={() => {
                   onChange(value.filter((entry) => entry !== name))
                 }}
-                className="px-1 text-xs text-danger disabled:opacity-40"
+                className="px-1 text-body text-danger disabled:opacity-40"
               >
                 ×
               </button>
@@ -144,7 +144,7 @@ export function AutoGroupEditor({
 
       <div className="mt-2 flex items-end gap-2">
         <div className="flex flex-col gap-1">
-          <label htmlFor={selectId} className="text-xs text-ink-2">
+          <label htmlFor={selectId} className="text-meta text-ink-2">
             {t('common.tokens.autoGroups.add')}
           </label>
           <select
@@ -154,7 +154,7 @@ export function AutoGroupEditor({
             onChange={(event) => {
               setPending(event.target.value)
             }}
-            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1 disabled:opacity-50"
+            className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1 disabled:opacity-50"
           >
             <option value="">
               {full
@@ -172,18 +172,18 @@ export function AutoGroupEditor({
           type="button"
           disabled={disabled || full || pending === ''}
           onClick={add}
-          className="h-9 rounded-lg border border-border-default px-3 text-sm text-ink-1 disabled:opacity-40"
+          className="h-9 rounded-lg border border-border-default px-3 text-body text-ink-1 disabled:opacity-40"
         >
           {t('common.tokens.autoGroups.addAction')}
         </button>
-        <span className="ml-auto text-xs tabular-nums text-ink-2">
+        <span className="ml-auto text-meta tabular-nums text-ink-2">
           {t('common.tokens.autoGroups.selected', {
             count: value.length,
             max: maxCount,
           })}
         </span>
       </div>
-      {error !== undefined ? <p className="mt-1 text-xs text-danger">{error}</p> : null}
+      {error !== undefined ? <p className="mt-1 text-meta text-danger">{error}</p> : null}
     </div>
   )
 }

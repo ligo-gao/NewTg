@@ -137,7 +137,7 @@ export function UserSubscriptionsDialog({ user, onClose }: UserSubscriptionsDial
           ))}
         </div>
       ) : query.isError ? (
-        <div className="flex items-center gap-3 text-sm text-ink-2">
+        <div className="flex items-center gap-3 text-body text-ink-2">
           <span>
             {error instanceof ApiError && error.kind === 'offline'
               ? t('admin.subscriptions.offline_read_error')
@@ -156,12 +156,12 @@ export function UserSubscriptionsDialog({ user, onClose }: UserSubscriptionsDial
           </Button>
         </div>
       ) : items.length === 0 ? (
-        <p className="text-sm text-ink-2">{t('admin.subscriptions.user.empty')}</p>
+        <p className="text-body text-ink-2">{t('admin.subscriptions.user.empty')}</p>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1040px] text-sm">
+          <table className="w-full min-w-[1040px] text-body">
             <thead>
-              <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
+              <tr className="border-b border-border-hairline text-left text-meta text-ink-2">
                 <th scope="col" className="px-3 py-2 font-medium">
                   {t('admin.subscriptions.user.column_status')}
                 </th>
@@ -211,10 +211,10 @@ export function UserSubscriptionsDialog({ user, onClose }: UserSubscriptionsDial
                     </StatusBadge>
                   </td>
                   <td className="px-3 py-2 text-ink-1">{item.plan_title_snapshot}</td>
-                  <td className="px-3 py-2 text-xs text-ink-2">
+                  <td className="px-3 py-2 text-meta text-ink-2">
                     {formatDateTime(item.start_at, locale)}
                   </td>
-                  <td className="px-3 py-2 text-xs text-ink-2">
+                  <td className="px-3 py-2 text-meta text-ink-2">
                     {formatDateTime(item.end_at, locale)}
                   </td>
                   <td className="px-3 py-2 text-ink-2">
@@ -223,7 +223,7 @@ export function UserSubscriptionsDialog({ user, onClose }: UserSubscriptionsDial
                   <td className="px-3 py-2">
                     <QuotaCell item={item} locale={locale} />
                   </td>
-                  <td className="px-3 py-2 text-xs text-ink-2">
+                  <td className="px-3 py-2 text-meta text-ink-2">
                     {item.next_reset_at === null || item.next_reset_at === undefined
                       ? '—'
                       : formatDateTime(item.next_reset_at, locale)}
@@ -244,7 +244,7 @@ export function UserSubscriptionsDialog({ user, onClose }: UserSubscriptionsDial
                         : t('admin.subscriptions.user.cancel_at_end_no')}
                     </StatusBadge>
                   </td>
-                  <td className="px-3 py-2 font-mono text-xs text-ink-2">
+                  <td className="px-3 py-2 font-mono text-meta text-ink-2">
                     {item.order_id === null || item.order_id === undefined
                       ? '—'
                       : t('admin.subscriptions.user.order_ref', { id: item.order_id })}
@@ -256,7 +256,7 @@ export function UserSubscriptionsDialog({ user, onClose }: UserSubscriptionsDial
                       {item.status === 'active' ? (
                         <Button
                           variant="danger"
-                          className="h-8 px-2 text-[13px]"
+                          className="h-8 px-2 text-meta"
                           onClick={() => setCancelTarget(item)}
                         >
                           {t('admin.subscriptions.user.cancel_now')}
@@ -269,7 +269,7 @@ export function UserSubscriptionsDialog({ user, onClose }: UserSubscriptionsDial
             </tbody>
           </table>
           {query.data !== undefined && query.data.total > items.length ? (
-            <p className="mt-2 text-xs text-ink-3">
+            <p className="mt-2 text-meta text-ink-3">
               {t('admin.subscriptions.user.cap_notice', { count: items.length })}
             </p>
           ) : null}
@@ -339,7 +339,7 @@ function QuotaCell({
   const percent = Math.round((used / item.amount_total) * 100)
   return (
     <div className="flex min-w-[120px] flex-col gap-1">
-      <span className="font-mono text-xs tabular-nums text-ink-1">
+      <span className="font-mono text-meta tabular-nums text-ink-1">
         {t('admin.subscriptions.user.used_of', {
           used: formatCredits(item.amount_used, locale),
           total: formatCredits(item.amount_total, locale),

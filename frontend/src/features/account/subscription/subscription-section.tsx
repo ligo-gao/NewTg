@@ -93,7 +93,7 @@ export function SubscriptionSection() {
       {offline ? (
         <p
           role="status"
-          className="rounded-lg border border-warning-line bg-warning-bg px-3 py-2 text-sm text-warning"
+          className="rounded-lg border border-warning-line bg-warning-bg px-3 py-2 text-body text-warning"
         >
           {t('account.subscription.offline_notice')}
         </p>
@@ -105,11 +105,11 @@ export function SubscriptionSection() {
       >
         <h2
           id="subscription-plans-title"
-          className="text-[15px] font-semibold text-ink-1"
+          className="text-card-title text-ink-1"
         >
           {t('account.subscription.plans.title')}
         </h2>
-        <p className="mt-1 text-[13px] text-ink-2">
+        <p className="mt-1 text-meta text-ink-2">
           {t('account.subscription.plans.subtitle')}
         </p>
 
@@ -125,7 +125,7 @@ export function SubscriptionSection() {
             <div aria-hidden="true" className="h-40 animate-pulse rounded-xl bg-surface-subtle" />
           </div>
         ) : plansQuery.isError ? (
-          <div className="mt-4 flex items-center gap-3 text-sm text-ink-2">
+          <div className="mt-4 flex items-center gap-3 text-body text-ink-2">
             <span>{t('account.subscription.plans.error')}</span>
             <Button variant="secondary" onClick={() => void plansQuery.refetch()}>
               {t('account.subscription.plans.retry')}

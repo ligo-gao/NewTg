@@ -87,7 +87,7 @@ function PerformanceCard({
       data-testid={testId}
       className="rounded-xl border border-border-default bg-surface-card p-5"
     >
-      <h2 className="mb-3 text-[15px] font-semibold leading-[22px] text-ink-1">
+      <h2 className="mb-3 text-card-title font-semibold leading-[22px] text-ink-1">
         {title}
       </h2>
       {children}
@@ -123,10 +123,10 @@ function InlineError({
     <div
       data-testid={testId}
       role="alert"
-      className="flex flex-wrap items-center gap-3 rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-sm text-danger"
+      className="flex flex-wrap items-center gap-3 rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-body text-danger"
     >
       <span>{message}</span>
-      <Button variant="ghost" className="h-7 px-2 text-xs" onClick={onRetry}>
+      <Button variant="ghost" className="h-7 px-2 text-body" onClick={onRetry}>
         {retryLabel}
       </Button>
     </div>
@@ -154,7 +154,7 @@ function ResultLine({
       data-testid={testId}
       data-tone={tone}
       aria-live="polite"
-      className={`mt-3 rounded-lg border px-3 py-2 text-sm ${toneClass}`}
+      className={`mt-3 rounded-lg border px-3 py-2 text-body ${toneClass}`}
     >
       {children}
     </p>
@@ -399,10 +399,10 @@ export function PerformancePage() {
   if (!wideEnough) {
     return (
       <div className="mx-auto max-w-[1520px] rounded-xl border border-border-hairline bg-surface-card p-8">
-        <h1 className="text-xl font-semibold text-ink-1">
+        <h1 className="text-page-title font-semibold text-ink-1">
           {t('admin.performance.page.title')}
         </h1>
-        <p className="mt-2 text-sm text-ink-2">
+        <p className="mt-2 text-body text-ink-2">
           {t('admin.performance.page.desktop_only')}
         </p>
       </div>
@@ -434,7 +434,7 @@ export function PerformancePage() {
     >
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-ink-1">
+          <h1 className="text-page-title font-semibold text-ink-1">
             {t('admin.performance.page.title')}
           </h1>
         </div>
@@ -453,7 +453,7 @@ export function PerformancePage() {
           </Button>
           <span
             data-testid="performance-last-updated"
-            className="font-mono text-xs text-ink-3"
+            className="font-mono text-meta text-ink-3"
           >
             {t('admin.performance.page.last_updated', {
               time: formatClock(statsQuery.dataUpdatedAt, locale),
@@ -471,7 +471,7 @@ export function PerformancePage() {
       {offline ? (
         <p
           data-testid="performance-offline-snapshot"
-          className="text-sm text-warning"
+          className="text-body text-warning"
           role="status"
         >
           {t('admin.performance.page.offline_snapshot')}
@@ -517,13 +517,13 @@ export function PerformancePage() {
                       : 'admin.performance.disk.status_disabled',
                   )}
                 </StatusBadge>
-                <span className="font-mono text-xs text-ink-2">
+                <span className="font-mono text-meta text-ink-2">
                   {diskPath === ''
                     ? '—'
                     : t('admin.performance.disk.path', { path: diskPath })}
                 </span>
               </div>
-              <p className="font-mono text-sm text-ink-2">
+              <p className="font-mono text-body text-ink-2">
                 {t('admin.performance.disk.files', {
                   count: formatCount(stats.cache_stats.file_count, locale),
                 })}
@@ -552,11 +552,11 @@ export function PerformancePage() {
                     style={{ width: `${diskPercent}%` }}
                   />
                 </div>
-                <span className="font-mono text-xs text-ink-3">
+                <span className="font-mono text-meta text-ink-3">
                   {formatDecimal(diskPercent, locale)}%
                 </span>
               </div>
-              <p className="font-mono text-sm text-ink-2">
+              <p className="font-mono text-body text-ink-2">
                 {t('admin.performance.disk.threshold', {
                   size:
                     stats.config.threshold_mb > 0
@@ -584,11 +584,11 @@ export function PerformancePage() {
              * 只用 cache_stats.enabled 会把两者混成同一句「未启用」。
              */}
             {!configEnabled ? (
-              <p className="mt-3 text-sm text-ink-3">
+              <p className="mt-3 text-body text-ink-3">
                 {t('admin.performance.disk.empty')}
               </p>
             ) : !diskEnabled ? (
-              <p className="mt-3 text-sm text-ink-3">
+              <p className="mt-3 text-body text-ink-3">
                 {t('admin.performance.disk.dir_unavailable')}
               </p>
             ) : null}
@@ -601,7 +601,7 @@ export function PerformancePage() {
               >
                 {t('admin.performance.disk.clear_button')}
               </Button>
-              <p id="performance-disk-consequence" className="text-xs text-ink-3">
+              <p id="performance-disk-consequence" className="text-meta text-ink-3">
                 {t('admin.performance.disk.consequence')}
               </p>
             </div>
@@ -655,7 +655,7 @@ export function PerformancePage() {
           />
         ) : (
           <>
-            <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm text-ink-2 md:grid-cols-4">
+            <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-body text-ink-2 md:grid-cols-4">
               <p className="font-mono">
                 {t('admin.performance.gc.alloc', {
                   size: formatBytes(stats.memory_stats.alloc_bytes, locale),
@@ -686,7 +686,7 @@ export function PerformancePage() {
               >
                 {t('admin.performance.gc.run_button')}
               </Button>
-              <p id="performance-gc-consequence" className="text-xs text-ink-3">
+              <p id="performance-gc-consequence" className="text-meta text-ink-3">
                 {t('admin.performance.gc.note')}
               </p>
             </div>
@@ -747,12 +747,12 @@ export function PerformancePage() {
               />
             ) : null}
             <div className="flex flex-col gap-2">
-              <p className="font-mono text-xs text-ink-2">
+              <p className="font-mono text-meta text-ink-2">
                 {logs.log_dir === ''
                   ? '—'
                   : t('admin.performance.logs.dir', { dir: logs.log_dir })}
               </p>
-              <p className="font-mono text-sm text-ink-2">
+              <p className="font-mono text-body text-ink-2">
                 {t('admin.performance.logs.files', {
                   count: formatCount(logs.file_count, locale),
                 })}
@@ -775,10 +775,10 @@ export function PerformancePage() {
               <>
                 <div className="mt-3 flex flex-col gap-3 xl:flex-row xl:items-end xl:gap-6">
                   <fieldset className="flex flex-col gap-1">
-                    <legend className="mb-1 text-[13px] font-medium text-ink-1">
+                    <legend className="mb-1 text-meta font-medium text-ink-1">
                       {t('admin.performance.logs.mode_label')}
                     </legend>
-                    <div className="flex flex-wrap gap-3 text-sm text-ink-2">
+                    <div className="flex flex-wrap gap-3 text-body text-ink-2">
                       <label className="flex items-center gap-1.5">
                         <input
                           type="radio"
@@ -805,7 +805,7 @@ export function PerformancePage() {
                   <div className="flex flex-col gap-1">
                     <label
                       htmlFor="performance-log-value"
-                      className="text-[13px] font-medium text-ink-1"
+                      className="text-meta font-medium text-ink-1"
                     >
                       {t('admin.performance.logs.value_label')}
                     </label>
@@ -832,9 +832,9 @@ export function PerformancePage() {
                             [mode]: next,
                           }))
                         }}
-                        className="h-9 w-28 rounded-lg border border-border-default bg-surface-card px-3 font-mono text-sm text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                        className="h-9 w-28 rounded-lg border border-border-default bg-surface-card px-3 font-mono text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
                       />
-                      <span className="text-sm text-ink-3">
+                      <span className="text-body text-ink-3">
                         {t(
                           mode === 'by_days'
                             ? 'admin.performance.logs.days_unit'
@@ -845,7 +845,7 @@ export function PerformancePage() {
                     {valueValidation.error !== undefined ? (
                       <p
                         id="performance-log-value-error"
-                        className="text-xs text-danger"
+                        className="text-meta text-danger"
                       >
                         {t(
                           valueValidation.error === 'required'
@@ -860,7 +860,7 @@ export function PerformancePage() {
                 <p
                   data-testid="performance-logs-preview"
                   aria-live="polite"
-                  className="mt-3 text-sm text-ink-2"
+                  className="mt-3 text-body text-ink-2"
                 >
                   {cleanupPreview.count === 0
                     ? t('admin.performance.logs.preview_none')
@@ -869,7 +869,7 @@ export function PerformancePage() {
                         size: formatBytes(cleanupPreview.bytes, locale),
                       })}
                 </p>
-                <p className="text-xs text-ink-3">
+                <p className="text-meta text-ink-3">
                   {t('admin.performance.logs.active_note')}
                 </p>
 
@@ -888,7 +888,7 @@ export function PerformancePage() {
                   </Button>
                   <p
                     id="performance-logs-consequence"
-                    className="text-xs text-ink-3"
+                    className="text-meta text-ink-3"
                   >
                     {t('admin.performance.logs.consequence')}
                   </p>
@@ -944,7 +944,7 @@ export function PerformancePage() {
                  */}
                 <p
                   id="performance-logs-consequence"
-                  className="mt-3 text-sm text-ink-3"
+                  className="mt-3 text-body text-ink-3"
                 >
                   {t('admin.performance.logs.empty')}
                 </p>
@@ -981,14 +981,14 @@ export function PerformancePage() {
             }}
           />
         ) : recentQuery.data.items.length === 0 ? (
-          <p className="text-sm text-ink-3">
+          <p className="text-body text-ink-3">
             {t('admin.performance.recent.empty')}
           </p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] border-collapse text-left text-sm">
+            <table className="w-full min-w-[760px] border-collapse text-left text-body">
               <thead>
-                <tr className="border-b border-border-hairline text-xs text-ink-3">
+                <tr className="border-b border-border-hairline text-meta text-ink-3">
                   <th scope="col" className="px-2 py-2 font-medium">
                     {t('admin.performance.recent.time')}
                   </th>
@@ -1016,7 +1016,7 @@ export function PerformancePage() {
                     data-testid="performance-recent-row"
                     className="border-b border-border-hairline last:border-0"
                   >
-                    <td className="whitespace-nowrap px-2 py-2 font-mono text-xs text-ink-2">
+                    <td className="whitespace-nowrap px-2 py-2 font-mono text-meta text-ink-2">
                       {formatDateTime(item.time, locale)}
                     </td>
                     <td className="px-2 py-2 text-ink-2">{item.actor}</td>
@@ -1042,7 +1042,7 @@ export function PerformancePage() {
                         )}
                       </StatusBadge>
                     </td>
-                    <td className="px-2 py-2 font-mono text-xs text-ink-2">
+                    <td className="px-2 py-2 font-mono text-meta text-ink-2">
                       <span>
                         {item.action === 'system.gc.run'
                           ? formatMilliseconds(item.duration_ms, locale)

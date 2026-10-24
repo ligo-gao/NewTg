@@ -75,7 +75,7 @@ function ViewToggle({
           type="button"
           aria-pressed={view === mode}
           onClick={() => onChange(mode)}
-          className={`h-7 rounded-md px-3 text-xs font-medium focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none ${
+          className={`h-7 rounded-md px-3 text-badge focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none ${
             view === mode
               ? 'bg-surface-card text-brand shadow-sm'
               : 'text-ink-2 hover:text-ink-1'
@@ -106,7 +106,7 @@ function SectionHeader({
   const { t } = useI18n()
   return (
     <div className="flex items-center justify-between gap-3">
-      <h2 className="text-base font-semibold leading-6 text-ink-1">
+      <h2 className="text-section font-semibold leading-6 text-ink-1">
         {t(titleKey)}
       </h2>
       {toggle && view !== undefined && onViewChange !== undefined ? (
@@ -119,7 +119,7 @@ function SectionHeader({
 function EmptyLine({ textKey }: { textKey: string }) {
   const { t } = useI18n()
   return (
-    <p className="rounded-lg border border-dashed border-border-hairline px-4 py-8 text-center text-sm text-ink-2">
+    <p className="rounded-lg border border-dashed border-border-hairline px-4 py-8 text-center text-body text-ink-2">
       {t(textKey)}
     </p>
   )
@@ -130,26 +130,26 @@ export function DeltaMarker({ deltaPct }: { deltaPct: number | null }) {
   const { t, locale } = useI18n()
   if (deltaPct === null) {
     return (
-      <span className="text-xs text-chart-div-mid">
+      <span className="text-meta text-chart-div-mid">
         {t('public.rankings.delta.new')}
       </span>
     )
   }
   if (deltaPct > 0) {
     return (
-      <span className="text-xs font-medium tabular-nums text-chart-div-pos">
+      <span className="text-badge tabular-nums text-chart-div-pos">
         ▲ {formatPercent(deltaPct, locale)}
       </span>
     )
   }
   if (deltaPct < 0) {
     return (
-      <span className="text-xs font-medium tabular-nums text-chart-div-neg">
+      <span className="text-badge tabular-nums text-chart-div-neg">
         ▼ {formatPercent(Math.abs(deltaPct), locale)}
       </span>
     )
   }
-  return <span className="text-xs text-chart-div-mid">—</span>
+  return <span className="text-meta text-chart-div-mid">—</span>
 }
 
 function PeriodChip({
@@ -166,7 +166,7 @@ function PeriodChip({
     <button
       type="button"
       onClick={() => onSelectPeriod(wider)}
-      className="rounded-full border border-border-default px-3 py-1 text-xs font-medium text-brand hover:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+      className="rounded-full border border-border-default px-3 py-1 text-badge text-brand hover:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
     >
       {t('public.rankings.model.switch_to', { period: t(PERIOD_LABEL_KEYS[wider]) })}
     </button>
@@ -226,16 +226,16 @@ export function ModelRankingsSection({
               >
                 <div className="flex items-baseline justify-between gap-2">
                   <div className="flex min-w-0 items-baseline gap-2">
-                    <span className="w-6 shrink-0 text-xs tabular-nums text-ink-3">
+                    <span className="w-6 shrink-0 text-meta tabular-nums text-ink-3">
                       {model.rank}
                     </span>
-                    <span className="truncate text-sm font-semibold text-ink-1">
+                    <span className="truncate text-body font-semibold text-ink-1">
                       {model.display_name}
                     </span>
                   </div>
                   <DeltaMarker deltaPct={model.delta_pct} />
                 </div>
-                <p className="ml-8 truncate text-xs text-ink-2">{model.author}</p>
+                <p className="ml-8 truncate text-meta text-ink-2">{model.author}</p>
                 <div className="ml-8 mt-2 h-2 rounded-full bg-surface-subtle">
                   <div
                     className="h-2 rounded-full"
@@ -249,7 +249,7 @@ export function ModelRankingsSection({
                     }}
                   />
                 </div>
-                <p className="ml-8 mt-1 text-xs tabular-nums text-ink-2">
+                <p className="ml-8 mt-1 text-meta tabular-nums text-ink-2">
                   {formatCompact(model.total_tokens, locale)}{' '}
                   {t('public.rankings.model.tokens')} ·{' '}
                   {formatCompact(model.requests, locale)}{' '}
@@ -262,8 +262,8 @@ export function ModelRankingsSection({
       ) : (
         <div className="mt-4">
           <div className="overflow-x-auto rounded-lg border border-border-hairline">
-            <table data-testid="model-table" className="w-full text-left text-sm">
-              <thead className="bg-surface-subtle text-xs text-ink-2">
+            <table data-testid="model-table" className="w-full text-left text-body">
+              <thead className="bg-surface-subtle text-meta text-ink-2">
                 <tr>
                   <th scope="col" className="px-3 py-2 font-medium">
                     {t('public.rankings.model.rank')}
@@ -302,7 +302,7 @@ export function ModelRankingsSection({
                       >
                         {model.display_name}
                       </button>
-                      <span className="ml-2 text-xs text-ink-2">
+                      <span className="ml-2 text-meta text-ink-2">
                         {model.author}
                       </span>
                     </td>
@@ -320,7 +320,7 @@ export function ModelRankingsSection({
               </tbody>
             </table>
           </div>
-          <div className="mt-2 flex items-center justify-between text-xs text-ink-3">
+          <div className="mt-2 flex items-center justify-between text-meta text-ink-3">
             {models.length > 10 ? (
               <button
                 type="button"
@@ -365,13 +365,13 @@ function MoverColumn({
 
   return (
     <div>
-      <h3 className="text-sm font-semibold text-ink-1">
+      <h3 className="text-body font-semibold text-ink-1">
         {direction === 'up'
           ? `↑ ${t('public.rankings.momentum.rising')}`
           : `↓ ${t('public.rankings.momentum.falling')}`}
       </h3>
       {items.length === 0 ? (
-        <p className="mt-3 text-sm text-ink-2">{t(emptyKey)}</p>
+        <p className="mt-3 text-body text-ink-2">{t(emptyKey)}</p>
       ) : (
         <ul className="mt-3 flex flex-col gap-2">
           {items.slice(0, 5).map((item) => (
@@ -386,11 +386,11 @@ function MoverColumn({
                 className="w-full rounded-lg px-2 py-2 text-left hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
               >
                 <div className="flex items-baseline justify-between gap-3">
-                  <span className="min-w-0 truncate text-sm font-semibold text-ink-1">
+                  <span className="min-w-0 truncate text-body font-semibold text-ink-1">
                     {item.model}
                   </span>
                   <span
-                    className="shrink-0 text-xs font-medium tabular-nums"
+                    className="shrink-0 text-badge tabular-nums"
                     style={{ color }}
                   >
                     {direction === 'up' ? '▲' : '▼'}{' '}
@@ -398,7 +398,7 @@ function MoverColumn({
                   </span>
                 </div>
                 <div className="mt-1 flex items-center gap-2">
-                  <span className="truncate text-xs text-ink-2">
+                  <span className="truncate text-meta text-ink-2">
                     {item.author}
                   </span>
                   <span className="ml-auto h-1.5 flex-1 max-w-32 rounded-full bg-surface-subtle">
@@ -502,7 +502,7 @@ export function TrendSection({
         </div>
       ) : view === 'chart' ? (
         <div className="mt-4">
-          <ul className="mb-3 flex flex-wrap gap-x-4 gap-y-2 text-xs text-ink-2">
+          <ul className="mb-3 flex flex-wrap gap-x-4 gap-y-2 text-meta text-ink-2">
             {trend.series.map((item) => (
               <li key={item.model} className="flex items-center gap-1.5">
                 <span
@@ -528,7 +528,7 @@ export function TrendSection({
             {trend.buckets.map((bucket, bucketIndex) => {
               const total = totals[bucketIndex] ?? 0
               return (
-                <li key={bucket} className="text-xs text-ink-2">
+                <li key={bucket} className="text-meta text-ink-2">
                   <div className="mb-1 flex justify-between gap-2">
                     <span title={formatBucketFull(bucket)}>
                       {formatBucketLabel(bucket, trend.granularity)}
@@ -559,8 +559,8 @@ export function TrendSection({
         </div>
       ) : (
         <div className="mt-4 max-h-[32rem] overflow-auto rounded-lg border border-border-hairline">
-          <table data-testid="trend-table" className="w-full text-left text-sm">
-            <thead className="sticky top-0 bg-surface-subtle text-xs text-ink-2">
+          <table data-testid="trend-table" className="w-full text-left text-body">
+            <thead className="sticky top-0 bg-surface-subtle text-meta text-ink-2">
               <tr>
                 <th scope="col" className="px-3 py-2 font-medium">
                   {t('public.rankings.trend.time')}
@@ -656,8 +656,8 @@ function ProviderTable({
   const totalTokens = entries.reduce((sum, item) => sum + item.tokens, 0)
   const totalShare = entries.reduce((sum, item) => sum + item.share, 0)
   return (
-    <table data-testid="provider-table" className="w-full text-left text-sm">
-      <thead className="bg-surface-subtle text-xs text-ink-2">
+    <table data-testid="provider-table" className="w-full text-left text-body">
+      <thead className="bg-surface-subtle text-meta text-ink-2">
         <tr>
           <th scope="col" className="px-3 py-2 font-medium">
             {t('public.rankings.share.rank')}
@@ -746,7 +746,7 @@ export function ShareSection({
               ariaLabel={t('public.rankings.share.chart_aria')}
               otherLabel={t('public.rankings.share.other')}
             />
-            <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs text-ink-2">
+            <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-meta text-ink-2">
               {entries.map((entry) => (
                 <li key={entry.label} className="flex items-center gap-1.5">
                   <span
@@ -760,14 +760,14 @@ export function ShareSection({
                 </li>
               ))}
             </ul>
-            <p className="mt-6 text-xs font-medium text-ink-2">
+            <p className="mt-6 text-badge text-ink-2">
               {t('public.rankings.share.providers')}
             </p>
             <div className="mt-2 overflow-x-auto rounded-lg border border-border-hairline">
               <ProviderTable entries={entries} locale={locale} showTotal />
             </div>
           </div>
-          <div className="rounded-lg border border-border-hairline bg-surface-subtle p-4 text-sm text-ink-2">
+          <div className="rounded-lg border border-border-hairline bg-surface-subtle p-4 text-body text-ink-2">
             <p className="font-medium text-ink-1">
               {t('public.rankings.share.providers')}
             </p>
@@ -802,7 +802,7 @@ export function SectionPlaceholder({ titleKey }: { titleKey: string }) {
   const { t } = useI18n()
   return (
     <section>
-      <h2 className="text-base font-semibold leading-6 text-ink-1">
+      <h2 className="text-section font-semibold leading-6 text-ink-1">
         {t(titleKey)}
       </h2>
       <div
@@ -813,7 +813,7 @@ export function SectionPlaceholder({ titleKey }: { titleKey: string }) {
           <div key={index} className="h-8 rounded bg-surface-subtle" />
         ))}
       </div>
-      <p className="mt-2 text-xs text-ink-2">
+      <p className="mt-2 text-meta text-ink-2">
         {t('public.rankings.section.accumulating')}
       </p>
     </section>

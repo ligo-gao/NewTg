@@ -16,10 +16,10 @@ export function TwoFaCard() {
 
   return (
     <section className="rounded-xl border border-border-hairline bg-surface-card p-5">
-      <h2 className="text-base font-semibold text-ink-1">
+      <h2 className="text-section text-ink-1">
         {t('auth.two_fa_setup.title')}
       </h2>
-      <p className="mt-1 text-[13px] text-ink-2">
+      <p className="mt-1 text-meta text-ink-2">
         {/* Card copy, not the login-challenge instruction: the two contexts
             differ ("enable" vs "enter a code"). */}
         {t('auth.two_fa_setup.card_description')}

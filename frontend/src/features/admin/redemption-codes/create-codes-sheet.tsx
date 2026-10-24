@@ -305,7 +305,7 @@ export function CreateCodesResultDialog({
       }
     >
       <ul
-        className="h-[240px] overflow-y-auto rounded-lg border border-border-hairline bg-surface-subtle p-3 font-mono text-[13px] tracking-[0.05em]"
+        className="h-[240px] overflow-y-auto rounded-lg border border-border-hairline bg-surface-subtle p-3 font-mono text-meta tracking-[0.05em]"
         aria-label={t('admin.redemption.create.codes_label')}
       >
         {data.codes.map((code) => (
@@ -314,7 +314,7 @@ export function CreateCodesResultDialog({
           </li>
         ))}
       </ul>
-      <p className="mt-2 text-xs text-warning">{t('admin.redemption.create.result_warning')}</p>
+      <p className="mt-2 text-meta text-warning">{t('admin.redemption.create.result_warning')}</p>
       <div
         className="mt-3 flex flex-wrap items-center gap-2"
         role="group"
@@ -322,7 +322,7 @@ export function CreateCodesResultDialog({
       >
         <Button
           variant="secondary"
-          className="h-8 px-3 text-[13px]"
+          className="h-8 px-3 text-meta"
           disabled={tooMany}
           onClick={() => downloadRedemptionCodes(data, 'txt', {}, saveFile)}
         >
@@ -330,7 +330,7 @@ export function CreateCodesResultDialog({
         </Button>
         <Button
           variant="secondary"
-          className="h-8 px-3 text-[13px]"
+          className="h-8 px-3 text-meta"
           disabled={tooMany}
           onClick={() => downloadRedemptionCodes(data, 'markdown', {}, saveFile)}
         >
@@ -338,7 +338,7 @@ export function CreateCodesResultDialog({
         </Button>
       </div>
       {tooMany ? (
-        <p className="mt-2 text-xs text-danger">
+        <p className="mt-2 text-meta text-danger">
           {t('admin.redemption.create.export_too_many')}
         </p>
       ) : null}

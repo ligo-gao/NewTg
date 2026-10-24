@@ -335,7 +335,7 @@ export function NotificationSheet({
     >
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-xs text-ink-3">
+          <p className="text-meta text-ink-3">
             {t(
               total === 1
                 ? 'common.notifications.total_one'
@@ -348,7 +348,7 @@ export function NotificationSheet({
            */}
           <Button
             variant="secondary"
-            className="h-8 px-2.5 text-[13px]"
+            className="h-8 px-2.5 text-meta"
             onClick={() => void markAllRead()}
             disabled={markingAll || !hasUnread}
           >
@@ -359,7 +359,7 @@ export function NotificationSheet({
         </div>
 
         {actionError !== null ? (
-          <p role="alert" className="text-sm text-danger">
+          <p role="alert" className="text-body text-danger">
             {actionError === 'read'
               ? t('common.notifications.mark_read_failed')
               : t('common.notifications.mark_all_failed')}
@@ -367,17 +367,17 @@ export function NotificationSheet({
         ) : null}
 
         {query.isPending ? (
-          <p role="status" className="py-6 text-center text-sm text-ink-3">
+          <p role="status" className="py-6 text-center text-body text-ink-3">
             {t('common.notifications.loading')}
           </p>
         ) : query.isError ? (
           <div role="alert" className="flex flex-col items-start gap-2 py-4">
-            <p className="text-sm text-ink-2">
+            <p className="text-body text-ink-2">
               {describeError(query.error, t, retrySeconds)}
             </p>
             <Button
               variant="secondary"
-              className="h-8 px-3 text-[13px]"
+              className="h-8 px-3 text-meta"
               onClick={() => void query.refetch()}
               disabled={retryBlocked}
             >
@@ -385,7 +385,7 @@ export function NotificationSheet({
             </Button>
           </div>
         ) : items.length === 0 ? (
-          <p role="status" className="py-10 text-center text-sm text-ink-3">
+          <p role="status" className="py-10 text-center text-body text-ink-3">
             {t('common.notifications.empty')}
           </p>
         ) : (
@@ -414,10 +414,10 @@ export function NotificationSheet({
                         <span aria-hidden="true" className="mt-1.5 size-2 shrink-0" />
                       )}
                       <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-medium text-ink-1">
+                        <span className="block text-body font-medium text-ink-1">
                           {item.title || t('common.notifications.untitled')}
                         </span>
-                        <span className="mt-0.5 block text-xs text-ink-3">
+                        <span className="mt-0.5 block text-meta text-ink-3">
                           <time
                             dateTime={item.created_at}
                             title={formatAbsolute(item.created_at, locale)}
@@ -438,7 +438,7 @@ export function NotificationSheet({
                       </span>
                     </span>
                     {item.summary ? (
-                      <span className="text-sm text-ink-2">{item.summary}</span>
+                      <span className="text-body text-ink-2">{item.summary}</span>
                     ) : null}
                     {/*
                      * 不渲染 `body`：它是按用户语言渲染后的 Markdown 原文，
@@ -461,18 +461,18 @@ export function NotificationSheet({
           >
             <Button
               variant="ghost"
-              className="h-8 px-2 text-[13px]"
+              className="h-8 px-2 text-meta"
               onClick={() => setPage((current) => Math.max(1, current - 1))}
               disabled={page <= 1 || query.isFetching}
             >
               {t('common.notifications.pagination.prev')}
             </Button>
-            <p className="text-xs text-ink-3">
+            <p className="text-meta text-ink-3">
               {t('common.notifications.pagination.page', { page, pages })}
             </p>
             <Button
               variant="ghost"
-              className="h-8 px-2 text-[13px]"
+              className="h-8 px-2 text-meta"
               onClick={() =>
                 setPage((current) => Math.min(pages, current + 1))
               }

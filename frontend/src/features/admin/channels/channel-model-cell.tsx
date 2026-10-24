@@ -25,7 +25,7 @@ export function ChannelModelCell({
   const { t } = useI18n()
 
   if (models.length === 0) {
-    return <span className="text-xs text-ink-3">—</span>
+    return <span className="text-meta text-ink-3">—</span>
   }
 
   return (
@@ -40,7 +40,7 @@ export function ChannelModelCell({
         name: channelName,
       })}
       onClick={onToggle}
-      className="inline-flex h-7 items-center gap-1 rounded-md border border-border-default bg-surface-card px-2 text-xs font-medium text-ink-1 transition-colors hover:border-brand-line hover:bg-brand-subtle hover:text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+      className="inline-flex h-7 items-center gap-1 rounded-md border border-border-default bg-surface-card px-2 text-badge text-ink-1 transition-colors hover:border-brand-line hover:bg-brand-subtle hover:text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
     >
       <svg
         data-testid={`channel-model-chevron-${channelId}`}

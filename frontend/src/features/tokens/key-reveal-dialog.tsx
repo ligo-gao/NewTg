@@ -73,24 +73,24 @@ export function KeyRevealDialog({ entries, onClose, onImport }: KeyRevealDialogP
       <div className="flex flex-col gap-3">
         <div
           role="note"
-          className="rounded-md border-l-4 border-warning bg-warning-bg px-3 py-2 text-xs text-warning"
+          className="rounded-md border-l-4 border-warning bg-warning-bg px-3 py-2 text-meta text-warning"
         >
           {t('common.tokens.keyReveal.warning')}
         </div>
         {entries.length > 1 ? (
-          <p className="text-xs text-ink-2">
+          <p className="text-meta text-ink-2">
             {t('common.tokens.keyReveal.total', { count: entries.length })}
           </p>
         ) : null}
         <ul className="flex max-h-60 flex-col gap-2 overflow-y-auto">
           {entries.map((entry) => (
             <li key={`${entry.name}-${entry.key}`} className="flex flex-col gap-1">
-              <span className="text-xs text-ink-2">{entry.name}</span>
+              <span className="text-meta text-ink-2">{entry.name}</span>
               <div className="flex items-center gap-2">
                 <code
                   aria-readonly="true"
                   aria-label={t('common.tokens.keyReveal.plainAria')}
-                  className="flex-1 overflow-x-auto rounded-md bg-surface-hover px-2 py-1.5 font-mono text-[13px] text-ink-1"
+                  className="flex-1 overflow-x-auto rounded-md bg-surface-hover px-2 py-1.5 font-mono text-meta text-ink-1"
                 >
                   {entry.key}
                 </code>

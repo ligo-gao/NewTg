@@ -342,11 +342,11 @@ export function ModelPerformance({ canViewDimension }: ModelPerformanceProps) {
         <div>
           <h2
             id="model-performance-title"
-            className="text-lg font-semibold text-ink-1"
+            className="text-section font-semibold text-ink-1"
           >
             {t('common.dashboard.performance.title')}
           </h2>
-          <p className="mt-1 text-[13px] text-ink-3">
+          <p className="mt-1 text-meta text-ink-3">
             {t('common.dashboard.performance.subtitle')}
           </p>
         </div>
@@ -372,7 +372,7 @@ export function ModelPerformance({ canViewDimension }: ModelPerformanceProps) {
                     setRange(value)
                   }}
                   className={[
-                    'rounded-md px-2.5 py-1 text-[13px] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                    'rounded-md px-2.5 py-1 text-meta focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
                     active
                       ? 'bg-surface-hover font-medium text-ink-1'
                       : 'text-ink-2 hover:text-ink-1',
@@ -384,7 +384,7 @@ export function ModelPerformance({ canViewDimension }: ModelPerformanceProps) {
             })}
           </div>
 
-          <label className="flex flex-col gap-1 text-[13px] font-medium text-ink-1">
+          <label className="flex flex-col gap-1 text-meta font-medium text-ink-1">
             {t('common.dashboard.performance.model')}
             <select
               data-testid="perf-model-select"
@@ -394,7 +394,7 @@ export function ModelPerformance({ canViewDimension }: ModelPerformanceProps) {
                 const value = event.target.value
                 setModel(value === '' ? undefined : value)
               }}
-              className="h-9 min-w-40 rounded-lg border border-border-default bg-surface-card px-2 text-sm text-ink-1"
+              className="h-9 min-w-40 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1"
             >
               <option value="">
                 {t('common.dashboard.performance.model_all')}
@@ -428,7 +428,7 @@ export function ModelPerformance({ canViewDimension }: ModelPerformanceProps) {
                       setDimensionChoice(value)
                     }}
                     className={[
-                      'rounded-md px-2.5 py-1 text-[13px] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                      'rounded-md px-2.5 py-1 text-meta focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
                       active
                         ? 'bg-surface-hover font-medium text-ink-1'
                         : 'text-ink-2 hover:text-ink-1',
@@ -449,14 +449,14 @@ export function ModelPerformance({ canViewDimension }: ModelPerformanceProps) {
         <div
           data-testid="perf-error"
           role="alert"
-          className="mt-4 rounded-lg border border-danger-line bg-danger-bg p-3 text-sm text-danger"
+          className="mt-4 rounded-lg border border-danger-line bg-danger-bg p-3 text-body text-danger"
         >
           <p>{t('common.dashboard.performance.error')}</p>
           <button
             type="button"
             data-testid="perf-retry"
             onClick={() => void query.refetch()}
-            className="mt-2 rounded border border-danger-line px-2 py-0.5 text-xs focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="mt-2 rounded border border-danger-line px-2 py-0.5 text-badge focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
             {t('common.action.retry')}
           </button>
@@ -465,7 +465,7 @@ export function ModelPerformance({ canViewDimension }: ModelPerformanceProps) {
         // 管道闸门：独立说明，不显示任何历史数字（UI §8.7）。
         <div
           data-testid="perf-pipeline-disabled"
-          className="mt-4 rounded-lg border border-warning-line bg-warning-bg p-4 text-sm text-ink-1"
+          className="mt-4 rounded-lg border border-warning-line bg-warning-bg p-4 text-body text-ink-1"
         >
           <p className="font-medium">
             {t('common.dashboard.performance.pipeline_disabled')}
@@ -477,7 +477,7 @@ export function ModelPerformance({ canViewDimension }: ModelPerformanceProps) {
       ) : (
         <div className="mt-4 flex flex-col gap-4">
           {data.pipeline.stale ? (
-            <p data-testid="perf-stale" className="text-xs text-warning">
+            <p data-testid="perf-stale" className="text-meta text-warning">
               {t('common.dashboard.performance.stale')}
             </p>
           ) : null}
@@ -486,12 +486,12 @@ export function ModelPerformance({ canViewDimension }: ModelPerformanceProps) {
             <div
               data-testid="perf-comparison"
               role="status"
-              className="rounded-lg border border-warning-line bg-warning-bg p-3 text-sm text-ink-1"
+              className="rounded-lg border border-warning-line bg-warning-bg p-3 text-body text-ink-1"
             >
               <p className="font-medium">
                 {t('common.dashboard.performance.comparison.title')}
               </p>
-              <p className="mt-1 text-xs text-ink-2">
+              <p className="mt-1 text-meta text-ink-2">
                 {t('common.dashboard.performance.comparison.body', {
                   pipeline: formatPercent(
                     data.comparison.pipeline_success_rate,
@@ -505,7 +505,7 @@ export function ModelPerformance({ canViewDimension }: ModelPerformanceProps) {
             </div>
           ) : null}
 
-          <div className="flex flex-wrap items-center gap-2 text-[13px] text-ink-2">
+          <div className="flex flex-wrap items-center gap-2 text-meta text-ink-2">
             <span>
               {t('common.dashboard.performance.sample_size', {
                 count: formatCount(sampleSize, locale),
@@ -528,7 +528,7 @@ export function ModelPerformance({ canViewDimension }: ModelPerformanceProps) {
           </div>
 
           {emptyWindow ? (
-            <p data-testid="perf-empty" className="text-sm text-ink-2">
+            <p data-testid="perf-empty" className="text-body text-ink-2">
               {t('common.dashboard.performance.empty')}{' '}
               <a href="/tokens" className="text-brand underline">
                 {t('common.dashboard.performance.empty_action')}
@@ -627,7 +627,7 @@ export function ModelPerformance({ canViewDimension }: ModelPerformanceProps) {
             dimensionForbidden ? (
               <p
                 data-testid="perf-dimension-forbidden"
-                className="rounded-lg border border-border-hairline p-3 text-sm text-ink-2"
+                className="rounded-lg border border-border-hairline p-3 text-body text-ink-2"
               >
                 {t('common.dashboard.performance.admin_required')}
               </p>
@@ -700,14 +700,14 @@ function ChartPanel({
       data-testid={testId}
       className="rounded-lg border border-border-hairline p-3"
     >
-      <h3 className="text-sm font-semibold text-ink-1">{title}</h3>
+      <h3 className="text-body font-semibold text-ink-1">{title}</h3>
       {hasData ? (
         <>
           <div className="mt-2">
             <AnalyticsChart series={series} config={config} />
           </div>
           {/* UI §8.5：每个图表都提供可展开的数据表等价文本。 */}
-          <details className="mt-2 text-xs text-ink-2">
+          <details className="mt-2 text-meta text-ink-2">
             <summary className="cursor-pointer text-brand">
               {t('common.dashboard.performance.view_data_table')}
             </summary>
@@ -745,7 +745,7 @@ function ChartPanel({
           </details>
         </>
       ) : (
-        <p className="mt-2 text-sm text-ink-3">
+        <p className="mt-2 text-body text-ink-3">
           {t('common.dashboard.performance.chart_empty')}
         </p>
       )}
@@ -768,12 +768,12 @@ function IncidentList({
     >
       <h3
         id="perf-incidents-title"
-        className="text-sm font-semibold text-ink-1"
+        className="text-body font-semibold text-ink-1"
       >
         {t('common.dashboard.performance.incidents.title')}
       </h3>
       {incidents.length === 0 ? (
-        <p className="mt-2 text-sm text-ink-3">
+        <p className="mt-2 text-body text-ink-3">
           {t('common.dashboard.performance.incidents.none')}
         </p>
       ) : (
@@ -783,7 +783,7 @@ function IncidentList({
               key={`${incident.start}-${incident.end}`}
               data-testid="perf-incident"
               tabIndex={0}
-              className="flex flex-wrap items-center gap-2 rounded-lg bg-surface-subtle px-3 py-2 text-[13px] text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="flex flex-wrap items-center gap-2 rounded-lg bg-surface-subtle px-3 py-2 text-meta text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             >
               <span aria-hidden="true" className="text-danger">
                 ▲
@@ -840,7 +840,7 @@ function DimensionTable({
     >
       <h3
         id="perf-dimensions-title"
-        className="text-sm font-semibold text-ink-1"
+        className="text-body font-semibold text-ink-1"
       >
         {t('common.dashboard.performance.dimension.title', {
           dimension: t(
@@ -858,7 +858,7 @@ function DimensionTable({
         <div
           data-testid="perf-dimensions-error"
           role="alert"
-          className="mt-2 text-sm text-danger"
+          className="mt-2 text-body text-danger"
         >
           {t('common.dashboard.performance.error')}{' '}
           <button
@@ -870,14 +870,14 @@ function DimensionTable({
           </button>
         </div>
       ) : rows.length === 0 ? (
-        <p className="mt-2 text-sm text-ink-3">
+        <p className="mt-2 text-body text-ink-3">
           {t('common.dashboard.performance.chart_empty')}
         </p>
       ) : (
         <div className="mt-2 overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-body">
             <thead>
-              <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
+              <tr className="border-b border-border-hairline text-left text-meta text-ink-2">
                 <th scope="col" className="py-2 font-medium">
                   {t('common.dashboard.performance.dimension.key')}
                 </th>
@@ -901,7 +901,7 @@ function DimensionTable({
                   key={`${row.dimension}-${row.key}`}
                   className="border-b border-border-hairline last:border-0"
                 >
-                  <td className="py-2 font-mono text-[13px]">{row.key}</td>
+                  <td className="py-2 font-mono text-meta">{row.key}</td>
                   <td className="py-2 text-right tabular-nums">
                     {formatCount(row.requests, locale)}
                   </td>
@@ -943,13 +943,13 @@ function ModelTable({
       aria-labelledby="perf-models-title"
       className="rounded-lg border border-border-hairline p-3"
     >
-      <h3 id="perf-models-title" className="text-sm font-semibold text-ink-1">
+      <h3 id="perf-models-title" className="text-body font-semibold text-ink-1">
         {t('common.dashboard.performance.models.title')}
       </h3>
       <div className="mt-2 overflow-x-auto">
-        <table className="w-full text-sm">
+        <table className="w-full text-body">
           <thead>
-            <tr className="border-b border-border-hairline text-left text-xs text-ink-2">
+            <tr className="border-b border-border-hairline text-left text-meta text-ink-2">
               <th scope="col" className="py-2 font-medium">
                 {t('common.dashboard.performance.models.model')}
               </th>
@@ -995,12 +995,12 @@ function ModelTable({
                         row.model === selectedModel ? undefined : row.model,
                       )
                     }}
-                    className="font-mono text-[13px] text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                    className="font-mono text-meta text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
                   >
                     {row.model}
                   </button>
                 </th>
-                <td className="py-2 text-right font-mono text-[13px] tabular-nums">
+                <td className="py-2 text-right font-mono text-meta tabular-nums">
                   {formatMs(row.ttft_p50_ms, row.ttft_p50_over_30s)} /{' '}
                   {formatMs(row.ttft_p95_ms, row.ttft_p95_over_30s)}
                 </td>

@@ -90,28 +90,28 @@ function TaskRuns({ taskName }: { taskName: string }) {
 
   if (query.isPending) {
     return (
-      <p className="px-4 py-3 text-sm text-ink-2" role="status">
+      <p className="px-4 py-3 text-body text-ink-2" role="status">
         {t('settings.status.tasks.runs_loading')}
       </p>
     )
   }
   if (query.isError) {
     return (
-      <p className="px-4 py-3 text-sm text-danger" role="alert">
+      <p className="px-4 py-3 text-body text-danger" role="alert">
         {t('settings.status.tasks.runs_error')}
       </p>
     )
   }
   const runs = query.data?.runs.items ?? []
   if (runs.length === 0) {
-    return <p className="px-4 py-3 text-sm text-ink-3">{t('settings.status.tasks.runs_empty')}</p>
+    return <p className="px-4 py-3 text-body text-ink-3">{t('settings.status.tasks.runs_empty')}</p>
   }
   return (
     <div className="px-4 py-3">
-      <h4 className="mb-2 text-xs font-medium text-ink-3">{t('settings.status.tasks.runs_title')}</h4>
+      <h4 className="mb-2 text-card-title text-ink-3">{t('settings.status.tasks.runs_title')}</h4>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[560px] text-left text-sm">
-          <thead className="text-xs text-ink-3">
+        <table className="w-full min-w-[560px] text-left text-body">
+          <thead className="text-meta text-ink-3">
             <tr>
               <th scope="col" className="py-1 pr-3 font-medium">{t('settings.status.tasks.run_started')}</th>
               <th scope="col" className="py-1 pr-3 font-medium">{t('settings.status.tasks.run_status')}</th>
@@ -133,7 +133,7 @@ function TaskRuns({ taskName }: { taskName: string }) {
                     ? formatDuration(new Date(run.finished_at).getTime() - new Date(run.started_at).getTime())
                     : '—'}
                 </td>
-                <td className="py-1 font-mono text-xs text-danger">{run.error ?? '—'}</td>
+                <td className="py-1 font-mono text-meta text-danger">{run.error ?? '—'}</td>
               </tr>
             ))}
           </tbody>
@@ -200,10 +200,10 @@ export function SystemTasksCard() {
     >
       <div className="mb-3 flex items-center justify-between">
         <div>
-          <h2 className="text-[15px] font-semibold leading-[22px] text-ink-1">
+          <h2 className="text-card-title font-semibold leading-[22px] text-ink-1">
             {t('settings.status.tasks.title')}
           </h2>
-          <p className="mt-1 text-xs text-ink-3">{t('settings.status.tasks.subtitle')}</p>
+          <p className="mt-1 text-meta text-ink-3">{t('settings.status.tasks.subtitle')}</p>
         </div>
         <Button variant="secondary" onClick={() => void query.refetch()} disabled={query.isFetching}>
           {t('settings.status.tasks.refresh')}
@@ -211,7 +211,7 @@ export function SystemTasksCard() {
       </div>
 
       {query.isPending ? (
-        <p className="text-sm text-ink-2" role="status">{t('settings.status.tasks.loading')}</p>
+        <p className="text-body text-ink-2" role="status">{t('settings.status.tasks.loading')}</p>
       ) : null}
 
       {query.isError ? (
@@ -225,11 +225,11 @@ export function SystemTasksCard() {
 
       {query.isSuccess ? (
         tasks.length === 0 ? (
-          <p className="text-sm text-ink-3">{t('settings.status.tasks.empty')}</p>
+          <p className="text-body text-ink-3">{t('settings.status.tasks.empty')}</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[920px] text-left text-sm">
-              <thead className="text-xs text-ink-3">
+            <table className="w-full min-w-[920px] text-left text-body">
+              <thead className="text-meta text-ink-3">
                 <tr>
                   <th scope="col" className="py-2 pr-4 font-medium">{t('settings.status.tasks.task')}</th>
                   <th scope="col" className="py-2 pr-4 font-medium">{t('settings.status.tasks.enabled')}</th>
@@ -262,7 +262,7 @@ export function SystemTasksCard() {
                             {task.task_type}
                           </button>
                           {task.description !== undefined && task.description !== '' ? (
-                            <p className="text-xs text-ink-3">{task.description}</p>
+                            <p className="text-meta text-ink-3">{task.description}</p>
                           ) : null}
                         </td>
                         <td className="py-2 pr-4">
@@ -284,7 +284,7 @@ export function SystemTasksCard() {
                           )}
                         </td>
                         <td className="py-2 pr-4 font-mono text-ink-2">{formatTimestamp(task.next_due_at)}</td>
-                        <td className="py-2 pr-4 font-mono text-xs text-ink-2">{task.holder_id ?? '—'}</td>
+                        <td className="py-2 pr-4 font-mono text-meta text-ink-2">{task.holder_id ?? '—'}</td>
                         <td className="py-2 pr-4 font-mono text-ink-2">{formatDuration(task.last_duration_ms)}</td>
                         <td className="py-2">
                           <div className="flex items-center gap-2">
@@ -335,10 +335,10 @@ export function SystemTasksCard() {
           data-testid="system-task-trigger-dialog"
         >
           <div className="w-full max-w-md rounded-xl border border-border-default bg-surface-card p-5">
-            <h3 className="text-base font-semibold text-ink-1">
+            <h3 className="text-section font-semibold text-ink-1">
               {t('settings.status.tasks.trigger_confirm_title')}
             </h3>
-            <p className="mt-2 text-sm text-ink-2">
+            <p className="mt-2 text-body text-ink-2">
               {t('settings.status.tasks.trigger_confirm_body', { task: pending.task_type })}
             </p>
             <div className="mt-4 flex justify-end gap-2">

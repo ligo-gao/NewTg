@@ -63,7 +63,7 @@ export function ModelCatalogPage({ search, onSearchChange }: ModelCatalogPagePro
   if (meQuery.isPending) {
     return (
       <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
-        <h1 className="text-xl font-semibold text-ink-1">{t('admin.models.title')}</h1>
+        <h1 className="text-page-title font-semibold text-ink-1">{t('admin.models.title')}</h1>
         <section className="rounded-xl border border-border-hairline bg-surface-card p-5" aria-busy="true">
           {[0, 1, 2, 3, 4].map((index) => (
             <div key={index} className="mb-2 h-10 animate-pulse rounded bg-surface-subtle" />
@@ -76,8 +76,8 @@ export function ModelCatalogPage({ search, onSearchChange }: ModelCatalogPagePro
   if (!canReadCatalog(permissions)) {
     return (
       <div className="mx-auto max-w-[1520px] rounded-xl border border-border-hairline bg-surface-card p-8">
-        <h1 className="text-xl font-semibold text-ink-1">{t('common.error403.title')}</h1>
-        <p className="mt-2 text-sm text-ink-2">{t('common.error403.body')}</p>
+        <h1 className="text-page-title font-semibold text-ink-1">{t('common.error403.title')}</h1>
+        <p className="mt-2 text-body text-ink-2">{t('common.error403.body')}</p>
       </div>
     )
   }
@@ -85,8 +85,8 @@ export function ModelCatalogPage({ search, onSearchChange }: ModelCatalogPagePro
   if (!wideEnough) {
     return (
       <div className="mx-auto max-w-[1520px] rounded-xl border border-border-hairline bg-surface-card p-8">
-        <h1 className="text-xl font-semibold text-ink-1">{t('admin.models.title')}</h1>
-        <p className="mt-2 text-sm text-ink-2">{t('admin.models.desktop_only')}</p>
+        <h1 className="text-page-title font-semibold text-ink-1">{t('admin.models.title')}</h1>
+        <p className="mt-2 text-body text-ink-2">{t('admin.models.desktop_only')}</p>
       </div>
     )
   }
@@ -95,8 +95,8 @@ export function ModelCatalogPage({ search, onSearchChange }: ModelCatalogPagePro
     <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h1 className="text-xl font-semibold text-ink-1">{t('admin.models.title')}</h1>
-          <p className="mt-1 text-sm text-ink-2">{t('admin.models.subtitle')}</p>
+          <h1 className="text-page-title font-semibold text-ink-1">{t('admin.models.title')}</h1>
+          <p className="mt-1 text-body text-ink-2">{t('admin.models.subtitle')}</p>
         </div>
         <div role="tablist" aria-label={t('admin.models.title')} className="flex gap-1 border-b border-border-hairline">
           {TABS.map((tab) => {
@@ -108,7 +108,7 @@ export function ModelCatalogPage({ search, onSearchChange }: ModelCatalogPagePro
                 role="tab"
                 aria-selected={active}
                 className={[
-                  'border-b-2 px-3 py-2 text-sm',
+                  'border-b-2 px-3 py-2 text-body',
                   active
                     ? 'border-brand font-medium text-ink-1'
                     : 'border-transparent text-ink-2 hover:text-ink-1',

@@ -69,7 +69,7 @@ function Section({
 }) {
   return (
     <section className="border-t border-border-hairline pt-4 first:border-0 first:pt-0">
-      <h3 className="mb-3 flex items-center gap-2 text-[16px] font-semibold leading-6 text-ink-1">
+      <h3 className="mb-3 flex items-center gap-2 text-section leading-6 text-ink-1">
         <span aria-hidden="true" className="h-4 w-[3px] rounded bg-brand" />
         {title}
       </h3>
@@ -81,8 +81,8 @@ function Section({
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="contents">
-      <dt className="text-[13px] text-ink-3">{label}</dt>
-      <dd className="min-w-0 break-words text-sm text-ink-1">{children}</dd>
+      <dt className="text-meta text-ink-3">{label}</dt>
+      <dd className="min-w-0 break-words text-body text-ink-1">{children}</dd>
     </div>
   )
 }
@@ -259,11 +259,11 @@ export function LogDetailDrawer({
           <SkeletonSection />
         </div>
       ) : notFound ? (
-        <p className="py-8 text-center text-sm text-ink-2">
+        <p className="py-8 text-center text-body text-ink-2">
           {t('logs.usage.detail.not_found')}
         </p>
       ) : detailQuery.isError || detail === undefined ? (
-        <div role="alert" className="flex items-center gap-3 py-6 text-sm">
+        <div role="alert" className="flex items-center gap-3 py-6 text-body">
           <span>{t('logs.usage.error.load')}</span>
           <Button variant="secondary" onClick={() => void detailQuery.refetch()}>
             {t('logs.usage.error.retry')}
@@ -274,7 +274,7 @@ export function LogDetailDrawer({
           <div className="flex flex-wrap items-center gap-3">
             <UsageStatusBadge status={detail.status} />
             <span
-              className="text-[13px] text-ink-2"
+              className="text-meta text-ink-2"
               title={new Date(detail.created_at).toISOString()}
             >
               {formatRelativeTime(detail.created_at, locale)}
@@ -295,7 +295,7 @@ export function LogDetailDrawer({
           <Section title={t('logs.usage.detail.general')}>
             <dl className="grid grid-cols-[150px_1fr] gap-x-4 gap-y-2">
               <Field label={t('logs.usage.detail.request_id')}>
-                <span className="font-mono text-[13px]">{detail.request_id}</span>
+                <span className="font-mono text-meta">{detail.request_id}</span>
               </Field>
               <Field label={t('logs.usage.detail.time')}>
                 <span title={new Date(detail.created_at).toISOString()}>
@@ -303,7 +303,7 @@ export function LogDetailDrawer({
                 </span>
               </Field>
               <Field label={t('logs.usage.detail.model_group')}>
-                <span className="font-mono text-[13px]">{detail.model}</span>
+                <span className="font-mono text-meta">{detail.model}</span>
                 {' / '}
                 {detail.group ?? '—'}
               </Field>
@@ -313,7 +313,7 @@ export function LogDetailDrawer({
                 {detail.upstream ?? '—'}
                 {capabilities.isAdmin && detail.channel_id !== null &&
                 detail.channel_id !== undefined ? (
-                  <span className="ml-2 text-[12px] text-ink-3">
+                  <span className="ml-2 text-badge text-ink-3">
                     {t('logs.usage.detail.channel_id', { id: detail.channel_id })}
                   </span>
                 ) : null}
@@ -343,7 +343,7 @@ export function LogDetailDrawer({
               </Field>
             </dl>
             {estimated ? (
-              <p className="mt-2 text-xs text-warning">
+              <p className="mt-2 text-meta text-warning">
                 {t('logs.usage.detail.estimated')}
               </p>
             ) : null}
@@ -356,7 +356,7 @@ export function LogDetailDrawer({
                 {billingRows.map((row) => (
                   <div
                     key={row.key}
-                    className="flex flex-wrap items-baseline justify-between gap-2 font-mono text-[13px] tabular-nums"
+                    className="flex flex-wrap items-baseline justify-between gap-2 font-mono text-meta tabular-nums"
                   >
                     <dt className="text-ink-2">
                       {t(`logs.usage.detail.${row.key}`)}
@@ -380,7 +380,7 @@ export function LogDetailDrawer({
                   </div>
                 ))}
                 {groupRatio !== undefined ? (
-                  <div className="flex items-baseline justify-between gap-2 font-mono text-[13px] tabular-nums">
+                  <div className="flex items-baseline justify-between gap-2 font-mono text-meta tabular-nums">
                     <dt className="text-ink-2">
                       {t('logs.usage.detail.group_ratio')}
                     </dt>
@@ -390,7 +390,7 @@ export function LogDetailDrawer({
                   </div>
                 ) : null}
               </dl>
-              <dl className="mt-3 flex flex-col gap-2 border-t border-border-hairline pt-3 text-sm tabular-nums">
+              <dl className="mt-3 flex flex-col gap-2 border-t border-border-hairline pt-3 text-body tabular-nums">
                 <div className="flex justify-between gap-2">
                   <dt className="text-ink-2">
                     {t('logs.usage.detail.pre_deducted')}
@@ -407,7 +407,7 @@ export function LogDetailDrawer({
                 </div>
               </dl>
               {conclusionText !== null ? (
-                <p className="mt-3 rounded-xl bg-surface-subtle p-3 text-sm text-brand">
+                <p className="mt-3 rounded-xl bg-surface-subtle p-3 text-body text-brand">
                   {conclusionText}
                 </p>
               ) : null}
@@ -416,7 +416,7 @@ export function LogDetailDrawer({
 
           {/* D. Timing & failure */}
           <Section title={t('logs.usage.detail.timing')}>
-            <p className="mb-3 text-sm text-ink-1">
+            <p className="mb-3 text-body text-ink-1">
               {detail.status === 'success'
                 ? t('logs.usage.detail.attempt_summary_success', {
                     count: attempts,
@@ -442,11 +442,11 @@ export function LogDetailDrawer({
 
             {detail.status !== 'success' ? (
               <div className="mt-3">
-                <p className="text-[13px] font-medium text-ink-1">
+                <p className="text-meta font-medium text-ink-1">
                   {t('logs.usage.detail.failure_reason')}
                 </p>
-                <p className="mt-1 text-sm text-ink-2">
-                  <span className="mr-2 rounded bg-danger-bg px-1.5 py-0.5 text-xs text-danger">
+                <p className="mt-1 text-body text-ink-2">
+                  <span className="mr-2 rounded bg-danger-bg px-1.5 py-0.5 text-badge text-danger">
                     {detail.error_class ?? '—'}
                   </span>
                   {detail.error_message !== null &&
@@ -467,7 +467,7 @@ export function LogDetailDrawer({
                 className="mt-4 flex flex-col gap-2"
                 data-testid="retry-chain"
               >
-                <li className="text-[13px] font-medium text-ink-1">
+                <li className="text-meta font-medium text-ink-1">
                   {t('logs.usage.detail.retry_chain')}
                 </li>
                 {retryChain.map((step, index) => {
@@ -490,7 +490,7 @@ export function LogDetailDrawer({
                     <li
                       key={index}
                       data-testid="retry-step"
-                      className="flex flex-wrap items-center gap-2 rounded-lg bg-surface-subtle px-3 py-2 text-[13px]"
+                      className="flex flex-wrap items-center gap-2 rounded-lg bg-surface-subtle px-3 py-2 text-meta"
                     >
                       <span
                         aria-hidden="true"
@@ -531,21 +531,21 @@ export function LogDetailDrawer({
               {revealSensitive && promptField !== undefined ? (
                 <p
                   data-testid="prompt-revealed"
-                  className="max-h-[60vh] overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-surface-subtle p-3 font-mono text-sm"
+                  className="max-h-[60vh] overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-surface-subtle p-3 font-mono text-body"
                 >
                   {promptField}
                 </p>
               ) : promptField !== undefined ? (
                 <>
-                  <p className="font-mono text-sm" data-testid="prompt-masked">
+                  <p className="font-mono text-body" data-testid="prompt-masked">
                     {t('logs.usage.detail.masked_prompt')}
                   </p>
-                  <p className="mt-1 text-xs text-ink-3">
+                  <p className="mt-1 text-meta text-ink-3">
                     {t('logs.usage.sensitive.enable_hint')}
                   </p>
                 </>
               ) : (
-                <p className="text-sm text-ink-2">
+                <p className="text-body text-ink-2">
                   {t('logs.usage.sensitive.recording_disabled')}
                 </p>
               )}
@@ -574,7 +574,7 @@ function TokenStat({ value, total }: { value: number; total: number }) {
   return (
     <span className="font-mono tabular-nums">
       {formatTokenAmount(value)}
-      <span className="ml-2 text-[12px] text-ink-3">
+      <span className="ml-2 text-badge text-ink-3">
         {t('logs.usage.detail.percent', {
           value: formatPercent(value, total),
         })}

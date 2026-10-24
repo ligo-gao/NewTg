@@ -147,7 +147,7 @@ export function SettingsShell({ tab, onTabChange }: SettingsShellProps) {
         actions={
           <>
             {hasUnsavedChanges ? (
-              <p className="text-xs text-warning" role="status">
+              <p className="text-meta text-warning" role="status">
                 {t('settings.shell.dirty')}
               </p>
             ) : null}
@@ -160,7 +160,7 @@ export function SettingsShell({ tab, onTabChange }: SettingsShellProps) {
             {canManage ? (
               <a
                 href="/admin/settings/announcements"
-                className="inline-flex h-9 items-center justify-center rounded-lg border border-border-default bg-surface-card px-3.5 text-sm font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                className="inline-flex h-9 items-center justify-center rounded-lg border border-border-default bg-surface-card px-3.5 text-body font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
               >
                 {t('settings.shell.manage_announcements')}
               </a>
@@ -177,7 +177,7 @@ export function SettingsShell({ tab, onTabChange }: SettingsShellProps) {
 
       <div data-testid="settings-panel" className="flex flex-col gap-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="text-sm text-ink-2">{t(activeTab.descriptionKey)}</p>
+          <p className="text-body text-ink-2">{t(activeTab.descriptionKey)}</p>
           {isPaymentTab && canManage && complianceQuery.data?.confirmed ? (
             <StatusBadge variant="success">
               {t('settings.payment_compliance.confirmed_badge')}
@@ -186,7 +186,7 @@ export function SettingsShell({ tab, onTabChange }: SettingsShellProps) {
         </div>
         {paymentBlocked ? (
           paymentNeedsGate ? (
-            <p role="status" className="text-sm text-ink-2">
+            <p role="status" className="text-body text-ink-2">
               {t('settings.payment_compliance.blocked_hint')}
             </p>
           ) : complianceQuery.isError ? (
@@ -204,7 +204,7 @@ export function SettingsShell({ tab, onTabChange }: SettingsShellProps) {
               </Button>
             </div>
           ) : (
-            <p role="status" className="text-sm text-ink-2">
+            <p role="status" className="text-body text-ink-2">
               {t('settings.payment_compliance.status_loading')}
             </p>
           )

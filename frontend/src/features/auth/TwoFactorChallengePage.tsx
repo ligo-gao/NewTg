@@ -84,7 +84,7 @@ export function TwoFactorChallengePage({
   if (expired || ticket === undefined || ticket === '') {
     return (
       <AuthPageShell title={t('auth.two_factor.expired_title')}>
-        <p className="text-sm text-ink-2">{t('auth.two_factor.expired_body')}</p>
+        <p className="text-body text-ink-2">{t('auth.two_factor.expired_body')}</p>
         <Button className="mt-4 h-11 w-full" onClick={() => onNavigate('/sign-in')}>
           {t('auth.two_factor.to_sign_in')}
         </Button>
@@ -165,7 +165,7 @@ export function TwoFactorChallengePage({
               aria-controls="two-factor-panel"
               tabIndex={mode === value ? 0 : -1}
               className={[
-                '-mb-px border-b-2 px-1 pb-2 text-[13px] font-medium focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                '-mb-px border-b-2 px-1 pb-2 text-meta font-medium focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
                 mode === value
                   ? 'border-brand text-ink-1'
                   : 'border-transparent text-ink-3 hover:text-ink-1',

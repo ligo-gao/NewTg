@@ -19,10 +19,10 @@ import type { Channel } from './types'
  */
 
 const CARD = 'min-w-0 rounded-lg border border-border-hairline bg-surface-card p-4'
-const CARD_HEADING = 'text-[11px] font-semibold tracking-[0.02em] text-ink-2'
+const CARD_HEADING = 'text-badge font-semibold tracking-[0.02em] text-ink-2'
 const ROW = 'flex items-start justify-between gap-3'
-const ROW_LABEL = 'text-xs text-ink-2'
-const ROW_VALUE = 'text-right text-sm text-ink-1 tabular-nums'
+const ROW_LABEL = 'text-meta text-ink-2'
+const ROW_VALUE = 'text-right text-body text-ink-1 tabular-nums'
 
 function formatRelativeTime(iso: string, t: TranslateFn): string {
   const timestamp = Date.parse(iso)
@@ -44,7 +44,7 @@ function formatRelativeTime(iso: string, t: TranslateFn): string {
 function LastTestCell({ channel }: { channel: Channel }) {
   const { t, locale } = useI18n()
   if (channel.last_test_at === null) {
-    return <span className="text-xs text-ink-3">{t('common.channels.table.neverTested')}</span>
+    return <span className="text-meta text-ink-3">{t('common.channels.table.neverTested')}</span>
   }
   const timestamp = Date.parse(channel.last_test_at)
   const absolute = Number.isNaN(timestamp)
@@ -57,7 +57,7 @@ function LastTestCell({ channel }: { channel: Channel }) {
         ? 'text-danger'
         : 'text-ink-2'
   return (
-    <span title={absolute} className={`text-xs ${tone}`}>
+    <span title={absolute} className={`text-meta ${tone}`}>
       {channel.last_test_result === true
         ? '✓'
         : channel.last_test_result === false
@@ -71,7 +71,7 @@ function LastTestCell({ channel }: { channel: Channel }) {
 function GroupsValue({ groups }: { groups: string[] | null }) {
   const { t } = useI18n()
   if (groups === null || groups.length === 0) {
-    return <span className="text-xs text-ink-2">{t('common.channels.table.allGroups')}</span>
+    return <span className="text-meta text-ink-2">{t('common.channels.table.allGroups')}</span>
   }
   return (
     <span className="flex flex-wrap justify-end gap-1">
@@ -172,13 +172,13 @@ export function ChannelDetailPanel({
           )}
         </div>
         {channel.supported_models.length === 0 ? (
-          <p className="mt-2 text-sm text-ink-3">—</p>
+          <p className="mt-2 text-body text-ink-3">—</p>
         ) : (
           <div className="mt-2 flex flex-wrap gap-1.5">
             {channel.supported_models.map((model) => (
               <span
                 key={model}
-                className="inline-flex items-center rounded-md border border-border-hairline bg-surface-subtle px-2 py-0.5 font-mono text-[11px] text-ink-1"
+                className="inline-flex items-center rounded-md border border-border-hairline bg-surface-subtle px-2 py-0.5 font-mono text-badge text-ink-1"
               >
                 {model}
               </span>

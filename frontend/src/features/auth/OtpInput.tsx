@@ -89,7 +89,7 @@ export function OtpInput({
           maxLength={1}
           disabled={disabled}
           autoFocus={index === 0}
-          className="h-12 w-10 rounded-md border border-border-default bg-surface-card text-center font-mono text-xl font-semibold text-ink-1 focus-visible:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
+          className="h-12 w-10 rounded-md border border-border-default bg-surface-card text-center font-mono text-page-title text-ink-1 focus-visible:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
         />
       ))}
     </div>

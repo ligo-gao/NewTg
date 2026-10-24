@@ -22,7 +22,7 @@ export function SystemCard({
       className="rounded-xl border border-border-default bg-surface-card p-5"
     >
       <div className="mb-3 flex items-start justify-between gap-3">
-        <h2 className="text-[15px] font-semibold leading-[22px] text-ink-1">{title}</h2>
+        <h2 className="text-card-title font-semibold leading-[22px] text-ink-1">{title}</h2>
         {action}
       </div>
       {children}

@@ -247,8 +247,8 @@ export function ChangePlanDialog({
         footer={footer}
       >
         {result !== null ? (
-          <div aria-live="polite" className="flex flex-col gap-2 text-sm">
-            <p className="text-[15px] font-semibold text-success">
+          <div aria-live="polite" className="flex flex-col gap-2 text-body">
+            <p className="text-card-title text-success">
               {result.event_kind === 'upgraded'
                 ? t('account.subscription.change.success_upgraded')
                 : t('account.subscription.change.success_downgraded')}
@@ -286,19 +286,19 @@ export function ChangePlanDialog({
           </div>
         ) : step === 'select' ? (
           candidates.length === 0 ? (
-            <p className="text-sm text-ink-2">
+            <p className="text-body text-ink-2">
               {t('account.subscription.change.empty')}
             </p>
           ) : (
             <fieldset>
-              <legend className="mb-2 text-[13px] font-medium text-ink-1">
+              <legend className="mb-2 text-meta font-medium text-ink-1">
                 {t('account.subscription.change.target')}
               </legend>
               <div className="flex flex-col gap-2">
                 {candidates.map((plan) => (
                   <label
                     key={plan.id}
-                    className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-border-default bg-surface-page px-3 py-2 text-sm text-ink-1"
+                    className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-border-default bg-surface-page px-3 py-2 text-body text-ink-1"
                   >
                     <span className="flex items-center gap-2">
                       <input
@@ -323,7 +323,7 @@ export function ChangePlanDialog({
           )
         ) : (
           <div className="flex flex-col gap-3">
-            <dl className="flex flex-col gap-2 text-sm">
+            <dl className="flex flex-col gap-2 text-body">
               <div className="flex items-center justify-between gap-4">
                 <dt className="text-ink-2">
                   {t('account.subscription.change.current')}
@@ -351,7 +351,7 @@ export function ChangePlanDialog({
                 </dd>
               </div>
             </dl>
-            <p className="rounded-lg border border-info-line bg-info-bg px-3 py-2 text-sm text-info">
+            <p className="rounded-lg border border-info-line bg-info-bg px-3 py-2 text-body text-info">
               {timingHint}
             </p>
             {requiresProvider ? (
@@ -366,7 +366,7 @@ export function ChangePlanDialog({
         )}
 
         {error !== null ? (
-          <p role="alert" className="mt-3 text-sm text-danger">
+          <p role="alert" className="mt-3 text-body text-danger">
             {t(error.key, error.values)}
           </p>
         ) : null}
