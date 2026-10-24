@@ -186,6 +186,9 @@
       "trend_series": "Cost",
       "view_table": "View data table",
       "trend_table_caption": "Consumption trend data table",
+      "chart": {
+        "average": "Avg {value}"
+      },
       "granularity_hour": "Hourly",
       "granularity_day": "Daily",
       "empty": "No statistics yet",
