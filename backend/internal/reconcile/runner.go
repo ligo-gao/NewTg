@@ -279,6 +279,12 @@ func (r *Runner) runAccount(ctx context.Context, account store.UpstreamAccount, 
 	if timezone == "" {
 		timezone = "UTC"
 	}
+	// 原始键解码可能给出 0/负数。若不夹到默认值，log 窗口会退化成
+	// startDate == endDate，撞上 upstream_reconciliation_runs_window_chk，
+	// InsertRun 直接失败且无处记录原因。
+	if settings.LookbackDays < 1 {
+		settings.LookbackDays = DefaultLookbackDays
+	}
 	localNow := now.In(loc)
 	today := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, loc)
 	startDate := today.AddDate(0, 0, -settings.LookbackDays)
@@ -418,6 +424,7 @@ func buildItem(runID, accountID int64, key Key, local *LocalAggregate, snapshot 
 		item.SnapshotCacheWriteTokens = snapshot.CacheWriteTokens
 		item.SnapshotOutputTokens = snapshot.OutputTokens
 		item.SnapshotRequests = snapshot.Requests
+		item.SnapshotAmountMinor = snapshot.AmountMinor
 		item.UpstreamCostMinor = snapshot.AmountMinor
 	}
 
