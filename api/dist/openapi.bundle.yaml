@@ -11747,6 +11747,495 @@ paths:
           $ref: '#/components/responses/Error403'
         '500':
           $ref: '#/components/responses/Error500'
+  /api/upstream-accounts:
+    get:
+      tags:
+        - admin
+      operationId: listUpstreamAccounts
+      x-required-permission: settings:manage
+      summary: 上游账号列表（分页）
+      description: |
+        offset 分页，按 id 升序（稳定翻页）。status 为精确筛选，缺省不过滤。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          required: false
+          description: 1 = active、2 = disabled；缺省 = 全部。
+          schema:
+            type: integer
+            enum:
+              - 1
+              - 2
+      responses:
+        '200':
+          description: OK（offset 分页信封）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpstreamAccountList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+    post:
+      tags:
+        - admin
+      operationId: createUpstreamAccount
+      x-required-permission: settings:manage
+      summary: 新建上游账号
+      description: |
+        currency 缺省 CNY、timezone 缺省 Asia/Shanghai、status 置为 active。
+        timezone 无法解析 422；name 冲突 409。成功 201 返回整行。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpstreamAccountCreate'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpstreamAccount'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/upstream-accounts/{id}:
+    patch:
+      tags:
+        - admin
+      operationId: updateUpstreamAccount
+      x-required-permission: settings:manage
+      summary: 部分更新上游账号（乐观锁）
+      description: |
+        必须原样回传 expected_updated_at（缺失 400、不匹配 409）。
+        字段缺省 = 不修改；console_url 显式 null = 清空。
+        timezone 非法 422；name 冲突 409；账号不存在 404。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 上游账号 id（正整数）；非法/不存在同形 404。
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpstreamAccountUpdate'
+      responses:
+        '200':
+          description: 更新后的账号
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpstreamAccount'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+    delete:
+      tags:
+        - admin
+      operationId: deleteUpstreamAccount
+      x-required-permission: settings:manage
+      summary: 删除上游账号
+      description: |
+        仍被渠道或快照引用的账号由数据库 FK RESTRICT 拒绝，映射为 409：
+        历史对账必须以当时的归属为准，不能级联删除。成功 204。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 上游账号 id（正整数）；非法/不存在同形 404。
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已删除
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/upstream-snapshots:
+    get:
+      tags:
+        - admin
+      operationId: listUpstreamSnapshots
+      x-required-permission: settings:manage
+      summary: 按账号与日期区间读取上游用量快照
+      description: |
+        account_id 必填；from/to 为闭区间 ISO date（缺省由服务端按配置的
+        回看窗口补齐）。不分页：区间本身约束结果规模，按 (usage_date,
+        upstream_model) 升序返回。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: account_id
+          in: query
+          required: true
+          description: 上游账号 id。
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - name: from
+          in: query
+          required: false
+          description: 起始自然日（含），YYYY-MM-DD。
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: false
+          description: 结束自然日（含），YYYY-MM-DD。
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: OK（不分页的 items 信封）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpstreamSnapshotList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+    put:
+      tags:
+        - admin
+      operationId: upsertUpstreamSnapshots
+      x-required-permission: settings:manage
+      summary: 批量写入（upsert）上游用量快照
+      description: |
+        同一 (account_id, usage_date, upstream_model) 重复键按「后写覆盖」；
+        最多 500 条，全量在一个事务内写入（全成或全回滚）。entered_by 取当前
+        管理员，source 缺省 manual。成功返回 {updated: n}。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpstreamSnapshotUpsert'
+      responses:
+        '200':
+          description: 写入结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpstreamSnapshotUpsertResult'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/upstream-reconciliations/runs:
+    get:
+      tags:
+        - admin
+      operationId: listReconcileRuns
+      x-required-permission: settings:manage
+      summary: 对账运行历史（分页）
+      description: |
+        offset 分页，按 started_at 降序（最新优先）。account_id 缺省 = 全部账号。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: account_id
+          in: query
+          required: false
+          description: 只返回该账号的 run。
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK（offset 分页信封）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReconcileRunList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/upstream-reconciliations/runs/{id}/items:
+    get:
+      tags:
+        - admin
+      operationId: listReconcileItems
+      x-required-permission: settings:manage
+      summary: 某次运行的差异明细（分页 + 筛选）
+      description: |
+        offset 分页，按 usage_date 降序、模型升序。severity/status 为空表示
+        不筛选；非法枚举 400。run 不存在 404。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 对账 run id（正整数）；不存在 404。
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - name: severity
+          in: query
+          required: false
+          description: 差异等级（迁移 CHECK 闭集）。
+          schema:
+            type: string
+            enum:
+              - ok
+              - warn
+              - alert
+              - partial_snapshot
+              - missing_snapshot
+              - missing_local
+              - local_expired
+        - name: status
+          in: query
+          required: false
+          description: 运营处置状态。
+          schema:
+            type: string
+            enum:
+              - open
+              - acknowledged
+              - resolved
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK（offset 分页信封）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReconcileItemList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/upstream-reconciliations/summary:
+    get:
+      tags:
+        - admin
+      operationId: getReconcileSummary
+      x-required-permission: settings:manage
+      summary: 某次运行的按天汇总（概览）
+      description: |
+        run_id 必填（缺失 400；run 不存在 404）。返回收入/成本/毛利/差异率的
+        按天聚合；无法计算的维度为 null（UI 显示 —，不是 0）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: run_id
+          in: query
+          required: true
+          description: 对账 run id。
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReconcileSummary'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/upstream-reconciliations/run:
+    post:
+      tags:
+        - admin
+      operationId: triggerReconcileRun
+      x-required-permission: settings:manage
+      summary: 手动触发一次对账
+      description: |
+        同步执行（60 秒超时；超时 504，detail 在已创建 run 时附 run id）。
+        account_id 缺省 = 全部启用账号。返回本次生成的 run 与聚合计数。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReconcileRunRequest'
+      responses:
+        '200':
+          description: 触发结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReconcileRunResult'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '504':
+          description: 对账在 60 秒内未完成（problem+json；已创建 run 时 detail 附其 id）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /api/upstream-reconciliations/items/{id}/ack:
+    post:
+      tags:
+        - admin
+      operationId: ackReconcileItem
+      x-required-permission: settings:manage
+      summary: 标记差异明细已确认 / 已解决
+      description: |
+        status 缺省 acknowledged；非法枚举 422。明细不存在 404。
+        处置写审计事件 reconcile.item_ack（含 before/after）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 差异明细 id（正整数）；不存在 404。
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReconcileAckRequest'
+      responses:
+        '200':
+          description: 处置后的明细摘要
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReconcileAckResult'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
 components:
   securitySchemes:
     sessionCookie:
@@ -12346,6 +12835,11 @@ components:
           type: array
           items:
             type: string
+        upstream_account_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: 归属的上游账号（upstream_accounts.id）；null = 未归属。
         created_at:
           type: string
           format: date-time
@@ -12429,6 +12923,768 @@ components:
             message:
               type: string
               description: 固定文案（不包含上游 URL/凭据/SQL 等内部信息）
+    UpstreamAccount:
+      type: object
+      additionalProperties: false
+      description: |
+        upstream_accounts 的一行。console_url 为空时序列化为 null（不是空串）。
+        updated_at 同时是 PATCH 的乐观锁版本，必须原样回传。
+      required:
+        - id
+        - name
+        - provider
+        - currency
+        - timezone
+        - status
+        - note
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        provider:
+          type: string
+          minLength: 1
+          maxLength: 64
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+          description: ISO 4217 三字母币种；缺省 CNY（char(3)）。
+        timezone:
+          type: string
+          maxLength: 64
+          description: IANA 时区名；缺省 Asia/Shanghai。「一天」按该时区切分。
+        console_url:
+          type: string
+          maxLength: 512
+          nullable: true
+          description: 供应商控制台地址（绝对 http(s)）；null = 未填写。
+        status:
+          type: integer
+          enum:
+            - 1
+            - 2
+          description: 1 = active、2 = disabled（迁移 CHECK status IN (1,2)）。
+        note:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          description: 乐观锁版本；PATCH 必须回传为 expected_updated_at。
+    UpstreamAccountList:
+      type: object
+      additionalProperties: false
+      description: GET /api/upstream-accounts 的 offset 分页信封（Page 形状，items 为账号投影）。
+      required:
+        - items
+        - total
+        - page
+        - page_size
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UpstreamAccount'
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+    UpstreamAccountCreate:
+      type: object
+      additionalProperties: false
+      description: |
+        创建载荷。currency 缺省 CNY，timezone 缺省 Asia/Shanghai（服务端补齐，
+        不依赖 DDL 默认）；status 由服务端置为 active（1），创建后经 PATCH 停用。
+      required:
+        - name
+        - provider
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: 账号名，全局唯一（冲突 409）；首尾空白由服务端裁剪。
+        provider:
+          type: string
+          minLength: 1
+          maxLength: 64
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+          description: 缺省 CNY。
+        timezone:
+          type: string
+          maxLength: 64
+          description: 必须能被 time.LoadLocation 解析（否则 422）；缺省 Asia/Shanghai。
+        console_url:
+          type: string
+          maxLength: 512
+          nullable: true
+          description: 绝对 http(s) 地址；null/缺省 = 未填写。
+        note:
+          type: string
+    UpstreamAccountUpdate:
+      type: object
+      additionalProperties: false
+      description: |
+        部分更新。字段缺省 = 不修改；console_url 显式 null = 清空。
+        expected_updated_at 必带：不匹配 409（镜像 users 端点的 updated_at 乐观锁）。
+      required:
+        - expected_updated_at
+      properties:
+        expected_updated_at:
+          type: string
+          format: date-time
+          description: 客户端读取到的 updated_at 原值。
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        provider:
+          type: string
+          minLength: 1
+          maxLength: 64
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+        timezone:
+          type: string
+          maxLength: 64
+        console_url:
+          type: string
+          maxLength: 512
+          nullable: true
+        status:
+          type: integer
+          enum:
+            - 1
+            - 2
+        note:
+          type: string
+    UpstreamSnapshot:
+      type: object
+      additionalProperties: false
+      description: |
+        upstream_usage_snapshots 的一行。五个计数与 amount_minor 可空：
+        null = 上游未报告该维度（不参与差异判定），0 = 真实的零。
+        source 为 manual（人工录入）| csv（批量导入）。
+      required:
+        - account_id
+        - usage_date
+        - upstream_model
+        - currency
+        - source
+        - entered_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        account_id:
+          type: integer
+          format: int64
+        usage_date:
+          type: string
+          format: date
+          description: 按账号时区切分的自然日（ISO date，不做 24h 运算）。
+        upstream_model:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: 上游供应商侧的模型名（与本地 model_name 不是同一口径）。
+        input_cache_hit_tokens:
+          type: integer
+          format: int64
+          nullable: true
+        input_cache_miss_tokens:
+          type: integer
+          format: int64
+          nullable: true
+        cache_write_tokens:
+          type: integer
+          format: int64
+          nullable: true
+        output_tokens:
+          type: integer
+          format: int64
+          nullable: true
+        requests:
+          type: integer
+          format: int64
+          nullable: true
+        amount_minor:
+          type: integer
+          format: int64
+          nullable: true
+          description: 上游账单金额，整数最小单位（分）；null = 未报告。
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+          description: 缺省 CNY。
+        source:
+          type: string
+          enum:
+            - manual
+            - csv
+        entered_by:
+          type: integer
+          format: int64
+          nullable: true
+          description: 录入管理员 id；null = 系统/批量导入未绑定执行者。
+        entered_at:
+          type: string
+          format: date-time
+        note:
+          type: string
+    UpstreamSnapshotWrite:
+      type: object
+      additionalProperties: false
+      description: |
+        upsert 的写入投影（items 元素），不是读取形状。幂等键 (usage_date,
+        upstream_model) 必填；账期归属由外层 account_id 决定，故不含 account_id。
+        溯源字段由服务端盖章，客户端不得提交：source 恒为 manual、entered_by 取
+        当前管理员、entered_at 取写入时刻，currency 缺省取所属账号的币种。
+      required:
+        - usage_date
+        - upstream_model
+      properties:
+        usage_date:
+          type: string
+          format: date
+          description: 按账号时区切分的自然日（ISO date，不做 24h 运算）。
+        upstream_model:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: 上游供应商侧的模型名（与本地 model_name 不是同一口径）。
+        input_cache_hit_tokens:
+          type: integer
+          format: int64
+          nullable: true
+        input_cache_miss_tokens:
+          type: integer
+          format: int64
+          nullable: true
+        cache_write_tokens:
+          type: integer
+          format: int64
+          nullable: true
+        output_tokens:
+          type: integer
+          format: int64
+          nullable: true
+        requests:
+          type: integer
+          format: int64
+          nullable: true
+        amount_minor:
+          type: integer
+          format: int64
+          nullable: true
+          description: 上游账单金额，整数最小单位（分）；null = 未报告。
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+          description: 可选；缺省 CNY。v1 全库统一 CNY，不按账号货币换算。
+        note:
+          type: string
+    UpstreamSnapshotList:
+      type: object
+      additionalProperties: false
+      description: |
+        按账号 + 日期区间读取的快照集合。不分页：区间由 from/to 约束，
+        结果按 (usage_date, upstream_model) 升序。
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UpstreamSnapshot'
+    UpstreamSnapshotUpsert:
+      type: object
+      additionalProperties: false
+      description: |
+        批量写入（upsert）载荷：同一 (account_id, usage_date, upstream_model) 重复
+        出现时后写覆盖；最多 500 条。所有行在一个事务内写入（全成或全回滚）。
+      required:
+        - account_id
+        - items
+      properties:
+        account_id:
+          type: integer
+          format: int64
+          description: 所属账号；所有 item 归属于该账号（items 内不再重复携带）。
+        items:
+          type: array
+          maxItems: 500
+          items:
+            $ref: '#/components/schemas/UpstreamSnapshotWrite'
+    UpstreamSnapshotUpsertResult:
+      type: object
+      additionalProperties: false
+      description: 实际写入行数（同批重复键先折叠，故可能小于提交条数）。
+      required:
+        - updated
+      properties:
+        updated:
+          type: integer
+          minimum: 0
+    ReconcileRun:
+      type: object
+      additionalProperties: false
+      description: |
+        upstream_reconciliation_runs 的一行。容差、quota_per_unit 与 timezone 在
+        开跑时快照进来；修改设置不会改写历史判定。
+      required:
+        - id
+        - account_id
+        - window_start
+        - window_end
+        - triggered_by
+        - status
+        - token_tolerance_bp
+        - amount_tolerance_minor
+        - quota_per_unit
+        - timezone
+        - started_at
+        - error
+      properties:
+        id:
+          type: integer
+          format: int64
+        account_id:
+          type: integer
+          format: int64
+        window_start:
+          type: string
+          format: date
+        window_end:
+          type: string
+          format: date
+          description: 闭区间右端（含当日，即本次对账覆盖的最后一天）；迁移 CHECK 要求 window_end > window_start。
+        triggered_by:
+          type: string
+          enum:
+            - worker
+            - manual
+        status:
+          type: string
+          enum:
+            - running
+            - succeeded
+            - partial
+            - failed
+        token_tolerance_bp:
+          type: integer
+          description: token 差异容忍度（万分比，快照值）。
+        amount_tolerance_minor:
+          type: integer
+          format: int64
+          description: 金额差异容忍度（分，快照值）。
+        quota_per_unit:
+          type: integer
+          format: int64
+          description: credits → 分 的换算系数（快照值）。
+        timezone:
+          type: string
+          maxLength: 64
+          description: 判定「一天」所用的 IANA 时区（快照值）。
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: null = 仍在运行。
+        error:
+          type: string
+          description: 失败原因摘要；空串 = 无错误（列 NOT NULL DEFAULT ''）。
+    ReconcileRunList:
+      type: object
+      additionalProperties: false
+      description: GET /api/upstream-reconciliations/runs 的 offset 分页信封（started_at 降序）。
+      required:
+        - items
+        - total
+        - page
+        - page_size
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReconcileRun'
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+    ReconcileItem:
+      type: object
+      additionalProperties: false
+      description: |
+        upstream_reconciliation_items 的一行 = 一个 run 内 (account, usage_date,
+        upstream_model) 的本地侧 + 上游快照侧 + 差异与利润判定。
+        local_* 为非空计数（缺省 0）；snapshot_*/delta_*/金额列可空：
+        null = 上游未报告或无法计算，与真实的 0 区分。
+      required:
+        - id
+        - run_id
+        - account_id
+        - usage_date
+        - upstream_model
+        - local_requests
+        - local_estimated_requests
+        - local_refunded_requests
+        - local_cache_hit_tokens
+        - local_cache_miss_tokens
+        - local_output_tokens
+        - local_wallet_credits
+        - local_subscription_credits
+        - local_cost_credits
+        - local_unknown_requests
+        - local_multi_attempt_requests
+        - snapshot_partial
+        - severity
+        - status
+        - note
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        run_id:
+          type: integer
+          format: int64
+        account_id:
+          type: integer
+          format: int64
+        usage_date:
+          type: string
+          format: date
+        upstream_model:
+          type: string
+          minLength: 1
+          maxLength: 128
+        local_requests:
+          type: integer
+          format: int64
+        local_estimated_requests:
+          type: integer
+          format: int64
+        local_refunded_requests:
+          type: integer
+          format: int64
+        local_cache_hit_tokens:
+          type: integer
+          format: int64
+        local_cache_miss_tokens:
+          type: integer
+          format: int64
+        local_output_tokens:
+          type: integer
+          format: int64
+        local_wallet_credits:
+          type: integer
+          format: int64
+        local_subscription_credits:
+          type: integer
+          format: int64
+        local_cost_credits:
+          type: integer
+          format: int64
+        local_unknown_requests:
+          type: integer
+          format: int64
+        local_multi_attempt_requests:
+          type: integer
+          format: int64
+        snapshot_cache_hit_tokens:
+          type: integer
+          format: int64
+          nullable: true
+        snapshot_cache_miss_tokens:
+          type: integer
+          format: int64
+          nullable: true
+        snapshot_cache_write_tokens:
+          type: integer
+          format: int64
+          nullable: true
+        snapshot_output_tokens:
+          type: integer
+          format: int64
+          nullable: true
+        snapshot_requests:
+          type: integer
+          format: int64
+          nullable: true
+        snapshot_amount_minor:
+          type: integer
+          format: int64
+          nullable: true
+          description: 上游账单金额（分）；null = 未报告。
+        delta_cache_hit_tokens:
+          type: integer
+          format: int64
+          nullable: true
+        delta_cache_miss_tokens:
+          type: integer
+          format: int64
+          nullable: true
+        delta_output_tokens:
+          type: integer
+          format: int64
+          nullable: true
+        delta_token_bp:
+          type: integer
+          format: int64
+          nullable: true
+          description: token 差异率（万分比）；null = 无可用分母。
+        snapshot_partial:
+          type: boolean
+          description: true = 上游快照缺维度，比较只是部分口径。
+        revenue_minor:
+          type: integer
+          format: int64
+          nullable: true
+          description: 本地收入（分）；null = 无法计算。
+        upstream_cost_minor:
+          type: integer
+          format: int64
+          nullable: true
+          description: 上游成本（分）；null = 无法计算。
+        margin_minor:
+          type: integer
+          format: int64
+          nullable: true
+          description: 毛利 = revenue_minor - upstream_cost_minor（分）；null = 无法计算。
+        margin_bp:
+          type: integer
+          format: int64
+          nullable: true
+          description: 毛利率（万分比）；null = 收入为 0 或无收入。
+        severity:
+          type: string
+          enum:
+            - ok
+            - warn
+            - alert
+            - partial_snapshot
+            - missing_snapshot
+            - missing_local
+            - local_expired
+          description: 差异等级与快照缺失类判定（迁移 CHECK 闭集）。
+        status:
+          type: string
+          enum:
+            - open
+            - acknowledged
+            - resolved
+          description: 运营处置状态。
+        note:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ReconcileItemList:
+      type: object
+      additionalProperties: false
+      description: GET /api/upstream-reconciliations/runs/{id}/items 的 offset 分页信封。
+      required:
+        - items
+        - total
+        - page
+        - page_size
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReconcileItem'
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+    ReconcileSummary:
+      type: object
+      additionalProperties: false
+      description: |
+        GET /api/upstream-reconciliations/summary?run_id=… 的响应：按天聚合的
+        收入/成本/毛利/差异率。run_id 必填（缺失 400；run 不存在 404）。
+      required:
+        - run_id
+        - account_id
+        - generated_at
+        - days
+      properties:
+        run_id:
+          type: integer
+          format: int64
+        account_id:
+          type: integer
+          format: int64
+        generated_at:
+          type: string
+          format: date-time
+          description: 本次汇总的生成时刻（UTC）。
+        days:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReconcileSummaryDay'
+    ReconcileSummaryDay:
+      type: object
+      additionalProperties: false
+      description: 某个 run 内一天的汇总（概览 tab 的 days 元素）。
+      required:
+        - usage_date
+        - item_count
+        - alert_count
+        - warn_count
+      properties:
+        usage_date:
+          type: string
+          format: date
+        item_count:
+          type: integer
+          format: int64
+        alert_count:
+          type: integer
+          format: int64
+        warn_count:
+          type: integer
+          format: int64
+        delta_token_bp:
+          type: integer
+          format: int64
+          nullable: true
+          description: 当日加权 token 差异率；null = 当天没有可比对的快照维度。
+        revenue_minor:
+          type: integer
+          format: int64
+          nullable: true
+        upstream_cost_minor:
+          type: integer
+          format: int64
+          nullable: true
+        margin_minor:
+          type: integer
+          format: int64
+          nullable: true
+    ReconcileRunRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        手动触发对账。body 必填；account_id 缺省（传 {}）表示遍历全部启用账号。
+        运行同步执行（60s 超时，超时 504）。
+      properties:
+        account_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 只对账该账号；缺省 = 全部 active 账号。
+    ReconcileRunResult:
+      type: object
+      additionalProperties: false
+      description: 手动触发的聚合结果；run_ids 为本次生成的 run（重跑会新增 run）。
+      required:
+        - run_ids
+        - items
+        - alerts
+        - status
+      properties:
+        run_ids:
+          type: array
+          items:
+            type: integer
+            format: int64
+        items:
+          type: integer
+          format: int64
+          description: 本次写入的明细总数。
+        alerts:
+          type: integer
+          format: int64
+          description: severity = alert 的明细数。
+        status:
+          type: string
+          enum:
+            - succeeded
+            - partial
+            - failed
+          description: 本次触发的聚合状态。
+    ReconcileAckRequest:
+      type: object
+      additionalProperties: false
+      description: 标记明细已确认 / 已解决；status 缺省 acknowledged。
+      required:
+        - note
+      properties:
+        status:
+          type: string
+          enum:
+            - acknowledged
+            - resolved
+          default: acknowledged
+        note:
+          type: string
+          maxLength: 2000
+          description: 处置说明（可空串，但字段必须存在）。
+    ReconcileAckResult:
+      type: object
+      additionalProperties: false
+      description: 处置后的明细摘要（updated_at 为本次写入刷新后的值）。
+      required:
+        - id
+        - status
+      properties:
+        id:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum:
+            - open
+            - acknowledged
+            - resolved
+        note:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
     Language:
       type: string
       enum:

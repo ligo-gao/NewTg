@@ -49,6 +49,11 @@ export interface Channel {
   /** Optimistic-concurrency token derived from `updated_at` (R-P8). */
   version: string
   /**
+   * 上游账号归属（上游用量对账）：`null` = 未绑定。列表行同样携带该字段，
+   * 对账页的渠道归属卡片据此回显服务端值。
+   */
+  upstream_account_id?: number | null
+  /**
    * Detail/POST/PATCH responses only (GC-6 detail exception). List rows carry
    * neither field, so list fixtures must not invent them.
    */
@@ -169,6 +174,8 @@ export interface UpdateChannelInput {
   remark?: string | null
   tag?: string | null
   status?: 1 | 2
+  /** 绑定/解绑上游账号；`null` 显式解除绑定。 */
+  upstream_account_id?: number | null
 }
 
 export interface BatchOperationResult {

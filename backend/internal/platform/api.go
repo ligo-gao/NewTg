@@ -597,6 +597,20 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	transactionalEmail := httpapi.NewTransactionalEmailSender(
 		notify.NewSMTPSender(center, cipher))
 
+	// 上游用量对账手动触发（Task 9）：复用 worker 周期任务的同一个构造器，
+	// 保证两处数据源分工一致（usage_logs 在**日志库**，账号/快照/run 在主库）
+	// 且共用同一份设置读取。装配失败阻止上线，而不是让触发端点静默 500。
+	reconcileRunner, err := newReconcileRunner(workerTaskDeps{
+		DB: db, LogsDB: logsDB, Center: center, Logger: log,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gateway: reconcile runner: %w", err)
+	}
+	// 快照列表的缺省回看窗口与 runner 共用同一份设置读取：每次请求读一次内存
+	// 快照，改 reconcile.lookback_days 无需重启。读取失败只是拿不到配置值，
+	// 返回 0 让 handler 回落编译期默认，而不是让整个读端点 500。
+	reconcileSettings := NewReconcileSettingsReader(center, log)
+
 	router, err := httpapi.BuildGatewayRouter(httpapi.GatewayDeps{
 		DB:                      db,
 		LogDB:                   logsDB,
@@ -642,6 +656,16 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		// W13-EMAIL：事务性邮件（验证码/密码重置/通知测试）共用一个适配器。
 		EmailSender:        transactionalEmail,
 		NotificationSender: transactionalEmail,
+		// Task 9：对账手动触发与 worker 周期任务共用同一个 runner 构造器。
+		ReconcileRunner: reconcileRunner,
+		// 快照列表缺省窗口跟随 reconcile.lookback_days；读错误按脏值处理。
+		ReconcileLookbackDays: func(ctx context.Context) int {
+			settings, err := reconcileSettings.ReconcileSettings(ctx)
+			if err != nil {
+				return 0
+			}
+			return settings.LookbackDays
+		},
 	})
 	if err != nil {
 		return nil, err

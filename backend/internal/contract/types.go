@@ -612,6 +612,15 @@ type UsageFact struct {
 	Stream           bool
 	Attempts         int
 	BuiltInToolCalls map[string]int // v1.1 · 决议 B6：内建工具调用次数
+
+	// —— 上游对账维度（写日志时固化，usage_logs 迁移 20261028090500）——
+	//
+	// 中继在产出事实时从 RelayContext 一次性复制这三个值；此后计费/日志只读
+	// 事实，绝不再回读（可能已被重试改写的）RelayContext。零值 = 未归属，
+	// 日志落 NULL 而不是编造 0。
+	ResponseID        string // 上游响应 id；流式路径不保留，留空
+	UpstreamModel     string // 上游实际模型名（渠道映射后）
+	UpstreamAccountID int64  // 归属的上游账号 id；0 = 未归属
 }
 
 // BillingSession 是计费 → 中继的会话（v1.1 · 决议 B1/B4 + 补遗 2/3）。

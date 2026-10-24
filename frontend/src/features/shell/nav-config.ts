@@ -104,6 +104,14 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         permission: 'channels:read',
       },
       {
+        id: 'upstream-reconciliation',
+        labelKey: 'common.nav.upstream_reconciliation',
+        to: '/admin/upstream-reconciliation',
+        icon: 'clipboard',
+        adminOnly: true,
+        permission: 'settings:manage',
+      },
+      {
         id: 'models',
         labelKey: 'common.nav.models',
         to: '/admin/models',

@@ -1853,6 +1853,10 @@ func (h *RelayHandler) pipeNativeAnthropicStream(
 		FirstTokenMS: firstTokenMS,
 		Stream:       true,
 		Attempts:     rc.AttemptIndex + 1,
+		// 流式路径不保留上游响应 id；归属维度照常冻结（对账按 SUM 聚合，
+		// response_id 列对流式行文档化为 NULL）。
+		UpstreamModel:     rc.UpstreamModel,
+		UpstreamAccountID: rc.UpstreamAccountID,
 	}
 	if !usageHasFact(accumulated) {
 		fact.Usage = estimatedUsageFor(rc.ChannelType)
@@ -2093,6 +2097,9 @@ func (h *RelayHandler) bridgeAnthropicCrossProtocolStream(
 		FirstTokenMS: firstTokenMS,
 		Stream:       true,
 		Attempts:     rc.AttemptIndex + 1,
+		// 流式路径不保留上游响应 id；归属维度照常冻结。
+		UpstreamModel:     rc.UpstreamModel,
+		UpstreamAccountID: rc.UpstreamAccountID,
 	}
 	terminate(fact)
 }
@@ -2379,14 +2386,21 @@ func (h *RelayHandler) resolveChannel(ctx context.Context, rc *contract.RelayCon
 	if ch.BaseURL != nil {
 		apiBase = *ch.BaseURL
 	}
+	// 上游账号归属随渠道整组投影；NULL = 未归属，以 0 表示。
+	// 后续由执行层复制进 RelayContext，再在产出 UsageFact 时冻结。
+	accountID := int64(0)
+	if ch.UpstreamAccountID != nil {
+		accountID = *ch.UpstreamAccountID
+	}
 	return relay.ChannelAssignment{
-		ChannelID:     channelID,
-		ChannelType:   contract.ChannelType(ch.Type),
-		APIBase:       apiBase,
-		Credential:    creds.APIKey,
-		UpstreamModel: modelMappingTarget(ch.ModelMapping, rc.OriginModel),
-		GroupRatio:    1.0,
-		CreatedTime:   ch.CreatedAt,
+		ChannelID:         channelID,
+		ChannelType:       contract.ChannelType(ch.Type),
+		APIBase:           apiBase,
+		Credential:        creds.APIKey,
+		UpstreamModel:     modelMappingTarget(ch.ModelMapping, rc.OriginModel),
+		UpstreamAccountID: accountID,
+		GroupRatio:        1.0,
+		CreatedTime:       ch.CreatedAt,
 		// M4-a：渠道级自动禁用开关随整组投影进执行层。每次 Get 都是当前
 		// 行值，因此管理员在请求进行中关闭 auto_ban 最多影响下一轮解析。
 		AutoBan: ch.AutoBan,
@@ -3067,6 +3081,9 @@ func (h *RelayHandler) bridgeStream(
 		FirstTokenMS: firstTokenMS,
 		Stream:       true,
 		Attempts:     rc.AttemptIndex + 1,
+		// 流式路径不保留上游响应 id；归属维度照常冻结。
+		UpstreamModel:     rc.UpstreamModel,
+		UpstreamAccountID: rc.UpstreamAccountID,
 	}
 	if !usageHasFact(accumulated) {
 		// 上游没有给出任何非零用量（包括空 `usage: {}` / 全零帧，且无头部）：

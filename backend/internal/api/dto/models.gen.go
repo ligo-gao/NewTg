@@ -1992,6 +1992,162 @@ func (e RankingsStatus) Valid() bool {
 	}
 }
 
+// Defines values for ReconcileAckRequestStatus.
+const (
+	ReconcileAckRequestStatusAcknowledged ReconcileAckRequestStatus = "acknowledged"
+	ReconcileAckRequestStatusResolved     ReconcileAckRequestStatus = "resolved"
+)
+
+// Valid indicates whether the value is a known member of the ReconcileAckRequestStatus enum.
+func (e ReconcileAckRequestStatus) Valid() bool {
+	switch e {
+	case ReconcileAckRequestStatusAcknowledged:
+		return true
+	case ReconcileAckRequestStatusResolved:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ReconcileAckResultStatus.
+const (
+	ReconcileAckResultStatusAcknowledged ReconcileAckResultStatus = "acknowledged"
+	ReconcileAckResultStatusOpen         ReconcileAckResultStatus = "open"
+	ReconcileAckResultStatusResolved     ReconcileAckResultStatus = "resolved"
+)
+
+// Valid indicates whether the value is a known member of the ReconcileAckResultStatus enum.
+func (e ReconcileAckResultStatus) Valid() bool {
+	switch e {
+	case ReconcileAckResultStatusAcknowledged:
+		return true
+	case ReconcileAckResultStatusOpen:
+		return true
+	case ReconcileAckResultStatusResolved:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ReconcileItemSeverity.
+const (
+	ReconcileItemSeverityAlert           ReconcileItemSeverity = "alert"
+	ReconcileItemSeverityLocalExpired    ReconcileItemSeverity = "local_expired"
+	ReconcileItemSeverityMissingLocal    ReconcileItemSeverity = "missing_local"
+	ReconcileItemSeverityMissingSnapshot ReconcileItemSeverity = "missing_snapshot"
+	ReconcileItemSeverityOk              ReconcileItemSeverity = "ok"
+	ReconcileItemSeverityPartialSnapshot ReconcileItemSeverity = "partial_snapshot"
+	ReconcileItemSeverityWarn            ReconcileItemSeverity = "warn"
+)
+
+// Valid indicates whether the value is a known member of the ReconcileItemSeverity enum.
+func (e ReconcileItemSeverity) Valid() bool {
+	switch e {
+	case ReconcileItemSeverityAlert:
+		return true
+	case ReconcileItemSeverityLocalExpired:
+		return true
+	case ReconcileItemSeverityMissingLocal:
+		return true
+	case ReconcileItemSeverityMissingSnapshot:
+		return true
+	case ReconcileItemSeverityOk:
+		return true
+	case ReconcileItemSeverityPartialSnapshot:
+		return true
+	case ReconcileItemSeverityWarn:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ReconcileItemStatus.
+const (
+	ReconcileItemStatusAcknowledged ReconcileItemStatus = "acknowledged"
+	ReconcileItemStatusOpen         ReconcileItemStatus = "open"
+	ReconcileItemStatusResolved     ReconcileItemStatus = "resolved"
+)
+
+// Valid indicates whether the value is a known member of the ReconcileItemStatus enum.
+func (e ReconcileItemStatus) Valid() bool {
+	switch e {
+	case ReconcileItemStatusAcknowledged:
+		return true
+	case ReconcileItemStatusOpen:
+		return true
+	case ReconcileItemStatusResolved:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ReconcileRunStatus.
+const (
+	ReconcileRunStatusFailed    ReconcileRunStatus = "failed"
+	ReconcileRunStatusPartial   ReconcileRunStatus = "partial"
+	ReconcileRunStatusRunning   ReconcileRunStatus = "running"
+	ReconcileRunStatusSucceeded ReconcileRunStatus = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the ReconcileRunStatus enum.
+func (e ReconcileRunStatus) Valid() bool {
+	switch e {
+	case ReconcileRunStatusFailed:
+		return true
+	case ReconcileRunStatusPartial:
+		return true
+	case ReconcileRunStatusRunning:
+		return true
+	case ReconcileRunStatusSucceeded:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ReconcileRunTriggeredBy.
+const (
+	ReconcileRunTriggeredByManual ReconcileRunTriggeredBy = "manual"
+	ReconcileRunTriggeredByWorker ReconcileRunTriggeredBy = "worker"
+)
+
+// Valid indicates whether the value is a known member of the ReconcileRunTriggeredBy enum.
+func (e ReconcileRunTriggeredBy) Valid() bool {
+	switch e {
+	case ReconcileRunTriggeredByManual:
+		return true
+	case ReconcileRunTriggeredByWorker:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ReconcileRunResultStatus.
+const (
+	ReconcileRunResultStatusFailed    ReconcileRunResultStatus = "failed"
+	ReconcileRunResultStatusPartial   ReconcileRunResultStatus = "partial"
+	ReconcileRunResultStatusSucceeded ReconcileRunResultStatus = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the ReconcileRunResultStatus enum.
+func (e ReconcileRunResultStatus) Valid() bool {
+	switch e {
+	case ReconcileRunResultStatusFailed:
+		return true
+	case ReconcileRunResultStatusPartial:
+		return true
+	case ReconcileRunResultStatusSucceeded:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for RedemptionCodeCodeMask.
 const (
 	RedemptionCodeCodeMaskEmpty RedemptionCodeCodeMask = "••••••"
@@ -2246,22 +2402,22 @@ func (e SetupResponseUserStatus) Valid() bool {
 
 // Defines values for SquareState.
 const (
-	Hidden      SquareState = "hidden"
-	Partial     SquareState = "partial"
-	Unavailable SquareState = "unavailable"
-	Visible     SquareState = "visible"
+	SquareStateHidden      SquareState = "hidden"
+	SquareStatePartial     SquareState = "partial"
+	SquareStateUnavailable SquareState = "unavailable"
+	SquareStateVisible     SquareState = "visible"
 )
 
 // Valid indicates whether the value is a known member of the SquareState enum.
 func (e SquareState) Valid() bool {
 	switch e {
-	case Hidden:
+	case SquareStateHidden:
 		return true
-	case Partial:
+	case SquareStatePartial:
 		return true
-	case Unavailable:
+	case SquareStateUnavailable:
 		return true
-	case Visible:
+	case SquareStateVisible:
 		return true
 	default:
 		return false
@@ -2904,6 +3060,60 @@ const (
 func (e TwoFADisableResponseTotpEnabled) Valid() bool {
 	switch e {
 	case False:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for UpstreamAccountStatus.
+const (
+	UpstreamAccountStatusN1 UpstreamAccountStatus = 1
+	UpstreamAccountStatusN2 UpstreamAccountStatus = 2
+)
+
+// Valid indicates whether the value is a known member of the UpstreamAccountStatus enum.
+func (e UpstreamAccountStatus) Valid() bool {
+	switch e {
+	case UpstreamAccountStatusN1:
+		return true
+	case UpstreamAccountStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for UpstreamAccountUpdateStatus.
+const (
+	UpstreamAccountUpdateStatusN1 UpstreamAccountUpdateStatus = 1
+	UpstreamAccountUpdateStatusN2 UpstreamAccountUpdateStatus = 2
+)
+
+// Valid indicates whether the value is a known member of the UpstreamAccountUpdateStatus enum.
+func (e UpstreamAccountUpdateStatus) Valid() bool {
+	switch e {
+	case UpstreamAccountUpdateStatusN1:
+		return true
+	case UpstreamAccountUpdateStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for UpstreamSnapshotSource.
+const (
+	UpstreamSnapshotSourceCsv    UpstreamSnapshotSource = "csv"
+	UpstreamSnapshotSourceManual UpstreamSnapshotSource = "manual"
+)
+
+// Valid indicates whether the value is a known member of the UpstreamSnapshotSource enum.
+func (e UpstreamSnapshotSource) Valid() bool {
+	switch e {
+	case UpstreamSnapshotSourceCsv:
+		return true
+	case UpstreamSnapshotSourceManual:
 		return true
 	default:
 		return false
@@ -3990,6 +4200,78 @@ func (e ListTokensParamsQuota) Valid() bool {
 	case ListTokensParamsQuotaNormal:
 		return true
 	case ListTokensParamsQuotaUnlimited:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListUpstreamAccountsParamsStatus.
+const (
+	ListUpstreamAccountsParamsStatusN1 ListUpstreamAccountsParamsStatus = 1
+	ListUpstreamAccountsParamsStatusN2 ListUpstreamAccountsParamsStatus = 2
+)
+
+// Valid indicates whether the value is a known member of the ListUpstreamAccountsParamsStatus enum.
+func (e ListUpstreamAccountsParamsStatus) Valid() bool {
+	switch e {
+	case ListUpstreamAccountsParamsStatusN1:
+		return true
+	case ListUpstreamAccountsParamsStatusN2:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListReconcileItemsParamsSeverity.
+const (
+	ListReconcileItemsParamsSeverityAlert           ListReconcileItemsParamsSeverity = "alert"
+	ListReconcileItemsParamsSeverityLocalExpired    ListReconcileItemsParamsSeverity = "local_expired"
+	ListReconcileItemsParamsSeverityMissingLocal    ListReconcileItemsParamsSeverity = "missing_local"
+	ListReconcileItemsParamsSeverityMissingSnapshot ListReconcileItemsParamsSeverity = "missing_snapshot"
+	ListReconcileItemsParamsSeverityOk              ListReconcileItemsParamsSeverity = "ok"
+	ListReconcileItemsParamsSeverityPartialSnapshot ListReconcileItemsParamsSeverity = "partial_snapshot"
+	ListReconcileItemsParamsSeverityWarn            ListReconcileItemsParamsSeverity = "warn"
+)
+
+// Valid indicates whether the value is a known member of the ListReconcileItemsParamsSeverity enum.
+func (e ListReconcileItemsParamsSeverity) Valid() bool {
+	switch e {
+	case ListReconcileItemsParamsSeverityAlert:
+		return true
+	case ListReconcileItemsParamsSeverityLocalExpired:
+		return true
+	case ListReconcileItemsParamsSeverityMissingLocal:
+		return true
+	case ListReconcileItemsParamsSeverityMissingSnapshot:
+		return true
+	case ListReconcileItemsParamsSeverityOk:
+		return true
+	case ListReconcileItemsParamsSeverityPartialSnapshot:
+		return true
+	case ListReconcileItemsParamsSeverityWarn:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListReconcileItemsParamsStatus.
+const (
+	ListReconcileItemsParamsStatusAcknowledged ListReconcileItemsParamsStatus = "acknowledged"
+	ListReconcileItemsParamsStatusOpen         ListReconcileItemsParamsStatus = "open"
+	ListReconcileItemsParamsStatusResolved     ListReconcileItemsParamsStatus = "resolved"
+)
+
+// Valid indicates whether the value is a known member of the ListReconcileItemsParamsStatus enum.
+func (e ListReconcileItemsParamsStatus) Valid() bool {
+	switch e {
+	case ListReconcileItemsParamsStatusAcknowledged:
+		return true
+	case ListReconcileItemsParamsStatusOpen:
+		return true
+	case ListReconcileItemsParamsStatusResolved:
 		return true
 	default:
 		return false
@@ -5203,6 +5485,9 @@ type Channel struct {
 
 	// UpdatedAt 乐观锁版本；PATCH 必须原样回传。也用于展示「最近更新」。
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// UpstreamAccountId 归属的上游账号（upstream_accounts.id）；null = 未归属。
+	UpstreamAccountId *int64 `json:"upstream_account_id,omitempty"`
 
 	// Version R-P8：derived updated_at（RFC3339Nano UTC）。
 	Version string `json:"version"`
@@ -8806,6 +9091,196 @@ type RankingsWindow struct {
 	Start time.Time `json:"start"`
 }
 
+// ReconcileAckRequest 标记明细已确认 / 已解决；status 缺省 acknowledged。
+type ReconcileAckRequest struct {
+	// Note 处置说明（可空串，但字段必须存在）。
+	Note   string                     `json:"note"`
+	Status *ReconcileAckRequestStatus `json:"status,omitempty"`
+}
+
+// ReconcileAckRequestStatus defines model for ReconcileAckRequest.Status.
+type ReconcileAckRequestStatus string
+
+// ReconcileAckResult 处置后的明细摘要（updated_at 为本次写入刷新后的值）。
+type ReconcileAckResult struct {
+	Id        int64                    `json:"id"`
+	Note      *string                  `json:"note,omitempty"`
+	Status    ReconcileAckResultStatus `json:"status"`
+	UpdatedAt *time.Time               `json:"updated_at,omitempty"`
+}
+
+// ReconcileAckResultStatus defines model for ReconcileAckResult.Status.
+type ReconcileAckResultStatus string
+
+// ReconcileItem upstream_reconciliation_items 的一行 = 一个 run 内 (account, usage_date,
+// upstream_model) 的本地侧 + 上游快照侧 + 差异与利润判定。
+// local_* 为非空计数（缺省 0）；snapshot_*/delta_*/金额列可空：
+// null = 上游未报告或无法计算，与真实的 0 区分。
+type ReconcileItem struct {
+	AccountId            int64     `json:"account_id"`
+	CreatedAt            time.Time `json:"created_at"`
+	DeltaCacheHitTokens  *int64    `json:"delta_cache_hit_tokens,omitempty"`
+	DeltaCacheMissTokens *int64    `json:"delta_cache_miss_tokens,omitempty"`
+	DeltaOutputTokens    *int64    `json:"delta_output_tokens,omitempty"`
+
+	// DeltaTokenBp token 差异率（万分比）；null = 无可用分母。
+	DeltaTokenBp              *int64 `json:"delta_token_bp,omitempty"`
+	Id                        int64  `json:"id"`
+	LocalCacheHitTokens       int64  `json:"local_cache_hit_tokens"`
+	LocalCacheMissTokens      int64  `json:"local_cache_miss_tokens"`
+	LocalCostCredits          int64  `json:"local_cost_credits"`
+	LocalEstimatedRequests    int64  `json:"local_estimated_requests"`
+	LocalMultiAttemptRequests int64  `json:"local_multi_attempt_requests"`
+	LocalOutputTokens         int64  `json:"local_output_tokens"`
+	LocalRefundedRequests     int64  `json:"local_refunded_requests"`
+	LocalRequests             int64  `json:"local_requests"`
+	LocalSubscriptionCredits  int64  `json:"local_subscription_credits"`
+	LocalUnknownRequests      int64  `json:"local_unknown_requests"`
+	LocalWalletCredits        int64  `json:"local_wallet_credits"`
+
+	// MarginBp 毛利率（万分比）；null = 收入为 0 或无收入。
+	MarginBp *int64 `json:"margin_bp,omitempty"`
+
+	// MarginMinor 毛利 = revenue_minor - upstream_cost_minor（分）；null = 无法计算。
+	MarginMinor *int64 `json:"margin_minor,omitempty"`
+	Note        string `json:"note"`
+
+	// RevenueMinor 本地收入（分）；null = 无法计算。
+	RevenueMinor *int64 `json:"revenue_minor,omitempty"`
+	RunId        int64  `json:"run_id"`
+
+	// Severity 差异等级与快照缺失类判定（迁移 CHECK 闭集）。
+	Severity ReconcileItemSeverity `json:"severity"`
+
+	// SnapshotAmountMinor 上游账单金额（分）；null = 未报告。
+	SnapshotAmountMinor      *int64 `json:"snapshot_amount_minor,omitempty"`
+	SnapshotCacheHitTokens   *int64 `json:"snapshot_cache_hit_tokens,omitempty"`
+	SnapshotCacheMissTokens  *int64 `json:"snapshot_cache_miss_tokens,omitempty"`
+	SnapshotCacheWriteTokens *int64 `json:"snapshot_cache_write_tokens,omitempty"`
+	SnapshotOutputTokens     *int64 `json:"snapshot_output_tokens,omitempty"`
+
+	// SnapshotPartial true = 上游快照缺维度，比较只是部分口径。
+	SnapshotPartial  bool   `json:"snapshot_partial"`
+	SnapshotRequests *int64 `json:"snapshot_requests,omitempty"`
+
+	// Status 运营处置状态。
+	Status    ReconcileItemStatus `json:"status"`
+	UpdatedAt time.Time           `json:"updated_at"`
+
+	// UpstreamCostMinor 上游成本（分）；null = 无法计算。
+	UpstreamCostMinor *int64             `json:"upstream_cost_minor,omitempty"`
+	UpstreamModel     string             `json:"upstream_model"`
+	UsageDate         openapi_types.Date `json:"usage_date"`
+}
+
+// ReconcileItemSeverity 差异等级与快照缺失类判定（迁移 CHECK 闭集）。
+type ReconcileItemSeverity string
+
+// ReconcileItemStatus 运营处置状态。
+type ReconcileItemStatus string
+
+// ReconcileItemList GET /api/upstream-reconciliations/runs/{id}/items 的 offset 分页信封。
+type ReconcileItemList struct {
+	Items    []ReconcileItem `json:"items"`
+	Page     int             `json:"page"`
+	PageSize int             `json:"page_size"`
+	Total    int             `json:"total"`
+}
+
+// ReconcileRun upstream_reconciliation_runs 的一行。容差、quota_per_unit 与 timezone 在
+// 开跑时快照进来；修改设置不会改写历史判定。
+type ReconcileRun struct {
+	AccountId int64 `json:"account_id"`
+
+	// AmountToleranceMinor 金额差异容忍度（分，快照值）。
+	AmountToleranceMinor int64 `json:"amount_tolerance_minor"`
+
+	// Error 失败原因摘要；空串 = 无错误（列 NOT NULL DEFAULT ''）。
+	Error string `json:"error"`
+
+	// FinishedAt null = 仍在运行。
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	Id         int64      `json:"id"`
+
+	// QuotaPerUnit credits → 分 的换算系数（快照值）。
+	QuotaPerUnit int64              `json:"quota_per_unit"`
+	StartedAt    time.Time          `json:"started_at"`
+	Status       ReconcileRunStatus `json:"status"`
+
+	// Timezone 判定「一天」所用的 IANA 时区（快照值）。
+	Timezone string `json:"timezone"`
+
+	// TokenToleranceBp token 差异容忍度（万分比，快照值）。
+	TokenToleranceBp int                     `json:"token_tolerance_bp"`
+	TriggeredBy      ReconcileRunTriggeredBy `json:"triggered_by"`
+
+	// WindowEnd 闭区间右端（含当日，即本次对账覆盖的最后一天）；迁移 CHECK 要求 window_end > window_start。
+	WindowEnd   openapi_types.Date `json:"window_end"`
+	WindowStart openapi_types.Date `json:"window_start"`
+}
+
+// ReconcileRunStatus defines model for ReconcileRun.Status.
+type ReconcileRunStatus string
+
+// ReconcileRunTriggeredBy defines model for ReconcileRun.TriggeredBy.
+type ReconcileRunTriggeredBy string
+
+// ReconcileRunList GET /api/upstream-reconciliations/runs 的 offset 分页信封（started_at 降序）。
+type ReconcileRunList struct {
+	Items    []ReconcileRun `json:"items"`
+	Page     int            `json:"page"`
+	PageSize int            `json:"page_size"`
+	Total    int            `json:"total"`
+}
+
+// ReconcileRunRequest 手动触发对账。body 必填；account_id 缺省（传 {}）表示遍历全部启用账号。
+// 运行同步执行（60s 超时，超时 504）。
+type ReconcileRunRequest struct {
+	// AccountId 只对账该账号；缺省 = 全部 active 账号。
+	AccountId *int64 `json:"account_id,omitempty"`
+}
+
+// ReconcileRunResult 手动触发的聚合结果；run_ids 为本次生成的 run（重跑会新增 run）。
+type ReconcileRunResult struct {
+	// Alerts severity = alert 的明细数。
+	Alerts int64 `json:"alerts"`
+
+	// Items 本次写入的明细总数。
+	Items  int64   `json:"items"`
+	RunIds []int64 `json:"run_ids"`
+
+	// Status 本次触发的聚合状态。
+	Status ReconcileRunResultStatus `json:"status"`
+}
+
+// ReconcileRunResultStatus 本次触发的聚合状态。
+type ReconcileRunResultStatus string
+
+// ReconcileSummary GET /api/upstream-reconciliations/summary?run_id=… 的响应：按天聚合的
+// 收入/成本/毛利/差异率。run_id 必填（缺失 400；run 不存在 404）。
+type ReconcileSummary struct {
+	AccountId int64                 `json:"account_id"`
+	Days      []ReconcileSummaryDay `json:"days"`
+
+	// GeneratedAt 本次汇总的生成时刻（UTC）。
+	GeneratedAt time.Time `json:"generated_at"`
+	RunId       int64     `json:"run_id"`
+}
+
+// ReconcileSummaryDay 某个 run 内一天的汇总（概览 tab 的 days 元素）。
+type ReconcileSummaryDay struct {
+	AlertCount int64 `json:"alert_count"`
+
+	// DeltaTokenBp 当日加权 token 差异率；null = 当天没有可比对的快照维度。
+	DeltaTokenBp      *int64             `json:"delta_token_bp,omitempty"`
+	ItemCount         int64              `json:"item_count"`
+	MarginMinor       *int64             `json:"margin_minor,omitempty"`
+	RevenueMinor      *int64             `json:"revenue_minor,omitempty"`
+	UpstreamCostMinor *int64             `json:"upstream_cost_minor,omitempty"`
+	UsageDate         openapi_types.Date `json:"usage_date"`
+	WarnCount         int64              `json:"warn_count"`
+}
+
 // RedeemCodeRequest defines model for RedeemCodeRequest.
 type RedeemCodeRequest struct {
 	// Code 用户输入原样提交；服务端归一化后再哈希
@@ -9991,6 +10466,154 @@ type UploadTaskPluginResponse struct {
 	Created bool              `json:"created"`
 	Plugin  TaskPlugin        `json:"plugin"`
 	Version TaskPluginVersion `json:"version"`
+}
+
+// UpstreamAccount upstream_accounts 的一行。console_url 为空时序列化为 null（不是空串）。
+// updated_at 同时是 PATCH 的乐观锁版本，必须原样回传。
+type UpstreamAccount struct {
+	// ConsoleUrl 供应商控制台地址（绝对 http(s)）；null = 未填写。
+	ConsoleUrl *string   `json:"console_url,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+
+	// Currency ISO 4217 三字母币种；缺省 CNY（char(3)）。
+	Currency string `json:"currency"`
+	Id       int64  `json:"id"`
+	Name     string `json:"name"`
+	Note     string `json:"note"`
+	Provider string `json:"provider"`
+
+	// Status 1 = active、2 = disabled（迁移 CHECK status IN (1,2)）。
+	Status UpstreamAccountStatus `json:"status"`
+
+	// Timezone IANA 时区名；缺省 Asia/Shanghai。「一天」按该时区切分。
+	Timezone string `json:"timezone"`
+
+	// UpdatedAt 乐观锁版本；PATCH 必须回传为 expected_updated_at。
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// UpstreamAccountStatus 1 = active、2 = disabled（迁移 CHECK status IN (1,2)）。
+type UpstreamAccountStatus int
+
+// UpstreamAccountCreate 创建载荷。currency 缺省 CNY，timezone 缺省 Asia/Shanghai（服务端补齐，
+// 不依赖 DDL 默认）；status 由服务端置为 active（1），创建后经 PATCH 停用。
+type UpstreamAccountCreate struct {
+	// ConsoleUrl 绝对 http(s) 地址；null/缺省 = 未填写。
+	ConsoleUrl *string `json:"console_url,omitempty"`
+
+	// Currency 缺省 CNY。
+	Currency *string `json:"currency,omitempty"`
+
+	// Name 账号名，全局唯一（冲突 409）；首尾空白由服务端裁剪。
+	Name     string  `json:"name"`
+	Note     *string `json:"note,omitempty"`
+	Provider string  `json:"provider"`
+
+	// Timezone 必须能被 time.LoadLocation 解析（否则 422）；缺省 Asia/Shanghai。
+	Timezone *string `json:"timezone,omitempty"`
+}
+
+// UpstreamAccountList GET /api/upstream-accounts 的 offset 分页信封（Page 形状，items 为账号投影）。
+type UpstreamAccountList struct {
+	Items    []UpstreamAccount `json:"items"`
+	Page     int               `json:"page"`
+	PageSize int               `json:"page_size"`
+	Total    int               `json:"total"`
+}
+
+// UpstreamAccountUpdate 部分更新。字段缺省 = 不修改；console_url 显式 null = 清空。
+// expected_updated_at 必带：不匹配 409（镜像 users 端点的 updated_at 乐观锁）。
+type UpstreamAccountUpdate struct {
+	ConsoleUrl *string `json:"console_url,omitempty"`
+	Currency   *string `json:"currency,omitempty"`
+
+	// ExpectedUpdatedAt 客户端读取到的 updated_at 原值。
+	ExpectedUpdatedAt time.Time                    `json:"expected_updated_at"`
+	Name              *string                      `json:"name,omitempty"`
+	Note              *string                      `json:"note,omitempty"`
+	Provider          *string                      `json:"provider,omitempty"`
+	Status            *UpstreamAccountUpdateStatus `json:"status,omitempty"`
+	Timezone          *string                      `json:"timezone,omitempty"`
+}
+
+// UpstreamAccountUpdateStatus defines model for UpstreamAccountUpdate.Status.
+type UpstreamAccountUpdateStatus int
+
+// UpstreamSnapshot upstream_usage_snapshots 的一行。五个计数与 amount_minor 可空：
+// null = 上游未报告该维度（不参与差异判定），0 = 真实的零。
+// source 为 manual（人工录入）| csv（批量导入）。
+type UpstreamSnapshot struct {
+	AccountId int64 `json:"account_id"`
+
+	// AmountMinor 上游账单金额，整数最小单位（分）；null = 未报告。
+	AmountMinor      *int64 `json:"amount_minor,omitempty"`
+	CacheWriteTokens *int64 `json:"cache_write_tokens,omitempty"`
+
+	// Currency 缺省 CNY。
+	Currency  string    `json:"currency"`
+	EnteredAt time.Time `json:"entered_at"`
+
+	// EnteredBy 录入管理员 id；null = 系统/批量导入未绑定执行者。
+	EnteredBy            *int64                 `json:"entered_by,omitempty"`
+	Id                   *int64                 `json:"id,omitempty"`
+	InputCacheHitTokens  *int64                 `json:"input_cache_hit_tokens,omitempty"`
+	InputCacheMissTokens *int64                 `json:"input_cache_miss_tokens,omitempty"`
+	Note                 *string                `json:"note,omitempty"`
+	OutputTokens         *int64                 `json:"output_tokens,omitempty"`
+	Requests             *int64                 `json:"requests,omitempty"`
+	Source               UpstreamSnapshotSource `json:"source"`
+
+	// UpstreamModel 上游供应商侧的模型名（与本地 model_name 不是同一口径）。
+	UpstreamModel string `json:"upstream_model"`
+
+	// UsageDate 按账号时区切分的自然日（ISO date，不做 24h 运算）。
+	UsageDate openapi_types.Date `json:"usage_date"`
+}
+
+// UpstreamSnapshotSource defines model for UpstreamSnapshot.Source.
+type UpstreamSnapshotSource string
+
+// UpstreamSnapshotList 按账号 + 日期区间读取的快照集合。不分页：区间由 from/to 约束，
+// 结果按 (usage_date, upstream_model) 升序。
+type UpstreamSnapshotList struct {
+	Items []UpstreamSnapshot `json:"items"`
+}
+
+// UpstreamSnapshotUpsert 批量写入（upsert）载荷：同一 (account_id, usage_date, upstream_model) 重复
+// 出现时后写覆盖；最多 500 条。所有行在一个事务内写入（全成或全回滚）。
+type UpstreamSnapshotUpsert struct {
+	// AccountId 所属账号；所有 item 归属于该账号（items 内不再重复携带）。
+	AccountId int64                   `json:"account_id"`
+	Items     []UpstreamSnapshotWrite `json:"items"`
+}
+
+// UpstreamSnapshotUpsertResult 实际写入行数（同批重复键先折叠，故可能小于提交条数）。
+type UpstreamSnapshotUpsertResult struct {
+	Updated int `json:"updated"`
+}
+
+// UpstreamSnapshotWrite upsert 的写入投影（items 元素），不是读取形状。幂等键 (usage_date,
+// upstream_model) 必填；账期归属由外层 account_id 决定，故不含 account_id。
+// 溯源字段由服务端盖章，客户端不得提交：source 恒为 manual、entered_by 取
+// 当前管理员、entered_at 取写入时刻，currency 缺省取所属账号的币种。
+type UpstreamSnapshotWrite struct {
+	// AmountMinor 上游账单金额，整数最小单位（分）；null = 未报告。
+	AmountMinor      *int64 `json:"amount_minor,omitempty"`
+	CacheWriteTokens *int64 `json:"cache_write_tokens,omitempty"`
+
+	// Currency 可选；缺省 CNY。v1 全库统一 CNY，不按账号货币换算。
+	Currency             *string `json:"currency,omitempty"`
+	InputCacheHitTokens  *int64  `json:"input_cache_hit_tokens,omitempty"`
+	InputCacheMissTokens *int64  `json:"input_cache_miss_tokens,omitempty"`
+	Note                 *string `json:"note,omitempty"`
+	OutputTokens         *int64  `json:"output_tokens,omitempty"`
+	Requests             *int64  `json:"requests,omitempty"`
+
+	// UpstreamModel 上游供应商侧的模型名（与本地 model_name 不是同一口径）。
+	UpstreamModel string `json:"upstream_model"`
+
+	// UsageDate 按账号时区切分的自然日（ISO date，不做 24h 运算）。
+	UsageDate openapi_types.Date `json:"usage_date"`
 }
 
 // UsableGroup defines model for UsableGroup.
@@ -11973,6 +12596,132 @@ type BatchEnableTokensParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// ListUpstreamAccountsParams defines parameters for ListUpstreamAccounts.
+type ListUpstreamAccountsParams struct {
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
+
+	// Status 1 = active、2 = disabled；缺省 = 全部。
+	Status *ListUpstreamAccountsParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+}
+
+// ListUpstreamAccountsParamsStatus defines parameters for ListUpstreamAccounts.
+type ListUpstreamAccountsParamsStatus int
+
+// CreateUpstreamAccountParams defines parameters for CreateUpstreamAccount.
+type CreateUpstreamAccountParams struct {
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// DeleteUpstreamAccountParams defines parameters for DeleteUpstreamAccount.
+type DeleteUpstreamAccountParams struct {
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// UpdateUpstreamAccountParams defines parameters for UpdateUpstreamAccount.
+type UpdateUpstreamAccountParams struct {
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// AckReconcileItemParams defines parameters for AckReconcileItem.
+type AckReconcileItemParams struct {
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// TriggerReconcileRunParams defines parameters for TriggerReconcileRun.
+type TriggerReconcileRunParams struct {
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ListReconcileRunsParams defines parameters for ListReconcileRuns.
+type ListReconcileRunsParams struct {
+	// AccountId 只返回该账号的 run。
+	AccountId *int64 `form:"account_id,omitempty" json:"account_id,omitempty"`
+
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
+}
+
+// ListReconcileItemsParams defines parameters for ListReconcileItems.
+type ListReconcileItemsParams struct {
+	// Severity 差异等级（迁移 CHECK 闭集）。
+	Severity *ListReconcileItemsParamsSeverity `form:"severity,omitempty" json:"severity,omitempty"`
+
+	// Status 运营处置状态。
+	Status *ListReconcileItemsParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+
+	// PageQuery 页码，1 基（默认 1）
+	PageQuery *PageQuery `form:"p,omitempty" json:"p,omitempty"`
+
+	// PageSize 每页条数（默认 20，上限 100）
+	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
+}
+
+// ListReconcileItemsParamsSeverity defines parameters for ListReconcileItems.
+type ListReconcileItemsParamsSeverity string
+
+// ListReconcileItemsParamsStatus defines parameters for ListReconcileItems.
+type ListReconcileItemsParamsStatus string
+
+// GetReconcileSummaryParams defines parameters for GetReconcileSummary.
+type GetReconcileSummaryParams struct {
+	// RunId 对账 run id。
+	RunId int64 `form:"run_id" json:"run_id"`
+}
+
+// ListUpstreamSnapshotsParams defines parameters for ListUpstreamSnapshots.
+type ListUpstreamSnapshotsParams struct {
+	// AccountId 上游账号 id。
+	AccountId int64 `form:"account_id" json:"account_id"`
+
+	// From 起始自然日（含），YYYY-MM-DD。
+	From *openapi_types.Date `form:"from,omitempty" json:"from,omitempty"`
+
+	// To 结束自然日（含），YYYY-MM-DD。
+	To *openapi_types.Date `form:"to,omitempty" json:"to,omitempty"`
+}
+
+// UpsertUpstreamSnapshotsParams defines parameters for UpsertUpstreamSnapshots.
+type UpsertUpstreamSnapshotsParams struct {
+	// IdempotencyKey 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
 // ListUsageLogsParams defines parameters for ListUsageLogs.
 type ListUsageLogsParams struct {
 	// PageQuery 页码，1 基（默认 1）
@@ -12678,6 +13427,21 @@ type BatchDisableTokensJSONRequestBody = BatchTokenRequest
 
 // BatchEnableTokensJSONRequestBody defines body for BatchEnableTokens for application/json ContentType.
 type BatchEnableTokensJSONRequestBody = BatchTokenRequest
+
+// CreateUpstreamAccountJSONRequestBody defines body for CreateUpstreamAccount for application/json ContentType.
+type CreateUpstreamAccountJSONRequestBody = UpstreamAccountCreate
+
+// UpdateUpstreamAccountJSONRequestBody defines body for UpdateUpstreamAccount for application/json ContentType.
+type UpdateUpstreamAccountJSONRequestBody = UpstreamAccountUpdate
+
+// AckReconcileItemJSONRequestBody defines body for AckReconcileItem for application/json ContentType.
+type AckReconcileItemJSONRequestBody = ReconcileAckRequest
+
+// TriggerReconcileRunJSONRequestBody defines body for TriggerReconcileRun for application/json ContentType.
+type TriggerReconcileRunJSONRequestBody = ReconcileRunRequest
+
+// UpsertUpstreamSnapshotsJSONRequestBody defines body for UpsertUpstreamSnapshots for application/json ContentType.
+type UpsertUpstreamSnapshotsJSONRequestBody = UpstreamSnapshotUpsert
 
 // CreateUserJSONRequestBody defines body for CreateUser for application/json ContentType.
 type CreateUserJSONRequestBody = AdminCreateUserRequest

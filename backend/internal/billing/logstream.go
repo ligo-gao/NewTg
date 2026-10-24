@@ -121,6 +121,21 @@ type UsageLogEvent struct {
 	ErrorMessage     *string   `json:"error_message,omitempty"`
 	Other            string    `json:"other"`
 
+	// —— 上游对账维度（usage_logs 迁移 20261028090500）——
+	//
+	// 全部 omitempty：滚动发布期间旧生产者产出的事件没有这些键，新消费者
+	// 必须解出零值（nil / 0）而不是报错；新生产者写入的事件对旧消费者而言
+	// 只是多了几个未知 JSON 键，同样安全。
+	//
+	// UsageSource/UsageSemantic 用指针保留 NULL 语义（未知 ≠ 0）。
+	UsageSource       *int16  `json:"usage_source,omitempty"`
+	UsageSemantic     *int16  `json:"usage_semantic,omitempty"`
+	ReasoningTokens   int     `json:"reasoning_tokens,omitempty"`
+	UpstreamModel     *string `json:"upstream_model,omitempty"`
+	UpstreamAccountID *int64  `json:"upstream_account_id,omitempty"`
+	ResponseID        *string `json:"response_id,omitempty"`
+	Attempts          int     `json:"attempts,omitempty"`
+
 	FeedEligible bool   `json:"feed_eligible,omitempty"`
 	FeedUpstream string `json:"feed_upstream,omitempty"`
 }
@@ -179,55 +194,77 @@ func eventFromUsageLogRow(row usageLogRow, eventTime time.Time,
 	feedEligible bool, feedUpstream string) UsageLogEvent {
 
 	return UsageLogEvent{
-		RequestID:        row.requestID,
-		CreatedAt:        eventTime.UTC(),
-		UserID:           row.userID,
-		TokenID:          ptrNullInt64(row.tokenID),
-		ChannelID:        ptrNullInt64(row.channelID),
-		Model:            row.model,
-		Group:            ptrNullString(row.group),
-		PromptTokens:     row.promptTokens,
-		CompletionTokens: row.completionTokens,
-		CacheReadTokens:  row.cacheReadTokens,
-		CacheWriteTokens: row.cacheWriteTokens,
-		PreDeducted:      row.preDeducted,
-		Cost:             row.cost,
-		Refunded:         row.refunded,
-		LatencyMS:        ptrNullInt64(row.latencyMS),
-		FirstTokenMS:     ptrNullInt64(row.firstTokenMS),
-		Stream:           row.stream,
-		Status:           row.status,
-		ErrorClass:       ptrNullString(row.errorClass),
-		ErrorMessage:     ptrNullString(row.errorMessage),
-		Other:            row.other,
-		FeedEligible:     feedEligible,
-		FeedUpstream:     feedUpstream,
+		RequestID:         row.requestID,
+		CreatedAt:         eventTime.UTC(),
+		UserID:            row.userID,
+		TokenID:           ptrNullInt64(row.tokenID),
+		ChannelID:         ptrNullInt64(row.channelID),
+		Model:             row.model,
+		Group:             ptrNullString(row.group),
+		PromptTokens:      row.promptTokens,
+		CompletionTokens:  row.completionTokens,
+		CacheReadTokens:   row.cacheReadTokens,
+		CacheWriteTokens:  row.cacheWriteTokens,
+		PreDeducted:       row.preDeducted,
+		Cost:              row.cost,
+		Refunded:          row.refunded,
+		LatencyMS:         ptrNullInt64(row.latencyMS),
+		FirstTokenMS:      ptrNullInt64(row.firstTokenMS),
+		Stream:            row.stream,
+		Status:            row.status,
+		ErrorClass:        ptrNullString(row.errorClass),
+		ErrorMessage:      ptrNullString(row.errorMessage),
+		Other:             row.other,
+		UsageSource:       ptrNullInt16(row.usageSource),
+		UsageSemantic:     ptrNullInt16(row.usageSemantic),
+		ReasoningTokens:   row.reasoningTokens,
+		UpstreamModel:     ptrNullString(row.upstreamModel),
+		UpstreamAccountID: ptrNullInt64(row.upstreamAccountID),
+		ResponseID:        ptrNullString(row.responseID),
+		Attempts:          row.attempts,
+		FeedEligible:      feedEligible,
+		FeedUpstream:      feedUpstream,
 	}
 }
 
 // usageLogRow 把事件还原成写库投影。created_at 不参与（显式列单独传递）。
+//
+// 兼容旧生产者：本版本之前入队的事件没有对账维度键，解出的零值是
+// Attempts==0、UsageSource/UsageSemantic==nil。前者按迁移的 NOT NULL
+// DEFAULT 1 归一到 1，后者保持 NULL（未知不得用 0 冒充）。
 func (e UsageLogEvent) usageLogRow() usageLogRow {
+	attempts := e.Attempts
+	if attempts <= 0 {
+		attempts = 1
+	}
 	return usageLogRow{
-		requestID:        e.RequestID,
-		userID:           e.UserID,
-		tokenID:          nullInt64FromPtr(e.TokenID),
-		channelID:        nullInt64FromPtr(e.ChannelID),
-		model:            e.Model,
-		group:            nullStringFromPtr(e.Group),
-		promptTokens:     e.PromptTokens,
-		completionTokens: e.CompletionTokens,
-		cacheReadTokens:  e.CacheReadTokens,
-		cacheWriteTokens: e.CacheWriteTokens,
-		preDeducted:      e.PreDeducted,
-		cost:             e.Cost,
-		refunded:         e.Refunded,
-		latencyMS:        nullInt64FromPtr(e.LatencyMS),
-		firstTokenMS:     nullInt64FromPtr(e.FirstTokenMS),
-		stream:           e.Stream,
-		status:           e.Status,
-		errorClass:       nullStringFromPtr(e.ErrorClass),
-		errorMessage:     nullStringFromPtr(e.ErrorMessage),
-		other:            e.Other,
+		requestID:         e.RequestID,
+		userID:            e.UserID,
+		tokenID:           nullInt64FromPtr(e.TokenID),
+		channelID:         nullInt64FromPtr(e.ChannelID),
+		model:             e.Model,
+		group:             nullStringFromPtr(e.Group),
+		promptTokens:      e.PromptTokens,
+		completionTokens:  e.CompletionTokens,
+		cacheReadTokens:   e.CacheReadTokens,
+		cacheWriteTokens:  e.CacheWriteTokens,
+		preDeducted:       e.PreDeducted,
+		cost:              e.Cost,
+		refunded:          e.Refunded,
+		latencyMS:         nullInt64FromPtr(e.LatencyMS),
+		firstTokenMS:      nullInt64FromPtr(e.FirstTokenMS),
+		stream:            e.Stream,
+		status:            e.Status,
+		errorClass:        nullStringFromPtr(e.ErrorClass),
+		errorMessage:      nullStringFromPtr(e.ErrorMessage),
+		other:             e.Other,
+		usageSource:       nullInt16FromPtr(e.UsageSource),
+		usageSemantic:     nullInt16FromPtr(e.UsageSemantic),
+		reasoningTokens:   e.ReasoningTokens,
+		upstreamModel:     nullStringFromPtr(e.UpstreamModel),
+		upstreamAccountID: nullInt64FromPtr(e.UpstreamAccountID),
+		responseID:        nullStringFromPtr(e.ResponseID),
+		attempts:          attempts,
 	}
 }
 
@@ -974,7 +1011,8 @@ INSERT INTO usage_logs (
     model, "group", prompt_tokens, completion_tokens, cache_read_tokens,
     cache_write_tokens, pre_deducted, cost, refunded, latency_ms,
     first_token_ms, stream, status, error_class, error_message,
-    retry_chain, other, created_at)`
+    retry_chain, other, usage_source, usage_semantic, reasoning_tokens,
+    upstream_model, upstream_account_id, response_id, attempts, created_at)`
 
 // insertUsageLogBatch 用一条多行 INSERT 写入整批新行。
 //
@@ -984,8 +1022,8 @@ func insertUsageLogBatch(ctx context.Context, tx *sql.Tx, events []UsageLogEvent
 	if len(events) == 0 {
 		return nil
 	}
-	// 每行 24 列，其中 token_name/upstream/retry_chain 显式 NULL，绑定参数 21 个。
-	const paramsPerRow = 21
+	// 每行 31 列，其中 token_name/upstream/retry_chain 显式 NULL，绑定参数 28 个。
+	const paramsPerRow = 28
 	rows := make([]string, len(events))
 	args := make([]any, 0, paramsPerRow*len(events))
 	for i := range events {
@@ -995,12 +1033,13 @@ func insertUsageLogBatch(ctx context.Context, tx *sql.Tx, events []UsageLogEvent
         $%d, $%d, $%d, $%d, $%d,
         $%d, $%d, $%d, $%d, $%d,
         $%d, $%d, $%d, $%d, $%d,
-        NULL, $%d::jsonb, $%d)`,
+        NULL, $%d::jsonb, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)`,
 			base+1, base+2, base+3, base+4,
 			base+5, base+6, base+7, base+8, base+9,
 			base+10, base+11, base+12, base+13, base+14,
 			base+15, base+16, base+17, base+18, base+19,
-			base+20, base+21)
+			base+20, base+21, base+22, base+23, base+24,
+			base+25, base+26, base+27, base+28)
 		row := ev.usageLogRow()
 		args = append(args,
 			ev.RequestID, ev.UserID, row.tokenID,
@@ -1008,7 +1047,10 @@ func insertUsageLogBatch(ctx context.Context, tx *sql.Tx, events []UsageLogEvent
 			row.promptTokens, row.completionTokens, row.cacheReadTokens,
 			row.cacheWriteTokens, row.preDeducted, row.cost, row.refunded,
 			row.latencyMS, row.firstTokenMS, row.stream, row.status,
-			row.errorClass, row.errorMessage, row.other, ev.CreatedAt.UTC())
+			row.errorClass, row.errorMessage, row.other,
+			row.usageSource, row.usageSemantic, row.reasoningTokens,
+			row.upstreamModel, row.upstreamAccountID, row.responseID, row.attempts,
+			ev.CreatedAt.UTC())
 	}
 	query := usageLogBatchInsertSQL + "\nVALUES " + strings.Join(rows, ",\n")
 	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
@@ -1073,4 +1115,19 @@ func nullStringFromPtr(v *string) sql.NullString {
 		return sql.NullString{}
 	}
 	return sql.NullString{String: *v, Valid: true}
+}
+
+func ptrNullInt16(v sql.NullInt16) *int16 {
+	if !v.Valid {
+		return nil
+	}
+	out := v.Int16
+	return &out
+}
+
+func nullInt16FromPtr(v *int16) sql.NullInt16 {
+	if v == nil {
+		return sql.NullInt16{}
+	}
+	return sql.NullInt16{Int16: *v, Valid: true}
 }

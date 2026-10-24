@@ -10,7 +10,7 @@ package platform
 //
 // 【为什么手动触发要绑定 Run】§13.5 要求「写 pending 行 + 唤醒，由调度 pass
 // 按正常租约认领」。如果白名单任务没有可执行的 Run，触发只会留下一条永远
-// pending 的行——这比 404 更具误导性。因此 5 个白名单任务都绑定一个既有的
+// pending 的行——这比 404 更具误导性。因此每个白名单任务都绑定一个既有的
 // 一轮执行函数；它们自身的周期执行仍归既有循环。
 
 import (
@@ -31,6 +31,8 @@ import (
 	"newtg/gateway/internal/httpapi"
 	"newtg/gateway/internal/pricingstrategy"
 	"newtg/gateway/internal/rankings"
+	"newtg/gateway/internal/reconcile"
+	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/worker"
 )
 
@@ -128,6 +130,13 @@ func startWorkerTaskFramework(parent context.Context, deps workerTaskDeps) (func
 
 // bindWorkerTaskRuns 给白名单任务绑定「一轮执行」函数。
 func bindWorkerTaskRuns(registry *worker.Registry, deps workerTaskDeps) error {
+	// 上游用量对账：runner 每进程构造一次（仓储句柄无状态，执行时才触库）。
+	// 构造失败是装配错误，随 bind 一并上抛，由 startWorkerTaskFramework
+	// 记录为「任务框架不可用」——与其它绑定失败同一语义。
+	reconcileRunner, err := newReconcileRunner(deps)
+	if err != nil {
+		return fmt.Errorf("worker task reconcile runner: %w", err)
+	}
 	bindings := map[string]func(ctx context.Context) (worker.Result, error){
 		"worker_history_cleanup": func(ctx context.Context) (worker.Result, error) {
 			store, err := worker.NewSQLStore(deps.DB)
@@ -214,6 +223,9 @@ func bindWorkerTaskRuns(registry *worker.Registry, deps workerTaskDeps) error {
 		"holiday_sync": func(ctx context.Context) (worker.Result, error) {
 			return runHolidaySync(ctx, deps)
 		},
+		"upstream_usage_reconcile": func(ctx context.Context) (worker.Result, error) {
+			return runUpstreamReconcile(ctx, reconcileRunner)
+		},
 	}
 	for name, run := range bindings {
 		if err := registry.BindRun(name, run); err != nil {
@@ -237,7 +249,65 @@ func bindWorkerTaskRuns(registry *worker.Registry, deps workerTaskDeps) error {
 		"holiday_sync_disabled"); err != nil {
 		return fmt.Errorf("worker task enable predicate: %w", err)
 	}
+	// upstream_usage_reconcile 的运行时开关（reconcile.enabled）：关闭时调度
+	// pass 跳过、手动触发 409 reconcile_disabled。runner 内部保留同一开关作为
+	// 兜底，覆盖「触发后开关被关」的竞态。
+	if err := registry.SetEnabled("upstream_usage_reconcile",
+		func() bool { return reconcileEnabled(deps.Center) },
+		"reconcile_disabled"); err != nil {
+		return fmt.Errorf("worker task enable predicate: %w", err)
+	}
 	return nil
+}
+
+// newReconcileRunner 装配进程内唯一的对账执行器。
+//
+// 数据源分工（设计 §7.1）：usage_logs 在**日志库**，账号/快照/run 在主库；
+// 两者混用会让对账读到另一个库的空表。Retention 不是设置键，取设计常量
+// （90 天，与 usage_logs 分区保留一致）。
+func newReconcileRunner(deps workerTaskDeps) (*reconcile.Runner, error) {
+	return reconcile.NewRunner(reconcile.RunnerConfig{
+		Accounts:  store.NewUpstreamAccountRepo(deps.DB),
+		Snapshots: store.NewUpstreamSnapshotRepo(deps.DB),
+		Usage:     store.NewUsageAggregateRepo(deps.LogsDB),
+		Store:     store.NewReconcileRepo(deps.DB),
+		Settings:  NewReconcileSettingsReader(deps.Center, deps.Logger),
+		Retention: reconcile.DefaultRetention,
+		Logger:    deps.Logger,
+	})
+}
+
+// runUpstreamReconcile 执行一次全账号对账，并把 Outcome 压成运行历史允许的
+// 四个字段（worker.Result 只允许计数与枚举，不得写入上游响应体）。
+//
+// trigger 固定 "worker"：手动触发与周期执行共用同一个执行体，而
+// reconcile.enabled 的放行/阻断在注册表谓词层完成——阻止一次关闭后的手动
+// 补跑是框架的 409，不是 runner 的静默跳过。
+func runUpstreamReconcile(ctx context.Context, runner *reconcile.Runner) (worker.Result, error) {
+	outcome, err := runner.Run(ctx, "worker", nil)
+	if err != nil {
+		return nil, err
+	}
+	return worker.Result{
+		"accounts": len(outcome.RunIDs),
+		"items":    outcome.Items,
+		"alerts":   outcome.Alerts,
+		"status":   reconcileResultStatus(outcome.Status),
+	}, nil
+}
+
+// reconcileResultStatus 把 runner 的 Outcome.Status 收敛到 worker.Result 的
+// 三值契约：skipped（没有可处理账号）与 disabled（开关关闭的兜底路径）
+// 都表示「本次没有需要报告的差异」，按 succeeded + 零计数落库。
+func reconcileResultStatus(status string) string {
+	switch status {
+	case "partial":
+		return "partial"
+	case "failed":
+		return "failed"
+	default:
+		return "succeeded"
+	}
 }
 
 // ---- holiday_sync（spec §5.2.1） ------------------------------------------

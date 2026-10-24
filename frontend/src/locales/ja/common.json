@@ -415,6 +415,7 @@
   "toast.dismiss": "通知を閉じる",
   "toast.request_id": "request_id：{requestId}",
   "nav.channels": "チャネル",
+  "nav.upstream_reconciliation": "アップストリーム照合",
   "nav.tokens": "API トークン",
   "nav.model_config": "モデル設定",
   "nav.skip": "本文へスキップ",

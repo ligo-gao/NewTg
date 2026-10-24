@@ -439,9 +439,11 @@ type ChannelResponse struct {
 	// 投影：类型 61 单绑、类型 60 多绑、其余渠道均为空。它们不是秘密。
 	TaskPluginKey        *string  `json:"task_plugin_key"`
 	TaskExtendPluginKeys []string `json:"task_extend_plugin_keys"`
-	CreatedAt            string   `json:"created_at"`
-	UpdatedAt            string   `json:"updated_at"`
-	Version              string   `json:"version"` // R-P8：derived updated_at（RFC3339Nano UTC）
+	// 上游账号归属（上游用量对账设计 §4.1）；nil 序列化为 null（未归属）。
+	UpstreamAccountID *int64 `json:"upstream_account_id"`
+	CreatedAt         string `json:"created_at"`
+	UpdatedAt         string `json:"updated_at"`
+	Version           string `json:"version"` // R-P8：derived updated_at（RFC3339Nano UTC）
 
 	CredentialsMasked *ChannelCredentialsMasked `json:"credentials_masked,omitempty"`
 	CredentialsSet    *bool                     `json:"credentials_set,omitempty"`
@@ -499,6 +501,8 @@ type createChannelRequest struct {
 	// channelFromCreate 内完成，错误统一 400。
 	TaskPluginKey        json.RawMessage `json:"task_plugin_key"`
 	TaskExtendPluginKeys json.RawMessage `json:"task_extend_plugin_keys"`
+	// 上游账号归属（上游用量对账设计 §4.1）：null/缺省 = 未归属。
+	UpstreamAccountID *int64 `json:"upstream_account_id"`
 }
 
 type updateChannelRequest struct {
@@ -521,6 +525,8 @@ type updateChannelRequest struct {
 	// RawMessage 区分「缺省」（不修改）、`null`（清空）与具体值。
 	TaskPluginKey        json.RawMessage `json:"task_plugin_key"`
 	TaskExtendPluginKeys json.RawMessage `json:"task_extend_plugin_keys"`
+	// 上游账号归属：RawMessage 区分「缺省」（不修改）与 `null`（清空归属）。
+	UpstreamAccountID json.RawMessage `json:"upstream_account_id"`
 }
 
 type batchStatusRequest struct {
@@ -1021,6 +1027,11 @@ func (h *ChannelHandler) channelFromCreate(ctx context.Context, v *validator, re
 	if req.AutoBan != nil {
 		autoBan = *req.AutoBan
 	}
+	// 上游账号归属：null/缺省 = 未归属；显式值必须是正整数（不存在的 id 由
+	// channels_upstream_account_fk 兜底）。
+	if req.UpstreamAccountID != nil && *req.UpstreamAccountID <= 0 {
+		v.add("upstream_account_id", "upstream_account_id must be a positive integer or null")
+	}
 
 	testModel := normalizeOptionalChannelText(req.TestModel)
 	if testModel != nil {
@@ -1093,6 +1104,7 @@ func (h *ChannelHandler) channelFromCreate(ctx context.Context, v *validator, re
 		Tag:                  tag,
 		TaskPluginKey:        pluginKey,
 		TaskExtendPluginKeys: extendKeys,
+		UpstreamAccountID:    req.UpstreamAccountID,
 	}, nil
 }
 
@@ -1346,6 +1358,23 @@ func (h *ChannelHandler) buildPatch(ctx context.Context, v *validator, existing 
 		}
 	}
 
+	// 上游账号归属（上游用量对账设计 §4.1）：`null` 清空，正整数写入；
+	// 其它形状（0/负数/非整数）是字段级 422，绝不静默忽略。
+	if req.UpstreamAccountID != nil {
+		if isJSONNull(req.UpstreamAccountID) {
+			patch.UpstreamAccountIDSet = true
+			patch.UpstreamAccountID = nil
+		} else {
+			var accountID int64
+			if err := json.Unmarshal(req.UpstreamAccountID, &accountID); err != nil || accountID <= 0 {
+				v.add("upstream_account_id", "upstream_account_id must be a positive integer or null")
+			} else {
+				patch.UpstreamAccountIDSet = true
+				patch.UpstreamAccountID = &accountID
+			}
+		}
+	}
+
 	credentialsProvided := false
 	if req.Credentials != nil {
 		// F-06-03：null / 缺省 / 空 api_key → 保持原值，不重新加密。
@@ -1511,6 +1540,7 @@ func changedChannelFields(req *updateChannelRequest) []string {
 	add(req.Tag != nil, "tag")
 	add(req.TaskPluginKey != nil, "task_plugin_key")
 	add(req.TaskExtendPluginKeys != nil, "task_extend_plugin_keys")
+	add(req.UpstreamAccountID != nil, "upstream_account_id")
 	return fields
 }
 
@@ -2503,6 +2533,7 @@ func channelToResponse(ch *store.Channel) (ChannelResponse, error) {
 		LastTestResult:       ch.LastTestResult,
 		TaskPluginKey:        ch.TaskPluginKey,
 		TaskExtendPluginKeys: extendKeys,
+		UpstreamAccountID:    ch.UpstreamAccountID,
 		CreatedAt:            formatChannelTime(ch.CreatedAt),
 		UpdatedAt:            version,
 		Version:              version,

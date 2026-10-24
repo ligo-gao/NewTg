@@ -93,7 +93,12 @@ var sectionOrder = []string{
 	// 通用设置页按「更新检查」整体读写，也避免 site 表单一次提交几十个键。
 	"site.update_check",
 	"update",
-	"nav", "auth", "auth.turnstile", "billing", "billing_setting",
+	"nav", "auth", "auth.turnstile", "billing",
+	// 上游用量对账（docs/superpowers/specs/2026-10-24-upstream-usage-reconciliation-design.md
+	// §4.7；逐键登记见 docs/system-config-mapping.md §4.7 #72–#77）。
+	// 独立 section：对账参数只服务 worker 与管理面，不进入 /api/status 公开下发。
+	"reconcile",
+	"billing_setting",
 	// W15-C：每日签到（modules-01 §3.19 流程侧 / modules-03 F-03-12 入账侧，
 	// C-44/N-MAP-1 闭）。三键独立 section 但都**不进公开下发全集**：
 	// modules-08 §1.4.1 明确排除 checkin.*；用户侧入口由
@@ -439,6 +444,20 @@ func buildRegistry() []Setting {
 		// 误写成「事实上的永不过期」。
 		def("billing.subscription_inflight_lease_ttl_seconds", "billing", TypeInt, int64(120),
 			minInt(120), maxInt(86400)),
+
+		// ==== reconcile（上游用量对账，上游用量对账设计 §4.7）====
+		//
+		// 六键与 docs/system-config-mapping.md §4.7 #72–#77 逐字一致。
+		// 全部非公开：对账参数属于内部运营配置，不进 /api/status 匿名面。
+		//
+		// 容差参数会在每次对账开跑时快照进 upstream_reconciliation_runs，
+		// 因此改动只影响之后的新 run，不改写历史判定。
+		def("reconcile.enabled", "reconcile", TypeBool, true),
+		def("reconcile.lookback_days", "reconcile", TypeInt, int64(3), minInt(1), maxInt(30)),
+		def("reconcile.token_tolerance_bp", "reconcile", TypeInt, int64(100), minInt(0), maxInt(10000)),
+		def("reconcile.min_delta_tokens", "reconcile", TypeInt, int64(1000), minInt(0), maxInt(1000000000)),
+		def("reconcile.amount_tolerance_minor", "reconcile", TypeInt, int64(100), minInt(0), maxInt(1000000000)),
+		def("reconcile.raw_usage_enabled", "reconcile", TypeBool, true),
 
 		// ==== checkin（modules-08 §3.8 签到奖励设置面；C-44/N-MAP-1 闭）====
 		//

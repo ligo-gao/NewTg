@@ -9,7 +9,8 @@
 //     外部循环（Scheduled=false 且 Run=nil）只出现在目录里，调度器不碰它们。
 //
 // 【为什么静态注册表而不是 DB 目录】任务名、周期、超时与白名单是代码契约
-// （billing-06 §13.5.1 冻结 5 个可手动触发任务）。允许 DB 增删任务等于开放
+// （billing-06 §13.5.1 冻结的 5 个 + spec 逐项追加的 holiday_sync、
+// upstream_usage_reconcile）。允许 DB 增删任务等于开放
 // 「任意任务名执行」入口，与 §13.5「不提供任意 SQL/命令/函数名」冲突。
 package worker
 
@@ -330,6 +331,20 @@ func DefaultRegistry() (*Registry, error) {
 			Scheduled: true,
 			// spec §5.2.1：手工触发沿用现有任务触发端点与权限。只拉取并整年
 			// 替换日历，幂等；数据源不可达时保留旧行。
+			ManualTriggerAllowed: true,
+		},
+		// ---- D 类：上游用量对账（框架调度型，设计 §11） ----
+		Task{
+			Name:        "upstream_usage_reconcile",
+			Description: "Reconcile local usage logs against upstream console snapshots",
+			// 每天一次：对账窗口按 lookback_days 覆盖最近若干自然日，重跑是
+			// 追加新 run（旧 run 不可变），因此周期只需小于窗口长度。
+			Interval: 24 * time.Hour,
+			// 单账号聚合 + 逐条比较 + 落库；5 分钟覆盖正常规模，超时由调度器
+			// 主动收敛，不让卡死的执行占着租约。
+			Timeout:   5 * time.Minute,
+			Scheduled: true,
+			// 管理员可补跑：每次执行生成新 run，幂等且不改写历史判定。
 			ManualTriggerAllowed: true,
 		},
 	)

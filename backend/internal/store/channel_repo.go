@@ -96,6 +96,11 @@ type ChannelPatch struct {
 	TaskPluginKeySet     bool
 	TaskPluginKey        *string
 	TaskExtendPluginKeys []byte
+
+	// 上游账号归属（上游用量对账设计 §4.1）。
+	//   UpstreamAccountIDSet=true 且 UpstreamAccountID=nil → 清空归属（SQL NULL）。
+	UpstreamAccountIDSet bool
+	UpstreamAccountID    *int64
 }
 
 // BatchResult 对应 modules-06 F-06-02 的 {succeeded:[id], failed:[{id,reason}]}。
@@ -119,12 +124,12 @@ type ChannelRepo struct{ db *sql.DB }
 // NewChannelRepo 构造仓储；db 由 platform.OpenDB 提供（pgx stdlib 驱动）。
 func NewChannelRepo(db *sql.DB) *ChannelRepo { return &ChannelRepo{db: db} }
 
-// channelColumns 与 platform-01 §6 的 22 列 + M6d Task 7a 绑定 2 列逐列对应
-// （顺序固定，供 scanChannel 使用）。
+// channelColumns 与 platform-01 §6 的 22 列 + M6d Task 7a 绑定 2 列 + 上游归属 1 列
+// 逐列对应（顺序固定，供 scanChannel 使用）。
 const channelColumns = `id, name, type, base_url, credentials, supported_models, group_tags,
 	model_mapping, weight, priority, rate_limit, status, auto_ban, test_model, remark, tag,
 	fail_count, auto_disabled_reason, last_test_at, last_test_result, created_at, updated_at,
-	task_plugin_key, task_extend_plugin_keys`
+	task_plugin_key, task_extend_plugin_keys, upstream_account_id`
 
 // scanRow 抽象 *sql.Row / *sql.Rows 的共同 Scan 方法。
 type scanRow interface {
@@ -149,12 +154,14 @@ func scanChannel(row scanRow) (*Channel, error) {
 		// NOT NULL DEFAULT '[]'，仍用 []byte 承载（jsonb 文本）。
 		taskPluginKey sql.NullString
 		taskExtend    []byte
+		// upstream_account_id 为 NULL = 未归属任何上游账号。
+		upstreamAccountID sql.NullInt64
 	)
 	err := row.Scan(
 		&ch.ID, &ch.Name, &ch.Type, &baseURL, &ch.Credentials, &ch.SupportedModels, &groupTag,
 		&ch.ModelMapping, &ch.Weight, &ch.Priority, &rateLim, &ch.Status, &ch.AutoBan,
 		&testMod, &remark, &tag, &ch.FailCount, &reason, &lastAt, &lastRes,
-		&ch.CreatedAt, &ch.UpdatedAt, &taskPluginKey, &taskExtend,
+		&ch.CreatedAt, &ch.UpdatedAt, &taskPluginKey, &taskExtend, &upstreamAccountID,
 	)
 	if err != nil {
 		return nil, err
@@ -193,6 +200,10 @@ func scanChannel(row scanRow) (*Channel, error) {
 		ch.TaskPluginKey = &v
 	}
 	ch.TaskExtendPluginKeys = taskExtend
+	if upstreamAccountID.Valid {
+		v := upstreamAccountID.Int64
+		ch.UpstreamAccountID = &v
+	}
 	return &ch, nil
 }
 
@@ -265,14 +276,14 @@ func (r *ChannelRepo) Create(ctx context.Context, ch *Channel) (*Channel, error)
 	row := r.db.QueryRowContext(ctx, `INSERT INTO channels
 		(name, type, base_url, credentials, supported_models, group_tags, model_mapping,
 		 weight, priority, rate_limit, status, auto_ban, test_model, remark, tag, auto_disabled_reason,
-		 task_plugin_key, task_extend_plugin_keys)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+		 task_plugin_key, task_extend_plugin_keys, upstream_account_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 		RETURNING `+channelColumns,
 		ch.Name, ch.Type, nullableString(ch.BaseURL), ch.Credentials, ch.SupportedModels,
 		nullableBytes(ch.GroupTags), ch.ModelMapping, ch.Weight, ch.Priority,
 		nullableInt32(ch.RateLimit), ch.Status, ch.AutoBan, nullableString(ch.TestModel),
 		nullableString(ch.Remark), nullableString(ch.Tag), nullableString(ch.AutoDisabledReason),
-		nullableString(ch.TaskPluginKey), ch.TaskExtendPluginKeys)
+		nullableString(ch.TaskPluginKey), ch.TaskExtendPluginKeys, nullableInt64(ch.UpstreamAccountID))
 
 	out, err := scanChannel(row)
 	if isUniqueViolation(err) {
@@ -364,6 +375,9 @@ func (r *ChannelRepo) Update(ctx context.Context, id int64, patch ChannelPatch, 
 	}
 	if patch.TaskExtendPluginKeys != nil {
 		add("task_extend_plugin_keys = $%d", patch.TaskExtendPluginKeys)
+	}
+	if patch.UpstreamAccountIDSet {
+		add("upstream_account_id = $%d", nullableInt64(patch.UpstreamAccountID))
 	}
 
 	if len(sets) == 0 {

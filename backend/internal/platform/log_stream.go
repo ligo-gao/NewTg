@@ -30,6 +30,10 @@ import (
 // settingLogBatchEnabled 是 usage_logs 批处理的总开关（默认 false）。
 const settingLogBatchEnabled = "log.batch_enabled"
 
+// settingUsageRawEnabled 控制是否把协议原始 usage JSON 写入
+// other.admin_info.usage_raw（上游用量对账设计 §4.7，默认 true）。
+const settingUsageRawEnabled = "reconcile.raw_usage_enabled"
+
 // usageLogBatchEnabled 解析批处理开关。标签解析失败按 false（同步路径）处理：
 // 批处理是加速面，配置异常必须回落到更保守的同步写入，而不是 fail-open。
 func usageLogBatchEnabled(center *configcenter.Center, log *slog.Logger) bool {
@@ -38,6 +42,18 @@ func usageLogBatchEnabled(center *configcenter.Center, log *slog.Logger) bool {
 		log.Info("usage_logs batching setting resolved",
 			"key", settingLogBatchEnabled, "enabled", enabled,
 			"mode", map[bool]string{true: "redis_stream", false: "synchronous"}[enabled])
+	}
+	return enabled
+}
+
+// usageRawEnabled 解析原始 usage 开关。与批处理开关一样是启动时快照：改动随
+// 进程重建生效，避免不同副本写出两种 other 形状。默认 true——原始 JSON 只进
+// admin_info，非管理员视图整段剥离，保留它是对账/审计的唯一证据。
+func usageRawEnabled(center *configcenter.Center, log *slog.Logger) bool {
+	enabled := configBool(center, settingUsageRawEnabled, true)
+	if log != nil {
+		log.Info("usage_logs raw usage setting resolved",
+			"key", settingUsageRawEnabled, "enabled", enabled)
 	}
 	return enabled
 }
@@ -51,6 +67,8 @@ func newUsageLogDBLogger(logsDB *sql.DB, feed billing.FeedPublisher,
 	perf billing.PerfMetricsRecorder) *billing.DBLogger {
 
 	writer := billing.NewDBLogger(logsDB).WithFeed(feed, log)
+	// 原始 usage 与批处理一样在启动时解析一次快照。
+	writer = writer.WithRawUsage(usageRawEnabled(center, log))
 	if perf != nil {
 		writer = writer.WithPerfMetrics(perf)
 	}

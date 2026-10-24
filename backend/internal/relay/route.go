@@ -908,6 +908,13 @@ func Route(ctx context.Context, rc *contract.RelayContext, deps RouteDeps) (*con
 	fact.LatencyMS = int(time.Since(start).Milliseconds())
 	fact.Stream = false
 	fact.Attempts = rc.AttemptIndex + 1
+	// 上游对账维度在事实产出时一次性冻结：此后日志只读事实，不回读可能
+	// 已被重试改写的 RelayContext（设计 §4.6）。流式路径不保留响应 id。
+	if response != nil {
+		fact.ResponseID = response.ID
+	}
+	fact.UpstreamModel = rc.UpstreamModel
+	fact.UpstreamAccountID = rc.UpstreamAccountID
 	// FirstTokenMS 保持 nil：非流式没有首 token 时刻（契约 §6.1 · 决议 B6）。
 	finalFact = *fact
 	settle = true // defer 走 Terminate；失败/panic 出口保持 false → Refund

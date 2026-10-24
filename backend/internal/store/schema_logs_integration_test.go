@@ -27,8 +27,11 @@ import (
 //	  go test -tags=integration ./internal/store/ -run TestLogsSchema -v
 
 // logsWantColumns 日志库逐表列数（platform-01 §5 = 14、§12 = 25）。
+// 上游用量对账（migrations-logs 20261028090500，2026-10-24）给 usage_logs
+// 追加 7 列（usage_source/usage_semantic/reasoning_tokens/upstream_model/
+// upstream_account_id/response_id/attempts），25→32；20261028090600 只加索引。
 var logsWantColumns = map[string]int{
-	"usage_logs": 25,
+	"usage_logs": 32,
 	"audit_logs": 14,
 }
 
@@ -292,7 +295,7 @@ func TestLogsSchema(t *testing.T) {
 		}
 	})
 
-	// (f) 列数 25 / 14；audit_logs 无 request_id 列（platform-05 U-05-7 冻结）。
+	// (f) 列数 32 / 14；audit_logs 无 request_id 列（platform-05 U-05-7 冻结）。
 	t.Run("column_counts", func(t *testing.T) {
 		tables := make([]string, 0, len(logsWantColumns))
 		for table := range logsWantColumns {

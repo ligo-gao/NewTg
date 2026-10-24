@@ -1,0 +1,486 @@
+# 上游用量对账路径（上游用量对账设计 §4；plan Task 4）。
+#
+# 全部是管理面：仅管理员会话 + settings:manage。Bearer 令牌没有角色/权限
+# 语义，RBAC 判定必然 fail-closed，故这些 operation 只声明 sessionCookie。
+# 错误体一律 RFC 7807 problem+json（与 admin.yaml 同口径）。
+paths:
+  /api/upstream-accounts:
+    get:
+      tags: [admin]
+      operationId: listUpstreamAccounts
+      x-required-permission: settings:manage
+      summary: 上游账号列表（分页）
+      description: |
+        offset 分页，按 id 升序（稳定翻页）。status 为精确筛选，缺省不过滤。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/pagination.yaml#/parameters/Page'
+        - $ref: '../components/pagination.yaml#/parameters/PageSize'
+        - name: status
+          in: query
+          required: false
+          description: 1 = active、2 = disabled；缺省 = 全部。
+          schema:
+            type: integer
+            enum: [1, 2]
+      responses:
+        '200':
+          description: OK（offset 分页信封）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/upstream-reconciliation.yaml#/schemas/UpstreamAccountList'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    post:
+      tags: [admin]
+      operationId: createUpstreamAccount
+      x-required-permission: settings:manage
+      summary: 新建上游账号
+      description: |
+        currency 缺省 CNY、timezone 缺省 Asia/Shanghai、status 置为 active。
+        timezone 无法解析 422；name 冲突 409。成功 201 返回整行。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/IdempotencyKey'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/upstream-reconciliation.yaml#/schemas/UpstreamAccountCreate'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/upstream-reconciliation.yaml#/schemas/UpstreamAccount'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/upstream-accounts/{id}:
+    patch:
+      tags: [admin]
+      operationId: updateUpstreamAccount
+      x-required-permission: settings:manage
+      summary: 部分更新上游账号（乐观锁）
+      description: |
+        必须原样回传 expected_updated_at（缺失 400、不匹配 409）。
+        字段缺省 = 不修改；console_url 显式 null = 清空。
+        timezone 非法 422；name 冲突 409；账号不存在 404。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 上游账号 id（正整数）；非法/不存在同形 404。
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '../components/params.yaml#/parameters/IdempotencyKey'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/upstream-reconciliation.yaml#/schemas/UpstreamAccountUpdate'
+      responses:
+        '200':
+          description: 更新后的账号
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/upstream-reconciliation.yaml#/schemas/UpstreamAccount'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    delete:
+      tags: [admin]
+      operationId: deleteUpstreamAccount
+      x-required-permission: settings:manage
+      summary: 删除上游账号
+      description: |
+        仍被渠道或快照引用的账号由数据库 FK RESTRICT 拒绝，映射为 409：
+        历史对账必须以当时的归属为准，不能级联删除。成功 204。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 上游账号 id（正整数）；非法/不存在同形 404。
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '../components/params.yaml#/parameters/IdempotencyKey'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已删除
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/upstream-snapshots:
+    get:
+      tags: [admin]
+      operationId: listUpstreamSnapshots
+      x-required-permission: settings:manage
+      summary: 按账号与日期区间读取上游用量快照
+      description: |
+        account_id 必填；from/to 为闭区间 ISO date（缺省由服务端按配置的
+        回看窗口补齐）。不分页：区间本身约束结果规模，按 (usage_date,
+        upstream_model) 升序返回。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: account_id
+          in: query
+          required: true
+          description: 上游账号 id。
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - name: from
+          in: query
+          required: false
+          description: 起始自然日（含），YYYY-MM-DD。
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: false
+          description: 结束自然日（含），YYYY-MM-DD。
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: OK（不分页的 items 信封）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/upstream-reconciliation.yaml#/schemas/UpstreamSnapshotList'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+    put:
+      tags: [admin]
+      operationId: upsertUpstreamSnapshots
+      x-required-permission: settings:manage
+      summary: 批量写入（upsert）上游用量快照
+      description: |
+        同一 (account_id, usage_date, upstream_model) 重复键按「后写覆盖」；
+        最多 500 条，全量在一个事务内写入（全成或全回滚）。entered_by 取当前
+        管理员，source 缺省 manual。成功返回 {updated: n}。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/IdempotencyKey'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/upstream-reconciliation.yaml#/schemas/UpstreamSnapshotUpsert'
+      responses:
+        '200':
+          description: 写入结果
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/upstream-reconciliation.yaml#/schemas/UpstreamSnapshotUpsertResult'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/upstream-reconciliations/runs:
+    get:
+      tags: [admin]
+      operationId: listReconcileRuns
+      x-required-permission: settings:manage
+      summary: 对账运行历史（分页）
+      description: |
+        offset 分页，按 started_at 降序（最新优先）。account_id 缺省 = 全部账号。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: account_id
+          in: query
+          required: false
+          description: 只返回该账号的 run。
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '../components/pagination.yaml#/parameters/Page'
+        - $ref: '../components/pagination.yaml#/parameters/PageSize'
+      responses:
+        '200':
+          description: OK（offset 分页信封）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/upstream-reconciliation.yaml#/schemas/ReconcileRunList'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/upstream-reconciliations/runs/{id}/items:
+    get:
+      tags: [admin]
+      operationId: listReconcileItems
+      x-required-permission: settings:manage
+      summary: 某次运行的差异明细（分页 + 筛选）
+      description: |
+        offset 分页，按 usage_date 降序、模型升序。severity/status 为空表示
+        不筛选；非法枚举 400。run 不存在 404。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 对账 run id（正整数）；不存在 404。
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - name: severity
+          in: query
+          required: false
+          description: 差异等级（迁移 CHECK 闭集）。
+          schema:
+            type: string
+            enum:
+              - ok
+              - warn
+              - alert
+              - partial_snapshot
+              - missing_snapshot
+              - missing_local
+              - local_expired
+        - name: status
+          in: query
+          required: false
+          description: 运营处置状态。
+          schema:
+            type: string
+            enum: [open, acknowledged, resolved]
+        - $ref: '../components/pagination.yaml#/parameters/Page'
+        - $ref: '../components/pagination.yaml#/parameters/PageSize'
+      responses:
+        '200':
+          description: OK（offset 分页信封）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/upstream-reconciliation.yaml#/schemas/ReconcileItemList'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/upstream-reconciliations/summary:
+    get:
+      tags: [admin]
+      operationId: getReconcileSummary
+      x-required-permission: settings:manage
+      summary: 某次运行的按天汇总（概览）
+      description: |
+        run_id 必填（缺失 400；run 不存在 404）。返回收入/成本/毛利/差异率的
+        按天聚合；无法计算的维度为 null（UI 显示 —，不是 0）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: run_id
+          in: query
+          required: true
+          description: 对账 run id。
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/upstream-reconciliation.yaml#/schemas/ReconcileSummary'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/upstream-reconciliations/run:
+    post:
+      tags: [admin]
+      operationId: triggerReconcileRun
+      x-required-permission: settings:manage
+      summary: 手动触发一次对账
+      description: |
+        同步执行（60 秒超时；超时 504，detail 在已创建 run 时附 run id）。
+        account_id 缺省 = 全部启用账号。返回本次生成的 run 与聚合计数。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/IdempotencyKey'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/upstream-reconciliation.yaml#/schemas/ReconcileRunRequest'
+      responses:
+        '200':
+          description: 触发结果
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/upstream-reconciliation.yaml#/schemas/ReconcileRunResult'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '504':
+          description: 对账在 60 秒内未完成（problem+json；已创建 run 时 detail 附其 id）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+
+  /api/upstream-reconciliations/items/{id}/ack:
+    post:
+      tags: [admin]
+      operationId: ackReconcileItem
+      x-required-permission: settings:manage
+      summary: 标记差异明细已确认 / 已解决
+      description: |
+        status 缺省 acknowledged；非法枚举 422。明细不存在 404。
+        处置写审计事件 reconcile.item_ack（含 before/after）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 差异明细 id（正整数）；不存在 404。
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '../components/params.yaml#/parameters/IdempotencyKey'
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/upstream-reconciliation.yaml#/schemas/ReconcileAckRequest'
+      responses:
+        '200':
+          description: 处置后的明细摘要
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/upstream-reconciliation.yaml#/schemas/ReconcileAckResult'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'

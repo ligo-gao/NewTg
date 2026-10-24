@@ -204,6 +204,397 @@ func TestTasksTerminalRetentionIndexMigrationUpDown(t *testing.T) {
 	}
 }
 
+// ---- 上游账号回填（20261028100000_upstream_account_backfill）----
+
+// TestUpstreamAccountBackfillMigrationUpDown 验证升级回填：「每个现有渠道建
+// 一个同名上游账号并回填 channels.upstream_account_id」（设计 §12.1）。
+//
+// 冻结的行为：
+//   - up 后每个渠道都归属到自己的账号，账号 provider 等于渠道 type，
+//     币种/时区为设计规定的 CNY / Asia/Shanghai；
+//   - 账号 note 精确指出来源渠道 id —— down 就靠这个溯源标记识别本次迁移
+//     建的账号；
+//   - down 清空链接、删除无历史数据的账号；再次 up 可重放。
+//
+// 为什么固定到 20261028100000 而不是「再走一步」：20261028090400
+// （usage_integrity_findings）也排在回填迁移之前，回填迁移的编号刻意与相邻
+// 迁移拉开（100000）；直接写目标版本不受将来在该区间追加迁移的影响。
+func TestUpstreamAccountBackfillMigrationUpDown(t *testing.T) {
+	db, m := newUpstreamBackfillDB(t, "upacct_backfill")
+
+	if err := m.Migrate(20261028090300); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		t.Fatalf("migrate up to 20261028090300: %v", err)
+	}
+	// 升级前的既有数据：两个渠道，都没有上游账号归属。
+	channels := []struct {
+		id   int64
+		name string
+		typ  string
+	}{
+		{insertChannel(t, db, "openai-prod", "openai"), "openai-prod", "openai"},
+		{insertChannel(t, db, "anthropic-prod", "anthropic"), "anthropic-prod", "anthropic"},
+	}
+
+	if err := m.Migrate(20261028100000); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		t.Fatalf("migrate up to 20261028100000: %v", err)
+	}
+
+	var accounts int
+	if err := db.QueryRow(`SELECT count(*) FROM upstream_accounts`).Scan(&accounts); err != nil {
+		t.Fatalf("count upstream accounts: %v", err)
+	}
+	if accounts != len(channels) {
+		t.Fatalf("want %d upstream accounts after backfill, got %d", len(channels), accounts)
+	}
+
+	for _, ch := range channels {
+		var (
+			accName  string
+			provider string
+			currency string
+			timezone string
+			note     string
+		)
+		// JOIN 命中即证明 upstream_account_id 非空（外键指向存在的账号）。
+		err := db.QueryRow(`
+			SELECT a.name, a.provider, a.currency, a.timezone, a.note
+			FROM channels c
+			JOIN upstream_accounts a ON a.id = c.upstream_account_id
+			WHERE c.id = $1`, ch.id).Scan(&accName, &provider, &currency, &timezone, &note)
+		if err != nil {
+			t.Fatalf("channel %d (%s) must be linked to an upstream account: %v", ch.id, ch.name, err)
+		}
+		if accName != ch.name {
+			t.Fatalf("account for channel %d: want name %q, got %q", ch.id, ch.name, accName)
+		}
+		if provider != ch.typ {
+			t.Fatalf("account for channel %d: want provider %q (= channel type), got %q", ch.id, ch.typ, provider)
+		}
+		if currency != "CNY" || timezone != "Asia/Shanghai" {
+			t.Fatalf("account for channel %d: want CNY/Asia/Shanghai, got %q/%q", ch.id, currency, timezone)
+		}
+		if want := fmt.Sprintf("migrated from channel #%d", ch.id); note != want {
+			t.Fatalf("account for channel %d: want note %q, got %q", ch.id, want, note)
+		}
+	}
+
+	// down：链接清空、账号删除（本次迁移建的账号都没有快照/run，可安全删除）。
+	if err := m.Steps(-1); err != nil {
+		t.Fatalf("migrate down 1: %v", err)
+	}
+	var linked int
+	if err := db.QueryRow(`SELECT count(*) FROM channels WHERE upstream_account_id IS NOT NULL`).Scan(&linked); err != nil {
+		t.Fatalf("count linked channels: %v", err)
+	}
+	if linked != 0 {
+		t.Fatalf("down must clear channels.upstream_account_id, %d links left", linked)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM upstream_accounts`).Scan(&accounts); err != nil {
+		t.Fatalf("count upstream accounts after down: %v", err)
+	}
+	if accounts != 0 {
+		t.Fatalf("down must delete the migrated accounts, %d left", accounts)
+	}
+
+	// 再 up：渠道还在，回填可重放（渠道名唯一，因此不会撞名）。
+	if err := m.Steps(1); err != nil {
+		t.Fatalf("migrate up 1 after down: %v", err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM upstream_accounts`).Scan(&accounts); err != nil {
+		t.Fatalf("count upstream accounts after re-up: %v", err)
+	}
+	if accounts != len(channels) {
+		t.Fatalf("re-up must recreate %d upstream accounts, got %d", len(channels), accounts)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM channels WHERE upstream_account_id IS NOT NULL`).Scan(&linked); err != nil {
+		t.Fatalf("count linked channels after re-up: %v", err)
+	}
+	if linked != len(channels) {
+		t.Fatalf("re-up must relink %d channels, got %d", len(channels), linked)
+	}
+}
+
+// TestUpstreamAccountBackfillGuards 验证回填的两条护栏：
+//
+//  1. 管理员预先建了同名但 provider 不同的账号时，渠道**不得**挂上去 ——
+//     否则对账会拿错误供应商的上游控制台账单去比对（同名不等于同一账期主体）。
+//  2. provider 为空或超过 varchar(64) 的渠道被跳过而不是中止升级 ——
+//     channels.type 是无长度约束的 text，而 upstream_accounts.provider 是
+//     varchar(64)；一条病态数据不该让整个升级失败。
+//
+// down 对这两类账号都不动：它们没有本次迁移写入的溯源 note。
+func TestUpstreamAccountBackfillGuards(t *testing.T) {
+	db, m := newUpstreamBackfillDB(t, "upacct_guard")
+
+	if err := m.Migrate(20261028090300); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		t.Fatalf("migrate up to 20261028090300: %v", err)
+	}
+	var preexistingID int64
+	if err := db.QueryRow(`INSERT INTO upstream_accounts (name, provider, note)
+		VALUES ('openai-prod', 'anthropic', 'admin created') RETURNING id`).Scan(&preexistingID); err != nil {
+		t.Fatalf("insert pre-existing account: %v", err)
+	}
+	collisionID := insertChannel(t, db, "openai-prod", "openai")
+	wideTypeID := insertChannel(t, db, "wide-provider", strings.Repeat("x", 65))
+	emptyTypeID := insertChannel(t, db, "empty-provider", "")
+
+	// 超长 type 若未被过滤，这一步会因 provider 超长而中止整个升级；
+	// 空 type 不会中止，但会建出 provider = '' 的哑账号，同样应当跳过。
+	if err := m.Migrate(20261028100000); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		t.Fatalf("migrate up to 20261028100000 must not abort on pathological channel types: %v", err)
+	}
+
+	for _, id := range []int64{collisionID, wideTypeID, emptyTypeID} {
+		var accID sql.NullInt64
+		if err := db.QueryRow(`SELECT upstream_account_id FROM channels WHERE id = $1`, id).Scan(&accID); err != nil {
+			t.Fatalf("read channel %d link: %v", id, err)
+		}
+		if accID.Valid {
+			t.Fatalf("channel %d must stay unlinked (未归属), got account %d", id, accID.Int64)
+		}
+	}
+	var accounts int
+	if err := db.QueryRow(`SELECT count(*) FROM upstream_accounts`).Scan(&accounts); err != nil {
+		t.Fatalf("count upstream accounts: %v", err)
+	}
+	if accounts != 1 {
+		t.Fatalf("no account may be created for guarded channels, want 1 (the pre-existing one), got %d", accounts)
+	}
+	var provider, note string
+	if err := db.QueryRow(`SELECT provider, note FROM upstream_accounts WHERE id = $1`, preexistingID).Scan(&provider, &note); err != nil {
+		t.Fatalf("read pre-existing account: %v", err)
+	}
+	if provider != "anthropic" || note != "admin created" {
+		t.Fatalf("pre-existing account must be untouched, got provider=%q note=%q", provider, note)
+	}
+
+	// down：非溯源账号（以及它的任何链接）不在回退范围内。
+	if err := m.Steps(-1); err != nil {
+		t.Fatalf("migrate down 1: %v", err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM upstream_accounts`).Scan(&accounts); err != nil {
+		t.Fatalf("count upstream accounts after down: %v", err)
+	}
+	if accounts != 1 {
+		t.Fatalf("down must keep accounts without the provenance note, want 1, got %d", accounts)
+	}
+}
+
+// TestUpstreamAccountBackfillDownKeepsHistory 验证 down 在「升级后已经积累
+// 对账数据」的库上仍能成功，且不丢数据：
+//
+// 迁移建的账号一旦有了快照或 run，就已被 ON DELETE RESTRICT 引用；down 若
+// 直接 DELETE 会中止。正确行为是只清空链接、保留账号（有意为之：数据是
+// 升级后的真实对账记录），仅删除没有历史的溯源账号。
+func TestUpstreamAccountBackfillDownKeepsHistory(t *testing.T) {
+	db, m := newUpstreamBackfillDB(t, "upacct_down_history")
+
+	if err := m.Migrate(20261028090300); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		t.Fatalf("migrate up to 20261028090300: %v", err)
+	}
+	withHistoryID := insertChannel(t, db, "openai-prod", "openai")
+	insertChannel(t, db, "anthropic-prod", "anthropic")
+	if err := m.Migrate(20261028100000); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		t.Fatalf("migrate up to 20261028100000: %v", err)
+	}
+
+	var keptAccountID int64
+	if err := db.QueryRow(`SELECT upstream_account_id FROM channels WHERE id = $1`, withHistoryID).Scan(&keptAccountID); err != nil {
+		t.Fatalf("read backfilled account id: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO upstream_usage_snapshots
+		(account_id, usage_date, upstream_model) VALUES ($1, '2026-10-24', 'gpt-4o')`, keptAccountID); err != nil {
+		t.Fatalf("insert snapshot: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO upstream_reconciliation_runs
+		(account_id, window_start, window_end, triggered_by, token_tolerance_bp,
+		 amount_tolerance_minor, quota_per_unit, timezone)
+		VALUES ($1, '2026-10-20', '2026-10-23', 'manual', 0, 0, 500000, 'Asia/Shanghai')`, keptAccountID); err != nil {
+		t.Fatalf("insert reconciliation run: %v", err)
+	}
+
+	if err := m.Steps(-1); err != nil {
+		t.Fatalf("down must succeed with reconciliation data present: %v", err)
+	}
+	var accounts int
+	if err := db.QueryRow(`SELECT count(*) FROM upstream_accounts`).Scan(&accounts); err != nil {
+		t.Fatalf("count upstream accounts after down: %v", err)
+	}
+	if accounts != 1 {
+		t.Fatalf("down must keep exactly the account with history, got %d accounts", accounts)
+	}
+	var survivedID int64
+	if err := db.QueryRow(`SELECT id FROM upstream_accounts`).Scan(&survivedID); err != nil {
+		t.Fatalf("read surviving account: %v", err)
+	}
+	if survivedID != keptAccountID {
+		t.Fatalf("down must keep account %d (has snapshots/runs), got %d", keptAccountID, survivedID)
+	}
+	var linked int
+	if err := db.QueryRow(`SELECT count(*) FROM channels WHERE upstream_account_id IS NOT NULL`).Scan(&linked); err != nil {
+		t.Fatalf("count linked channels: %v", err)
+	}
+	if linked != 0 {
+		t.Fatalf("down must still clear links to migrated accounts, %d left", linked)
+	}
+	var snapshotCount, runCount int
+	if err := db.QueryRow(`SELECT count(*) FROM upstream_usage_snapshots`).Scan(&snapshotCount); err != nil {
+		t.Fatalf("count snapshots: %v", err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM upstream_reconciliation_runs`).Scan(&runCount); err != nil {
+		t.Fatalf("count runs: %v", err)
+	}
+	if snapshotCount != 1 || runCount != 1 {
+		t.Fatalf("down must not delete reconciliation data, snapshots=%d runs=%d", snapshotCount, runCount)
+	}
+}
+
+// TestUpstreamAccountBackfillKeepsProvenanceAfterRename 是「归属确定性」的
+// 回归用例，覆盖两个场景：
+//
+//  1. down 会保留带历史数据的迁移账号；渠道之后改名再前滚时，按名字去重
+//     挡不住第二个账号（名字已不同），必须靠溯源 note 挂回原账号，且不得新造
+//     账号 —— 否则控制台会拿错误的上游账号对账。
+//  2. 另一个渠道复用旧名字时，同名兜底不得把**同一个账号**挂给两个渠道：
+//     那会让新渠道的用量拿旧渠道的账单去对账（静默错账）。账号一旦已挂出就
+//     不再参与兜底；这里 A 还占着旧名字（upstream_accounts_name_uq），INSERT
+//     也 mint 不出同名新账号，所以复用旧名的渠道保持「未归属」。
+func TestUpstreamAccountBackfillKeepsProvenanceAfterRename(t *testing.T) {
+	db, m := newUpstreamBackfillDB(t, "upacct_rename")
+
+	if err := m.Migrate(20261028090400); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		t.Fatalf("migrate up to 20261028090400: %v", err)
+	}
+	channelID := insertChannel(t, db, "openai-prod", "openai")
+	if err := m.Migrate(20261028100000); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		t.Fatalf("migrate up to 20261028100000: %v", err)
+	}
+	var accountID int64
+	if err := db.QueryRow(`SELECT upstream_account_id FROM channels WHERE id = $1`, channelID).Scan(&accountID); err != nil {
+		t.Fatalf("read initial link: %v", err)
+	}
+
+	// 账号带上历史数据（down 因此保留它，只清链接），随后渠道改名。
+	if _, err := db.Exec(`INSERT INTO upstream_usage_snapshots
+		(account_id, usage_date, upstream_model) VALUES ($1, '2026-10-24', 'gpt-4o')`, accountID); err != nil {
+		t.Fatalf("insert snapshot: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE channels SET name = 'openai-prod-renamed' WHERE id = $1`, channelID); err != nil {
+		t.Fatalf("rename channel: %v", err)
+	}
+
+	if err := m.Steps(-1); err != nil {
+		t.Fatalf("migrate down 1: %v", err)
+	}
+	var accounts int
+	if err := db.QueryRow(`SELECT count(*) FROM upstream_accounts`).Scan(&accounts); err != nil {
+		t.Fatalf("count accounts after down: %v", err)
+	}
+	if accounts != 1 {
+		t.Fatalf("down must keep the note-bearing account that has history, got %d accounts", accounts)
+	}
+
+	// 旧名字被释放后，新渠道复用它 —— 同名兜底不得把它挂到旧渠道的账号上。
+	newChannelID := insertChannel(t, db, "openai-prod", "openai")
+
+	// 重新前滚：名字已变，ON CONFLICT (name) 挡不住重复，只能靠溯源护栏。
+	if err := m.Steps(1); err != nil {
+		t.Fatalf("migrate up 1 after down: %v", err)
+	}
+	var relinked int64
+	if err := db.QueryRow(`SELECT upstream_account_id FROM channels WHERE id = $1`, channelID).Scan(&relinked); err != nil {
+		t.Fatalf("read relinked account: %v", err)
+	}
+	if relinked != accountID {
+		t.Fatalf("re-up must relink channel %d to the note-bearing account %d, got %d", channelID, accountID, relinked)
+	}
+	var newLink sql.NullInt64
+	if err := db.QueryRow(`SELECT upstream_account_id FROM channels WHERE id = $1`, newChannelID).Scan(&newLink); err != nil {
+		t.Fatalf("read new channel link: %v", err)
+	}
+	if newLink.Valid && newLink.Int64 == accountID {
+		t.Fatalf("channel %d reusing the freed name must not inherit account %d from channel %d", newChannelID, accountID, channelID)
+	}
+	// 当前实现下新渠道保持「未归属」：A 还占着旧名字，upstream_accounts_name_uq
+	// 让 INSERT 无法再 mint 一个同名账号；pass 2 的 NOT EXISTS 又排除了已挂出的
+	// 账号。未归属在控制台可见、可人工处置，而错挂是静默错账，所以这是刻意的
+	// 保守结果 —— 若将来改为自动新建（改名）账号并挂上，这里的断言按新行为调整。
+	if newLink.Valid {
+		t.Fatalf("channel %d reusing the freed name must stay unlinked, got account %d", newChannelID, newLink.Int64)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM upstream_accounts`).Scan(&accounts); err != nil {
+		t.Fatalf("count accounts after re-up: %v", err)
+	}
+	if accounts != 1 {
+		t.Fatalf("re-up must not mint a second account for the same channel, got %d accounts", accounts)
+	}
+	var withNote int
+	wantNote := fmt.Sprintf("migrated from channel #%d", channelID)
+	if err := db.QueryRow(`SELECT count(*) FROM upstream_accounts WHERE note = $1`, wantNote).Scan(&withNote); err != nil {
+		t.Fatalf("count provenance accounts: %v", err)
+	}
+	if withNote != 1 {
+		t.Fatalf("want exactly one provenance account for channel %d, got %d", channelID, withNote)
+	}
+	var sharers int
+	if err := db.QueryRow(`SELECT count(*) FROM channels WHERE upstream_account_id = $1`, accountID).Scan(&sharers); err != nil {
+		t.Fatalf("count channels linked to account %d: %v", accountID, err)
+	}
+	if sharers != 1 {
+		t.Fatalf("account %d must belong to exactly one channel, got %d", accountID, sharers)
+	}
+}
+
+// newUpstreamBackfillDB 建一个临时 schema，返回连到该 schema 的 *sql.DB 与
+// 迁移器；schema 在清理阶段 DROP CASCADE。手法与上面的用例一致。
+func newUpstreamBackfillDB(t *testing.T, prefix string) (*sql.DB, *migrate.Migrate) {
+	t.Helper()
+	baseDSN := os.Getenv("NEWTG_TEST_DB_DSN")
+	if baseDSN == "" {
+		t.Skip("NEWTG_TEST_DB_DSN 未设置，跳过集成测试")
+	}
+	admin, err := sql.Open("pgx", baseDSN)
+	if err != nil {
+		t.Fatalf("open admin db: %v", err)
+	}
+	if err := admin.Ping(); err != nil {
+		t.Fatalf("ping admin db: %v", err)
+	}
+	schema := fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano())
+	if _, err := admin.Exec(`CREATE SCHEMA ` + schema); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = admin.Exec(`DROP SCHEMA ` + schema + ` CASCADE`)
+		_ = admin.Close()
+	})
+
+	dsn, err := dsnWithSearchPath(baseDSN, schema)
+	if err != nil {
+		t.Fatalf("build scoped dsn: %v", err)
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open scoped db: %v", err)
+	}
+	m := newTestMigrator(t, db)
+	t.Cleanup(func() { _, _ = m.Close() })
+	return db, m
+}
+
+// insertChannel 插入一个满足 channels NOT NULL 约束的渠道（name、type、
+// credentials、supported_models），返回自增 id。
+func insertChannel(t *testing.T, db *sql.DB, name, channelType string) int64 {
+	t.Helper()
+	var id int64
+	if err := db.QueryRow(`INSERT INTO channels (name, type, credentials, supported_models)
+		VALUES ($1, $2, '\x2a'::bytea, '["gpt-4o"]'::jsonb)
+		RETURNING id`, name, channelType).Scan(&id); err != nil {
+		t.Fatalf("insert channel %q (type %q): %v", name, channelType, err)
+	}
+	return id
+}
+
 // dsnWithSearchPath 在 DSN 上追加 search_path 运行时参数。
 //
 // 保留原 query（sslmode 等）并覆盖 search_path：pgx 把它作为会话参数下发，

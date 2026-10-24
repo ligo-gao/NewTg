@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"math"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -59,7 +60,7 @@ func TestSaturateRowProjection(t *testing.T) {
 	row, err := buildUsageLogRow(testUsageFact(), testRelayContext(), SettlementOutcome{
 		Cost: 321, PreDeducted: 500, Refunded: 179,
 		Status: UsageLogStatusSuccess,
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow: %v", err)
 	}
@@ -114,7 +115,7 @@ func TestSaturateRowNullsAndForcing(t *testing.T) {
 		Cost:   99, // error 状态必须强制为 0
 		Status: UsageLogStatusError, ErrorClass: "upstream_server",
 		ErrorMessage: "boom",
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow: %v", err)
 	}
@@ -140,7 +141,7 @@ func TestSaturateRowNullsAndForcing(t *testing.T) {
 	// refunded 状态同样强制 cost=0（worker 兜底退款）。
 	row, err = buildUsageLogRow(nil, rc, SettlementOutcome{
 		Cost: 55, PreDeducted: 55, Refunded: 55, Status: UsageLogStatusRefunded,
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow(refunded): %v", err)
 	}
@@ -154,10 +155,10 @@ func TestSaturateRowNullsAndForcing(t *testing.T) {
 // 必须直接调用 buildUsageLogRow：经 Saturate 且 logsDB=nil 时，任何输入都会
 // 先撞上「没有日志库」错误，断言会变成永真的空测试。
 func TestSaturateRejectsInvalidInput(t *testing.T) {
-	if _, err := buildUsageLogRow(testUsageFact(), nil, SettlementOutcome{}); err == nil {
+	if _, err := buildUsageLogRow(testUsageFact(), nil, SettlementOutcome{}, false); err == nil {
 		t.Fatal("buildUsageLogRow(nil rc) = nil, want error")
 	}
-	if _, err := buildUsageLogRow(testUsageFact(), &contract.RelayContext{}, SettlementOutcome{}); err == nil {
+	if _, err := buildUsageLogRow(testUsageFact(), &contract.RelayContext{}, SettlementOutcome{}, false); err == nil {
 		t.Fatal("buildUsageLogRow(empty request id) = nil, want error")
 	}
 
@@ -175,7 +176,7 @@ func TestSaturateRejectsInvalidInput(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := buildUsageLogRow(testUsageFact(), rc, tc.outcome); err == nil {
+			if _, err := buildUsageLogRow(testUsageFact(), rc, tc.outcome, false); err == nil {
 				t.Fatalf("buildUsageLogRow(%+v) = nil, want error", tc.outcome)
 			}
 		})
@@ -189,7 +190,7 @@ func TestSaturateRetainedCost(t *testing.T) {
 
 	row, err := buildUsageLogRow(nil, rc, SettlementOutcome{
 		PreDeducted: 300, Refunded: 300, RetainedCost: 50, Status: UsageLogStatusRefunded,
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow(refunded retained): %v", err)
 	}
@@ -202,7 +203,7 @@ func TestSaturateRetainedCost(t *testing.T) {
 
 	row, err = buildUsageLogRow(nil, rc, SettlementOutcome{
 		PreDeducted: 300, Refunded: 300, Status: UsageLogStatusRefunded,
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow(plain refunded): %v", err)
 	}
@@ -213,7 +214,7 @@ func TestSaturateRetainedCost(t *testing.T) {
 	// success 只用 Cost，RetainedCost 不参与。
 	row, err = buildUsageLogRow(testUsageFact(), rc, SettlementOutcome{
 		Cost: 10, RetainedCost: 50, Status: UsageLogStatusSuccess,
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow(success): %v", err)
 	}
@@ -224,7 +225,7 @@ func TestSaturateRetainedCost(t *testing.T) {
 	// error 即使带了 RetainedCost 也强制 0（没有保留消费语义）。
 	row, err = buildUsageLogRow(testUsageFact(), rc, SettlementOutcome{
 		Cost: 10, RetainedCost: 50, Status: UsageLogStatusError,
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow(error): %v", err)
 	}
@@ -240,7 +241,7 @@ func TestSaturateOtherSanitizesNUL(t *testing.T) {
 	rc.RequestPath = "/v1/chat\x00/completions"
 	rc.UpstreamModel = "gpt\x00-4o-upstream"
 
-	other := buildUsageLogOther(rc, "gpt-4o", sql.NullInt64{}, SettlementOutcome{})
+	other := buildUsageLogOther(rc, "gpt-4o", sql.NullInt64{}, SettlementOutcome{}, false, nil)
 	blob, err := json.Marshal(other)
 	if err != nil {
 		t.Fatalf("marshal other: %v", err)
@@ -269,7 +270,7 @@ func TestSaturateClampsTimingFields(t *testing.T) {
 
 	row, err := buildUsageLogRow(fact, testRelayContext(), SettlementOutcome{
 		Status: UsageLogStatusSuccess,
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow: %v", err)
 	}
@@ -289,7 +290,7 @@ func TestSaturateStreamPrecedence(t *testing.T) {
 	fact := testUsageFact()
 	fact.Stream = false
 
-	row, err := buildUsageLogRow(fact, rc, SettlementOutcome{Status: UsageLogStatusSuccess})
+	row, err := buildUsageLogRow(fact, rc, SettlementOutcome{Status: UsageLogStatusSuccess}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow(fact): %v", err)
 	}
@@ -297,7 +298,7 @@ func TestSaturateStreamPrecedence(t *testing.T) {
 		t.Fatal("fact.Stream=false 必须优先于 rc.Streaming=true")
 	}
 
-	row, err = buildUsageLogRow(nil, rc, SettlementOutcome{Status: UsageLogStatusRefunded})
+	row, err = buildUsageLogRow(nil, rc, SettlementOutcome{Status: UsageLogStatusRefunded}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow(nil fact): %v", err)
 	}
@@ -310,7 +311,7 @@ func TestSaturateStreamPrecedence(t *testing.T) {
 func TestSaturateNoModelMappingWhenSame(t *testing.T) {
 	rc := testRelayContext()
 	rc.UpstreamModel = rc.OriginModel
-	other := buildUsageLogOther(rc, rc.OriginModel, sql.NullInt64{}, SettlementOutcome{})
+	other := buildUsageLogOther(rc, rc.OriginModel, sql.NullInt64{}, SettlementOutcome{}, false, nil)
 	if _, ok := other["upstream_model_name"]; ok {
 		t.Fatal("上游模型与请求模型相同，不应写 upstream_model_name")
 	}
@@ -335,7 +336,7 @@ func TestSaturateNilLogsDB(t *testing.T) {
 func TestSaturateOtherPartitions(t *testing.T) {
 	row, err := buildUsageLogRow(testUsageFact(), testRelayContext(), SettlementOutcome{
 		Cost: 10, Status: UsageLogStatusSuccess,
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow: %v", err)
 	}
@@ -401,7 +402,7 @@ func TestSaturateOtherPartitions(t *testing.T) {
 	// M4：订阅来源（失败退款）必须写 subscription；未传来源的零值保持 wallet。
 	subRow, err := buildUsageLogRow(testUsageFact(), testRelayContext(), SettlementOutcome{
 		Cost: 10, Status: UsageLogStatusSuccess, FundingSource: contract.FundingSubscription,
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow(subscription): %v", err)
 	}
@@ -431,7 +432,7 @@ func TestSaturateOtherPartitions(t *testing.T) {
 func TestSaturateOtherNoDiscountForZeroRate(t *testing.T) {
 	rc := testRelayContext()
 	rc.Discount = 0
-	other := buildUsageLogOther(rc, "gpt-4o", sql.NullInt64{}, SettlementOutcome{})
+	other := buildUsageLogOther(rc, "gpt-4o", sql.NullInt64{}, SettlementOutcome{}, false, nil)
 	if _, ok := other["applied_discount"]; ok {
 		t.Fatal("rate=0 不得凭零值写入 applied_discount")
 	}
@@ -440,7 +441,7 @@ func TestSaturateOtherNoDiscountForZeroRate(t *testing.T) {
 	}
 
 	rc.Discount = 0.75
-	other = buildUsageLogOther(rc, "gpt-4o", sql.NullInt64{}, SettlementOutcome{})
+	other = buildUsageLogOther(rc, "gpt-4o", sql.NullInt64{}, SettlementOutcome{}, false, nil)
 	if got := other["applied_discount"]; got != 0.75 {
 		t.Fatalf("applied_discount = %v, want 0.75", got)
 	}
@@ -475,5 +476,118 @@ func assertNoEstimatedKeys(t *testing.T, v any, path string) {
 		for _, child := range node {
 			assertNoEstimatedKeys(t, child, path+"[]")
 		}
+	}
+}
+
+// TestBuildUsageLogOtherWritesRawUsageWhenEnabled 验证开关打开且原始 usage
+// 非空时，JSON 原样落在 admin_info.usage_raw（对账/审计的唯一原始证据），
+// 且不经过 public 分区或 setPublicKey。
+func TestBuildUsageLogOtherWritesRawUsageWhenEnabled(t *testing.T) {
+	raw := map[string]any{
+		"prompt_tokens":     int64(1000),
+		"completion_tokens": 200,
+		"details":           map[string]any{"cached_tokens": int64(300)},
+	}
+	rc := &contract.RelayContext{RequestID: "req-raw-on"}
+	other := buildUsageLogOther(rc, "gpt-4o", sql.NullInt64{},
+		SettlementOutcome{}, true, raw)
+
+	if _, leaked := other["usage_raw"]; leaked {
+		t.Fatal("usage_raw must not be written to the public partition")
+	}
+	adminInfo, ok := other["admin_info"].(map[string]any)
+	if !ok {
+		t.Fatalf("admin_info = %T, want a map", other["admin_info"])
+	}
+	got, ok := adminInfo["usage_raw"].(map[string]any)
+	if !ok {
+		t.Fatalf("admin_info.usage_raw = %T, want a map", adminInfo["usage_raw"])
+	}
+	if !reflect.DeepEqual(got, raw) {
+		t.Fatalf("usage_raw = %#v, want %#v", got, raw)
+	}
+}
+
+// TestBuildUsageLogOtherOmitsRawUsageWhenDisabled 验证开关关闭时即使有原始
+// usage 也不写（也不留下空的 admin_info）。
+func TestBuildUsageLogOtherOmitsRawUsageWhenDisabled(t *testing.T) {
+	rc := &contract.RelayContext{RequestID: "req-raw-off"}
+	other := buildUsageLogOther(rc, "gpt-4o", sql.NullInt64{},
+		SettlementOutcome{}, false, map[string]any{"prompt_tokens": int64(1000)})
+	if _, present := other["admin_info"]; present {
+		t.Fatalf("admin_info = %v, want absent when raw usage is disabled", other["admin_info"])
+	}
+}
+
+// TestBuildUsageLogOtherOmitsEmptyRawUsage 验证 nil/空 map 不产生
+// usage_raw，也不凭空创建 admin_info。
+func TestBuildUsageLogOtherOmitsEmptyRawUsage(t *testing.T) {
+	cases := map[string]map[string]any{"nil": nil, "empty": {}}
+	for name, raw := range cases {
+		rc := &contract.RelayContext{RequestID: "req-raw-" + name}
+		other := buildUsageLogOther(rc, "gpt-4o", sql.NullInt64{},
+			SettlementOutcome{}, true, raw)
+		if _, present := other["admin_info"]; present {
+			t.Fatalf("%s: admin_info = %v, want absent", name, other["admin_info"])
+		}
+	}
+}
+
+// TestBuildUsageLogRowThreadsRawUsage 验证 DBLogger 的开关经
+// buildUsageLogRow 传到 other；worker 的退款占位（fact == nil）
+// 没有用量事实，开关打开也不 panic、不写 usage_raw。
+func TestBuildUsageLogRowThreadsRawUsage(t *testing.T) {
+	fact := testUsageFact()
+	fact.Usage.Raw = map[string]any{"prompt_tokens": int64(1000)}
+	row, err := buildUsageLogRow(fact, testRelayContext(),
+		SettlementOutcome{Status: UsageLogStatusSuccess}, true)
+	if err != nil {
+		t.Fatalf("buildUsageLogRow: %v", err)
+	}
+	var other map[string]any
+	if err := json.Unmarshal([]byte(row.other), &other); err != nil {
+		t.Fatalf("unmarshal other: %v", err)
+	}
+	adminInfo, ok := other["admin_info"].(map[string]any)
+	if !ok {
+		t.Fatalf("admin_info = %T, want a map", other["admin_info"])
+	}
+	raw, ok := adminInfo["usage_raw"].(map[string]any)
+	if !ok {
+		t.Fatalf("admin_info.usage_raw = %T, want a map", adminInfo["usage_raw"])
+	}
+	// JSON 往返后数字是 float64；这里只钉住原始键值确实被透传。
+	if raw["prompt_tokens"] != float64(1000) {
+		t.Fatalf("usage_raw.prompt_tokens = %v, want 1000", raw["prompt_tokens"])
+	}
+
+	// worker 退款占位：fact == nil。
+	rc := &contract.RelayContext{RequestID: "req-raw-nil-fact"}
+	row, err = buildUsageLogRow(nil, rc,
+		SettlementOutcome{Status: UsageLogStatusRefunded}, true)
+	if err != nil {
+		t.Fatalf("buildUsageLogRow(nil fact): %v", err)
+	}
+	var refundOther map[string]any
+	if err := json.Unmarshal([]byte(row.other), &refundOther); err != nil {
+		t.Fatalf("unmarshal refunded other: %v", err)
+	}
+	if _, present := refundOther["admin_info"]; present {
+		t.Fatalf("nil fact admin_info = %v, want absent", refundOther["admin_info"])
+	}
+}
+
+// TestDBLoggerWithRawUsageChains 验证链式装配只改开关、返回同一实例。
+func TestDBLoggerWithRawUsageChains(t *testing.T) {
+	logger := NewDBLogger(nil)
+	if got := logger.WithRawUsage(true); got != logger {
+		t.Fatal("WithRawUsage must return the same logger for chaining")
+	}
+	if !logger.rawUsage {
+		t.Fatal("rawUsage = false, want true")
+	}
+	logger.WithRawUsage(false)
+	if logger.rawUsage {
+		t.Fatal("rawUsage = true after WithRawUsage(false)")
 	}
 }

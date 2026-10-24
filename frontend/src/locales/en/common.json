@@ -415,6 +415,7 @@
   "toast.dismiss": "Dismiss notification",
   "toast.request_id": "request_id: {requestId}",
   "nav.channels": "Channels",
+  "nav.upstream_reconciliation": "Upstream reconciliation",
   "nav.tokens": "API Tokens",
   "nav.model_config": "Model Config",
   "nav.skip": "Skip to content",

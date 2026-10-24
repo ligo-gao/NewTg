@@ -35,6 +35,34 @@ func (h *captureLogHandler) snapshot() []slog.Record {
 	return append([]slog.Record(nil), h.records...)
 }
 
+// TestUsageRawEnabledDefaultsTrue 验证原始 usage 开关未配置时按注册表默认值
+// true 解析，并留下一条带 key/state 的启动日志（启动快照必须可观测）。
+func TestUsageRawEnabledDefaultsTrue(t *testing.T) {
+	center := configcenter.New(nil, nil)
+	handler := &captureLogHandler{}
+	if !usageRawEnabled(center, slog.New(handler)) {
+		t.Fatal("usageRawEnabled = false for an empty config center, want true (registry default)")
+	}
+	records := handler.snapshot()
+	if len(records) != 1 {
+		t.Fatalf("log records = %d, want 1", len(records))
+	}
+	var key string
+	var enabled bool
+	records[0].Attrs(func(a slog.Attr) bool {
+		switch a.Key {
+		case "key":
+			key = a.Value.String()
+		case "enabled":
+			enabled = a.Value.Bool()
+		}
+		return true
+	})
+	if key != settingUsageRawEnabled || !enabled {
+		t.Fatalf("logged key/enabled = %q/%v, want %q/true", key, enabled, settingUsageRawEnabled)
+	}
+}
+
 // TestStartUsageLogStreamWorkerDisabledDoesNotStart 验证默认关闭时：
 //   - 不启动消费 goroutine（用 nil Redis/日志库也不会触发装配错误日志）；
 //   - 返回可安全调用的停止函数。

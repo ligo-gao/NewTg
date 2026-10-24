@@ -235,6 +235,23 @@ const (
 	ActionChannelUpdate = "channel.update"
 	ActionChannelDelete = "channel.delete"
 
+	// 上游用量对账（上游用量对账设计 §4.4；Task 8/9）。账号增删改与快照批量
+	// upsert 都是管理配置/台账写入，归 operation。detail 只允许 id/name、
+	// 写入行数与 account_id/usage_date 区间这类非秘密事实。账号 before/after
+	// 快照会记录自由文本 note（与用户审计记录 email/remark 的既有先例一致，
+	// 审计保留 12 个月）；console_url 正文只投影为「是否填写」布尔，快照
+	// 逐行内容不进入审计。一次批量 upsert 只写一条事件。
+	ActionUpstreamAccountCreate  = "upstream_account.create"
+	ActionUpstreamAccountUpdate  = "upstream_account.update"
+	ActionUpstreamAccountDelete  = "upstream_account.delete"
+	ActionUpstreamSnapshotUpsert = "upstream_snapshot.upsert"
+
+	// 对账运行的手动触发与明细处置（Task 9）。两者都是管理面的显式操作，归
+	// operation 类；detail 只记录 run_id/计数/状态与明细 id，不复制差异明细
+	// 的统计内容。ack 的 before/after 只含 status/note。
+	ActionReconcileRun     = "reconcile.run"
+	ActionReconcileItemAck = "reconcile.item_ack"
+
 	// W11 渠道凭据受控揭示（security-03 §2.10；modules-06 F-06-03）。这是
 	// 「常规接口永不返回明文」的唯一例外，审计是它唯一的长期追溯面：
 	// detail 只允许 channel_id/reason/revealed_fields，**永不记录凭据内容
@@ -368,6 +385,14 @@ var actionCategories = map[string]string{
 	ActionChannelUpdate:            categoryOperation,
 	ActionChannelDelete:            categoryOperation,
 	ActionChannelCredentialsReveal: categoryOperation,
+
+	ActionUpstreamAccountCreate:  categoryOperation,
+	ActionUpstreamAccountUpdate:  categoryOperation,
+	ActionUpstreamAccountDelete:  categoryOperation,
+	ActionUpstreamSnapshotUpsert: categoryOperation,
+
+	ActionReconcileRun:     categoryOperation,
+	ActionReconcileItemAck: categoryOperation,
 }
 
 // Category 返回动作名对应的审计分类；未知动作 ok=false。

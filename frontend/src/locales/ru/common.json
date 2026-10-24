@@ -415,6 +415,7 @@
   "toast.dismiss": "Закрыть уведомление",
   "toast.request_id": "request_id: {requestId}",
   "nav.channels": "Каналы",
+  "nav.upstream_reconciliation": "Сверка с провайдерами",
   "nav.tokens": "API-токены",
   "nav.model_config": "Настройка моделей",
   "nav.skip": "Перейти к содержимому",

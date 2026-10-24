@@ -415,6 +415,7 @@
   "toast.dismiss": "Đóng thông báo",
   "toast.request_id": "request_id: {requestId}",
   "nav.channels": "Kênh",
+  "nav.upstream_reconciliation": "Đối soát nhà cung cấp",
   "nav.tokens": "API token",
   "nav.model_config": "Cấu hình mô hình",
   "nav.skip": "Chuyển đến nội dung",
