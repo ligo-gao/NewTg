@@ -18,7 +18,7 @@ CREATE TABLE upstream_reconciliation_runs (
     started_at             timestamptz NOT NULL DEFAULT now(),
     finished_at            timestamptz,
     error                  text        NOT NULL DEFAULT '',
-    CONSTRAINT upstream_reconciliation_runs_triggered_chk
+    CONSTRAINT upstream_reconciliation_runs_triggered_by_chk
         CHECK (triggered_by IN ('worker', 'manual')),
     CONSTRAINT upstream_reconciliation_runs_status_chk
         CHECK (status IN ('running', 'succeeded', 'partial', 'failed')),
