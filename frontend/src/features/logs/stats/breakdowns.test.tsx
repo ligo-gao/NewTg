@@ -86,10 +86,66 @@ describe('RecentFailures', () => {
     expect(onViewAll).toHaveBeenCalled()
   })
 
+  it('renders a real failure message instead of the status label', () => {
+    renderWithProviders(
+      <RecentFailures
+        items={[{ ...FAILURE, error_message: 'upstream exploded' }]}
+        total={1}
+        onOpen={vi.fn()}
+        onViewAll={vi.fn()}
+      />,
+    )
+    expect(screen.getByText('upstream exploded · 5.0s')).toBeTruthy()
+    expect(screen.queryByText(/^Failed ·/)).toBeNull()
+  })
+
+  it('falls back to error_class when error_message is only the mask', () => {
+    renderWithProviders(
+      <RecentFailures
+        items={[
+          {
+            ...FAILURE,
+            error_message: '••••••',
+            error_class: 'upstream_5xx',
+          },
+        ]}
+        total={1}
+        onOpen={vi.fn()}
+        onViewAll={vi.fn()}
+      />,
+    )
+    expect(screen.getByText('upstream_5xx · 5.0s')).toBeTruthy()
+    expect(screen.queryByText(/••••••/)).toBeNull()
+  })
+
+  it('falls back to the status label when both message and class are empty', () => {
+    renderWithProviders(
+      <RecentFailures
+        items={[{ ...FAILURE, error_message: '***', error_class: null }]}
+        total={1}
+        onOpen={vi.fn()}
+        onViewAll={vi.fn()}
+      />,
+    )
+    expect(screen.getByText('Failed · 5.0s')).toBeTruthy()
+  })
+
+  it('prints failure times on a 24-hour clock', () => {
+    renderWithProviders(
+      <RecentFailures items={[FAILURE]} total={1} onOpen={vi.fn()} onViewAll={vi.fn()} />,
+    )
+    const time = screen.getByText(/^\d{2}:\d{2}$/)
+    expect(time.textContent).toMatch(/^\d{2}:\d{2}$/)
+    expect(screen.queryByText(/AM|PM/)).toBeNull()
+  })
+
   it('shows the empty note when nothing failed', () => {
     renderWithProviders(
       <RecentFailures items={[]} total={0} onOpen={vi.fn()} onViewAll={vi.fn()} />,
     )
     expect(screen.getByText('No failed requests in this window')).toBeTruthy()
+    // The card is visible for every user on a healthy window; a live link to
+    // an empty list would be a dead end.
+    expect(screen.queryByText(/View all/)).toBeNull()
   })
 })
