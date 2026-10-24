@@ -200,6 +200,21 @@ export function DistributionCard({
 }
 
 /**
+ * The failure reason printed under the model line.
+ *
+ * `error_message` is the stored upstream text. Without `reveal_sensitive` the
+ * backend replaces it with a mask (`••••••`), and a mask is not a reason, so
+ * an empty or all-mask message falls back to `error_class` (never masked; the
+ * drawer prints it raw) and finally to the status label via the caller.
+ */
+function failureReason(item: UsageLogItem): string | null {
+  const message = item.error_message?.trim() ?? ''
+  if (message !== '' && !/^[•*]+$/.test(message)) return message
+  const errorClass = item.error_class?.trim() ?? ''
+  return errorClass === '' ? null : errorClass
+}
+
+/**
  * Newest-first failure list (§ review focus: `status=error` only). Rows are
  * buttons so the whole line opens the detail drawer for pointer and keyboard
  * users alike; the footer jumps to the filtered list.
@@ -220,6 +235,9 @@ export function RecentFailures({
   const timeFormat = new Intl.DateTimeFormat(locale, {
     hour: '2-digit',
     minute: '2-digit',
+    // The track is 38px wide and sized for "14:51"; the 12-hour default
+    // ("02:51 PM") wraps every row in English.
+    hour12: false,
   })
 
   return (
@@ -254,8 +272,9 @@ export function RecentFailures({
                   {item.model} · {item.token_name ?? '—'}
                 </b>
                 <small className="truncate text-badge text-ink-3">
-                  {item.error_message ?? t(USAGE_STATUS_KEYS[item.status])} ·{' '}
-                  {formatSeconds(item.latency_ms)}
+                  {failureReason(item) ??
+                    t(USAGE_STATUS_KEYS[item.status])}{' '}
+                  · {formatSeconds(item.latency_ms)}
                 </small>
               </span>
               <UsageStatusBadge status={item.status} />
@@ -263,15 +282,17 @@ export function RecentFailures({
           ))}
         </div>
       )}
-      <p className="border-t border-border-hairline px-4 py-2">
-        <button
-          type="button"
-          onClick={onViewAll}
-          className="text-meta font-medium text-brand hover:text-brand-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
-        >
-          {t('logs.usage.stats.fail.view_all', { total })}
-        </button>
-      </p>
+      {items.length > 0 ? (
+        <p className="border-t border-border-hairline px-4 py-2">
+          <button
+            type="button"
+            onClick={onViewAll}
+            className="text-meta font-medium text-brand hover:text-brand-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          >
+            {t('logs.usage.stats.fail.view_all', { total })}
+          </button>
+        </p>
+      ) : null}
     </section>
   )
 }

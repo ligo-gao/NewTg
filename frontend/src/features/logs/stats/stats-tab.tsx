@@ -6,7 +6,7 @@ import { ApiError } from '@/api/errors'
 import { requireData } from '@/api/result'
 import type { components, operations } from '@/api/schema'
 import { formatCredits, formatTokenAmount } from '@/shared/lib/format'
-import { useI18n } from '@/shared/lib/i18n-context'
+import { useI18n, type TranslateFn } from '@/shared/lib/i18n-context'
 
 import { formatSeconds } from '../format'
 import {
@@ -47,6 +47,14 @@ type RatesQuery = NonNullable<
 type ListQuery = NonNullable<operations['listUsageLogs']['parameters']['query']>
 
 /**
+ * F-05-06 会话内敏感开关。OpenAPI 冻结稿尚未收录该参数，但后端已实现；
+ * 缺省即打码，只有显式 1 才会请求原文（服务端仍重校验 log.prompt.view）。
+ * The list page already carries the same narrow extension in its own
+ * `UsageLogsQuery`; the contract gap is a separate follow-up.
+ */
+type FailuresQuery = ListQuery & { reveal_sensitive?: 0 | 1 }
+
+/**
  * Shared filter set for every `/api/usage-stats/*` call. It is derived from
  * the same route search as the list, which is what keeps the cards, the charts
  * and the table on one window (F-05-03 §5.7).
@@ -71,13 +79,18 @@ function buildStatsQuery(
   return query
 }
 
-function statsErrorText(
-  error: unknown,
-  t: (key: string) => string,
-): string {
+function statsErrorText(error: unknown, t: TranslateFn): string {
   if (error instanceof ApiError) {
     if (error.kind === 'offline') return t('logs.usage.error.offline')
     if (error.kind === 'validation') return t('logs.usage.error.invalid_range')
+    // The stats tab fires several requests on entry, so the limiter is a
+    // reachable state. The generic retry copy would just invite another 429;
+    // name the condition instead (same key the list uses).
+    if (error.kind === 'rate_limited') {
+      return t('logs.usage.error.too_many', {
+        seconds: error.retry_after ?? 60,
+      })
+    }
   }
   return t('logs.usage.error.load')
 }
@@ -99,6 +112,10 @@ export interface UsageStatsTabProps {
    * request, otherwise the first paint briefly shows every user's totals.
    */
   ready: boolean
+  /** F-05-06 reveal state owned by the page; only the failures list uses it. */
+  revealSensitive: boolean
+  /** `log.prompt.view`: without it the server always masks error text. */
+  canViewSensitive: boolean
   onOpenLog: (logId: number) => void
   onViewAllFailures: () => void
 }
@@ -118,6 +135,8 @@ export function UsageStatsTab({
   isAdmin,
   active,
   ready,
+  revealSensitive,
+  canViewSensitive,
   onOpenLog,
   onViewAllFailures,
 }: UsageStatsTabProps) {
@@ -190,7 +209,7 @@ export function UsageStatsTab({
   // card is already known-empty, and a second `/api/usage-logs` call would be
   // indistinguishable from a list refetch. A failed summary still enables the
   // card so the section keeps its own retry.
-  const failureQuery: ListQuery = {
+  const failureQuery: FailuresQuery = {
     ...usageRangeParams(search),
     status: 'error',
     p: 1,
@@ -198,12 +217,14 @@ export function UsageStatsTab({
     ...(search.model !== undefined ? { model: search.model } : {}),
     ...(search.group !== undefined ? { group: search.group } : {}),
     ...(search.token_id !== undefined ? { token_id: search.token_id } : {}),
+    // Without the flag the backend masks `error_message`; the card falls back
+    // to `error_class`, so a viewer who may see the text should ask for it.
+    ...(revealSensitive && canViewSensitive ? { reveal_sensitive: 1 } : {}),
   }
   const failureCountInSummary =
     summaryQuery.data === undefined
       ? null
-      : (summaryQuery.data.error_count ?? 0) +
-        (summaryQuery.data.refused_count ?? 0)
+      : summaryQuery.data.error_count ?? 0
   const failuresEnabled =
     enabled &&
     !isAdmin &&
@@ -258,6 +279,11 @@ export function UsageStatsTab({
   )
   const insights = trendInsights(trendRows)
   const peak = insights.peak
+  // A refused/refunded-only window has traffic but no spend. `trendInsights`
+  // still names a peak bucket in that case (every bucket ties at 0), which
+  // would print "Peak 01:00 · 0 credits (0.0%)". The peak line is meaningful
+  // only when something was actually spent; peakShare keeps its own 0.
+  const hasSpend = insights.totalCost > 0
   const activeBuckets = topActiveBuckets(trendRows, 5)
 
   const emptyHint =
@@ -291,10 +317,10 @@ export function UsageStatsTab({
           refunded: formatCredits(summary.refunded_total, locale),
         })
 
-  const failureCount =
-    summary === undefined
-      ? 0
-      : (summary.error_count ?? 0) + (summary.refused_count ?? 0)
+  // The failure card and its destination are `status=error` only, so the
+  // printed count must not fold in refusals: refusals stay visible in the
+  // status counts above and in the token card's quota note.
+  const failureCount = summary === undefined ? 0 : summary.error_count ?? 0
   const retryLabel = t('logs.usage.error.retry')
   const granularityKey =
     granularity === 'hour'
@@ -374,7 +400,9 @@ export function UsageStatsTab({
       item,
       `${String(item.token_id)}:${item.token_name}`,
       item.token_name === ''
-        ? t('logs.usage.stats.token_key.unassigned')
+        ? item.token_id === 0
+          ? t('logs.usage.stats.token_key.unassigned')
+          : `#${String(item.token_id)}`
         : item.token_name === 'other'
           ? t('logs.usage.stats.other')
           : item.token_name,
@@ -464,7 +492,7 @@ export function UsageStatsTab({
             value={
               summary === undefined
                 ? '—'
-                : `${((summary.success_rate ?? 0) * 100).toFixed(1)}%`
+                : `${oneDecimal((summary.success_rate ?? 0) * 100)}%`
             }
             foot={
               failureCount === 0
@@ -596,7 +624,7 @@ export function UsageStatsTab({
               <>
                 <TrendChart rows={trendRows} granularity={granularity} />
                 <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-border-hairline pt-2.5 text-badge text-ink-2">
-                  {peak !== null ? (
+                  {hasSpend && peak !== null ? (
                     <span>
                       {t('logs.usage.stats.chart.peak', {
                         time: formatBucketTick(peak.bucket, granularity, locale),
@@ -696,7 +724,7 @@ export function UsageStatsTab({
               <RailRow
                 label={t('logs.usage.stats.rail.peak')}
                 value={
-                  peak === null
+                  !hasSpend || peak === null
                     ? '—'
                     : `${formatBucketTick(peak.bucket, granularity, locale)} · ${formatCredits(peak.cost, locale)}`
                 }

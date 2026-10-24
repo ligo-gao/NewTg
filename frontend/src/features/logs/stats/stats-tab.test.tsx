@@ -183,25 +183,39 @@ function installStats(overrides: Overrides = {}): FetchRecord[] {
 type TabOptions = Partial<
   Pick<
     UsageStatsTabProps,
-    'isAdmin' | 'canFilterByUsername' | 'onOpenLog' | 'onViewAllFailures'
+    | 'isAdmin'
+    | 'canFilterByUsername'
+    | 'revealSensitive'
+    | 'canViewSensitive'
+    | 'onOpenLog'
+    | 'onViewAllFailures'
   >
 >
 
-function renderTab(
+function tabElement(
   overrides: Partial<UsageLogSearch> = {},
   options: TabOptions = {},
 ) {
-  return renderWithProviders(
+  return (
     <UsageStatsTab
       search={{ ...DEFAULT_USAGE_LOG_SEARCH, ...overrides }}
       canFilterByUsername={options.canFilterByUsername ?? false}
       isAdmin={options.isAdmin ?? false}
       active
       ready
+      revealSensitive={options.revealSensitive ?? false}
+      canViewSensitive={options.canViewSensitive ?? false}
       onOpenLog={options.onOpenLog ?? vi.fn()}
       onViewAllFailures={options.onViewAllFailures ?? vi.fn()}
-    />,
+    />
   )
+}
+
+function renderTab(
+  overrides: Partial<UsageLogSearch> = {},
+  options: TabOptions = {},
+) {
+  return renderWithProviders(tabElement(overrides, options))
 }
 
 describe('usage stats tab (F-05-03)', () => {
@@ -264,6 +278,8 @@ describe('usage stats tab (F-05-03)', () => {
         isAdmin={false}
         active
         ready={false}
+        revealSensitive={false}
+        canViewSensitive={false}
         onOpenLog={vi.fn()}
         onViewAllFailures={vi.fn()}
       />,
@@ -392,7 +408,9 @@ describe('usage stats tab (F-05-03)', () => {
     expect(onOpenLog).toHaveBeenCalledWith(7)
 
     // Both the KPI foot and the failure card footer jump to the same list.
-    await user.click(screen.getByText('18 failures → View details'))
+    // The KPI counts errors only (17), because the card and its destination
+    // are `status=error`; the summary's single refusal is shown above instead.
+    await user.click(screen.getByText('17 failures → View details'))
     await user.click(screen.getByText('View all 74 failures'))
     expect(onViewAllFailures).toHaveBeenCalledTimes(2)
   })
@@ -526,5 +544,113 @@ describe('usage stats tab (F-05-03)', () => {
     expect(screen.queryByTestId('stats-rates')).toBeNull()
     expect(screen.queryByTestId('trend-avg')).toBeNull()
     expect(requestsFor(requests, '/api/usage-stats/rates')).toHaveLength(0)
+  })
+
+  it('sends reveal_sensitive only when permitted and refetches when it changes', async () => {
+    const requests = installStats({ logs: () => jsonResponse(FAILURES) })
+    const view = renderWithProviders(
+      tabElement({}, { revealSensitive: true, canViewSensitive: false }),
+    )
+
+    await screen.findByText('Total spent')
+    await waitFor(() => {
+      expect(requestsFor(requests, '/api/usage-logs')).toHaveLength(1)
+    })
+    // The permission gate wins over the session switch: a viewer without
+    // log.prompt.view never asks the server to reveal.
+    expect(
+      latestRequest(requests, '/api/usage-logs')?.url.searchParams.has(
+        'reveal_sensitive',
+      ),
+    ).toBe(false)
+
+    view.rerender(tabElement({}, { revealSensitive: true, canViewSensitive: true }))
+    await waitFor(() => {
+      expect(requestsFor(requests, '/api/usage-logs')).toHaveLength(2)
+    })
+    // The new key carries the flag, so the list is refetched with plaintext.
+    expect(
+      latestRequest(requests, '/api/usage-logs')?.url.searchParams.get(
+        'reveal_sensitive',
+      ),
+    ).toBe('1')
+  })
+
+  it('omits the peak line and rail value in a zero-spend window', async () => {
+    installStats({
+      summary: () =>
+        jsonResponse({
+          ...SUMMARY,
+          cost_total: 0,
+          pre_deducted_total: 0,
+          refunded_total: 0,
+          success_rate: 0,
+        }),
+      timeseries: () =>
+        jsonResponse([
+          { bucket: hourBucket(-1), cost: 0, requests: 5 },
+          { bucket: hourBucket(0), cost: 0, requests: 4 },
+        ]),
+    })
+    renderTab()
+
+    await screen.findByText('Total spent')
+    await screen.findByTestId('trend-chart')
+    // Requests but no spend: a peak would print "… · 0 credits (0.0%)".
+    expect(screen.queryByText(/credits \(/)).toBeNull()
+    const peakRow = screen.getByText('Peak bucket').parentElement
+    expect(peakRow).not.toBeNull()
+    expect(within(peakRow as HTMLElement).getByText('—')).toBeTruthy()
+    expect(screen.queryByText(/NaN/)).toBeNull()
+  })
+
+  it('distinguishes a missing token name from no token at all', async () => {
+    installStats({
+      byToken: () =>
+        jsonResponse({
+          items: [
+            {
+              token_id: 0,
+              token_name: '',
+              cost: 100,
+              requests: 2,
+              tokens: 100,
+              percent: 50,
+            },
+            {
+              token_id: 42,
+              token_name: '',
+              cost: 100,
+              requests: 2,
+              tokens: 100,
+              percent: 50,
+            },
+          ],
+          total: 200,
+        }),
+    })
+    renderTab()
+
+    const tokenCard = await screen.findByRole('region', {
+      name: 'Token usage',
+    })
+    expect(within(tokenCard).getByText('No token')).toBeTruthy()
+    expect(within(tokenCard).getByText('#42')).toBeTruthy()
+  })
+
+  it('names a rate-limited stats request instead of the generic load error', async () => {
+    installStats({
+      summary: () =>
+        problemResponse(
+          429,
+          { type: 'rate_limited', title: 'slow down' },
+          { 'Retry-After': '30' },
+        ),
+    })
+    renderTab()
+
+    expect(
+      await screen.findByText('Too many requests, retry in 30s'),
+    ).toBeTruthy()
   })
 })

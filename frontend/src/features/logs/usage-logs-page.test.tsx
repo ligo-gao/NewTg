@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useToastStore } from '@/shared/ui/toast'
 
@@ -212,6 +212,68 @@ describe('usage logs list', () => {
     expect(screen.getAllByText('prod-key-1')).toHaveLength(4)
     expect(screen.getAllByText('1,204').length).toBeGreaterThan(0)
     expect(screen.getAllByText('refunded 467')).toHaveLength(1)
+  })
+
+  it('lets Enter on a copy button copy without opening the drawer', async () => {
+    const user = userEvent.setup()
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    const requests = installScenario({
+      list: () => jsonResponse(page([USER_ROW])),
+    })
+    renderWithProviders(<PageHarness />)
+
+    const copyButton = await screen.findByRole('button', {
+      name: 'Copy request ID',
+    })
+    copyButton.focus()
+    await user.keyboard('{Enter}')
+
+    expect(writeText).toHaveBeenCalledWith(USER_ROW.request_id)
+    await waitFor(() => {
+      expect(
+        useToastStore.getState().toasts.some((toast) => toast.message === 'Copied'),
+      ).toBe(true)
+    })
+    // The row's own Enter handler must not fire for a key pressed on a child.
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(
+      requestsFor(requests, `/api/usage-logs/${String(USER_ROW.id)}`),
+    ).toHaveLength(0)
+  })
+
+  it('reports a failed copy instead of claiming success', async () => {
+    const user = userEvent.setup()
+    const writeText = vi.fn(async () => {
+      throw new Error('clipboard denied')
+    })
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    installScenario({ list: () => jsonResponse(page([USER_ROW])) })
+    renderWithProviders(<PageHarness />)
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Copy request ID' }),
+    )
+
+    await waitFor(() => {
+      expect(
+        useToastStore
+          .getState()
+          .toasts.some(
+            (toast) =>
+              toast.message === 'Copy failed. Please select the text manually.',
+          ),
+      ).toBe(true)
+    })
+    expect(
+      useToastStore.getState().toasts.some((toast) => toast.message === 'Copied'),
+    ).toBe(false)
   })
 
   it('defaults to a 24h range and never sends a username for a user', async () => {
