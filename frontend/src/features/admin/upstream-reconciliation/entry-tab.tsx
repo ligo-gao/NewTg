@@ -14,10 +14,10 @@ import {
   type UpstreamSnapshot,
   type UpstreamSnapshotWrite,
 } from './api'
+import { ACCOUNTS_QUERY_KEY } from './query-keys'
 
 /** 结果页与录入页共享同一读取前缀；保存成功后按前缀失效。 */
 const SNAPSHOTS_QUERY_KEY = ['upstream-snapshots'] as const
-const ACCOUNTS_QUERY_KEY = ['upstream-accounts'] as const
 
 /** 五个计数维度，顺序即表格列顺序。 */
 const COUNT_FIELDS = [

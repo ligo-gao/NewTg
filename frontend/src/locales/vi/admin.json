@@ -1563,10 +1563,7 @@
       "tab_entry": "Nhập ảnh chụp",
       "tab_results": "Kết quả đối soát",
       "tab_overview": "Tổng quan",
-      "tab_accounts": "Tài khoản nhà cung cấp",
-      "placeholder_entry": "Phần nhập ảnh chụp chưa khả dụng.",
-      "placeholder_results": "Kết quả đối soát chưa khả dụng.",
-      "placeholder_accounts": "Tài khoản nhà cung cấp chưa khả dụng."
+      "tab_accounts": "Tài khoản nhà cung cấp"
     },
     "overview": {
       "no_run": "Chọn một lần chạy trong tab Kết quả để xem tổng quan.",
@@ -1674,6 +1671,47 @@
       "ack_saving": "Đang lưu…",
       "ack_success": "Đã lưu xác nhận.",
       "read_only": "Chỉ đọc: tài khoản của bạn thiếu quyền settings:manage."
+    },
+    "accounts": {
+      "title": "Tài khoản nhà cung cấp",
+      "subtitle": "Mỗi bảng điều khiển nhà cung cấp là một tài khoản. Ảnh chụp và lần đối soát đều thuộc về tài khoản đó.",
+      "create": "Tài khoản mới",
+      "edit": "Sửa",
+      "disable": "Vô hiệu hóa",
+      "enable": "Kích hoạt",
+      "delete": "Xóa",
+      "delete_confirm": "Xóa tài khoản {name}? Không thể hoàn tác.",
+      "delete_blocked": "Đang gắn với một kênh — hãy bỏ gắn trước.",
+      "empty": "Chưa có tài khoản nhà cung cấp.",
+      "loading": "Đang tải tài khoản nhà cung cấp…",
+      "load_error": "Không thể tải tài khoản nhà cung cấp.",
+      "read_only": "Chỉ đọc: tài khoản của bạn không có quyền settings:manage.",
+      "status_active": "Đang hoạt động",
+      "status_disabled": "Đã vô hiệu hóa",
+      "form_title_create": "Tạo tài khoản nhà cung cấp",
+      "form_title_edit": "Sửa tài khoản nhà cung cấp",
+      "form": {
+        "name": "Tên",
+        "provider": "Nhà cung cấp",
+        "currency": "Tiền tệ",
+        "timezone": "Múi giờ",
+        "console_url": "URL bảng điều khiển",
+        "note": "Ghi chú",
+        "save": "Lưu",
+        "creating": "Đang tạo…",
+        "saving": "Đang lưu…"
+      },
+      "binding": {
+        "title": "Gán kênh",
+        "subtitle": "Gán mỗi kênh cho tài khoản nhà cung cấp có bảng điều khiển tương ứng.",
+        "channel": "Kênh",
+        "account": "Tài khoản nhà cung cấp",
+        "unbound": "Chưa gán",
+        "saved": "Đã lưu gán kênh.",
+        "error": "Không thể lưu gán kênh.",
+        "empty": "Chưa có kênh nào.",
+        "truncated": "Đang hiển thị {shown} trong {total} kênh đầu tiên."
+      }
     }
   },
   "subscriptions": {

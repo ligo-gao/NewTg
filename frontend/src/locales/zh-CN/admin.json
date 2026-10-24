@@ -1563,10 +1563,7 @@
       "tab_entry": "快照录入",
       "tab_results": "对账结果",
       "tab_overview": "总览",
-      "tab_accounts": "上游账号",
-      "placeholder_entry": "快照录入分区尚未开放。",
-      "placeholder_results": "对账结果分区尚未开放。",
-      "placeholder_accounts": "上游账号分区尚未开放。"
+      "tab_accounts": "上游账号"
     },
     "overview": {
       "no_run": "请在“对账结果”中选择一次运行，以查看其概览。",
@@ -1674,6 +1671,47 @@
       "ack_saving": "保存中…",
       "ack_success": "处置已保存。",
       "read_only": "只读：你的账号缺少 settings:manage 权限。"
+    },
+    "accounts": {
+      "title": "上游账号",
+      "subtitle": "每个供应商控制台对应一个上游账号，快照与对账运行都归属于它。",
+      "create": "新建账号",
+      "edit": "编辑",
+      "disable": "停用",
+      "enable": "启用",
+      "delete": "删除",
+      "delete_confirm": "确定要删除账号「{name}」吗？此操作不可撤销。",
+      "delete_blocked": "已绑定渠道——请先解除绑定。",
+      "empty": "暂无上游账号。",
+      "loading": "正在加载上游账号…",
+      "load_error": "加载上游账号失败。",
+      "read_only": "只读：当前账号缺少 settings:manage 权限。",
+      "status_active": "启用中",
+      "status_disabled": "已停用",
+      "form_title_create": "新建上游账号",
+      "form_title_edit": "编辑上游账号",
+      "form": {
+        "name": "名称",
+        "provider": "供应商",
+        "currency": "币种",
+        "timezone": "时区",
+        "console_url": "控制台地址",
+        "note": "备注",
+        "save": "保存",
+        "creating": "创建中…",
+        "saving": "保存中…"
+      },
+      "binding": {
+        "title": "渠道归属",
+        "subtitle": "将每个渠道归到其控制台对应的上游账号。",
+        "channel": "渠道",
+        "account": "上游账号",
+        "unbound": "未归属",
+        "saved": "渠道归属已保存。",
+        "error": "保存渠道归属失败。",
+        "empty": "暂无渠道。",
+        "truncated": "仅显示前 {shown} 个渠道，共 {total} 个。"
+      }
     }
   },
   "subscriptions": {

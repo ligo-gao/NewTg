@@ -1563,10 +1563,7 @@
       "tab_entry": "スナップショット入力",
       "tab_results": "照合結果",
       "tab_overview": "概要",
-      "tab_accounts": "アップストリームアカウント",
-      "placeholder_entry": "スナップショット入力はまだ利用できません。",
-      "placeholder_results": "照合結果はまだ利用できません。",
-      "placeholder_accounts": "アップストリームアカウントはまだ利用できません。"
+      "tab_accounts": "アップストリームアカウント"
     },
     "overview": {
       "no_run": "概要を表示するには「照合結果」で実行を選択してください。",
@@ -1674,6 +1671,47 @@
       "ack_saving": "保存中…",
       "ack_success": "対応を保存しました。",
       "read_only": "読み取り専用: アカウントに settings:manage 権限がありません。"
+    },
+    "accounts": {
+      "title": "アップストリームアカウント",
+      "subtitle": "プロバイダーのコンソールごとに 1 つのアカウントを持ちます。スナップショットと照合実行はそのアカウントに紐づきます。",
+      "create": "新規アカウント",
+      "edit": "編集",
+      "disable": "無効化",
+      "enable": "有効化",
+      "delete": "削除",
+      "delete_confirm": "アカウント {name} を削除しますか？この操作は取り消せません。",
+      "delete_blocked": "チャネルに紐づいています。先に紐づけを解除してください。",
+      "empty": "アップストリームアカウントはまだありません。",
+      "loading": "アップストリームアカウントを読み込み中…",
+      "load_error": "アップストリームアカウントを読み込めませんでした。",
+      "read_only": "読み取り専用：このアカウントには settings:manage 権限がありません。",
+      "status_active": "有効",
+      "status_disabled": "無効",
+      "form_title_create": "アップストリームアカウントを作成",
+      "form_title_edit": "アップストリームアカウントを編集",
+      "form": {
+        "name": "名前",
+        "provider": "プロバイダー",
+        "currency": "通貨",
+        "timezone": "タイムゾーン",
+        "console_url": "コンソール URL",
+        "note": "メモ",
+        "save": "保存",
+        "creating": "作成中…",
+        "saving": "保存中…"
+      },
+      "binding": {
+        "title": "チャネルの紐づけ",
+        "subtitle": "各チャネルを、参照しているコンソールのアップストリームアカウントに紐づけます。",
+        "channel": "チャネル",
+        "account": "アップストリームアカウント",
+        "unbound": "未紐づけ",
+        "saved": "チャネルの紐づけを保存しました。",
+        "error": "チャネルの紐づけを保存できませんでした。",
+        "empty": "チャネルはまだありません。",
+        "truncated": "全 {total} チャネルのうち先頭 {shown} 件を表示しています。"
+      }
     }
   },
   "subscriptions": {

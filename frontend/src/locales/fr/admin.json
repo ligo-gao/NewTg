@@ -1563,10 +1563,7 @@
       "tab_entry": "Saisie des instantanés",
       "tab_results": "Résultats du rapprochement",
       "tab_overview": "Vue d’ensemble",
-      "tab_accounts": "Comptes fournisseurs",
-      "placeholder_entry": "La saisie des instantanés n’est pas encore disponible.",
-      "placeholder_results": "Les résultats du rapprochement ne sont pas encore disponibles.",
-      "placeholder_accounts": "Les comptes fournisseurs ne sont pas encore disponibles."
+      "tab_accounts": "Comptes fournisseurs"
     },
     "overview": {
       "no_run": "Choisissez une exécution dans l’onglet Résultats pour voir son aperçu.",
@@ -1674,6 +1671,47 @@
       "ack_saving": "Enregistrement…",
       "ack_success": "Confirmation enregistrée.",
       "read_only": "Lecture seule : votre compte n'a pas la permission settings:manage."
+    },
+    "accounts": {
+      "title": "Comptes fournisseurs",
+      "subtitle": "Chaque console fournisseur correspond à un compte. Les instantanés et les exécutions de rapprochement lui sont rattachés.",
+      "create": "Nouveau compte",
+      "edit": "Modifier",
+      "disable": "Désactiver",
+      "enable": "Activer",
+      "delete": "Supprimer",
+      "delete_confirm": "Supprimer le compte {name} ? Cette action est irréversible.",
+      "delete_blocked": "Associé à un canal — dissociez-le d’abord.",
+      "empty": "Aucun compte fournisseur pour l’instant.",
+      "loading": "Chargement des comptes fournisseurs…",
+      "load_error": "Impossible de charger les comptes fournisseurs.",
+      "read_only": "Lecture seule : votre compte ne dispose pas de la permission settings:manage.",
+      "status_active": "Actif",
+      "status_disabled": "Désactivé",
+      "form_title_create": "Nouveau compte fournisseur",
+      "form_title_edit": "Modifier le compte fournisseur",
+      "form": {
+        "name": "Nom",
+        "provider": "Fournisseur",
+        "currency": "Devise",
+        "timezone": "Fuseau horaire",
+        "console_url": "URL de la console",
+        "note": "Note",
+        "save": "Enregistrer",
+        "creating": "Création…",
+        "saving": "Enregistrement…"
+      },
+      "binding": {
+        "title": "Attribution des canaux",
+        "subtitle": "Rattachez chaque canal au compte fournisseur dont il utilise la console.",
+        "channel": "Canal",
+        "account": "Compte fournisseur",
+        "unbound": "Non attribué",
+        "saved": "Attribution du canal enregistrée.",
+        "error": "Impossible d’enregistrer l’attribution du canal.",
+        "empty": "Aucun canal pour l’instant.",
+        "truncated": "Affichage des {shown} premiers canaux sur {total}."
+      }
     }
   },
   "subscriptions": {

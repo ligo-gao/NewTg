@@ -1563,10 +1563,7 @@
       "tab_entry": "Snapshot entry",
       "tab_results": "Reconciliation results",
       "tab_overview": "Overview",
-      "tab_accounts": "Upstream accounts",
-      "placeholder_entry": "Snapshot entry is not available yet.",
-      "placeholder_results": "Reconciliation results are not available yet.",
-      "placeholder_accounts": "Upstream accounts are not available yet."
+      "tab_accounts": "Upstream accounts"
     },
     "overview": {
       "no_run": "Choose a run in the Results tab to see its overview.",
@@ -1674,6 +1671,47 @@
       "ack_saving": "Saving…",
       "ack_success": "Acknowledgement saved.",
       "read_only": "Read-only: your account lacks the settings:manage permission."
+    },
+    "accounts": {
+      "title": "Upstream accounts",
+      "subtitle": "Each provider console is one account. Snapshots and reconciliation runs belong to it.",
+      "create": "New account",
+      "edit": "Edit",
+      "disable": "Disable",
+      "enable": "Enable",
+      "delete": "Delete",
+      "delete_confirm": "Delete account {name}? This cannot be undone.",
+      "delete_blocked": "Bound to a channel — unbind it first.",
+      "empty": "No upstream accounts yet.",
+      "loading": "Loading upstream accounts…",
+      "load_error": "Could not load upstream accounts.",
+      "read_only": "Read-only: your account lacks the settings:manage permission.",
+      "status_active": "Active",
+      "status_disabled": "Disabled",
+      "form_title_create": "New upstream account",
+      "form_title_edit": "Edit upstream account",
+      "form": {
+        "name": "Name",
+        "provider": "Provider",
+        "currency": "Currency",
+        "timezone": "Timezone",
+        "console_url": "Console URL",
+        "note": "Note",
+        "save": "Save",
+        "creating": "Creating…",
+        "saving": "Saving…"
+      },
+      "binding": {
+        "title": "Channel attribution",
+        "subtitle": "Attribute each channel to the upstream account whose console it draws from.",
+        "channel": "Channel",
+        "account": "Upstream account",
+        "unbound": "Unbound",
+        "saved": "Channel attribution saved.",
+        "error": "Could not save the channel attribution.",
+        "empty": "No channels yet.",
+        "truncated": "Showing the first {shown} of {total} channels."
+      }
     }
   },
   "subscriptions": {

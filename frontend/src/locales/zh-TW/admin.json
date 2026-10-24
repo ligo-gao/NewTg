@@ -1563,10 +1563,7 @@
       "tab_entry": "快照輸入",
       "tab_results": "對帳結果",
       "tab_overview": "總覽",
-      "tab_accounts": "上游帳號",
-      "placeholder_entry": "快照輸入分區尚未開放。",
-      "placeholder_results": "對帳結果分區尚未開放。",
-      "placeholder_accounts": "上游帳號分區尚未開放。"
+      "tab_accounts": "上游帳號"
     },
     "overview": {
       "no_run": "請在「對帳結果」中選擇一次執行，以查看其概覽。",
@@ -1674,6 +1671,47 @@
       "ack_saving": "儲存中…",
       "ack_success": "處置已儲存。",
       "read_only": "唯讀：你的帳號缺少 settings:manage 權限。"
+    },
+    "accounts": {
+      "title": "上游帳號",
+      "subtitle": "每個供應商主控台對應一個上游帳號，快照與對帳執行都歸屬於它。",
+      "create": "新增帳號",
+      "edit": "編輯",
+      "disable": "停用",
+      "enable": "啟用",
+      "delete": "刪除",
+      "delete_confirm": "確定要刪除帳號「{name}」嗎？此操作無法復原。",
+      "delete_blocked": "已綁定頻道——請先解除綁定。",
+      "empty": "尚無上游帳號。",
+      "loading": "正在載入上游帳號…",
+      "load_error": "載入上游帳號失敗。",
+      "read_only": "唯讀：目前帳號缺少 settings:manage 權限。",
+      "status_active": "啟用中",
+      "status_disabled": "已停用",
+      "form_title_create": "新增上游帳號",
+      "form_title_edit": "編輯上游帳號",
+      "form": {
+        "name": "名稱",
+        "provider": "供應商",
+        "currency": "幣種",
+        "timezone": "時區",
+        "console_url": "主控台位址",
+        "note": "備註",
+        "save": "儲存",
+        "creating": "建立中…",
+        "saving": "儲存中…"
+      },
+      "binding": {
+        "title": "頻道歸屬",
+        "subtitle": "將每個頻道歸到其主控台對應的上游帳號。",
+        "channel": "頻道",
+        "account": "上游帳號",
+        "unbound": "未歸屬",
+        "saved": "頻道歸屬已儲存。",
+        "error": "儲存頻道歸屬失敗。",
+        "empty": "尚無頻道。",
+        "truncated": "僅顯示前 {shown} 個頻道，共 {total} 個。"
+      }
     }
   },
   "subscriptions": {

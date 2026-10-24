@@ -6,8 +6,8 @@ import { PageHeader } from '@/features/shell/page-header'
 import { meQueryOptions } from '@/lib/session'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { handleTabListKeyDown } from '@/shared/lib/roving-focus'
-import { FormAlert } from '@/shared/ui/form'
 
+import { AccountsTab } from './accounts-tab'
 import { EntryTab } from './entry-tab'
 import { OverviewTab } from './overview-tab'
 import { ResultsTab } from './results-tab'
@@ -110,16 +110,8 @@ export function UpstreamReconciliationPage() {
           />
         ) : null}
         {tab === 'overview' ? <OverviewTab runId={runId} /> : null}
-        {tab === 'accounts' ? (
-          <TabPlaceholder
-            message={t('admin.upstream_reconciliation.page.placeholder_accounts')}
-          />
-        ) : null}
+        {tab === 'accounts' ? <AccountsTab canManage={canManage} /> : null}
       </section>
     </div>
   )
-}
-
-function TabPlaceholder({ message }: { message: string }) {
-  return <FormAlert tone="info">{message}</FormAlert>
 }
