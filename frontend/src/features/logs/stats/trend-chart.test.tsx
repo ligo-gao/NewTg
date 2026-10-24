@@ -35,6 +35,23 @@ describe('trend chart', () => {
     expect(within(table).getAllByRole('row')).toHaveLength(4) // header + 3
   })
 
+  it('labels the requests pane at max, mid and zero like the spend pane', () => {
+    renderWithProviders(
+      <TrendChart
+        rows={[
+          { bucket: '2026-10-24T01:00:00Z', cost: 10, requests: 6800 },
+          { bucket: '2026-10-24T02:00:00Z', cost: 20, requests: 3400 },
+        ]}
+        granularity="hour"
+      />,
+    )
+    const labels = screen
+      .getAllByTestId('trend-y-request-label')
+      .map((label) => label.textContent)
+    expect(labels).toEqual(['6,800', '3,400', '0'])
+    expect(labels).toHaveLength(3)
+  })
+
   it('draws the average line only when the window has spend', () => {
     const { unmount } = renderWithProviders(<TrendChart rows={ROWS} granularity="hour" />)
     expect(screen.getByTestId('trend-avg')).toBeTruthy()
