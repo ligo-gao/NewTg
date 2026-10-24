@@ -101,6 +101,11 @@ func (f *fakeModelPerformanceStore) LatestByModel(_ context.Context, _ string) (
 	return store.ModelPerformanceTest{}, false, nil
 }
 
+// LatestByModels 满足接口的批量读面；管理面用例不读取批量接口。
+func (f *fakeModelPerformanceStore) LatestByModels(_ context.Context, _ []string) (map[string]store.ModelPerformanceTest, error) {
+	return nil, nil
+}
+
 func perfIntPtr(v int) *int { return &v }
 
 // ---------- 脚手架 ----------

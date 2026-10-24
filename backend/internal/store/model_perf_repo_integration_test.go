@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -424,6 +425,68 @@ func TestModelPerfRetentionSkipsWhenLocked(t *testing.T) {
 	}
 	if result.Locked {
 		t.Fatalf("second replica must skip retention when the lock is held")
+	}
+}
+
+// TestLatestByModelsPicksNewestPerModel 验证批量最新测速读面（主库
+// model_performance_tests）：每个模型只取 created_at 最新的一行，未测过的
+// 模型不出现，空入参直接返回空 map。
+func TestLatestByModelsPicksNewestPerModel(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewSQLModelPerformanceStore(db)
+	ctx := context.Background()
+
+	var channelID int64
+	if err := db.QueryRow(`INSERT INTO channels (name, type, credentials, supported_models, status)
+		VALUES ($1, 'openai', decode('00','hex'), '[]'::jsonb, 1) RETURNING id`,
+		"batch-perf-"+fmt.Sprint(time.Now().UnixNano())).Scan(&channelID); err != nil {
+		t.Fatalf("insert channel: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := db.Exec(`DELETE FROM channels WHERE id = $1`, channelID); err != nil {
+			t.Errorf("cleanup channel: %v", err)
+		}
+	})
+
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	// success_count 用作「哪一行」的标记（runs 固定 10，满足 CHECK）。
+	insert := func(model string, createdAt time.Time, successCount int) {
+		t.Helper()
+		if _, err := db.Exec(`
+			INSERT INTO model_performance_tests
+				(channel_id, model, provider, runs, success_count, success_rate, created_at)
+			VALUES ($1, $2, 'openai', 10, $3, 1, $4)`,
+			channelID, model, successCount, createdAt); err != nil {
+			t.Fatalf("insert model performance test: %v", err)
+		}
+	}
+	insert("batch/model-a", base, 1)
+	insert("batch/model-a", base.Add(time.Minute), 2)
+	insert("batch/model-b", base.Add(30*time.Second), 3)
+
+	got, err := repo.LatestByModels(ctx, []string{"batch/model-a", "batch/model-b", "batch/model-missing"})
+	if err != nil {
+		t.Fatalf("LatestByModels: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("batch len = %d, want 2 (%+v)", len(got), got)
+	}
+	if _, ok := got["batch/model-missing"]; ok {
+		t.Fatalf("无测试的模型不应出现: %+v", got["batch/model-missing"])
+	}
+	if a := got["batch/model-a"]; a.SuccessCount != 2 || !a.CreatedAt.Equal(base.Add(time.Minute)) {
+		t.Fatalf("model-a = %+v, want newest row (success_count=2, created_at=%s)", a, base.Add(time.Minute))
+	}
+	if b := got["batch/model-b"]; b.SuccessCount != 3 || !b.CreatedAt.Equal(base.Add(30*time.Second)) {
+		t.Fatalf("model-b = %+v, want the only row (success_count=3)", b)
+	}
+
+	empty, err := repo.LatestByModels(ctx, nil)
+	if err != nil {
+		t.Fatalf("empty LatestByModels: %v", err)
+	}
+	if empty == nil || len(empty) != 0 {
+		t.Fatalf("empty batch = %+v, want empty map", empty)
 	}
 }
 

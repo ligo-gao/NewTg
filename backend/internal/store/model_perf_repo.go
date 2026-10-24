@@ -646,6 +646,9 @@ type ModelPerformanceStore interface {
 	ListRecent(ctx context.Context, channelID int64, model string, limit int) ([]ModelPerformanceTest, error)
 	// LatestByModel 返回该模型（不限渠道）最新的一条测试；无记录时 ok=false。
 	LatestByModel(ctx context.Context, model string) (ModelPerformanceTest, bool, error)
+	// LatestByModels 返回每个入参模型（不限渠道）最新的一条测试，按模型索引。
+	// 从未测试过的模型不出现在 map 中；models 为空时直接返回空 map。
+	LatestByModels(ctx context.Context, models []string) (map[string]ModelPerformanceTest, error)
 }
 
 // SQLModelPerformanceStore 是 ModelPerformanceStore 的 PostgreSQL 实现。
@@ -779,6 +782,44 @@ func (r *SQLModelPerformanceStore) LatestByModel(
 			"store: latest model performance test(%s): %w", model, err)
 	}
 	return test, true, nil
+}
+
+// LatestByModels 批量返回每个模型（不限渠道）最新的一条测试，按模型索引。
+//
+// 使用 DISTINCT ON (model) 一次取回所有模型的最新行，避免模型库列表页对每个
+// 模型各发一条查询。排序与 LatestByModel 一致（created_at DESC, id DESC），
+// 同一 millisecond 的两条测试也有确定顺序。从未测试过的模型不出现——调用方
+// 渲染空状态而不是零值对象；空入参直接返回空 map，不查库。
+func (r *SQLModelPerformanceStore) LatestByModels(
+	ctx context.Context,
+	models []string,
+) (map[string]ModelPerformanceTest, error) {
+	out := make(map[string]ModelPerformanceTest, len(models))
+	if len(models) == 0 {
+		return out, nil
+	}
+
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT DISTINCT ON (model) `+modelPerformanceTestColumns+`
+		   FROM model_performance_tests
+		  WHERE model = ANY($1::text[])
+		  ORDER BY model, created_at DESC, id DESC`, models)
+	if err != nil {
+		return nil, fmt.Errorf("store: latest model performance tests: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		test, scanErr := scanModelPerformanceTest(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("store: scan latest model performance test: %w", scanErr)
+		}
+		out[test.Model] = test
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate latest model performance tests: %w", err)
+	}
+	return out, nil
 }
 
 // scanModelPerformanceTest 读取汇总行，并把可空列映射为指针。
