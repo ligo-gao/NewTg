@@ -68,6 +68,9 @@ type Set struct {
 	billingRefund       *prometheus.CounterVec
 	billingQuotaClamp   *prometheus.CounterVec
 	billingInsufficient *prometheus.CounterVec
+	// billingSettleFailures 是「上游已执行但结算失败」的计数：非流式会被
+	// 402 阻断交付，流式只能靠这条指标与 ERROR 日志发现欠费请求。
+	billingSettleFailures *prometheus.CounterVec
 
 	workerTaskRuns        *prometheus.CounterVec
 	workerTaskDuration    *prometheus.HistogramVec
@@ -172,6 +175,10 @@ func newSet() *Set {
 			Namespace: Namespace, Subsystem: "billing", Name: "insufficient_quota_total",
 			Help: "Requests refused with HTTP 402 (insufficient quota) by model.",
 		}, []string{"model"}),
+		billingSettleFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "billing", Name: "settle_failures_total",
+			Help: "Settlement failures after the upstream call by model, group and reason.",
+		}, []string{"model", "group", "reason"}),
 
 		workerTaskRuns: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: Namespace, Subsystem: "worker", Name: "task_runs_total",
@@ -247,6 +254,7 @@ func (s *Set) collectors() []prometheus.Collector {
 		s.channelRequests, s.channelDuration, s.channelFailover, s.channelAutoDisabled,
 		s.billingPreConsume, s.billingSettle, s.billingRefund, s.billingQuotaClamp,
 		s.billingInsufficient,
+		s.billingSettleFailures,
 		s.workerTaskRuns, s.workerTaskDuration, s.workerTaskLastSuccess,
 		s.workerAbandonedRefund, s.workerAbandonedAge, s.workerStreamLag,
 		s.dbPool, s.redisUp, s.redisCommandDuration,
@@ -352,6 +360,11 @@ func ObserveQuotaClamp(op, kind string) { Default().ObserveQuotaClamp(op, kind) 
 
 // ObserveInsufficientQuota 记录一次 402 拒绝。
 func ObserveInsufficientQuota(model string) { Default().ObserveInsufficientQuota(model) }
+
+// ObserveSettleFailure 记录一次结算失败（响应可能已交付或即将被 402 阻断）。
+func ObserveSettleFailure(model, group, reason string) {
+	Default().ObserveSettleFailure(model, group, reason)
+}
 
 // ObserveDemoWriteRejected 记录一次演示站只读守卫拒绝。
 func ObserveDemoWriteRejected(routeFamily string) { Default().ObserveDemoWriteRejected(routeFamily) }

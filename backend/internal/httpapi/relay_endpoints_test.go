@@ -174,11 +174,12 @@ func (f *fakeRelayChannelStore) EnabledModels(_ context.Context) ([]string, erro
 // 成功出口走 Terminate（可断言最终 UsageFact）；失败/取消/panic 出口走
 // Refund（R-85），只记录次数。
 type recordingBilling struct {
-	mu          sync.Mutex
-	stub        *billingseam.Stub
-	terminated  []contract.UsageFact
-	preConsumed []contract.QuotaEstimate
-	refunds     int
+	mu           sync.Mutex
+	stub         *billingseam.Stub
+	terminated   []contract.UsageFact
+	preConsumed  []contract.QuotaEstimate
+	refunds      int
+	terminateErr error
 }
 
 func newRecordingBilling() *recordingBilling {
@@ -198,7 +199,11 @@ func (b *recordingBilling) ChargeIncrement(delta int64, fact contract.UsageFact)
 func (b *recordingBilling) Terminate(fact contract.UsageFact) error {
 	b.mu.Lock()
 	b.terminated = append(b.terminated, fact)
+	err := b.terminateErr
 	b.mu.Unlock()
+	if err != nil {
+		return err
+	}
 	return b.stub.Terminate(fact)
 }
 func (b *recordingBilling) Refund() error {
@@ -222,7 +227,6 @@ func (b *recordingBilling) preConsumeCount() int {
 	defer b.mu.Unlock()
 	return len(b.preConsumed)
 }
-
 
 func (b *recordingBilling) refundCount() int {
 	b.mu.Lock()
@@ -2473,5 +2477,50 @@ func TestRelayChatEstimateCarriesRawRequest(t *testing.T) {
 	}
 	if est.Raw == nil || len(est.Raw.Messages) == 0 {
 		t.Fatalf("QuotaEstimate.Raw = %+v, want 本次请求 IR", est.Raw)
+	}
+}
+
+func TestSettleFailureReason(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"insufficient", fmt.Errorf("%w: x", billing.ErrInsufficientQuota), "insufficient_quota"},
+		{"closed", fmt.Errorf("%w: x", billing.ErrRequestClosed), "request_closed"},
+		{"inflight", fmt.Errorf("%w: x", billing.ErrSettlementInProgress), "settlement_in_progress"},
+		{"other", errors.New("boom"), "internal"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := settleFailureReason(tt.err); got != tt.want {
+				t.Fatalf("reason = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestChatSettlementFailureReturns402(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"x","object":"chat.completion","created":1,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"secret"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+	env := newRelayTestEnv(t, upstream, nil)
+	env.billing.terminateErr = fmt.Errorf("%w: settle", billing.ErrInsufficientQuota)
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`)
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402; body=%s", w.Code, w.Body.String())
+	}
+	if got := decodeRelayError(t, w.Body.Bytes()).Error.Code; got != "insufficient_quota" {
+		t.Fatalf("code = %q, want insufficient_quota", got)
+	}
+	if strings.Contains(w.Body.String(), `"choices"`) {
+		t.Fatal("结算失败时不得交付上游响应")
+	}
+	if env.billing.terminateCount() != 1 {
+		t.Fatalf("terminate = %d, want 1", env.billing.terminateCount())
 	}
 }

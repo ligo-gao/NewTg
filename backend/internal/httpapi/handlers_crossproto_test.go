@@ -13,6 +13,8 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +23,7 @@ import (
 	"testing"
 
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/store"
 )
@@ -701,6 +704,29 @@ func TestDeferredSettlementRefundsBeforeCommit(t *testing.T) {
 	}
 	if billing.terminateCount() != 0 {
 		t.Fatalf("abort 后 commit 不得结算，terminate=%d", billing.terminateCount())
+	}
+}
+
+// TestDeferredSettlementCommitReturnsTerminateError 固定结算失败的幂等语义：
+// commit 必须把内层错误原样上抛，且 finalized 后 abort 不得再退款。
+func TestDeferredSettlementCommitReturnsTerminateError(t *testing.T) {
+	b := newRecordingBilling()
+	b.terminateErr = fmt.Errorf("%w: settle", billing.ErrInsufficientQuota)
+	d := newDeferredSettlement(b)
+	if err := d.Terminate(contract.UsageFact{Model: "gpt-test"}); err != nil {
+		t.Fatalf("deferred Terminate: %v", err)
+	}
+
+	err := d.commit()
+	if !errors.Is(err, billing.ErrInsufficientQuota) {
+		t.Fatalf("commit err = %v, want ErrInsufficientQuota", err)
+	}
+	if b.terminateCount() != 1 {
+		t.Fatalf("terminate = %d, want 1", b.terminateCount())
+	}
+	d.abort()
+	if b.refundCount() != 0 {
+		t.Fatalf("refund = %d, want 0（commit 失败后不得再退款）", b.refundCount())
 	}
 }
 

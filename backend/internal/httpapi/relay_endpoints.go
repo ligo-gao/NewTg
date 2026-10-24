@@ -1548,7 +1548,13 @@ func (h *RelayHandler) serveNativeJSON(w http.ResponseWriter, r *http.Request, r
 		body = encoded
 	}
 	if settlement != nil {
-		_ = settlement.commit()
+		// 用户付不起这笔账：不交付服务。hold 留在账本由补偿扫描处理，
+		// 这里绝不能 Refund（上游已经执行完了）。
+		if commitErr := settlement.commit(); commitErr != nil {
+			h.reportSettlementFailure(rc, commitErr, false)
+			h.writeMessagesMappedError(w, rc.RequestID, commitErr)
+			return
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if rc.RequestID != "" {
@@ -2528,8 +2534,14 @@ func (h *RelayHandler) serveJSON(w http.ResponseWriter, r *http.Request, rc *con
 		return
 	}
 	if settlement != nil {
-		// 结算失败与 Route 同口径：不阻断已编码的响应。
-		_ = settlement.commit()
+		// 用户付不起这笔账：不交付服务。hold 留在账本由补偿扫描处理；
+		// 这里绝不能 Refund（上游已经执行完了）。
+		if commitErr := settlement.commit(); commitErr != nil {
+			status = "error"
+			h.reportSettlementFailure(rc, commitErr, false)
+			writeRelayMappedError(w, rc.RequestID, commitErr)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -3414,6 +3426,50 @@ func mapRelayContextError(err error) (int, string, string) {
 	default:
 		return http.StatusInternalServerError, "internal_error", "internal error"
 	}
+}
+
+// settleFailureReason 把结算错误收敛成有限的指标/日志枚举。
+//
+// GC-6：标签与日志字段绝不能直接来自 err.Error()。
+func settleFailureReason(err error) string {
+	var quotaErr *billing.QuotaError
+	switch {
+	case errors.As(err, &quotaErr), errors.Is(err, billing.ErrInsufficientQuota):
+		return "insufficient_quota"
+	case errors.Is(err, billing.ErrRequestClosed):
+		return "request_closed"
+	case errors.Is(err, billing.ErrSettlementInProgress):
+		return "settlement_in_progress"
+	default:
+		return "internal"
+	}
+}
+
+// reportSettlementFailure 记录一次「上游已执行、结算失败」。
+//
+// delivered 区分非流式（false：402 阻断交付）与流式（true：只能事后
+// 靠指标/日志发现欠费请求）。
+func (h *RelayHandler) reportSettlementFailure(rc *contract.RelayContext, err error, delivered bool) {
+	reason := settleFailureReason(err)
+	if rc != nil {
+		metrics.ObserveSettleFailure(rc.OriginModel, rc.UsingGroup, reason)
+	}
+	if h == nil || h.log == nil || rc == nil {
+		return
+	}
+	args := []any{
+		"request_id", rc.RequestID,
+		"endpoint", relay.EndpointLabel(rc),
+		"model", rc.OriginModel,
+		"group", rc.UsingGroup,
+		"error_class", reason,
+		"delivered", delivered,
+	}
+	var quotaErr *billing.QuotaError
+	if errors.As(err, &quotaErr) {
+		args = append(args, "required", quotaErr.Required, "available", quotaErr.Available)
+	}
+	h.log.Error("billing settlement failed", args...)
 }
 
 // writeRelayMappedError 映射错误并写 /v1 响应。

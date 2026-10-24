@@ -151,6 +151,14 @@ func (s *Set) ObserveInsufficientQuota(model string) {
 	s.billingInsufficient.WithLabelValues(s.guardModel.Value(model)).Inc()
 }
 
+// ObserveSettleFailure 记录一次结算失败。reason 必须是调用方收敛后的枚举
+// （metric 标签不得来自任意错误文本）。
+func (s *Set) ObserveSettleFailure(model, group, reason string) {
+	defer swallowPanic()
+	s.billingSettleFailures.WithLabelValues(
+		s.guardModel.Value(model), s.guardGroup.Value(group), reason).Inc()
+}
+
 // ObserveDemoWriteRejected 记录一次演示站只读守卫拒绝（modules-08 §3.17 Q6）。
 //
 // routeFamily 必须是服务端白名单枚举（见 httpapi.demoWriteRouteFamily）：

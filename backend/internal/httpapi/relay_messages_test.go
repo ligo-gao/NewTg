@@ -17,6 +17,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"iter"
 	"net/http"
@@ -26,6 +27,7 @@ import (
 	"time"
 
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/relay/adapters"
 	"newtg/gateway/internal/relay/ir"
@@ -1259,5 +1261,26 @@ func TestMessagesEstimateCarriesRawRequest(t *testing.T) {
 	}
 	if est.Raw == nil || len(est.Raw.Messages) == 0 {
 		t.Fatalf("QuotaEstimate.Raw = %+v, want 本次请求 IR", est.Raw)
+	}
+}
+
+func TestMessagesSettlementFailureReturns402(t *testing.T) {
+	env, _ := messagesTestEnv(t, contract.ChannelTypeAnthropic, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, messagesUpstreamBody)
+	})
+	env.billing.terminateErr = fmt.Errorf("%w: settle", billing.ErrInsufficientQuota)
+
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
+		messagesHeaders())
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "insufficient quota") {
+		t.Fatalf("body = %s, want Claude 402 文案", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "msg_1") {
+		t.Fatal("结算失败时不得交付上游响应")
 	}
 }

@@ -53,6 +53,7 @@ var requiredFamilies = []string{
 	"newtg_billing_refund_credits_total",
 	"newtg_billing_quota_clamp_total",
 	"newtg_billing_insufficient_quota_total",
+	"newtg_billing_settle_failures_total",
 
 	"newtg_worker_task_runs_total",
 	"newtg_worker_task_duration_seconds",
@@ -95,6 +96,7 @@ func populateAll(set *Set) {
 	set.ObserveRefund("sync", 10)
 	set.ObserveQuotaClamp("quotaChecked", "overflow")
 	set.ObserveInsufficientQuota("gpt-x")
+	set.ObserveSettleFailure("gpt-x", "default", "insufficient_quota")
 	set.InitWorker()
 	set.ObserveWorkerTask("preconsume_reconcile", "succeeded", now)
 	set.SetWorkerAbandoned("wallet", 3, 12*time.Minute)
