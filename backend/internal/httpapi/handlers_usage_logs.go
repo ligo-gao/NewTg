@@ -843,6 +843,36 @@ func (h *UsageLogHandlers) tokenNamesFor(r *http.Request, ids []int64) (map[int6
 	return out, rows.Err()
 }
 
+// enrichTokenNames 从主库 api_tokens 批量补齐缺失的令牌名：一次 IN 查询，
+// 不是逐行查询。只填空值，已有快照不得被覆盖；主库偶发失败只记 Warn，
+// 读路径仍返回当前数据（与 by-user 统计同一非致命策略）。
+func (h *UsageLogHandlers) enrichTokenNames(r *http.Request, items []usageLogItem) {
+	missing := make([]int64, 0, len(items))
+	for _, item := range items {
+		if item.TokenID != nil && *item.TokenID > 0 && (item.TokenName == nil || *item.TokenName == "") {
+			missing = append(missing, *item.TokenID)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	names, err := h.tokenNamesFor(r, missing)
+	if err != nil {
+		h.log.Warn("usage logs: token name lookup failed", "error", err)
+		return
+	}
+	for i := range items {
+		if items[i].TokenID == nil || *items[i].TokenID <= 0 ||
+			(items[i].TokenName != nil && *items[i].TokenName != "") {
+			continue
+		}
+		if name, ok := names[*items[i].TokenID]; ok && name != "" {
+			value := name
+			items[i].TokenName = &value
+		}
+	}
+}
+
 // --- 列表 -----------------------------------------------------------------
 
 type usageLogPage struct {
@@ -940,6 +970,8 @@ func (h *UsageLogHandlers) handleUsageLogList(w http.ResponseWriter, r *http.Req
 		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
 		return
 	}
+	// usage_logs.token_name 线上恒为 NULL，令牌名改从主库补齐。
+	h.enrichTokenNames(r, items)
 	if viewer.admin {
 		names, err := h.usernamesFor(r, userIDs)
 		if err != nil {
@@ -1004,7 +1036,10 @@ func (h *UsageLogHandlers) handleUsageLogDetail(w http.ResponseWriter, r *http.R
 		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
 		return
 	}
-	detail := usageLogDetail{usageLogItem: row.toItem(viewer.admin, revealSensitive), Other: projectOther(row.Other, viewer.admin, revealSensitive)}
+	items := []usageLogItem{row.toItem(viewer.admin, revealSensitive)}
+	// usage_logs.token_name 线上恒为 NULL，令牌名改从主库补齐。
+	h.enrichTokenNames(r, items)
+	detail := usageLogDetail{usageLogItem: items[0], Other: projectOther(row.Other, viewer.admin, revealSensitive)}
 	if viewer.admin {
 		if name, err := h.usernamesFor(r, []int64{row.UserID}); err == nil {
 			if username, ok := name[row.UserID]; ok {
