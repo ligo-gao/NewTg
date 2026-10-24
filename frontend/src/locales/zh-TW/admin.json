@@ -1686,6 +1686,7 @@
       "loading": "正在載入上游帳號…",
       "load_error": "載入上游帳號失敗。",
       "read_only": "唯讀：目前帳號缺少 settings:manage 權限。",
+      "truncated": "僅顯示前 {shown} 個帳號，共 {total} 個。",
       "status_active": "啟用中",
       "status_disabled": "已停用",
       "form_title_create": "新增上游帳號",

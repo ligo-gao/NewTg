@@ -1686,6 +1686,7 @@
       "loading": "アップストリームアカウントを読み込み中…",
       "load_error": "アップストリームアカウントを読み込めませんでした。",
       "read_only": "読み取り専用：このアカウントには settings:manage 権限がありません。",
+      "truncated": "全 {total} アカウントのうち先頭 {shown} 件を表示しています。",
       "status_active": "有効",
       "status_disabled": "無効",
       "form_title_create": "アップストリームアカウントを作成",

@@ -1686,6 +1686,7 @@
       "loading": "正在加载上游账号…",
       "load_error": "加载上游账号失败。",
       "read_only": "只读：当前账号缺少 settings:manage 权限。",
+      "truncated": "仅显示前 {shown} 个账号，共 {total} 个。",
       "status_active": "启用中",
       "status_disabled": "已停用",
       "form_title_create": "新建上游账号",

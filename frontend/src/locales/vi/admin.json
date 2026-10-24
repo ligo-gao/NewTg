@@ -1686,6 +1686,7 @@
       "loading": "Đang tải tài khoản nhà cung cấp…",
       "load_error": "Không thể tải tài khoản nhà cung cấp.",
       "read_only": "Chỉ đọc: tài khoản của bạn không có quyền settings:manage.",
+      "truncated": "Đang hiển thị {shown} trong {total} tài khoản đầu tiên.",
       "status_active": "Đang hoạt động",
       "status_disabled": "Đã vô hiệu hóa",
       "form_title_create": "Tạo tài khoản nhà cung cấp",

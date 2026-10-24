@@ -72,15 +72,22 @@ export function AccountsTab({ canManage }: { canManage: boolean }) {
   const { t } = useI18n()
   const queryClient = useQueryClient()
   const [form, setForm] = useState<AccountFormState | null>(null)
+  const [pendingBindings, setPendingBindings] = useState<ReadonlySet<number>>(
+    () => new Set(),
+  )
 
   const accountsQuery = useQuery({
     queryKey: ACCOUNTS_QUERY_KEY,
     // 不传 status：停用的账号同样要列出来，否则无法重新启用。
-    queryFn: ({ signal }) => listAccounts({}, signal),
+    // 页大小固定为一页 100：归属下拉必须看到尽可能多的账号；一页 100 是
+    // 服务端上限，取缺省 20 会让第 21 个之后的账号在下拉里悄悄消失。
+    queryFn: ({ signal }) => listAccounts({ page_size: 100 }, signal),
     retry: false,
     staleTime: 30_000,
   })
   const accounts = accountsQuery.data?.items ?? []
+  const accountsTotal = accountsQuery.data?.total ?? 0
+  const accountsTruncated = accountsTotal > accounts.length
 
   const channelsQuery = useQuery({
     queryKey: CHANNELS_QUERY_KEY,
@@ -128,6 +135,10 @@ export function AccountsTab({ canManage }: { canManage: boolean }) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ACCOUNTS_QUERY_KEY })
     },
+    onError: () => {
+      // 409 后重取，让行拿到服务端的 updated_at，重试才有意义。
+      void queryClient.invalidateQueries({ queryKey: ACCOUNTS_QUERY_KEY })
+    },
   })
 
   const bindingMutation = useMutation({
@@ -137,6 +148,22 @@ export function AccountsTab({ canManage }: { canManage: boolean }) {
         upstream_account_id: payload.accountId,
       }),
     retry: false,
+    onMutate: (variables) => {
+      // 每个渠道各自挂起，避免 A 行的请求未落在 B 行的下拉上，也避免
+      // A 行在首次请求未回时再发一次带着旧 version 的写入。
+      setPendingBindings((previous) => {
+        const next = new Set(previous)
+        next.add(variables.channel.id)
+        return next
+      })
+    },
+    onSettled: (_data, _error, variables) => {
+      setPendingBindings((previous) => {
+        const next = new Set(previous)
+        next.delete(variables.channel.id)
+        return next
+      })
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: CHANNELS_INVALIDATE_KEY })
       void queryClient.invalidateQueries({ queryKey: ACCOUNTS_QUERY_KEY })
@@ -299,7 +326,10 @@ export function AccountsTab({ canManage }: { canManage: boolean }) {
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap items-center justify-end gap-2">
                           {bound ? (
-                            <span className="text-meta text-ink-3">
+                            <span
+                              id={`account-delete-hint-${account.id}`}
+                              className="text-meta text-ink-3"
+                            >
                               {t(
                                 'admin.upstream_reconciliation.accounts.delete_blocked',
                               )}
@@ -337,6 +367,11 @@ export function AccountsTab({ canManage }: { canManage: boolean }) {
                             disabled={
                               !canManage || deleteMutation.isPending || bound
                             }
+                            aria-describedby={
+                              bound
+                                ? `account-delete-hint-${account.id}`
+                                : undefined
+                            }
                             onClick={() => {
                               requestDelete(account)
                             }}
@@ -351,6 +386,17 @@ export function AccountsTab({ canManage }: { canManage: boolean }) {
               </tbody>
             </table>
           </div>
+        ) : null}
+
+        {accountsTruncated ? (
+          // 账号被截断时必须明说：下拉里缺一个账号，管理员「修正」归属时
+          // 会悄悄覆盖掉真实的账号指向。
+          <p className="text-meta text-ink-3">
+            {t('admin.upstream_reconciliation.accounts.truncated', {
+              shown: accounts.length,
+              total: accountsTotal,
+            })}
+          </p>
         ) : null}
       </section>
 
@@ -402,21 +448,26 @@ export function AccountsTab({ canManage }: { canManage: boolean }) {
               </thead>
               <tbody>
                 {channels.map((channel) => {
-                  const rowPending =
-                    bindingMutation.isPending &&
-                    bindingMutation.variables?.channel.id === channel.id
+                  const rowPending = pendingBindings.has(channel.id)
                   return (
                     <tr
                       key={channel.id}
                       data-testid="binding-row"
                       className="border-t border-border-hairline"
                     >
-                      <td className="px-4 py-3 text-ink-1">{channel.name}</td>
+                      {/* 行表头必须是 th：scope 只在 th 上有效，td 上的 scope 是
+                          无效标记，读屏不会把它当表头念。 */}
+                      <th
+                        scope="row"
+                        className="px-4 py-3 text-left font-normal text-ink-1"
+                      >
+                        {channel.name}
+                      </th>
                       <td className="px-4 py-3">
                         <select
-                          aria-label={t(
+                          aria-label={`${t(
                             'admin.upstream_reconciliation.accounts.binding.account',
-                          )}
+                          )}: ${channel.name}`}
                           value={
                             channel.upstream_account_id === null ||
                             channel.upstream_account_id === undefined
@@ -458,6 +509,17 @@ export function AccountsTab({ canManage }: { canManage: boolean }) {
             {t('admin.upstream_reconciliation.accounts.binding.truncated', {
               shown: channels.length,
               total: channelTotal,
+            })}
+          </p>
+        ) : null}
+
+        {accountsTruncated ? (
+          // 账号被截断时必须明说：下拉里缺一个账号，管理员「修正」归属时
+          // 会悄悄覆盖掉真实的账号指向。
+          <p className="text-meta text-ink-3">
+            {t('admin.upstream_reconciliation.accounts.truncated', {
+              shown: accounts.length,
+              total: accountsTotal,
             })}
           </p>
         ) : null}

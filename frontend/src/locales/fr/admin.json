@@ -1686,6 +1686,7 @@
       "loading": "Chargement des comptes fournisseurs…",
       "load_error": "Impossible de charger les comptes fournisseurs.",
       "read_only": "Lecture seule : votre compte ne dispose pas de la permission settings:manage.",
+      "truncated": "Affichage des {shown} premiers comptes sur {total}.",
       "status_active": "Actif",
       "status_disabled": "Désactivé",
       "form_title_create": "Nouveau compte fournisseur",

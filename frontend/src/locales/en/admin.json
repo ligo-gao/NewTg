@@ -1686,6 +1686,7 @@
       "loading": "Loading upstream accounts…",
       "load_error": "Could not load upstream accounts.",
       "read_only": "Read-only: your account lacks the settings:manage permission.",
+      "truncated": "Showing the first {shown} of {total} accounts.",
       "status_active": "Active",
       "status_disabled": "Disabled",
       "form_title_create": "New upstream account",
