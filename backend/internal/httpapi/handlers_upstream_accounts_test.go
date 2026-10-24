@@ -278,7 +278,9 @@ type upstreamTestEnv struct {
 }
 
 // newUpstreamTestEnv 装配账号 + 快照端点（同一 authz，边角与生产装配一致）。
-func newUpstreamTestEnv(t *testing.T) *upstreamTestEnv {
+// 可选的 lookback 覆盖快照列表缺省回看窗口的读取；不传等价于未装配，
+// handler 回落编译期默认。nil 也按未装配处理。
+func newUpstreamTestEnv(t *testing.T, lookback ...func(ctx context.Context) int) *upstreamTestEnv {
 	t.Helper()
 	accounts := newFakeUpstreamAccountRepo()
 	snapshots := newFakeUpstreamSnapshotRepo()
@@ -286,6 +288,10 @@ func newUpstreamTestEnv(t *testing.T) *upstreamTestEnv {
 	authz := rbac.NewAuthzMiddleware()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	var lookbackDays func(ctx context.Context) int
+	if len(lookback) > 0 {
+		lookbackDays = lookback[0]
+	}
 
 	accountHandlers, err := NewUpstreamAccountHandlers(UpstreamAccountHandlerConfig{
 		Repo: accounts, Authz: authz, Audit: audit.New(capture), Logger: logger,
@@ -296,6 +302,7 @@ func newUpstreamTestEnv(t *testing.T) *upstreamTestEnv {
 	snapshotHandlers, err := NewUpstreamSnapshotHandlers(UpstreamSnapshotHandlerConfig{
 		Repo: snapshots, Accounts: accounts, Authz: authz, Audit: audit.New(capture),
 		Logger: logger, Now: func() time.Time { return now },
+		LookbackDays: lookbackDays,
 	})
 	if err != nil {
 		t.Fatalf("NewUpstreamSnapshotHandlers: %v", err)

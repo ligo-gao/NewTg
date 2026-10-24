@@ -59,8 +59,10 @@ type UpstreamSnapshotHandlerConfig struct {
 	Logger   *slog.Logger
 	// Now 是「今天」判定的时钟接缝；nil 时使用 time.Now。
 	Now func() time.Time
-	// LookbackDays 是 from/to 缺省时的回看天数；<=0 时使用 runner 的默认值。
-	LookbackDays int
+	// LookbackDays 是 from/to 缺省时的回看天数（读取 reconcile.lookback_days，
+	// 每次请求读一次内存快照，改设置无需重启）；nil 或返回值 <=0 时使用
+	// reconcile.DefaultLookbackDays。
+	LookbackDays func(ctx context.Context) int
 }
 
 // UpstreamSnapshotHandlers 持有快照端点依赖，可并发使用。
@@ -71,7 +73,7 @@ type UpstreamSnapshotHandlers struct {
 	audit        *audit.Logger
 	log          *slog.Logger
 	now          func() time.Time
-	lookbackDays int
+	lookbackDays func(ctx context.Context) int
 }
 
 var (
@@ -107,13 +109,9 @@ func NewUpstreamSnapshotHandlers(cfg UpstreamSnapshotHandlerConfig) (*UpstreamSn
 	if now == nil {
 		now = time.Now
 	}
-	lookback := cfg.LookbackDays
-	if lookback <= 0 {
-		lookback = reconcile.DefaultLookbackDays
-	}
 	h := &UpstreamSnapshotHandlers{
 		repo: repo, accounts: accounts, authz: authz, audit: cfg.Audit, log: log,
-		now: now, lookbackDays: lookback,
+		now: now, lookbackDays: cfg.LookbackDays,
 	}
 	h.registerPolicies()
 	return h, nil
@@ -170,7 +168,7 @@ func (h *UpstreamSnapshotHandlers) handleList(w http.ResponseWriter, r *http.Req
 	}
 
 	today := upstreamToday(h.now(), loc)
-	from := today.AddDate(0, 0, -h.lookbackDays)
+	from := today.AddDate(0, 0, -h.lookbackWindow(r.Context()))
 	to := today
 	if raw := strings.TrimSpace(r.URL.Query().Get("from")); raw != "" {
 		parsed, valid := parseUpstreamDate(raw)
@@ -450,6 +448,18 @@ func upstreamAccountCurrency(account *store.UpstreamAccount) string {
 		return normalized
 	}
 	return upstreamDefaultCurrency
+}
+
+// lookbackWindow 返回 from/to 缺省时的回看天数：每次请求读一次设置快照，
+// 使 reconcile.lookback_days 的修改无需重启；未装配或脏值（<=0）回落编译期
+// 默认窗口（读取侧不做上界钳制，写入已由设置注册表校验）。
+func (h *UpstreamSnapshotHandlers) lookbackWindow(ctx context.Context) int {
+	if h.lookbackDays != nil {
+		if days := h.lookbackDays(ctx); days > 0 {
+			return days
+		}
+	}
+	return reconcile.DefaultLookbackDays
 }
 
 // upstreamToday 返回账号时区里的「今天」，以 UTC 零点承载日字面值

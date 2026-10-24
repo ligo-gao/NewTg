@@ -606,6 +606,10 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	if err != nil {
 		return nil, fmt.Errorf("gateway: reconcile runner: %w", err)
 	}
+	// 快照列表的缺省回看窗口与 runner 共用同一份设置读取：每次请求读一次内存
+	// 快照，改 reconcile.lookback_days 无需重启。读取失败只是拿不到配置值，
+	// 返回 0 让 handler 回落编译期默认，而不是让整个读端点 500。
+	reconcileSettings := NewReconcileSettingsReader(center, log)
 
 	router, err := httpapi.BuildGatewayRouter(httpapi.GatewayDeps{
 		DB:                      db,
@@ -654,6 +658,14 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		NotificationSender: transactionalEmail,
 		// Task 9：对账手动触发与 worker 周期任务共用同一个 runner 构造器。
 		ReconcileRunner: reconcileRunner,
+		// 快照列表缺省窗口跟随 reconcile.lookback_days；读错误按脏值处理。
+		ReconcileLookbackDays: func(ctx context.Context) int {
+			settings, err := reconcileSettings.ReconcileSettings(ctx)
+			if err != nil {
+				return 0
+			}
+			return settings.LookbackDays
+		},
 	})
 	if err != nil {
 		return nil, err

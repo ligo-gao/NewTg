@@ -7,6 +7,7 @@ package httpapi
 // newUpstreamTestEnv，以及 handlers_users_test.go 的审计捕获/Principal 助手。
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -198,6 +199,91 @@ func TestListUpstreamSnapshotsDefaultsToAccountTimeZoneLookback(t *testing.T) {
 	}
 	if got.Source != dto.UpstreamSnapshotSourceManual {
 		t.Fatalf("source = %q，期望 manual", got.Source)
+	}
+}
+
+// TestListUpstreamSnapshotsUsesConfiguredLookback 覆盖缺省窗口来源：
+// reconcile.lookback_days 的配置值（每次请求读取）、脏值回落、未装配回落。
+func TestListUpstreamSnapshotsUsesConfiguredLookback(t *testing.T) {
+	cases := []struct {
+		name     string
+		lookback func(ctx context.Context) int
+		wantFrom time.Time
+		// secondFrom 非 nil 时再发一次请求，断言窗口随之改变（读取器每次取值）。
+		secondFrom *time.Time
+	}{
+		{
+			name:     "configured seven days",
+			lookback: func(context.Context) int { return 7 },
+			wantFrom: time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:     "zero falls back to default",
+			lookback: func(context.Context) int { return 0 },
+			wantFrom: time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:     "nil falls back to default",
+			lookback: nil,
+			wantFrom: time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC),
+		},
+	}
+	// 「每次请求读一次」是本次接线的目的：改 reconcile.lookback_days 不重启
+	// 也要生效。用一个每次返回不同窗口的读取器证明第二次请求确实重新取值。
+	secondWindowFrom := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+	cases = append(cases, struct {
+		name       string
+		lookback   func(ctx context.Context) int
+		wantFrom   time.Time
+		secondFrom *time.Time
+	}{
+		name: "read per request",
+		lookback: func() func(context.Context) int {
+			calls := 0
+			return func(context.Context) int {
+				calls++
+				if calls == 1 {
+					return 7
+				}
+				return 2
+			}
+		}(),
+		wantFrom:   time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC), // 第一次：today-7
+		secondFrom: &secondWindowFrom,                             // 第二次：today-2
+	})
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newUpstreamTestEnv(t, tc.lookback)
+			env.accounts.seed(store.UpstreamAccount{
+				ID: 1, Name: "openai-main", Provider: "openai",
+				Currency: "CNY", Timezone: "Asia/Shanghai",
+			})
+
+			rr := env.request(limitedAdmin(rbac.PermSettingsManage), http.MethodGet,
+				"/api/upstream-snapshots?account_id=1", nil)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("list status = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+			}
+
+			// 账号时区的今天仍是 2026-10-24；to 不随 lookback 变化。
+			wantTo := time.Date(2026, 10, 24, 0, 0, 0, 0, time.UTC)
+			if !env.snapshots.listFrom.Equal(tc.wantFrom) || !env.snapshots.listTo.Equal(wantTo) {
+				t.Fatalf("ListRange 窗口 = [%v, %v]，期望 [%v, %v]",
+					env.snapshots.listFrom, env.snapshots.listTo, tc.wantFrom, wantTo)
+			}
+			if tc.secondFrom != nil {
+				rr = env.request(limitedAdmin(rbac.PermSettingsManage), http.MethodGet,
+					"/api/upstream-snapshots?account_id=1", nil)
+				if rr.Code != http.StatusOK {
+					t.Fatalf("second list status = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+				}
+				if !env.snapshots.listFrom.Equal(*tc.secondFrom) {
+					t.Fatalf("第二次 ListRange from = %v，期望 %v（读取器必须每次请求重新取值）",
+						env.snapshots.listFrom, *tc.secondFrom)
+				}
+			}
+		})
 	}
 }
 

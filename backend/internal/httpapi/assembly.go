@@ -117,6 +117,10 @@ type GatewayDeps struct {
 	// runner 由 platform 注入：platform 依赖本包，本包不得反向导入它。
 	ReconcileRepo   ReconcileStore
 	ReconcileRunner ReconcileRunner
+	// ReconcileLookbackDays 是快照列表 from/to 缺省窗口的来源
+	// （reconcile.lookback_days）；nil 时回落编译期默认
+	// （reconcile.DefaultLookbackDays）。每次请求调用一次。
+	ReconcileLookbackDays func(ctx context.Context) int
 	// PricingRepo 是定价管理仓储的可选测试接缝；nil 且 DB 非 nil 时由
 	// store.NewPricingRepo(DB) 构造。DB 与 PricingRepo 都为空时不挂定价端点
 	// （M1 的纯 Repo 单测装配没有定价库表）。
@@ -912,12 +916,13 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			return nil, err
 		}
 		upstreamSnapshots, err := NewUpstreamSnapshotHandlers(UpstreamSnapshotHandlerConfig{
-			DB:       deps.DB,
-			Repo:     deps.UpstreamSnapshotRepo,
-			Accounts: deps.UpstreamAccountRepo,
-			Authz:    deps.Authz,
-			Audit:    deps.Audit,
-			Logger:   deps.Logger,
+			DB:           deps.DB,
+			Repo:         deps.UpstreamSnapshotRepo,
+			Accounts:     deps.UpstreamAccountRepo,
+			Authz:        deps.Authz,
+			Audit:        deps.Audit,
+			Logger:       deps.Logger,
+			LookbackDays: deps.ReconcileLookbackDays,
 		})
 		if err != nil {
 			return nil, err
