@@ -16,6 +16,8 @@ func TestPublicStatusSettingsProjection(t *testing.T) {
 		"site.seo.description":     configString("desc"),
 		"nav.pricing.enabled":      configBool(false),
 		"nav.console.require_auth": configBool(true),
+		"nav.models.enabled":       configBool(false),
+		"nav.models.require_auth":  configBool(false),
 		"billing.quota_per_unit":   configInt(200),
 		"pay.online_enabled":       configBool(false),
 		"auth.passkey.enabled":     configBool(true),
@@ -51,6 +53,10 @@ func TestPublicStatusSettingsProjection(t *testing.T) {
 			Console struct {
 				RequireAuth bool `json:"require_auth"`
 			} `json:"console"`
+			Models struct {
+				Enabled     bool `json:"enabled"`
+				RequireAuth bool `json:"require_auth"`
+			} `json:"models"`
 		} `json:"nav"`
 		Billing struct {
 			QuotaPerUnit int64 `json:"quota_per_unit"`
@@ -69,6 +75,22 @@ func TestPublicStatusSettingsProjection(t *testing.T) {
 	}
 	if body.Nav.Pricing.Enabled || !body.Nav.Console.RequireAuth {
 		t.Fatalf("nav 投影错误: %+v", body.Nav)
+	}
+	// 值来自配置投影（注册表默认 enabled=true），而非注册表默认。
+	if body.Nav.Models.Enabled || body.Nav.Models.RequireAuth {
+		t.Fatalf("nav.models 投影错误: %+v", body.Nav.Models)
+	}
+	// 字段必须真实下发：注册表默认 true，缺失会被零值 false 掩盖。
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("JSON 非法: %v", err)
+	}
+	var navRaw map[string]json.RawMessage
+	if err := json.Unmarshal(raw["nav"], &navRaw); err != nil {
+		t.Fatalf("nav 非法: %v", err)
+	}
+	if _, ok := navRaw["models"]; !ok {
+		t.Fatal("nav.models 未下发")
 	}
 	if body.Billing.QuotaPerUnit != 200 {
 		t.Fatalf("billing.quota_per_unit = %d", body.Billing.QuotaPerUnit)
@@ -103,6 +125,10 @@ func TestPublicStatusSettingsDefaults(t *testing.T) {
 			Home struct {
 				Enabled bool `json:"enabled"`
 			} `json:"home"`
+			Models struct {
+				Enabled     bool `json:"enabled"`
+				RequireAuth bool `json:"require_auth"`
+			} `json:"models"`
 		} `json:"nav"`
 		Billing struct {
 			DisplayUnit string `json:"display_unit"`
@@ -119,6 +145,12 @@ func TestPublicStatusSettingsDefaults(t *testing.T) {
 	}
 	if !body.Nav.Home.Enabled {
 		t.Fatal("nav.home.enabled 默认应为 true")
+	}
+	if !body.Nav.Models.Enabled {
+		t.Fatal("nav.models.enabled 默认应为 true")
+	}
+	if body.Nav.Models.RequireAuth {
+		t.Fatal("nav.models.require_auth 默认应为 false")
 	}
 	if body.Billing.DisplayUnit != "credits" {
 		t.Fatalf("billing.display_unit 默认 = %q", body.Billing.DisplayUnit)

@@ -8335,7 +8335,7 @@ type PublicModelParameter struct {
 	Type        string      `json:"type"`
 }
 
-// PublicNav 六个导航项（home/console/pricing/rankings/docs/about）的 enabled 与
+// PublicNav 七个导航项（home/console/models/pricing/rankings/docs/about）的 enabled 与
 // require_auth，以及控制台模块显隐。`docs.require_auth` 与
 // `about.require_auth` 默认 false（R-PUB-09）。
 type PublicNav struct {
@@ -8343,6 +8343,7 @@ type PublicNav struct {
 	Console *PublicNavItem `json:"console,omitempty"`
 	Docs    *PublicNavItem `json:"docs,omitempty"`
 	Home    *PublicNavItem `json:"home,omitempty"`
+	Models  *PublicNavItem `json:"models,omitempty"`
 	Modules *struct {
 		Chat *struct {
 			Playground *bool `json:"playground,omitempty"`
@@ -8537,7 +8538,7 @@ type PublicStatus struct {
 	// Languages canonical 7 语（modules-01 F-01-19）；顺序即下拉框顺序。
 	Languages []Language `json:"languages"`
 
-	// Nav 六个导航项（home/console/pricing/rankings/docs/about）的 enabled 与
+	// Nav 七个导航项（home/console/models/pricing/rankings/docs/about）的 enabled 与
 	// require_auth，以及控制台模块显隐。`docs.require_auth` 与
 	// `about.require_auth` 默认 false（R-PUB-09）。
 	Nav PublicNav `json:"nav"`

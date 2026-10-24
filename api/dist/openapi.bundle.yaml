@@ -12510,7 +12510,7 @@ components:
     PublicNav:
       type: object
       description: |
-        六个导航项（home/console/pricing/rankings/docs/about）的 enabled 与
+        七个导航项（home/console/models/pricing/rankings/docs/about）的 enabled 与
         require_auth，以及控制台模块显隐。`docs.require_auth` 与
         `about.require_auth` 默认 false（R-PUB-09）。
       properties:
@@ -12519,6 +12519,8 @@ components:
         console:
           $ref: '#/components/schemas/PublicNavItem'
         pricing:
+          $ref: '#/components/schemas/PublicNavItem'
+        models:
           $ref: '#/components/schemas/PublicNavItem'
         rankings:
           $ref: '#/components/schemas/PublicNavItem'

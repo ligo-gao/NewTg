@@ -5970,7 +5970,7 @@ export interface components {
             require_auth: boolean;
         };
         /**
-         * @description 六个导航项（home/console/pricing/rankings/docs/about）的 enabled 与
+         * @description 七个导航项（home/console/models/pricing/rankings/docs/about）的 enabled 与
          *     require_auth，以及控制台模块显隐。`docs.require_auth` 与
          *     `about.require_auth` 默认 false（R-PUB-09）。
          */
@@ -5978,6 +5978,7 @@ export interface components {
             home?: components["schemas"]["PublicNavItem"];
             console?: components["schemas"]["PublicNavItem"];
             pricing?: components["schemas"]["PublicNavItem"];
+            models?: components["schemas"]["PublicNavItem"];
             rankings?: components["schemas"]["PublicNavItem"];
             docs?: components["schemas"]["PublicNavItem"];
             about?: components["schemas"]["PublicNavItem"];

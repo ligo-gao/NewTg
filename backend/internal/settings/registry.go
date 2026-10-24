@@ -365,6 +365,8 @@ func buildRegistry() []Setting {
 		def("nav.console.require_auth", "nav", TypeBool, true, public(), locked()),
 		def("nav.pricing.enabled", "nav", TypeBool, true, public()),
 		def("nav.pricing.require_auth", "nav", TypeBool, false, public()),
+		def("nav.models.enabled", "nav", TypeBool, true, public()),
+		def("nav.models.require_auth", "nav", TypeBool, false, public()),
 		def("nav.rankings.enabled", "nav", TypeBool, true, public()),
 		def("nav.rankings.require_auth", "nav", TypeBool, false, public()),
 		def("nav.docs.enabled", "nav", TypeBool, true, public()),

@@ -219,6 +219,7 @@ func TestRegistryGoldenSets(t *testing.T) {
 		"site.home_custom_html", "site.home_blocks", "site.demo.enabled",
 		"nav.home.enabled", "nav.home.require_auth", "nav.console.enabled",
 		"nav.console.require_auth", "nav.pricing.enabled", "nav.pricing.require_auth",
+		"nav.models.enabled", "nav.models.require_auth",
 		"nav.rankings.enabled", "nav.rankings.require_auth", "nav.docs.enabled",
 		"nav.docs.require_auth", "nav.about.enabled", "nav.about.require_auth",
 		"nav.modules.console", "nav.modules.chat.playground",
