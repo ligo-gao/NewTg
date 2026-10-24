@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
+	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
@@ -155,5 +156,75 @@ func TestRefusalIntegrationIdempotentAndConverges(t *testing.T) {
 	}
 	if n := countUsageLog(t, db, requestID); n != 1 {
 		t.Fatalf("收敛后行数 = %d, want 1", n)
+	}
+}
+
+// TestRefusalIntegrationSharesAdvisoryLockWithSaturate 证明「拒绝行与结算行
+// 共用同一把 request_id 作用域顾问锁」不是注释里的约定，而是可观察的行为。
+//
+// 手法：由测试事务手动持有该 request_id 的锁（与两条生产写入路径同一个
+// SQL 表达式），再并发调用 RecordRefusal 与 Saturate——两者都必须阻塞；
+// 释放后两者都完成，且该 request_id 仍只有一行。若任何一方换了锁键，
+// 它会在持有期间直接穿过并写入第二行，本测试失败。
+func TestRefusalIntegrationSharesAdvisoryLockWithSaturate(t *testing.T) {
+	db := openRefusalLogsTestDB(t)
+	ctx := context.Background()
+	requestID := newTestUUID(t)
+	cleanupUsageLog(t, db, requestID)
+	logger := NewDBLogger(db)
+
+	holder, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin holder tx: %v", err)
+	}
+	defer func() { _ = holder.Rollback() }()
+	if err := lockUsageLogRequestID(ctx, holder, requestID); err != nil {
+		t.Fatalf("hold advisory lock: %v", err)
+	}
+
+	refusalDone := make(chan error, 1)
+	go func() {
+		waitCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		refusalDone <- logger.RecordRefusal(waitCtx, Refusal{
+			RequestID: requestID, UserID: 7, Stage: RefusalStageAuth,
+		})
+	}()
+
+	satDone := make(chan error, 1)
+	go func() {
+		waitCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		rc := &contract.RelayContext{RequestID: requestID, UserID: 7}
+		satDone <- logger.Saturate(waitCtx, nil, rc, SettlementOutcome{
+			Status: UsageLogStatusRefunded, ErrorClass: "worker_refund", ErrorMessage: "abandoned",
+		})
+	}()
+
+	// 锁被测试事务持有时，两条写入路径都不得完成。
+	select {
+	case err := <-refusalDone:
+		t.Fatalf("RecordRefusal 没有等待顾问锁就返回: %v", err)
+	case err := <-satDone:
+		t.Fatalf("Saturate 没有等待顾问锁就返回: %v", err)
+	case <-time.After(400 * time.Millisecond):
+	}
+
+	if err := holder.Commit(); err != nil {
+		t.Fatalf("release advisory lock: %v", err)
+	}
+	for name, done := range map[string]chan error{"RecordRefusal": refusalDone, "Saturate": satDone} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s after release: %v", name, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s did not finish after the lock was released", name)
+		}
+	}
+
+	if n := countUsageLog(t, db, requestID); n != 1 {
+		t.Fatalf("行数 = %d, want 1（同一 request_id 的两条写入路径必须串行）", n)
 	}
 }

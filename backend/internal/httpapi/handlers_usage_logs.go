@@ -1170,11 +1170,13 @@ func triageEvidenceFromRow(row *usageLogRow) (triageEvidence, triage.Evidence) {
 	// 最近一次非零上游状态码；全为零时回退到 triage.upstream_status。
 	upstreamStatus := 0
 	// ServerFailureSeen 记录整条重试链里是否出现过服务端故障：任一 5xx，或
-	// 任一 nil/0 状态（没拿到响应 → 超时/传输错误）。末轮的 nil/0 同样计入：
-	// 「最终没有响应」本身就是服务端故障信号，否则 `[429, 0]` 会渲染成
-	// 「没有 5xx 或超时」并排除渠道，与 retry_chain 里记录的超时自相矛盾。
-	// upstream_status 仍取「最近一次非零状态码」，所以 `[0]` 的中性
-	// no_upstream_response 分支不受本标记影响。
+	// 任一 nil/0 状态（没拿到响应）。nil/0 不区分「上游超时」与「网关本地
+	// 失败（渠道解析/分派/构造请求）」——两者在证据里本就同为「没有上游
+	// 响应」，宁可保守，也不能把后者漏成「没有服务端故障」从而排除渠道。
+	// 末轮的 nil/0 同样计入：「最终没有响应」本身就是服务端故障信号，否则
+	// `[429, 0]` 会渲染成「没有 5xx 或超时」并排除渠道，与 retry_chain 里
+	// 记录的超时自相矛盾。upstream_status 仍取「最近一次非零状态码」，所以
+	// `[0]` 的中性 no_upstream_response 分支不受本标记影响。
 	serverFailureSeen := false
 	for _, entry := range chain {
 		if entry.UpstreamStatus == nil || *entry.UpstreamStatus == 0 {

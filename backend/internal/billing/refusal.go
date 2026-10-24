@@ -38,6 +38,21 @@ func validRefusalStage(stage string) bool {
 	return ok
 }
 
+// refusalStructures 是 Structure 的冻结取值："" 表示「尚未校验」，
+// valid / invalid 是真实解析结论。与 triage.Evidence.RequestStructure 及
+// OpenAPI 的 TriageEvidence.request_structure 枚举逐一对应。
+var refusalStructures = map[string]struct{}{
+	"":        {},
+	"valid":   {},
+	"invalid": {},
+}
+
+// validRefusalStructure 报告 structure 是否属于冻结词表。
+func validRefusalStructure(structure string) bool {
+	_, ok := refusalStructures[structure]
+	return ok
+}
+
 // Refusal 是一条「未到达上游即被拒绝」的日志投影。
 //
 // 与 usageLogRow 的区别：这里没有用量事实（token 数/延迟/流式都不存在），
@@ -80,6 +95,11 @@ func (l *DBLogger) RecordRefusal(ctx context.Context, in Refusal) error {
 	// admin_info.triage，污染 triage.Evidence.RejectStage 的归因。
 	if !validRefusalStage(in.Stage) {
 		return fmt.Errorf("billing: unknown refusal stage %q", in.Stage)
+	}
+	// 同理校验 Structure：写错的取值会静默进入 admin_info.triage，
+	// 读取端只会把它当成「未校验」，管理员看到的排除依据因此消失。
+	if !validRefusalStructure(in.Structure) {
+		return fmt.Errorf("billing: unknown refusal structure %q", in.Structure)
 	}
 	// 调用方把任何错误当作「日志失败但继续服务」，因此这里绝不 panic：
 	// 未装配日志库时返回错误而不是解引用 nil。

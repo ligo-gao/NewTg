@@ -10363,7 +10363,7 @@ export interface components {
             created_at: string;
             model: string;
             /** Format: int64 */
-            channel_id: number | null;
+            channel_id?: number | null;
             /** @enum {string} */
             status: "success" | "error" | "refunded" | "refused";
             owner: components["schemas"]["TriageOwner"];
@@ -19790,6 +19790,16 @@ export interface operations {
             query?: {
                 /** @description 预设时间窗口；缺省 24h。 */
                 range?: "24h" | "7d" | "14d" | "30d";
+                /**
+                 * @description 窗口起点的绝对时间（RFC3339）。必须与 `end` 成对提供，
+                 *     同时存在时优先于 `range`。
+                 */
+                start?: string;
+                /**
+                 * @description 窗口终点的绝对时间（RFC3339）。必须与 `start` 成对提供；
+                 *     跨度超过 90 天返回 422。
+                 */
+                end?: string;
                 /** @description 返回条目上限（1–50）；缺省 20。 */
                 limit?: number;
                 /** @description 只保留该责任方的条目；缺省不过滤。 */

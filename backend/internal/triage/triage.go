@@ -51,8 +51,9 @@ type Evidence struct {
 	RequestStructure string
 	// RejectStage 是网关本地拒绝发生的阶段（quota/rate_limit/auth/...）。
 	RejectStage string
-	// ServerFailureSeen 表示整条重试链上出现过 5xx 或（非末轮的）超时/无响应。
-	// 末轮即使以 4xx 收尾，也不能据此声称「所有尝试都没有服务端故障」。
+	// ServerFailureSeen 表示整条重试链上出现过 5xx，或任何一轮没有拿到上游
+	// 响应（nil/0 状态码，末轮同样计入）。它就是「不能声称没有服务端故障」
+	// 的依据：末轮即使以 4xx 收尾，也不能据此排除渠道。
 	ServerFailureSeen bool
 }
 

@@ -8973,7 +8973,7 @@ type RecentFailureCounts struct {
 
 // RecentFailureItem defines model for RecentFailureItem.
 type RecentFailureItem struct {
-	ChannelId int64     `json:"channel_id"`
+	ChannelId *int64    `json:"channel_id,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	Model     string    `json:"model"`
 
@@ -12308,6 +12308,14 @@ type ListUsageLogsParamsStatus string
 type ListRecentFailuresParams struct {
 	// Range 预设时间窗口；缺省 24h。
 	Range *ListRecentFailuresParamsRange `form:"range,omitempty" json:"range,omitempty"`
+
+	// Start 窗口起点的绝对时间（RFC3339）。必须与 `end` 成对提供，
+	// 同时存在时优先于 `range`。
+	Start *time.Time `form:"start,omitempty" json:"start,omitempty"`
+
+	// End 窗口终点的绝对时间（RFC3339）。必须与 `start` 成对提供；
+	// 跨度超过 90 天返回 422。
+	End *time.Time `form:"end,omitempty" json:"end,omitempty"`
 
 	// Limit 返回条目上限（1–50）；缺省 20。
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`

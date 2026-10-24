@@ -677,13 +677,6 @@ func buildUsageLogRow(fact *contract.UsageFact,
 	return row, nil
 }
 
-// maxRetryChainEntries 是 retry_chain 的元素上界。
-//
-// relay 侧 RecordAttempt 已把 RelayContext.Attempts 截到 8 条；这里再截一次
-// 是防御性双保险：日志投影不依赖上游包的实现细节，过量输入直接挡在 jsonb
-// 写入之前（jsonb 体积与读取端渲染成本都被这一处钳住）。
-const maxRetryChainEntries = 8
-
 // retryChainStep 是 retry_chain 数组元素的固定形状（键名即落库契约）。
 //
 // 只承载执行层真实持有的事实：attempt 序号、渠道 id、上游族、错误归类、
@@ -714,9 +707,12 @@ func buildRetryChain(rc *contract.RelayContext) (string, error) {
 	if rc == nil || len(rc.Attempts) == 0 {
 		return "", nil
 	}
+	// 上界与生产端（relay.RecordAttempt）共用 contract.MaxAttemptRecords：
+	// 日志投影不依赖上游包的实现细节，过量输入直接挡在 jsonb 写入之前
+	// （jsonb 体积与读取端渲染成本都被这一处钳住）。
 	attempts := rc.Attempts
-	if len(attempts) > maxRetryChainEntries {
-		attempts = attempts[:maxRetryChainEntries]
+	if len(attempts) > contract.MaxAttemptRecords {
+		attempts = attempts[:contract.MaxAttemptRecords]
 	}
 	upstream := string(rc.ChannelType)
 	steps := make([]retryChainStep, len(attempts))

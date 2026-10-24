@@ -62,6 +62,16 @@ func TestRecordRefusalValidation(t *testing.T) {
 			wantErrContains: "unknown refusal stage",
 		},
 		{
+			name:            "unknown structure",
+			mutate:          func(r *Refusal) { r.Structure = "Valid" },
+			wantErrContains: "unknown refusal structure",
+		},
+		{
+			name:            "unparsed structure is allowed",
+			mutate:          func(r *Refusal) { r.Structure = "" },
+			wantErrContains: "no logs database",
+		},
+		{
 			name:            "valid input reaches the db check",
 			mutate:          func(*Refusal) {},
 			wantErrContains: "no logs database",
@@ -111,6 +121,23 @@ func TestRefusalStagesFrozen(t *testing.T) {
 	for _, stage := range []string{"", "Auth", "upstream_error", "quotas"} {
 		if validRefusalStage(stage) {
 			t.Fatalf("validRefusalStage(%q) = true, want false", stage)
+		}
+	}
+}
+
+// TestRefusalStructuresFrozen 钉死 Structure 的三种合法取值。
+//
+// 与 Stage 词表同理：读取端（triage.Evidence.RequestStructure）与前端字典
+// 都按这些字面量分支，取值漂移只会让判定静默退化，不会报错。
+func TestRefusalStructuresFrozen(t *testing.T) {
+	for _, structure := range []string{"", "valid", "invalid"} {
+		if !validRefusalStructure(structure) {
+			t.Fatalf("validRefusalStructure(%q) = false, want true", structure)
+		}
+	}
+	for _, structure := range []string{"Valid", "INVALID", "unverified", "parsed"} {
+		if validRefusalStructure(structure) {
+			t.Fatalf("validRefusalStructure(%q) = true, want false", structure)
 		}
 	}
 }

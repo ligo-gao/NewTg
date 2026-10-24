@@ -10358,6 +10358,22 @@ paths:
               - 14d
               - 30d
             default: 24h
+        - name: start
+          in: query
+          description: |
+            窗口起点的绝对时间（RFC3339）。必须与 `end` 成对提供，
+            同时存在时优先于 `range`。
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          description: |
+            窗口终点的绝对时间（RFC3339）。必须与 `start` 成对提供；
+            跨度超过 90 天返回 422。
+          schema:
+            type: string
+            format: date-time
         - name: limit
           in: query
           description: 返回条目上限（1–50）；缺省 20。
@@ -22074,7 +22090,6 @@ components:
         - request_id
         - created_at
         - model
-        - channel_id
         - status
         - owner
         - sub

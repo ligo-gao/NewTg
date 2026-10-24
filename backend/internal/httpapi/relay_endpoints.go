@@ -401,7 +401,7 @@ func configIntValue(config ConfigReader, key string) (int, bool) {
 // **同一个** RelayAuth 实例与同一份 trustedProxies 解析结果：复制一份配置
 // 会让两条路径在代理信任策略上悄悄分叉。
 func (h *RelayHandler) AuthMiddleware() func(http.Handler) http.Handler {
-	return RelayAuth(h.tokens, h.access, h.trustedProxies)
+	return RelayAuthWithRecorder(h.tokens, h.access, h.trustedProxies, h.refusals, h.log)
 }
 
 // Register 把 /v1 路由挂到 mux；鉴权中间件只包裹这些端点（管理面不经过它）。
@@ -1305,10 +1305,24 @@ func (h *RelayHandler) handleMessagesCountTokens(w http.ResponseWriter, r *http.
 	body, err := readRelayBody(r)
 	if err != nil {
 		if errors.Is(err, errRelayBodyTooLarge) {
+			// 中继前拒绝：count_tokens 与 messages 共用拒绝词表，结构校验
+			// 尚未发生（Structure 留空 = 未校验），只记「请求体超限」这一事实。
+			h.recordRefusal(r, billing.Refusal{
+				RequestID:    requestID,
+				Stage:        billing.RefusalStageRequestStructure,
+				ErrorClass:   "request_too_large",
+				ErrorMessage: "request body exceeds the 32 MiB limit",
+			})
 			writeErr(w, http.StatusRequestEntityTooLarge, requestID, "request_too_large",
 				"request body exceeds the 32 MiB limit")
 			return
 		}
+		h.recordRefusal(r, billing.Refusal{
+			RequestID:    requestID,
+			Stage:        billing.RefusalStageRequestStructure,
+			ErrorClass:   "param_invalid",
+			ErrorMessage: "failed to read request body",
+		})
 		writeErr(w, http.StatusBadRequest, requestID, "invalid_request", "failed to read request body")
 		return
 	}
@@ -1319,10 +1333,24 @@ func (h *RelayHandler) handleMessagesCountTokens(w http.ResponseWriter, r *http.
 	parsed, err := ir.ParseAnthropicRequest(body)
 	if err != nil {
 		h.log.Warn("messages count_tokens: invalid Anthropic request body", "error", err, "request_id", requestID)
+		h.recordRefusal(r, billing.Refusal{
+			RequestID:    requestID,
+			Stage:        billing.RefusalStageRequestStructure,
+			ErrorClass:   "param_invalid",
+			ErrorMessage: "invalid Anthropic request body",
+			Structure:    "invalid",
+		})
 		writeErr(w, http.StatusBadRequest, requestID, "invalid_request", "invalid Anthropic request body")
 		return
 	}
 	if strings.TrimSpace(parsed.Model) == "" {
+		h.recordRefusal(r, billing.Refusal{
+			RequestID:    requestID,
+			Stage:        billing.RefusalStageRequestStructure,
+			ErrorClass:   "param_invalid",
+			ErrorMessage: "model is required",
+			Structure:    "invalid",
+		})
 		writeErr(w, http.StatusBadRequest, requestID, "invalid_request", "model is required")
 		return
 	}
@@ -1363,6 +1391,16 @@ func (h *RelayHandler) handleMessagesCountTokens(w http.ResponseWriter, r *http.
 	// 这些检查都不产生计费或上游调用，失败路径仍零副作用。
 	pinID, hasPin := relay.ParseChannelPin(r)
 	if !hasPin && !tokenModelAllowed(principal.ModelLimits, parsed.Model) {
+		h.recordRefusal(r, billing.Refusal{
+			RequestID:    requestID,
+			UserID:       int64(rc.UserID),
+			TokenID:      refusalTokenID(rc.TokenID),
+			Model:        parsed.Model,
+			Endpoint:     contract.EndpointLabel(rc.RequestPath),
+			Stage:        billing.RefusalStageModelAdmission,
+			ErrorMessage: "this token is not allowed to access the requested model",
+			Structure:    rc.RequestStructure,
+		})
 		writeErr(w, http.StatusForbidden, requestID, "distributor_token_model_forbidden",
 			"this token is not allowed to access the requested model")
 		return
@@ -3757,17 +3795,9 @@ func refusalTokenID(tokenID int) *int64 {
 // 在这里补齐。落库失败只记 WARN 并吞掉——落库永不阻断请求，原始 HTTP 响应
 // 仍由调用方照常写出。
 func (h *RelayHandler) recordRefusal(r *http.Request, in billing.Refusal) {
-	if h == nil || h.refusals == nil || r == nil {
+	if h == nil {
 		return
 	}
-	// 落库永不阻断请求：即使注入的实现 panic，也必须让调用方继续写原始
-	// HTTP 响应（否则客户端会拿到断连而不是那条 4xx）。recover 只记 WARN。
-	defer func() {
-		if recovered := recover(); recovered != nil && h.log != nil {
-			h.log.Warn("relay refusal recorder panicked",
-				"request_id", in.RequestID, "stage", in.Stage, "panic", recovered)
-		}
-	}()
 	// 调用方没给身份时才回源 Principal。fail-closed 401 的站点本就没有
 	// Principal：UserID 保持 0、TokenID 保持 nil（「无法说明是谁」是诚实
 	// 结果，绝不能猜一个用户）。
@@ -3779,15 +3809,32 @@ func (h *RelayHandler) recordRefusal(r *http.Request, in billing.Refusal) {
 			in.TokenID = principal.TokenID
 		}
 	}
+	recordPreRelayRefusal(h.refusals, h.log, r, in)
+}
+
+// recordPreRelayRefusal 是拒绝行的唯一落库出口（handler 与鉴权中间件共用）。
+//
+// 落库永不阻断请求：即使注入的实现 panic，也必须让调用方继续写原始 HTTP
+// 响应（否则客户端会拿到断连而不是那条 4xx）。recover 只记 WARN。
+// WithoutCancel：客户端断开不得取消落库；2s 上限避免拒绝行的写入拖住响应
+// （超时即放弃，错误仍只记日志）。
+func recordPreRelayRefusal(recorder RefusalRecorder, log *slog.Logger, r *http.Request, in billing.Refusal) {
+	if recorder == nil || r == nil {
+		return
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil && log != nil {
+			log.Warn("relay refusal recorder panicked",
+				"request_id", in.RequestID, "stage", in.Stage, "panic", recovered)
+		}
+	}()
 	if in.Endpoint == "" && r.URL != nil {
 		in.Endpoint = contract.EndpointLabel(r.URL.Path)
 	}
-	// WithoutCancel：客户端断开不得取消落库；2s 上限避免拒绝行的写入拖住
-	// 响应（超时即放弃，错误仍只记日志）。
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Second)
 	defer cancel()
-	if err := h.refusals.RecordRefusal(ctx, in); err != nil {
-		h.log.Warn("relay refusal not recorded",
+	if err := recorder.RecordRefusal(ctx, in); err != nil && log != nil {
+		log.Warn("relay refusal not recorded",
 			"request_id", in.RequestID, "stage", in.Stage, "error", err)
 	}
 }

@@ -95,9 +95,17 @@ type RelayContext struct {
 	OverrideAudit   []OverrideAuditEntry
 	Diagnostics     []DiagnosticEntry
 	// Attempts 是本次请求每轮上游尝试的执行层证据（写入方：执行层，追加式）。
-	// 有界：最多保留前 maxAttemptRecords 条（见 relay.RecordAttempt）。
+	// 有界：最多保留前 MaxAttemptRecords 条（见 relay.RecordAttempt）。
 	Attempts []AttemptRecord
 }
+
+// MaxAttemptRecords 是单请求 Attempts 与落库 retry_chain 共用的元素上界。
+//
+// 生产者（relay.RecordAttempt）与消费者（billing.buildRetryChain）必须用
+// 同一个值：两边各写一个字面量时，只改一处会让读取端的条数与证据链长度
+// 悄悄脱钩。重试上限为 5，跨组再放大一次尝试数；8 条足以覆盖正常路径并
+// 留出余量，同时防止被构造的上下文无界增长。
+const MaxAttemptRecords = 8
 
 // AttemptRecord 是一次上游尝试的执行层证据（排障用，非计费真源）。
 //

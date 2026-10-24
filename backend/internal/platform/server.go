@@ -317,9 +317,11 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db Resource, logsS
 	}
 	// Task 3b：中继前拒绝的落库接缝。日志库未装配（探针-only/测试）时保持
 	// nil（no-op）——nil *sql.DB 构造出的 DBLogger 会在首次使用时 panic。
+	// 外层节流按用户限速：拒绝发生在入口限流之前，没有上限时畸形请求循环
+	// 会变成一条 usage_logs 写放大通道（见 httpapi.NewThrottledRefusalRecorder）。
 	var refusals httpapi.RefusalRecorder
 	if logsSQL != nil {
-		refusals = billing.NewDBLogger(logsSQL)
+		refusals = httpapi.NewThrottledRefusalRecorder(billing.NewDBLogger(logsSQL))
 	}
 	relayHandler := httpapi.NewRelayHandler(httpapi.RelayHandlerOptions{
 		Channels:        channelRepo,

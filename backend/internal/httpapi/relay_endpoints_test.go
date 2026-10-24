@@ -34,6 +34,7 @@ import (
 	"newtg/gateway/internal/relay/adapters"
 	"newtg/gateway/internal/relay/billingseam"
 	"newtg/gateway/internal/store"
+	"newtg/gateway/internal/triage"
 )
 
 const (
@@ -2557,6 +2558,53 @@ func TestRelayRefusalRecordedForMalformedChatBody(t *testing.T) {
 
 // TestRelayRefusalRecordedForMalformedMessagesBody：/v1/messages 的解析失败
 // 走同一接缝，stage 为 request_structure。
+// TestRelayRefusalRecordedForCountTokensRejections：count_tokens 的三类中继前
+// 4xx（body 不可读 / 解析失败 / 缺 model）都必须留下 request_structure 拒绝行。
+// 该端点此前只写响应不落库，管理员按 requestId 查不到任何东西。
+func TestRelayRefusalRecordedForCountTokensRejections(t *testing.T) {
+	cases := []struct {
+		name      string
+		body      string
+		structure string
+	}{
+		{"unparsable body", `{"model":`, "invalid"},
+		{"missing model", `{"messages":[{"role":"user","content":"hi"}]}`, "invalid"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env, _ := messagesTestEnv(t, contract.ChannelTypeAnthropic, func(http.ResponseWriter, *http.Request) {
+				t.Error("rejected body must not reach upstream")
+			})
+			rec := &fakeRefusalRecorder{}
+			env.handler.refusals = rec
+
+			w := env.do(t, http.MethodPost, "/v1/messages/count_tokens", tc.body, messagesHeaders())
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+			}
+			refusals := rec.snapshot()
+			if len(refusals) != 1 {
+				t.Fatalf("refusals = %d, want 1", len(refusals))
+			}
+			got := refusals[0]
+			if got.Stage != billing.RefusalStageRequestStructure {
+				t.Fatalf("stage = %q, want request_structure", got.Stage)
+			}
+			if got.Structure != tc.structure {
+				t.Fatalf("structure = %q, want %q", got.Structure, tc.structure)
+			}
+			// 端点标签词表是冻结的（chat_completions|messages|responses|other），
+			// count_tokens 归入 other。
+			if got.Endpoint != "other" {
+				t.Fatalf("endpoint = %q, want other", got.Endpoint)
+			}
+			if got.RequestID != w.Header().Get("X-Request-ID") {
+				t.Fatalf("request_id = %q, header = %q", got.RequestID, w.Header().Get("X-Request-ID"))
+			}
+		})
+	}
+}
+
 func TestRelayRefusalRecordedForMalformedMessagesBody(t *testing.T) {
 	env, _ := messagesTestEnv(t, contract.ChannelTypeAnthropic, func(http.ResponseWriter, *http.Request) {
 		t.Error("malformed body must not reach upstream")
@@ -3030,5 +3078,73 @@ func TestChatPostChargeLogFailureStillDelivers(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "error_class=log_write_failed") {
 		t.Fatalf("logs = %s, want error_class=log_write_failed", logs.String())
+	}
+}
+
+// TestCrossProtocolFailureLeavesConversionEvidence 是 GW-01 的生产端接缝：
+// OpenAI 客户端 → Anthropic 渠道，上游以 400 拒绝。
+//
+// 这条路径不经过 crossproto.Forward（它只在 2xx 后追加响应方向步骤），因此
+// 转换证据必须在 relay.Route 重建请求体时写下；否则结算行没有 conversion，
+// 判定引擎只能给出 UNKNOWN——而 400 恰恰是「网关改写请求改错了」的典型形态。
+func TestCrossProtocolFailureLeavesConversionEvidence(t *testing.T) {
+	var upstreamBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		upstreamBody = string(raw)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"bad request"}}`))
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	env.channels.channels[relayTestChannelID].Type = string(contract.ChannelTypeAnthropic)
+	var captured *contract.RelayContext
+	env.captureRC = func(rc *contract.RelayContext) { captured = rc }
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
+	if w.Code == http.StatusOK {
+		t.Fatalf("cross-protocol 400 必须向上传播为错误，got 200: %s", w.Body.String())
+	}
+	if captured == nil {
+		t.Fatal("captureRC 未收到 RelayContext")
+	}
+
+	// 请求体确实被改写（证明「转换已发生」不是推断）：OpenAI 的字符串 content
+	// 变成了 Anthropic 的文本块数组。
+	if !strings.Contains(upstreamBody, `"type":"text"`) {
+		t.Fatalf("上游收到的请求体没有被改写成 Anthropic 形状：%s", upstreamBody)
+	}
+
+	if len(captured.ConversionChain) == 0 {
+		t.Fatal("ConversionChain 为空：失败请求的转换证据没有被记录")
+	}
+	step := captured.ConversionChain[0]
+	if step.Stage != "request" || step.From != "openai" || step.To != "anthropic_messages" {
+		t.Fatalf("conversion step = %+v, want request openai→anthropic_messages", step)
+	}
+
+	if len(captured.Attempts) != 1 {
+		t.Fatalf("Attempts = %d, want 1", len(captured.Attempts))
+	}
+	if got := captured.Attempts[0].UpstreamStatus; got != http.StatusBadRequest {
+		t.Fatalf("attempt upstream_status = %d, want 400", got)
+	}
+
+	// 生产端证据 → 判定引擎：必须是 GW-01，而不是「证据不足」。
+	verdict := triage.Classify(triage.Evidence{
+		Status:           "error",
+		UpstreamStatus:   captured.Attempts[0].UpstreamStatus,
+		Attempts:         len(captured.Attempts),
+		ConversionSteps:  len(captured.ConversionChain),
+		RouteFrom:        string(step.From),
+		RouteTo:          string(step.To),
+		RequestStructure: "valid",
+	})
+	if verdict.Rule != "GW-01" || verdict.Owner != triage.OwnerGateway {
+		t.Fatalf("verdict = %s/%s, want gateway/GW-01（signals=%+v）",
+			verdict.Owner, verdict.Rule, verdict.Signals)
 	}
 }

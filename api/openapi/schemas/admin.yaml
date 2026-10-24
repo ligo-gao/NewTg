@@ -4319,7 +4319,9 @@ schemas:
   RecentFailureItem:
     type: object
     additionalProperties: false
-    required: [request_id, created_at, model, channel_id, status, owner, sub, rule]
+    # channel_id 不在 required 内：中继前拒绝行没有渠道，显式输出 null。
+    # 入 required 会让生成器产出 int64（非指针），消费者解码 null 即失败。
+    required: [request_id, created_at, model, status, owner, sub, rule]
     properties:
       request_id:
         type: string
