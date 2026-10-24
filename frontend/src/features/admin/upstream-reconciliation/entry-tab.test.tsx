@@ -74,6 +74,7 @@ const SNAPSHOTS = [
 
 interface SnapshotApiOptions {
   onSnapshot?: (url: URL) => void
+  onAccounts?: (url: URL) => void
   onPut?: (body: Record<string, unknown>) => void
   /** 保存请求在此 Promise 完成前不返回，用于断言保存进行中的 UI 状态。 */
   putGate?: Promise<void>
@@ -85,14 +86,15 @@ interface SnapshotApiOptions {
 
 function installSnapshotApi(options: SnapshotApiOptions = {}) {
   server.use(
-    http.get(`${ORIGIN}/api/upstream-accounts`, () =>
-      HttpResponse.json({
+    http.get(`${ORIGIN}/api/upstream-accounts`, ({ request }) => {
+      options.onAccounts?.(new URL(request.url))
+      return HttpResponse.json({
         items: [ACCOUNT],
         total: 1,
         page: 1,
-        page_size: 20,
-      }),
-    ),
+        page_size: 100,
+      })
+    }),
     http.get(`${ORIGIN}/api/upstream-snapshots`, async ({ request }) => {
       options.onSnapshot?.(new URL(request.url))
       await options.getGate
@@ -126,6 +128,19 @@ async function loadDate(date: string) {
 }
 
 describe('snapshot entry tab', () => {
+  it('asks for the same 100-account page the accounts tab uses', async () => {
+    // 两个标签页共用 ACCOUNTS_QUERY_KEY：参数一旦不同，先打开的一方会把
+    // 小页缓存塞给另一方，且不会因为过期而自动重取。
+    const seen: URLSearchParams[] = []
+    installSnapshotApi({ onAccounts: (url) => seen.push(url.searchParams) })
+
+    await renderWithProviders(<EntryTab canManage />, ['common', 'admin'])
+    await screen.findByRole('option', { name: 'DeepSeek' })
+
+    expect(seen.length).toBeGreaterThan(0)
+    expect(seen[0]?.get('page_size')).toBe('100')
+  })
+
   it('prefills from the server and PUTs only dirty rows', async () => {
     let putBody: Record<string, unknown> | null = null
     let snapshotCalls = 0

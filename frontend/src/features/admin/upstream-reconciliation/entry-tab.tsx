@@ -229,7 +229,10 @@ export function EntryTab({ canManage }: { canManage: boolean }) {
 
   const accountsQuery = useQuery({
     queryKey: ACCOUNTS_QUERY_KEY,
-    queryFn: ({ signal }) => listAccounts({}, signal),
+    // 与「账号」标签页共用同一个缓存键，两处的查询参数必须一致：那里要求一页
+    // 100（归属下拉要看到尽可能多的账号），这里若退回缺省 20，先打开本页再切
+    // 过去时对方会直接复用这份 20 条的缓存而不重取。
+    queryFn: ({ signal }) => listAccounts({ page_size: 100 }, signal),
     retry: false,
     staleTime: 30_000,
   })
