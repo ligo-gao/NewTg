@@ -10478,7 +10478,10 @@ type UsageStatsByModelItem struct {
 
 	// Percent 十进制基点分配，各扇区合计恰为 100
 	Percent float32 `json:"percent"`
-	Tokens  int64   `json:"tokens"`
+
+	// Requests 窗口内该模型的请求数
+	Requests int64 `json:"requests"`
+	Tokens   int64 `json:"tokens"`
 }
 
 // UsageStatsByTokenItem defines model for UsageStatsByTokenItem.

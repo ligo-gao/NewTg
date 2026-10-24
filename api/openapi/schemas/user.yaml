@@ -1721,11 +1721,12 @@ schemas:
   UsageStatsByModelItem:
     type: object
     additionalProperties: false
-    required: [model, cost, tokens, percent]
+    required: [model, cost, tokens, requests, percent]
     properties:
       model: { type: string, description: 第 9 名起聚合为 other }
       cost: { type: integer, format: int64 }
       tokens: { type: integer, format: int64 }
+      requests: { type: integer, format: int64, description: 窗口内该模型的请求数 }
       percent:
         type: number
         description: 十进制基点分配，各扇区合计恰为 100

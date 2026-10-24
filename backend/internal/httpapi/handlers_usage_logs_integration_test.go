@@ -773,15 +773,24 @@ func TestIntegrationUsageStatsSummary(t *testing.T) {
 func TestIntegrationUsageStatsByModel(t *testing.T) {
 	env := newUsageTestEnv(t)
 	userID, _ := ensureUsageTestUser(t, env, "bm")
-	for i := 0; i < 9; i++ {
+	// 各模型请求数刻意不同（model-0 三次、model-1 两次、其余一次），
+	// 且 tokens 与请求数不相等：count(*) 漏算或 scan 顺序错位都会被断言抓到。
+	for i := 0; i < 3; i++ {
+		env.seed(t, usageSeed{UserID: userID, Model: "model-0", Cost: 10, PromptTokens: 1, Completion: 1})
+	}
+	for i := 0; i < 2; i++ {
+		env.seed(t, usageSeed{UserID: userID, Model: "model-1", Cost: 10, PromptTokens: 1, Completion: 1})
+	}
+	for i := 2; i < 9; i++ {
 		env.seed(t, usageSeed{UserID: userID, Model: fmt.Sprintf("model-%d", i), Cost: 10, PromptTokens: 1, Completion: 1})
 	}
 	rec := env.do(t, http.MethodGet, "/api/usage-stats/by-model", userPrincipal(userID))
 	body := decodeUsageJSON[[]struct {
-		Model   string  `json:"model"`
-		Cost    int64   `json:"cost"`
-		Tokens  int64   `json:"tokens"`
-		Percent float64 `json:"percent"`
+		Model    string  `json:"model"`
+		Cost     int64   `json:"cost"`
+		Tokens   int64   `json:"tokens"`
+		Requests int64   `json:"requests"`
+		Percent  float64 `json:"percent"`
 	}](t, rec)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("by-model status = %d body=%s", rec.Code, rec.Body.String())
@@ -789,15 +798,25 @@ func TestIntegrationUsageStatsByModel(t *testing.T) {
 	if len(body) != 9 {
 		t.Fatalf("by-model rows = %d, want top 8 + other = 9", len(body))
 	}
-	if body[8].Model != "other" || body[8].Cost != 10 {
-		t.Fatalf("other bucket = %+v", body[8])
+	if body[0].Model != "model-0" || body[0].Cost != 30 || body[0].Tokens != 6 || body[0].Requests != 3 {
+		t.Fatalf("model-0 = %+v, want cost=30 tokens=6 requests=3", body[0])
 	}
-	var sum float64
+	if body[1].Model != "model-1" || body[1].Cost != 20 || body[1].Tokens != 4 || body[1].Requests != 2 {
+		t.Fatalf("model-1 = %+v, want cost=20 tokens=4 requests=2", body[1])
+	}
+	if body[8].Model != "other" || body[8].Cost != 10 || body[8].Tokens != 2 || body[8].Requests != 1 {
+		t.Fatalf("other bucket = %+v, want cost=10 tokens=2 requests=1", body[8])
+	}
+	var sum, requests int64
 	for _, item := range body {
-		sum += item.Percent
+		sum += int64(math.Round(item.Percent * 100))
+		requests += item.Requests
 	}
-	if sum < 99.999 || sum > 100.001 {
-		t.Fatalf("percent sum = %v, want 100", sum)
+	if sum != 10000 {
+		t.Fatalf("percent basis points = %d, want 10000", sum)
+	}
+	if requests != 12 {
+		t.Fatalf("total requests = %d, want 12 (3+2+7)", requests)
 	}
 
 	// 0 行 → 空数组（不是 null）。

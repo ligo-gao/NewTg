@@ -10562,6 +10562,11 @@ export interface components {
             cost: number;
             /** Format: int64 */
             tokens: number;
+            /**
+             * Format: int64
+             * @description 窗口内该模型的请求数
+             */
+            requests: number;
             /** @description 十进制基点分配，各扇区合计恰为 100 */
             percent: number;
         };

@@ -2231,10 +2231,11 @@ func (h *UsageLogHandlers) handleUsageStatsSummary(w http.ResponseWriter, r *htt
 }
 
 type usageByModelItem struct {
-	Model   string  `json:"model"`
-	Cost    int64   `json:"cost"`
-	Tokens  int64   `json:"tokens"`
-	Percent float64 `json:"percent"`
+	Model    string  `json:"model"`
+	Cost     int64   `json:"cost"`
+	Tokens   int64   `json:"tokens"`
+	Requests int64   `json:"requests"`
+	Percent  float64 `json:"percent"`
 }
 
 func (h *UsageLogHandlers) handleUsageStatsByModel(w http.ResponseWriter, r *http.Request) {
@@ -2244,7 +2245,8 @@ func (h *UsageLogHandlers) handleUsageStatsByModel(w http.ResponseWriter, r *htt
 	}
 	rows, err := h.logDB.QueryContext(r.Context(), `
 		SELECT model, COALESCE(SUM(cost), 0),
-		       COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)
+		       COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0),
+		       count(*)
 		FROM usage_logs`+where+`
 		GROUP BY model ORDER BY SUM(cost) DESC, model ASC`, args...)
 	if err != nil {
@@ -2258,7 +2260,7 @@ func (h *UsageLogHandlers) handleUsageStatsByModel(w http.ResponseWriter, r *htt
 	var totalCost int64
 	for rows.Next() {
 		var item usageByModelItem
-		if err := rows.Scan(&item.Model, &item.Cost, &item.Tokens); err != nil {
+		if err := rows.Scan(&item.Model, &item.Cost, &item.Tokens, &item.Requests); err != nil {
 			h.log.Error("usage stats by-model: scan failed", "error", err)
 			writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
 			return
@@ -2278,6 +2280,7 @@ func (h *UsageLogHandlers) handleUsageStatsByModel(w http.ResponseWriter, r *htt
 		for _, item := range all[8:] {
 			other.Cost += item.Cost
 			other.Tokens += item.Tokens
+			other.Requests += item.Requests
 		}
 		items = append(append([]usageByModelItem{}, all[:8]...), other)
 	}

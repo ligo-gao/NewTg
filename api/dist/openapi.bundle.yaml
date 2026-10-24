@@ -22496,6 +22496,7 @@ components:
         - model
         - cost
         - tokens
+        - requests
         - percent
       properties:
         model:
@@ -22507,6 +22508,10 @@ components:
         tokens:
           type: integer
           format: int64
+        requests:
+          type: integer
+          format: int64
+          description: 窗口内该模型的请求数
         percent:
           type: number
           description: 十进制基点分配，各扇区合计恰为 100
