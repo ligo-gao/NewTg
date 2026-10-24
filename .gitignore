@@ -27,6 +27,10 @@ deploy/backups/
 # Logs
 *.log
 
+# Python
+__pycache__/
+*.pyc
+
 # Worktrees (each design branch lives here; never track them)
 .claude/worktrees/
 
