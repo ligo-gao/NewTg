@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useToastStore } from '@/shared/ui/toast'
 
@@ -214,6 +214,68 @@ describe('usage logs list', () => {
     expect(screen.getAllByText('refunded 467')).toHaveLength(1)
   })
 
+  it('lets Enter on a copy button copy without opening the drawer', async () => {
+    const user = userEvent.setup()
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    const requests = installScenario({
+      list: () => jsonResponse(page([USER_ROW])),
+    })
+    renderWithProviders(<PageHarness />)
+
+    const copyButton = await screen.findByRole('button', {
+      name: 'Copy request ID',
+    })
+    copyButton.focus()
+    await user.keyboard('{Enter}')
+
+    expect(writeText).toHaveBeenCalledWith(USER_ROW.request_id)
+    await waitFor(() => {
+      expect(
+        useToastStore.getState().toasts.some((toast) => toast.message === 'Copied'),
+      ).toBe(true)
+    })
+    // The row's own Enter handler must not fire for a key pressed on a child.
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(
+      requestsFor(requests, `/api/usage-logs/${String(USER_ROW.id)}`),
+    ).toHaveLength(0)
+  })
+
+  it('reports a failed copy instead of claiming success', async () => {
+    const user = userEvent.setup()
+    const writeText = vi.fn(async () => {
+      throw new Error('clipboard denied')
+    })
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    installScenario({ list: () => jsonResponse(page([USER_ROW])) })
+    renderWithProviders(<PageHarness />)
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Copy request ID' }),
+    )
+
+    await waitFor(() => {
+      expect(
+        useToastStore
+          .getState()
+          .toasts.some(
+            (toast) =>
+              toast.message === 'Copy failed. Please select the text manually.',
+          ),
+      ).toBe(true)
+    })
+    expect(
+      useToastStore.getState().toasts.some((toast) => toast.message === 'Copied'),
+    ).toBe(false)
+  })
+
   it('defaults to a 24h range and never sends a username for a user', async () => {
     const requests = installScenario({
       list: () => jsonResponse(page([USER_ROW])),
@@ -273,6 +335,32 @@ describe('usage logs list', () => {
     expect(screen.queryByRole('columnheader', { name: 'User' })).toBeNull()
   })
 
+  it('shows the request id column to every role and hides the group filter from users', async () => {
+    installScenario({ list: () => jsonResponse(page([USER_ROW])) })
+    renderWithProviders(<PageHarness />)
+
+    await screen.findByText('gpt-4o')
+    expect(screen.getByRole('columnheader', { name: 'Request ID' })).toBeTruthy()
+    expect(screen.getByText('9f3a8d2e…')).toBeTruthy()
+    expect(screen.queryByLabelText('Group')).toBeNull()
+  })
+
+  it('keeps a user-supplied group filter visible as a removable chip', async () => {
+    const user = userEvent.setup()
+    const requests = installScenario({
+      list: () => jsonResponse(page([USER_ROW])),
+    })
+    renderWithProviders(<PageHarness initial={{ group: 'vip' }} />)
+
+    await screen.findByText('gpt-4o')
+    await user.click(screen.getByRole('button', { name: 'Group: vip ×' }))
+    await waitFor(() => {
+      expect(
+        latestRequest(requests, '/api/usage-logs')?.url.searchParams.get('group'),
+      ).toBeNull()
+    })
+  })
+
   it('syncs the status filter to the URL and resets to page 1', async () => {
     const user = userEvent.setup()
     const changes: UsageLogSearch[] = []
@@ -327,9 +415,10 @@ describe('usage logs list', () => {
     )
   })
 
-  it('debounces the group and token filters by 300ms', async () => {
+  it('debounces the group and token filters by 300ms (admin)', async () => {
     const user = userEvent.setup()
     const requests = installScenario({
+      me: ME_ADMIN,
       list: () => jsonResponse(page([USER_ROW])),
     })
     renderWithProviders(<PageHarness />)

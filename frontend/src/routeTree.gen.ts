@@ -56,6 +56,7 @@ import { Route as ConsoleAdminSettingsIndexRouteImport } from './routes/_console
 import { Route as ConsoleAdminSettingsAnnouncementsRouteImport } from './routes/_console/admin/settings/announcements'
 import { Route as ConsoleAdminSettingsNotificationTemplatesRouteImport } from './routes/_console/admin/settings/notification-templates'
 import { Route as ConsoleAdminSystemAuditLogsRouteImport } from './routes/_console/admin/system/audit-logs'
+import { Route as ConsoleAdminSystemFailureTriageRouteImport } from './routes/_console/admin/system/failure-triage'
 import { Route as ConsoleAdminSystemPerformanceRouteImport } from './routes/_console/admin/system/performance'
 import { Route as ConsoleAdminSystemStatusRouteImport } from './routes/_console/admin/system/status'
 import { Route as ConsoleAdminUsersIndexRouteImport } from './routes/_console/admin/users/index'
@@ -309,6 +310,12 @@ const ConsoleAdminSystemAuditLogsRoute =
     path: '/system/audit-logs',
     getParentRoute: () => ConsoleAdminRoute,
   } as any)
+const ConsoleAdminSystemFailureTriageRoute =
+  ConsoleAdminSystemFailureTriageRouteImport.update({
+    id: '/system/failure-triage',
+    path: '/system/failure-triage',
+    getParentRoute: () => ConsoleAdminRoute,
+  } as any)
 const ConsoleAdminSystemPerformanceRoute =
   ConsoleAdminSystemPerformanceRouteImport.update({
     id: '/system/performance',
@@ -388,6 +395,7 @@ export interface FileRoutesByFullPath {
   '/admin/settings/announcements': typeof ConsoleAdminSettingsAnnouncementsRoute
   '/admin/settings/notification-templates': typeof ConsoleAdminSettingsNotificationTemplatesRoute
   '/admin/system/audit-logs': typeof ConsoleAdminSystemAuditLogsRoute
+  '/admin/system/failure-triage': typeof ConsoleAdminSystemFailureTriageRoute
   '/admin/system/performance': typeof ConsoleAdminSystemPerformanceRoute
   '/admin/system/status': typeof ConsoleAdminSystemStatusRoute
   '/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
@@ -441,6 +449,7 @@ export interface FileRoutesByTo {
   '/admin/settings/announcements': typeof ConsoleAdminSettingsAnnouncementsRoute
   '/admin/settings/notification-templates': typeof ConsoleAdminSettingsNotificationTemplatesRoute
   '/admin/system/audit-logs': typeof ConsoleAdminSystemAuditLogsRoute
+  '/admin/system/failure-triage': typeof ConsoleAdminSystemFailureTriageRoute
   '/admin/system/performance': typeof ConsoleAdminSystemPerformanceRoute
   '/admin/system/status': typeof ConsoleAdminSystemStatusRoute
   '/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
@@ -497,6 +506,7 @@ export interface FileRoutesById {
   '/_console/admin/settings/announcements': typeof ConsoleAdminSettingsAnnouncementsRoute
   '/_console/admin/settings/notification-templates': typeof ConsoleAdminSettingsNotificationTemplatesRoute
   '/_console/admin/system/audit-logs': typeof ConsoleAdminSystemAuditLogsRoute
+  '/_console/admin/system/failure-triage': typeof ConsoleAdminSystemFailureTriageRoute
   '/_console/admin/system/performance': typeof ConsoleAdminSystemPerformanceRoute
   '/_console/admin/system/status': typeof ConsoleAdminSystemStatusRoute
   '/_console/admin/users/groups': typeof ConsoleAdminUsersGroupsRoute
@@ -553,6 +563,7 @@ export interface FileRouteTypes {
     | '/admin/settings/announcements'
     | '/admin/settings/notification-templates'
     | '/admin/system/audit-logs'
+    | '/admin/system/failure-triage'
     | '/admin/system/performance'
     | '/admin/system/status'
     | '/admin/users/groups'
@@ -606,6 +617,7 @@ export interface FileRouteTypes {
     | '/admin/settings/announcements'
     | '/admin/settings/notification-templates'
     | '/admin/system/audit-logs'
+    | '/admin/system/failure-triage'
     | '/admin/system/performance'
     | '/admin/system/status'
     | '/admin/users/groups'
@@ -661,6 +673,7 @@ export interface FileRouteTypes {
     | '/_console/admin/settings/announcements'
     | '/_console/admin/settings/notification-templates'
     | '/_console/admin/system/audit-logs'
+    | '/_console/admin/system/failure-triage'
     | '/_console/admin/system/performance'
     | '/_console/admin/system/status'
     | '/_console/admin/users/groups'
@@ -1027,6 +1040,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleAdminSystemAuditLogsRouteImport
       parentRoute: typeof ConsoleAdminRoute
     }
+    '/_console/admin/system/failure-triage': {
+      id: '/_console/admin/system/failure-triage'
+      path: '/system/failure-triage'
+      fullPath: '/admin/system/failure-triage'
+      preLoaderRoute: typeof ConsoleAdminSystemFailureTriageRouteImport
+      parentRoute: typeof ConsoleAdminRoute
+    }
     '/_console/admin/system/performance': {
       id: '/_console/admin/system/performance'
       path: '/system/performance'
@@ -1082,6 +1102,7 @@ interface ConsoleAdminRouteChildren {
   ConsoleAdminSettingsAnnouncementsRoute: typeof ConsoleAdminSettingsAnnouncementsRoute
   ConsoleAdminSettingsNotificationTemplatesRoute: typeof ConsoleAdminSettingsNotificationTemplatesRoute
   ConsoleAdminSystemAuditLogsRoute: typeof ConsoleAdminSystemAuditLogsRoute
+  ConsoleAdminSystemFailureTriageRoute: typeof ConsoleAdminSystemFailureTriageRoute
   ConsoleAdminSystemPerformanceRoute: typeof ConsoleAdminSystemPerformanceRoute
   ConsoleAdminSystemStatusRoute: typeof ConsoleAdminSystemStatusRoute
   ConsoleAdminUsersGroupsRoute: typeof ConsoleAdminUsersGroupsRoute
@@ -1106,6 +1127,7 @@ const ConsoleAdminRouteChildren: ConsoleAdminRouteChildren = {
   ConsoleAdminSettingsNotificationTemplatesRoute:
     ConsoleAdminSettingsNotificationTemplatesRoute,
   ConsoleAdminSystemAuditLogsRoute: ConsoleAdminSystemAuditLogsRoute,
+  ConsoleAdminSystemFailureTriageRoute: ConsoleAdminSystemFailureTriageRoute,
   ConsoleAdminSystemPerformanceRoute: ConsoleAdminSystemPerformanceRoute,
   ConsoleAdminSystemStatusRoute: ConsoleAdminSystemStatusRoute,
   ConsoleAdminUsersGroupsRoute: ConsoleAdminUsersGroupsRoute,

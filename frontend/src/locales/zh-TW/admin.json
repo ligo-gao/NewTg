@@ -1894,5 +1894,284 @@
       "cap_notice": "僅顯示最近的 {count} 筆訂閱，較早的執行個體未顯示。",
       "order_ref": "#{id}"
     }
+  },
+  "failure_triage": {
+    "title": "失敗排障",
+    "subtitle": "貼上客戶端錯誤中的 requestId，確認這次失敗該由誰處理。",
+    "desktop_only": "本頁需要寬螢幕（1024px 以上）瀏覽。",
+    "search": {
+      "label": "requestId",
+      "placeholder": "貼上 requestId，例如 6de20d22…",
+      "submit": "查詢",
+      "invalid": "requestId 格式不正確。請貼上 32 位十六進位 ID，可含連字號。"
+    },
+    "rail": {
+      "heading": "最近失敗",
+      "count": "最近 {count} 筆",
+      "window": "掃描區間 {start} – {end}",
+      "tab_all": "全部",
+      "tab_user": "使用者請求",
+      "tab_channel": "上游渠道",
+      "tab_gateway": "閘道本身",
+      "empty": "這個歸屬下暫無失敗。",
+      "footer": "資料保留 90 天 · 僅管理員可見"
+    },
+    "totals": {
+      "lead": "最近 {count} 筆失敗",
+      "user": "使用者請求 {count}",
+      "channel": "上游渠道 {count}",
+      "gateway": "閘道本身 {count}",
+      "unknown": "證據不足 {count}",
+      "lead_filtered": "最近 {count} 筆失敗 · {owner}"
+    },
+    "sections": {
+      "evidence": "判定依據",
+      "actions": "建議動作"
+    },
+    "stamp": {
+      "owner_label": "歸屬",
+      "sub_label": "子類 · {sub}"
+    },
+    "case": {
+      "copy_request_id": "複製",
+      "copied": "已複製到剪貼簿。",
+      "copy_failed": "複製到剪貼簿失敗。"
+    },
+    "empty": {
+      "heading": "貼上 requestId 開始排查",
+      "body": "案卷會給出結論、判定依據與建議動作。"
+    },
+    "not_found": {
+      "heading": "日誌庫裡沒有這個 requestId",
+      "hint_1": "部分中繼前拒絕不會落庫：例如被鑑權中介層或策略攔下的請求沒有進入中繼，因此沒有日誌記錄。",
+      "hint_2": "requestId 複製不完整，或與客戶端顯示的格式不一致；",
+      "hint_3": "已經超過日誌保留期（90 天）。"
+    },
+    "error": {
+      "recent": "最近失敗載入失敗。",
+      "case": "案卷載入失敗。",
+      "retry": "重試"
+    },
+    "facts": {
+      "model": "模型",
+      "upstream_model": "上游模型",
+      "channel": "渠道",
+      "endpoint": "端點",
+      "route": "協定路徑",
+      "upstream_status": "上游狀態碼",
+      "attempts": "嘗試次數",
+      "billing": "計費"
+    },
+    "values": {
+      "upstream_none": "無上游回應",
+      "attempts_none": "0（未發出）",
+      "attempts": "{count} 次",
+      "route_not_reached": "未到達上游",
+      "route_direct": "無（{from} → {to}）",
+      "billing_refunded": "已退款",
+      "billing_charged": "已扣費",
+      "billing_none": "未扣費",
+      "channel": "{type} · ID {id}",
+      "protocol_unknown": "未知協定"
+    },
+    "owner": {
+      "user": "使用者請求",
+      "channel": "上游渠道",
+      "gateway": "閘道本身",
+      "unknown": "證據不足"
+    },
+    "vote": {
+      "user": "指向使用者",
+      "channel": "指向渠道",
+      "gateway": "指向閘道",
+      "exclude-user": "排除使用者",
+      "exclude-channel": "排除渠道",
+      "neutral": "中性"
+    },
+    "rule": {
+      "USR-01": {
+        "title": "使用者請求內容不合法",
+        "summary": "閘道在中繼前的結構檢查中發現使用者原始請求不合法，失敗發生在轉換層之前，因此由使用者請求端負責。"
+      },
+      "USR-02": {
+        "title": "閘道在送往上游前拒絕了請求",
+        "summary": "請求在額度、限流、鑑權或准入階段被閘道本機拒絕，沒有產生上游呼叫，責任在呼叫端。"
+      },
+      "CH-01": {
+        "title": "上游渠道拒絕了憑證",
+        "summary": "上游以 401/403 拒絕渠道憑證，與使用者請求內容無關，需要檢查或更新該渠道的憑證。"
+      },
+      "CH-02": {
+        "title": "上游渠道持續回傳伺服器錯誤",
+        "summary": "上游在多次嘗試後仍回傳 5xx，重試與故障轉移未能找到健康渠道，責任在上游渠道。"
+      },
+      "GW-01": {
+        "title": "協定轉換讓請求變得不再合法",
+        "summary": "使用者原始請求結構合法，但經過閘道的協定轉換後上游回傳 4xx；轉換層是本次請求中唯一新增的變數，屬於閘道本身。"
+      },
+      "GW-02": {
+        "title": "閘道尚未實作所需能力",
+        "summary": "請求命中了閘道未實作的能力（端點或渠道類型），失敗發生在閘道端，需要補齊實作。"
+      },
+      "UNKNOWN": {
+        "title": "現有證據不足以確定責任方",
+        "summary": "已落庫的事實無法明確指向使用者、上游渠道或閘道，請結合下方判定依據與容器日誌繼續排查。"
+      }
+    },
+    "sub": {
+      "request_structure": "請求結構",
+      "quota": "額度不足",
+      "rate_limit": "觸發限流",
+      "auth": "鑑權失敗",
+      "model_admission": "模型准入",
+      "channel_selection": "渠道選擇",
+      "upstream_auth": "上游憑證",
+      "upstream_server": "上游 5xx",
+      "protocol_conversion": "協定轉換",
+      "unsupported": "能力未實作",
+      "insufficient_evidence": "證據不足",
+      "unknown": "未知原因"
+    },
+    "signal": {
+      "request_structure_invalid": {
+        "fact": "使用者原始請求結構檢查失敗",
+        "note": "閘道在轉送前發現原始請求內容不合法。"
+      },
+      "request_structure_valid": {
+        "fact": "使用者原始請求結構檢查通過",
+        "note": "原始請求內容符合預期 schema 並成功解析；這並不排除請求在語意上存在問題。"
+      },
+      "request_structure_unverified": {
+        "fact": "請求結構未檢查",
+        "note": "本次請求沒有留下結構檢查結論，無法據此排除使用者端。"
+      },
+      "refused_before_upstream": {
+        "fact": "閘道在送往上游前拒絕（{stage}）",
+        "note": "拒絕發生在選擇渠道之前，沒有產生上游呼叫。"
+      },
+      "no_upstream_attempt": {
+        "fact": "沒有發出上游請求",
+        "note": "閘道在本機處理完畢，上游沒有參與本次失敗。"
+      },
+      "no_upstream_response": {
+        "fact": "未收到上游回應（嘗試 {attempts} 次）",
+        "note": "請求已送出但沒有取得回應，可能是網路錯誤或逾時。"
+      },
+      "no_upstream_server_error": {
+        "fact": "未出現 5xx 或逾時（嘗試 {attempts} 次）",
+        "note": "上游沒有伺服器故障跡象，可排除渠道健康問題。"
+      },
+      "upstream_status": {
+        "fact": "上游回傳 {upstream_status}",
+        "note": "該狀態碼無法單獨區分是請求內容還是渠道問題。"
+      },
+      "upstream_auth_rejected": {
+        "fact": "上游回傳 {upstream_status}，拒絕憑證",
+        "note": "鑑權失敗發生在請求內容被處理之前。"
+      },
+      "upstream_server_error": {
+        "fact": "上游回傳 {upstream_status}",
+        "note": "上游伺服器錯誤，屬於渠道端。"
+      },
+      "attempt_count": {
+        "fact": "上游嘗試 {attempts} 次",
+        "note": "嘗試次數用於判斷重試與故障轉移是否已經發生。"
+      },
+      "conversion_applied": {
+        "fact": "經過協定轉換：{from} → {to}",
+        "note": "閘道重寫了請求格式，轉換層是本次請求中新增的變數。"
+      },
+      "conversion_absent": {
+        "fact": "無協定轉換：{from} → {to}",
+        "note": "請求內容按原格式轉送，閘道沒有改寫。"
+      },
+      "error_class": {
+        "fact": "錯誤分類 {class}",
+        "note": "該分類無法單獨區分責任方。"
+      },
+      "error_class_unsupported": {
+        "fact": "閘道未實作的能力：{class}",
+        "note": "端點或渠道類型在閘道端尚未支援，屬於閘道本身。"
+      },
+      "unknown": {
+        "fact": "未識別的判定依據",
+        "note": "該判定依據尚未收錄在本版介面文案中，請結合容器日誌排查。"
+      }
+    },
+    "action": {
+      "user": {
+        "1": {
+          "title": "複製診斷摘要",
+          "note": "把結論、requestId 與判定依據一起傳給使用者。",
+          "button": "複製"
+        },
+        "2": {
+          "title": "開啟用量日誌",
+          "note": "核對落庫的請求列與重試鏈。",
+          "button": "開啟"
+        },
+        "3": {
+          "title": "複製回覆範本",
+          "note": "一段可直接送出、說明請求問題的回覆。",
+          "button": "複製"
+        }
+      },
+      "channel": {
+        "1": {
+          "title": "複製診斷摘要",
+          "note": "把結論與判定依據傳給渠道負責人。",
+          "button": "複製"
+        },
+        "2": {
+          "title": "開啟渠道設定",
+          "note": "重測憑證，或在恢復前暫時停用該渠道。",
+          "button": "開啟"
+        },
+        "3": {
+          "title": "複製 requestId",
+          "note": "向上游服務商升級問題時附上它。",
+          "button": "複製 ID"
+        }
+      },
+      "gateway": {
+        "1": {
+          "title": "複製診斷摘要",
+          "note": "在 issue 裡帶上 requestId、協定路徑與判定依據。",
+          "button": "複製"
+        },
+        "2": {
+          "title": "開啟用量日誌",
+          "note": "核對落庫的請求列與重試鏈。",
+          "button": "開啟"
+        },
+        "3": {
+          "title": "複製命中的規則",
+          "note": "把規則附在修正說明或事後檢討中。",
+          "button": "複製"
+        }
+      },
+      "unknown": {
+        "1": {
+          "title": "複製診斷摘要",
+          "note": "在升級前先分享已掌握的事實。",
+          "button": "複製"
+        },
+        "2": {
+          "title": "開啟用量日誌",
+          "note": "查看落庫的請求列與重試鏈。",
+          "button": "開啟"
+        },
+        "3": {
+          "title": "複製 requestId",
+          "note": "用它關聯容器日誌。",
+          "button": "複製 ID"
+        }
+      }
+    },
+    "copy": {
+      "summary": "{title}\n\n{summary}\n\nrequestId: {requestId}\n規則：{rule}",
+      "reply": "關於你回報的請求 {requestId}：{summary}\n\n請修正請求後重試。",
+      "rule_text": "{rule} · {summary}"
+    }
   }
 }

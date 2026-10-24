@@ -156,9 +156,29 @@ func TestSaturateIntegrationWritesColumns(t *testing.T) {
 	if !channelID.Valid || channelID.Int64 != int64(rc.ChannelID) {
 		t.Fatalf("channel_id = %+v", channelID)
 	}
-	// M3 无数据源的列必须为 NULL，不得用占位值污染统计。
-	if tokenName.Valid || upstream.Valid || retryChain.Valid {
-		t.Fatalf("token_name/upstream/retry_chain 应为 NULL: %+v %+v %+v", tokenName, upstream, retryChain)
+	// token_name/upstream 在 M3 无数据源，必须为 NULL，不得用占位值污染统计；
+	// retry_chain 现在由执行层 Attempts 投影而来，不能再是 NULL。
+	if tokenName.Valid || upstream.Valid {
+		t.Fatalf("token_name/upstream 应为 NULL: %+v %+v", tokenName, upstream)
+	}
+	var chainLength int
+	if err := db.QueryRow(
+		`SELECT jsonb_array_length(retry_chain) FROM usage_logs WHERE request_id = $1::uuid`,
+		rc.RequestID).Scan(&chainLength); err != nil {
+		t.Fatalf("read jsonb_array_length(retry_chain): %v", err)
+	}
+	if chainLength != 1 {
+		t.Fatalf("jsonb_array_length(retry_chain) = %d, want 1", chainLength)
+	}
+	if !retryChain.Valid {
+		t.Fatal("retry_chain 不应为 NULL")
+	}
+	var chain []map[string]any
+	if err := json.Unmarshal([]byte(retryChain.String), &chain); err != nil {
+		t.Fatalf("retry_chain 不是 JSON 数组: %v (%s)", err, retryChain.String)
+	}
+	if got := chain[0]["upstream_status"]; got != float64(200) {
+		t.Fatalf("retry_chain[0].upstream_status = %v, want 200", got)
 	}
 	if model != "gpt-4o" || group != "vip" {
 		t.Fatalf("model/group = %s/%s", model, group)
@@ -195,6 +215,20 @@ func TestSaturateIntegrationWritesColumns(t *testing.T) {
 	}
 	if _, ok := admin["quota_saturation"]; !ok {
 		t.Fatalf("other.admin_info.quota_saturation 缺失: %s", other)
+	}
+	// 排障证据：admin_info.triage 必须与 retry_chain 同源落库。
+	triage, ok := admin["triage"].(map[string]any)
+	if !ok {
+		t.Fatalf("other.admin_info.triage = %T, want object: %s", admin["triage"], other)
+	}
+	if got := triage["endpoint"]; got != "chat_completions" {
+		t.Fatalf("triage.endpoint = %v, want chat_completions", got)
+	}
+	if got := triage["upstream_status"]; got != float64(200) {
+		t.Fatalf("triage.upstream_status = %v, want 200", got)
+	}
+	if got := triage["attempts"]; got != float64(1) {
+		t.Fatalf("triage.attempts = %v, want 1", got)
 	}
 	assertNoEstimatedKeys(t, otherMap, "other")
 }
@@ -257,6 +291,63 @@ func TestSaturateIntegrationIdempotent(t *testing.T) {
 	}
 	if n := countUsageLog(t, db, rc.RequestID); n != 1 {
 		t.Fatalf("行数 = %d, want 1", n)
+	}
+}
+
+// TestSaturateIntegrationRefundKeepsEvidence 钉死退款收敛不丢排障证据：
+// 同一 request_id 先写 error 行（带 retry_chain 与 admin_info.triage），
+// worker 之后把它单向收敛为 refunded；UPDATE 不得触碰这两列。
+func TestSaturateIntegrationRefundKeepsEvidence(t *testing.T) {
+	db := openLogsTestDB(t)
+	rc := testRelayContext()
+	rc.RequestID = newTestUUID(t)
+	cleanupUsageLog(t, db, rc.RequestID)
+	l := NewDBLogger(db)
+	ctx := context.Background()
+
+	errorOutcome := SettlementOutcome{
+		PreDeducted: 100, Status: UsageLogStatusError,
+		ErrorClass: "upstream_server", ErrorMessage: "upstream 500",
+	}
+	if err := l.Saturate(ctx, testUsageFact(), rc, errorOutcome); err != nil {
+		t.Fatalf("Saturate(error): %v", err)
+	}
+	var beforeChain, beforeOther string
+	if err := db.QueryRow(
+		`SELECT retry_chain::text, other::text FROM usage_logs WHERE request_id = $1::uuid`,
+		rc.RequestID).Scan(&beforeChain, &beforeOther); err != nil {
+		t.Fatalf("read error row: %v", err)
+	}
+	if beforeChain == "" || beforeChain == "null" {
+		t.Fatalf("error 行缺少 retry_chain: %q", beforeChain)
+	}
+
+	refunded := SettlementOutcome{
+		PreDeducted: 100, Refunded: 100, Status: UsageLogStatusRefunded,
+		ErrorClass: "worker_refund", ErrorMessage: "abandoned",
+	}
+	if err := l.Saturate(ctx, nil, rc, refunded); err != nil {
+		t.Fatalf("Saturate(refunded): %v", err)
+	}
+
+	var status int16
+	var afterChain, afterOther string
+	if err := db.QueryRow(
+		`SELECT status, retry_chain::text, other::text FROM usage_logs WHERE request_id = $1::uuid`,
+		rc.RequestID).Scan(&status, &afterChain, &afterOther); err != nil {
+		t.Fatalf("read converged row: %v", err)
+	}
+	if status != UsageLogStatusRefunded {
+		t.Fatalf("status = %d, want refunded", status)
+	}
+	if afterChain != beforeChain {
+		t.Fatalf("退款收敛改写了 retry_chain:\nbefore=%s\nafter =%s", beforeChain, afterChain)
+	}
+	if afterOther != beforeOther {
+		t.Fatalf("退款收敛改写了 other:\nbefore=%s\nafter =%s", beforeOther, afterOther)
+	}
+	if !strings.Contains(afterOther, `"triage"`) {
+		t.Fatalf("退款后 admin_info.triage 丢失: %s", afterOther)
 	}
 }
 

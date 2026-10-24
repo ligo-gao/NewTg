@@ -182,10 +182,63 @@
       "spend_tooltip": "Tạm trừ {pre} / hoàn trả {refunded}",
       "by_model": "Phân bố theo mô hình",
       "other": "Khác",
-      "trend": "Xu hướng chi tiêu",
-      "trend_series": "Chi phí",
+      "trend": "Chi tiêu và yêu cầu",
       "view_table": "Xem bảng dữ liệu",
-      "trend_table_caption": "Bảng dữ liệu xu hướng chi tiêu",
+      "trend_table_caption": "Bảng dữ liệu chi tiêu và yêu cầu",
+      "chart": {
+        "average": "Trung bình {value}",
+        "sub": "Một trục thời gian, hai thang đo độc lập; di chuột lên một khoảng để xem giá trị",
+        "cost_series": "Chi tiêu · điểm",
+        "request_series": "Yêu cầu · số lượng",
+        "peak": "Cao nhất {time} · {cost} điểm ({percent}%)",
+        "active": "Hoạt động {active} / {total} {unit}",
+        "average_hour": "Trung bình {value} điểm / giờ",
+        "average_day": "Trung bình {value} điểm / ngày",
+        "zero_note": "{count} khoảng bằng 0; vẫn giữ vị trí",
+        "unit_hour": "giờ",
+        "unit_day": "ngày"
+      },
+      "kpi": {
+        "success": "Tỷ lệ thành công",
+        "tokens": "Token",
+        "latency": "Độ trễ P50",
+        "active": "Người dùng hoạt động",
+        "foot": {
+          "pre_refund": "Tạm trừ {pre} · Hoàn tiền {refunded}",
+          "avg_request": "{value} điểm mỗi yêu cầu · Hoàn tiền {refunded}",
+          "status_counts": "Thành công {success} · Thất bại {error} · Hoàn tiền {refunded} · Từ chối {refused}",
+          "failures_admin": "{count} lần thất bại → Phân loại thất bại",
+          "failures_user": "{count} lần thất bại → Xem chi tiết",
+          "token_split": "Đầu vào {input} · Đầu ra {output}",
+          "p95": "P95 {p95} · {samples} mẫu",
+          "active_note": "Không trùng lặp trong khoảng"
+        }
+      },
+      "rail": {
+        "title": "Tóm tắt khoảng thời gian",
+        "sub": "Số liệu tổng hợp theo bộ lọc hiện tại",
+        "peak": "Khoảng cao nhất",
+        "peak_share": "Tỷ trọng chi tiêu",
+        "active": "Khoảng có lưu lượng",
+        "avg_hour": "Trung bình mỗi giờ",
+        "avg_day": "Trung bình mỗi ngày",
+        "avg_request": "Trung bình mỗi yêu cầu",
+        "rpm": "RPM",
+        "tpm": "TPM",
+        "rpm_value": "{avg} trung bình · {peak} cao nhất",
+        "tpm_value": "{avg} trung bình",
+        "active_list": "Khoảng có lưu lượng",
+        "active_columns": "Chi tiêu / yêu cầu",
+        "hours_value": "{active} / {total} {unit}"
+      },
+      "token": {
+        "title": "Cơ cấu token",
+        "sub": "Tổng đầu vào và đầu ra {total}",
+        "cache": "Đọc bộ nhớ đệm",
+        "note": "Trung bình {avg} token mỗi yêu cầu; đầu vào gấp {ratio}× đầu ra",
+        "note_no_ratio": "Trung bình {avg} token mỗi yêu cầu"
+      },
+      "source_note": "Điểm = tạm trừ − hoàn trả; tỷ lệ thành công = yêu cầu thành công / tổng yêu cầu; phân vị độ trễ chỉ tính các yêu cầu thành công có độ trễ > 0. Khoảng thời gian khớp với bộ lọc phía trên.",
       "granularity_hour": "Theo giờ",
       "granularity_day": "Theo ngày",
       "empty": "Chưa có thống kê",
@@ -204,6 +257,32 @@
         "rpm_avg": "RPM trung bình",
         "rpm_peak": "RPM cao nhất",
         "tpm_avg": "TPM trung bình"
+      },
+      "model": {
+        "sub": "Sắp xếp theo chi tiêu · hạng 1–{n}, phần còn lại gộp vào mục khác",
+        "tag": "{count} mô hình"
+      },
+      "group": {
+        "title": "Sử dụng theo nhóm",
+        "sub": "{count} nhóm · theo chi tiêu"
+      },
+      "user": {
+        "title": "Xếp hạng người dùng",
+        "sub": "{count} người dùng hoạt động · theo chi tiêu"
+      },
+      "token_key": {
+        "title": "Sử dụng token",
+        "sub": "Tách theo các token API của bạn",
+        "tag": "{count} token",
+        "note": "Khi hạn mức của token hết, yêu cầu bị từ chối ngay tại cổng và được ghi là \"bị từ chối\".",
+        "unassigned": "Không dùng token"
+      },
+      "fail": {
+        "title": "Lỗi gần đây",
+        "sub": "Mới nhất trước",
+        "tag": "{shown} / {total}",
+        "view_all": "Xem tất cả {total} lỗi",
+        "empty": "Không có yêu cầu thất bại trong khoảng này"
       }
     }
   },

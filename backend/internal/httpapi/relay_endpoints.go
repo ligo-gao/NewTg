@@ -140,6 +140,16 @@ type AttemptFailureReporter interface {
 		class contract.ErrorClass, statusCode int, body []byte)
 }
 
+// RefusalRecorder 是「未到达上游即被拒绝」的落库接缝（Task 3b）。
+//
+// 生产实现是 *billing.DBLogger；nil 表示未装配日志库（探针-only / 测试装配），
+// 此时所有拒绝记录都是 no-op，HTTP 行为与接线前逐字节一致。
+type RefusalRecorder interface {
+	RecordRefusal(ctx context.Context, in billing.Refusal) error
+}
+
+var _ RefusalRecorder = (*billing.DBLogger)(nil)
+
 // modelPricingStatusDisabled 是 model_pricing.status 的停用值（modules-06
 // §3.7 状态机：1 启用 / 2 停用；迁移的 CHECK 约束只允许这两个值）。
 const modelPricingStatusDisabled int16 = 2
@@ -205,6 +215,9 @@ type RelayHandlerOptions struct {
 	// 复用现有 Redis 客户端的 *ratelimit.Limiter。nil 表示未装配（仅测试/
 	// 无 Redis 的降级装配），此时跳过限流、行为与 M5 之前一致。
 	RateLimiter RelayRateLimiter
+	// Refusals 是中继前拒绝（鉴权/请求结构/模型准入/配额/限流）的落库接缝
+	// （Task 3b）；nil 时 no-op。
+	Refusals RefusalRecorder
 }
 
 // NativeRouteDispatcher 是插件原生路由在 HTTP 面的唯一接缝（生产实现
@@ -252,6 +265,8 @@ type RelayHandler struct {
 	attemptReporter AttemptFailureReporter
 	// rateLimiter 是 W7/M5-b 的准入限流接缝；nil 时三档桶全部跳过。
 	rateLimiter RelayRateLimiter
+	// refusals 是 Task 3b 的中继前拒绝落库接缝；nil 时记录为 no-op。
+	refusals RefusalRecorder
 	// maxAutoGroups 是 R-63 的跨组上限（装配处解析并钳制 [1,20]）。
 	maxAutoGroups int
 	// playground 是 /pg/* 的内部转发表（路径已重写为 /v1/*，不含 RelayAuth；
@@ -310,6 +325,7 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 		groupConfigured:  opts.GroupConfigured,
 		attemptReporter:  opts.AttemptFailureReporter,
 		rateLimiter:      opts.RateLimiter,
+		refusals:         opts.Refusals,
 		// R-63：站点键 relay.cross_group_retry_max_groups（默认 3，非法回退
 		// 默认，钳制 [1,20]）。在这里解析一次，请求热路径只读字段。
 		maxAutoGroups: resolveCrossGroupRetryMaxGroups(opts.Config),
@@ -385,7 +401,7 @@ func configIntValue(config ConfigReader, key string) (int, bool) {
 // **同一个** RelayAuth 实例与同一份 trustedProxies 解析结果：复制一份配置
 // 会让两条路径在代理信任策略上悄悄分叉。
 func (h *RelayHandler) AuthMiddleware() func(http.Handler) http.Handler {
-	return RelayAuth(h.tokens, h.access, h.trustedProxies)
+	return RelayAuthWithRecorder(h.tokens, h.access, h.trustedProxies, h.refusals, h.log)
 }
 
 // Register 把 /v1 路由挂到 mux；鉴权中间件只包裹这些端点（管理面不经过它）。
@@ -765,6 +781,13 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if protocolErr != nil {
+		h.recordRefusal(r, billing.Refusal{
+			RequestID:    requestID,
+			Stage:        billing.RefusalStageRequestStructure,
+			ErrorClass:   "param_invalid",
+			ErrorMessage: "unsupported target protocol (expected openai, anthropic, or gemini)",
+			Structure:    "invalid",
+		})
 		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_protocol",
 			"unsupported target protocol (expected openai, anthropic, or gemini)")
 		return
@@ -773,10 +796,24 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 	body, err := readRelayBody(r)
 	if err != nil {
 		if errors.Is(err, errRelayBodyTooLarge) {
+			h.recordRefusal(r, billing.Refusal{
+				RequestID:    requestID,
+				Stage:        billing.RefusalStageRequestStructure,
+				ErrorClass:   "param_invalid",
+				ErrorMessage: "request body exceeds the 32 MiB limit",
+				Structure:    "invalid",
+			})
 			writeRelayError(w, http.StatusRequestEntityTooLarge, requestID, "request_too_large",
 				"request body exceeds the 32 MiB limit")
 			return
 		}
+		h.recordRefusal(r, billing.Refusal{
+			RequestID:    requestID,
+			Stage:        billing.RefusalStageRequestStructure,
+			ErrorClass:   "param_invalid",
+			ErrorMessage: "failed to read request body",
+			Structure:    "invalid",
+		})
 		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request", "failed to read request body")
 		return
 	}
@@ -786,6 +823,13 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 
 	parsed, err := ir.ParseOpenAIRequest(body)
 	if err != nil {
+		h.recordRefusal(r, billing.Refusal{
+			RequestID:    requestID,
+			Stage:        billing.RefusalStageRequestStructure,
+			ErrorClass:   "param_invalid",
+			ErrorMessage: "invalid OpenAI request body",
+			Structure:    "invalid",
+		})
 		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request", "invalid OpenAI request body")
 		return
 	}
@@ -793,6 +837,14 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 	// 下游 SSE 桥接只编码 index=0 的增量，n>1 会静默丢失其余候选。
 	// 与其返回一个语义不完整的流，不如在入口 400 拒绝并明确说明。
 	if parsed.Stream && requestChoiceCount(body) > 1 {
+		h.recordRefusal(r, billing.Refusal{
+			RequestID:    requestID,
+			Model:        parsed.Model,
+			Stage:        billing.RefusalStageRequestStructure,
+			ErrorClass:   "param_invalid",
+			ErrorMessage: "stream=true with n>1 is not supported: the streaming bridge cannot preserve choice identity",
+			Structure:    "invalid",
+		})
 		writeRelayError(w, http.StatusBadRequest, requestID, "invalid_request",
 			"stream=true with n>1 is not supported: the streaming bridge cannot preserve choice identity")
 		return
@@ -801,6 +853,8 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 	principal, ok := auth.PrincipalFrom(r.Context())
 	if !ok {
 		// 只有中间件未挂载才会到这里；fail-closed，绝不把零值身份当匿名用户。
+		// 不记录拒绝行：这是网关接线故障（中间件缺失），记成 refused 会把网关
+		// 自己的 bug 归到用户头上——正是本功能要防的倒置判定。
 		writeRelayError(w, http.StatusUnauthorized, requestID, "", "invalid token")
 		return
 	}
@@ -813,6 +867,9 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 	// 归一化层是 Request/OriginModel/Streaming 的唯一写入方（relay-01 §7.2）。
 	// 必须在 BuildRelayContext 之后写：它会先用 peekStreaming 填一个尽力值。
 	relay.WithRequest(rc, parsed, ir.FormatOpenAIChat, r.URL.Path)
+	// 到这里 IR 已解析成功、入口校验（n>1 流式限制）已通过，结构是真实
+	// 「合法」的证据；后续拒绝（限流/模型准入/配额）据此带上 valid。
+	rc.RequestStructure = "valid"
 
 	// F-08-18：在 IR 归一化之后、PreConsume/上游之前过滤（见函数注释）。
 	// 放在 BuildRelayContext 之后是为了日志能带上 user_id；此时尚未创建
@@ -839,6 +896,22 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 	// 与上游之前。被拒绝的请求因此零预扣、零 usage_logs、零上游调用；流式与
 	// 非流式在分流前只计一次（不按 SSE 帧计）。
 	if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal, clientIP(r)); rejection != nil {
+		// Task 3b：限流拒绝在入口直接写响应（不经过 logRelayFailure），因此
+		// 在这里补记录。500（限流器故障）是网关故障，明确不记。
+		// 演示站两层日额度是站点级容量（全站保险丝），不是调用方自己的令牌
+		// 配额；把它记成用户拒绝会误归因，故排除。其余 429 照记。
+		if rejection.Status == http.StatusTooManyRequests && rejection.Code != demoRelayQuotaExceededCode {
+			h.recordRefusal(r, billing.Refusal{
+				RequestID:    rc.RequestID,
+				UserID:       int64(rc.UserID),
+				TokenID:      refusalTokenID(rc.TokenID),
+				Model:        parsed.Model,
+				Endpoint:     contract.EndpointLabel(rc.RequestPath),
+				Stage:        billing.RefusalStageRateLimit,
+				ErrorMessage: "rate limit exceeded",
+				Structure:    rc.RequestStructure,
+			})
+		}
 		writeRelayRateLimitError(w, rc.RequestID, rejection)
 		return
 	}
@@ -852,6 +925,15 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 	// 优先级高于白名单（§3.4 注：pin 命中时跳过白名单）。非管理员 pin
 	// 已在 BuildRelayContext 返回 403，因此这里 hasPin 等价于管理员 pin。
 	if !hasPin && !tokenModelAllowed(principal.ModelLimits, parsed.Model) {
+		h.recordRefusal(r, billing.Refusal{
+			RequestID:    requestID,
+			UserID:       int64(rc.UserID),
+			TokenID:      refusalTokenID(rc.TokenID),
+			Model:        parsed.Model,
+			Stage:        billing.RefusalStageModelAdmission,
+			ErrorMessage: "this token is not allowed to access the requested model",
+			Structure:    rc.RequestStructure,
+		})
 		writeRelayError(w, http.StatusForbidden, requestID, "distributor_token_model_forbidden",
 			"this token is not allowed to access the requested model")
 		return
@@ -1000,10 +1082,24 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	body, err := readRelayBody(r)
 	if err != nil {
 		if errors.Is(err, errRelayBodyTooLarge) {
+			h.recordRefusal(r, billing.Refusal{
+				RequestID:    requestID,
+				Stage:        billing.RefusalStageRequestStructure,
+				ErrorClass:   "param_invalid",
+				ErrorMessage: "request body exceeds the 32 MiB limit",
+				Structure:    "invalid",
+			})
 			writeErr(w, http.StatusRequestEntityTooLarge, requestID, "request_too_large",
 				"request body exceeds the 32 MiB limit")
 			return
 		}
+		h.recordRefusal(r, billing.Refusal{
+			RequestID:    requestID,
+			Stage:        billing.RefusalStageRequestStructure,
+			ErrorClass:   "param_invalid",
+			ErrorMessage: "failed to read request body",
+			Structure:    "invalid",
+		})
 		writeErr(w, http.StatusBadRequest, requestID, "invalid_request", "failed to read request body")
 		return
 	}
@@ -1015,6 +1111,13 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		// GC-6：解析器文本可能回显用户输入片段，对客户端只给固定文案；
 		// 服务端日志保留“哪个字段/块类型”这一层，便于定位客户端兼容性问题。
 		h.log.Warn("messages: invalid Anthropic request body", "error", err, "request_id", requestID)
+		h.recordRefusal(r, billing.Refusal{
+			RequestID:    requestID,
+			Stage:        billing.RefusalStageRequestStructure,
+			ErrorClass:   "param_invalid",
+			ErrorMessage: "invalid Anthropic request body",
+			Structure:    "invalid",
+		})
 		writeErr(w, http.StatusBadRequest, requestID, "invalid_request", "invalid Anthropic request body")
 		return
 	}
@@ -1027,6 +1130,14 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// 因此在这里、PreConsume 与任何上游调用之前显式拒绝缺失、0 与负数。
 	// 负数本会被 ir.validateScalars 拦住（同样是 400），这里统一口径。
 	if parsed.MaxTokens == nil || *parsed.MaxTokens <= 0 {
+		h.recordRefusal(r, billing.Refusal{
+			RequestID:    requestID,
+			Model:        parsed.Model,
+			Stage:        billing.RefusalStageRequestStructure,
+			ErrorClass:   "param_invalid",
+			ErrorMessage: "max_tokens is required and must be a positive integer",
+			Structure:    "invalid",
+		})
 		writeErr(w, http.StatusBadRequest, requestID, "invalid_request",
 			"max_tokens is required and must be a positive integer")
 		return
@@ -1035,6 +1146,7 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	principal, ok := auth.PrincipalFrom(r.Context())
 	if !ok {
 		// 只有中间件未挂载才会到这里；fail-closed，绝不把零值身份当匿名用户。
+		// 不记录拒绝行：网关接线故障不得写成用户请求被拒（与 chat 同口径）。
 		writeErr(w, http.StatusUnauthorized, requestID, "", "invalid token")
 		return
 	}
@@ -1046,6 +1158,8 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	// 归一化层是 Request/OriginModel/Streaming 的唯一写入方（relay-01 §7.2）。
 	relay.WithRequest(rc, parsed, ir.FormatAnthropicMessages, r.URL.Path)
+	// IR 与 max_tokens 校验均已通过（见上方必填校验），结构证据为 valid。
+	rc.RequestStructure = "valid"
 
 	// F-08-18：与 chat 同一时点（IR 之后、PreConsume/上游之前）。/v1/messages
 	// 的 system 已由解析器放进 Messages[0]（RoleSystem），因此同一个
@@ -1058,6 +1172,20 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// 之前。原生入口没有 /pg 分支，因此不存在 TokenID==nil 的会话路径
 	// （B11 恒参与）。
 	if rejection := checkRelayRateLimit(r.Context(), h.rateLimiter, h.config, rc, principal, clientIP(r)); rejection != nil {
+		// Task 3b：与 chat 同口径——入口限流直接写响应，不经过 logRelayFailure。
+		// 与 chat 同口径：演示站日额度是站点容量，不计入用户拒绝。
+		if rejection.Status == http.StatusTooManyRequests && rejection.Code != demoRelayQuotaExceededCode {
+			h.recordRefusal(r, billing.Refusal{
+				RequestID:    rc.RequestID,
+				UserID:       int64(rc.UserID),
+				TokenID:      refusalTokenID(rc.TokenID),
+				Model:        parsed.Model,
+				Endpoint:     contract.EndpointLabel(rc.RequestPath),
+				Stage:        billing.RefusalStageRateLimit,
+				ErrorMessage: "rate limit exceeded",
+				Structure:    rc.RequestStructure,
+			})
+		}
 		writeRelayRateLimitErrorWith(w, rc.RequestID, rejection, writeErr)
 		return
 	}
@@ -1067,6 +1195,15 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// 对话族），因此没有 TokenID==nil 的分组回源分支。
 	pinID, hasPin := relay.ParseChannelPin(r)
 	if !hasPin && !tokenModelAllowed(principal.ModelLimits, parsed.Model) {
+		h.recordRefusal(r, billing.Refusal{
+			RequestID:    requestID,
+			UserID:       int64(rc.UserID),
+			TokenID:      refusalTokenID(rc.TokenID),
+			Model:        parsed.Model,
+			Stage:        billing.RefusalStageModelAdmission,
+			ErrorMessage: "this token is not allowed to access the requested model",
+			Structure:    rc.RequestStructure,
+		})
 		writeErr(w, http.StatusForbidden, requestID, "distributor_token_model_forbidden",
 			"this token is not allowed to access the requested model")
 		return
@@ -1168,10 +1305,24 @@ func (h *RelayHandler) handleMessagesCountTokens(w http.ResponseWriter, r *http.
 	body, err := readRelayBody(r)
 	if err != nil {
 		if errors.Is(err, errRelayBodyTooLarge) {
+			// 中继前拒绝：count_tokens 与 messages 共用拒绝词表，结构校验
+			// 尚未发生（Structure 留空 = 未校验），只记「请求体超限」这一事实。
+			h.recordRefusal(r, billing.Refusal{
+				RequestID:    requestID,
+				Stage:        billing.RefusalStageRequestStructure,
+				ErrorClass:   "request_too_large",
+				ErrorMessage: "request body exceeds the 32 MiB limit",
+			})
 			writeErr(w, http.StatusRequestEntityTooLarge, requestID, "request_too_large",
 				"request body exceeds the 32 MiB limit")
 			return
 		}
+		h.recordRefusal(r, billing.Refusal{
+			RequestID:    requestID,
+			Stage:        billing.RefusalStageRequestStructure,
+			ErrorClass:   "param_invalid",
+			ErrorMessage: "failed to read request body",
+		})
 		writeErr(w, http.StatusBadRequest, requestID, "invalid_request", "failed to read request body")
 		return
 	}
@@ -1182,10 +1333,24 @@ func (h *RelayHandler) handleMessagesCountTokens(w http.ResponseWriter, r *http.
 	parsed, err := ir.ParseAnthropicRequest(body)
 	if err != nil {
 		h.log.Warn("messages count_tokens: invalid Anthropic request body", "error", err, "request_id", requestID)
+		h.recordRefusal(r, billing.Refusal{
+			RequestID:    requestID,
+			Stage:        billing.RefusalStageRequestStructure,
+			ErrorClass:   "param_invalid",
+			ErrorMessage: "invalid Anthropic request body",
+			Structure:    "invalid",
+		})
 		writeErr(w, http.StatusBadRequest, requestID, "invalid_request", "invalid Anthropic request body")
 		return
 	}
 	if strings.TrimSpace(parsed.Model) == "" {
+		h.recordRefusal(r, billing.Refusal{
+			RequestID:    requestID,
+			Stage:        billing.RefusalStageRequestStructure,
+			ErrorClass:   "param_invalid",
+			ErrorMessage: "model is required",
+			Structure:    "invalid",
+		})
 		writeErr(w, http.StatusBadRequest, requestID, "invalid_request", "model is required")
 		return
 	}
@@ -1202,6 +1367,8 @@ func (h *RelayHandler) handleMessagesCountTokens(w http.ResponseWriter, r *http.
 		return
 	}
 	relay.WithRequest(rc, parsed, ir.FormatAnthropicMessages, r.URL.Path)
+	// IR 解析与 model 必填校验均已通过；count_tokens 同样带出真实结构证据。
+	rc.RequestStructure = "valid"
 
 	// F-08-18：与 /v1/messages 同一时点与同一口径（IR 之后、任何上游调用
 	// 之前）。count_tokens 原始 body 会被原样送到上游，若不在这里过滤，敏感词
@@ -1224,6 +1391,16 @@ func (h *RelayHandler) handleMessagesCountTokens(w http.ResponseWriter, r *http.
 	// 这些检查都不产生计费或上游调用，失败路径仍零副作用。
 	pinID, hasPin := relay.ParseChannelPin(r)
 	if !hasPin && !tokenModelAllowed(principal.ModelLimits, parsed.Model) {
+		h.recordRefusal(r, billing.Refusal{
+			RequestID:    requestID,
+			UserID:       int64(rc.UserID),
+			TokenID:      refusalTokenID(rc.TokenID),
+			Model:        parsed.Model,
+			Endpoint:     contract.EndpointLabel(rc.RequestPath),
+			Stage:        billing.RefusalStageModelAdmission,
+			ErrorMessage: "this token is not allowed to access the requested model",
+			Structure:    rc.RequestStructure,
+		})
 		writeErr(w, http.StatusForbidden, requestID, "distributor_token_model_forbidden",
 			"this token is not allowed to access the requested model")
 		return
@@ -1291,7 +1468,7 @@ func (h *RelayHandler) handleMessagesCountTokens(w http.ResponseWriter, r *http.
 	resp, err := client.Do(upstreamReq)
 	if err != nil {
 		// 传输层失败：不把底层文本（可能含 URL）交给客户端。
-		h.logRelayFailure(rc, err)
+		h.logRelayFailure(r, rc, err)
 		writeErr(w, http.StatusBadGateway, requestID, "upstream_error", "upstream request failed")
 		return
 	}
@@ -1299,14 +1476,14 @@ func (h *RelayHandler) handleMessagesCountTokens(w http.ResponseWriter, r *http.
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		class := adapter.ClassifyError(resp.StatusCode, nil)
 		upstreamErr := &relay.UpstreamStatusError{StatusCode: resp.StatusCode, Class: class}
-		h.logRelayFailure(rc, upstreamErr)
+		h.logRelayFailure(r, rc, upstreamErr)
 		status, _, message := relayUpstreamStatus(upstreamErr)
 		writeErr(w, status, requestID, "upstream_error", message)
 		return
 	}
 	tokens, err := counter.ParseCountTokensResponse(resp)
 	if err != nil {
-		h.logRelayFailure(rc, err)
+		h.logRelayFailure(r, rc, err)
 		writeErr(w, http.StatusBadGateway, requestID, "upstream_error",
 			"upstream returned an invalid count_tokens response")
 		return
@@ -1515,7 +1692,7 @@ func (h *RelayHandler) serveNativeJSON(w http.ResponseWriter, r *http.Request, r
 	}
 	resp, err := relay.Route(r.Context(), rc, deps)
 	if err != nil {
-		h.logRelayFailure(rc, err)
+		h.logRelayFailure(r, rc, err)
 		h.writeMessagesMappedError(w, rc.RequestID, err)
 		return
 	}
@@ -1588,7 +1765,7 @@ func (h *RelayHandler) serveNativeStream(w http.ResponseWriter, r *http.Request,
 	start := time.Now()
 	result, err := relay.ExecuteAttempts(r.Context(), rc, deps)
 	if err != nil {
-		h.logRelayFailure(rc, err)
+		h.logRelayFailure(r, rc, err)
 		h.writeMessagesMappedError(w, rc.RequestID, err)
 		return
 	}
@@ -2534,7 +2711,7 @@ func (h *RelayHandler) serveJSON(w http.ResponseWriter, r *http.Request, rc *con
 	resp, err := relay.Route(r.Context(), rc, deps)
 	if err != nil {
 		status = "error"
-		h.logRelayFailure(rc, err)
+		h.logRelayFailure(r, rc, err)
 		writeRelayMappedError(w, rc.RequestID, err)
 		return
 	}
@@ -2654,7 +2831,7 @@ func (h *RelayHandler) serveStream(w http.ResponseWriter, r *http.Request, rc *c
 	result, err := relay.ExecuteAttempts(r.Context(), rc, deps)
 	if err != nil {
 		status = "error"
-		h.logRelayFailure(rc, err)
+		h.logRelayFailure(r, rc, err)
 		writeRelayMappedError(w, rc.RequestID, err)
 		return
 	}
@@ -3551,11 +3728,14 @@ func relayFailureDiagnostics(err error) (class string, upstreamStatus, attempts 
 // 为什么必须在这里打：客户端只收到固定文案 + requestId（GC-6），失败请求
 // 也不一定写进 usage_logs（没有开启计费会话的失败没有日志行）。缺了这一行，
 // 用户报 requestId 时无法知道是哪个渠道、模型、上游状态码，排障只能靠猜。
-func (h *RelayHandler) logRelayFailure(rc *contract.RelayContext, err error) {
+//
+// r 只用于 Task 3b 的拒绝落库（身份/端点与「不随客户端断开取消」的 ctx）；
+// 传 nil 时诊断日志照常写，拒绝记录跳过。
+func (h *RelayHandler) logRelayFailure(r *http.Request, rc *contract.RelayContext, err error) {
 	if h == nil || h.log == nil || rc == nil {
 		return
 	}
-	status, code, _ := mapRelayError(err)
+	status, code, message := mapRelayError(err)
 	class, upstreamStatus, attempts := relayFailureDiagnostics(err)
 	h.log.Warn("relay request failed",
 		"request_id", rc.RequestID,
@@ -3571,6 +3751,109 @@ func (h *RelayHandler) logRelayFailure(rc *contract.RelayContext, err error) {
 		"upstream_status", upstreamStatus,
 		"attempts", attempts,
 	)
+	// Task 3b：402/429 且**从未到达上游**才是「中继前拒绝」，补一条 refused 行。
+	// 「未到达上游」的主判据是执行层没有记录任何 Attempt（len(rc.Attempts) != 0）。
+	// upstreamStatus != 0 是纵深防御、当前不承重：上游 429 会被执行层聚合/映射
+	// 成 502（见 mapRelayError），根本进不了下面的 402/429 分支，因此该条件今天
+	// 不会决定任何结果；保留它只为防止将来错误映射改动后，上游状态以 429 形态
+	// 重新到达这里而被误记成入口限流。
+	if r == nil || h.refusals == nil || len(rc.Attempts) != 0 || upstreamStatus != 0 {
+		return
+	}
+	stage := ""
+	switch status {
+	case http.StatusPaymentRequired:
+		stage = billing.RefusalStageQuota
+	case http.StatusTooManyRequests:
+		stage = billing.RefusalStageRateLimit
+	}
+	if stage == "" {
+		return
+	}
+	// 计费类错误不是 *UpstreamStatusError，relayFailureDiagnostics 因此返回空
+	// 分类；但 mapRelayError 已经给出了同一套 error_class 词表里的 code
+	//（insufficient_quota 等）。落库沿用 code 而不是留 NULL——拒绝行本来就
+	// 没有上游状态码，分类是管理员唯一能看到的成因标签。
+	errorClass := class
+	if errorClass == "" {
+		errorClass = code
+	}
+	h.recordRefusal(r, billing.Refusal{
+		RequestID:    rc.RequestID,
+		UserID:       int64(rc.UserID),
+		TokenID:      refusalTokenID(rc.TokenID),
+		Model:        rc.OriginModel,
+		Endpoint:     contract.EndpointLabel(rc.RequestPath),
+		Stage:        stage,
+		ErrorClass:   errorClass,
+		ErrorMessage: message,
+		Structure:    rc.RequestStructure,
+	})
+}
+
+// 中继前拒绝的阶段词表由 billing 包持有（billing.RefusalStage*）：写入方与
+// 校验方必须是同一份定义，否则一边改名会让 RecordRefusal 静默拒收，拒绝行
+// 直接丢失。这里不再重复声明。
+
+// refusalTokenID 把 RelayContext 的 int 令牌语义（0 = 会话路径没有令牌）
+// 转成 Refusal 的 *int64（nil = 无令牌）。不能对 0 取地址：那会把「无令牌」
+// 写成「令牌 0」，两者在 usage_logs 里是可区分的。
+func refusalTokenID(tokenID int) *int64 {
+	if tokenID <= 0 {
+		return nil
+	}
+	id := int64(tokenID)
+	return &id
+}
+
+// recordRefusal 写入一条「未到达上游即被拒绝」的 usage_logs 行（Task 3b）。
+//
+// 所有拒绝点的唯一出口：调用方只给出 stage 与本点已知的事实，身份与端点标签
+// 在这里补齐。落库失败只记 WARN 并吞掉——落库永不阻断请求，原始 HTTP 响应
+// 仍由调用方照常写出。
+func (h *RelayHandler) recordRefusal(r *http.Request, in billing.Refusal) {
+	if h == nil {
+		return
+	}
+	// 调用方没给身份时才回源 Principal。fail-closed 401 的站点本就没有
+	// Principal：UserID 保持 0、TokenID 保持 nil（「无法说明是谁」是诚实
+	// 结果，绝不能猜一个用户）。
+	if principal, ok := auth.PrincipalFrom(r.Context()); ok {
+		if in.UserID == 0 {
+			in.UserID = principal.UserID
+		}
+		if in.TokenID == nil {
+			in.TokenID = principal.TokenID
+		}
+	}
+	recordPreRelayRefusal(h.refusals, h.log, r, in)
+}
+
+// recordPreRelayRefusal 是拒绝行的唯一落库出口（handler 与鉴权中间件共用）。
+//
+// 落库永不阻断请求：即使注入的实现 panic，也必须让调用方继续写原始 HTTP
+// 响应（否则客户端会拿到断连而不是那条 4xx）。recover 只记 WARN。
+// WithoutCancel：客户端断开不得取消落库；2s 上限避免拒绝行的写入拖住响应
+// （超时即放弃，错误仍只记日志）。
+func recordPreRelayRefusal(recorder RefusalRecorder, log *slog.Logger, r *http.Request, in billing.Refusal) {
+	if recorder == nil || r == nil {
+		return
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil && log != nil {
+			log.Warn("relay refusal recorder panicked",
+				"request_id", in.RequestID, "stage", in.Stage, "panic", recovered)
+		}
+	}()
+	if in.Endpoint == "" && r.URL != nil {
+		in.Endpoint = contract.EndpointLabel(r.URL.Path)
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Second)
+	defer cancel()
+	if err := recorder.RecordRefusal(ctx, in); err != nil && log != nil {
+		log.Warn("relay refusal not recorded",
+			"request_id", in.RequestID, "stage", in.Stage, "error", err)
+	}
 }
 
 // mapRelayError 把路由/执行错误映射为客户端状态码（relay-01 §9.3）。

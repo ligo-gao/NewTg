@@ -5117,3 +5117,121 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error409'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
+
+  # 失败排障（admin console 后端；logs:read）。只读，仅 admin 会话 +
+  # logs:read；非 admin（含缺 logs:read 的 admin）一律 403。同一 requestId
+  # 多行时详情取终态行（refunded > error > refused > success）。响应只含
+  # owner / sub / rule / signal.code + params 等代码，不含任何自然语言。
+  /api/usage-logs/triage/{request_id}:
+    get:
+      tags: [admin]
+      operationId: getRequestTriage
+      x-required-permission: logs:read
+      summary: 按 requestId 判定失败责任方（用户请求 / 上游渠道 / 网关自身）
+      description: |
+        管理员粘贴客户端错误报告里的 requestId，得到责任方判定与判定依据。
+        `request_id` 只接受 UUID 的 32 位十六进制或带连字符拼写（其它形式
+        422）。格式正确但查无此 ID——包括已超过 90 天保留期——返回
+        200 + `found: false`，以便「从未存在」与「已过期删除」不可区分。
+
+        证据全部来自已落库事实：`usage_logs.retry_chain` 与
+        `other.admin_info.triage`。`verdict.signals` 是判定依据的原子事实
+        列表；`params` 缺省表示该信号没有可插值的小值。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          description: 请求 ID（UUID；32 位十六进制或 36 位带连字符均可）。
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 判定结果；格式正确但查无此 ID 时为 found=false（不是 404）。
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/RequestTriage'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/usage-logs/triage/recent:
+    get:
+      tags: [admin]
+      operationId: listRecentFailures
+      x-required-permission: logs:read
+      summary: 最近失败列表（可按责任方过滤）
+      description: |
+        返回窗口内最近的失败条目（status 非 success）。同一 requestId 只列
+        一次。`counts` 只统计本次返回的 `items`——UI 文案为「最近 N 条」，
+        不是整个窗口的全量总数。`owner` 缺省返回全部责任方。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: range
+          in: query
+          description: 预设时间窗口；缺省 24h。
+          schema:
+            type: string
+            enum: [24h, 7d, 14d, 30d]
+            default: 24h
+        - name: start
+          in: query
+          description: |
+            窗口起点的绝对时间（RFC3339）。必须与 `end` 成对提供，
+            同时存在时优先于 `range`。
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          description: |
+            窗口终点的绝对时间（RFC3339）。必须与 `start` 成对提供；
+            跨度超过 90 天返回 422。
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          description: 返回条目上限（1–50）；缺省 20。
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+        - name: owner
+          in: query
+          description: 只保留该责任方的条目；缺省不过滤。
+          schema:
+            $ref: '../schemas/admin.yaml#/schemas/TriageOwner'
+      responses:
+        '200':
+          description: 最近失败条目 + 本次返回条目的责任方计数。
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/RecentFailures'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '404':
+          $ref: '../components/responses.yaml#/responses/Error404'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'

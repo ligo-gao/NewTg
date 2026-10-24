@@ -15,6 +15,7 @@ import (
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/relay/adapters"
 	"newtg/gateway/internal/relay/billingseam"
+	"newtg/gateway/internal/relay/ir"
 )
 
 // routeTestChannelHeader 让假 RoundTripper 知道本次请求打到了哪个渠道。
@@ -41,9 +42,16 @@ type routeTestAdapter struct {
 	parseErr     error
 	panicOnParse bool
 	class        contract.ErrorClass
+	// channelType 为空时按 OpenAI 处理（既有用例都不关心协议族）。
+	channelType contract.ChannelType
 }
 
-func (a *routeTestAdapter) Type() contract.ChannelType { return contract.ChannelTypeOpenAI }
+func (a *routeTestAdapter) Type() contract.ChannelType {
+	if a.channelType == "" {
+		return contract.ChannelTypeOpenAI
+	}
+	return a.channelType
+}
 
 func (a *routeTestAdapter) Caps() contract.Capabilities { return contract.Capabilities{} }
 
@@ -922,6 +930,90 @@ func TestRouteDispatchFailureFastFails(t *testing.T) {
 	if !billing.Refunded() || billing.Sessions() != 0 || billing.Reserved() != 0 {
 		t.Fatalf("分派失败后应退款释放预算：refunded=%v sessions=%d reserved=%d",
 			billing.Refunded(), billing.Sessions(), billing.Reserved())
+	}
+	// Minor 1：分派失败也必须留下 error_class，否则结算行里为空，排障引擎
+	// 看不到 channel_type_unimplemented（GW-02 永远无法命中）。
+	if rc.LastError == nil || rc.LastError.Class != contract.ErrChannelTypeUnimplemented {
+		t.Fatalf("rc.LastError = %#v, want class channel_type_unimplemented", rc.LastError)
+	}
+}
+
+// TestAppendRequestConversion 钉死请求方向转换证据的生成条件：只有渠道
+// 线协议与客户端协议不同才追加一步；OpenAI 兼容渠道不得凭空多一步。
+func TestAppendRequestConversion(t *testing.T) {
+	newContext := func(rawFormat contract.RelayFormat, req *contract.Request) *contract.RelayContext {
+		if req != nil {
+			req.RawFormat = rawFormat
+		}
+		return &contract.RelayContext{Request: req}
+	}
+	tests := []struct {
+		name      string
+		rc        *contract.RelayContext
+		adapter   contract.Adapter
+		wantSteps int
+		wantFrom  contract.RelayFormat
+		wantTo    contract.RelayFormat
+	}{
+		{
+			name:      "anthropic channel rewrites an OpenAI request",
+			rc:        newContext(ir.FormatOpenAIChat, &contract.Request{Model: "m"}),
+			adapter:   &routeTestAdapter{channelType: contract.ChannelTypeAnthropic},
+			wantSteps: 1,
+			wantFrom:  ir.FormatOpenAIChat,
+			wantTo:    ir.FormatAnthropicMessages,
+		},
+		{
+			name:      "moonshot uses the anthropic wire format",
+			rc:        newContext(ir.FormatOpenAIChat, &contract.Request{Model: "m"}),
+			adapter:   &routeTestAdapter{channelType: contract.ChannelTypeMoonshot},
+			wantSteps: 1,
+			wantFrom:  ir.FormatOpenAIChat,
+			wantTo:    ir.FormatAnthropicMessages,
+		},
+		{
+			name:      "gemini channel rewrites an OpenAI request",
+			rc:        newContext(ir.FormatOpenAIChat, &contract.Request{Model: "m"}),
+			adapter:   &routeTestAdapter{channelType: contract.ChannelTypeGemini},
+			wantSteps: 1,
+			wantFrom:  ir.FormatOpenAIChat,
+			wantTo:    ir.FormatGeminiGenerateContent,
+		},
+		{
+			name:      "empty raw format falls back to OpenAI chat",
+			rc:        newContext("", &contract.Request{Model: "m"}),
+			adapter:   &routeTestAdapter{channelType: contract.ChannelTypeAnthropic},
+			wantSteps: 1,
+			wantFrom:  ir.FormatOpenAIChat,
+			wantTo:    ir.FormatAnthropicMessages,
+		},
+		{
+			name:      "OpenAI-family channel gains no step",
+			rc:        newContext(ir.FormatOpenAIChat, &contract.Request{Model: "m"}),
+			adapter:   &routeTestAdapter{channelType: contract.ChannelTypeOpenAI},
+			wantSteps: 0,
+		},
+		{
+			name:      "same protocol client and channel gain no step",
+			rc:        newContext(ir.FormatAnthropicMessages, &contract.Request{Model: "m"}),
+			adapter:   &routeTestAdapter{channelType: contract.ChannelTypeAnthropic},
+			wantSteps: 0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			appendRequestConversion(tc.rc, tc.adapter)
+			if len(tc.rc.ConversionChain) != tc.wantSteps {
+				t.Fatalf("ConversionChain = %+v, want %d step(s)", tc.rc.ConversionChain, tc.wantSteps)
+			}
+			if tc.wantSteps == 0 {
+				return
+			}
+			step := tc.rc.ConversionChain[0]
+			if step.Stage != "request" || step.From != tc.wantFrom || step.To != tc.wantTo || step.At.IsZero() {
+				t.Fatalf("step = %+v, want request %s→%s with timestamp", step, tc.wantFrom, tc.wantTo)
+			}
+		})
 	}
 }
 

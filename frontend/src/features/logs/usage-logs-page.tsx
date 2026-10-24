@@ -493,9 +493,21 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
     update({ range: next, start: undefined, end: undefined, p: 1 })
   }
 
-  function copy(value: string): void {
-    void navigator.clipboard?.writeText(value).catch(() => undefined)
-    push({ tone: 'success', message: t('common.action.copied') })
+  async function copy(value: string): Promise<void> {
+    // A plain-HTTP origin has no Clipboard API. Claiming success there would
+    // hide the failure of the support path this redesign adds, so the toast is
+    // driven by the write itself; on failure the text stays selectable.
+    const clipboard = navigator.clipboard
+    if (clipboard === undefined) {
+      push({ tone: 'error', message: t('common.error_page.copy_failed') })
+      return
+    }
+    try {
+      await clipboard.writeText(value)
+      push({ tone: 'success', message: t('common.action.copied') })
+    } catch {
+      push({ tone: 'error', message: t('common.error_page.copy_failed') })
+    }
   }
 
   // Keep the filter toolbar mounted on every failure: a 422/429 must leave the
@@ -519,7 +531,10 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
   }
 
   const columnCount =
-    7 + (capabilities.isAdmin ? 1 : 0) + (capabilities.canFilterByUsername ? 1 : 0)
+    7 +
+    (capabilities.isAdmin ? 1 : 0) +
+    (capabilities.canFilterByUsername ? 1 : 0) +
+    1
 
   return (
     <section className="mx-auto flex max-w-[1520px] flex-col gap-4">
@@ -611,16 +626,18 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
             className="h-9 w-44"
           />
 
-          <TextField
-            id="logs-group"
-            label={t('logs.usage.filters.group')}
-            placeholder={t('logs.usage.filters.group_placeholder')}
-            value={groupDraft}
-            onChange={(event) => {
-              setGroupDraft(event.target.value)
-            }}
-            className="h-9 w-36"
-          />
+          {capabilities.isAdmin ? (
+            <TextField
+              id="logs-group"
+              label={t('logs.usage.filters.group')}
+              placeholder={t('logs.usage.filters.group_placeholder')}
+              value={groupDraft}
+              onChange={(event) => {
+                setGroupDraft(event.target.value)
+              }}
+              className="h-9 w-36"
+            />
+          ) : null}
 
           <TextField
             id="logs-token"
@@ -894,6 +911,9 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
                     {t('logs.usage.columns.user')}
                   </th>
                 ) : null}
+                <th scope="col" className="px-4 py-2">
+                  {t('logs.usage.columns.request_id')}
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -910,6 +930,9 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
                       setSelectedId(row.id)
                     }}
                     onKeyDown={(event) => {
+                      // Only the row itself opens the drawer. Copy buttons
+                      // inside the row must keep their own Enter/Space click.
+                      if (event.target !== event.currentTarget) return
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault()
                         setSelectedId(row.id)
@@ -933,7 +956,7 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
                         aria-label={t('logs.usage.copy.model')}
                         onClick={(event) => {
                           event.stopPropagation()
-                          copy(row.model)
+                          void copy(row.model)
                         }}
                         className="ml-2 rounded px-1 text-ink-3 hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
                       >
@@ -997,7 +1020,7 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
                             aria-label={t('logs.usage.copy.channel')}
                             onClick={(event) => {
                               event.stopPropagation()
-                              copy(row.upstream as string)
+                              void copy(row.upstream as string)
                             }}
                             className="ml-2 rounded px-1 text-ink-3 hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
                           >
@@ -1011,6 +1034,25 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
                         {row.username ?? '—'}
                       </td>
                     ) : null}
+                    <td className="px-4 py-2">
+                      <span
+                        className="font-mono text-badge text-ink-2"
+                        title={row.request_id}
+                      >
+                        {row.request_id.slice(0, 8)}…
+                      </span>
+                      <button
+                        type="button"
+                        aria-label={t('logs.usage.copy.request_id')}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          void copy(row.request_id)
+                        }}
+                        className="ml-2 rounded px-1 text-ink-3 hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                      >
+                        ⧉
+                      </button>
+                    </td>
                   </tr>
                 )
               })}
@@ -1048,8 +1090,15 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
         <UsageStatsTab
           search={search}
           canFilterByUsername={capabilities.canFilterByUsername}
+          isAdmin={capabilities.isAdmin}
           active={tab === 'stats'}
           ready={!capabilities.loading}
+          revealSensitive={revealSensitive}
+          canViewSensitive={capabilities.canViewSensitive}
+          onOpenLog={setSelectedId}
+          onViewAllFailures={() => {
+            update({ tab: 'logs', status: 'error', p: 1 })
+          }}
         />
       </div>
 

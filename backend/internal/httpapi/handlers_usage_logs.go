@@ -25,6 +25,7 @@ package httpapi
 
 import (
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,8 +43,10 @@ import (
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
+	"newtg/gateway/internal/triage"
 )
 
 const (
@@ -170,6 +173,15 @@ func (h *UsageLogHandlers) RegisterUsageLogRoutes(mux *http.ServeMux, wrap func(
 	}
 	register("GET /api/usage-logs", h.handleUsageLogList)
 	register("GET /api/usage-logs/export", h.handleUsageLogExport)
+	// 失败排障（admin console 后端）。`triage/recent` 是两段路径，与单段
+	// `{id}` 不重叠，也与 `{id}/prompt` 不重叠（第二段字面量不同），可直接
+	// 注册。但 `triage/{request_id}` 与既有 `{id}/prompt` 在
+	// `/api/usage-logs/triage/prompt` 上重叠，且两者互不更具体——直接注册
+	// 会让 ServeMux panic。因此详情路由走 `/api/usage-logs/` 子树兜底
+	// （子树是两者的超集，故不冲突），由 handleUsageLogSubtree 精确分发；
+	// 不要把它「修正」成直接注册 `triage/{request_id}`。
+	register("GET /api/usage-logs/triage/recent", h.handleRecentFailures)
+	register("GET /api/usage-logs/", h.handleUsageLogSubtree)
 	// F-05-08 的规范路径是 GET /api/model-perf（modules-05 §5.5 / UI §8.9）；
 	// 同时保留 /api/usage-logs/model-performance 别名，兼容只读端点族的
 	// 直觉路径。两个路径共用同一 handler，鉴权与参数校验不可能漂移。
@@ -181,6 +193,7 @@ func (h *UsageLogHandlers) RegisterUsageLogRoutes(mux *http.ServeMux, wrap func(
 	register("GET /api/usage-stats/by-model", h.handleUsageStatsByModel)
 	register("GET /api/usage-stats/by-user", h.handleUsageStatsByUser)
 	register("GET /api/usage-stats/by-group", h.handleUsageStatsByGroup)
+	register("GET /api/usage-stats/by-token", h.handleUsageStatsByToken)
 	register("GET /api/usage-stats/timeseries", h.handleUsageStatsTimeseries)
 	register("GET /api/usage-stats/rates", h.handleUsageStatsRates)
 	register("GET /api/audit-logs", h.handleAuditLogList)
@@ -791,6 +804,75 @@ func (h *UsageLogHandlers) usernamesFor(r *http.Request, ids []int64) (map[int64
 	return out, rows.Err()
 }
 
+// tokenNamesFor 批量读取令牌名，避免 N+1。令牌名以主库 api_tokens 为准：
+// usage_logs.token_name 在线上写入路径中恒为 NULL（RelayContext 不携带令牌名），
+// 该列只是不可依赖的历史快照。
+func (h *UsageLogHandlers) tokenNamesFor(r *http.Request, ids []int64) (map[int64]string, error) {
+	out := make(map[int64]string, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	uniq := make([]int64, 0, len(ids))
+	seen := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			uniq = append(uniq, id)
+		}
+	}
+	placeholders := make([]string, len(uniq))
+	args := make([]any, len(uniq))
+	for i, id := range uniq {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+	rows, err := h.db.QueryContext(r.Context(),
+		`SELECT id, name FROM api_tokens WHERE id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		out[id] = name
+	}
+	return out, rows.Err()
+}
+
+// enrichTokenNames 从主库 api_tokens 批量补齐缺失的令牌名：一次 IN 查询，
+// 不是逐行查询。只填空值，已有快照不得被覆盖；主库偶发失败只记 Warn，
+// 读路径仍返回当前数据（与 by-user 统计同一非致命策略）。
+func (h *UsageLogHandlers) enrichTokenNames(r *http.Request, items []usageLogItem) {
+	missing := make([]int64, 0, len(items))
+	for _, item := range items {
+		if item.TokenID != nil && *item.TokenID > 0 && (item.TokenName == nil || *item.TokenName == "") {
+			missing = append(missing, *item.TokenID)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	names, err := h.tokenNamesFor(r, missing)
+	if err != nil {
+		h.log.Warn("usage logs: token name lookup failed", "error", err)
+		return
+	}
+	for i := range items {
+		if items[i].TokenID == nil || *items[i].TokenID <= 0 ||
+			(items[i].TokenName != nil && *items[i].TokenName != "") {
+			continue
+		}
+		if name, ok := names[*items[i].TokenID]; ok && name != "" {
+			value := name
+			items[i].TokenName = &value
+		}
+	}
+}
+
 // --- 列表 -----------------------------------------------------------------
 
 type usageLogPage struct {
@@ -888,6 +970,8 @@ func (h *UsageLogHandlers) handleUsageLogList(w http.ResponseWriter, r *http.Req
 		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
 		return
 	}
+	// usage_logs.token_name 线上恒为 NULL，令牌名改从主库补齐。
+	h.enrichTokenNames(r, items)
 	if viewer.admin {
 		names, err := h.usernamesFor(r, userIDs)
 		if err != nil {
@@ -952,7 +1036,10 @@ func (h *UsageLogHandlers) handleUsageLogDetail(w http.ResponseWriter, r *http.R
 		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
 		return
 	}
-	detail := usageLogDetail{usageLogItem: row.toItem(viewer.admin, revealSensitive), Other: projectOther(row.Other, viewer.admin, revealSensitive)}
+	items := []usageLogItem{row.toItem(viewer.admin, revealSensitive)}
+	// usage_logs.token_name 线上恒为 NULL，令牌名改从主库补齐。
+	h.enrichTokenNames(r, items)
+	detail := usageLogDetail{usageLogItem: items[0], Other: projectOther(row.Other, viewer.admin, revealSensitive)}
 	if viewer.admin {
 		if name, err := h.usernamesFor(r, []int64{row.UserID}); err == nil {
 			if username, ok := name[row.UserID]; ok {
@@ -965,6 +1052,543 @@ func (h *UsageLogHandlers) handleUsageLogDetail(w http.ResponseWriter, r *http.R
 		}
 	}
 	writeJSON(w, http.StatusOK, detail)
+}
+
+// --- 失败排障（admin console） -------------------------------------------
+
+// 失败排障端点只读，且只对 admin + logs:read 开放。resolveViewer 会把
+// 「admin 但缺 logs:read」收窄为普通用户视图；排障面不应把上游/协议转换
+// 证据下发给普通用户，因此非 admin 一律 403（而不是收窄成本人范围）。
+const (
+	triageRecentDefaultLimit = 20
+	triageRecentMaxLimit     = 50
+
+	// recent 采用分页扫描而不是一次拉全窗口：窗口最长 30 天，全量装载
+	// 不可接受。maxScan 是成本上限；counts 只统计**本次返回的条目**，
+	// 与 UI「最近 N 条」一致，不伪造窗口总数。
+	triageRecentBatchSize = 200
+	triageRecentMaxScan   = 2000
+)
+
+// TriageConversionStep 是 other.admin_info.triage.conversion 的一步。
+type triageConversionStep struct {
+	Stage string `json:"stage"`
+	From  string `json:"from"`
+	To    string `json:"to"`
+}
+
+// triageBilling 是判定时已知的计费事实（金额单位与 usage_logs 一致）。
+type triageBilling struct {
+	Cost        int64  `json:"cost"`
+	PreDeducted *int64 `json:"pre_deducted"`
+	Refunded    int64  `json:"refunded"`
+}
+
+// triageEvidence 是响应里的证据投影；与 triage.Evidence 分开，
+// 因为前端还需要 endpoint / conversion 明细等引擎不消费的事实。
+type triageEvidence struct {
+	Endpoint         string                 `json:"endpoint"`
+	RouteFrom        string                 `json:"route_from"`
+	RouteTo          string                 `json:"route_to"`
+	Conversion       []triageConversionStep `json:"conversion"`
+	UpstreamStatus   int                    `json:"upstream_status"`
+	Attempts         int                    `json:"attempts"`
+	ChannelType      string                 `json:"channel_type"`
+	ChannelID        *int64                 `json:"channel_id"`
+	RequestStructure string                 `json:"request_structure"`
+	RejectStage      string                 `json:"reject_stage"`
+	Billing          triageBilling          `json:"billing"`
+	ErrorClass       string                 `json:"error_class"`
+	CreatedAt        time.Time              `json:"created_at"`
+}
+
+// requestTriageResponse 是 GET /api/usage-logs/triage/{request_id} 的响应。
+// found=false 时只返回 found + request_id（过期删除与从未存在不可区分）。
+type requestTriageResponse struct {
+	Found     bool            `json:"found"`
+	RequestID string          `json:"request_id"`
+	Log       *usageLogDetail `json:"log,omitempty"`
+	Evidence  *triageEvidence `json:"evidence,omitempty"`
+	Verdict   *triage.Verdict `json:"verdict,omitempty"`
+}
+
+// triageAdminInfo 是 other.admin_info.triage 的已落库形状。upstream_status
+// 只在真正收到上游响应时存在；缺省（nil）意味着 0，不是错误。
+type triageAdminInfo struct {
+	Endpoint         string                 `json:"endpoint"`
+	ChannelType      string                 `json:"channel_type"`
+	UpstreamStatus   *int                   `json:"upstream_status"`
+	Attempts         int                    `json:"attempts"`
+	RequestStructure string                 `json:"request_structure"`
+	Stage            string                 `json:"stage"`
+	Conversion       []triageConversionStep `json:"conversion"`
+}
+
+// triageAttemptEntry 只取 retry_chain 元素里判定需要的一个键。
+type triageAttemptEntry struct {
+	UpstreamStatus *int `json:"upstream_status"`
+}
+
+// triageStatusRank 是同一 request_id 多行时的终态优先级：值越小越优先
+// （refunded > error > refused > success）。
+func triageStatusRank(status int16) int {
+	switch status {
+	case billing.UsageLogStatusRefunded:
+		return 0
+	case billing.UsageLogStatusError:
+		return 1
+	case billing.UsageLogStatusRefused:
+		return 2
+	case billing.UsageLogStatusSuccess:
+		return 3
+	default:
+		return 4
+	}
+}
+
+// triageRowPicker 在同一 request_id 的多行中按终态优先级挑一行：rank 越小
+// 越优先（refunded > error > refused > success），同 rank 保留先到的一行
+// （查询按 created_at DESC, id DESC，即最新一行）。列表与详情共用它，
+// 保证同一 id 在两个端点得到同一个判定。
+type triageRowPicker struct {
+	row  *usageLogRow
+	rank int
+}
+
+func (p *triageRowPicker) offer(row *usageLogRow) {
+	rank := triageStatusRank(row.Status)
+	if p.row != nil && rank >= p.rank {
+		return
+	}
+	copied := *row
+	p.row = &copied
+	p.rank = rank
+}
+
+// parseTriageRequestID 只接受 UUID 的两种常见拼写：32 位十六进制或
+// 带连字符的 36 位形式（braces/urn:uuid 等其它 uuid.Parse 能接受的变体
+// 一律 422，避免把「格式错误」和「查无此 ID」混为一谈）。
+func parseTriageRequestID(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	switch len(raw) {
+	case 32:
+		if _, err := hex.DecodeString(raw); err != nil {
+			return "", false
+		}
+	case 36:
+		if raw[8] != '-' || raw[13] != '-' || raw[18] != '-' || raw[23] != '-' {
+			return "", false
+		}
+		compact := raw[:8] + raw[9:13] + raw[14:18] + raw[19:23] + raw[24:]
+		if _, err := hex.DecodeString(compact); err != nil {
+			return "", false
+		}
+	default:
+		return "", false
+	}
+	parsed, err := uuid.Parse(raw)
+	if err != nil {
+		return "", false
+	}
+	return parsed.String(), true
+}
+
+// parseTriageAdminInfo 只读 other.admin_info.triage；任何解析失败都退化成
+// 零值（证据缺失不等于端点失败）。
+func parseTriageAdminInfo(raw []byte) triageAdminInfo {
+	var info triageAdminInfo
+	if len(raw) == 0 {
+		return info
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return info
+	}
+	adminRaw, ok := top["admin_info"]
+	if !ok {
+		return info
+	}
+	var admin map[string]json.RawMessage
+	if err := json.Unmarshal(adminRaw, &admin); err != nil {
+		return info
+	}
+	triageRaw, ok := admin["triage"]
+	if !ok {
+		return info
+	}
+	_ = json.Unmarshal(triageRaw, &info)
+	return info
+}
+
+// parseTriageRetryChain 区分「没有重试链」（NULL）与「空数组」：只有 NULL
+// 才回退到 triage.attempts。
+func parseTriageRetryChain(raw []byte) ([]triageAttemptEntry, bool) {
+	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "null" {
+		return nil, false
+	}
+	var chain []triageAttemptEntry
+	if err := json.Unmarshal(raw, &chain); err != nil {
+		return nil, false
+	}
+	return chain, true
+}
+
+// triageEvidenceFromRow 从一条 usage_logs 行投影出响应证据与引擎输入。
+func triageEvidenceFromRow(row *usageLogRow) (triageEvidence, triage.Evidence) {
+	info := parseTriageAdminInfo(row.Other)
+	chain, chainPresent := parseTriageRetryChain(row.RetryChain)
+
+	attempts := info.Attempts
+	if chainPresent {
+		attempts = len(chain)
+	}
+	// 最近一次非零上游状态码；全为零时回退到 triage.upstream_status。
+	upstreamStatus := 0
+	// ServerFailureSeen 记录整条重试链里是否出现过服务端故障：任一 5xx，或
+	// 任一 nil/0 状态（没拿到响应）。nil/0 不区分「上游超时」与「网关本地
+	// 失败（渠道解析/分派/构造请求）」——两者在证据里本就同为「没有上游
+	// 响应」，宁可保守，也不能把后者漏成「没有服务端故障」从而排除渠道。
+	// 末轮的 nil/0 同样计入：「最终没有响应」本身就是服务端故障信号，否则
+	// `[429, 0]` 会渲染成「没有 5xx 或超时」并排除渠道，与 retry_chain 里
+	// 记录的超时自相矛盾。upstream_status 仍取「最近一次非零状态码」，所以
+	// `[0]` 的中性 no_upstream_response 分支不受本标记影响。
+	serverFailureSeen := false
+	for _, entry := range chain {
+		if entry.UpstreamStatus == nil || *entry.UpstreamStatus == 0 {
+			serverFailureSeen = true
+			continue
+		}
+		upstreamStatus = *entry.UpstreamStatus
+		if *entry.UpstreamStatus >= 500 {
+			serverFailureSeen = true
+		}
+	}
+	if upstreamStatus == 0 && info.UpstreamStatus != nil {
+		upstreamStatus = *info.UpstreamStatus
+		if *info.UpstreamStatus >= 500 {
+			serverFailureSeen = true
+		}
+	}
+
+	conversion := info.Conversion
+	if conversion == nil {
+		// 契约里 conversion 恒为数组（可为空）：缺少 admin_info.triage、
+		// 解析失败或 triage 里没有 conversion 时都退化为 []，绝不向客户端
+		// 下发 null（前端按 TriageConversionStep[] 直接 map）。
+		conversion = []triageConversionStep{}
+	}
+	routeFrom, routeTo := "", ""
+	if len(conversion) > 0 {
+		routeFrom = conversion[0].From
+		routeTo = conversion[len(conversion)-1].To
+	}
+
+	errorClass := nullStringValue(row.ErrorClass)
+	engine := triage.Evidence{
+		Status:            usageStatusString(row.Status),
+		ErrorClass:        errorClass,
+		UpstreamStatus:    upstreamStatus,
+		Attempts:          attempts,
+		ConversionSteps:   len(conversion),
+		RouteFrom:         routeFrom,
+		RouteTo:           routeTo,
+		RequestStructure:  info.RequestStructure,
+		RejectStage:       info.Stage,
+		ServerFailureSeen: serverFailureSeen,
+	}
+	out := triageEvidence{
+		Endpoint:         info.Endpoint,
+		RouteFrom:        routeFrom,
+		RouteTo:          routeTo,
+		Conversion:       conversion,
+		UpstreamStatus:   upstreamStatus,
+		Attempts:         attempts,
+		ChannelType:      info.ChannelType,
+		ChannelID:        nullableInt(row.ChannelID),
+		RequestStructure: info.RequestStructure,
+		RejectStage:      info.Stage,
+		Billing: triageBilling{
+			Cost:        nullIntValue(row.Cost),
+			PreDeducted: nullableInt(row.PreDeducted),
+			Refunded:    nullIntValue(row.Refunded),
+		},
+		ErrorClass: errorClass,
+		CreatedAt:  row.CreatedAt.UTC(),
+	}
+	return out, engine
+}
+
+// handleUsageLogSubtree 是 /api/usage-logs/ 子树的兜底分发器。它只服务
+// `triage/{request_id}`；其余未命中具体路由的路径保持与标准 mux 一致的 404
+// （不新增任何可见面）。之所以需要它：`triage/{request_id}` 与既有
+// `{id}/prompt` 在 `/api/usage-logs/triage/prompt` 处重叠且互不更具体，
+// ServeMux 会 panic；子树模式 `/api/usage-logs/` 是两者的超集，可安全共存。
+func (h *UsageLogHandlers) handleUsageLogSubtree(w http.ResponseWriter, r *http.Request) {
+	const prefix = "/api/usage-logs/"
+	rest := strings.TrimPrefix(r.URL.Path, prefix)
+	requestID, isTriage := strings.CutPrefix(rest, "triage/")
+	if !isTriage || requestID == "" || strings.Contains(requestID, "/") {
+		writeProblem(w, http.StatusNotFound, problemTypeNotFound, "Not Found")
+		return
+	}
+	// 把路径参数交给详情 handler，后者只读 PathValue("request_id")。
+	r.SetPathValue("request_id", requestID)
+	h.handleRequestTriage(w, r)
+}
+
+func (h *UsageLogHandlers) handleRequestTriage(w http.ResponseWriter, r *http.Request) {
+	viewer, ok := h.resolveViewer(w, r)
+	if !ok {
+		return
+	}
+	if !viewer.admin {
+		writeForbidden(w)
+		return
+	}
+	if h.logDB == nil {
+		// 装配缺失不能伪装成 500：前端据 503 提示「日志库未就绪，稍后重试」。
+		writeProblem(w, http.StatusServiceUnavailable, authProblemServiceUnavailable, "Service unavailable")
+		return
+	}
+	requestID, ok := parseTriageRequestID(r.PathValue("request_id"))
+	if !ok {
+		writeInvalidRequest(w, "request_id must be a UUID")
+		return
+	}
+
+	// 同一 request_id 可能有多行（结算/退款追加行），按终态优先级在 Go 侧
+	// 选择，避免把状态数字面量写进 SQL。行数天然很小。
+	rows, err := h.logDB.QueryContext(r.Context(),
+		`SELECT `+usageListColumns+`, other FROM usage_logs
+		 WHERE request_id = $1::uuid
+		 ORDER BY created_at DESC, id DESC`, requestID)
+	if err != nil {
+		h.log.Error("request triage: query failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
+	defer rows.Close()
+
+	var picker triageRowPicker
+	for rows.Next() {
+		var row usageLogRow
+		if err := row.scanDetail(rows); err != nil {
+			h.log.Error("request triage: scan failed", "error", err)
+			writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+			return
+		}
+		row.CreatedAt = row.CreatedAt.UTC()
+		picker.offer(&row)
+	}
+	if err := rows.Err(); err != nil {
+		h.log.Error("request triage: rows failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
+	best := picker.row
+	if best == nil {
+		// 从未存在与超过 90 天保留期在此不可区分：都是 200 + found=false。
+		writeJSON(w, http.StatusOK, requestTriageResponse{Found: false, RequestID: requestID})
+		return
+	}
+
+	// reveal_sensitive 不开放：排障证据不需要错误原文，恒走打码分支
+	// （maskSensitiveError / toItem 的默认行为）。
+	log := usageLogDetail{
+		usageLogItem: best.toItem(true, false),
+		Other:        projectOther(best.Other, true, false),
+	}
+	evidence, engineInput := triageEvidenceFromRow(best)
+	verdict := triage.Classify(engineInput)
+	writeJSON(w, http.StatusOK, requestTriageResponse{
+		Found:     true,
+		RequestID: best.RequestID,
+		Log:       &log,
+		Evidence:  &evidence,
+		Verdict:   &verdict,
+	})
+}
+
+type triageRecentItem struct {
+	RequestID string       `json:"request_id"`
+	CreatedAt time.Time    `json:"created_at"`
+	Model     string       `json:"model"`
+	ChannelID *int64       `json:"channel_id"`
+	Status    string       `json:"status"`
+	Owner     triage.Owner `json:"owner"`
+	Sub       string       `json:"sub"`
+	Rule      string       `json:"rule"`
+}
+
+type triageRecentCounts struct {
+	User    int `json:"user"`
+	Channel int `json:"channel"`
+	Gateway int `json:"gateway"`
+	Unknown int `json:"unknown"`
+	Total   int `json:"total"`
+}
+
+type triageRecentWindow struct {
+	Start time.Time `json:"start"`
+	End   time.Time `json:"end"`
+}
+
+type recentFailuresResponse struct {
+	Items  []triageRecentItem `json:"items"`
+	Counts triageRecentCounts `json:"counts"`
+	Window triageRecentWindow `json:"window"`
+}
+
+func parseTriageRecentLimit(q url.Values) (int, string) {
+	raw := strings.TrimSpace(q.Get("limit"))
+	if raw == "" {
+		return triageRecentDefaultLimit, ""
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 || value > triageRecentMaxLimit {
+		return 0, "limit must be an integer between 1 and 50"
+	}
+	return value, ""
+}
+
+func parseTriageOwner(q url.Values) (triage.Owner, string) {
+	switch raw := strings.TrimSpace(q.Get("owner")); raw {
+	case "":
+		return "", ""
+	case string(triage.OwnerUser), string(triage.OwnerChannel),
+		string(triage.OwnerGateway), string(triage.OwnerUnknown):
+		return triage.Owner(raw), ""
+	default:
+		return "", "owner must be one of user, channel, gateway, unknown"
+	}
+}
+
+func (h *UsageLogHandlers) handleRecentFailures(w http.ResponseWriter, r *http.Request) {
+	viewer, ok := h.resolveViewer(w, r)
+	if !ok {
+		return
+	}
+	if !viewer.admin {
+		writeForbidden(w)
+		return
+	}
+	if h.logDB == nil {
+		writeProblem(w, http.StatusServiceUnavailable, authProblemServiceUnavailable, "Service unavailable")
+		return
+	}
+
+	q := r.URL.Query()
+	limit, detail := parseTriageRecentLimit(q)
+	if detail != "" {
+		writeInvalidRequest(w, detail)
+		return
+	}
+	ownerFilter, detail := parseTriageOwner(q)
+	if detail != "" {
+		writeInvalidRequest(w, detail)
+		return
+	}
+	start, end, detail := parseUsageWindow(q, "24h", h.now())
+	if detail != "" {
+		writeInvalidRequest(w, detail)
+		return
+	}
+
+	// 先用与详情端点相同的 triageRowPicker 为每个 request_id 选出终态行，
+	// 再按首次出现（即该 id 最新一行）的顺序产出条目——列表与详情对同一
+	// id 的 status/owner/rule 因此不会互相矛盾。picker 的替换规则需要看到
+	// 该 id 的全部行，所以扫描到窗口结束或 maxScan 上限后才收口。
+	pickers := make(map[string]*triageRowPicker, limit)
+	order := make([]string, 0, limit)
+	scanned, offset := 0, 0
+	for scanned < triageRecentMaxScan {
+		rows, err := h.logDB.QueryContext(r.Context(),
+			`SELECT `+usageListColumns+`, other FROM usage_logs
+			 WHERE created_at >= $1 AND created_at < $2 AND status <> $3
+			 ORDER BY created_at DESC, id DESC
+			 LIMIT $4 OFFSET $5`,
+			start, end, billing.UsageLogStatusSuccess, triageRecentBatchSize, offset)
+		if err != nil {
+			h.log.Error("recent failures: query failed", "error", err)
+			writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+			return
+		}
+
+		batch := 0
+		for rows.Next() {
+			var row usageLogRow
+			if err := row.scanDetail(rows); err != nil {
+				_ = rows.Close()
+				h.log.Error("recent failures: scan failed", "error", err)
+				writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+				return
+			}
+			batch++
+			picker, seenBefore := pickers[row.RequestID]
+			if !seenBefore {
+				picker = &triageRowPicker{}
+				pickers[row.RequestID] = picker
+				order = append(order, row.RequestID)
+			}
+			picker.offer(&row)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			h.log.Error("recent failures: rows failed", "error", err)
+			writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+			return
+		}
+		_ = rows.Close()
+		scanned += batch
+		if batch < triageRecentBatchSize {
+			break
+		}
+		offset += triageRecentBatchSize
+	}
+
+	items := make([]triageRecentItem, 0, limit)
+	for _, requestID := range order {
+		row := pickers[requestID].row
+		_, engineInput := triageEvidenceFromRow(row)
+		verdict := triage.Classify(engineInput)
+		if ownerFilter != "" && verdict.Owner != ownerFilter {
+			continue
+		}
+		items = append(items, triageRecentItem{
+			RequestID: row.RequestID,
+			CreatedAt: row.CreatedAt.UTC(),
+			Model:     row.Model,
+			ChannelID: nullableInt(row.ChannelID),
+			Status:    usageStatusString(row.Status),
+			Owner:     verdict.Owner,
+			Sub:       verdict.Sub,
+			Rule:      verdict.Rule,
+		})
+		if len(items) == limit {
+			break
+		}
+	}
+
+	// counts 只统计本次返回的条目：UI 文案是「最近 N 条」，不得暗示这是
+	// 整个时间窗的全量总数。
+	counts := triageRecentCounts{Total: len(items)}
+	for _, item := range items {
+		switch item.Owner {
+		case triage.OwnerUser:
+			counts.User++
+		case triage.OwnerChannel:
+			counts.Channel++
+		case triage.OwnerGateway:
+			counts.Gateway++
+		default:
+			counts.Unknown++
+		}
+	}
+	writeJSON(w, http.StatusOK, recentFailuresResponse{
+		Items:  items,
+		Counts: counts,
+		Window: triageRecentWindow{Start: start, End: end},
+	})
 }
 
 // --- 导出（F-05-07） ------------------------------------------------------
@@ -1560,6 +2184,13 @@ type usageSummaryResponse struct {
 	CompletionTokensTotal int64   `json:"completion_tokens_total"`
 	PreDeductedTotal      int64   `json:"pre_deducted_total"`
 	RefundedTotal         int64   `json:"refunded_total"`
+	CacheReadTokensTotal  int64   `json:"cache_read_tokens_total"`
+	// 按日志状态计数（0=refused,1=success,2=error,3=refunded）；四者之和
+	// 等于 RequestCount，前端据此给出「成功/失败/退款/拒绝」分解。
+	SuccessCount  int64 `json:"success_count"`
+	ErrorCount    int64 `json:"error_count"`
+	RefundedCount int64 `json:"refunded_count"`
+	RefusedCount  int64 `json:"refused_count"`
 	// 成功请求的延迟分位（毫秒）。只统计 status=1 且 latency_ms>0 的行；
 	// 无样本时为 0，绝不返回 NaN 或伪造值。
 	P50LatencyMS   int64 `json:"p50_latency_ms"`
@@ -1582,11 +2213,17 @@ func (h *UsageLogHandlers) handleUsageStatsSummary(w http.ResponseWriter, r *htt
 		SELECT COALESCE(SUM(cost), 0), count(*),
 		       COALESCE(SUM(CASE WHEN status = 1 THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
-		       COALESCE(SUM(pre_deducted), 0), COALESCE(SUM(refunded), 0)
+		       COALESCE(SUM(pre_deducted), 0), COALESCE(SUM(refunded), 0),
+		       COALESCE(SUM(cache_read_tokens), 0),
+		       COALESCE(SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN status = 3 THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN status = 0 THEN 1 ELSE 0 END), 0)
 		FROM usage_logs`+where, args...).Scan(
 		&out.CostTotal, &out.RequestCount, &success,
 		&out.PromptTokensTotal, &out.CompletionTokensTotal,
 		&out.PreDeductedTotal, &out.RefundedTotal,
+		&out.CacheReadTokensTotal,
+		&out.ErrorCount, &out.RefundedCount, &out.RefusedCount,
 	)
 	if err != nil {
 		h.log.Error("usage stats summary: query failed", "error", err)
@@ -1597,6 +2234,7 @@ func (h *UsageLogHandlers) handleUsageStatsSummary(w http.ResponseWriter, r *htt
 	if out.RequestCount > 0 {
 		out.SuccessRate = float64(success) / float64(out.RequestCount)
 	}
+	out.SuccessCount = success
 
 	// 延迟分位只取成功请求：失败请求的 latency 是“失败得多快”，混进来会
 	// 让 P95 看起来变好。percentile_cont 忽略 NULL，仍显式过滤 0 值。
@@ -1628,10 +2266,11 @@ func (h *UsageLogHandlers) handleUsageStatsSummary(w http.ResponseWriter, r *htt
 }
 
 type usageByModelItem struct {
-	Model   string  `json:"model"`
-	Cost    int64   `json:"cost"`
-	Tokens  int64   `json:"tokens"`
-	Percent float64 `json:"percent"`
+	Model    string  `json:"model"`
+	Cost     int64   `json:"cost"`
+	Tokens   int64   `json:"tokens"`
+	Requests int64   `json:"requests"`
+	Percent  float64 `json:"percent"`
 }
 
 func (h *UsageLogHandlers) handleUsageStatsByModel(w http.ResponseWriter, r *http.Request) {
@@ -1641,7 +2280,8 @@ func (h *UsageLogHandlers) handleUsageStatsByModel(w http.ResponseWriter, r *htt
 	}
 	rows, err := h.logDB.QueryContext(r.Context(), `
 		SELECT model, COALESCE(SUM(cost), 0),
-		       COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)
+		       COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0),
+		       count(*)
 		FROM usage_logs`+where+`
 		GROUP BY model ORDER BY SUM(cost) DESC, model ASC`, args...)
 	if err != nil {
@@ -1655,7 +2295,7 @@ func (h *UsageLogHandlers) handleUsageStatsByModel(w http.ResponseWriter, r *htt
 	var totalCost int64
 	for rows.Next() {
 		var item usageByModelItem
-		if err := rows.Scan(&item.Model, &item.Cost, &item.Tokens); err != nil {
+		if err := rows.Scan(&item.Model, &item.Cost, &item.Tokens, &item.Requests); err != nil {
 			h.log.Error("usage stats by-model: scan failed", "error", err)
 			writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
 			return
@@ -1675,6 +2315,7 @@ func (h *UsageLogHandlers) handleUsageStatsByModel(w http.ResponseWriter, r *htt
 		for _, item := range all[8:] {
 			other.Cost += item.Cost
 			other.Tokens += item.Tokens
+			other.Requests += item.Requests
 		}
 		items = append(append([]usageByModelItem{}, all[:8]...), other)
 	}
@@ -1846,6 +2487,105 @@ func (h *UsageLogHandlers) handleUsageStatsByGroup(w http.ResponseWriter, r *htt
 		items[i].Percent = percents[i]
 	}
 	writeJSON(w, http.StatusOK, usageByGroupResponse{Items: items, Total: totalCost})
+}
+
+type usageByTokenItem struct {
+	TokenID   int64   `json:"token_id"`
+	TokenName string  `json:"token_name"`
+	Cost      int64   `json:"cost"`
+	Requests  int64   `json:"requests"`
+	Tokens    int64   `json:"tokens"`
+	Percent   float64 `json:"percent"`
+}
+
+type usageByTokenResponse struct {
+	Items []usageByTokenItem `json:"items"`
+	Total int64              `json:"total"`
+}
+
+// handleUsageStatsByToken 按 API 令牌聚合消费；无令牌的行归入 token_id=0，
+// 第 9 名起聚合为 other（token_name="other"，token_id=0）。令牌名在读取时
+// 从主库 api_tokens 补齐（usage_logs.token_name 线上恒为 NULL）。
+func (h *UsageLogHandlers) handleUsageStatsByToken(w http.ResponseWriter, r *http.Request) {
+	_, where, args, ok := h.statsWhere(w, r, r.URL.Query())
+	if !ok {
+		return
+	}
+	// token_id 可空：NULL 与字面量 0 在 COALESCE 后同属一个桶（无令牌的行）。
+	// token_name 取组内最新快照无意义（同一 id 名称可变），用 MAX 保证确定性；
+	// 按 SUM(cost) 排序、token_id 兜底，保证同额行的顺序稳定。
+	rows, err := h.logDB.QueryContext(r.Context(), `
+		SELECT COALESCE(token_id, 0),
+		       COALESCE(MAX(token_name), ''),
+		       COALESCE(SUM(cost), 0), count(*),
+		       COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)
+		FROM usage_logs`+where+`
+		GROUP BY 1 ORDER BY SUM(cost) DESC, 1 ASC`, args...)
+	if err != nil {
+		h.log.Error("usage stats by-token: query failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
+	defer rows.Close()
+
+	all := make([]usageByTokenItem, 0, 16)
+	var totalCost int64
+	for rows.Next() {
+		var item usageByTokenItem
+		if err := rows.Scan(&item.TokenID, &item.TokenName, &item.Cost, &item.Requests, &item.Tokens); err != nil {
+			h.log.Error("usage stats by-token: scan failed", "error", err)
+			writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+			return
+		}
+		totalCost += item.Cost
+		all = append(all, item)
+	}
+	if err := rows.Err(); err != nil {
+		h.log.Error("usage stats by-token: rows failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
+
+	items := all
+	if len(all) > 8 {
+		other := usageByTokenItem{TokenName: "other"}
+		for _, item := range all[8:] {
+			other.Cost += item.Cost
+			other.Requests += item.Requests
+			other.Tokens += item.Tokens
+		}
+		items = append(append([]usageByTokenItem{}, all[:8]...), other)
+	}
+
+	// usage_logs.token_name 线上恒为 NULL，令牌名改从主库补齐；查名失败只记日志，
+	// 不让统计请求失败（与列表接口的 usernamesFor 同一非致命策略）。
+	missing := make([]int64, 0, len(items))
+	for _, item := range items {
+		if item.TokenID > 0 && item.TokenName == "" {
+			missing = append(missing, item.TokenID)
+		}
+	}
+	if names, err := h.tokenNamesFor(r, missing); err != nil {
+		h.log.Error("usage stats by-token: token name lookup failed", "error", err)
+	} else {
+		for i := range items {
+			if items[i].TokenID > 0 && items[i].TokenName == "" {
+				if name, ok := names[items[i].TokenID]; ok {
+					items[i].TokenName = name
+				}
+			}
+		}
+	}
+
+	costs := make([]int64, len(items))
+	for i := range items {
+		costs[i] = items[i].Cost
+	}
+	percents := percentBasisPoints(costs, totalCost)
+	for i := range items {
+		items[i].Percent = percents[i]
+	}
+	writeJSON(w, http.StatusOK, usageByTokenResponse{Items: items, Total: totalCost})
 }
 
 func assignPercentBasisPoints(items []usageByModelItem, totalCost int64) {

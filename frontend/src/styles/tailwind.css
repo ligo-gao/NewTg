@@ -43,6 +43,10 @@
   --color-neutral-bg: var(--neutral-bg);
   --color-neutral-line: var(--neutral-line);
 
+  --color-verdict-user: var(--verdict-user);
+  --color-verdict-channel: var(--verdict-channel);
+  --color-verdict-gateway: var(--verdict-gateway);
+
   --color-amount-out: var(--amount-out);
   --color-amount-in: var(--amount-in);
   --color-amount-zero: var(--amount-zero);

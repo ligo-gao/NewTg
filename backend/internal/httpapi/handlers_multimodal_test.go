@@ -27,6 +27,7 @@ import (
 
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/relay/ir"
 	"newtg/gateway/internal/relay/multimodal"
 )
 
@@ -888,12 +889,16 @@ func TestMultimodal_GeminiEmbeddingRoutes(t *testing.T) {
 		model    string
 		body     string
 		wantCode int
+		// wantRaw 是入口写入的 Request.RawFormat。NF-1：Gemini 原生嵌入的 body
+		// 就是 Gemini 形态，若入口仍标 openai，转换链会凭空多出一条
+		// request/openai→gemini 步骤，4xx 因此被判成网关责任。
+		wantRaw contract.RelayFormat
 	}{
-		{"/v1/engines/text-embedding-004/embeddings", "text-embedding-004", `{"input":"hi"}`, http.StatusOK},
-		{"/v1/models/text-embedding-004:embedContent", "text-embedding-004", `{"content":{"parts":[{"text":"hi"}]}}`, http.StatusOK},
-		{"/v1beta/models/text-embedding-004:batchEmbedContents", "text-embedding-004", `{"requests":[]}`, http.StatusOK},
-		{"/v1/models/text-embedding-004:countTokens", "", `{}`, http.StatusNotFound},
-		{"/v1beta/models/gemini-pro:generateContent", "", `{}`, http.StatusNotFound},
+		{"/v1/engines/text-embedding-004/embeddings", "text-embedding-004", `{"input":"hi"}`, http.StatusOK, "openai"},
+		{"/v1/models/text-embedding-004:embedContent", "text-embedding-004", `{"content":{"parts":[{"text":"hi"}]}}`, http.StatusOK, ir.FormatGeminiGenerateContent},
+		{"/v1beta/models/text-embedding-004:batchEmbedContents", "text-embedding-004", `{"requests":[]}`, http.StatusOK, ir.FormatGeminiGenerateContent},
+		{"/v1/models/text-embedding-004:countTokens", "", `{}`, http.StatusNotFound, ""},
+		{"/v1beta/models/gemini-pro:generateContent", "", `{}`, http.StatusNotFound, ""},
 	}
 	for _, tc := range cases {
 		resp := doMultimodal(t, handler, multimodalRequest{path: tc.path, body: []byte(tc.body), contentType: "application/json"}, true)
@@ -902,10 +907,13 @@ func TestMultimodal_GeminiEmbeddingRoutes(t *testing.T) {
 		}
 		if tc.wantCode == http.StatusOK {
 			dispatcher.mu.Lock()
-			model, endpoint := dispatcher.rc.OriginModel, dispatcher.endpoint
+			model, endpoint, rawFormat := dispatcher.rc.OriginModel, dispatcher.endpoint, dispatcher.rc.RawFormat
 			dispatcher.mu.Unlock()
 			if model != tc.model || endpoint != contract.EndpointEmbeddings {
 				t.Fatalf("%s: model=%q endpoint=%q, want %q/%q", tc.path, model, endpoint, tc.model, contract.EndpointEmbeddings)
+			}
+			if rawFormat != tc.wantRaw {
+				t.Fatalf("%s: RawFormat = %q, want %q（入口必须如实标注入站协议）", tc.path, rawFormat, tc.wantRaw)
 			}
 		}
 	}

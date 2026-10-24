@@ -43,21 +43,13 @@ const (
 // EndpointLabel 把请求路径收敛为有界端点标签。
 //
 // 只认已注册的公开端点；插件原生路由/未知路径一律 other。绝不能直接回传
-// RequestPath（可能含路径参数）。
+// RequestPath（可能含路径参数）。标签的唯一真源在 contract.EndpointLabel，
+// 无 RelayContext 的调用方（计费、管理端点）直接复用同一实现。
 func EndpointLabel(rc *contract.RelayContext) string {
 	if rc == nil {
 		return "other"
 	}
-	switch rc.RequestPath {
-	case "/v1/chat/completions":
-		return "chat_completions"
-	case "/v1/messages":
-		return "messages"
-	case "/v1/responses":
-		return "responses"
-	default:
-		return "other"
-	}
+	return contract.EndpointLabel(rc.RequestPath)
 }
 
 // ErrorClassName 把冻结的 ErrorClass 映射为指标标签（有限枚举）。

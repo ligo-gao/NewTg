@@ -1894,5 +1894,284 @@
       "cap_notice": "Chỉ hiển thị {count} đăng ký gần nhất. Các phiên bản cũ hơn không được hiển thị.",
       "order_ref": "#{id}"
     }
+  },
+  "failure_triage": {
+    "title": "Chẩn đoán lỗi",
+    "subtitle": "Dán requestId từ lỗi phía máy khách để xác định ai phải xử lý lần thất bại này.",
+    "desktop_only": "Trang này dành cho màn hình rộng (từ 1024 px).",
+    "search": {
+      "label": "requestId",
+      "placeholder": "Dán requestId, ví dụ 6de20d22…",
+      "submit": "Tra cứu",
+      "invalid": "requestId không hợp lệ. Hãy dán ID thập lục phân 32 ký tự, có hoặc không có dấu gạch nối."
+    },
+    "rail": {
+      "heading": "Lỗi gần đây",
+      "count": "{count} gần nhất",
+      "window": "Khoảng quét: {start} – {end}",
+      "tab_all": "Tất cả",
+      "tab_user": "Yêu cầu người dùng",
+      "tab_channel": "Kênh nguồn",
+      "tab_gateway": "Cổng",
+      "empty": "Không có lỗi nào thuộc bên chịu trách nhiệm này.",
+      "footer": "Dữ liệu lưu 90 ngày · Chỉ quản trị viên"
+    },
+    "totals": {
+      "lead": "{count} lỗi gần nhất",
+      "user": "Yêu cầu người dùng {count}",
+      "channel": "Kênh nguồn {count}",
+      "gateway": "Cổng {count}",
+      "unknown": "Thiếu bằng chứng {count}",
+      "lead_filtered": "{count} lỗi gần nhất · {owner}"
+    },
+    "sections": {
+      "evidence": "Căn cứ đánh giá",
+      "actions": "Hành động đề xuất"
+    },
+    "stamp": {
+      "owner_label": "Bên chịu trách nhiệm",
+      "sub_label": "Loại phụ · {sub}"
+    },
+    "case": {
+      "copy_request_id": "Sao chép",
+      "copied": "Đã sao chép vào clipboard.",
+      "copy_failed": "Không sao chép được vào clipboard."
+    },
+    "empty": {
+      "heading": "Dán requestId để bắt đầu",
+      "body": "Hồ sơ sẽ hiển thị kết luận, căn cứ đánh giá và các bước tiếp theo."
+    },
+    "not_found": {
+      "heading": "Không có bản ghi log cho requestId này",
+      "hint_1": "Một số yêu cầu bị từ chối trước relay không được ghi lại: ví dụ yêu cầu bị middleware xác thực hoặc chính sách chặn sẽ không đến relay nên không có bản ghi log.",
+      "hint_2": "requestId được sao chép không đầy đủ hoặc không khớp định dạng mà máy khách hiển thị.",
+      "hint_3": "Đã quá thời hạn lưu log (90 ngày)."
+    },
+    "error": {
+      "recent": "Không tải được lỗi gần đây.",
+      "case": "Không tải được hồ sơ này.",
+      "retry": "Thử lại"
+    },
+    "facts": {
+      "model": "Mô hình",
+      "upstream_model": "Mô hình nguồn",
+      "channel": "Kênh",
+      "endpoint": "Điểm cuối",
+      "route": "Đường dẫn giao thức",
+      "upstream_status": "Trạng thái nguồn",
+      "attempts": "Số lần thử",
+      "billing": "Thanh toán"
+    },
+    "values": {
+      "upstream_none": "Không có phản hồi từ nguồn",
+      "attempts_none": "0 (chưa gửi)",
+      "attempts": "{count} lần",
+      "route_not_reached": "Chưa đến nguồn",
+      "route_direct": "Không ({from} → {to})",
+      "billing_refunded": "Đã hoàn tiền",
+      "billing_charged": "Đã tính phí",
+      "billing_none": "Chưa tính phí",
+      "channel": "{type} · ID {id}",
+      "protocol_unknown": "Giao thức không xác định"
+    },
+    "owner": {
+      "user": "Yêu cầu người dùng",
+      "channel": "Kênh nguồn",
+      "gateway": "Cổng",
+      "unknown": "Không đủ bằng chứng"
+    },
+    "vote": {
+      "user": "Chỉ về người dùng",
+      "channel": "Chỉ về kênh",
+      "gateway": "Chỉ về cổng",
+      "exclude-user": "Loại trừ người dùng",
+      "exclude-channel": "Loại trừ kênh",
+      "neutral": "Trung lập"
+    },
+    "rule": {
+      "USR-01": {
+        "title": "Yêu cầu của người dùng không hợp lệ",
+        "summary": "Bước kiểm tra cấu trúc trước khi chuyển tiếp đã từ chối yêu cầu gốc của bên gọi; lỗi thuộc về yêu cầu người dùng."
+      },
+      "USR-02": {
+        "title": "Cổng đã từ chối yêu cầu trước khi gửi đến nguồn",
+        "summary": "Yêu cầu bị từ chối cục bộ (hạn mức, giới hạn tần suất, xác thực hoặc tiếp nhận) trước mọi lần gọi nguồn; kênh không tham gia."
+      },
+      "CH-01": {
+        "title": "Kênh nguồn đã từ chối thông tin xác thực",
+        "summary": "Nguồn trả về 401/403 cho thông tin xác thực của kênh, không liên quan đến nội dung yêu cầu."
+      },
+      "CH-02": {
+        "title": "Kênh nguồn liên tục trả lỗi máy chủ",
+        "summary": "Sau nhiều lần thử, nguồn vẫn trả 5xx và cơ chế chuyển đổi không tìm được kênh khỏe mạnh."
+      },
+      "GW-01": {
+        "title": "Chuyển đổi giao thức đã làm yêu cầu không hợp lệ",
+        "summary": "Cấu trúc yêu cầu gốc hợp lệ, nhưng 4xx xuất hiện sau khi cổng chuyển đổi giao thức; lớp chuyển đổi là biến mới duy nhất của yêu cầu này."
+      },
+      "GW-02": {
+        "title": "Cổng chưa triển khai khả năng này",
+        "summary": "Yêu cầu chạm vào khả năng chưa được triển khai (điểm cuối hoặc loại kênh); lỗi nằm ở phía cổng."
+      },
+      "UNKNOWN": {
+        "title": "Không đủ bằng chứng để xác định bên chịu trách nhiệm",
+        "summary": "Các dữ kiện đã lưu không chỉ rõ người dùng, kênh nguồn hay cổng. Hãy tiếp tục với phần căn cứ bên dưới và log của container."
+      }
+    },
+    "sub": {
+      "request_structure": "Cấu trúc yêu cầu",
+      "quota": "Không đủ hạn mức",
+      "rate_limit": "Chạm giới hạn tần suất",
+      "auth": "Xác thực thất bại",
+      "model_admission": "Tiếp nhận mô hình",
+      "channel_selection": "Chọn kênh",
+      "upstream_auth": "Thông tin xác thực nguồn",
+      "upstream_server": "Nguồn 5xx",
+      "protocol_conversion": "Chuyển đổi giao thức",
+      "unsupported": "Khả năng chưa triển khai",
+      "insufficient_evidence": "Thiếu bằng chứng",
+      "unknown": "Nguyên nhân không xác định"
+    },
+    "signal": {
+      "request_structure_invalid": {
+        "fact": "Cấu trúc yêu cầu gốc không hợp lệ",
+        "note": "Cổng đánh giá nội dung gốc không hợp lệ trước khi chuyển tiếp."
+      },
+      "request_structure_valid": {
+        "fact": "Cấu trúc yêu cầu gốc hợp lệ",
+        "note": "Nội dung gốc đã được phân tích theo schema mong đợi; điều này không loại trừ một vấn đề ngữ nghĩa trong yêu cầu."
+      },
+      "request_structure_unverified": {
+        "fact": "Chưa kiểm tra cấu trúc yêu cầu",
+        "note": "Không có kết luận kiểm tra nào được lưu, nên chưa thể loại trừ phía người dùng."
+      },
+      "refused_before_upstream": {
+        "fact": "Cổng từ chối trước khi gửi đến nguồn ({stage})",
+        "note": "Việc từ chối xảy ra trước khi chọn kênh; không có yêu cầu nào được gửi đến nguồn."
+      },
+      "no_upstream_attempt": {
+        "fact": "Không gửi yêu cầu đến nguồn",
+        "note": "Cổng xử lý cục bộ; nguồn không tham gia vào lần thất bại này."
+      },
+      "no_upstream_response": {
+        "fact": "Không có phản hồi từ nguồn (số lần thử: {attempts})",
+        "note": "Yêu cầu đã được gửi nhưng không có phản hồi: có thể do lỗi mạng hoặc hết thời gian chờ."
+      },
+      "no_upstream_server_error": {
+        "fact": "Không có 5xx hay hết thời gian chờ (số lần thử: {attempts})",
+        "note": "Không có dấu hiệu lỗi máy chủ từ nguồn; có thể loại trừ tình trạng của kênh."
+      },
+      "upstream_status": {
+        "fact": "Nguồn trả về {upstream_status}",
+        "note": "Chỉ mã này không đủ phân biệt lỗi nội dung yêu cầu với lỗi kênh."
+      },
+      "upstream_auth_rejected": {
+        "fact": "Nguồn trả về {upstream_status} và từ chối thông tin xác thực",
+        "note": "Lỗi xác thực xảy ra trước khi nội dung yêu cầu được xử lý."
+      },
+      "upstream_server_error": {
+        "fact": "Nguồn trả về {upstream_status}",
+        "note": "Lỗi máy chủ phía nguồn, thuộc về kênh."
+      },
+      "attempt_count": {
+        "fact": "Số lần gọi nguồn: {attempts}",
+        "note": "Số lần thử cho biết có xảy ra thử lại và chuyển đổi kênh hay không."
+      },
+      "conversion_applied": {
+        "fact": "Có chuyển đổi giao thức: {from} → {to}",
+        "note": "Cổng đã viết lại định dạng; lớp chuyển đổi là biến mới của yêu cầu này."
+      },
+      "conversion_absent": {
+        "fact": "Không chuyển đổi giao thức: {from} → {to}",
+        "note": "Nội dung được chuyển tiếp nguyên định dạng; cổng không viết lại."
+      },
+      "error_class": {
+        "fact": "Lớp lỗi: {class}",
+        "note": "Chỉ lớp này không đủ xác định bên chịu trách nhiệm."
+      },
+      "error_class_unsupported": {
+        "fact": "Khả năng chưa triển khai: {class}",
+        "note": "Điểm cuối hoặc loại kênh này chưa được cổng hỗ trợ."
+      },
+      "unknown": {
+        "fact": "Căn cứ chưa nhận diện",
+        "note": "Căn cứ này chưa có trong bản dịch giao diện hiện tại; hãy đối chiếu với log của container."
+      }
+    },
+    "action": {
+      "user": {
+        "1": {
+          "title": "Sao chép tóm tắt chẩn đoán",
+          "note": "Chia sẻ kết luận, requestId và căn cứ với người dùng.",
+          "button": "Sao chép"
+        },
+        "2": {
+          "title": "Mở log sử dụng",
+          "note": "Kiểm tra dòng yêu cầu đã lưu và chuỗi thử lại.",
+          "button": "Mở"
+        },
+        "3": {
+          "title": "Sao chép mẫu trả lời",
+          "note": "Câu trả lời sẵn sàng gửi, giải thích vấn đề của yêu cầu.",
+          "button": "Sao chép"
+        }
+      },
+      "channel": {
+        "1": {
+          "title": "Sao chép tóm tắt chẩn đoán",
+          "note": "Chia sẻ kết luận và căn cứ với người quản lý kênh.",
+          "button": "Sao chép"
+        },
+        "2": {
+          "title": "Mở cài đặt kênh",
+          "note": "Kiểm tra lại thông tin xác thực hoặc tạm tắt kênh cho đến khi hồi phục.",
+          "button": "Mở"
+        },
+        "3": {
+          "title": "Sao chép requestId",
+          "note": "Đính kèm khi chuyển lên nhà cung cấp nguồn.",
+          "button": "Sao chép ID"
+        }
+      },
+      "gateway": {
+        "1": {
+          "title": "Sao chép tóm tắt chẩn đoán",
+          "note": "Đưa requestId, đường dẫn giao thức và căn cứ vào issue.",
+          "button": "Sao chép"
+        },
+        "2": {
+          "title": "Mở log sử dụng",
+          "note": "Kiểm tra dòng yêu cầu đã lưu và chuỗi thử lại.",
+          "button": "Mở"
+        },
+        "3": {
+          "title": "Sao chép quy tắc áp dụng",
+          "note": "Đính kèm quy tắc vào bản sửa lỗi hoặc phân tích sau sự cố.",
+          "button": "Sao chép"
+        }
+      },
+      "unknown": {
+        "1": {
+          "title": "Sao chép tóm tắt chẩn đoán",
+          "note": "Chia sẻ những gì đã biết trước khi chuyển cấp.",
+          "button": "Sao chép"
+        },
+        "2": {
+          "title": "Mở log sử dụng",
+          "note": "Xem dòng yêu cầu đã lưu và chuỗi thử lại.",
+          "button": "Mở"
+        },
+        "3": {
+          "title": "Sao chép requestId",
+          "note": "Dùng để đối chiếu với log của container.",
+          "button": "Sao chép ID"
+        }
+      }
+    },
+    "copy": {
+      "summary": "{title}\n\n{summary}\n\nrequestId: {requestId}\nQuy tắc: {rule}",
+      "reply": "Về yêu cầu {requestId} bạn phản ánh: {summary}\n\nVui lòng sửa yêu cầu rồi thử lại.",
+      "rule_text": "{rule} · {summary}"
+    }
   }
 }

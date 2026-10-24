@@ -996,6 +996,7 @@
   "nav.redemption_codes": "Codes de remboursement",
   "nav.models": "Modèles et fournisseurs",
   "nav.performance": "Performances",
+  "nav.failure_triage": "Triage des échecs",
   "announcement_popup": {
     "confirm": "J’ai compris",
     "category_label": "Type d’annonce",

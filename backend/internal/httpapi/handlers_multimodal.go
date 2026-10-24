@@ -92,11 +92,6 @@ const (
 	// 其余表单字段远小于它；它是防止畸形 multipart 把单个字段读爆的兜底，
 	// 与整体 maxRelayBodyBytes 共同构成内存上界。
 	maxMultipartFieldBytes = 1 << 20
-
-	// multimodalRawFormat 标注多模态族的入站形态。这些端点的对外契约均按
-	// OpenAI 形态暴露；真正的分派依据是 Handle 的 endpoint 参数，RawFormat
-	// 只用于让 Task 4 知道请求体是 OpenAI 风格的原始 JSON / multipart。
-	multimodalRawFormat contract.RelayFormat = "openai"
 )
 
 // MultimodalDispatcher 由 Task 4 实现并注入（relay-04 §0.2 统一入口的后半段）。
@@ -247,10 +242,15 @@ func (h *MultimodalHandler) serve(w http.ResponseWriter, r *http.Request, endpoi
 	}
 	// 归一化层（Task 4）随后仍是 Request 的权威写入方；这里只写入入口阶段
 	// 已确定的模型名与原始 body，保证 OriginModel（路由按它选渠道）可用。
+	// 入站协议按路径如实标注：Gemini 原生嵌入（:embedContent /
+	// :batchEmbedContents）的 body 就是 Gemini 形态，其余（含 engines 形态的
+	// OpenAI input）是 OpenAI 形态（见 multimodal.InboundFormat）。
+	rawFormat := multimodal.InboundFormat(r.URL.Path)
 	relay.WithRequest(rc, &contract.Request{
-		Model: model,
-		Raw:   contract.ProtocolBody(body),
-	}, multimodalRawFormat, r.URL.Path)
+		Model:     model,
+		Raw:       contract.ProtocolBody(body),
+		RawFormat: rawFormat,
+	}, rawFormat, r.URL.Path)
 
 	// F-08-18（W14）：多模态入口没有对话 IR/system 指令，用户文本按 prompt
 	// 面扫描（任务书第 4 条）。位置固定在入口校验与 RelayContext 之后、

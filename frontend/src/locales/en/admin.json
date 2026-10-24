@@ -1894,5 +1894,284 @@
       "cap_notice": "Showing the {count} most recent subscriptions. Older instances are not displayed.",
       "order_ref": "#{id}"
     }
+  },
+  "failure_triage": {
+    "title": "Failure triage",
+    "subtitle": "Paste a requestId from a client error to decide who owns this failure.",
+    "desktop_only": "This page is available on desktop screens (1024 px and wider).",
+    "search": {
+      "label": "requestId",
+      "placeholder": "Paste a requestId, e.g. 6de20d22…",
+      "submit": "Search",
+      "invalid": "That is not a valid requestId. Paste the 32-character hexadecimal ID, with or without hyphens."
+    },
+    "rail": {
+      "heading": "Recent failures",
+      "count": "{count} most recent",
+      "window": "Scanned window {start} – {end}",
+      "tab_all": "All",
+      "tab_user": "User request",
+      "tab_channel": "Upstream channel",
+      "tab_gateway": "Gateway",
+      "empty": "No failures under this owner.",
+      "footer": "Data retained for 90 days · Administrators only"
+    },
+    "totals": {
+      "lead": "{count} most recent failures",
+      "user": "User request {count}",
+      "channel": "Upstream channel {count}",
+      "gateway": "Gateway {count}",
+      "unknown": "Insufficient evidence {count}",
+      "lead_filtered": "{count} most recent failures · {owner}"
+    },
+    "sections": {
+      "evidence": "Evidence",
+      "actions": "Suggested actions"
+    },
+    "stamp": {
+      "owner_label": "Owner",
+      "sub_label": "Subtype · {sub}"
+    },
+    "case": {
+      "copy_request_id": "Copy",
+      "copied": "Copied to clipboard.",
+      "copy_failed": "Could not copy to the clipboard."
+    },
+    "empty": {
+      "heading": "Paste a requestId to begin",
+      "body": "The case file shows the conclusion, the evidence behind it and the next steps."
+    },
+    "not_found": {
+      "heading": "No log entry for this requestId",
+      "hint_1": "Some pre-relay rejections are never recorded: requests stopped by the authentication middleware or by policy never reach the relay, so no log entry exists.",
+      "hint_2": "The requestId was copied incompletely or does not match the format shown by the client.",
+      "hint_3": "The log retention period (90 days) has passed."
+    },
+    "error": {
+      "recent": "Could not load recent failures.",
+      "case": "Could not load this case file.",
+      "retry": "Retry"
+    },
+    "facts": {
+      "model": "Model",
+      "upstream_model": "Upstream model",
+      "channel": "Channel",
+      "endpoint": "Endpoint",
+      "route": "Protocol path",
+      "upstream_status": "Upstream status",
+      "attempts": "Attempts",
+      "billing": "Billing"
+    },
+    "values": {
+      "upstream_none": "No upstream response",
+      "attempts_none": "0 (not sent)",
+      "attempts": "{count}×",
+      "route_not_reached": "Never reached upstream",
+      "route_direct": "None ({from} → {to})",
+      "billing_refunded": "Refunded",
+      "billing_charged": "Charged",
+      "billing_none": "Not charged",
+      "channel": "{type} · ID {id}",
+      "protocol_unknown": "Unknown protocol"
+    },
+    "owner": {
+      "user": "User request",
+      "channel": "Upstream channel",
+      "gateway": "Gateway",
+      "unknown": "Insufficient evidence"
+    },
+    "vote": {
+      "user": "Points to user",
+      "channel": "Points to channel",
+      "gateway": "Points to gateway",
+      "exclude-user": "Excludes user",
+      "exclude-channel": "Excludes channel",
+      "neutral": "Neutral"
+    },
+    "rule": {
+      "USR-01": {
+        "title": "The user request is invalid",
+        "summary": "The pre-relay structure check rejected the caller original request, so the failure belongs to the user request."
+      },
+      "USR-02": {
+        "title": "The gateway rejected the request before reaching upstream",
+        "summary": "The gateway rejected the request locally (quota, rate limit, authentication or admission) before any upstream attempt, so no channel was involved."
+      },
+      "CH-01": {
+        "title": "The upstream channel rejected its credentials",
+        "summary": "The upstream answered 401/403 to the channel credentials, independent of the request body."
+      },
+      "CH-02": {
+        "title": "The upstream channel keeps returning server errors",
+        "summary": "The upstream kept returning 5xx after retries, and failover did not find a healthy channel."
+      },
+      "GW-01": {
+        "title": "Protocol conversion made the request invalid",
+        "summary": "The caller request structure was valid, but a 4xx appeared after the gateway converted the protocol; the conversion layer is the only new variable in this request."
+      },
+      "GW-02": {
+        "title": "The gateway has not implemented this capability",
+        "summary": "The request hit a capability the gateway has not implemented (endpoint or channel type), so the failure is on our side."
+      },
+      "UNKNOWN": {
+        "title": "There is not enough evidence to assign ownership",
+        "summary": "The stored facts do not point clearly to the user, the upstream channel or the gateway. Continue with the evidence below and the container logs."
+      }
+    },
+    "sub": {
+      "request_structure": "Request structure",
+      "quota": "Insufficient quota",
+      "rate_limit": "Rate limited",
+      "auth": "Authentication failed",
+      "model_admission": "Model admission",
+      "channel_selection": "Channel selection",
+      "upstream_auth": "Upstream credentials",
+      "upstream_server": "Upstream 5xx",
+      "protocol_conversion": "Protocol conversion",
+      "unsupported": "Capability not implemented",
+      "insufficient_evidence": "Insufficient evidence",
+      "unknown": "Unknown cause"
+    },
+    "signal": {
+      "request_structure_invalid": {
+        "fact": "The original request structure is invalid",
+        "note": "The gateway found the original body invalid before relaying it."
+      },
+      "request_structure_valid": {
+        "fact": "The original request structure is valid",
+        "note": "The original body parsed against the expected schema; this does not rule out a semantic problem in the request."
+      },
+      "request_structure_unverified": {
+        "fact": "The request structure was not verified",
+        "note": "No structure-check conclusion was stored, so the user side cannot be ruled out."
+      },
+      "refused_before_upstream": {
+        "fact": "The gateway rejected the request before upstream ({stage})",
+        "note": "The rejection happened before channel selection; no upstream request was made."
+      },
+      "no_upstream_attempt": {
+        "fact": "No upstream request was made",
+        "note": "The gateway finished the request locally; upstream did not take part in this failure."
+      },
+      "no_upstream_response": {
+        "fact": "No upstream response (attempts: {attempts})",
+        "note": "The request was sent but no response arrived, which may indicate a network error or timeout."
+      },
+      "no_upstream_server_error": {
+        "fact": "No 5xx or timeout (attempts: {attempts})",
+        "note": "The upstream showed no server-failure signs; channel health can be ruled out."
+      },
+      "upstream_status": {
+        "fact": "The upstream returned {upstream_status}",
+        "note": "This status alone cannot distinguish a request problem from a channel problem."
+      },
+      "upstream_auth_rejected": {
+        "fact": "The upstream returned {upstream_status} and rejected the credentials",
+        "note": "Authentication failed before the request content was processed."
+      },
+      "upstream_server_error": {
+        "fact": "The upstream returned {upstream_status}",
+        "note": "Upstream server error: the channel is responsible."
+      },
+      "attempt_count": {
+        "fact": "Upstream attempts: {attempts}",
+        "note": "The attempt count shows whether retries and failover took place."
+      },
+      "conversion_applied": {
+        "fact": "Protocol conversion applied: {from} → {to}",
+        "note": "The gateway rewrote the format; the conversion layer is the new variable in this request."
+      },
+      "conversion_absent": {
+        "fact": "No protocol conversion: {from} → {to}",
+        "note": "The body was relayed in its original format; the gateway did not rewrite it."
+      },
+      "error_class": {
+        "fact": "Error class {class}",
+        "note": "This class alone cannot identify the responsible party."
+      },
+      "error_class_unsupported": {
+        "fact": "Capability not implemented: {class}",
+        "note": "This endpoint or channel type is not supported by the gateway yet."
+      },
+      "unknown": {
+        "fact": "Unrecognised evidence",
+        "note": "This evidence is not covered by the UI copy in this version; check the container logs."
+      }
+    },
+    "action": {
+      "user": {
+        "1": {
+          "title": "Copy the diagnostic summary",
+          "note": "Share the conclusion, requestId and evidence with the user.",
+          "button": "Copy"
+        },
+        "2": {
+          "title": "Open usage logs",
+          "note": "Check the stored request row and its retry chain.",
+          "button": "Open"
+        },
+        "3": {
+          "title": "Copy a reply template",
+          "note": "A ready-to-send reply that explains the request problem.",
+          "button": "Copy"
+        }
+      },
+      "channel": {
+        "1": {
+          "title": "Copy the diagnostic summary",
+          "note": "Share the conclusion and evidence with the channel owner.",
+          "button": "Copy"
+        },
+        "2": {
+          "title": "Open channel settings",
+          "note": "Re-test the credential or disable the channel until it recovers.",
+          "button": "Open"
+        },
+        "3": {
+          "title": "Copy the requestId",
+          "note": "Attach it when escalating to the upstream provider.",
+          "button": "Copy ID"
+        }
+      },
+      "gateway": {
+        "1": {
+          "title": "Copy the diagnostic summary",
+          "note": "Include the requestId, protocol path and evidence in the issue.",
+          "button": "Copy"
+        },
+        "2": {
+          "title": "Open usage logs",
+          "note": "Check the stored request row and its retry chain.",
+          "button": "Open"
+        },
+        "3": {
+          "title": "Copy the applied rule",
+          "note": "Attach the rule to the fix or the postmortem.",
+          "button": "Copy"
+        }
+      },
+      "unknown": {
+        "1": {
+          "title": "Copy the diagnostic summary",
+          "note": "Share what is known before escalating.",
+          "button": "Copy"
+        },
+        "2": {
+          "title": "Open usage logs",
+          "note": "Inspect the stored request row and its retry chain.",
+          "button": "Open"
+        },
+        "3": {
+          "title": "Copy the requestId",
+          "note": "Use it to correlate the container logs.",
+          "button": "Copy ID"
+        }
+      }
+    },
+    "copy": {
+      "summary": "{title}\n\n{summary}\n\nrequestId: {requestId}\nRule: {rule}",
+      "reply": "About the request {requestId} you reported: {summary}\n\nPlease correct the request and try again.",
+      "rule_text": "{rule} · {summary}"
+    }
   }
 }

@@ -42,6 +42,10 @@ type RelayContext struct {
 	Request     *Request
 	RawFormat   RelayFormat
 	RequestPath string
+	// RequestStructure 是请求结构校验结果（写入方：端点层）：
+	// "valid" | "invalid" | ""（空 = 尚未校验）。排障据此区分「用户请求不合法」
+	// 与「上游/网关故障」，不得塞入其他自由文本。
+	RequestStructure string
 
 	// AnthropicBeta 是客户端 `anthropic-beta` 头经白名单过滤后的值（R-W18-05）。
 	//
@@ -94,6 +98,46 @@ type RelayContext struct {
 	ConversionChain []ConversionStepEntry
 	OverrideAudit   []OverrideAuditEntry
 	Diagnostics     []DiagnosticEntry
+	// Attempts 是本次请求每轮上游尝试的执行层证据（写入方：执行层，追加式）。
+	// 有界：最多保留前 MaxAttemptRecords 条（见 relay.RecordAttempt）。
+	Attempts []AttemptRecord
+}
+
+// MaxAttemptRecords 是单请求 Attempts 与落库 retry_chain 共用的元素上界。
+//
+// 生产者（relay.RecordAttempt）与消费者（billing.buildRetryChain）必须用
+// 同一个值：两边各写一个字面量时，只改一处会让读取端的条数与证据链长度
+// 悄悄脱钩。重试上限为 5，跨组再放大一次尝试数；8 条足以覆盖正常路径并
+// 留出余量，同时防止被构造的上下文无界增长。
+const MaxAttemptRecords = 8
+
+// AttemptRecord 是一次上游尝试的执行层证据（排障用，非计费真源）。
+//
+// UpstreamStatus == 0 表示**没有拿到上游响应**（渠道解析/分派/构造失败、
+// 网络错误或超时）；非 0 时是上游实际返回的 HTTP 状态码。
+type AttemptRecord struct {
+	Index          int // 整笔请求内的尝试序号（0 起，跨组不重置）
+	ChannelID      int
+	ChannelType    ChannelType
+	UpstreamStatus int
+	ErrorClass     ErrorClass // 本轮分类；成功时为 ErrUnknown
+	LatencyMS      int        // 本轮从开始到结果落地的耗时（毫秒）
+}
+
+// EndpointLabel 把请求路径收敛为有界端点标签（chat_completions|messages|
+// responses|other）。契约层提供纯 path 版本，供没有 RelayContext 的调用方
+// （计费、管理端点）复用同一套标签。
+func EndpointLabel(path string) string {
+	switch path {
+	case "/v1/chat/completions":
+		return "chat_completions"
+	case "/v1/messages":
+		return "messages"
+	case "/v1/responses":
+		return "responses"
+	default:
+		return "other"
+	}
 }
 
 // 钳制事件的类型见 billing.go 的 `QuotaClamp`。

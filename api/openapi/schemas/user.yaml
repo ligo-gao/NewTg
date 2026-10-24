@@ -1712,15 +1712,21 @@ schemas:
         type: integer
         format: int64
         description: 窗口内去重用户数；非管理员恒为 1（0 行时为 0）
+      cache_read_tokens_total: { type: integer, format: int64, description: 缓存读取 tokens 合计 }
+      success_count: { type: integer, format: int64, description: status=1 的行数 }
+      error_count: { type: integer, format: int64, description: status=2 的行数 }
+      refunded_count: { type: integer, format: int64, description: status=3 的行数 }
+      refused_count: { type: integer, format: int64, description: status=0 的行数 }
 
   UsageStatsByModelItem:
     type: object
     additionalProperties: false
-    required: [model, cost, tokens, percent]
+    required: [model, cost, tokens, requests, percent]
     properties:
       model: { type: string, description: 第 9 名起聚合为 other }
       cost: { type: integer, format: int64 }
       tokens: { type: integer, format: int64 }
+      requests: { type: integer, format: int64, description: 窗口内该模型的请求数 }
       percent:
         type: number
         description: 十进制基点分配，各扇区合计恰为 100
@@ -1777,6 +1783,36 @@ schemas:
         type: array
         items:
           $ref: '#/schemas/UsageStatsByGroupItem'
+      total:
+        type: integer
+        format: int64
+        description: 窗口内总消费（积分）
+
+  UsageStatsByTokenItem:
+    type: object
+    additionalProperties: false
+    required: [token_id, token_name, cost, requests, tokens, percent]
+    properties:
+      token_id: { type: integer, format: int64, description: 无令牌的行为 0；other 行也为 0 }
+      token_name:
+        type: string
+        description: 无令牌的行为空串；第 9 名起聚合为 other
+      cost: { type: integer, format: int64 }
+      requests: { type: integer, format: int64 }
+      tokens: { type: integer, format: int64 }
+      percent:
+        type: number
+        description: 十进制基点分配，合计为 100
+
+  UsageStatsByTokenResponse:
+    type: object
+    additionalProperties: false
+    required: [items, total]
+    properties:
+      items:
+        type: array
+        items:
+          $ref: '#/schemas/UsageStatsByTokenItem'
       total:
         type: integer
         format: int64

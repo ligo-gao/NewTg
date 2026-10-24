@@ -211,6 +211,14 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         adminOnly: true,
         permission: 'settings:manage',
       },
+      {
+        id: 'failure-triage',
+        labelKey: 'common.nav.failure_triage',
+        to: '/admin/system/failure-triage',
+        icon: 'search',
+        adminOnly: true,
+        permission: 'logs:read',
+      },
     ],
   },
   {

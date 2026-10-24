@@ -1,3 +1,8 @@
+declare module '*.module.css' {
+  const classes: Record<string, string>
+  export default classes
+}
+
 interface ImportMetaEnv {
   /** Rsbuild/Vite built-in: true outside production builds (dev-only warnings). */
   readonly DEV: boolean

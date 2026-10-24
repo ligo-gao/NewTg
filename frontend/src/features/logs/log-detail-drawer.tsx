@@ -318,6 +318,11 @@ export function LogDetailDrawer({
                   </span>
                 ) : null}
               </Field>
+              {capabilities.isAdmin && detail.username !== undefined ? (
+                <Field label={t('logs.usage.columns.user')}>
+                  {detail.username}
+                </Field>
+              ) : null}
               <Field label={t('logs.usage.detail.stream')}>
                 {detail.stream
                   ? t('logs.usage.detail.stream_yes')

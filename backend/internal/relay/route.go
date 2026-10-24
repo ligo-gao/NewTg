@@ -11,6 +11,7 @@ import (
 
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/relay/adapters"
+	"newtg/gateway/internal/relay/ir"
 	"newtg/gateway/internal/relay/usage"
 )
 
@@ -355,6 +356,56 @@ func newDefaultRouteClient() *http.Client {
 // HTTP 错误分类、重试/快失败判定、循环前一次性 PreConsume、最终失败 Terminate
 // 都在这里。成功时**不** Terminate——最终 UsageFact 只有解析响应后才存在，
 // 由 Route（或流式路径的调用方）负责结算。
+// wireRelayFormat 把渠道类型归一到上游线协议标识。
+//
+// 只有 Anthropic / Gemini 原生渠道与 OpenAI 客户端不同形；OpenAI 兼容族
+// （openai/azure/deepseek/…）沿用 OpenAI Chat 标识，因此不会产生转换步。
+//
+// 为什么不复用 crossproto.ProtocolOfChannelType：crossproto 是路由层的上层
+// （relay_endpoints 调它做响应回写），反向依赖会模糊分层。这张小表与
+// adapters.DispatchTable 的 anthropic_native/gemini_native 条目一一对应，
+// 标识取值直接复用 ir 的 RawFormat 常量，避免另立一套字面量。
+func wireRelayFormat(channelType contract.ChannelType) contract.RelayFormat {
+	switch channelType {
+	case contract.ChannelTypeAnthropic, contract.ChannelTypeMoonshot:
+		return ir.FormatAnthropicMessages
+	case contract.ChannelTypeGemini:
+		return ir.FormatGeminiGenerateContent
+	default:
+		return ir.FormatOpenAIChat
+	}
+}
+
+// appendRequestConversion 记录「请求体已按上游协议重建」这一事实。
+//
+// 必须在 BuildRequest 成功之后、发往上游之前调用：此时请求体确实被改写，
+// 即使本轮最终失败（4xx/5xx/超时），结算时仍能证明网关改写过请求。这条
+// 证据是 GW-01（4xx 出现在协议转换之后）的唯一来源——crossproto.Forward
+// 只在上游 2xx 后才追加响应方向的步骤，失败请求永远走不到那里。
+//
+// 客户端协议取 Request.RawFormat；空值（非 ir 解析出的合成请求）按 OpenAI
+// Chat 处理，与入口端点默认协议一致。客户端与渠道同形时不追加，避免给
+// OpenAI→OpenAI 的请求伪造转换步。
+func appendRequestConversion(rc *contract.RelayContext, adapter contract.Adapter) {
+	if rc == nil || adapter == nil {
+		return
+	}
+	from := ir.FormatOpenAIChat
+	if rc.Request != nil && rc.Request.RawFormat != "" {
+		from = rc.Request.RawFormat
+	}
+	to := wireRelayFormat(adapter.Type())
+	if from == to {
+		return
+	}
+	AppendConversion(rc, contract.ConversionStepEntry{
+		Stage: "request",
+		From:  from,
+		To:    to,
+		At:    time.Now().UTC(),
+	})
+}
+
 func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteDeps) (*AttemptResult, error) {
 	if rc == nil {
 		return nil, &FastFailError{Err: errRelayContextMissing}
@@ -468,10 +519,21 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 	// prevChannelType 只服务故障转移指标：记录上一轮真正解析出的渠道类型。
 	prevChannelType := ""
 
-	// reportAttempt 是 W10-METRICS 的唯一上报点：nil 观察者零开销；
-	// EndpointLabel 把 path 收敛为有界枚举，Model 由指标包的护栏限基数。
+	// reportAttempt 是每轮尝试结果的唯一上报点：先落执行层证据（Attempts），
+	// 再交给 nil 观察者（零开销）。EndpointLabel 把 path 收敛为有界枚举，
+	// Model 由指标包的护栏限基数。statusCode 为 0 表示没有拿到上游响应。
 	reportAttempt := func(channelID int, channelType, fromType, result string,
-		class contract.ErrorClass, attemptIndex int, started time.Time) {
+		statusCode int, class contract.ErrorClass, attemptIndex int, started time.Time) {
+		// 证据采集必须先于观察者的 nil 判断：未接指标的测试/降级装配同样要
+		// 拿到排障事实。
+		RecordAttempt(rc, contract.AttemptRecord{
+			Index:          attemptIndex,
+			ChannelID:      channelID,
+			ChannelType:    contract.ChannelType(channelType),
+			UpstreamStatus: statusCode,
+			ErrorClass:     class,
+			LatencyMS:      int(time.Since(started).Milliseconds()),
+		})
 		if deps.ObserveAttempt == nil {
 			return
 		}
@@ -630,7 +692,7 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 				// 解析失败时渠道类型未知：用固定 "unknown" 而不是空标签，
 				// 且不更新 prevChannelType（本轮没有真正命中渠道类型）。
 				reportAttempt(candidate.ChannelID, "unknown", prevChannelType,
-					attemptRetryableFail, contract.ErrUnknown, attemptIndex, attemptStarted)
+					attemptRetryableFail, 0, contract.ErrUnknown, attemptIndex, attemptStarted)
 				WithRoute(rc, effective, attemptIndex, &contract.RelayError{
 					Class:     contract.ErrUnknown,
 					Code:      "channel:resolve_failed",
@@ -655,7 +717,16 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 				// 换渠道重试与该分类冲突，故整体快失败（错误文本经安全包装，GC-6）。
 				// R-62：适配器分派失败同时是**不换组**的硬停止。
 				reportAttempt(candidate.ChannelID, channelType, prevChannelType,
-					attemptFatalFail, contract.ErrChannelTypeUnimplemented, attemptIndex, attemptStarted)
+					attemptFatalFail, 0, contract.ErrChannelTypeUnimplemented, attemptIndex, attemptStarted)
+				// 把分类写进 LastError：结算时 failureAuditFields 只读这里，
+				// 否则 usage_logs.error_class 为空，排障引擎看不到
+				// channel_type_unimplemented（GW-02 永远无法命中）。
+				WithRoute(rc, effective, attemptIndex, &contract.RelayError{
+					Class:     contract.ErrChannelTypeUnimplemented,
+					Code:      "channel:adapter_unimplemented",
+					SkipRetry: true,
+					Message:   "渠道适配器未实现",
+				})
 				releaseBudget()
 				return nil, &FastFailError{Err: safeWrapf(dispatchErr, "relay: 渠道 %d 的适配器分派失败", candidate.ChannelID)}
 			}
@@ -673,7 +744,7 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 					buildResult = attemptRetryableFail
 				}
 				reportAttempt(candidate.ChannelID, channelType, prevChannelType,
-					buildResult, class, attemptIndex, attemptStarted)
+					buildResult, 0, class, attemptIndex, attemptStarted)
 				prevChannelType = channelType
 				WithRoute(rc, effective, attemptIndex, &contract.RelayError{
 					Class:     class,
@@ -694,6 +765,11 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 				return nil, &FastFailError{Err: safeWrapf(buildErr, "relay: 构造上游请求失败（渠道 %d）", candidate.ChannelID)}
 			}
 
+			// 请求体已按上游协议重建：在此记录请求方向的转换证据。必须早于
+			// 上游响应判定——否则跨协议请求一旦失败，转换链就永远为空，
+			// GW-01 无法命中，排障面板还会误报「网关未改写请求」。
+			appendRequestConversion(rc, adapter)
+
 			// 适配器拿不到 ctx（契约 §3.1 的 BuildRequest 无 ctx 参数），执行层负责
 			// 把本轮 context 绑到请求上；否则客户端取消无法中止上游调用。
 			httpReq = httpReq.WithContext(ctx)
@@ -710,7 +786,7 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 				// GC-6：url.Error 的文本含完整 URL，故只保留安全摘要，不渲染底层文本。
 				lastErr = &RetryableError{Err: safeWrapf(doErr, "relay: 上游传输失败（渠道 %d）", candidate.ChannelID)}
 				reportAttempt(candidate.ChannelID, channelType, prevChannelType,
-					attemptRetryableFail, contract.ErrRetryable, attemptIndex, attemptStarted)
+					attemptRetryableFail, 0, contract.ErrRetryable, attemptIndex, attemptStarted)
 				prevChannelType = channelType
 				WithRoute(rc, effective, attemptIndex, &contract.RelayError{
 					Class:     contract.ErrRetryable,
@@ -732,7 +808,7 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 				// 记成本次请求的失败原因。
 				WithRoute(rc, effective, attemptIndex, nil)
 				reportAttempt(candidate.ChannelID, channelType, prevChannelType,
-					attemptOK, contract.ErrUnknown, attemptIndex, attemptStarted)
+					attemptOK, resp.StatusCode, contract.ErrUnknown, attemptIndex, attemptStarted)
 				return &AttemptResult{
 					Response:  resp,
 					Adapter:   adapter,
@@ -752,7 +828,7 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 				statusResult = attemptRetryableFail
 			}
 			reportAttempt(candidate.ChannelID, channelType, prevChannelType,
-				statusResult, class, attemptIndex, attemptStarted)
+				statusResult, resp.StatusCode, class, attemptIndex, attemptStarted)
 			prevChannelType = channelType
 			WithRoute(rc, effective, attemptIndex, &contract.RelayError{
 				Class:        class,

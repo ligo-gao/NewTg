@@ -996,6 +996,7 @@
   "nav.redemption_codes": "Mã đổi thưởng",
   "nav.models": "Mô hình và nhà cung cấp",
   "nav.performance": "Hiệu năng",
+  "nav.failure_triage": "Chẩn đoán lỗi",
   "announcement_popup": {
     "confirm": "Đã hiểu",
     "category_label": "Loại thông báo",

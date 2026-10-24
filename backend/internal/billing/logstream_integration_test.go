@@ -237,6 +237,78 @@ func TestIntegrationUsageLogStreamWritesExplicitCreatedAt(t *testing.T) {
 	}
 }
 
+// TestIntegrationUsageLogStreamPersistsRetryChain 验证批处理路径也落排障证据：
+// retry_chain 随事件穿过 Stream 的 JSON 传输表示，落库投影与同步路径一致
+// （不得再固定写 NULL）。批处理是受支持开关，静默丢证据正是本功能要防的事。
+func TestIntegrationUsageLogStreamPersistsRetryChain(t *testing.T) {
+	rdb := openLogStreamRedis(t)
+	db := openLogStreamLogsDB(t)
+	resetUsageLogStream(t, rdb)
+	c := newTestLogStreamConsumer(t, rdb, db, "w10n2-retry-chain")
+
+	rid := newTestUUID(t)
+	cleanupUsageLogRequest(t, db, rid)
+
+	rc := &contract.RelayContext{
+		RequestID:   rid,
+		UserID:      7,
+		ChannelID:   42,
+		OriginModel: "gpt-4o",
+		UsingGroup:  "vip",
+		RequestPath: "/v1/chat/completions",
+		ChannelType: contract.ChannelTypeOpenAI,
+		Attempts: []contract.AttemptRecord{{
+			Index:          0,
+			ChannelID:      42,
+			ChannelType:    contract.ChannelTypeOpenAI,
+			UpstreamStatus: 502,
+			ErrorClass:     contract.ErrUpstreamServer,
+			LatencyMS:      42,
+		}},
+	}
+	row, err := buildUsageLogRow(testUsageFact(), rc, SettlementOutcome{
+		PreDeducted: 10, Status: UsageLogStatusError, ErrorClass: "upstream_server",
+	}, false)
+	if err != nil {
+		t.Fatalf("buildUsageLogRow: %v", err)
+	}
+	if !row.retryChain.Valid {
+		t.Fatal("测试前置：retry_chain 应为非 NULL")
+	}
+	event := eventFromUsageLogRow(row, time.Now().UTC(), true, "openai")
+
+	if err := c.consume(context.Background(),
+		[]redis.XMessage{logStreamMessage(t, "1-0", event)}); err != nil {
+		t.Fatalf("consume: %v", err)
+	}
+
+	var chain sql.NullString
+	if err := db.QueryRow(
+		`SELECT retry_chain::text FROM usage_logs WHERE request_id = $1::uuid`, rid).
+		Scan(&chain); err != nil {
+		t.Fatalf("read retry_chain: %v", err)
+	}
+	if !chain.Valid {
+		t.Fatal("批处理落库把 retry_chain 写成了 NULL")
+	}
+	var steps []map[string]any
+	if err := json.Unmarshal([]byte(chain.String), &steps); err != nil {
+		t.Fatalf("retry_chain 不是 JSON 数组: %v (%s)", err, chain.String)
+	}
+	if len(steps) != 1 {
+		t.Fatalf("retry_chain 长度 = %d, want 1", len(steps))
+	}
+	if got := steps[0]["upstream_status"]; got != float64(502) {
+		t.Fatalf("retry_chain[0].upstream_status = %v, want 502", got)
+	}
+	if got := steps[0]["error_class"]; got != "upstream_server" {
+		t.Fatalf("retry_chain[0].error_class = %v, want upstream_server", got)
+	}
+	if _, ok := steps[0]["decision"]; ok {
+		t.Fatalf("不得合成路由决策 decision: %v", steps[0])
+	}
+}
+
 // TestIntegrationUsageLogStreamDedupsDuplicates 验证批内与跨批重复只写一行。
 func TestIntegrationUsageLogStreamDedupsDuplicates(t *testing.T) {
 	rdb := openLogStreamRedis(t)

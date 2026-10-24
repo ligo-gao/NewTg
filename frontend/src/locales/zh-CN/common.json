@@ -996,6 +996,7 @@
   "nav.redemption_codes": "兑换码",
   "nav.models": "模型与供应商",
   "nav.performance": "性能管理",
+  "nav.failure_triage": "失败排障",
   "announcement_popup": {
     "confirm": "知道了",
     "category_label": "公告类型",

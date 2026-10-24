@@ -31,6 +31,7 @@ import (
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/relay"
 	"newtg/gateway/internal/relay/adapters"
+	"newtg/gateway/internal/relay/ir"
 )
 
 const (
@@ -42,9 +43,29 @@ const (
 	// maxErrorBodyBytes 是错误体读取上限，只用于适配器分类，绝不回显（GC-6）。
 	maxErrorBodyBytes = 64 << 10
 
-	// multimodalRawFormat 标注入站协议形态：对外契约按 OpenAI 形态暴露。
+	// multimodalRawFormat 标注入站协议形态：多模态族对外契约默认按 OpenAI
+	// 形态暴露。Gemini 原生嵌入路径是例外，见 InboundFormat。
 	multimodalRawFormat contract.RelayFormat = "openai"
 )
+
+// InboundFormat 返回多模态端点入站请求体的协议标识（写入 Request.RawFormat）。
+//
+// 只有 Gemini 原生嵌入路径（`/v1/models/{m}:embedContent`、
+// `/v1beta/models/{m}:batchEmbedContents` 等同形路径）的 body 本身就是
+// Gemini 形态：endpointAdapter 只替换 URL 中的模型名，不重编码 body。把它
+// 如实标成 Gemini，请求转换证据（relay.appendRequestConversion）才不会在
+// Gemini 渠道上产生虚假的 `openai → gemini_generate_content` 步骤，4xx 也
+// 不会因此被归责为网关（GW-01）。
+//
+// `/v1/engines/{m}/embeddings` 虽然同样走 Gemini 上游，但入站 body 是 OpenAI
+// 的 `input` 形态，会被 openAIInputToGeminiEmbedding 翻译成 Gemini
+// `content.parts`——那里确实发生了一次转换，必须继续记 OpenAI。
+func InboundFormat(path string) contract.RelayFormat {
+	if _, ok := GeminiEmbeddingModel(path); ok && !strings.HasPrefix(path, "/v1/engines/") {
+		return ir.FormatGeminiGenerateContent
+	}
+	return multimodalRawFormat
+}
 
 var (
 	// ErrUnsupportedChannel 表示该渠道类型没有本端点族实现。
@@ -518,11 +539,15 @@ func endpointPath(endpoint contract.Endpoint) string {
 }
 
 // relayWithRequest 是 dispatcher 写请求组的状态（保持与 httpapi 的
-// relay.WithRequest 同一写法）。
+// relay.WithRequest 同一写法）。入站协议必须如实标注：Gemini 原生嵌入路径
+// 的 body 不重编码（见 InboundFormat），否则会在 Gemini 渠道上留下虚假的
+// 请求转换证据。
 func relayWithRequest(rc *contract.RelayContext, plan *RequestPlan, path string) {
+	format := InboundFormat(path)
 	relay.WithRequest(rc, &contract.Request{
-		Model:  rc.OriginModel,
-		Raw:    plan.rawBody,
-		Stream: plan.stream,
-	}, multimodalRawFormat, path)
+		Model:     rc.OriginModel,
+		Raw:       plan.rawBody,
+		Stream:    plan.stream,
+		RawFormat: format,
+	}, format, path)
 }

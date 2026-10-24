@@ -4,11 +4,14 @@ package httpapi
 // 与 relay_endpoints_test.go 同包：复用其中的内存 fake 与 httptest 装配。
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/store"
 )
 
@@ -138,4 +141,204 @@ func TestParseTrustedProxies(t *testing.T) {
 	if parseTrustedProxies("") != nil {
 		t.Fatal("空配置必须返回 nil（不信任任何代理）")
 	}
+}
+
+// ---------- 鉴权阶段的拒绝行（失败排障：401/403 的 requestId 可查） ----------
+
+// authRefusalRequestID 从响应头取 requestId：消息里的 `(requestId: …)` 与
+// X-Request-ID 必须与落库行一致，否则管理员拿客户端报的 ID 查不到任何东西。
+func authRefusalRequestID(t *testing.T, w *httptest.ResponseRecorder) string {
+	t.Helper()
+	id := w.Header().Get("X-Request-ID")
+	if id == "" {
+		t.Fatal("X-Request-ID 为空")
+	}
+	if !strings.Contains(w.Body.String(), "requestId: "+id) {
+		t.Fatalf("响应消息 = %s, want 包含 requestId: %s", w.Body.String(), id)
+	}
+	return id
+}
+
+// TestRelayAuthRecordsRefusals 覆盖鉴权阶段应记录的五种拒绝：
+// 凭证缺失、未知令牌、令牌不可用、用户被封禁、IP 白名单。
+func TestRelayAuthRecordsRefusals(t *testing.T) {
+	body := `{"model":"gpt-test","messages":[{"role":"user","content":"hi"}]}`
+
+	t.Run("missing credential records anonymous refusal", func(t *testing.T) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Error("auth failure must not reach upstream")
+		}))
+		defer upstream.Close()
+		env := newRelayTestEnv(t, upstream, nil)
+		rec := &fakeRefusalRecorder{}
+		env.handler.refusals = rec
+
+		w := env.do(t, http.MethodPost, "/v1/chat/completions", body, nil)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401", w.Code)
+		}
+		requestID := authRefusalRequestID(t, w)
+
+		refusals := rec.snapshot()
+		if len(refusals) != 1 {
+			t.Fatalf("refusals = %d, want 1", len(refusals))
+		}
+		got := refusals[0]
+		if got.RequestID != requestID {
+			t.Fatalf("落库 requestId = %q, want %q（必须与响应一致）", got.RequestID, requestID)
+		}
+		if got.Stage != billing.RefusalStageAuth {
+			t.Fatalf("stage = %q, want auth", got.Stage)
+		}
+		if got.UserID != 0 || got.TokenID != nil {
+			t.Fatalf("身份 = %d/%v, want 0/nil（令牌未解析出来，不得猜身份）", got.UserID, got.TokenID)
+		}
+		if got.ErrorClass != "unauthorized" {
+			t.Fatalf("error_class = %q, want unauthorized", got.ErrorClass)
+		}
+		if got.Endpoint != "chat_completions" {
+			t.Fatalf("endpoint = %q, want chat_completions", got.Endpoint)
+		}
+	})
+
+	t.Run("unknown token records anonymous refusal", func(t *testing.T) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Error("auth failure must not reach upstream")
+		}))
+		defer upstream.Close()
+		env := newRelayTestEnv(t, upstream, nil)
+		rec := &fakeRefusalRecorder{}
+		env.handler.refusals = rec
+
+		w := env.do(t, http.MethodPost, "/v1/chat/completions", body,
+			map[string]string{"Authorization": "Bearer " + "sk-" + strings.Repeat("z", 48)})
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401", w.Code)
+		}
+		refusals := rec.snapshot()
+		if len(refusals) != 1 || refusals[0].UserID != 0 {
+			t.Fatalf("refusals = %+v, want 一条 user 0 的记录", refusals)
+		}
+	})
+
+	t.Run("unusable token records owner", func(t *testing.T) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Error("auth failure must not reach upstream")
+		}))
+		defer upstream.Close()
+		env := newRelayTestEnv(t, upstream, nil)
+		rec := &fakeRefusalRecorder{}
+		env.handler.refusals = rec
+		env.tokens.mu.Lock()
+		env.tokens.byHash[auth.HashTokenKey(relayTestToken)].Status = "disabled"
+		env.tokens.mu.Unlock()
+
+		w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions", body)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401", w.Code)
+		}
+		refusals := rec.snapshot()
+		if len(refusals) != 1 {
+			t.Fatalf("refusals = %d, want 1", len(refusals))
+		}
+		got := refusals[0]
+		if got.UserID != relayTestUserID {
+			t.Fatalf("user = %d, want %d", got.UserID, relayTestUserID)
+		}
+		if got.TokenID == nil || *got.TokenID != relayTestTokenID {
+			t.Fatalf("token = %v, want %d", got.TokenID, relayTestTokenID)
+		}
+	})
+
+	t.Run("banned user records auth_user_banned", func(t *testing.T) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Error("auth failure must not reach upstream")
+		}))
+		defer upstream.Close()
+		env := newRelayTestEnv(t, upstream, nil)
+		rec := &fakeRefusalRecorder{}
+		env.handler.refusals = rec
+		env.access.mu.Lock()
+		env.access.status = "disabled"
+		env.access.mu.Unlock()
+
+		w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions", body)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", w.Code)
+		}
+		refusals := rec.snapshot()
+		if len(refusals) != 1 || refusals[0].ErrorClass != "auth_user_banned" {
+			t.Fatalf("refusals = %+v, want auth_user_banned", refusals)
+		}
+	})
+
+	t.Run("ip deny records access_denied", func(t *testing.T) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Error("auth failure must not reach upstream")
+		}))
+		defer upstream.Close()
+		env := newRelayTestEnv(t, upstream, nil)
+		rec := &fakeRefusalRecorder{}
+		env.handler.refusals = rec
+		env.tokens.mu.Lock()
+		env.tokens.byHash[auth.HashTokenKey(relayTestToken)].AllowIPs = []string{"10.0.0.9"}
+		env.tokens.mu.Unlock()
+
+		w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions", body)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", w.Code)
+		}
+		refusals := rec.snapshot()
+		if len(refusals) != 1 || refusals[0].ErrorClass != "access_denied" {
+			t.Fatalf("refusals = %+v, want access_denied", refusals)
+		}
+	})
+}
+
+// TestRelayAuthSkipsRefusalForInfrastructureFailures 钉死「不记网关自身故障」：
+// 令牌存储故障与缺失的令牌存储都返回 401，但不得写 refused 行——把存储故障
+// 说成用户请求的问题正是本功能要防的倒置判定。
+func TestRelayAuthSkipsRefusalForInfrastructureFailures(t *testing.T) {
+	body := `{"model":"gpt-test","messages":[{"role":"user","content":"hi"}]}`
+
+	t.Run("token store failure", func(t *testing.T) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Error("auth failure must not reach upstream")
+		}))
+		defer upstream.Close()
+		env := newRelayTestEnv(t, upstream, nil)
+		rec := &fakeRefusalRecorder{}
+		env.handler.refusals = rec
+		env.tokens.mu.Lock()
+		env.tokens.resolveErr = errors.New("redis unavailable")
+		env.tokens.mu.Unlock()
+
+		w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions", body)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401（fail-closed 语义不变）", w.Code)
+		}
+		if got := len(rec.snapshot()); got != 0 {
+			t.Fatalf("refusals = %d, want 0（存储故障不得记成用户拒绝）", got)
+		}
+	})
+
+	t.Run("missing token store", func(t *testing.T) {
+		rec := &fakeRefusalRecorder{}
+		mux := http.NewServeMux()
+		mux.Handle("/v1/", RelayAuthWithRecorder(nil, &fakeRelayAccess{status: "enabled"}, nil, rec, nil)(
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("missing token store must not reach the handler")
+			})))
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+relayTestToken)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401", w.Code)
+		}
+		if got := len(rec.snapshot()); got != 0 {
+			t.Fatalf("refusals = %d, want 0（接线故障不得记成用户拒绝）", got)
+		}
+	})
 }

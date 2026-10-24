@@ -5,12 +5,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/netip"
 	"strings"
 	"time"
 
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/store"
 )
 
@@ -296,20 +298,69 @@ func PlaygroundSessionAuth(sessions *auth.SessionManager) func(http.Handler) htt
 //   - 仅当 TRUSTED_PROXIES 非空且直连对端 ∈ 白名单时，才解析 X-Forwarded-For，
 //     并从右向左跳过受信代理取第一个非受信地址（标准代理链语义）。
 //     未配置时 XFF 完全被忽略——否则任意客户端可伪造白名单 IP。
+//
+// RelayAuth 是 RelayAuthWithRecorder 的兼容入口：不写拒绝行（测试装配与
+// 不需要排障证据的调用方使用）。
 func RelayAuth(tokenStore auth.TokenLookup, access UserAccessStore, trustedProxies []netip.Prefix) func(http.Handler) http.Handler {
+	return RelayAuthWithRecorder(tokenStore, access, trustedProxies, nil, nil)
+}
+
+// RelayAuthWithRecorder 与 RelayAuth 相同，但在鉴权失败时把拒绝写进日志库
+// （status=refused，stage=auth），让客户端错误消息里的 requestId 可以查。
+//
+// 记录范围刻意收窄：
+//   - 记：凭证缺失/非法、令牌不可用、用户已删除、用户被封禁、IP 白名单拒绝。
+//   - 不记：tokenStore/access 未装配、用户状态查询的存储故障（500）。这些是
+//     网关自身的接线或下游故障，记成 refused 会把网关的 bug 归到用户头上——
+//     正是本功能要防的倒置判定。
+//
+// 落库永不改变响应：recordPreRelayRefusal 先写响应、再尽力记录。
+func RelayAuthWithRecorder(tokenStore auth.TokenLookup, access UserAccessStore,
+	trustedProxies []netip.Prefix, recorder RefusalRecorder, log *slog.Logger,
+) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// R-W18-04：鉴权失败发生在 handler 之前，写出器必须在这里就按
-			// 入站协议选定——否则 /v1/messages 的 401/403/500 会退回 OpenAI 形。
 			writeErr := writeRelayErrorForRequest(r)
+			// reject 写出拒绝响应，再记录一条 auth 阶段的拒绝行。
+			// userID==0 表示「无法说明是谁」（令牌根本没解析出来）。
+			// requestId 在拒绝时才生成：成功的请求不该为一次用不上的熵读取付费。
+			reject := func(status int, code, message string, userID int64, tokenID *int64) {
+				requestID := newRelayRequestID()
+				writeErr(w, status, requestID, code, message)
+				// 熵源异常时 newRelayRequestID 返回空串、writeErr 会自行生成一个；
+				// 以响应头里的实际值为准，保证落库行与客户端看到的 requestId 一致。
+				if written := w.Header().Get("X-Request-ID"); written != "" {
+					requestID = written
+				}
+				errorClass := code
+				if errorClass == "" {
+					// §3.6 的 401 不传 code（避免令牌存在性探测），但落库需要
+					// 一个稳定分类；usage_logs.error_class 里沿用既有词表。
+					errorClass = "unauthorized"
+				}
+				recordPreRelayRefusal(recorder, log, r, billing.Refusal{
+					RequestID:    requestID,
+					UserID:       userID,
+					TokenID:      tokenID,
+					Stage:        billing.RefusalStageAuth,
+					ErrorClass:   errorClass,
+					ErrorMessage: message,
+				})
+			}
+
 			raw, ok := relayCredentialFromRequest(r)
 			if !ok {
-				writeErr(w, http.StatusUnauthorized, "", "", "invalid token")
+				reject(http.StatusUnauthorized, "", "invalid token", 0, nil)
 				return
 			}
 			key := normalizeRelayTokenKey(raw)
-			if key == "" || tokenStore == nil {
+			if tokenStore == nil {
+				// 网关接线故障：不记录（见函数注释）。
 				writeErr(w, http.StatusUnauthorized, "", "", "invalid token")
+				return
+			}
+			if key == "" {
+				reject(http.StatusUnauthorized, "", "invalid token", 0, nil)
 				return
 			}
 			// 兼容载体归一化：relay.BuildRelayContext 只重新解析 Authorization /
@@ -319,8 +370,21 @@ func RelayAuth(tokenStore auth.TokenLookup, access UserAccessStore, trustedProxi
 			r.Header.Set("Authorization", "Bearer "+raw)
 
 			meta, err := tokenStore.Resolve(r.Context(), auth.HashTokenKey(key))
-			if err != nil || !tokenUsable(meta, time.Now()) {
+			if err != nil {
+				// §3.6 对客户端一律 401，但落库必须区分两类原因：
+				//   - 查无此令牌（ErrTokenNotFound）= 确定的用户侧事实，记录；
+				//   - 其它错误（Redis/DB 故障，fail-closed 成 401）在协议上
+				//     不可区分，记成 refused 会把存储故障说成用户请求的问题。
+				if errors.Is(err, store.ErrTokenNotFound) {
+					reject(http.StatusUnauthorized, "", "invalid token", 0, nil)
+					return
+				}
 				writeErr(w, http.StatusUnauthorized, "", "", "invalid token")
+				return
+			}
+			if !tokenUsable(meta, time.Now()) {
+				tokenID := meta.ID
+				reject(http.StatusUnauthorized, "", "invalid token", meta.UserID, &tokenID)
 				return
 			}
 			if access == nil {
@@ -332,7 +396,8 @@ func RelayAuth(tokenStore auth.TokenLookup, access UserAccessStore, trustedProxi
 			if err != nil {
 				// 已删除用户 → 401（身份失效），与坏令牌同语义；其余存储故障 500。
 				if errors.Is(err, store.ErrUserNotFound) {
-					writeErr(w, http.StatusUnauthorized, "", "", "invalid token")
+					tokenID := meta.ID
+					reject(http.StatusUnauthorized, "", "invalid token", meta.UserID, &tokenID)
 					return
 				}
 				// 与 relay-01 §2 阶段 1 的 500 database_error 对齐；不暴露存储错误文本。
@@ -341,13 +406,16 @@ func RelayAuth(tokenStore auth.TokenLookup, access UserAccessStore, trustedProxi
 			}
 			if status != "enabled" {
 				// §3.4：用户被封禁 → 403 auth_user_banned。
-				writeErr(w, http.StatusForbidden, "", "auth_user_banned", "user is not enabled")
+				tokenID := meta.ID
+				reject(http.StatusForbidden, "auth_user_banned", "user is not enabled", meta.UserID, &tokenID)
 				return
 			}
 			// §3.4 IP 白名单：allow_ips 非空时客户端 IP 必须在列表中。
 			// 解析失败/不在列表一律 403 access_denied（不区分原因）。
 			if !tokenIPAllowed(r, meta.AllowIPs, trustedProxies) {
-				writeErr(w, http.StatusForbidden, "", "access_denied", "client IP is not allowed for this token")
+				tokenID := meta.ID
+				reject(http.StatusForbidden, "access_denied",
+					"client IP is not allowed for this token", meta.UserID, &tokenID)
 				return
 			}
 

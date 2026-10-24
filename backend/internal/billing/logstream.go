@@ -119,7 +119,10 @@ type UsageLogEvent struct {
 	Status           int16     `json:"status"`
 	ErrorClass       *string   `json:"error_class,omitempty"`
 	ErrorMessage     *string   `json:"error_message,omitempty"`
-	Other            string    `json:"other"`
+	// RetryChain 是排障证据的 JSON 文本（与 usageLogRow.retryChain 同一投影）。
+	// 新增字段对旧消费者向后兼容：缺席即 NULL，与 W10-N2 上线前的行为一致。
+	RetryChain *string `json:"retry_chain,omitempty"`
+	Other      string  `json:"other"`
 
 	// —— 上游对账维度（usage_logs 迁移 20261028090500）——
 	//
@@ -214,6 +217,7 @@ func eventFromUsageLogRow(row usageLogRow, eventTime time.Time,
 		Status:            row.status,
 		ErrorClass:        ptrNullString(row.errorClass),
 		ErrorMessage:      ptrNullString(row.errorMessage),
+		RetryChain:        ptrNullString(row.retryChain),
 		Other:             row.other,
 		UsageSource:       ptrNullInt16(row.usageSource),
 		UsageSemantic:     ptrNullInt16(row.usageSemantic),
@@ -257,6 +261,7 @@ func (e UsageLogEvent) usageLogRow() usageLogRow {
 		status:            e.Status,
 		errorClass:        nullStringFromPtr(e.ErrorClass),
 		errorMessage:      nullStringFromPtr(e.ErrorMessage),
+		retryChain:        nullStringFromPtr(e.RetryChain),
 		other:             e.Other,
 		usageSource:       nullInt16FromPtr(e.UsageSource),
 		usageSemantic:     nullInt16FromPtr(e.UsageSemantic),
@@ -1018,12 +1023,17 @@ INSERT INTO usage_logs (
 //
 // 为什么必须一条语句：分区路由与 WAL 写入都是按语句聚合的，逐行 INSERT 会
 // 退化成与同步路径一样的事务内多次往返，批量写入的意义就没了。
+//
+// 参数投影**复用同步路径的 usageLogInsertArgs**（$1..$28），每行只在末尾追加
+// created_at（$29）：列语义只有一处定义，批量路径不会把 retry_chain 之类的
+// 新列悄悄写成 NULL。token_name/upstream 仍是 SQL 常量 NULL，不占参数。
 func insertUsageLogBatch(ctx context.Context, tx *sql.Tx, events []UsageLogEvent) error {
 	if len(events) == 0 {
 		return nil
 	}
-	// 每行 31 列，其中 token_name/upstream/retry_chain 显式 NULL，绑定参数 28 个。
-	const paramsPerRow = 28
+	// 每行 30 列，其中 token_name/upstream 显式 NULL；绑定参数 = 共享的 28 个
+	// 列参数 + 1 个 created_at。
+	const paramsPerRow = 29
 	rows := make([]string, len(events))
 	args := make([]any, 0, paramsPerRow*len(events))
 	for i := range events {
@@ -1033,24 +1043,15 @@ func insertUsageLogBatch(ctx context.Context, tx *sql.Tx, events []UsageLogEvent
         $%d, $%d, $%d, $%d, $%d,
         $%d, $%d, $%d, $%d, $%d,
         $%d, $%d, $%d, $%d, $%d,
-        NULL, $%d::jsonb, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)`,
+        $%d::jsonb, $%d::jsonb, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)`,
 			base+1, base+2, base+3, base+4,
 			base+5, base+6, base+7, base+8, base+9,
 			base+10, base+11, base+12, base+13, base+14,
 			base+15, base+16, base+17, base+18, base+19,
 			base+20, base+21, base+22, base+23, base+24,
-			base+25, base+26, base+27, base+28)
-		row := ev.usageLogRow()
-		args = append(args,
-			ev.RequestID, ev.UserID, row.tokenID,
-			row.channelID, row.model, row.group,
-			row.promptTokens, row.completionTokens, row.cacheReadTokens,
-			row.cacheWriteTokens, row.preDeducted, row.cost, row.refunded,
-			row.latencyMS, row.firstTokenMS, row.stream, row.status,
-			row.errorClass, row.errorMessage, row.other,
-			row.usageSource, row.usageSemantic, row.reasoningTokens,
-			row.upstreamModel, row.upstreamAccountID, row.responseID, row.attempts,
-			ev.CreatedAt.UTC())
+			base+25, base+26, base+27, base+28, base+29)
+		args = append(args, usageLogInsertArgs(ev.usageLogRow())...)
+		args = append(args, ev.CreatedAt.UTC())
 	}
 	query := usageLogBatchInsertSQL + "\nVALUES " + strings.Join(rows, ",\n")
 	if _, err := tx.ExecContext(ctx, query, args...); err != nil {

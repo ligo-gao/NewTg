@@ -996,6 +996,7 @@
   "nav.redemption_codes": "引き換えコード",
   "nav.models": "モデルとプロバイダー",
   "nav.performance": "パフォーマンス管理",
+  "nav.failure_triage": "失敗の切り分け",
   "announcement_popup": {
     "confirm": "了解しました",
     "category_label": "お知らせの種類",

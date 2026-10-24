@@ -1894,5 +1894,284 @@
       "cap_notice": "仅显示最近的 {count} 条订阅，更早的实例未展示。",
       "order_ref": "#{id}"
     }
+  },
+  "failure_triage": {
+    "title": "失败排障",
+    "subtitle": "粘贴客户端报错里的 requestId，确认这次失败该由谁处理。",
+    "desktop_only": "本页需要宽屏（1024px 及以上）访问。",
+    "search": {
+      "label": "requestId",
+      "placeholder": "粘贴 requestId，例如 6de20d22…",
+      "submit": "查询",
+      "invalid": "requestId 格式不正确。请粘贴 32 位十六进制 ID，可带连字符。"
+    },
+    "rail": {
+      "heading": "最近失败",
+      "count": "最近 {count} 条",
+      "window": "扫描窗口 {start} – {end}",
+      "tab_all": "全部",
+      "tab_user": "用户请求",
+      "tab_channel": "上游渠道",
+      "tab_gateway": "网关自身",
+      "empty": "这个归属下暂无失败。",
+      "footer": "数据保留 90 天 · 仅管理员可见"
+    },
+    "totals": {
+      "lead": "最近 {count} 条失败",
+      "user": "用户请求 {count}",
+      "channel": "上游渠道 {count}",
+      "gateway": "网关自身 {count}",
+      "unknown": "证据不足 {count}",
+      "lead_filtered": "最近 {count} 条失败 · {owner}"
+    },
+    "sections": {
+      "evidence": "判定依据",
+      "actions": "建议动作"
+    },
+    "stamp": {
+      "owner_label": "归属",
+      "sub_label": "子类 · {sub}"
+    },
+    "case": {
+      "copy_request_id": "复制",
+      "copied": "已复制到剪贴板。",
+      "copy_failed": "复制到剪贴板失败。"
+    },
+    "empty": {
+      "heading": "粘贴 requestId 开始排查",
+      "body": "案卷会给出结论、判定依据和建议动作。"
+    },
+    "not_found": {
+      "heading": "日志库里没有这个 requestId",
+      "hint_1": "部分中继前拒绝不会落库：例如被鉴权中间件或策略拦下的请求没有进入中继，因此没有日志记录。",
+      "hint_2": "requestId 复制不完整，或与客户端显示的格式不一致；",
+      "hint_3": "已经超过日志保留期（90 天）。"
+    },
+    "error": {
+      "recent": "最近失败加载失败。",
+      "case": "案卷加载失败。",
+      "retry": "重试"
+    },
+    "facts": {
+      "model": "模型",
+      "upstream_model": "上游模型",
+      "channel": "渠道",
+      "endpoint": "端点",
+      "route": "协议路径",
+      "upstream_status": "上游状态码",
+      "attempts": "尝试次数",
+      "billing": "计费"
+    },
+    "values": {
+      "upstream_none": "无上游响应",
+      "attempts_none": "0（未发出）",
+      "attempts": "{count} 次",
+      "route_not_reached": "未到达上游",
+      "route_direct": "无（{from} → {to}）",
+      "billing_refunded": "已退款",
+      "billing_charged": "已扣费",
+      "billing_none": "未扣费",
+      "channel": "{type} · ID {id}",
+      "protocol_unknown": "未知协议"
+    },
+    "owner": {
+      "user": "用户请求",
+      "channel": "上游渠道",
+      "gateway": "网关自身",
+      "unknown": "证据不足"
+    },
+    "vote": {
+      "user": "指向用户",
+      "channel": "指向渠道",
+      "gateway": "指向网关",
+      "exclude-user": "排除用户",
+      "exclude-channel": "排除渠道",
+      "neutral": "中性"
+    },
+    "rule": {
+      "USR-01": {
+        "title": "用户请求内容不合法",
+        "summary": "网关在中继前的结构校验中发现用户原始请求不合法，失败发生在转换层之前，因此由用户请求侧负责。"
+      },
+      "USR-02": {
+        "title": "网关在发往上游前拒绝了请求",
+        "summary": "请求在额度、限流、鉴权或准入阶段被网关本地拒绝，没有产生上游调用，责任在调用方一侧。"
+      },
+      "CH-01": {
+        "title": "上游渠道拒绝了凭据",
+        "summary": "上游以 401/403 拒绝了渠道凭据，与用户请求内容无关，需要检查或更新该渠道的凭据。"
+      },
+      "CH-02": {
+        "title": "上游渠道持续返回服务端错误",
+        "summary": "上游在多次尝试后仍返回 5xx，重试与故障转移未能找到健康渠道，责任在上游渠道。"
+      },
+      "GW-01": {
+        "title": "协议转换让请求变得不合法",
+        "summary": "用户原始请求结构合法，但经过网关的协议转换后上游返回 4xx；转换层是本次请求中唯一新增的变量，属于网关自身。"
+      },
+      "GW-02": {
+        "title": "网关尚未实现所需能力",
+        "summary": "请求命中了网关未实现的能力（端点或渠道类型），失败发生在网关侧，需要补齐实现。"
+      },
+      "UNKNOWN": {
+        "title": "现有证据不足以确定责任方",
+        "summary": "已落库的事实无法明确指向用户、上游渠道或网关，请结合下方判定依据与容器日志继续排查。"
+      }
+    },
+    "sub": {
+      "request_structure": "请求结构",
+      "quota": "额度不足",
+      "rate_limit": "触发限流",
+      "auth": "鉴权失败",
+      "model_admission": "模型准入",
+      "channel_selection": "渠道选择",
+      "upstream_auth": "上游凭据",
+      "upstream_server": "上游 5xx",
+      "protocol_conversion": "协议转换",
+      "unsupported": "能力未实现",
+      "insufficient_evidence": "证据不足",
+      "unknown": "未知原因"
+    },
+    "signal": {
+      "request_structure_invalid": {
+        "fact": "用户原始请求结构校验失败",
+        "note": "网关在转发前发现原始请求体不合法。"
+      },
+      "request_structure_valid": {
+        "fact": "用户原始请求结构校验通过",
+        "note": "原始请求体符合预期 schema 并成功解析；这并不排除请求在语义上存在问题。"
+      },
+      "request_structure_unverified": {
+        "fact": "请求结构未校验",
+        "note": "本次请求没有留下结构校验结论，无法据此排除用户侧。"
+      },
+      "refused_before_upstream": {
+        "fact": "网关在发往上游前拒绝（{stage}）",
+        "note": "拒绝发生在选择渠道之前，没有产生上游调用。"
+      },
+      "no_upstream_attempt": {
+        "fact": "没有发出上游请求",
+        "note": "网关在本地处理完毕，上游没有参与本次失败。"
+      },
+      "no_upstream_response": {
+        "fact": "未收到上游响应（尝试 {attempts} 次）",
+        "note": "请求已发出但没有拿到响应，可能是网络错误或超时。"
+      },
+      "no_upstream_server_error": {
+        "fact": "未出现 5xx 或超时（尝试 {attempts} 次）",
+        "note": "上游没有服务端故障迹象，可排除渠道健康问题。"
+      },
+      "upstream_status": {
+        "fact": "上游返回 {upstream_status}",
+        "note": "该状态码无法单独区分是请求内容还是渠道问题。"
+      },
+      "upstream_auth_rejected": {
+        "fact": "上游返回 {upstream_status}，拒绝凭据",
+        "note": "鉴权失败发生在请求内容被处理之前。"
+      },
+      "upstream_server_error": {
+        "fact": "上游返回 {upstream_status}",
+        "note": "上游服务端错误，属于渠道侧。"
+      },
+      "attempt_count": {
+        "fact": "上游尝试 {attempts} 次",
+        "note": "尝试次数用于判断重试与故障转移是否已经发生。"
+      },
+      "conversion_applied": {
+        "fact": "经过协议转换：{from} → {to}",
+        "note": "网关重写了请求格式，转换层是本次请求中新增的变量。"
+      },
+      "conversion_absent": {
+        "fact": "无协议转换：{from} → {to}",
+        "note": "请求体按原格式转发，网关没有改写。"
+      },
+      "error_class": {
+        "fact": "错误分类 {class}",
+        "note": "该分类无法单独区分责任方。"
+      },
+      "error_class_unsupported": {
+        "fact": "网关未实现的能力：{class}",
+        "note": "端点或渠道类型在网关侧尚未支持，属于网关自身。"
+      },
+      "unknown": {
+        "fact": "未识别的判定依据",
+        "note": "该判定依据尚未收录在本版本的界面文案中，请结合容器日志排查。"
+      }
+    },
+    "action": {
+      "user": {
+        "1": {
+          "title": "复制诊断摘要",
+          "note": "把结论、requestId 与判定依据一起发给用户。",
+          "button": "复制"
+        },
+        "2": {
+          "title": "打开用量日志",
+          "note": "核对落库的请求行与重试链。",
+          "button": "打开"
+        },
+        "3": {
+          "title": "复制回复模板",
+          "note": "一段可直接发送、说明请求问题的回复。",
+          "button": "复制"
+        }
+      },
+      "channel": {
+        "1": {
+          "title": "复制诊断摘要",
+          "note": "把结论与判定依据发给渠道负责人。",
+          "button": "复制"
+        },
+        "2": {
+          "title": "打开渠道设置",
+          "note": "重测凭据，或在恢复前临时禁用该渠道。",
+          "button": "打开"
+        },
+        "3": {
+          "title": "复制 requestId",
+          "note": "向上游服务商升级问题时附上它。",
+          "button": "复制 ID"
+        }
+      },
+      "gateway": {
+        "1": {
+          "title": "复制诊断摘要",
+          "note": "在 issue 里带上 requestId、协议路径与判定依据。",
+          "button": "复制"
+        },
+        "2": {
+          "title": "打开用量日志",
+          "note": "核对落库的请求行与重试链。",
+          "button": "打开"
+        },
+        "3": {
+          "title": "复制命中的规则",
+          "note": "把规则附在修复说明或事后复盘中。",
+          "button": "复制"
+        }
+      },
+      "unknown": {
+        "1": {
+          "title": "复制诊断摘要",
+          "note": "在升级前先共享已经掌握的事实。",
+          "button": "复制"
+        },
+        "2": {
+          "title": "打开用量日志",
+          "note": "查看落库的请求行与重试链。",
+          "button": "打开"
+        },
+        "3": {
+          "title": "复制 requestId",
+          "note": "用它去关联容器日志。",
+          "button": "复制 ID"
+        }
+      }
+    },
+    "copy": {
+      "summary": "{title}\n\n{summary}\n\nrequestId: {requestId}\n规则：{rule}",
+      "reply": "关于你反馈的请求 {requestId}：{summary}\n\n请修正请求后重试。",
+      "rule_text": "{rule} · {summary}"
+    }
   }
 }

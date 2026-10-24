@@ -319,9 +319,10 @@ var usageLogReservedPublicKeys = map[string]struct{}{
 
 // usageLogRow 是一条 usage_logs 行的写投影（id/created_at 由数据库生成）。
 //
-// token_name/upstream/retry_chain 在 M3 没有可靠数据源：RelayContext 不携带
-// 令牌名与上游显示名，重试链历史也只有中继逐次尝试才能组装。三列可空，
-// 因此显式写 NULL 而不是编造占位值（platform-01 §12）。
+// token_name/upstream 在 M3 没有可靠数据源：RelayContext 不携带令牌名与
+// 上游显示名。两列可空，因此显式写 NULL 而不是编造占位值（platform-01 §12）。
+// retry_chain 由执行层的 Attempts 投影而来（buildRetryChain）；没有尝试
+// （未到达上游）时为 NULL。
 type usageLogRow struct {
 	requestID        string
 	userID           int64
@@ -342,6 +343,7 @@ type usageLogRow struct {
 	status           int16
 	errorClass       sql.NullString
 	errorMessage     sql.NullString
+	retryChain       sql.NullString
 	other            string
 
 	// —— 上游对账维度（usage_logs 迁移 20261028090500）——
@@ -661,6 +663,13 @@ func buildUsageLogRow(fact *contract.UsageFact,
 		group = rc.UserGroup
 	}
 
+	// retry_chain 是排障证据：逐轮上游尝试的投影。空 Attempts 必须写 NULL
+	// （nullString 把空串视为未设置），不能写空数组冒充「查过但没有记录」。
+	retryChain, err := buildRetryChain(rc)
+	if err != nil {
+		return usageLogRow{}, err
+	}
+
 	row := usageLogRow{
 		requestID:        strings.TrimSpace(rc.RequestID),
 		userID:           int64(rc.UserID),
@@ -681,6 +690,7 @@ func buildUsageLogRow(fact *contract.UsageFact,
 		status:           outcome.Status,
 		errorClass:       nullString(truncateLogText(outcome.ErrorClass, 255)),
 		errorMessage:     nullString(truncateLogText(outcome.ErrorMessage, 500)),
+		retryChain:       nullString(retryChain),
 	}
 
 	// —— 上游对账维度（设计 §4.6）——
@@ -751,6 +761,63 @@ func semanticFromPromptIncludesCache(includes bool) int16 {
 	return 1
 }
 
+// retryChainStep 是 retry_chain 数组元素的固定形状（键名即落库契约）。
+//
+// 只承载执行层真实持有的事实：attempt 序号、渠道 id、上游族、错误归类、
+// 耗时与上游状态码。channel_name / upstream_request_id 没有可靠来源，不写
+// （modules-05 §1.3 的元素级投影允许缺键）。
+//
+// `decision`（受控 6 值路由决策）同样不写：AttemptRecord 目前不带路由层的
+// PolicyDecision，从序号推断「同优先级/降优先级」会把网关从未观测到的事实
+// 写进审计证据。等 AttemptRecord 携带真实决策后再加回该键（用户可见标签）。
+type retryChainStep struct {
+	Attempt        string `json:"attempt"`
+	ChannelID      int    `json:"channel_id"`
+	Upstream       string `json:"upstream"`
+	ErrorClass     string `json:"error_class"`
+	LatencyMS      int    `json:"latency_ms"`
+	UpstreamStatus int    `json:"upstream_status"`
+}
+
+// buildRetryChain 把执行层证据投影为 usage_logs.retry_chain 的 JSON 文本。
+//
+// 空/nil Attempts 返回 ""（调用方写 NULL）：没有到达上游的请求不应伪造一条
+// 空链路，否则读取端无法区分「没有尝试」与「尝试记录丢失」。
+//
+// upstream 取请求级 rc.ChannelType（结算时最终解析出的渠道族），与
+// admin_info.triage.channel_type 同源；重试可能换渠道类型，但 AttemptRecord
+// 的 ChannelType 与请求级字段在结算时通常一致，按契约只写请求级标签。
+func buildRetryChain(rc *contract.RelayContext) (string, error) {
+	if rc == nil || len(rc.Attempts) == 0 {
+		return "", nil
+	}
+	// 上界与生产端（relay.RecordAttempt）共用 contract.MaxAttemptRecords：
+	// 日志投影不依赖上游包的实现细节，过量输入直接挡在 jsonb 写入之前
+	// （jsonb 体积与读取端渲染成本都被这一处钳住）。
+	attempts := rc.Attempts
+	if len(attempts) > contract.MaxAttemptRecords {
+		attempts = attempts[:contract.MaxAttemptRecords]
+	}
+	upstream := string(rc.ChannelType)
+	steps := make([]retryChainStep, len(attempts))
+	for i, attempt := range attempts {
+		steps[i] = retryChainStep{
+			Attempt:        fmt.Sprintf("%d/%d", i+1, len(attempts)),
+			ChannelID:      attempt.ChannelID,
+			Upstream:       upstream,
+			ErrorClass:     attempt.ErrorClass.String(),
+			LatencyMS:      attempt.LatencyMS,
+			UpstreamStatus: attempt.UpstreamStatus,
+		}
+	}
+	encoded, err := json.Marshal(steps)
+	if err != nil {
+		// 固定结构体的 Marshal 不会失败（无 NaN/chan/func）；保底不写半成品。
+		return "", fmt.Errorf("billing: marshal usage log retry chain: %w", err)
+	}
+	return string(encoded), nil
+}
+
 // usageField 安全读取 Usage 的某个 int64 字段（fact 为 nil 时返回 0）。
 func usageField(fact *contract.UsageFact, pick func(*contract.Usage) int64) int64 {
 	if fact == nil {
@@ -767,9 +834,12 @@ func usageField(fact *contract.UsageFact, pick func(*contract.Usage) int64) int6
 //     usage_semantic / billing_mode / expr_b64；
 //   - 订阅来源成功日志额外写 billing_preference 与 subscription_* 快照
 //     （billing-08 §5.3）：所有值来自结算结果，不做二次查询；
-//   - admin_info：quota_saturation（4 键 op/kind/original/clamped），以及
-//     usage_raw（协议原始 usage JSON；仅当 rawUsage 为 true 且 usageRaw 非空
-//     时写入——生产由 reconcile.raw_usage_enabled 决定）。
+//   - admin_info：quota_saturation（4 键 op/kind/original/clamped）、
+//     triage（排障证据：endpoint / channel_type / upstream_status / attempts /
+//     request_structure / conversion），以及 usage_raw（协议原始 usage JSON；
+//     仅当 rawUsage 为 true 且 usageRaw 非空时写入——生产由
+//     reconcile.raw_usage_enabled 决定）。三者都只进 admin_info，普通用户视图
+//     会整体剥离该分区（billing-07 §7.2）。
 //
 // **禁止 estimated_* 键**（billing-00 §11、billing-07 §6.9）：估算值在结果
 // 缺失时复用同名键，不引入新前缀。本函数不写任何 estimated_ 前缀键。
@@ -872,7 +942,7 @@ func buildUsageLogOther(rc *contract.RelayContext,
 		}
 	}
 
-	adminInfo := make(map[string]any, 2)
+	adminInfo := make(map[string]any, 3)
 	if rc.QuotaClamp != nil {
 		// 钳制标记必须只出现在 admin_info：普通用户视图会整体剥离该分区
 		// （billing-07 §7.2），这使「管理员可见、非管理员不可见」成为结构
@@ -884,11 +954,88 @@ func buildUsageLogOther(rc *contract.RelayContext,
 		// 普通用户可见的 public 分区（上游用量对账设计 §4.7）。
 		adminInfo["usage_raw"] = usageRaw
 	}
-	if len(adminInfo) > 0 {
-		other["admin_info"] = adminInfo
-	}
+	adminInfo["triage"] = buildTriageInfo(rc)
+	other["admin_info"] = adminInfo
 
 	return other
+}
+
+// maxTriageConversionSteps 是 admin_info.triage.conversion 保留的步数上界。
+//
+// 转换链是诊断线索而不是审计流水：排障只需要知道「是否发生转换、哪一段」，
+// 4 步足以覆盖"入站 → 中间 IR → 上游"的常见路径，也避免把异常长链写进
+// 每次日志（体积与读取端渲染成本）。
+const maxTriageConversionSteps = 4
+
+// triageLabelMaxRunes 是 conversion 中 stage/from/to 的字符串截断上界。
+//
+// 与 truncateLogText 同一口径（按 rune 截断、去 NUL）：这些值最终进 jsonb，
+// 未清洗的超长/非法 UTF-8 文本会让整条日志插入失败并阻塞结算。
+const triageLabelMaxRunes = 64
+
+// buildTriageInfo 构造 admin_info.triage 的排障证据投影。
+//
+// 只写有可靠来源的事实，且全部是有界值（枚举、状态码、计数）：
+//   - endpoint：contract.EndpointLabel（chat_completions|messages|responses|other）；
+//   - channel_type：请求级渠道族（与 retry_chain[].upstream 同源）；
+//   - upstream_status：最近一次**拿到的**上游响应状态码。末尾几轮可能是
+//     网络错误/超时（AttemptRecord.UpstreamStatus==0），它们不应覆盖之前
+//     真正拿到的响应；一次都没有拿到时整键省略（0 不是合法的 HTTP 状态）；
+//   - attempts：执行层记录的尝试次数（已由 relay 截到 8 条）；
+//   - request_structure：valid|invalid|""（空 = 未校验），空串也写，读取端
+//     据此区分「校验通过/不通过/未校验」三态；
+//   - conversion：最多 4 步，标签截断 64 rune；无转换时写空数组。
+//
+// 本函数不写任何自由文本（上游响应体、prompt、渠道名/凭据），符合 GC-6。
+func buildTriageInfo(rc *contract.RelayContext) map[string]any {
+	if rc == nil {
+		rc = &contract.RelayContext{}
+	}
+	upstreamStatus := 0
+	for _, attempt := range rc.Attempts {
+		if attempt.UpstreamStatus != 0 {
+			upstreamStatus = attempt.UpstreamStatus
+		}
+	}
+	triage := make(map[string]any, 6)
+	triage["endpoint"] = contract.EndpointLabel(rc.RequestPath)
+	triage["channel_type"] = string(rc.ChannelType)
+	if upstreamStatus != 0 {
+		triage["upstream_status"] = upstreamStatus
+	}
+	triage["attempts"] = len(rc.Attempts)
+	triage["request_structure"] = truncateLogText(rc.RequestStructure, triageLabelMaxRunes)
+	triage["conversion"] = buildTriageConversion(rc.ConversionChain)
+	return triage
+}
+
+// buildTriageConversion 把转换链投影为 {stage, from, to} 的有界数组。
+//
+// 连续重复的 (stage, from, to) 只保留一步：执行层每轮 BuildRequest 都会追加
+// 请求方向的转换，同一渠道上的重试因此会产生完全相同的相邻条目。去重只针对
+// 相邻重复，不同 stage（例如之后的 protocol_convert 响应回写）不会互相吞掉。
+func buildTriageConversion(chain []contract.ConversionStepEntry) []map[string]any {
+	// 非 nil 空切片：jsonb 写 [] 而不是 null，读取端不必区分两种「没有转换」。
+	steps := make([]map[string]any, 0, min(len(chain), maxTriageConversionSteps))
+	var prevStage, prevFrom, prevTo string
+	for _, entry := range chain {
+		stage := truncateLogText(entry.Stage, triageLabelMaxRunes)
+		from := truncateLogText(string(entry.From), triageLabelMaxRunes)
+		to := truncateLogText(string(entry.To), triageLabelMaxRunes)
+		if len(steps) > 0 && stage == prevStage && from == prevFrom && to == prevTo {
+			continue
+		}
+		if len(steps) == maxTriageConversionSteps {
+			break
+		}
+		steps = append(steps, map[string]any{
+			"stage": stage,
+			"from":  from,
+			"to":    to,
+		})
+		prevStage, prevFrom, prevTo = stage, from, to
+	}
+	return steps
 }
 
 // setPublicKey 写入 public 顶层键，拒绝保留键（billing-07 §7.1）。
@@ -920,13 +1067,8 @@ func (l *DBLogger) writeUsageLog(ctx context.Context, row usageLogRow) (bool, er
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// 【I1】先 ::uuid 规范化再取文本：UUID 的合法输入拼写不止一种
-	// （大小写、带花括号 `{...}`），直接对原始文本做哈希会让同一个
-	// requestID 落到两把不同的锁上，进而并发写出两行日志。PG 的
-	// uuid→text 输出固定为小写无花括号形式，保证所有拼写共享同一把锁。
-	if _, err := tx.ExecContext(ctx,
-		`SELECT pg_advisory_xact_lock(hashtextextended(($1::uuid)::text, 0))`, row.requestID); err != nil {
-		return false, fmt.Errorf("lock usage log request id: %w", err)
+	if err := lockUsageLogRequestID(ctx, tx, row.requestID); err != nil {
+		return false, err
 	}
 
 	existing, err := existingUsageLogStatuses(ctx, tx, row.requestID)
@@ -960,14 +1102,7 @@ func (l *DBLogger) writeUsageLog(ctx context.Context, row usageLogRow) (bool, er
 		return false, tx.Commit()
 	}
 
-	if _, err := tx.ExecContext(ctx, usageLogInsertSQL,
-		row.requestID, row.userID, row.tokenID, row.channelID, row.model,
-		row.group, row.promptTokens, row.completionTokens, row.cacheReadTokens,
-		row.cacheWriteTokens, row.preDeducted, row.cost, row.refunded,
-		row.latencyMS, row.firstTokenMS, row.stream, row.status,
-		row.errorClass, row.errorMessage, row.other,
-		row.usageSource, row.usageSemantic, row.reasoningTokens,
-		row.upstreamModel, row.upstreamAccountID, row.responseID, row.attempts); err != nil {
+	if _, err := tx.ExecContext(ctx, usageLogInsertSQL, usageLogInsertArgs(row)...); err != nil {
 		return false, fmt.Errorf("insert usage log: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -976,12 +1111,33 @@ func (l *DBLogger) writeUsageLog(ctx context.Context, row usageLogRow) (bool, er
 	return true, nil
 }
 
+// lockUsageLogRequestID 取 request_id 作用域的事务级咨询锁。
+//
+// 所有写 usage_logs 的执行者（Saturate/writeUsageLog 与 RecordRefusal）都
+// 必须经本函数加锁，才能让同一请求的写者共享同一把锁。
+//
+// 【I1】先 ::uuid 规范化再取文本：UUID 的合法输入拼写不止一种
+// （大小写、带花括号 `{...}`），直接对原始文本做哈希会让同一个
+// requestID 落到两把不同的锁上，进而并发写出两行日志。PG 的
+// uuid→text 输出固定为小写无花括号形式，保证所有拼写共享同一把锁。
+func lockUsageLogRequestID(ctx context.Context, tx *sql.Tx, requestID string) error {
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended(($1::uuid)::text, 0))`, requestID); err != nil {
+		return fmt.Errorf("lock usage log request id: %w", err)
+	}
+	return nil
+}
+
 // usageLogInsertSQL 显式列出 platform-01 §12 的列清单，并在末尾追加
 // 20261028090500 迁移的七个对账维度列（列序与批处理路径逐列一致）。
 //
-// id 由 IDENTITY 生成，created_at 由数据库 now() 生成；token_name/upstream/
-// retry_chain 在 M3 无可靠来源，显式 NULL。列清单保持与迁移逐列同名，
-// 便于后续补数据源时按列增补，而不是改成 map/反射写入。
+// id 由 IDENTITY 生成，created_at 由数据库 now() 生成；token_name/upstream
+// 仍无可靠来源，显式 NULL。列清单保持与迁移逐列同名，便于后续补数据源时
+// 按列增补，而不是改成 map/反射写入。
+//
+// retry_chain 从 NULL 常量改为 $20::jsonb（排障证据），other 顺延为
+// $21::jsonb，其后是对账维度列 $22..$28；共 28 个绑定参数
+// （token_name/upstream 不占位）。
 const usageLogInsertSQL = `
 INSERT INTO usage_logs (
     request_id, user_id, token_id, token_name, channel_id, upstream,
@@ -994,7 +1150,24 @@ VALUES ($1::uuid, $2, $3, NULL, $4, NULL,
         $5, $6, $7, $8, $9,
         $10, $11, $12, $13, $14,
         $15, $16, $17, $18, $19,
-        NULL, $20::jsonb, $21, $22, $23, $24, $25, $26, $27)`
+        $20::jsonb, $21::jsonb, $22, $23, $24, $25, $26, $27, $28)`
+
+// usageLogInsertArgs 按 usageLogInsertSQL 的 $1..$28 顺序展开绑定参数。
+//
+// 抽出来供两条写路径共用：Saturate 的同步写入与 Task 3 的中继前拒绝行
+// （RecordRefusal），以及批量冲刷路径（每行末尾自行追加 created_at）。
+// 参数顺序是跨任务契约，改动必须同步改 SQL 占位符。
+func usageLogInsertArgs(row usageLogRow) []any {
+	return []any{
+		row.requestID, row.userID, row.tokenID, row.channelID, row.model,
+		row.group, row.promptTokens, row.completionTokens, row.cacheReadTokens,
+		row.cacheWriteTokens, row.preDeducted, row.cost, row.refunded,
+		row.latencyMS, row.firstTokenMS, row.stream, row.status,
+		row.errorClass, row.errorMessage, row.retryChain, row.other,
+		row.usageSource, row.usageSemantic, row.reasoningTokens,
+		row.upstreamModel, row.upstreamAccountID, row.responseID, row.attempts,
+	}
+}
 
 // existingUsageLogStatuses 读取该 request_id 已存在的日志状态。
 //
