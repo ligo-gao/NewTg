@@ -41,6 +41,8 @@ func TestDefaultRegistryManualWhitelistIsFrozen(t *testing.T) {
 		"worker_history_cleanup":  true,
 		// spec §5.2.1：手工同步中国节假日日历（整年替换，幂等）。
 		"holiday_sync": true,
+		// 上游对账补跑：每次生成新 run，历史 run 不可变，幂等。
+		"upstream_usage_reconcile": true,
 	}
 	got := make(map[string]bool)
 	for _, task := range registry.Tasks() {

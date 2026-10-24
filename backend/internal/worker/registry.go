@@ -332,5 +332,19 @@ func DefaultRegistry() (*Registry, error) {
 			// 替换日历，幂等；数据源不可达时保留旧行。
 			ManualTriggerAllowed: true,
 		},
+		// ---- D 类：上游用量对账（框架调度型，设计 §11） ----
+		Task{
+			Name:        "upstream_usage_reconcile",
+			Description: "Reconcile local usage logs against upstream console snapshots",
+			// 每天一次：对账窗口按 lookback_days 覆盖最近若干自然日，重跑是
+			// 追加新 run（旧 run 不可变），因此周期只需小于窗口长度。
+			Interval: 24 * time.Hour,
+			// 单账号聚合 + 逐条比较 + 落库；5 分钟覆盖正常规模，超时由调度器
+			// 主动收敛，不让卡死的执行占着租约。
+			Timeout:   5 * time.Minute,
+			Scheduled: true,
+			// 管理员可补跑：每次执行生成新 run，幂等且不改写历史判定。
+			ManualTriggerAllowed: true,
+		},
 	)
 }
