@@ -182,10 +182,63 @@
       "spend_tooltip": "预扣 {pre} / 退回 {refunded}",
       "by_model": "模型分布",
       "other": "其他",
-      "trend": "消费趋势",
-      "trend_series": "消费",
+      "trend": "消费与请求",
       "view_table": "查看数据表",
       "trend_table_caption": "消费趋势数据表",
+      "chart": {
+        "average": "均值 {value}",
+        "sub": "同一时间轴，两条独立量纲；悬停任意时段查看数值",
+        "cost_series": "消费 · 积分",
+        "request_series": "请求 · 次",
+        "peak": "峰值 {time} · {cost} 积分（{percent}%）",
+        "active": "有流量 {active} / {total} {unit}",
+        "average_hour": "平均 {value} 积分 / 小时",
+        "average_day": "平均 {value} 积分 / 天",
+        "zero_note": "{count} 个时段为 0，位置保留",
+        "unit_hour": "小时",
+        "unit_day": "天"
+      },
+      "kpi": {
+        "success": "成功率",
+        "tokens": "Tokens",
+        "latency": "延迟 P50",
+        "active": "活跃用户",
+        "foot": {
+          "pre_refund": "预扣 {pre} · 退款 {refunded}",
+          "avg_request": "平均每请求 {value} 积分 · 退款 {refunded}",
+          "status_counts": "成功 {success} · 失败 {error} · 退款 {refunded} · 拒绝 {refused}",
+          "failures_admin": "{count} 条失败记录 → 失败排障",
+          "failures_user": "{count} 条失败记录 → 查看明细",
+          "token_split": "输入 {input} · 输出 {output}",
+          "p95": "P95 {p95} · 样本 {samples}",
+          "active_note": "窗口内去重"
+        }
+      },
+      "rail": {
+        "title": "窗口摘要",
+        "sub": "同一筛选条件下的聚合口径",
+        "peak": "峰值时段",
+        "peak_share": "占窗口消费",
+        "active": "有流量时段",
+        "avg_hour": "平均每小时",
+        "avg_day": "平均每天",
+        "avg_request": "平均每请求",
+        "rpm": "RPM",
+        "tpm": "TPM",
+        "rpm_value": "{avg} 平均 · {peak} 峰值",
+        "tpm_value": "{avg} 平均",
+        "active_list": "活跃时段",
+        "active_columns": "消费 / 请求",
+        "hours_value": "{active} / {total} {unit}"
+      },
+      "token": {
+        "title": "Token 结构",
+        "sub": "输入与输出合计 {total}",
+        "cache": "缓存读取",
+        "note": "平均每次请求 {avg} tokens；输入是输出的 {ratio} 倍",
+        "note_no_ratio": "平均每次请求 {avg} tokens"
+      },
+      "source_note": "数据口径：积分 = 预扣 − 退款；成功率 = 成功请求 / 总请求；延迟分位仅统计成功且耗时大于 0 的请求。聚合窗口与上方筛选一致。",
       "granularity_hour": "按小时聚合",
       "granularity_day": "按天聚合",
       "empty": "暂无统计数据",
@@ -204,6 +257,32 @@
         "rpm_avg": "平均 RPM",
         "rpm_peak": "峰值 RPM",
         "tpm_avg": "平均 TPM"
+      },
+      "model": {
+        "sub": "按消费排序 · 第 {n} 名起归入其他",
+        "tag": "{count} 个模型"
+      },
+      "group": {
+        "title": "分组用量",
+        "sub": "{count} 个分组 · 按消费"
+      },
+      "user": {
+        "title": "用户排行",
+        "sub": "{count} 位活跃用户 · 按消费"
+      },
+      "token_key": {
+        "title": "令牌用量",
+        "sub": "按你的 API 令牌拆分",
+        "tag": "{count} 个令牌",
+        "note": "令牌额度用尽时，请求会在入口被拒绝并记为「已拒绝」。",
+        "unassigned": "未通过令牌"
+      },
+      "fail": {
+        "title": "最近失败",
+        "sub": "按时间倒序",
+        "tag": "{shown} / {total}",
+        "view_all": "查看全部 {total} 条失败明细",
+        "empty": "窗口内没有失败请求"
       }
     }
   },

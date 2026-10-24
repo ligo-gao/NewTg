@@ -182,10 +182,63 @@
       "spend_tooltip": "事前引き落とし {pre} / 返金 {refunded}",
       "by_model": "モデル別分布",
       "other": "その他",
-      "trend": "消費推移",
-      "trend_series": "消費",
+      "trend": "消費とリクエスト",
       "view_table": "データ表を表示",
       "trend_table_caption": "消費推移のデータ表",
+      "chart": {
+        "average": "平均 {value}",
+        "sub": "1つの時間軸に2つの独立した尺度。バケットにカーソルを合わせると値を確認できます",
+        "cost_series": "消費 · クレジット",
+        "request_series": "リクエスト · 件",
+        "peak": "ピーク {time} · {cost} クレジット（{percent}%）",
+        "active": "アクティブ {active} / {total} {unit}",
+        "average_hour": "平均 {value} クレジット / 時間",
+        "average_day": "平均 {value} クレジット / 日",
+        "zero_note": "{count} 件のバケットがゼロ（位置は保持）",
+        "unit_hour": "時間",
+        "unit_day": "日"
+      },
+      "kpi": {
+        "success": "成功率",
+        "tokens": "トークン",
+        "latency": "レイテンシ P50",
+        "active": "アクティブユーザー",
+        "foot": {
+          "pre_refund": "事前引き落とし {pre} · 返金 {refunded}",
+          "avg_request": "1リクエストあたり {value} クレジット · 返金 {refunded}",
+          "status_counts": "成功 {success} · 失敗 {error} · 返金 {refunded} · 拒否 {refused}",
+          "failures_admin": "{count} 件の失敗 → 失敗の切り分け",
+          "failures_user": "{count} 件の失敗 → 詳細を見る",
+          "token_split": "入力 {input} · 出力 {output}",
+          "p95": "P95 {p95} · サンプル {samples} 件",
+          "active_note": "期間内のユニーク数"
+        }
+      },
+      "rail": {
+        "title": "期間サマリー",
+        "sub": "現在のフィルター条件での集計",
+        "peak": "ピークバケット",
+        "peak_share": "消費に占める割合",
+        "active": "アクティブなバケット",
+        "avg_hour": "1時間あたりの平均",
+        "avg_day": "1日あたりの平均",
+        "avg_request": "1リクエストあたりの平均",
+        "rpm": "RPM",
+        "tpm": "TPM",
+        "rpm_value": "平均 {avg} · ピーク {peak}",
+        "tpm_value": "平均 {avg}",
+        "active_list": "アクティブなバケット",
+        "active_columns": "消費 / リクエスト",
+        "hours_value": "{active} / {total} {unit}"
+      },
+      "token": {
+        "title": "トークン構成",
+        "sub": "入力と出力の合計 {total}",
+        "cache": "キャッシュ読み取り",
+        "note": "1リクエストあたり平均 {avg} トークン；入力は出力の {ratio} 倍",
+        "note_no_ratio": "1リクエストあたり平均 {avg} トークン"
+      },
+      "source_note": "クレジット = 事前引き落とし − 返金；成功率 = 成功リクエスト / 全リクエスト；レイテンシのパーセンタイルは、レイテンシが 0 より大きい成功リクエストのみを対象とします。集計期間は上記のフィルターに一致します。",
       "granularity_hour": "1時間ごと",
       "granularity_day": "1日ごと",
       "empty": "統計データはまだありません",
@@ -204,6 +257,32 @@
         "rpm_avg": "平均 RPM",
         "rpm_peak": "ピーク RPM",
         "tpm_avg": "平均 TPM"
+      },
+      "model": {
+        "sub": "消費順 · 1〜{n} 位を表示し、残りは「その他」に集約",
+        "tag": "{count} モデル"
+      },
+      "group": {
+        "title": "グループ別利用",
+        "sub": "{count} グループ · 消費順"
+      },
+      "user": {
+        "title": "ユーザーランキング",
+        "sub": "アクティブユーザー {count} 人 · 消費順"
+      },
+      "token_key": {
+        "title": "トークン利用",
+        "sub": "API トークン別の内訳",
+        "tag": "{count} トークン",
+        "note": "トークンのクォータを使い切ると、リクエストは入口で拒否され「拒否」として記録されます。",
+        "unassigned": "トークンなし"
+      },
+      "fail": {
+        "title": "最近の失敗",
+        "sub": "新しい順",
+        "tag": "{shown} / {total}",
+        "view_all": "失敗 {total} 件をすべて表示",
+        "empty": "この期間に失敗したリクエストはありません"
       }
     }
   },
