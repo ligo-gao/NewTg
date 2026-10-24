@@ -184,7 +184,7 @@
       "other": "その他",
       "trend": "消費とリクエスト",
       "view_table": "データ表を表示",
-      "trend_table_caption": "消費推移のデータ表",
+      "trend_table_caption": "消費とリクエストのデータ表",
       "chart": {
         "average": "平均 {value}",
         "sub": "1つの時間軸に2つの独立した尺度。バケットにカーソルを合わせると値を確認できます",
@@ -206,7 +206,7 @@
         "foot": {
           "pre_refund": "事前引き落とし {pre} · 返金 {refunded}",
           "avg_request": "1リクエストあたり {value} クレジット · 返金 {refunded}",
-          "status_counts": "成功 {success} · 失敗 {error} · 返金 {refunded} · 拒否 {refused}",
+          "status_counts": "成功 {success} · 失敗 {error} · 返金済み {refunded} · 拒否 {refused}",
           "failures_admin": "{count} 件の失敗 → 失敗の切り分け",
           "failures_user": "{count} 件の失敗 → 詳細を見る",
           "token_split": "入力 {input} · 出力 {output}",

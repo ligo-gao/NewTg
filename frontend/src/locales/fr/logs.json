@@ -184,7 +184,7 @@
       "other": "Autre",
       "trend": "Dépenses et requêtes",
       "view_table": "Voir le tableau de données",
-      "trend_table_caption": "Tableau de données de l’évolution de la consommation",
+      "trend_table_caption": "Tableau de données des dépenses et des requêtes",
       "chart": {
         "average": "Moy. {value}",
         "sub": "Un seul axe temporel, deux échelles indépendantes ; survolez un intervalle pour voir ses valeurs",

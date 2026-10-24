@@ -184,7 +184,7 @@
       "other": "其他",
       "trend": "消費與請求",
       "view_table": "檢視資料表",
-      "trend_table_caption": "消費趨勢資料表",
+      "trend_table_caption": "消費與請求資料表",
       "chart": {
         "average": "均值 {value}",
         "sub": "同一時間軸，兩條獨立量綱；懸停任一時段檢視數值",
@@ -259,7 +259,7 @@
         "tpm_avg": "平均 TPM"
       },
       "model": {
-        "sub": "按消費排序 · 第 {n} 名起歸入其他",
+        "sub": "按消費排序 · 第 {n} 名之後歸入其他",
         "tag": "{count} 個模型"
       },
       "group": {
@@ -271,11 +271,11 @@
         "sub": "{count} 位活躍使用者 · 按消費"
       },
       "token_key": {
-        "title": "令牌用量",
-        "sub": "按你的 API 令牌拆分",
-        "tag": "{count} 個令牌",
-        "note": "令牌額度用盡時，請求會在入口被拒絕並記為「已拒絕」。",
-        "unassigned": "未通過令牌"
+        "title": "權杖用量",
+        "sub": "按您的 API 權杖拆分",
+        "tag": "{count} 個權杖",
+        "note": "權杖額度用盡時，請求會在入口被拒絕並記為「已拒絕」。",
+        "unassigned": "未指明權杖"
       },
       "fail": {
         "title": "最近失敗",

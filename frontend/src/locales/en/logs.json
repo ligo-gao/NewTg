@@ -184,7 +184,7 @@
       "other": "Other",
       "trend": "Spend and requests",
       "view_table": "View data table",
-      "trend_table_caption": "Consumption trend data table",
+      "trend_table_caption": "Spend and requests data table",
       "chart": {
         "average": "Avg {value}",
         "sub": "One time axis, two independent scales; hover a bucket for its values",

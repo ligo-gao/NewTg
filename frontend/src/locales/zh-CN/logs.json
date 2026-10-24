@@ -184,7 +184,7 @@
       "other": "其他",
       "trend": "消费与请求",
       "view_table": "查看数据表",
-      "trend_table_caption": "消费趋势数据表",
+      "trend_table_caption": "消费与请求数据表",
       "chart": {
         "average": "均值 {value}",
         "sub": "同一时间轴，两条独立量纲；悬停任意时段查看数值",
@@ -259,7 +259,7 @@
         "tpm_avg": "平均 TPM"
       },
       "model": {
-        "sub": "按消费排序 · 第 {n} 名起归入其他",
+        "sub": "按消费排序 · 第 {n} 名之后归入其他",
         "tag": "{count} 个模型"
       },
       "group": {
@@ -272,7 +272,7 @@
       },
       "token_key": {
         "title": "令牌用量",
-        "sub": "按你的 API 令牌拆分",
+        "sub": "按您的 API 令牌拆分",
         "tag": "{count} 个令牌",
         "note": "令牌额度用尽时，请求会在入口被拒绝并记为「已拒绝」。",
         "unassigned": "未通过令牌"
