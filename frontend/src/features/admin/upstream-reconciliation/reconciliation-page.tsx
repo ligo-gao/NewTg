@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useSearch } from '@tanstack/react-router'
+import { useState } from 'react'
 
 import { PageHeader } from '@/features/shell/page-header'
 import { meQueryOptions } from '@/lib/session'
@@ -8,6 +9,7 @@ import { handleTabListKeyDown } from '@/shared/lib/roving-focus'
 import { FormAlert } from '@/shared/ui/form'
 
 import { EntryTab } from './entry-tab'
+import { ResultsTab } from './results-tab'
 import {
   hasSettingsManage,
   normalizeReconciliationTab,
@@ -36,6 +38,9 @@ export function UpstreamReconciliationPage() {
   // 永远不会以只读身份出现（服务端仍逐请求强制）。
   const me = useQuery(meQueryOptions())
   const canManage = hasSettingsManage(me.data?.permissions)
+  // 运行选择跨 Tab 共享：结果 Tab 与后续概览 Tab 读同一次运行。不放 URL
+  // search param，路由的 validateSearch 不在本任务范围内。
+  const [runId, setRunId] = useState<number | null>(null)
 
   const selectTab = (next: ReconciliationTabId): void => {
     if (next === tab) return
@@ -97,8 +102,10 @@ export function UpstreamReconciliationPage() {
       >
         {tab === 'entry' ? <EntryTab canManage={canManage} /> : null}
         {tab === 'results' ? (
-          <TabPlaceholder
-            message={t('admin.upstream_reconciliation.page.placeholder_results')}
+          <ResultsTab
+            runId={runId}
+            onSelectRun={setRunId}
+            canManage={canManage}
           />
         ) : null}
         {tab === 'overview' ? (
