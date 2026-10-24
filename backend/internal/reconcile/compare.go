@@ -9,9 +9,15 @@ import "math"
 //     token 的日期会被 partial_snapshot 掩盖；
 //   - 反过来，快照没提供的维度不参与比较，也就绝不会因此产生 alert。
 func Compare(in Input) Comparison {
-	// 1. 没有快照：待录入，不算告警。
+	// 1. 没有快照：待录入，不算告警。收入（RevenueMinor）是网关侧的量，
+	// 只要本地聚合存在就必须照常计算——否则新账号的常见路径（尚无快照）
+	// 会把收入记成 0，连带毛利率与总览 KPI 全部失真。
 	if in.Snapshot == nil {
-		return Comparison{Severity: SeverityMissingSnapshot}
+		c := Comparison{Severity: SeverityMissingSnapshot}
+		if in.Local != nil {
+			c.RevenueMinor = CreditsToMinor(in.Local.CostCredits, in.QuotaPerUnit)
+		}
+		return c
 	}
 	// 2. 有快照没有本地聚合：可能漏记或渠道未归属。
 	if in.Local == nil {

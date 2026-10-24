@@ -90,6 +90,35 @@ func TestCompareMissingAndNullDims(t *testing.T) {
 	}
 }
 
+// 没有快照（新账号的常见路径）也必须计算网关侧收入，否则总览的收入/毛利
+// KPI 会被系统性低估；missing_local 时本地成本未知，收入才为 0。
+func TestCompareMissingSnapshotKeepsRevenue(t *testing.T) {
+	tol := Tolerances{TokenBP: 100, MinDeltaTokens: 1000, AmountMinor: 100}
+	got := Compare(Input{
+		Local:        &LocalAggregate{CostCredits: 5000},
+		Tolerances:   tol,
+		QuotaPerUnit: 100,
+	})
+	if got.Severity != SeverityMissingSnapshot {
+		t.Fatalf("severity = %s, want missing_snapshot", got.Severity)
+	}
+	if got.RevenueMinor != 5000 {
+		t.Fatalf("revenue = %d, want 5000", got.RevenueMinor)
+	}
+
+	got = Compare(Input{
+		Snapshot:     &Snapshot{},
+		Tolerances:   tol,
+		QuotaPerUnit: 100,
+	})
+	if got.Severity != SeverityMissingLocal {
+		t.Fatalf("severity = %s, want missing_local", got.Severity)
+	}
+	if got.RevenueMinor != 0 {
+		t.Fatalf("revenue = %d, want 0 when local is missing", got.RevenueMinor)
+	}
+}
+
 // 已提供维度的真实差异不能被「快照不完整」掩盖：alert 优先于 partial_snapshot。
 func TestCompareAlertWinsOverPartialSnapshot(t *testing.T) {
 	hit := int64(0)

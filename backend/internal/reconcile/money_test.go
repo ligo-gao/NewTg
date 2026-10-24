@@ -8,6 +8,8 @@ import (
 func TestCreditsToMinorRoundsHalfUp(t *testing.T) {
 	cases := []struct{ credits, qpu, want int64 }{
 		{150, 100, 150}, {1, 100, 1}, {1, 3, 33}, {2, 3, 67}, {0, 100, 0}, {5, 2, 250},
+		// 恰好一半（0.5）必须进位；略低于一半必须舍去；负数对称。
+		{1, 200, 1}, {1, 201, 0}, {-1, 200, -1},
 	}
 	for _, c := range cases {
 		if got := CreditsToMinor(c.credits, c.qpu); got != c.want {
@@ -45,11 +47,16 @@ func TestMarginBP(t *testing.T) {
 }
 
 func TestMarginBPRoundsHalfUp(t *testing.T) {
-	// 1*10000/8 = 1250；5*10000/8 = 6250；边界 .5 向上取整。
+	// 1*10000/8 = 1250；5*10000/8 = 6250；负数对称。
+	// 另外两条真正钉住舍入：1/20000 = 0.5bp 必须进位到 1，
+	// 1/20001 ≈ 0.49998bp 必须舍去为 0。
 	cases := []struct{ margin, revenue, want int64 }{
 		{1, 8, 1250},
 		{5, 8, 6250},
 		{-1, 8, -1250},
+		{1, 20000, 1},
+		{1, 20001, 0},
+		{-1, 20000, -1},
 	}
 	for _, c := range cases {
 		if bp, ok := MarginBP(c.margin, c.revenue); !ok || bp != c.want {
