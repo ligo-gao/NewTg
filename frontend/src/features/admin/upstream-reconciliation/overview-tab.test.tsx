@@ -449,6 +449,8 @@ describe('reconciliation overview tab', () => {
     await renderTab(42)
 
     await screen.findByTestId('analytics-chart')
+    // 运行列表与汇总并行发出，谁先到不定；先等到再断言参数，避免依赖顺序。
+    await waitFor(() => expect(runsCalls).toHaveLength(1))
     expect(summaryCalls[0]?.searchParams.get('run_id')).toBe('42')
     expect(runsCalls[0]?.searchParams.get('p')).toBe('1')
     expect(runsCalls[0]?.searchParams.get('page_size')).toBe('20')

@@ -264,6 +264,12 @@ describe('AnalyticsChart', () => {
     fireEvent.keyDown(svg, { key: 'ArrowRight' })
     expect(live.textContent).toContain('30 credits')
 
+    // 左方向键回退，并在第一个点上被 clamp。
+    fireEvent.keyDown(svg, { key: 'ArrowLeft' })
+    expect(live.textContent).toContain('10 credits')
+    fireEvent.keyDown(svg, { key: 'ArrowLeft' })
+    expect(live.textContent).toContain('10 credits')
+
     fireEvent.keyDown(svg, { key: 'Home' })
     expect(live.textContent).toContain('10 credits')
     fireEvent.keyDown(svg, { key: 'End' })
@@ -273,10 +279,61 @@ describe('AnalyticsChart', () => {
     expect(screen.queryByTestId('analytics-chart-tooltip')).toBeNull()
     expect(live.textContent).toBe('')
 
+    // 尚未选中时按左方向键从右端进入（与右方向键从左端进入对称）。
+    fireEvent.keyDown(svg, { key: 'ArrowLeft' })
+    expect(live.textContent).toContain('30 credits')
+
     // 重新选中后失焦也必须清除。
     fireEvent.keyDown(svg, { key: 'ArrowRight' })
     expect(screen.getByTestId('analytics-chart-tooltip')).not.toBeNull()
     fireEvent.blur(svg)
+    expect(screen.queryByTestId('analytics-chart-tooltip')).toBeNull()
+  })
+
+  it('opens on pointerdown and clears on pointerleave', async () => {
+    // jsdom 没有完整的 PointerEvent：用带 clientX 的 MouseEvent 走同一条
+    // React 事件通道，验证 pointerdown / pointerleave 这两个处理器本身，
+    // 而不是只验证鼠标的 mousemove / mouseleave。
+    const { container } = await renderWithProviders(
+      <AnalyticsChart series={series} config={config} tooltip />,
+    )
+    const svg = container.querySelector('svg')
+    if (svg === null) throw new Error('chart svg missing')
+    mockChartBox(svg)
+
+    fireEvent(svg, new MouseEvent('pointerdown', { clientX: 312, bubbles: true }))
+    expect(screen.getByTestId('analytics-chart-tooltip').textContent).toBe(
+      '30 credits',
+    )
+
+    // React 把 onPointerLeave 合成在原生 `pointerout` 上（relatedTarget 在
+    // 元素外时才算 leave），所以这里发 pointerout 而不是 pointerleave。
+    fireEvent(
+      svg,
+      new MouseEvent('pointerout', {
+        bubbles: true,
+        relatedTarget: document.body,
+      }),
+    )
+    expect(screen.queryByTestId('analytics-chart-tooltip')).toBeNull()
+
+    // pointermove 单独接一条：触摸拖动时没有 mousemove 兼容事件可依赖。
+    fireEvent(svg, new MouseEvent('pointermove', { clientX: 50, bubbles: true }))
+    expect(screen.getByTestId('analytics-chart-tooltip').textContent).toBe(
+      '10 credits',
+    )
+  })
+
+  it('ignores hover before the SVG has a measurable box', async () => {
+    // jsdom 的 getBoundingClientRect 宽度为 0；此时没有可用的坐标映射，
+    // 宁可什么都不选中，也不能把每个点都算成同一个索引。
+    const { container } = await renderWithProviders(
+      <AnalyticsChart series={series} config={config} tooltip />,
+    )
+    const svg = container.querySelector('svg')
+    if (svg === null) throw new Error('chart svg missing')
+
+    fireEvent.mouseMove(svg, { clientX: 312 })
     expect(screen.queryByTestId('analytics-chart-tooltip')).toBeNull()
   })
 

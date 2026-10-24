@@ -315,7 +315,11 @@ export function AnalyticsChart({
         role="img"
         aria-label={ariaLabel}
         viewBox={`0 0 ${VIEW_WIDTH} ${VIEW_HEIGHT}`}
-        className="h-auto w-full"
+        className={
+          tooltip === true
+            ? 'h-auto w-full focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none'
+            : 'h-auto w-full'
+        }
         tabIndex={tooltip === true ? 0 : undefined}
         onPointerMove={tooltip === true ? handlePointerMove : undefined}
         onMouseMove={tooltip === true ? handlePointerMove : undefined}
