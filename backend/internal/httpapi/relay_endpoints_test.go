@@ -2524,3 +2524,40 @@ func TestChatSettlementFailureReturns402(t *testing.T) {
 		t.Fatalf("terminate = %d, want 1", env.billing.terminateCount())
 	}
 }
+
+func TestChatStreamSettlementFailureIsReported(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}`+"\n\n")
+		if fl != nil {
+			fl.Flush()
+		}
+		_, _ = io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-test","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	var logs bytes.Buffer
+	env := newRelayTestEnv(t, upstream, nil)
+	env.handler.log = slog.New(slog.NewTextHandler(&logs, nil))
+	env.billing.terminateErr = fmt.Errorf("%w: settle", billing.ErrInsufficientQuota)
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hello"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（流式已交付，状态不可回改）", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "Hi") {
+		t.Fatalf("body = %s, want 已交付的数据帧", w.Body.String())
+	}
+	if env.billing.terminateCount() != 1 {
+		t.Fatalf("terminate = %d, want 1", env.billing.terminateCount())
+	}
+	if !strings.Contains(logs.String(), "billing settlement failed") {
+		t.Fatalf("logs = %s, want settlement failure 证据", logs.String())
+	}
+	if !strings.Contains(logs.String(), "error_class=insufficient_quota") {
+		t.Fatalf("logs = %s, want error_class=insufficient_quota", logs.String())
+	}
+}

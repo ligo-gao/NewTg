@@ -1670,18 +1670,21 @@ func (h *RelayHandler) pipeNativeAnthropicStream(
 	closeUpstream := func() { closeOnce.Do(func() { _ = upstream.Close() }) }
 
 	terminated := false
-	finalize := func(terminate func() error) {
+	finalize := func(terminate func() error) error {
 		if terminated || billing == nil {
-			return
+			return nil
 		}
 		terminated = true
-		_ = terminate()
+		return terminate()
 	}
 	terminate := func(fact contract.UsageFact) {
-		finalize(func() error { return billing.Terminate(fact) })
+		if err := finalize(func() error { return billing.Terminate(fact) }); err != nil {
+			// 流式响应已经写出：无法改 402，只能留下结算失败证据。
+			h.reportSettlementFailure(rc, err, true)
+		}
 	}
 	refund := func() {
-		finalize(func() error { return billing.Refund() })
+		_ = finalize(func() error { return billing.Refund() })
 	}
 	// GC-7 兜底：任何未走显式终结的出口（含 panic）都必须释放预留。
 	defer refund()
@@ -1894,18 +1897,21 @@ func (h *RelayHandler) bridgeAnthropicCrossProtocolStream(
 	closeUpstream := func() { closeOnce.Do(func() { _ = upstream.Close() }) }
 
 	terminated := false
-	finalize := func(terminate func() error) {
+	finalize := func(terminate func() error) error {
 		if terminated || billing == nil {
-			return
+			return nil
 		}
 		terminated = true
-		_ = terminate()
+		return terminate()
 	}
 	terminate := func(fact contract.UsageFact) {
-		finalize(func() error { return billing.Terminate(fact) })
+		if err := finalize(func() error { return billing.Terminate(fact) }); err != nil {
+			// 流式响应已经写出：无法改 402，只能留下结算失败证据。
+			h.reportSettlementFailure(rc, err, true)
+		}
 	}
 	refund := func() {
-		finalize(func() error { return billing.Refund() })
+		_ = finalize(func() error { return billing.Refund() })
 	}
 	// GC-7 兜底：任何未走显式终结的出口（含 panic）都必须释放预留。
 	defer refund()
@@ -2733,21 +2739,24 @@ func (h *RelayHandler) bridgeStream(
 	closeUpstream := func() { closeUpstreamOnce.Do(func() { _ = upstream.Close() }) }
 
 	terminated := false
-	finalize := func(terminate func() error) {
+	finalize := func(terminate func() error) error {
 		if terminated || billing == nil {
-			return
+			return nil
 		}
 		terminated = true
-		_ = terminate()
+		return terminate()
 	}
 	terminate := func(fact contract.UsageFact) {
-		finalize(func() error { return billing.Terminate(fact) })
+		if err := finalize(func() error { return billing.Terminate(fact) }); err != nil {
+			// 流式响应已经写出：无法改 402，只能留下结算失败证据。
+			h.reportSettlementFailure(rc, err, true)
+		}
 	}
 	// R-85：失败/取消/panic 是整笔不收费语义。真实引擎的 Refund 会全额退回
 	// hold 与增量，并把 usage_logs 收敛为 refunded；Terminate(零事实) 会让
 	// 按次/常量表达式模型对失败流照常扣费并记 success。
 	refund := func() {
-		finalize(func() error { return billing.Refund() })
+		_ = finalize(func() error { return billing.Refund() })
 	}
 	// GC-7 兜底：任何未走显式终结的出口（含 panic）也必须释放预留。
 	// 失败语义优先（R-85）：兜底一律退款，不结算。
