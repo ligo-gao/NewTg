@@ -77,6 +77,10 @@ interface SnapshotApiOptions {
   onPut?: (body: Record<string, unknown>) => void
   /** 保存请求在此 Promise 完成前不返回，用于断言保存进行中的 UI 状态。 */
   putGate?: Promise<void>
+  /** 快照读取在此 Promise 完成前不返回，用于断言「载入中」的竞态。 */
+  getGate?: Promise<void>
+  /** 在 getGate 放行、响应即将返回时触发：用于等待响应真正抵达。 */
+  onSnapshotDelivered?: () => void
 }
 
 function installSnapshotApi(options: SnapshotApiOptions = {}) {
@@ -89,8 +93,10 @@ function installSnapshotApi(options: SnapshotApiOptions = {}) {
         page_size: 20,
       }),
     ),
-    http.get(`${ORIGIN}/api/upstream-snapshots`, ({ request }) => {
+    http.get(`${ORIGIN}/api/upstream-snapshots`, async ({ request }) => {
       options.onSnapshot?.(new URL(request.url))
+      await options.getGate
+      options.onSnapshotDelivered?.()
       return HttpResponse.json({ items: SNAPSHOTS })
     }),
     http.put(`${ORIGIN}/api/upstream-snapshots`, async ({ request }) => {
@@ -263,7 +269,7 @@ describe('snapshot entry tab', () => {
     expect(within(first).getByLabelText('Amount (¥)').tagName).toBe('INPUT')
   })
 
-  it('keeps the row mounted and focused while typing in a numeric cell', async () => {
+  it('keeps accumulated keystrokes in one numeric input', async () => {
     installSnapshotApi()
     await renderWithProviders(<EntryTab canManage />, ['common', 'admin'])
     const user = userEvent.setup()
@@ -283,7 +289,7 @@ describe('snapshot entry tab', () => {
     expect(document.activeElement).toBe(output)
   })
 
-  it('disables the cell inputs while a save is in flight', async () => {
+  it('disables the cell inputs and the window controls while a save is in flight', async () => {
     const gate = deferred()
     installSnapshotApi({ putGate: gate.promise })
     await renderWithProviders(<EntryTab canManage />, ['common', 'admin'])
@@ -295,6 +301,13 @@ describe('snapshot entry tab', () => {
     if (first === undefined) throw new Error('missing first row')
     const output = within(first).getByLabelText('Output tokens') as HTMLInputElement
     const amount = within(first).getByLabelText('Amount (¥)') as HTMLInputElement
+    const loadButton = screen.getByRole('button', {
+      name: 'Load',
+    }) as HTMLButtonElement
+    const dateInput = screen.getByLabelText('Usage date') as HTMLInputElement
+    const accountSelect = screen.getByLabelText(
+      'Upstream account',
+    ) as HTMLSelectElement
 
     await user.clear(output)
     await user.type(output, '1200')
@@ -302,10 +315,18 @@ describe('snapshot entry tab', () => {
 
     await waitFor(() => expect(output.disabled).toBe(true))
     expect(amount.disabled).toBe(true)
+    // 保存期间换窗口会让基线取自提交时的行、而表格留在别的数据上，
+    // 下一次保存就会静默回滚这次成功的写入。
+    expect(loadButton.disabled).toBe(true)
+    expect(dateInput.disabled).toBe(true)
+    expect(accountSelect.disabled).toBe(true)
 
     gate.resolve()
     await waitFor(() => expect(output.disabled).toBe(false))
     expect(amount.disabled).toBe(false)
+    expect(loadButton.disabled).toBe(false)
+    expect(dateInput.disabled).toBe(false)
+    expect(accountSelect.disabled).toBe(false)
   })
 
   it('keeps unsaved edits when the discard confirmation is declined', async () => {
@@ -338,6 +359,62 @@ describe('snapshot entry tab', () => {
     expect(snapshotCalls).toBe(1)
     expect(screen.getAllByTestId('entry-model-row')[0]).toBe(first)
     expect((output as HTMLInputElement).value).toBe('1200')
+    expect(screen.getByText('1 unsaved row(s)')).toBeTruthy()
+  })
+
+  it('keeps a row added while a load is in flight', async () => {
+    // 读请求在飞行中时新增一行：响应抵达不得静默清掉这一行（脏数据优先）。
+    const gate = deferred()
+    let delivered = false
+    installSnapshotApi({
+      getGate: gate.promise,
+      onSnapshotDelivered: () => {
+        delivered = true
+      },
+    })
+    await renderWithProviders(<EntryTab canManage />, ['common', 'admin'])
+    const user = userEvent.setup()
+    await screen.findByRole('option', { name: 'DeepSeek' })
+    fireEvent.change(screen.getByLabelText('Usage date'), {
+      target: { value: '2026-10-23' },
+    })
+
+    await user.click(screen.getByRole('button', { name: 'Load' }))
+    await user.type(screen.getByLabelText('Add model'), 'deepseek-new')
+    await user.click(screen.getByRole('button', { name: 'Add' }))
+
+    gate.resolve()
+    await waitFor(() => expect(delivered).toBe(true))
+    // 让响应真正落到查询缓存并触发同步效果。
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    const rows = screen.getAllByTestId('entry-model-row')
+    expect(rows).toHaveLength(1)
+    expect(within(rows[0] as HTMLElement).getByText('deepseek-new')).toBeTruthy()
+    expect(screen.queryByText('deepseek-chat')).toBeNull()
+  })
+
+  it('keeps the account selection when its discard confirmation is declined', async () => {
+    installSnapshotApi()
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+
+    await renderWithProviders(<EntryTab canManage />, ['common', 'admin'])
+    const user = userEvent.setup()
+    await loadDate('2026-10-23')
+
+    const rows = await screen.findAllByTestId('entry-model-row')
+    const first = rows[0]
+    if (first === undefined) throw new Error('missing first row')
+    const output = within(first).getByLabelText('Output tokens') as HTMLInputElement
+    await user.clear(output)
+    await user.type(output, '1200')
+
+    const select = screen.getByLabelText('Upstream account') as HTMLSelectElement
+    fireEvent.change(select, { target: { value: '' } })
+
+    // 拒绝丢弃后，受控 select 回到原值，行与编辑值不变。
+    await waitFor(() => expect(select.value).toBe('1'))
+    expect(output.value).toBe('1200')
     expect(screen.getByText('1 unsaved row(s)')).toBeTruthy()
   })
 

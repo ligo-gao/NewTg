@@ -312,6 +312,7 @@ export function EntryTab({ canManage }: { canManage: boolean }) {
     const discarding = dirtyCount > 0
     if (!confirmDiscard()) return
     setValidationError(null)
+    setAddError(null)
     setSavedCount(null)
     if (loaded !== null && loaded.accountId === accountId && loaded.date === date) {
       // 确认丢弃后必须先从当前缓存恢复干净基线：重取若与上次结构相同，
@@ -389,6 +390,7 @@ export function EntryTab({ canManage }: { canManage: boolean }) {
   function reset(): void {
     setRows(baseline.map((row) => ({ ...row })))
     setValidationError(null)
+    setAddError(null)
     setSavedCount(null)
   }
 
@@ -403,13 +405,16 @@ export function EntryTab({ canManage }: { canManage: boolean }) {
     if (built.items.length === 0) return
 
     setValidationError(null)
+    // 基线取**提交时**的行快照，而不是 await 之后闭包里的 rows：保存期间
+    // 任何能把行改掉的路径都会让脏标记与基线脱节。
+    const submitted = rows
     try {
       const result = await saveMutation.mutateAsync({
         accountId: loaded.accountId,
         items: built.items,
       })
       // 立即以「已保存」为基线，脏标记无需等待重取即可清除。
-      setBaseline(rows)
+      setBaseline(submitted)
       setSavedCount(result.updated)
     } catch {
       // 失败文案由 `saveMutation.error` 渲染（RFC 7807 detail）。
@@ -437,7 +442,7 @@ export function EntryTab({ canManage }: { canManage: boolean }) {
               setAddError(null)
               clearLoaded()
             }}
-            disabled={accountsQuery.isPending}
+            disabled={accountsQuery.isPending || saveMutation.isPending}
             className="h-10 min-w-48 rounded-lg border border-border-default bg-surface-card px-2 text-body text-ink-1 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <option value="">
@@ -456,6 +461,7 @@ export function EntryTab({ canManage }: { canManage: boolean }) {
             label={t('admin.upstream_reconciliation.entry.date')}
             type="date"
             value={date}
+            disabled={saveMutation.isPending}
             onChange={(event) => {
               if (!confirmDiscard()) return
               setDate(event.target.value)
@@ -468,7 +474,11 @@ export function EntryTab({ canManage }: { canManage: boolean }) {
         <Button
           variant="secondary"
           className="h-10"
-          disabled={accountId === null || date === ''}
+          // 保存进行中不得换窗口：成功路径会以提交时的行作为新基线，此时
+          // 重取/丢弃会把基线以外的值留在表里，下一次保存就会悄悄回滚。
+          disabled={
+            accountId === null || date === '' || saveMutation.isPending
+          }
           onClick={() => void load()}
         >
           {t('admin.upstream_reconciliation.entry.load')}
