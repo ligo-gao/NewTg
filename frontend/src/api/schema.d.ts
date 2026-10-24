@@ -5869,6 +5869,11 @@ export interface components {
             last_test_result?: boolean | null;
             task_plugin_key?: string | null;
             task_extend_plugin_keys: string[];
+            /**
+             * Format: int64
+             * @description 归属的上游账号（upstream_accounts.id）；null = 未归属。
+             */
+            upstream_account_id?: number | null;
             /** Format: date-time */
             created_at: string;
             /**

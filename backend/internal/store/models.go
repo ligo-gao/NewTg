@@ -136,10 +136,14 @@ type Channel struct {
 	//   - 类型 60（newapi）：TaskPluginKey 必须为 NULL，Extend 非空。
 	// 其他类型两者都必须为空/空数组。指针表示 NULL（未绑定），空数组是
 	//「没有多绑」，二者语义不同但都合法，故 Extend 不用指针。
-	TaskPluginKey        *string   `gorm:"column:task_plugin_key"`
-	TaskExtendPluginKeys []byte    `gorm:"column:task_extend_plugin_keys"`
-	CreatedAt            time.Time `gorm:"column:created_at"`
-	UpdatedAt            time.Time `gorm:"column:updated_at"`
+	TaskPluginKey        *string `gorm:"column:task_plugin_key"`
+	TaskExtendPluginKeys []byte  `gorm:"column:task_extend_plugin_keys"`
+	// UpstreamAccountID 是渠道归属的上游账号（upstream_accounts.id，
+	// 上游用量对账设计 §4.1）；NULL = 未归属。归属是历史事实：迁移只追加可空
+	// 列，已有渠道默认不归属，删除仍被引用的账号由 FK RESTRICT 拒绝。
+	UpstreamAccountID *int64    `gorm:"column:upstream_account_id"`
+	CreatedAt         time.Time `gorm:"column:created_at"`
+	UpdatedAt         time.Time `gorm:"column:updated_at"`
 }
 
 // TableName 返回 GORM 表名。

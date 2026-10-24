@@ -62,6 +62,7 @@ type fakeChannelStore struct {
 	testResultCalls  int
 
 	lastPatch    store.ChannelPatch
+	lastCreate   *store.Channel
 	lastExpected time.Time
 	lastBatchIDs []int64
 	lastBatchTo  int16
@@ -125,6 +126,10 @@ func cloneChannel(c *store.Channel) *store.Channel {
 		out.TaskPluginKey = &v
 	}
 	out.TaskExtendPluginKeys = append([]byte(nil), c.TaskExtendPluginKeys...)
+	if c.UpstreamAccountID != nil {
+		v := *c.UpstreamAccountID
+		out.UpstreamAccountID = &v
+	}
 	return &out
 }
 
@@ -192,6 +197,7 @@ func (f *fakeChannelStore) Create(_ context.Context, ch *store.Channel) (*store.
 	now := time.Now().UTC()
 	ch.CreatedAt = now
 	ch.UpdatedAt = now
+	f.lastCreate = cloneChannel(ch)
 	f.items[ch.ID] = cloneChannel(ch)
 	return cloneChannel(ch), nil
 }
@@ -275,6 +281,9 @@ func (f *fakeChannelStore) Update(_ context.Context, id int64, patch store.Chann
 	}
 	if patch.TaskExtendPluginKeys != nil {
 		c.TaskExtendPluginKeys = append([]byte(nil), patch.TaskExtendPluginKeys...)
+	}
+	if patch.UpstreamAccountIDSet {
+		c.UpstreamAccountID = patch.UpstreamAccountID
 	}
 	c.UpdatedAt = time.Now().UTC()
 	f.items[id] = c
@@ -628,7 +637,8 @@ func TestChannelListPaginationAndFilters(t *testing.T) {
 		"fail_count": true, "auto_disabled_reason": true,
 		"last_test_at": true, "last_test_result": true,
 		"task_plugin_key": true, "task_extend_plugin_keys": true,
-		"created_at": true, "updated_at": true, "version": true,
+		"upstream_account_id": true,
+		"created_at":          true, "updated_at": true, "version": true,
 	}
 	for _, item := range envelope.Items {
 		for key := range item {
@@ -1269,6 +1279,38 @@ func TestChannelCreateNameConflict(t *testing.T) {
 	problem := decodeProblemBody(t, rr)
 	if problem["type"] != "https://newtg.dev/problems/channel_name_conflict" {
 		t.Fatalf("problem.type = %v", problem["type"])
+	}
+}
+
+// TestCreateChannelAcceptsUpstreamAccountID 锁定上游对账的渠道归属面：
+// POST /api/channels 接受 upstream_account_id，回显到 Channel DTO，并把
+// 归属传给 store（fake 收到的记录必须带同一值）。
+func TestCreateChannelAcceptsUpstreamAccountID(t *testing.T) {
+	env := newChannelTestEnv(t, ChannelHandlerOptions{})
+	body := map[string]any{
+		"name":                "attributed",
+		"type":                "openai",
+		"credentials":         map[string]any{"api_key": "sk-1234567890"},
+		"supported_models":    []string{"gpt-4o"},
+		"upstream_account_id": 42,
+	}
+	rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPost, "/api/channels", body), channelAdminPrincipal())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d，期望 201（body=%s）", rr.Code, rr.Body.String())
+	}
+
+	var resp struct {
+		UpstreamAccountID *int64 `json:"upstream_account_id"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("响应不是合法 JSON: %v（body=%s）", err, rr.Body.String())
+	}
+	if resp.UpstreamAccountID == nil || *resp.UpstreamAccountID != 42 {
+		t.Fatalf("响应 upstream_account_id = %v，期望 42", resp.UpstreamAccountID)
+	}
+	// 断言 store 收到的记录（而不是只信响应回显）同样带归属。
+	if got := env.store.lastCreate; got == nil || got.UpstreamAccountID == nil || *got.UpstreamAccountID != 42 {
+		t.Fatalf("store 收到的 upstream_account_id = %+v，期望 42", got)
 	}
 }
 

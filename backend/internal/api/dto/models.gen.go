@@ -5204,6 +5204,9 @@ type Channel struct {
 	// UpdatedAt 乐观锁版本；PATCH 必须原样回传。也用于展示「最近更新」。
 	UpdatedAt time.Time `json:"updated_at"`
 
+	// UpstreamAccountId 归属的上游账号（upstream_accounts.id）；null = 未归属。
+	UpstreamAccountId *int64 `json:"upstream_account_id,omitempty"`
+
 	// Version R-P8：derived updated_at（RFC3339Nano UTC）。
 	Version string `json:"version"`
 	Weight  int    `json:"weight"`

@@ -12346,6 +12346,11 @@ components:
           type: array
           items:
             type: string
+        upstream_account_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: 归属的上游账号（upstream_accounts.id）；null = 未归属。
         created_at:
           type: string
           format: date-time
