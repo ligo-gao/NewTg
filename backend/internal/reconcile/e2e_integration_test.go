@@ -20,8 +20,8 @@ package reconcile_test
 //
 // 运行（隔离库，先创建数据库；测试自身会执行迁移）：
 //
-//	NEWTG_TEST_DB_DSN='postgres://newtg:newtg@localhost:55432/newtg_reconcile_e2e?sslmode=disable' \
-//	NEWTG_TEST_LOGS_DSN='postgres://newtg:newtg@localhost:55432/newtg_reconcile_e2e_logs?sslmode=disable' \
+//	NEWTG_TEST_DB_DSN='postgres://newtg:<password>@localhost:55432/newtg_reconcile_e2e?sslmode=disable' \
+//	NEWTG_TEST_LOGS_DSN='postgres://newtg:<password>@localhost:55432/newtg_reconcile_e2e_logs?sslmode=disable' \
 //	  go test -tags=integration ./internal/reconcile -run 'TestReconcile(EndToEnd|EndpointsRejectNonAdmin)' -v
 //
 // NEWTG_TEST_LOGS_DSN 缺失时直接失败而不是跳过：日志库断言（聚合与审计）是
@@ -95,6 +95,10 @@ type reconcileE2E struct {
 	channelID int64
 	logIDs    []string
 	userIDs   []int64
+
+	// permissions 与中间件使用的是同一个 SQLAuthRepo 实例；权限用例直接经它
+	// 装载，证明 403 来自「权限被解析成 users:read」而不是装载器报错后的 fail-closed。
+	permissions *httpapi.SQLAuthRepo
 }
 
 // openTestDBs 打开主库与日志库，并对两者执行嵌入迁移。
@@ -163,6 +167,9 @@ func newReconcileE2E(t *testing.T) *reconcileE2E {
 	mainDB, logsDB := openTestDBs(t)
 
 	env := &reconcileE2E{t: t, mainDB: mainDB, logsDB: logsDB}
+	// 清理必须在任何夹具写入之前注册：后续步骤失败时也不能把用户、账号、渠道、
+	// usage_logs 或快照漏在共享测试库里。cleanup 容忍零 ID（DELETE 命中 0 行）。
+	t.Cleanup(env.cleanup)
 	suffix := uuid.NewString()[:8]
 
 	env.adminID = env.insertUser("e2e_admin_" + strings.ReplaceAll(suffix, "-", "_"))
@@ -190,7 +197,9 @@ func newReconcileE2E(t *testing.T) *reconcileE2E {
 		env.insertUsageLog(e2eOverModel, 10000, 500, 2000, 4321),
 	}
 
-	env.seedSnapshot()
+	// 刻意不在 setup 里预置快照：快照行只能由 PUT /api/upstream-snapshots 写入，
+	// 否则「PUT 返回 200 但什么都没落库」会被预置行掩盖，severity 断言照样通过。
+	// 权限用例不使用快照，因此也不需要夹具。
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	auditLogger := audit.New(logsDB)
@@ -232,7 +241,8 @@ func newReconcileE2E(t *testing.T) *reconcileE2E {
 
 	// 会话 Principal 不带 Permissions；权威权限必须按 UserID 从 users 行装载，
 	// 否则受限 admin 会被 nil=FULL 直接放行。
-	authz.SetPermissionLoader(httpapi.NewSQLAuthRepo(mainDB))
+	env.permissions = httpapi.NewSQLAuthRepo(mainDB)
+	authz.SetPermissionLoader(env.permissions)
 
 	mux := http.NewServeMux()
 	reconcileHandlers.RegisterRoutes(mux, nil)
@@ -240,7 +250,6 @@ func newReconcileE2E(t *testing.T) *reconcileE2E {
 	snapshotHandlers.RegisterRoutes(mux, nil)
 	env.mux = mux
 
-	t.Cleanup(env.cleanup)
 	return env
 }
 
@@ -288,28 +297,6 @@ func (e *reconcileE2E) insertUsageLog(model string, prompt, cacheRead, completio
 	return requestID
 }
 
-// seedSnapshot 直接写快照夹具，权限用例与断言不依赖 HTTP 录入路径；
-// 端到端流程本身仍会通过 PUT /api/upstream-snapshots 覆盖一次。
-func (e *reconcileE2E) seedSnapshot() {
-	e.t.Helper()
-	hitA, missA, outA := int64(100), int64(900), int64(100)
-	hitB, missB, outB := int64(5500), int64(19500), int64(4000)
-	amountA, amountB := int64(1234), int64(4321)
-	rows := []store.UpstreamSnapshot{
-		{
-			AccountID: e.accountID, UsageDate: e2eUsageDate, UpstreamModel: e2eMatchModel,
-			CacheHitTokens: &hitA, CacheMissTokens: &missA, OutputTokens: &outA, AmountMinor: &amountA,
-		},
-		{
-			AccountID: e.accountID, UsageDate: e2eUsageDate, UpstreamModel: e2eOverModel,
-			CacheHitTokens: &hitB, CacheMissTokens: &missB, OutputTokens: &outB, AmountMinor: &amountB,
-		},
-	}
-	if _, err := store.NewUpstreamSnapshotRepo(e.mainDB).Upsert(context.Background(), rows); err != nil {
-		e.t.Fatalf("seed snapshots: %v", err)
-	}
-}
-
 func (e *reconcileE2E) cleanup() {
 	// 顺序：明细随 run 级联删除，快照/渠道先于账号。
 	queries := []struct {
@@ -341,14 +328,15 @@ func (e *reconcileE2E) cleanup() {
 	}
 }
 
-// do 发送一次带会话身份的请求。
-func (e *reconcileE2E) do(p *auth.Principal, method, path string, body any) *httptest.ResponseRecorder {
-	e.t.Helper()
+// do 发送一次带会话身份的请求。t 显式传入：403 子测试要用子测试自己的 t，
+// 失败才能定位到具体路由而不是父测试。
+func (e *reconcileE2E) do(t *testing.T, p *auth.Principal, method, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
 	var reader io.Reader = http.NoBody
 	if body != nil {
 		raw, err := json.Marshal(body)
 		if err != nil {
-			e.t.Fatalf("marshal %s %s body: %v", method, path, err)
+			t.Fatalf("marshal %s %s body: %v", method, path, err)
 		}
 		reader = bytes.NewReader(raw)
 	}
@@ -379,8 +367,9 @@ func TestReconcileEndToEnd(t *testing.T) {
 	env := newReconcileE2E(t)
 	admin := env.admin()
 
-	// 1. 通过管理面重新录入快照，证明 PUT /api/upstream-snapshots → runner
-	//    的读取链是通的（夹具已直接落库，这里覆盖同一组键）。
+	// 1. 快照只经管理面 PUT 写入——setup 不预置任何快照行，所以 runner 读到的
+	//    每一行都必须来自这次 PUT。PUT 返回 200 却不落库时，下面的 severity
+	//    断言（missing_snapshot，而不是 ok/alert）会立刻失败。
 	hitA, missA, outA := int64(100), int64(900), int64(100)
 	hitB, missB, outB := int64(5500), int64(19500), int64(4000)
 	amountA, amountB := int64(1234), int64(4321)
@@ -399,7 +388,7 @@ func TestReconcileEndToEnd(t *testing.T) {
 			},
 		},
 	}
-	requireStatus(t, env.do(admin, http.MethodPut, "/api/upstream-snapshots", upsert),
+	requireStatus(t, env.do(t, admin, http.MethodPut, "/api/upstream-snapshots", upsert),
 		http.StatusOK, "PUT /api/upstream-snapshots")
 
 	// 2. 触发一次手动对账。
@@ -416,6 +405,13 @@ func TestReconcileEndToEnd(t *testing.T) {
 	if runs.Total != 1 || len(runs.Items) != 1 || runs.Items[0].Id != firstRunID {
 		t.Fatalf("runs after first trigger = %+v (total %d), want exactly run %d",
 			runs.Items, runs.Total, firstRunID)
+	}
+	// run 状态是确定性的：固定时钟 e2eNow 比最新日志晚 11.5 小时，远超 runner
+	// 的 15 分钟日志流滞后阈值（runner.go 的 logStreamLagThreshold），所以必须是
+	// partial。这里钉死具体值，避免「一律 partial」或「一律 succeeded」的回归漏过。
+	firstRunStatus := runs.Items[0].Status
+	if firstRunStatus != dto.ReconcileRunStatusPartial {
+		t.Fatalf("first run status = %s, want partial（固定时钟比最新日志晚 11.5h）", firstRunStatus)
 	}
 
 	// 3. 断言日界：日志时刻 2026-10-24T16:30:00Z 在 Asia/Shanghai 是 10-25。
@@ -463,18 +459,26 @@ func TestReconcileEndToEnd(t *testing.T) {
 	}
 
 	// 4. 处置告警条目：ack 必须落库并写审计。
-	requireStatus(t, env.do(admin, http.MethodPost,
+	requireStatus(t, env.do(t, admin, http.MethodPost,
 		fmt.Sprintf("/api/upstream-reconciliations/items/%d/ack", over.Id),
 		map[string]any{"status": "acknowledged", "note": "task-17 acceptance"}),
 		http.StatusOK, "POST ack")
 
 	acked := env.listItems(admin, firstRunID)
+	ackedFound := false
 	for _, item := range acked {
-		if item.Id == over.Id {
-			if item.Status != dto.ReconcileItemStatusAcknowledged || item.Note != "task-17 acceptance" {
-				t.Fatalf("acked item = status %s note %q", item.Status, item.Note)
-			}
+		if item.Id != over.Id {
+			continue
 		}
+		ackedFound = true
+		if item.Status != dto.ReconcileItemStatusAcknowledged || item.Note != "task-17 acceptance" {
+			t.Fatalf("acked item = status %s note %q", item.Status, item.Note)
+		}
+	}
+	if !ackedFound {
+		// 缺了条目时上面的循环会空转通过；ack 后条目消失同样是失败。
+		t.Fatalf("acked item %d missing from run %d items after ack: %+v",
+			over.Id, firstRunID, acked)
 	}
 
 	// 5. 审计行必须真实存在且形状可追溯。
@@ -492,8 +496,14 @@ func TestReconcileEndToEnd(t *testing.T) {
 	if trigger != "manual" {
 		t.Fatalf("reconcile.run audit trigger = %q, want manual", trigger)
 	}
-	if runStatus == "" || runStatus == "timeout" {
-		t.Fatalf("reconcile.run audit status = %q, want a completed status", runStatus)
+	// 审计里的 status 必须与 run 行的真实状态一致，且同样钉死为 partial：
+	// 一个写死 / 拼错的审计状态不能藏在「非空且不是 timeout」背后。
+	if runStatus != string(firstRunStatus) {
+		t.Fatalf("reconcile.run audit status = %q, want %q（与 run %d 行一致）",
+			runStatus, firstRunStatus, firstRunID)
+	}
+	if runStatus != "partial" {
+		t.Fatalf("reconcile.run audit status = %q, want partial（固定时钟比最新日志晚 11.5h）", runStatus)
 	}
 	var ackBefore, ackAfter string
 	if err := env.logsDB.QueryRow(
@@ -522,6 +532,10 @@ func TestReconcileEndToEnd(t *testing.T) {
 	if runs.Total != 2 {
 		t.Fatalf("runs after re-run = %d, want 2", runs.Total)
 	}
+	// 下面的状态与审计断言都遍历 runs.Items；少了这一条，空列表会让它们空转通过。
+	if len(runs.Items) != 2 {
+		t.Fatalf("runs after re-run = %d rows (total %d), want 2", len(runs.Items), runs.Total)
+	}
 	firstKeys := itemKeys(items)
 	secondItems := env.listItems(admin, secondRunID)
 	if len(secondItems) != 2 {
@@ -537,9 +551,35 @@ func TestReconcileEndToEnd(t *testing.T) {
 	}
 
 	for _, run := range runs.Items {
-		if run.Status == "failed" || run.Status == "running" {
-			t.Fatalf("run %d status = %s, want a finished run", run.Id, run.Status)
+		if run.Status != dto.ReconcileRunStatusPartial {
+			t.Fatalf("run %d status = %s, want partial", run.Id, run.Status)
 		}
+	}
+	// 第二次运行的审计行也必须与它自己的 run 行状态一致（最新一条就是它）。
+	var rerunAuditStatus string
+	if err := env.logsDB.QueryRow(
+		`SELECT COALESCE(detail->>'status', '') FROM audit_logs
+		 WHERE user_id = $1 AND detail->>'action' = $2
+		 ORDER BY id DESC LIMIT 1`,
+		admin.UserID, audit.ActionReconcileRun).Scan(&rerunAuditStatus); err != nil {
+		t.Fatalf("read reconcile.run audit after re-run: %v", err)
+	}
+	rerunAuditMatched := false
+	for _, run := range runs.Items {
+		if run.Id != secondRunID {
+			continue
+		}
+		rerunAuditMatched = true
+		if rerunAuditStatus != string(run.Status) {
+			t.Fatalf("re-run audit status = %q, want %q（与 run %d 行一致）",
+				rerunAuditStatus, run.Status, secondRunID)
+		}
+	}
+	if !rerunAuditMatched {
+		t.Fatalf("second run %d missing from the run list: %+v", secondRunID, runs.Items)
+	}
+	if n := env.countAudit(admin.UserID, audit.ActionReconcileRun); n != 2 {
+		t.Fatalf("audit %s rows after re-run = %d, want 2", audit.ActionReconcileRun, n)
 	}
 }
 
@@ -562,6 +602,27 @@ func TestReconcileEndpointsRejectNonAdmin(t *testing.T) {
 		`UPDATE users SET admin_permissions = '["users:read"]'::jsonb WHERE id = $1`,
 		limitedAdminID); err != nil {
 		t.Fatalf("restrict admin: %v", err)
+	}
+
+	// 403 必须来自「权限被正确解析成 ["users:read"]」，而不是装载器报错后的
+	// fail-closed。直接经中间件持有的同一个 SQLAuthRepo 装载：
+	// nil 在 RBAC 里等于 FULL，空集才是「什么都不要」。
+	limitedPerms, err := env.permissions.Load(context.Background(), limitedAdminID)
+	if err != nil {
+		t.Fatalf("load limited admin permissions: %v", err)
+	}
+	if limitedPerms == nil {
+		t.Fatal(`limited admin permissions = nil（RBAC 语义里等于 FULL），want ["users:read"]`)
+	}
+	if len(limitedPerms) != 1 || limitedPerms[0] != "users:read" {
+		t.Fatalf(`limited admin permissions = %v, want ["users:read"]`, limitedPerms)
+	}
+	plainPerms, err := env.permissions.Load(context.Background(), plainUserID)
+	if err != nil {
+		t.Fatalf("load plain user permissions: %v", err)
+	}
+	if plainPerms == nil || len(plainPerms) != 0 {
+		t.Fatalf("plain user permissions = %v, want empty non-nil（不得回退 FULL）", plainPerms)
 	}
 
 	sessions := map[string]*auth.Principal{
@@ -594,7 +655,7 @@ func TestReconcileEndpointsRejectNonAdmin(t *testing.T) {
 	for sessionName, principal := range sessions {
 		for _, route := range routes {
 			t.Run(sessionName+"/"+route.name, func(t *testing.T) {
-				rr := env.do(principal, route.method, route.path, route.body)
+				rr := env.do(t, principal, route.method, route.path, route.body)
 				if rr.Code != http.StatusForbidden {
 					t.Fatalf("status = %d, want 403 (not 404；body=%s)", rr.Code, rr.Body.String())
 				}
@@ -619,7 +680,7 @@ func TestReconcileEndpointsRejectNonAdmin(t *testing.T) {
 
 func (e *reconcileE2E) triggerRun(p *auth.Principal) dto.ReconcileRunResult {
 	e.t.Helper()
-	rr := e.do(p, http.MethodPost, "/api/upstream-reconciliations/run",
+	rr := e.do(e.t, p, http.MethodPost, "/api/upstream-reconciliations/run",
 		map[string]any{"account_id": e.accountID})
 	requireStatus(e.t, rr, http.StatusOK, "POST /api/upstream-reconciliations/run")
 	var result dto.ReconcileRunResult
@@ -631,7 +692,7 @@ func (e *reconcileE2E) triggerRun(p *auth.Principal) dto.ReconcileRunResult {
 
 func (e *reconcileE2E) listRuns(p *auth.Principal) dto.ReconcileRunList {
 	e.t.Helper()
-	rr := e.do(p, http.MethodGet,
+	rr := e.do(e.t, p, http.MethodGet,
 		fmt.Sprintf("/api/upstream-reconciliations/runs?account_id=%d", e.accountID), nil)
 	requireStatus(e.t, rr, http.StatusOK, "GET runs")
 	var list dto.ReconcileRunList
@@ -643,7 +704,7 @@ func (e *reconcileE2E) listRuns(p *auth.Principal) dto.ReconcileRunList {
 
 func (e *reconcileE2E) listItems(p *auth.Principal, runID int64) []dto.ReconcileItem {
 	e.t.Helper()
-	rr := e.do(p, http.MethodGet,
+	rr := e.do(e.t, p, http.MethodGet,
 		fmt.Sprintf("/api/upstream-reconciliations/runs/%d/items", runID), nil)
 	requireStatus(e.t, rr, http.StatusOK, "GET items")
 	var list dto.ReconcileItemList
@@ -664,6 +725,9 @@ func (e *reconcileE2E) countAudit(actor int64, action string) int64 {
 	return n
 }
 
+// duplicateKeyGroups 统计同一 run 内重复的 (account, usage_date, model) 组。
+// 它守的是表上的唯一约束（迁移层），不是 runner 的键生成逻辑：约束在时它永远
+// 返回 0；一旦约束被删且 runner 写出重复键，它才会失败。
 func (e *reconcileE2E) duplicateKeyGroups(runID int64) int64 {
 	e.t.Helper()
 	var n int64
