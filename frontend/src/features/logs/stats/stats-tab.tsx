@@ -28,6 +28,7 @@ import {
   type TrendPoint,
 } from './insights'
 import { fillTimeseries } from './series'
+import styles from './stats-tab.module.css'
 import { TrendChart } from './trend-chart'
 
 type UsageStatsByTokenItem = components['schemas']['UsageStatsByTokenItem']
@@ -384,7 +385,10 @@ export function UsageStatsTab({
     ? 'xl:grid-cols-[1.35fr_repeat(5,minmax(0,1fr))]'
     : 'xl:grid-cols-[1.35fr_repeat(4,minmax(0,1fr))]'
   const bandClass = [
-    'grid gap-px overflow-hidden rounded-xl border border-border-hairline bg-border-hairline',
+    styles.band,
+    // The cells own the hairlines (stats-tab.module.css); the band itself is
+    // only the rounded outline and the card fill behind an unfilled slot.
+    'grid overflow-hidden rounded-xl border border-border-hairline bg-surface-card',
     'sm:grid-cols-3',
     bandColumns,
   ].join(' ')
@@ -682,7 +686,7 @@ export function UsageStatsTab({
           </div>
         </section>
 
-        <div className="flex min-w-0 flex-col gap-3.5">
+        <div className="grid min-w-0 gap-3.5 lg:grid-cols-2 xl:grid-cols-1">
           <section className="flex min-w-0 flex-col rounded-xl border border-border-hairline bg-surface-card">
             <CardHeader
               title={t('logs.usage.stats.rail.title')}

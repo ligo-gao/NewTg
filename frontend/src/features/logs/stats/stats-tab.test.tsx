@@ -235,6 +235,51 @@ describe('usage stats tab (F-05-03)', () => {
     expect(screen.getByText('Recent failures')).toBeTruthy()
   })
 
+  it('draws the KPI separators on the cells, never as a gap background', async () => {
+    installStats()
+    renderTab()
+
+    const band = await screen.findByRole('region', {
+      name: 'Usage overview cards',
+    })
+    const bandClasses = band.className.split(/\s+/)
+    // A 1px gap over a `bg-border-hairline` band turned every unfilled slot
+    // (5 user cells in a 3-column row) into a solid gray card.
+    expect(bandClasses).not.toContain('gap-px')
+    expect(bandClasses).not.toContain('bg-border-hairline')
+
+    const cells = [...band.children]
+    expect(cells).toHaveLength(5)
+    for (const cell of cells) {
+      expect(cell.className.split(/\s+/)).toContain('bg-surface-card')
+    }
+  })
+
+  it('uses the same separator-free band for the loading skeleton', () => {
+    installStats()
+    renderWithProviders(
+      <UsageStatsTab
+        search={DEFAULT_USAGE_LOG_SEARCH}
+        canFilterByUsername={false}
+        isAdmin={false}
+        active
+        ready={false}
+        onOpenLog={vi.fn()}
+        onViewAllFailures={vi.fn()}
+      />,
+    )
+
+    const band = screen.getByTestId('stats-cards-loading')
+    const bandClasses = band.className.split(/\s+/)
+    expect(bandClasses).not.toContain('gap-px')
+    expect(bandClasses).not.toContain('bg-border-hairline')
+    const cells = [...band.children]
+    expect(cells).toHaveLength(5)
+    for (const cell of cells) {
+      expect(cell.className.split(/\s+/)).toContain('bg-surface-card')
+    }
+  })
+
   it('passes each model row its own request count', async () => {
     installStats()
     renderTab()

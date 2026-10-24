@@ -1,0 +1,43 @@
+/* KPI band separators.
+ *
+ * The band used to paint its hairlines as a 1px grid gap over a background of
+ * `--border-hairline`, which turned every unfilled slot (5 user cells in a
+ * 3-column row) into a solid gray block. The separators are now leading edges
+ * owned by the cells, so an empty slot paints nothing. This mirrors
+ * demos/console-redesign/assets/usage-logs.css (`.ul-kpi`).
+ *
+ * Breakpoints match the layout utilities on the band: 1 column below `sm`,
+ * 3 columns at `sm`, and one row at `xl` for both the 5-cell user band and the
+ * 6-cell admin band.
+ */
+.band > * {
+  border-color: var(--border-hairline);
+}
+
+/* 1 column: one rule between neighbours, none on the outer edge. */
+.band > * + * {
+  border-top: 1px solid var(--border-hairline);
+}
+
+/* 3 columns: row leaders drop the left rule; row two gains a top rule. */
+@media (min-width: 40rem) {
+  .band > * + * {
+    border-top-width: 0;
+  }
+  .band > *:not(:nth-child(3n + 1)) {
+    border-left: 1px solid var(--border-hairline);
+  }
+  .band > *:nth-child(n + 4) {
+    border-top: 1px solid var(--border-hairline);
+  }
+}
+
+/* xl: every cell fits one row, so only the left rules remain. Spelled
+ * `nth-child(n + 2)` (not `* + *`) to match the 3-column rule's specificity;
+ * an equal-specificity rule that comes later wins. */
+@media (min-width: 80rem) {
+  .band > *:nth-child(n + 2) {
+    border-top-width: 0;
+    border-left: 1px solid var(--border-hairline);
+  }
+}

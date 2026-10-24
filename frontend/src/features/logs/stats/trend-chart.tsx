@@ -178,10 +178,25 @@ export function TrendChart({ rows, granularity }: TrendChartProps) {
         <div className="grid grid-cols-[44px_minmax(0,1fr)] gap-1.5">
           <div className="relative h-[68px]">
             <span
+              data-testid="trend-y-request-label"
               className="absolute right-0 -translate-y-1/2 text-badge font-mono leading-none tabular-nums text-ink-3"
               style={{ top: '0%' }}
             >
-              {compact(maxRequests, locale)}
+              {formatCount(maxRequests, locale)}
+            </span>
+            <span
+              data-testid="trend-y-request-label"
+              className="absolute right-0 -translate-y-1/2 text-badge font-mono leading-none tabular-nums text-ink-3"
+              style={{ top: '50%' }}
+            >
+              {formatCount(maxRequests / 2, locale)}
+            </span>
+            <span
+              data-testid="trend-y-request-label"
+              className="absolute right-0 -translate-y-1/2 text-badge font-mono leading-none tabular-nums text-ink-3"
+              style={{ top: '100%' }}
+            >
+              {formatCount(0, locale)}
             </span>
           </div>
           <div
