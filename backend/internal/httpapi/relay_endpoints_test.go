@@ -2489,6 +2489,7 @@ func TestSettleFailureReason(t *testing.T) {
 		{"insufficient", fmt.Errorf("%w: x", billing.ErrInsufficientQuota), "insufficient_quota"},
 		{"closed", fmt.Errorf("%w: x", billing.ErrRequestClosed), "request_closed"},
 		{"inflight", fmt.Errorf("%w: x", billing.ErrSettlementInProgress), "settlement_in_progress"},
+		{"post_charge_log", fmt.Errorf("%w: x", billing.ErrPostChargeLogFailed), "log_write_failed"},
 		{"other", errors.New("boom"), "internal"},
 	}
 	for _, tt := range tests {
@@ -2559,5 +2560,33 @@ func TestChatStreamSettlementFailureIsReported(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "error_class=insufficient_quota") {
 		t.Fatalf("logs = %s, want error_class=insufficient_quota", logs.String())
+	}
+}
+
+// TestChatPostChargeLogFailureStillDelivers 覆盖 Important-2：资金已提交、
+// hold 已关闭，只有 usage_logs 写入失败——钱已经收上来了，必须照常交付
+// 响应（200），否则客户端重试会二次扣费。结算失败证据仍然留日志。
+func TestChatPostChargeLogFailureStillDelivers(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"c2","object":"chat.completion","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"delivered"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`)
+	}))
+	defer upstream.Close()
+
+	var logs bytes.Buffer
+	env := newRelayTestEnv(t, upstream, nil)
+	env.handler.log = slog.New(slog.NewTextHandler(&logs, nil))
+	env.billing.terminateErr = fmt.Errorf("%w: logdb down", billing.ErrPostChargeLogFailed)
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（钱已收，必须交付）; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "delivered") {
+		t.Fatalf("body = %s, want 已交付的上游响应", w.Body.String())
+	}
+	if !strings.Contains(logs.String(), "error_class=log_write_failed") {
+		t.Fatalf("logs = %s, want error_class=log_write_failed", logs.String())
 	}
 }

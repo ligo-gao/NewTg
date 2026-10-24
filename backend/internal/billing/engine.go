@@ -150,6 +150,11 @@ var (
 	// 这是 Important-1 的 fail-closed 出口：避免「已退款请求又产生新 hold」。
 	ErrRequestClosed = errors.New("billing: request already closed")
 
+	// ErrPostChargeLogFailed 表示资金已提交、hold 已关闭，仅 usage_logs /
+	// 日志库写入失败。上层必须照常交付响应：钱已经收上来了，把这种情况当
+	// 普通结算失败返回 5xx 会让客户端重试并二次扣费。
+	ErrPostChargeLogFailed = errors.New("billing: settled but usage log write failed")
+
 	// ErrPriceError 表示定价/配额钳制类错误（HTTP 400，不是 402）。
 	// 当前触发点：PreConsume 前 rc 上已存在 QuotaClamp（billing-03 §5.5）。
 	ErrPriceError = errors.New("billing: price error")

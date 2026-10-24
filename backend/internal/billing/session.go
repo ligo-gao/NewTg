@@ -714,6 +714,17 @@ func (s *Session) Terminate(fact contract.UsageFact) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Important-1：结算失败（补扣余额不足、DB/日志故障）时 hold 会留在账本，
+	// 由补偿扫描按租约心跳过期接管。心跳必须在这里停掉：它是「本进程仍持有
+	// 这个请求」的唯一信号，不停则租约永远新鲜，worker 永远看不到这笔 hold。
+	// 与此同时**不删除租约**——ZSET/hash 就是 worker 的候选集，删掉等于让
+	// hold 永久不可回收；租约 TTL 到期后缺失的 hash 会被判为 stale。
+	defer func() {
+		if err != nil {
+			s.stopHeartbeatLocked()
+		}
+	}()
+
 	// W10-METRICS：结算积分是营收口径（§5.4 点名的「计费金额」）。
 	// settledCost 只在资金事务提交成功后赋值；观察发生在返回前，不影响
 	// 任何 early-return/幂等语义。订阅来源的结算走独立函数，不在本 defer
@@ -854,7 +865,7 @@ func (s *Session) Terminate(fact contract.UsageFact) (err error) {
 				// 钱已扣且无 hold 可退：保持 settled（重试会二次扣款），
 				// 返回日志错误供上层记录/补写。绝不把已收的钱静默退回。
 				s.finishLocked(ctx, false)
-				return fmt.Errorf("billing: write usage log after charging: %w", err)
+				return fmt.Errorf("%w: %w", ErrPostChargeLogFailed, err)
 			}
 		}
 		s.finishLocked(ctx, false)
@@ -887,7 +898,7 @@ func (s *Session) Terminate(fact contract.UsageFact) (err error) {
 			if err := s.engine.saturator.Saturate(ctx, &fact, s.rc, outcome); err != nil {
 				// 钱已扣且 hold 已关：重试会二次扣款，保持 settled 并上抛日志错误。
 				s.finishLocked(ctx, false)
-				return fmt.Errorf("billing: write usage log after charging: %w", err)
+				return fmt.Errorf("%w: %w", ErrPostChargeLogFailed, err)
 			}
 		}
 		s.finishLocked(ctx, false)

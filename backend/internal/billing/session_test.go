@@ -2652,3 +2652,38 @@ func TestSessionPreConsumeClampsOutputReservation(t *testing.T) {
 		t.Fatalf("Reserved = %d, want 32868（100 + 默认上限 32768）", got)
 	}
 }
+
+// TestSessionTerminateChargeFailureStopsHeartbeat 覆盖 Important-1：补扣失败时
+// hold 留在账本等补偿扫描，但心跳必须停止——否则租约永远新鲜，worker 的悬挂
+// 扫描永远看不到这笔 hold，直到进程重启。
+func TestSessionTerminateChargeFailureStopsHeartbeat(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 100)
+	reg := &fakeRegistry{}
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, reg, nil)
+	e.heartbeat = 10 * time.Millisecond
+	req := testRequestID("abandon-heartbeat")
+	s := newBillingTestSession(e, userID, req, ratioSnapshot(100, 100))
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m", PromptTokens: 1_000_000}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	waitHeartbeats(t, reg, 2)
+
+	err := s.Terminate(contract.UsageFact{Usage: contract.Usage{Prompt: 2_000_000, PromptIncludesCache: true}})
+	if err == nil {
+		t.Fatal("补扣超过余额必须失败")
+	}
+
+	_, _, before := reg.snapshot()
+	time.Sleep(60 * time.Millisecond) // ≥ 5 个心跳周期
+	events, _, after := reg.snapshot()
+	if after != before {
+		t.Fatalf("heartbeats %d -> %d：结算失败后心跳必须停止", before, after)
+	}
+	for _, ev := range events {
+		if ev == "remove" {
+			t.Fatal("租约不得删除：worker 靠 Redis 索引发现悬挂 hold")
+		}
+	}
+}

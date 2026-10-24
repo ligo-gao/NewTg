@@ -1284,3 +1284,23 @@ func TestMessagesSettlementFailureReturns402(t *testing.T) {
 		t.Fatal("结算失败时不得交付上游响应")
 	}
 }
+
+// TestMessagesPostChargeLogFailureStillDelivers 是 Important-2 的 Claude 入口：
+// 资金已提交后日志写失败仍交付，信封保持 200。
+func TestMessagesPostChargeLogFailureStillDelivers(t *testing.T) {
+	env, _ := messagesTestEnv(t, contract.ChannelTypeAnthropic, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, messagesUpstreamBody)
+	})
+	env.billing.terminateErr = fmt.Errorf("%w: logdb down", billing.ErrPostChargeLogFailed)
+
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
+		messagesHeaders())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（钱已收，必须交付）; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "msg_1") {
+		t.Fatalf("body = %s, want 已交付的上游响应", w.Body.String())
+	}
+}

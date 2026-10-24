@@ -1551,9 +1551,14 @@ func (h *RelayHandler) serveNativeJSON(w http.ResponseWriter, r *http.Request, r
 		// 用户付不起这笔账：不交付服务。hold 留在账本由补偿扫描处理，
 		// 这里绝不能 Refund（上游已经执行完了）。
 		if commitErr := settlement.commit(); commitErr != nil {
-			h.reportSettlementFailure(rc, commitErr, false)
-			h.writeMessagesMappedError(w, rc.RequestID, commitErr)
-			return
+			// Important-2：资金已提交、hold 已关闭，只有日志写失败时钱其实
+			// 已经收上来了——拒绝交付只会让客户端重试并二次扣费。
+			postCharge := errors.Is(commitErr, billing.ErrPostChargeLogFailed)
+			h.reportSettlementFailure(rc, commitErr, postCharge)
+			if !postCharge {
+				h.writeMessagesMappedError(w, rc.RequestID, commitErr)
+				return
+			}
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -2543,10 +2548,17 @@ func (h *RelayHandler) serveJSON(w http.ResponseWriter, r *http.Request, rc *con
 		// 用户付不起这笔账：不交付服务。hold 留在账本由补偿扫描处理；
 		// 这里绝不能 Refund（上游已经执行完了）。
 		if commitErr := settlement.commit(); commitErr != nil {
-			status = "error"
-			h.reportSettlementFailure(rc, commitErr, false)
-			writeRelayMappedError(w, rc.RequestID, commitErr)
-			return
+			// Important-2：资金已提交、hold 已关闭，只有日志写失败时钱其实
+			// 已经收上来了——返回 5xx 只会让客户端重试并二次扣费。
+			postCharge := errors.Is(commitErr, billing.ErrPostChargeLogFailed)
+			if !postCharge {
+				status = "error"
+			}
+			h.reportSettlementFailure(rc, commitErr, postCharge)
+			if !postCharge {
+				writeRelayMappedError(w, rc.RequestID, commitErr)
+				return
+			}
 		}
 	}
 
@@ -3449,6 +3461,9 @@ func settleFailureReason(err error) string {
 		return "request_closed"
 	case errors.Is(err, billing.ErrSettlementInProgress):
 		return "settlement_in_progress"
+	case errors.Is(err, billing.ErrPostChargeLogFailed):
+		// 资金已提交、仅日志写失败：响应仍会交付，但欠一条 usage_logs。
+		return "log_write_failed"
 	default:
 		return "internal"
 	}
