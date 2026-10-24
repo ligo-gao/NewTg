@@ -55,6 +55,20 @@ describe('DistributionCard', () => {
     )
     expect(screen.getByText('Nothing here')).toBeTruthy()
   })
+
+  it('renders the optional note at the card foot', () => {
+    renderWithProviders(
+      <DistributionCard
+        title="Tokens"
+        subtitle="By spend"
+        items={ITEMS}
+        mode="compact"
+        emptyLabel="Nothing"
+        note="Quota exhausted requests are refused"
+      />,
+    )
+    expect(screen.getByText('Quota exhausted requests are refused')).toBeTruthy()
+  })
 })
 
 describe('RecentFailures', () => {

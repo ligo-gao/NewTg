@@ -171,7 +171,8 @@ export function UsageStatsTab({
 
   const byTokenQuery = useQuery({
     queryKey: ['usage-logs', 'stats', 'by-token', query],
-    enabled,
+    // User-only card; an admin never renders the token distribution.
+    enabled: enabled && !isAdmin,
     queryFn: async () =>
       requireData(
         await apiClient.GET('/api/usage-stats/by-token', {
@@ -318,9 +319,7 @@ export function UsageStatsTab({
     label:
       item.model === 'other' ? t('logs.usage.stats.other') : item.model,
     cost: item.cost,
-    // `/api/usage-stats/by-model` aggregates spend and tokens only; the
-    // requests column has no server value and renders as 0.
-    requests: 0,
+    requests: item.requests,
     tokens: item.tokens,
     percent: item.percent,
   }))
@@ -461,7 +460,7 @@ export function UsageStatsTab({
             value={
               summary === undefined
                 ? '—'
-                : `${(summary.success_rate * 100).toFixed(1)}%`
+                : `${((summary.success_rate ?? 0) * 100).toFixed(1)}%`
             }
             foot={
               failureCount === 0
@@ -515,7 +514,7 @@ export function UsageStatsTab({
           <MetricCard
             label={t('logs.usage.stats.kpi.latency')}
             value={
-              summary === undefined || summary.latency_samples === 0
+              summary === undefined || (summary.latency_samples ?? 0) === 0
                 ? '—'
                 : formatSeconds(summary.p50_latency_ms)
             }
@@ -524,10 +523,10 @@ export function UsageStatsTab({
                 ? undefined
                 : t('logs.usage.stats.kpi.foot.p95', {
                     p95:
-                      summary.latency_samples === 0
+                      (summary.latency_samples ?? 0) === 0
                         ? '—'
                         : formatSeconds(summary.p95_latency_ms),
-                    samples: count(summary.latency_samples),
+                    samples: count(summary.latency_samples ?? 0),
                   })
             }
           />
@@ -535,7 +534,7 @@ export function UsageStatsTab({
             <MetricCard
               label={t('logs.usage.stats.kpi.active')}
               value={
-                summary === undefined ? '—' : count(summary.active_users)
+                summary === undefined ? '—' : count(summary.active_users ?? 0)
               }
               foot={t('logs.usage.stats.kpi.foot.active_note')}
             />
@@ -614,9 +613,14 @@ export function UsageStatsTab({
                     })}
                   </span>
                   <span>
-                    {t('logs.usage.stats.chart.average_hour', {
-                      value: decimal(insights.averageCost),
-                    })}
+                    {t(
+                      granularity === 'hour'
+                        ? 'logs.usage.stats.chart.average_hour'
+                        : 'logs.usage.stats.chart.average_day',
+                      {
+                        value: decimal(insights.averageCost),
+                      },
+                    )}
                   </span>
                   <span className="text-ink-3">
                     {t('logs.usage.stats.chart.zero_note', {
@@ -710,33 +714,49 @@ export function UsageStatsTab({
                 })}
               />
               <RailRow
-                label={t('logs.usage.stats.rail.avg_hour')}
+                label={t(
+                  granularity === 'hour'
+                    ? 'logs.usage.stats.rail.avg_hour'
+                    : 'logs.usage.stats.rail.avg_day',
+                )}
                 value={decimal(insights.averageCost)}
               />
               <RailRow
                 label={t('logs.usage.stats.rail.avg_request')}
                 value={`${formatTokenAmount(split?.avgPerRequest ?? 0, locale)} ${t('logs.usage.stats.columns.tokens')}`}
               />
-              {ratesQuery.data !== undefined && summary !== undefined && summary.request_count > 0 ? (
+              {summary !== undefined &&
+              summary.request_count > 0 &&
+              (ratesQuery.data !== undefined || ratesQuery.isError) ? (
                 <div
                   data-testid="stats-rates"
                   role="group"
                   aria-label={t('logs.usage.stats.rates.title')}
                   className="flex flex-col"
                 >
-                  <RailRow
-                    label={t('logs.usage.stats.rail.rpm')}
-                    value={t('logs.usage.stats.rail.rpm_value', {
-                      avg: oneDecimal(ratesQuery.data.rpm_avg),
-                      peak: oneDecimal(ratesQuery.data.rpm_peak),
-                    })}
-                  />
-                  <RailRow
-                    label={t('logs.usage.stats.rail.tpm')}
-                    value={t('logs.usage.stats.rail.tpm_value', {
-                      avg: compact(ratesQuery.data.tpm_avg),
-                    })}
-                  />
+                  {ratesQuery.isError ? (
+                    <InlineError
+                      message={statsErrorText(ratesQuery.error, t)}
+                      onRetry={() => void ratesQuery.refetch()}
+                      retryLabel={retryLabel}
+                    />
+                  ) : ratesQuery.data !== undefined ? (
+                    <>
+                      <RailRow
+                        label={t('logs.usage.stats.rail.rpm')}
+                        value={t('logs.usage.stats.rail.rpm_value', {
+                          avg: oneDecimal(ratesQuery.data.rpm_avg),
+                          peak: oneDecimal(ratesQuery.data.rpm_peak),
+                        })}
+                      />
+                      <RailRow
+                        label={t('logs.usage.stats.rail.tpm')}
+                        value={t('logs.usage.stats.rail.tpm_value', {
+                          avg: compact(ratesQuery.data.tpm_avg),
+                        })}
+                      />
+                    </>
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -828,10 +848,14 @@ export function UsageStatsTab({
                   ) : null}
                 </div>
                 <p className="text-badge text-ink-3">
-                  {t('logs.usage.stats.token.note', {
-                    avg: formatTokenAmount(split.avgPerRequest, locale),
-                    ratio: split.inputToOutput ?? 0,
-                  })}
+                  {split.inputToOutput === null
+                    ? t('logs.usage.stats.token.note_no_ratio', {
+                        avg: formatTokenAmount(split.avgPerRequest, locale),
+                      })
+                    : t('logs.usage.stats.token.note', {
+                        avg: formatTokenAmount(split.avgPerRequest, locale),
+                        ratio: split.inputToOutput,
+                      })}
                 </p>
               </div>
             )}
@@ -905,6 +929,7 @@ export function UsageStatsTab({
               tag={t('logs.usage.stats.token_key.tag', {
                 count: tokenItems.length,
               })}
+              note={t('logs.usage.stats.token_key.note')}
               items={tokenItems}
               mode="compact"
               emptyLabel={t('logs.usage.stats.empty')}
@@ -1044,6 +1069,7 @@ function DistributionPanel({
   title,
   subtitle,
   tag,
+  note,
   items,
   mode,
   emptyLabel,
@@ -1055,6 +1081,7 @@ function DistributionPanel({
   title: string
   subtitle: string
   tag?: string
+  note?: string
   items: DistributionItem[]
   mode: 'full' | 'compact'
   emptyLabel: string
@@ -1096,6 +1123,7 @@ function DistributionPanel({
       title={title}
       subtitle={subtitle}
       {...(tag !== undefined ? { tag } : {})}
+      {...(note !== undefined ? { note } : {})}
       items={items}
       mode={mode}
       emptyLabel={emptyLabel}

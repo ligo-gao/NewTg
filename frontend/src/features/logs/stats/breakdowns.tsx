@@ -89,6 +89,7 @@ export function DistributionCard({
   title,
   subtitle,
   tag,
+  note,
   items,
   mode,
   emptyLabel,
@@ -96,6 +97,8 @@ export function DistributionCard({
   title: string
   subtitle: string
   tag?: string
+  /** Optional muted footnote, e.g. the token card's quota-refusal hint. */
+  note?: string
   items: DistributionItem[]
   mode: 'full' | 'compact'
   emptyLabel: string
@@ -187,6 +190,11 @@ export function DistributionCard({
           ))}
         </ul>
       )}
+      {note !== undefined ? (
+        <p className="border-t border-border-hairline px-4 py-2 text-badge text-ink-3">
+          {note}
+        </p>
+      ) : null}
     </section>
   )
 }

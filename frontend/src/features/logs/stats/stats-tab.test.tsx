@@ -35,9 +35,9 @@ const SUMMARY = {
 }
 
 const BY_MODEL = [
-  { model: 'gpt-4o', cost: 6240, tokens: 400_000, percent: 50 },
-  { model: 'claude-4', cost: 3744, tokens: 200_000, percent: 30 },
-  { model: 'other', cost: 2496, tokens: 100_000, percent: 20 },
+  { model: 'gpt-4o', cost: 6240, requests: 640, tokens: 400_000, percent: 50 },
+  { model: 'claude-4', cost: 3744, requests: 288, tokens: 200_000, percent: 30 },
+  { model: 'other', cost: 2496, requests: 96, tokens: 100_000, percent: 20 },
 ]
 
 const BY_TOKEN = [
@@ -235,6 +235,30 @@ describe('usage stats tab (F-05-03)', () => {
     expect(screen.getByText('Recent failures')).toBeTruthy()
   })
 
+  it('passes each model row its own request count', async () => {
+    installStats()
+    renderTab()
+
+    const modelCard = await screen.findByRole('region', {
+      name: 'Model distribution',
+    })
+    expect(within(modelCard).getByText('640')).toBeTruthy()
+  })
+
+  it('drops the input-to-output clause when completion tokens are zero', async () => {
+    installStats({
+      summary: () =>
+        jsonResponse({ ...SUMMARY, completion_tokens_total: 0 }),
+    })
+    renderTab()
+
+    await screen.findByText('Total spent')
+    // total = 1,200,000 prompt + 48,000 cache; / 1,024 requests → 1,219.
+    expect(screen.getByText('1,219 tokens per request')).toBeTruthy()
+    expect(screen.queryByText(/input is/)).toBeNull()
+    expect(screen.queryByText(/NaN/)).toBeNull()
+  })
+
   it('sends the shared filters to every stats endpoint', async () => {
     const requests = installStats()
     renderTab({
@@ -278,6 +302,8 @@ describe('usage stats tab (F-05-03)', () => {
         requestsFor(requests, '/api/usage-stats/by-group'),
       ).toHaveLength(1)
     })
+    // The admin view never renders the token card, so it must not fetch it.
+    expect(requestsFor(requests, '/api/usage-stats/by-token')).toHaveLength(0)
   })
 
   it('queries the token split and failures for a normal user', async () => {
@@ -339,6 +365,77 @@ describe('usage stats tab (F-05-03)', () => {
       'hour',
     ).length
     expect(within(table).getAllByRole('row')).toHaveLength(expected + 1)
+  })
+
+  it('switches the average label to the bucket unit', async () => {
+    installStats()
+    const first = renderTab({ range: '7d' })
+
+    await screen.findByText('Total spent')
+    expect(screen.getByText('Avg per day')).toBeTruthy()
+    expect(screen.getByText(/credits \/ day$/)).toBeTruthy()
+    first.unmount()
+
+    renderTab({ range: '24h' })
+    await screen.findByText('Total spent')
+    expect(screen.getByText('Avg per hour')).toBeTruthy()
+    expect(screen.getByText(/credits \/ hour$/)).toBeTruthy()
+  })
+
+  it('renders the quota note inside the token card only', async () => {
+    installStats()
+    renderTab()
+
+    const tokenCard = await screen.findByRole('region', {
+      name: 'Token usage',
+    })
+    expect(within(tokenCard).getByText(/quota runs out/)).toBeTruthy()
+
+    const modelCard = screen.getByRole('region', {
+      name: 'Model distribution',
+    })
+    expect(within(modelCard).queryByText(/quota runs out/)).toBeNull()
+  })
+
+  it('keeps an inline retry when the rates request fails', async () => {
+    const user = userEvent.setup()
+    const requests = installStats({
+      rates: () => problemResponse(500, { type: 'server_error', title: 'boom' }),
+    })
+    renderTab()
+
+    await screen.findByText('Total spent')
+    const rates = await screen.findByTestId('stats-rates')
+    expect(within(rates).getByText('Failed to load logs.')).toBeTruthy()
+
+    await user.click(within(rates).getByRole('button', { name: 'Retry' }))
+    await waitFor(() => {
+      expect(requestsFor(requests, '/api/usage-stats/rates')).toHaveLength(2)
+    })
+  })
+
+  it('never prints NaN when optional summary fields are absent', async () => {
+    installStats({
+      // Out-of-contract body: latency_samples, success_rate and active_users
+      // are optional on the wire even though the generated type marks them
+      // required.
+      summary: () =>
+        jsonResponse({
+          cost_total: 0,
+          request_count: 0,
+          prompt_tokens_total: 0,
+          completion_tokens_total: 0,
+          pre_deducted_total: 0,
+          refunded_total: 0,
+        }),
+    })
+    renderTab({}, { isAdmin: true })
+
+    await screen.findByText('Total spent')
+    expect(screen.queryByText(/NaN/)).toBeNull()
+    expect(screen.getByText('0.0%')).toBeTruthy()
+    expect(screen.getByText('P95 — · 0 samples')).toBeTruthy()
+    expect(screen.getByText('Active users')).toBeTruthy()
   })
 
   it('isolates a failing section', async () => {

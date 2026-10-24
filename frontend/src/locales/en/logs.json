@@ -193,6 +193,7 @@
         "peak": "Peak {time} · {cost} credits ({percent}%)",
         "active": "Active {active} / {total} {unit}",
         "average_hour": "Avg {value} credits / hour",
+        "average_day": "Avg {value} credits / day",
         "zero_note": "{count} buckets are zero; positions kept",
         "unit_hour": "hours",
         "unit_day": "days"
@@ -220,6 +221,7 @@
         "peak_share": "Share of spend",
         "active": "Active buckets",
         "avg_hour": "Avg per hour",
+        "avg_day": "Avg per day",
         "avg_request": "Avg per request",
         "rpm": "RPM",
         "tpm": "TPM",
@@ -233,7 +235,8 @@
         "title": "Token mix",
         "sub": "Input and output total {total}",
         "cache": "Cache read",
-        "note": "{avg} tokens per request; input is {ratio}× output"
+        "note": "{avg} tokens per request; input is {ratio}× output",
+        "note_no_ratio": "{avg} tokens per request"
       },
       "source_note": "Credits = pre-deducted − refunded; success rate = successful requests / total requests; latency percentiles count successful requests with latency > 0. The window matches the filters above.",
       "granularity_hour": "Hourly",
