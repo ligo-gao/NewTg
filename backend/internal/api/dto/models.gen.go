@@ -9233,7 +9233,7 @@ type ReconcileRunList struct {
 	Total    int            `json:"total"`
 }
 
-// ReconcileRunRequest 手动触发对账。account_id 缺省（或空 body）表示遍历全部启用账号。
+// ReconcileRunRequest 手动触发对账。body 必填；account_id 缺省（传 {}）表示遍历全部启用账号。
 // 运行同步执行（60s 超时，超时 504）。
 type ReconcileRunRequest struct {
 	// AccountId 只对账该账号；缺省 = 全部 active 账号。
@@ -10601,7 +10601,7 @@ type UpstreamSnapshotWrite struct {
 	AmountMinor      *int64 `json:"amount_minor,omitempty"`
 	CacheWriteTokens *int64 `json:"cache_write_tokens,omitempty"`
 
-	// Currency 可选；缺省取所属账号的 currency。
+	// Currency 可选；缺省 CNY。v1 全库统一 CNY，不按账号货币换算。
 	Currency             *string `json:"currency,omitempty"`
 	InputCacheHitTokens  *int64  `json:"input_cache_hit_tokens,omitempty"`
 	InputCacheMissTokens *int64  `json:"input_cache_miss_tokens,omitempty"`

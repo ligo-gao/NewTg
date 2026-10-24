@@ -6260,7 +6260,7 @@ export interface components {
              * @description 上游账单金额，整数最小单位（分）；null = 未报告。
              */
             amount_minor?: number | null;
-            /** @description 可选；缺省取所属账号的 currency。 */
+            /** @description 可选；缺省 CNY。v1 全库统一 CNY，不按账号货币换算。 */
             currency?: string;
             note?: string;
         };
@@ -6486,7 +6486,7 @@ export interface components {
             margin_minor?: number | null;
         };
         /**
-         * @description 手动触发对账。account_id 缺省（或空 body）表示遍历全部启用账号。
+         * @description 手动触发对账。body 必填；account_id 缺省（传 {}）表示遍历全部启用账号。
          *     运行同步执行（60s 超时，超时 504）。
          */
         ReconcileRunRequest: {
