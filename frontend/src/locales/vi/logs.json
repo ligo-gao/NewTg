@@ -204,8 +204,8 @@
         "latency": "Độ trễ P50",
         "active": "Người dùng hoạt động",
         "foot": {
-          "pre_refund": "Tạm trừ {pre} · Hoàn trả {refunded}",
-          "avg_request": "{value} điểm mỗi yêu cầu · Hoàn trả {refunded}",
+          "pre_refund": "Tạm trừ {pre} · Hoàn tiền {refunded}",
+          "avg_request": "{value} điểm mỗi yêu cầu · Hoàn tiền {refunded}",
           "status_counts": "Thành công {success} · Thất bại {error} · Hoàn tiền {refunded} · Từ chối {refused}",
           "failures_admin": "{count} lần thất bại → Phân loại thất bại",
           "failures_user": "{count} lần thất bại → Xem chi tiết",
