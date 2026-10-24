@@ -5661,6 +5661,190 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/upstream-accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 上游账号列表（分页）
+         * @description offset 分页，按 id 升序（稳定翻页）。status 为精确筛选，缺省不过滤。
+         */
+        get: operations["listUpstreamAccounts"];
+        put?: never;
+        /**
+         * 新建上游账号
+         * @description currency 缺省 CNY、timezone 缺省 Asia/Shanghai、status 置为 active。
+         *     timezone 无法解析 422；name 冲突 409。成功 201 返回整行。
+         */
+        post: operations["createUpstreamAccount"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/upstream-accounts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 删除上游账号
+         * @description 仍被渠道或快照引用的账号由数据库 FK RESTRICT 拒绝，映射为 409：
+         *     历史对账必须以当时的归属为准，不能级联删除。成功 204。
+         */
+        delete: operations["deleteUpstreamAccount"];
+        options?: never;
+        head?: never;
+        /**
+         * 部分更新上游账号（乐观锁）
+         * @description 必须原样回传 expected_updated_at（缺失 400、不匹配 409）。
+         *     字段缺省 = 不修改；console_url 显式 null = 清空。
+         *     timezone 非法 422；name 冲突 409；账号不存在 404。
+         */
+        patch: operations["updateUpstreamAccount"];
+        trace?: never;
+    };
+    "/api/upstream-snapshots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 按账号与日期区间读取上游用量快照
+         * @description account_id 必填；from/to 为闭区间 ISO date（缺省由服务端按配置的
+         *     回看窗口补齐）。不分页：区间本身约束结果规模，按 (usage_date,
+         *     upstream_model) 升序返回。
+         */
+        get: operations["listUpstreamSnapshots"];
+        /**
+         * 批量写入（upsert）上游用量快照
+         * @description 同一 (account_id, usage_date, upstream_model) 重复键按「后写覆盖」；
+         *     最多 500 条，全量在一个事务内写入（全成或全回滚）。entered_by 取当前
+         *     管理员，source 缺省 manual。成功返回 {updated: n}。
+         */
+        put: operations["upsertUpstreamSnapshots"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/upstream-reconciliations/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 对账运行历史（分页）
+         * @description offset 分页，按 started_at 降序（最新优先）。account_id 缺省 = 全部账号。
+         */
+        get: operations["listReconcileRuns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/upstream-reconciliations/runs/{id}/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 某次运行的差异明细（分页 + 筛选）
+         * @description offset 分页，按 usage_date 降序、模型升序。severity/status 为空表示
+         *     不筛选；非法枚举 400。run 不存在 404。
+         */
+        get: operations["listReconcileItems"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/upstream-reconciliations/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 某次运行的按天汇总（概览）
+         * @description run_id 必填（缺失 400；run 不存在 404）。返回收入/成本/毛利/差异率的
+         *     按天聚合；无法计算的维度为 null（UI 显示 —，不是 0）。
+         */
+        get: operations["getReconcileSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/upstream-reconciliations/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 手动触发一次对账
+         * @description 同步执行（60 秒超时；超时 504，detail 在已创建 run 时附 run id）。
+         *     account_id 缺省 = 全部启用账号。返回本次生成的 run 与聚合计数。
+         */
+        post: operations["triggerReconcileRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/upstream-reconciliations/items/{id}/ack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 标记差异明细已确认 / 已解决
+         * @description status 缺省 acknowledged；非法枚举 422。明细不存在 404。
+         *     处置写审计事件 reconcile.item_ack（含 before/after）。
+         */
+        post: operations["ackReconcileItem"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -5930,6 +6114,426 @@ export interface components {
                 /** @description 固定文案（不包含上游 URL/凭据/SQL 等内部信息） */
                 message: string;
             };
+        };
+        /**
+         * @description upstream_accounts 的一行。console_url 为空时序列化为 null（不是空串）。
+         *     updated_at 同时是 PATCH 的乐观锁版本，必须原样回传。
+         */
+        UpstreamAccount: {
+            /** Format: int64 */
+            id: number;
+            name: string;
+            provider: string;
+            /** @description ISO 4217 三字母币种；缺省 CNY（char(3)）。 */
+            currency: string;
+            /** @description IANA 时区名；缺省 Asia/Shanghai。「一天」按该时区切分。 */
+            timezone: string;
+            /** @description 供应商控制台地址（绝对 http(s)）；null = 未填写。 */
+            console_url?: string | null;
+            /**
+             * @description 1 = active、2 = disabled（迁移 CHECK status IN (1,2)）。
+             * @enum {integer}
+             */
+            status: 1 | 2;
+            note: string;
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * Format: date-time
+             * @description 乐观锁版本；PATCH 必须回传为 expected_updated_at。
+             */
+            updated_at: string;
+        };
+        /** @description GET /api/upstream-accounts 的 offset 分页信封（Page 形状，items 为账号投影）。 */
+        UpstreamAccountList: {
+            items: components["schemas"]["UpstreamAccount"][];
+            total: number;
+            page: number;
+            page_size: number;
+        };
+        /**
+         * @description 创建载荷。currency 缺省 CNY，timezone 缺省 Asia/Shanghai（服务端补齐，
+         *     不依赖 DDL 默认）；status 由服务端置为 active（1），创建后经 PATCH 停用。
+         */
+        UpstreamAccountCreate: {
+            /** @description 账号名，全局唯一（冲突 409）；首尾空白由服务端裁剪。 */
+            name: string;
+            provider: string;
+            /** @description 缺省 CNY。 */
+            currency?: string;
+            /** @description 必须能被 time.LoadLocation 解析（否则 422）；缺省 Asia/Shanghai。 */
+            timezone?: string;
+            /** @description 绝对 http(s) 地址；null/缺省 = 未填写。 */
+            console_url?: string | null;
+            note?: string;
+        };
+        /**
+         * @description 部分更新。字段缺省 = 不修改；console_url 显式 null = 清空。
+         *     expected_updated_at 必带：不匹配 409（镜像 users 端点的 updated_at 乐观锁）。
+         */
+        UpstreamAccountUpdate: {
+            /**
+             * Format: date-time
+             * @description 客户端读取到的 updated_at 原值。
+             */
+            expected_updated_at: string;
+            name?: string;
+            provider?: string;
+            currency?: string;
+            timezone?: string;
+            console_url?: string | null;
+            /** @enum {integer} */
+            status?: 1 | 2;
+            note?: string;
+        };
+        /**
+         * @description upstream_usage_snapshots 的一行。五个计数与 amount_minor 可空：
+         *     null = 上游未报告该维度（不参与差异判定），0 = 真实的零。
+         *     source 为 manual（人工录入）| csv（批量导入）。
+         */
+        UpstreamSnapshot: {
+            /** Format: int64 */
+            id?: number;
+            /** Format: int64 */
+            account_id: number;
+            /**
+             * Format: date
+             * @description 按账号时区切分的自然日（ISO date，不做 24h 运算）。
+             */
+            usage_date: string;
+            /** @description 上游供应商侧的模型名（与本地 model_name 不是同一口径）。 */
+            upstream_model: string;
+            /** Format: int64 */
+            input_cache_hit_tokens?: number | null;
+            /** Format: int64 */
+            input_cache_miss_tokens?: number | null;
+            /** Format: int64 */
+            cache_write_tokens?: number | null;
+            /** Format: int64 */
+            output_tokens?: number | null;
+            /** Format: int64 */
+            requests?: number | null;
+            /**
+             * Format: int64
+             * @description 上游账单金额，整数最小单位（分）；null = 未报告。
+             */
+            amount_minor?: number | null;
+            /** @description 缺省 CNY。 */
+            currency: string;
+            /** @enum {string} */
+            source: "manual" | "csv";
+            /**
+             * Format: int64
+             * @description 录入管理员 id；null = 系统/批量导入未绑定执行者。
+             */
+            entered_by?: number | null;
+            /** Format: date-time */
+            entered_at: string;
+            note?: string;
+        };
+        /**
+         * @description upsert 的写入投影（items 元素），不是读取形状。幂等键 (usage_date,
+         *     upstream_model) 必填；账期归属由外层 account_id 决定，故不含 account_id。
+         *     溯源字段由服务端盖章，客户端不得提交：source 恒为 manual、entered_by 取
+         *     当前管理员、entered_at 取写入时刻，currency 缺省取所属账号的币种。
+         */
+        UpstreamSnapshotWrite: {
+            /**
+             * Format: date
+             * @description 按账号时区切分的自然日（ISO date，不做 24h 运算）。
+             */
+            usage_date: string;
+            /** @description 上游供应商侧的模型名（与本地 model_name 不是同一口径）。 */
+            upstream_model: string;
+            /** Format: int64 */
+            input_cache_hit_tokens?: number | null;
+            /** Format: int64 */
+            input_cache_miss_tokens?: number | null;
+            /** Format: int64 */
+            cache_write_tokens?: number | null;
+            /** Format: int64 */
+            output_tokens?: number | null;
+            /** Format: int64 */
+            requests?: number | null;
+            /**
+             * Format: int64
+             * @description 上游账单金额，整数最小单位（分）；null = 未报告。
+             */
+            amount_minor?: number | null;
+            /** @description 可选；缺省取所属账号的 currency。 */
+            currency?: string;
+            note?: string;
+        };
+        /**
+         * @description 按账号 + 日期区间读取的快照集合。不分页：区间由 from/to 约束，
+         *     结果按 (usage_date, upstream_model) 升序。
+         */
+        UpstreamSnapshotList: {
+            items: components["schemas"]["UpstreamSnapshot"][];
+        };
+        /**
+         * @description 批量写入（upsert）载荷：同一 (account_id, usage_date, upstream_model) 重复
+         *     出现时后写覆盖；最多 500 条。所有行在一个事务内写入（全成或全回滚）。
+         */
+        UpstreamSnapshotUpsert: {
+            /**
+             * Format: int64
+             * @description 所属账号；所有 item 归属于该账号（items 内不再重复携带）。
+             */
+            account_id: number;
+            items: components["schemas"]["UpstreamSnapshotWrite"][];
+        };
+        /** @description 实际写入行数（同批重复键先折叠，故可能小于提交条数）。 */
+        UpstreamSnapshotUpsertResult: {
+            updated: number;
+        };
+        /**
+         * @description upstream_reconciliation_runs 的一行。容差、quota_per_unit 与 timezone 在
+         *     开跑时快照进来；修改设置不会改写历史判定。
+         */
+        ReconcileRun: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            account_id: number;
+            /** Format: date */
+            window_start: string;
+            /**
+             * Format: date
+             * @description 开区间右端（window_end > window_start，迁移 CHECK）。
+             */
+            window_end: string;
+            /** @enum {string} */
+            triggered_by: "worker" | "manual";
+            /** @enum {string} */
+            status: "running" | "succeeded" | "partial" | "failed";
+            /** @description token 差异容忍度（万分比，快照值）。 */
+            token_tolerance_bp: number;
+            /**
+             * Format: int64
+             * @description 金额差异容忍度（分，快照值）。
+             */
+            amount_tolerance_minor: number;
+            /**
+             * Format: int64
+             * @description credits → 分 的换算系数（快照值）。
+             */
+            quota_per_unit: number;
+            /** @description 判定「一天」所用的 IANA 时区（快照值）。 */
+            timezone: string;
+            /** Format: date-time */
+            started_at: string;
+            /**
+             * Format: date-time
+             * @description null = 仍在运行。
+             */
+            finished_at?: string | null;
+            /** @description 失败原因摘要；空串 = 无错误（列 NOT NULL DEFAULT ''）。 */
+            error: string;
+        };
+        /** @description GET /api/upstream-reconciliations/runs 的 offset 分页信封（started_at 降序）。 */
+        ReconcileRunList: {
+            items: components["schemas"]["ReconcileRun"][];
+            total: number;
+            page: number;
+            page_size: number;
+        };
+        /**
+         * @description upstream_reconciliation_items 的一行 = 一个 run 内 (account, usage_date,
+         *     upstream_model) 的本地侧 + 上游快照侧 + 差异与利润判定。
+         *     local_* 为非空计数（缺省 0）；snapshot_*\/delta_*\/金额列可空：
+         *     null = 上游未报告或无法计算，与真实的 0 区分。
+         */
+        ReconcileItem: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            run_id: number;
+            /** Format: int64 */
+            account_id: number;
+            /** Format: date */
+            usage_date: string;
+            upstream_model: string;
+            /** Format: int64 */
+            local_requests: number;
+            /** Format: int64 */
+            local_estimated_requests: number;
+            /** Format: int64 */
+            local_refunded_requests: number;
+            /** Format: int64 */
+            local_cache_hit_tokens: number;
+            /** Format: int64 */
+            local_cache_miss_tokens: number;
+            /** Format: int64 */
+            local_output_tokens: number;
+            /** Format: int64 */
+            local_wallet_credits: number;
+            /** Format: int64 */
+            local_subscription_credits: number;
+            /** Format: int64 */
+            local_cost_credits: number;
+            /** Format: int64 */
+            local_unknown_requests: number;
+            /** Format: int64 */
+            local_multi_attempt_requests: number;
+            /** Format: int64 */
+            snapshot_cache_hit_tokens?: number | null;
+            /** Format: int64 */
+            snapshot_cache_miss_tokens?: number | null;
+            /** Format: int64 */
+            snapshot_cache_write_tokens?: number | null;
+            /** Format: int64 */
+            snapshot_output_tokens?: number | null;
+            /** Format: int64 */
+            snapshot_requests?: number | null;
+            /**
+             * Format: int64
+             * @description 上游账单金额（分）；null = 未报告。
+             */
+            snapshot_amount_minor?: number | null;
+            /** Format: int64 */
+            delta_cache_hit_tokens?: number | null;
+            /** Format: int64 */
+            delta_cache_miss_tokens?: number | null;
+            /** Format: int64 */
+            delta_output_tokens?: number | null;
+            /**
+             * Format: int64
+             * @description token 差异率（万分比）；null = 无可用分母。
+             */
+            delta_token_bp?: number | null;
+            /** @description true = 上游快照缺维度，比较只是部分口径。 */
+            snapshot_partial: boolean;
+            /**
+             * Format: int64
+             * @description 本地收入（分）；null = 无法计算。
+             */
+            revenue_minor?: number | null;
+            /**
+             * Format: int64
+             * @description 上游成本（分）；null = 无法计算。
+             */
+            upstream_cost_minor?: number | null;
+            /**
+             * Format: int64
+             * @description 毛利 = revenue_minor - upstream_cost_minor（分）；null = 无法计算。
+             */
+            margin_minor?: number | null;
+            /**
+             * Format: int64
+             * @description 毛利率（万分比）；null = 收入为 0 或无收入。
+             */
+            margin_bp?: number | null;
+            /**
+             * @description 差异等级与快照缺失类判定（迁移 CHECK 闭集）。
+             * @enum {string}
+             */
+            severity: "ok" | "warn" | "alert" | "partial_snapshot" | "missing_snapshot" | "missing_local" | "local_expired";
+            /**
+             * @description 运营处置状态。
+             * @enum {string}
+             */
+            status: "open" | "acknowledged" | "resolved";
+            note: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description GET /api/upstream-reconciliations/runs/{id}/items 的 offset 分页信封。 */
+        ReconcileItemList: {
+            items: components["schemas"]["ReconcileItem"][];
+            total: number;
+            page: number;
+            page_size: number;
+        };
+        /**
+         * @description GET /api/upstream-reconciliations/summary?run_id=… 的响应：按天聚合的
+         *     收入/成本/毛利/差异率。run_id 必填（缺失 400；run 不存在 404）。
+         */
+        ReconcileSummary: {
+            /** Format: int64 */
+            run_id: number;
+            /** Format: int64 */
+            account_id: number;
+            /**
+             * Format: date-time
+             * @description 本次汇总的生成时刻（UTC）。
+             */
+            generated_at: string;
+            days: components["schemas"]["ReconcileSummaryDay"][];
+        };
+        /** @description 某个 run 内一天的汇总（概览 tab 的 days 元素）。 */
+        ReconcileSummaryDay: {
+            /** Format: date */
+            usage_date: string;
+            /** Format: int64 */
+            item_count: number;
+            /** Format: int64 */
+            alert_count: number;
+            /** Format: int64 */
+            warn_count: number;
+            /**
+             * Format: int64
+             * @description 当日加权 token 差异率；null = 当天没有可比对的快照维度。
+             */
+            delta_token_bp?: number | null;
+            /** Format: int64 */
+            revenue_minor?: number | null;
+            /** Format: int64 */
+            upstream_cost_minor?: number | null;
+            /** Format: int64 */
+            margin_minor?: number | null;
+        };
+        /**
+         * @description 手动触发对账。account_id 缺省（或空 body）表示遍历全部启用账号。
+         *     运行同步执行（60s 超时，超时 504）。
+         */
+        ReconcileRunRequest: {
+            /**
+             * Format: int64
+             * @description 只对账该账号；缺省 = 全部 active 账号。
+             */
+            account_id?: number;
+        };
+        /** @description 手动触发的聚合结果；run_ids 为本次生成的 run（重跑会新增 run）。 */
+        ReconcileRunResult: {
+            run_ids: number[];
+            /**
+             * Format: int64
+             * @description 本次写入的明细总数。
+             */
+            items: number;
+            /**
+             * Format: int64
+             * @description severity = alert 的明细数。
+             */
+            alerts: number;
+            /**
+             * @description 本次触发的聚合状态。
+             * @enum {string}
+             */
+            status: "succeeded" | "partial" | "failed";
+        };
+        /** @description 标记明细已确认 / 已解决；status 缺省 acknowledged。 */
+        ReconcileAckRequest: {
+            /**
+             * @default acknowledged
+             * @enum {string}
+             */
+            status: "acknowledged" | "resolved";
+            /** @description 处置说明（可空串，但字段必须存在）。 */
+            note: string;
+        };
+        /** @description 处置后的明细摘要（updated_at 为本次写入刷新后的值）。 */
+        ReconcileAckResult: {
+            /** Format: int64 */
+            id: number;
+            /** @enum {string} */
+            status: "open" | "acknowledged" | "resolved";
+            note?: string;
+            /** Format: date-time */
+            updated_at?: string;
         };
         /**
          * @description 冻结的 canonical 语言清单；非法值在 PUT /api/self/setting 返回 400。
@@ -21429,6 +22033,405 @@ export interface operations {
             400: components["responses"]["Error400"];
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listUpstreamAccounts: {
+        parameters: {
+            query?: {
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+                /** @description 1 = active、2 = disabled；缺省 = 全部。 */
+                status?: 1 | 2;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK（offset 分页信封） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpstreamAccountList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    createUpstreamAccount: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpstreamAccountCreate"];
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpstreamAccount"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    deleteUpstreamAccount: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 上游账号 id（正整数）；非法/不存在同形 404。 */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    updateUpstreamAccount: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 上游账号 id（正整数）；非法/不存在同形 404。 */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpstreamAccountUpdate"];
+            };
+        };
+        responses: {
+            /** @description 更新后的账号 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpstreamAccount"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listUpstreamSnapshots: {
+        parameters: {
+            query: {
+                /** @description 上游账号 id。 */
+                account_id: number;
+                /** @description 起始自然日（含），YYYY-MM-DD。 */
+                from?: string;
+                /** @description 结束自然日（含），YYYY-MM-DD。 */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK（不分页的 items 信封） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpstreamSnapshotList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    upsertUpstreamSnapshots: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpstreamSnapshotUpsert"];
+            };
+        };
+        responses: {
+            /** @description 写入结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpstreamSnapshotUpsertResult"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listReconcileRuns: {
+        parameters: {
+            query?: {
+                /** @description 只返回该账号的 run。 */
+                account_id?: number;
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK（offset 分页信封） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReconcileRunList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listReconcileItems: {
+        parameters: {
+            query?: {
+                /** @description 差异等级（迁移 CHECK 闭集）。 */
+                severity?: "ok" | "warn" | "alert" | "partial_snapshot" | "missing_snapshot" | "missing_local" | "local_expired";
+                /** @description 运营处置状态。 */
+                status?: "open" | "acknowledged" | "resolved";
+                /** @description 页码，1 基（默认 1） */
+                p?: components["parameters"]["Page"];
+                /** @description 每页条数（默认 20，上限 100） */
+                page_size?: components["parameters"]["PageSize"];
+            };
+            header?: never;
+            path: {
+                /** @description 对账 run id（正整数）；不存在 404。 */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK（offset 分页信封） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReconcileItemList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getReconcileSummary: {
+        parameters: {
+            query: {
+                /** @description 对账 run id。 */
+                run_id: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReconcileSummary"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    triggerReconcileRun: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReconcileRunRequest"];
+            };
+        };
+        responses: {
+            /** @description 触发结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReconcileRunResult"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+            /** @description 对账在 60 秒内未完成（problem+json；已创建 run 时 detail 附其 id） */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    ackReconcileItem: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 写操作幂等键（UUID）。同键重放在有效窗口内返回首次结果。 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 差异明细 id（正整数）；不存在 404。 */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReconcileAckRequest"];
+            };
+        };
+        responses: {
+            /** @description 处置后的明细摘要 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReconcileAckResult"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            422: components["responses"]["Error422"];
             500: components["responses"]["Error500"];
         };
     };

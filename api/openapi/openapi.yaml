@@ -583,6 +583,24 @@ paths:
   /api/task:
     $ref: './paths/admin.yaml#/paths/~1api~1task'
 
+  # 上游用量对账（plan 2026-10-24 Task 4）：全部 settings:manage 管理面。
+  /api/upstream-accounts:
+    $ref: './paths/upstream-reconciliation.yaml#/paths/~1api~1upstream-accounts'
+  /api/upstream-accounts/{id}:
+    $ref: './paths/upstream-reconciliation.yaml#/paths/~1api~1upstream-accounts~1{id}'
+  /api/upstream-snapshots:
+    $ref: './paths/upstream-reconciliation.yaml#/paths/~1api~1upstream-snapshots'
+  /api/upstream-reconciliations/runs:
+    $ref: './paths/upstream-reconciliation.yaml#/paths/~1api~1upstream-reconciliations~1runs'
+  /api/upstream-reconciliations/runs/{id}/items:
+    $ref: './paths/upstream-reconciliation.yaml#/paths/~1api~1upstream-reconciliations~1runs~1{id}~1items'
+  /api/upstream-reconciliations/summary:
+    $ref: './paths/upstream-reconciliation.yaml#/paths/~1api~1upstream-reconciliations~1summary'
+  /api/upstream-reconciliations/run:
+    $ref: './paths/upstream-reconciliation.yaml#/paths/~1api~1upstream-reconciliations~1run'
+  /api/upstream-reconciliations/items/{id}/ack:
+    $ref: './paths/upstream-reconciliation.yaml#/paths/~1api~1upstream-reconciliations~1items~1{id}~1ack'
+
 components:
   securitySchemes:
     sessionCookie:
@@ -635,6 +653,46 @@ components:
     # Claude 形错误信封（真源 writeClaudeError）；被 ClaudeError4xx/5xx 使用。
     ClaudeError:
       $ref: './schemas/relay.yaml#/schemas/ClaudeError'
+
+    # 上游用量对账（plan 2026-10-24 Task 4）：账号 / 快照 / run / 明细 / 概览。
+    UpstreamAccount:
+      $ref: './schemas/upstream-reconciliation.yaml#/schemas/UpstreamAccount'
+    UpstreamAccountList:
+      $ref: './schemas/upstream-reconciliation.yaml#/schemas/UpstreamAccountList'
+    UpstreamAccountCreate:
+      $ref: './schemas/upstream-reconciliation.yaml#/schemas/UpstreamAccountCreate'
+    UpstreamAccountUpdate:
+      $ref: './schemas/upstream-reconciliation.yaml#/schemas/UpstreamAccountUpdate'
+    UpstreamSnapshot:
+      $ref: './schemas/upstream-reconciliation.yaml#/schemas/UpstreamSnapshot'
+    UpstreamSnapshotWrite:
+      $ref: './schemas/upstream-reconciliation.yaml#/schemas/UpstreamSnapshotWrite'
+    UpstreamSnapshotList:
+      $ref: './schemas/upstream-reconciliation.yaml#/schemas/UpstreamSnapshotList'
+    UpstreamSnapshotUpsert:
+      $ref: './schemas/upstream-reconciliation.yaml#/schemas/UpstreamSnapshotUpsert'
+    UpstreamSnapshotUpsertResult:
+      $ref: './schemas/upstream-reconciliation.yaml#/schemas/UpstreamSnapshotUpsertResult'
+    ReconcileRun:
+      $ref: './schemas/upstream-reconciliation.yaml#/schemas/ReconcileRun'
+    ReconcileRunList:
+      $ref: './schemas/upstream-reconciliation.yaml#/schemas/ReconcileRunList'
+    ReconcileItem:
+      $ref: './schemas/upstream-reconciliation.yaml#/schemas/ReconcileItem'
+    ReconcileItemList:
+      $ref: './schemas/upstream-reconciliation.yaml#/schemas/ReconcileItemList'
+    ReconcileSummary:
+      $ref: './schemas/upstream-reconciliation.yaml#/schemas/ReconcileSummary'
+    ReconcileSummaryDay:
+      $ref: './schemas/upstream-reconciliation.yaml#/schemas/ReconcileSummaryDay'
+    ReconcileRunRequest:
+      $ref: './schemas/upstream-reconciliation.yaml#/schemas/ReconcileRunRequest'
+    ReconcileRunResult:
+      $ref: './schemas/upstream-reconciliation.yaml#/schemas/ReconcileRunResult'
+    ReconcileAckRequest:
+      $ref: './schemas/upstream-reconciliation.yaml#/schemas/ReconcileAckRequest'
+    ReconcileAckResult:
+      $ref: './schemas/upstream-reconciliation.yaml#/schemas/ReconcileAckResult'
 
   responses:
     Error400:
