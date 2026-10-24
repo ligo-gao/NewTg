@@ -204,6 +204,32 @@
         "rpm_avg": "Avg RPM",
         "rpm_peak": "Peak RPM",
         "tpm_avg": "Avg TPM"
+      },
+      "model": {
+        "sub": "Sorted by spend · ranks 1–{n}, the rest grouped as other",
+        "tag": "{count} models"
+      },
+      "group": {
+        "title": "Group usage",
+        "sub": "{count} groups · by spend"
+      },
+      "user": {
+        "title": "User ranking",
+        "sub": "{count} active users · by spend"
+      },
+      "token_key": {
+        "title": "Token usage",
+        "sub": "Split by your API tokens",
+        "tag": "{count} tokens",
+        "note": "When a token's quota runs out, requests are refused at the gate and logged as \"refused\".",
+        "unassigned": "No token"
+      },
+      "fail": {
+        "title": "Recent failures",
+        "sub": "Newest first",
+        "tag": "{shown} / {total}",
+        "view_all": "View all {total} failures",
+        "empty": "No failed requests in this window"
       }
     }
   },
