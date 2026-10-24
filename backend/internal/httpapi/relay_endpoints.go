@@ -880,12 +880,13 @@ func (h *RelayHandler) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 
 	// finding 13：预扣估算必须进入 RelayContext，否则 PreConsume 只能看到
 	// 零值（MaxTokens=nil），402 判定与 Terminate 预算释放都成了空转。
-	// PromptTokens 暂为 0：本地 token 估算器（relay-03 §7）尚未落地，
-	// 调用方不得把 0 误读成「prompt 免费」——M3 估算器接入后在此填充。
+	// Raw 携带本次归一化 IR：计费侧在 PromptTokens 缺席时据此保守估算输入，
+	// 调用方不得把 PromptTokens=0 误读成「prompt 免费」。
 	relay.WithQuotaEstimate(rc, &contract.QuotaEstimate{
 		Model:     parsed.Model,
 		Group:     rc.UsingGroup,
 		MaxTokens: parsed.MaxTokens,
+		Raw:       rc.Request,
 	})
 
 	deps := h.routeDeps(rc, pinID, hasPin, targetProtocol)
@@ -1087,14 +1088,15 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 与 chat 完全同一份预扣估算（finding 13）。准确口径：MaxTokens 只是
-	// QuotaEstimate 的输入之一——付费 token 模型的预扣仍由 estimateUsage
-	// 决定（当前为 0，不把 MaxTokens 换算成 Completion），它直接影响的是
+	// QuotaEstimate 的输入之一——付费 token 模型的预扣由 estimateUsage 从
+	// Raw 估算输入，并按 max_tokens 预留输出；这里的 MaxTokens 同时决定
 	// **免费模型**的防滥用 hold（MaxTokens × multiplier）。上面的入口校验
 	// 保证这里永远是非零的合法值。
 	relay.WithQuotaEstimate(rc, &contract.QuotaEstimate{
 		Model:     parsed.Model,
 		Group:     rc.UsingGroup,
 		MaxTokens: parsed.MaxTokens,
+		Raw:       rc.Request,
 	})
 
 	// 方向约束：只允许 openai / anthropic / gemini 三类已实现协议的上游

@@ -223,6 +223,7 @@ func (b *recordingBilling) preConsumeCount() int {
 	return len(b.preConsumed)
 }
 
+
 func (b *recordingBilling) refundCount() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -2450,5 +2451,27 @@ func TestRelayUpstream400IsLoggedWithDiagnostics(t *testing.T) {
 	}
 	if strings.Contains(line, upstreamCredential) {
 		t.Fatalf("渠道凭据不得进入日志（GC-6）：%s", line)
+	}
+}
+
+func TestRelayChatEstimateCarriesRawRequest(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"x","object":"chat.completion","created":1,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+	env := newRelayTestEnv(t, upstream, nil)
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	est, ok := env.billing.lastEstimate()
+	if !ok {
+		t.Fatal("PreConsume 没有收到估算")
+	}
+	if est.Raw == nil || len(est.Raw.Messages) == 0 {
+		t.Fatalf("QuotaEstimate.Raw = %+v, want 本次请求 IR", est.Raw)
 	}
 }

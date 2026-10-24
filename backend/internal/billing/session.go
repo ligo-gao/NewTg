@@ -15,6 +15,7 @@ import (
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/metrics"
 	"newtg/gateway/internal/store"
+	"newtg/gateway/internal/tokenestimate"
 )
 
 // maxImageN 是图像张数上界（relay-00 §10.1 MaxImageN = 128）。
@@ -2042,15 +2043,20 @@ func (s *Session) removeLeaseLocked(ctx context.Context) {
 
 // estimateUsage 由 QuotaEstimate 构造估算用量。
 //
-// C 恒为 0：tiered token 预扣以 P=估算输入、C=0 求值（billing-03 §3.1）；
-// 传统倍率也「仅估算输入，无输出 token 估算」（billing-03 §3.2 / §9.3 乙类
-// 怪癖：输出全靠结算少补）。MaxTokens 保留进 Raw 供诊断，不进入预扣金额。
+// P：优先使用上游/契约层已算好的 PromptTokens；缺席时从 Raw 请求 IR 保守
+// 估算（tokenestimate），避免「无估算器 → 0 输入 → 零预扣」。
+// C 不在本函数估算：预扣阶段的输出成本由调用方按 max_tokens 预留。
+// MaxTokens 保留进 Raw 供诊断。
 //
 // PromptIncludesCache=true：估算没有上游格式事实，且各子类均为 0，两种分支
 // 结果相同；显式取 true 避免 Claude 的 cr 加回路径被无意义地触发。
 func estimateUsage(est contract.QuotaEstimate) contract.Usage {
+	prompt := max(est.PromptTokens, 0)
+	if prompt == 0 && est.Raw != nil {
+		prompt = tokenestimate.PromptTokens(est.Raw)
+	}
 	u := contract.Usage{
-		Prompt:              max(est.PromptTokens, 0),
+		Prompt:              prompt,
 		PromptIncludesCache: true,
 		AudioSeconds:        max(est.AudioSeconds, 0),
 		Source:              contract.UsageEstimated,

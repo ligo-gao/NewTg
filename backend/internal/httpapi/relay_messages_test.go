@@ -1240,3 +1240,24 @@ func TestMessagesStreamPanicRefunds(t *testing.T) {
 		t.Fatalf("EndReason = %d, want EndPanic", got)
 	}
 }
+
+func TestMessagesEstimateCarriesRawRequest(t *testing.T) {
+	env, _ := messagesTestEnv(t, contract.ChannelTypeAnthropic, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, messagesUpstreamBody)
+	})
+
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
+		messagesHeaders())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	est, ok := env.billing.lastEstimate()
+	if !ok {
+		t.Fatal("PreConsume 没有收到估算")
+	}
+	if est.Raw == nil || len(est.Raw.Messages) == 0 {
+		t.Fatalf("QuotaEstimate.Raw = %+v, want 本次请求 IR", est.Raw)
+	}
+}

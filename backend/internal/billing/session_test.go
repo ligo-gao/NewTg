@@ -2574,3 +2574,24 @@ func TestSessionFreeModelZeroBalanceStillAllowed(t *testing.T) {
 		t.Fatalf("PreConsume(free) = %v, want nil（免费模型不受付费下限约束）", err)
 	}
 }
+
+// TestSessionPreConsumeEstimatesPromptFromRawRequest 证明 PreConsume 在
+// PromptTokens=0 时会从 QuotaEstimate.Raw 估算输入；completion 价为 0，
+// 因此结果不受后续输出预留默认值影响。
+func TestSessionPreConsumeEstimatesPromptFromRawRequest(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 1_000_000)
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	s := newBillingTestSession(e, userID, testRequestID("pre-prompt-raw"), ratioSnapshot(1_000_000, 0))
+
+	req := &contract.Request{Messages: []contract.Message{{
+		Role:    contract.RoleUser,
+		Content: []contract.ContentPart{{Kind: contract.PartText, Text: "hello world"}},
+	}}}
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m", Raw: req}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if got := s.Reserved(); got != 26 {
+		t.Fatalf("Reserved = %d, want 26（与 tokenestimate 的 hello world 口径一致）", got)
+	}
+}
