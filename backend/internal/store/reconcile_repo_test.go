@@ -125,15 +125,22 @@ func (reconcileRunDriver) Open(string) (driver.Conn, error) {
 }
 
 // reconcileRunConnector 为每次连接返回同一行；row 为 nil 时返回空结果集。
-type reconcileRunConnector struct{ row *ReconcileRun }
+// query 非 nil 时记录 GetRun 实际发出的 SQL，供列顺序断言。
+type reconcileRunConnector struct {
+	row   *ReconcileRun
+	query *string
+}
 
 func (c reconcileRunConnector) Connect(context.Context) (driver.Conn, error) {
-	return &reconcileRunConn{row: c.row}, nil
+	return &reconcileRunConn{row: c.row, query: c.query}, nil
 }
 
 func (c reconcileRunConnector) Driver() driver.Driver { return reconcileRunDriver{} }
 
-type reconcileRunConn struct{ row *ReconcileRun }
+type reconcileRunConn struct {
+	row   *ReconcileRun
+	query *string
+}
 
 func (c *reconcileRunConn) Prepare(string) (driver.Stmt, error) {
 	return nil, errors.New("reconcileRunConn: Prepare is unused")
@@ -143,7 +150,10 @@ func (c *reconcileRunConn) Begin() (driver.Tx, error) {
 	return nil, errors.New("reconcileRunConn: Begin is unused")
 }
 
-func (c *reconcileRunConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
+func (c *reconcileRunConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+	if c.query != nil {
+		*c.query = query
+	}
 	return &reconcileRunRows{row: c.row}, nil
 }
 
@@ -194,11 +204,21 @@ func TestReconcileRepoGetRun(t *testing.T) {
 		Timezone: "Asia/Shanghai", StartedAt: startedAt, FinishedAt: &finishedAt,
 	}
 
-	db := sql.OpenDB(reconcileRunConnector{row: &want})
+	var query string
+	db := sql.OpenDB(reconcileRunConnector{row: &want, query: &query})
 	t.Cleanup(func() { _ = db.Close() })
 	got, err := NewReconcileRepo(db).GetRun(ctx, 42)
 	if err != nil {
 		t.Fatalf("GetRun(42) error = %v，期望 nil", err)
+	}
+	// 钉住 SELECT 的列顺序：假驱动的 Columns() 是测试自己给的，掩盖不了
+	// reconcileRunColumns 里 triggered_by/status 被对调这类漂移。
+	if normalized := strings.Join(strings.Fields(query), " "); !strings.Contains(
+		normalized, strings.Join(reconcileRunTestColumns, ", ")) {
+		t.Fatalf("GetRun 查询列 = %q，期望按序包含 %q", normalized, strings.Join(reconcileRunTestColumns, ", "))
+	}
+	if !strings.Contains(query, "FROM upstream_reconciliation_runs WHERE id = $1") {
+		t.Fatalf("GetRun 查询 = %q，期望按 id 过滤", query)
 	}
 	if got.ID != want.ID || got.AccountID != want.AccountID || got.Status != want.Status ||
 		got.TriggeredBy != want.TriggeredBy || got.Timezone != want.Timezone ||

@@ -405,6 +405,41 @@ func TestAckRejectsUnknownStatus(t *testing.T) {
 	}
 }
 
+func TestAckRequiresNoteField(t *testing.T) {
+	// note 是必填字段（可空串）：缺字段或显式 null 都必须 400，不能把已有
+	// 说明静默清空。
+	cases := []struct {
+		name string
+		body map[string]any
+	}{
+		{"absent", map[string]any{"status": "resolved"}},
+		{"null", map[string]any{"status": "resolved", "note": nil}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newReconcileTestEnv(t, &fakeReconcileRunner{})
+			env.store.addItem(store.ReconcileItem{
+				ID: 5, RunID: 1, Status: "open", Note: "keep me",
+			})
+
+			rr := env.request(fullAdmin(), http.MethodPost,
+				"/api/upstream-reconciliations/items/5/ack", tc.body)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("缺 note status = %d，期望 400（body=%q）", rr.Code, rr.Body.String())
+			}
+			if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/problem+json") {
+				t.Fatalf("Content-Type = %q，期望 application/problem+json", ct)
+			}
+			if detail, _ := decodeReconcileJSON(t, rr)["detail"].(string); !strings.Contains(detail, "note is required") {
+				t.Fatalf("detail = %q，期望包含 note is required", detail)
+			}
+			if env.store.ackCalls != 0 {
+				t.Fatalf("缺 note 仍调用了 AckItem %d 次（note=%q）", env.store.ackCalls, env.store.lastAckNote)
+			}
+		})
+	}
+}
+
 func TestSummaryRequiresRunID(t *testing.T) {
 	env := newReconcileTestEnv(t, &fakeReconcileRunner{})
 
@@ -474,6 +509,38 @@ func TestTriggerRunPassesAccountID(t *testing.T) {
 	}
 	if ids := env.runner.calls[0].accountIDs; len(ids) != 1 || ids[0] != 7 {
 		t.Fatalf("accountIDs = %v，期望 [7]", ids)
+	}
+}
+
+func TestTriggerRunTimeoutReturns504(t *testing.T) {
+	env := newReconcileTestEnv(t, &fakeReconcileRunner{})
+	// runner 超时前可能已提交部分 run：Outcome 带 run ids 与错误一起返回。
+	env.runner.outcome = reconcile.Outcome{RunIDs: []int64{3, 4}}
+	env.runner.err = context.DeadlineExceeded
+
+	rr := env.request(fullAdmin(), http.MethodPost, "/api/upstream-reconciliations/run", map[string]any{})
+	if rr.Code != http.StatusGatewayTimeout {
+		t.Fatalf("超时 status = %d，期望 504（body=%q）", rr.Code, rr.Body.String())
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/problem+json") {
+		t.Fatalf("Content-Type = %q，期望 application/problem+json", ct)
+	}
+	body := decodeReconcileJSON(t, rr)
+	if body["type"] != problemTypeGatewayTimeout {
+		t.Fatalf("problem type = %v，期望 %s", body["type"], problemTypeGatewayTimeout)
+	}
+	detail, _ := body["detail"].(string)
+	if !strings.Contains(detail, "created run ids: 3, 4") {
+		t.Fatalf("detail = %q，期望列出已创建的 run ids（3, 4）", detail)
+	}
+
+	// 超时也必须有审计：这些 run 已经落库，不能没有任何记录指回触发者。
+	auditArgs := env.audit.concatenatedArgs()
+	if !strings.Contains(auditArgs, audit.ActionReconcileRun) || !strings.Contains(auditArgs, "timeout") {
+		t.Fatalf("超时未写 reconcile.run 审计（status=timeout）：%s", auditArgs)
+	}
+	if !strings.Contains(auditArgs, "3") || !strings.Contains(auditArgs, "4") {
+		t.Fatalf("超时审计未记录 run ids：%s", auditArgs)
 	}
 }
 
@@ -562,6 +629,9 @@ func TestListReconcileItemsPaginatesAndFilters(t *testing.T) {
 	if body["total"] != float64(1) {
 		t.Fatalf("total = %v，期望 1", body["total"])
 	}
+	if body["page"] != float64(1) || body["page_size"] != float64(10) {
+		t.Fatalf("items 分页回声 = page %v / page_size %v，期望 1/10", body["page"], body["page_size"])
+	}
 	if env.store.lastSeverity != "alert" || env.store.lastStatus != "" {
 		t.Fatalf("筛选入参 = severity %q / status %q，期望 alert/空", env.store.lastSeverity, env.store.lastStatus)
 	}
@@ -585,6 +655,10 @@ func TestAckItemUpdatesAndAudits(t *testing.T) {
 	body := decodeReconcileJSON(t, rr)
 	if body["id"] != float64(5) || body["status"] != "resolved" || body["note"] != "checked upstream" {
 		t.Fatalf("ack 响应 = %v，期望 id=5 status=resolved note=checked upstream", body)
+	}
+	// updated_at 必须是 AckItem 之后重新读取的值，而不是旧的 2026-10-20。
+	if body["updated_at"] != "2026-10-24T12:30:00Z" {
+		t.Fatalf("updated_at = %v，期望重读后的 2026-10-24T12:30:00Z", body["updated_at"])
 	}
 	if env.store.ackCalls != 1 || env.store.lastAckID != 5 ||
 		env.store.lastAckStatus != "resolved" || env.store.lastAckNote != "checked upstream" {
@@ -611,16 +685,41 @@ func TestAckItemDefaultsToAcknowledged(t *testing.T) {
 }
 
 func TestAckItemRejectsLongNote(t *testing.T) {
-	env := newReconcileTestEnv(t, &fakeReconcileRunner{})
-	env.store.addItem(store.ReconcileItem{ID: 7, RunID: 1, Status: "open"})
-
-	rr := env.request(fullAdmin(), http.MethodPost, "/api/upstream-reconciliations/items/7/ack",
-		map[string]any{"status": "acknowledged", "note": strings.Repeat("x", 2001)})
-	if rr.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("超长 note status = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	// 上限按 Unicode 码点计算，不是字节：2000 个 CJK 字符是 6000 字节，
+	// 契约允许，用 len() 会误拒。这里把两个边界都钉住。
+	cases := []struct {
+		name string
+		note string
+		want int
+	}{
+		{"2000 ASCII", strings.Repeat("x", 2000), http.StatusOK},
+		{"2001 ASCII", strings.Repeat("x", 2001), http.StatusUnprocessableEntity},
+		{"2000 CJK runes", strings.Repeat("对", 2000), http.StatusOK},
+		{"2001 CJK runes", strings.Repeat("对", 2001), http.StatusUnprocessableEntity},
 	}
-	if env.store.ackCalls != 0 {
-		t.Fatalf("校验失败仍调用了 AckItem %d 次", env.store.ackCalls)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newReconcileTestEnv(t, &fakeReconcileRunner{})
+			env.store.addItem(store.ReconcileItem{ID: 7, RunID: 1, Status: "open"})
+
+			rr := env.request(fullAdmin(), http.MethodPost,
+				"/api/upstream-reconciliations/items/7/ack",
+				map[string]any{"status": "acknowledged", "note": tc.note})
+			if rr.Code != tc.want {
+				t.Fatalf("note 长度 %d 字节 status = %d，期望 %d（body=%q）",
+					len(tc.note), rr.Code, tc.want, rr.Body.String())
+			}
+			if tc.want == http.StatusUnprocessableEntity {
+				if env.store.ackCalls != 0 {
+					t.Fatalf("校验失败仍调用了 AckItem %d 次", env.store.ackCalls)
+				}
+				return
+			}
+			if env.store.ackCalls != 1 || env.store.lastAckNote != tc.note {
+				t.Fatalf("AckItem 入参 = 调用 %d 次 / note 长度 %d，期望 1 次 / %d 字节",
+					env.store.ackCalls, len(env.store.lastAckNote), len(tc.note))
+			}
+		})
 	}
 }
 
@@ -648,8 +747,25 @@ func TestListReconcileRunsFiltersByAccount(t *testing.T) {
 	if body["total"] != float64(1) {
 		t.Fatalf("total = %v，期望 1", body["total"])
 	}
+	if body["page"] != float64(1) || body["page_size"] != float64(20) {
+		t.Fatalf("分页回声 = page %v / page_size %v，期望 1/20", body["page"], body["page_size"])
+	}
 	if env.store.lastAccountID == nil || *env.store.lastAccountID != 2 {
 		t.Fatalf("account_id 筛选入参 = %v，期望 2", env.store.lastAccountID)
+	}
+
+	// page_size 超过上限时静默归一到 100，响应回声也必须是归一后的值。
+	rr = env.request(fullAdmin(), http.MethodGet,
+		"/api/upstream-reconciliations/runs?p=2&page_size=500", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("page_size=500 status = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+	}
+	body = decodeReconcileJSON(t, rr)
+	if body["page"] != float64(2) || body["page_size"] != float64(100) {
+		t.Fatalf("归一后分页回声 = page %v / page_size %v，期望 2/100", body["page"], body["page_size"])
+	}
+	if env.store.lastRunsPage != 2 || env.store.lastRunsSz != 100 {
+		t.Fatalf("仓储分页入参 = p %d / size %d，期望 2/100", env.store.lastRunsPage, env.store.lastRunsSz)
 	}
 }
 

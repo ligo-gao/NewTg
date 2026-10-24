@@ -138,7 +138,8 @@ func (h *ReconcileHandlers) registerPolicies() {
 	h.authz.SetWritePolicy(reconcileTriggerAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{
 		"account_id": nil,
 	}})
-	// ack 的 status 缺省 acknowledged，note 可空串但字段存在。
+	// ack 的 status 缺省 acknowledged；note 必须出现（可空串）——用指针解码，
+	// 缺字段与显式 null 都在 handler 里 400，避免静默清空已有说明。
 	h.authz.SetWritePolicy(reconcileAckAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{
 		"status": nil,
 		"note":   nil,
@@ -311,10 +312,26 @@ func (h *ReconcileHandlers) handleTriggerRun(w http.ResponseWriter, r *http.Requ
 	outcome, err := h.runner.Run(ctx, reconcileTriggerManual, accountIDs)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			detail := fmt.Sprintf("reconciliation did not finish within %s", reconcileRunTimeout)
-			if len(outcome.RunIDs) > 0 {
-				detail += fmt.Sprintf(" (created run ids: %s)", joinInt64s(outcome.RunIDs))
+			runIDs := outcome.RunIDs
+			if runIDs == nil {
+				runIDs = []int64{}
 			}
+			detail := fmt.Sprintf("reconciliation did not finish within %s", reconcileRunTimeout)
+			if len(runIDs) > 0 {
+				detail += fmt.Sprintf(" (created run ids: %s)", joinInt64s(runIDs))
+			}
+			// 超时前可能已经提交了部分 run：即使响应失败，也要留下一条审计，
+			// 否则这些行没有任何记录能指回触发者。status 用 timeout 与成功区分。
+			auditDetail := map[string]any{
+				"action":  audit.ActionReconcileRun,
+				"trigger": reconcileTriggerManual,
+				"run_ids": runIDs,
+				"status":  "timeout",
+			}
+			if req.AccountId != nil {
+				auditDetail["account_id"] = *req.AccountId
+			}
+			h.auditEvent(r, audit.ActionReconcileRun, p.UserID, auditDetail, nil, nil, http.StatusGatewayTimeout)
 			writeAdminProblem(w, http.StatusGatewayTimeout, problemTypeGatewayTimeout,
 				"Gateway timeout", detail)
 			return
@@ -375,12 +392,24 @@ func (h *ReconcileHandlers) handleAckItem(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	var req dto.ReconcileAckRequest
+	// 契约要求 note 字段必须存在（可空串）。生成 DTO 的 Note 是 string，
+	// 无法区分「缺字段/null」与「空串」；这里用局部结构体的指针解码，避免
+	// 一个 {"status":"resolved"} 就把已有说明静默清空。
+	var req struct {
+		Note   *string                        `json:"note"`
+		Status *dto.ReconcileAckRequestStatus `json:"status,omitempty"`
+	}
 	if err := readAuthJSON(r, &req); err != nil {
 		writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
 			"request body must be a JSON object")
 		return
 	}
+	if req.Note == nil {
+		writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
+			"note is required")
+		return
+	}
+	note := *req.Note
 	status := string(dto.ReconcileAckRequestStatusAcknowledged)
 	if req.Status != nil {
 		if !req.Status.Valid() {
@@ -389,7 +418,7 @@ func (h *ReconcileHandlers) handleAckItem(w http.ResponseWriter, r *http.Request
 		}
 		status = string(*req.Status)
 	}
-	if utf8.RuneCountInString(req.Note) > reconcileAckNoteMaxRunes {
+	if utf8.RuneCountInString(note) > reconcileAckNoteMaxRunes {
 		writeUpstreamInvalidFields(w, []string{"note"})
 		return
 	}
@@ -399,7 +428,7 @@ func (h *ReconcileHandlers) handleAckItem(w http.ResponseWriter, r *http.Request
 		h.writeRepoError(w, "read reconciliation item before ack", err)
 		return
 	}
-	if err := h.repo.AckItem(r.Context(), id, status, req.Note); err != nil {
+	if err := h.repo.AckItem(r.Context(), id, status, note); err != nil {
 		h.writeRepoError(w, "ack reconciliation item", err)
 		return
 	}
@@ -418,11 +447,11 @@ func (h *ReconcileHandlers) handleAckItem(w http.ResponseWriter, r *http.Request
 	}, reconcileItemSnapshot(before), reconcileItemSnapshot(after), http.StatusOK)
 
 	updatedAt := after.UpdatedAt
-	note := after.Note
+	resultNote := after.Note
 	writeJSON(w, http.StatusOK, dto.ReconcileAckResult{
 		Id:        after.ID,
 		Status:    dto.ReconcileAckResultStatus(after.Status),
-		Note:      &note,
+		Note:      &resultNote,
 		UpdatedAt: &updatedAt,
 	})
 }
