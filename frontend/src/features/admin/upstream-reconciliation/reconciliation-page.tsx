@@ -1,11 +1,15 @@
+import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 
 import { PageHeader } from '@/features/shell/page-header'
+import { meQueryOptions } from '@/lib/session'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { handleTabListKeyDown } from '@/shared/lib/roving-focus'
 import { FormAlert } from '@/shared/ui/form'
 
+import { EntryTab } from './entry-tab'
 import {
+  hasSettingsManage,
   normalizeReconciliationTab,
   RECONCILIATION_TABS,
   type ReconciliationTabId,
@@ -28,6 +32,10 @@ export function UpstreamReconciliationPage() {
   })
   const navigate = useNavigate({ from: '/admin/upstream-reconciliation' })
   const tab = normalizeReconciliationTab(search.tab)
+  // 路由 beforeLoad 已挡住无权限直链；页面内再收窄一次，录入 Tab 的写控件
+  // 永远不会以只读身份出现（服务端仍逐请求强制）。
+  const me = useQuery(meQueryOptions())
+  const canManage = hasSettingsManage(me.data?.permissions)
 
   const selectTab = (next: ReconciliationTabId): void => {
     if (next === tab) return
@@ -87,11 +95,7 @@ export function UpstreamReconciliationPage() {
         aria-labelledby={`reconciliation-tab-${tab}`}
         className="flex flex-col gap-4"
       >
-        {tab === 'entry' ? (
-          <TabPlaceholder
-            message={t('admin.upstream_reconciliation.page.placeholder_entry')}
-          />
-        ) : null}
+        {tab === 'entry' ? <EntryTab canManage={canManage} /> : null}
         {tab === 'results' ? (
           <TabPlaceholder
             message={t('admin.upstream_reconciliation.page.placeholder_results')}
