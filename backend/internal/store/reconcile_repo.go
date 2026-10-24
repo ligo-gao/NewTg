@@ -454,6 +454,22 @@ func (r *ReconcileRepo) ListItems(ctx context.Context, runID int64, severity, st
 	return items, total, nil
 }
 
+// GetRun 按 id 读取一条 run；不存在返回 ErrRunNotFound。
+//
+// 手动触发与概览/明细端点都需要「先证明 run 存在」：列表查询本身对不存在的
+// run 只会返回空页，无法区分 404 与「存在但没有明细」。
+func (r *ReconcileRepo) GetRun(ctx context.Context, id int64) (*ReconcileRun, error) {
+	run, err := scanReconcileRun(r.db.QueryRowContext(ctx,
+		`SELECT `+reconcileRunColumns+` FROM upstream_reconciliation_runs WHERE id = $1`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrRunNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: get reconciliation run %d: %w", id, err)
+	}
+	return run, nil
+}
+
 // GetItem 按 id 读取一条明细；不存在返回 ErrItemNotFound。
 func (r *ReconcileRepo) GetItem(ctx context.Context, id int64) (*ReconcileItem, error) {
 	it, err := scanReconcileItem(r.db.QueryRowContext(ctx,

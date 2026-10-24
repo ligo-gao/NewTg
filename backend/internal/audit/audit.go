@@ -245,6 +245,12 @@ const (
 	ActionUpstreamAccountDelete  = "upstream_account.delete"
 	ActionUpstreamSnapshotUpsert = "upstream_snapshot.upsert"
 
+	// 对账运行的手动触发与明细处置（Task 9）。两者都是管理面的显式操作，归
+	// operation 类；detail 只记录 run_id/计数/状态与明细 id，不复制差异明细
+	// 的统计内容。ack 的 before/after 只含 status/note。
+	ActionReconcileRun     = "reconcile.run"
+	ActionReconcileItemAck = "reconcile.item_ack"
+
 	// W11 渠道凭据受控揭示（security-03 §2.10；modules-06 F-06-03）。这是
 	// 「常规接口永不返回明文」的唯一例外，审计是它唯一的长期追溯面：
 	// detail 只允许 channel_id/reason/revealed_fields，**永不记录凭据内容
@@ -383,6 +389,9 @@ var actionCategories = map[string]string{
 	ActionUpstreamAccountUpdate:  categoryOperation,
 	ActionUpstreamAccountDelete:  categoryOperation,
 	ActionUpstreamSnapshotUpsert: categoryOperation,
+
+	ActionReconcileRun:     categoryOperation,
+	ActionReconcileItemAck: categoryOperation,
 }
 
 // Category 返回动作名对应的审计分类；未知动作 ok=false。

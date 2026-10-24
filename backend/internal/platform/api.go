@@ -597,6 +597,16 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	transactionalEmail := httpapi.NewTransactionalEmailSender(
 		notify.NewSMTPSender(center, cipher))
 
+	// 上游用量对账手动触发（Task 9）：复用 worker 周期任务的同一个构造器，
+	// 保证两处数据源分工一致（usage_logs 在**日志库**，账号/快照/run 在主库）
+	// 且共用同一份设置读取。装配失败阻止上线，而不是让触发端点静默 500。
+	reconcileRunner, err := newReconcileRunner(workerTaskDeps{
+		DB: db, LogsDB: logsDB, Center: center, Logger: log,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gateway: reconcile runner: %w", err)
+	}
+
 	router, err := httpapi.BuildGatewayRouter(httpapi.GatewayDeps{
 		DB:                      db,
 		LogDB:                   logsDB,
@@ -642,6 +652,8 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		// W13-EMAIL：事务性邮件（验证码/密码重置/通知测试）共用一个适配器。
 		EmailSender:        transactionalEmail,
 		NotificationSender: transactionalEmail,
+		// Task 9：对账手动触发与 worker 周期任务共用同一个 runner 构造器。
+		ReconcileRunner: reconcileRunner,
 	})
 	if err != nil {
 		return nil, err

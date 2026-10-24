@@ -111,6 +111,12 @@ type GatewayDeps struct {
 	// DB 时不挂载端点（M1 纯 Repo 单测装配没有上游台账表）。
 	UpstreamAccountRepo  UpstreamAccountRepo
 	UpstreamSnapshotRepo UpstreamSnapshotRepo
+	// ReconcileRepo / ReconcileRunner 是上游用量对账运行端点的可选测试接缝
+	// （Task 9）。Repo 为 nil 且 DB 非 nil 时由 store.NewReconcileRepo 构造；
+	// Runner 为 nil 时仅触发端点返回 503，读/ack 端点照常挂载。
+	// runner 由 platform 注入：platform 依赖本包，本包不得反向导入它。
+	ReconcileRepo   ReconcileStore
+	ReconcileRunner ReconcileRunner
 	// PricingRepo 是定价管理仓储的可选测试接缝；nil 且 DB 非 nil 时由
 	// store.NewPricingRepo(DB) 构造。DB 与 PricingRepo 都为空时不挂定价端点
 	// （M1 的纯 Repo 单测装配没有定价库表）。
@@ -918,6 +924,24 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		}
 		upstreamAccounts.RegisterRoutes(rt.protected, nil)
 		upstreamSnapshots.RegisterRoutes(rt.protected, nil)
+	}
+
+	// 上游用量对账运行面（Task 9）：运行历史、明细、概览、手动触发与 ack。
+	// 与账号/快照端点共用同一条受保护链，handler 内部按 settings:manage 判定。
+	// runner 缺失不阻止挂载：读端点必须独立可用，触发端点显式 503。
+	if deps.DB != nil || deps.ReconcileRepo != nil {
+		reconcileHandlers, err := NewReconcileHandlers(ReconcileHandlerConfig{
+			DB:     deps.DB,
+			Repo:   deps.ReconcileRepo,
+			Runner: deps.ReconcileRunner,
+			Authz:  deps.Authz,
+			Audit:  deps.Audit,
+			Logger: deps.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		reconcileHandlers.RegisterRoutes(rt.protected, nil)
 	}
 
 	// 密码端点最后挂载：它要求认证仓储同时实现 PasswordRepo，并在有发信器
