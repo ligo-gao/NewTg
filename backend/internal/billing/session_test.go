@@ -2595,3 +2595,60 @@ func TestSessionPreConsumeEstimatesPromptFromRawRequest(t *testing.T) {
 		t.Fatalf("Reserved = %d, want 26（与 tokenestimate 的 hello world 口径一致）", got)
 	}
 }
+
+// TestOutputReserveCompletionTokens 固定输出预留的有界语义。
+func TestOutputReserveCompletionTokens(t *testing.T) {
+	ptr := func(n int) *int { return &n }
+	tests := []struct {
+		name string
+		out  outputReserve
+		max  *int
+		want int64
+	}{
+		{"disabled", outputReserve{enabled: false, def: 100, max: 1000}, ptr(50), 0},
+		{"default when absent", outputReserve{enabled: true, def: 100, max: 1000}, nil, 100},
+		{"declared below cap", outputReserve{enabled: true, def: 100, max: 1000}, ptr(50), 50},
+		{"declared above cap", outputReserve{enabled: true, def: 100, max: 1000}, ptr(5000), 1000},
+		{"zero declared uses default", outputReserve{enabled: true, def: 100, max: 1000}, ptr(0), 100},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.out.completionTokens(tt.max); got != tt.want {
+				t.Fatalf("completionTokens = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSessionPreConsumeReservesOutputTokens 证明输出预留进入预算：
+// 价格 1 积分/token，P=100、max_tokens=200 → hold=300。
+func TestSessionPreConsumeReservesOutputTokens(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 1_000_000)
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	s := newBillingTestSession(e, userID, testRequestID("pre-output"), ratioSnapshot(1_000_000, 1_000_000))
+	max := 200
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m", PromptTokens: 100, MaxTokens: &max}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if got := s.Reserved(); got != 300 {
+		t.Fatalf("Reserved = %d, want 300", got)
+	}
+}
+
+// TestSessionPreConsumeClampsOutputReservation 证明天文 max_tokens 被上限钳制。
+func TestSessionPreConsumeClampsOutputReservation(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 1_000_000)
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	s := newBillingTestSession(e, userID, testRequestID("pre-output-cap"), ratioSnapshot(1_000_000, 1_000_000))
+	max := 10_000_000
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m", PromptTokens: 100, MaxTokens: &max}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if got := s.Reserved(); got != 32_868 {
+		t.Fatalf("Reserved = %d, want 32868（100 + 默认上限 32768）", got)
+	}
+}

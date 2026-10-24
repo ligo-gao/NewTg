@@ -331,7 +331,11 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) (err error) {
 		return nil
 	}
 
-	params := NormalizeTokens(estimateUsage(est), *snap, usedVars)
+	out, err := s.engine.outputReserve()
+	if err != nil {
+		return err
+	}
+	params := NormalizeTokens(estimateUsage(est, out), *snap, usedVars)
 	params.ImageCount = s.reservedImages
 	base, err := pricing.ComputeQuota(*snap, params, usedVars)
 	if err != nil {
@@ -2045,18 +2049,21 @@ func (s *Session) removeLeaseLocked(ctx context.Context) {
 //
 // P：优先使用上游/契约层已算好的 PromptTokens；缺席时从 Raw 请求 IR 保守
 // 估算（tokenestimate），避免「无估算器 → 0 输入 → 零预扣」。
-// C 不在本函数估算：预扣阶段的输出成本由调用方按 max_tokens 预留。
+// C：按 outputReserve 预留有界输出 token（max_tokens 缺失用默认值、超上限
+// 钳制）。这是预扣阶段的保守估算，结算仍以 UsageFact 的真实用量为准，
+// 多退少补；关闭预留时恒为 0。
 // MaxTokens 保留进 Raw 供诊断。
 //
 // PromptIncludesCache=true：估算没有上游格式事实，且各子类均为 0，两种分支
 // 结果相同；显式取 true 避免 Claude 的 cr 加回路径被无意义地触发。
-func estimateUsage(est contract.QuotaEstimate) contract.Usage {
+func estimateUsage(est contract.QuotaEstimate, out outputReserve) contract.Usage {
 	prompt := max(est.PromptTokens, 0)
 	if prompt == 0 && est.Raw != nil {
 		prompt = tokenestimate.PromptTokens(est.Raw)
 	}
 	u := contract.Usage{
 		Prompt:              prompt,
+		Completion:          out.completionTokens(est.MaxTokens),
 		PromptIncludesCache: true,
 		AudioSeconds:        max(est.AudioSeconds, 0),
 		Source:              contract.UsageEstimated,

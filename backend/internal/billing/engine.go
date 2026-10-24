@@ -210,6 +210,13 @@ const (
 	// 付费模型必须至少冻结这么多，否则零余额用户可以零预扣出站。
 	// 0 = 关闭下限；此时零预算按 fail-closed 处理（见 applyPreConsumeFloor）。
 	ConfigMinPreConsumeQuota = "billing.min_pre_consume_quota"
+
+	// ConfigPreConsumeOutputReserveEnabled 控制预扣是否预留输出 token。
+	ConfigPreConsumeOutputReserveEnabled = "billing.pre_consume_output_reserve_enabled"
+	// ConfigPreConsumeOutputReserveDefault 是 max_tokens 缺失时的输出预留量。
+	ConfigPreConsumeOutputReserveDefault = "billing.pre_consume_output_reserve_default"
+	// ConfigPreConsumeOutputReserveMax 是输出预留的硬上限（防止 max_tokens 放大）。
+	ConfigPreConsumeOutputReserveMax = "billing.pre_consume_output_reserve_max"
 )
 
 const (
@@ -225,6 +232,10 @@ const (
 	// 零余额用户在账本的 balance >= n 条件上被拒绝，又不改变有余额用户的
 	// 结算结果（hold 在 Terminate 时全额退回或抵扣）。
 	defaultMinPreConsumeQuota = int64(1)
+
+	defaultPreConsumeOutputReserveEnabled       = true
+	defaultPreConsumeOutputReserveDefault int64 = 1024
+	defaultPreConsumeOutputReserveMax     int64 = 32768
 
 	// historyConsumptionTTL 是「历史累计消费」的缓存时长。
 	//
@@ -576,6 +587,56 @@ func (e *Engine) minPreConsumeQuota() (int64, error) {
 		return 0, fmt.Errorf("%w: %s must be >= 0", ErrInvalidConfig, ConfigMinPreConsumeQuota)
 	}
 	return n, nil
+}
+
+// outputReserve 是预扣时的输出 token 预留策略。
+type outputReserve struct {
+	enabled bool
+	def     int64
+	max     int64
+}
+
+// completionTokens 返回本次预扣预留的输出 token 数。
+func (o outputReserve) completionTokens(maxTokens *int) int64 {
+	if !o.enabled {
+		return 0
+	}
+	n := o.def
+	if maxTokens != nil && *maxTokens > 0 {
+		n = int64(*maxTokens)
+	}
+	if n > o.max {
+		n = o.max
+	}
+	return n
+}
+
+// outputReserve 读取并校验输出预留配置。非法配置 fail-closed：
+// 默认值大于上限或上限非正会让所有预扣失真，不能静默取一个值。
+func (e *Engine) outputReserve() (outputReserve, error) {
+	enabled, err := e.configBool(ConfigPreConsumeOutputReserveEnabled, defaultPreConsumeOutputReserveEnabled)
+	if err != nil {
+		return outputReserve{}, err
+	}
+	def, err := e.configInt64(ConfigPreConsumeOutputReserveDefault, defaultPreConsumeOutputReserveDefault)
+	if err != nil {
+		return outputReserve{}, err
+	}
+	maxTokens, err := e.configInt64(ConfigPreConsumeOutputReserveMax, defaultPreConsumeOutputReserveMax)
+	if err != nil {
+		return outputReserve{}, err
+	}
+	if def < 0 {
+		return outputReserve{}, fmt.Errorf("%w: %s must be >= 0", ErrInvalidConfig, ConfigPreConsumeOutputReserveDefault)
+	}
+	if maxTokens <= 0 {
+		return outputReserve{}, fmt.Errorf("%w: %s must be > 0", ErrInvalidConfig, ConfigPreConsumeOutputReserveMax)
+	}
+	if def > maxTokens {
+		return outputReserve{}, fmt.Errorf("%w: %s must be <= %s", ErrInvalidConfig,
+			ConfigPreConsumeOutputReserveDefault, ConfigPreConsumeOutputReserveMax)
+	}
+	return outputReserve{enabled: enabled, def: def, max: maxTokens}, nil
 }
 
 // freeModelHold 计算免费模型预扣额：ceil(maxTokens × multiplier)。

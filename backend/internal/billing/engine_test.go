@@ -248,3 +248,14 @@ func TestEngineSettlementLock(t *testing.T) {
 		release()
 	}
 }
+
+func TestEngineOutputReserveRejectsDefaultAboveMax(t *testing.T) {
+	cfg := mapConfig{
+		ConfigPreConsumeOutputReserveDefault: json.RawMessage("4096"),
+		ConfigPreConsumeOutputReserveMax:     json.RawMessage("1024"),
+	}
+	e := NewEngine(nil, nil, nil, cfg, nil, nil, nil)
+	if _, err := e.outputReserve(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("err = %v, want ErrInvalidConfig", err)
+	}
+}
