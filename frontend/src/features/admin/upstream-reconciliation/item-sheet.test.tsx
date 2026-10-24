@@ -118,6 +118,19 @@ function comparisonCells(rowKey: string): HTMLElement[] {
     .map((cell) => cell as HTMLElement)
 }
 
+/** 本地请求口径块里一行的标签 / 数值（`dt` / `dd`）。 */
+function localBasisLabel(rowKey: string): string | null | undefined {
+  return screen
+    .getByTestId(`local-basis-row-${rowKey}`)
+    .querySelector('dt')?.textContent
+}
+
+function localBasisValue(rowKey: string): string | null | undefined {
+  return screen
+    .getByTestId(`local-basis-row-${rowKey}`)
+    .querySelector('dd')?.textContent
+}
+
 /** 同一条明细以新状态重新传入（确认成功后列表被失效重取）。 */
 function RefreshHarness() {
   const [status, setStatus] = useState<ReconcileItem['status']>('open')
@@ -344,5 +357,67 @@ describe('reconciliation item sheet', () => {
     expect(
       (screen.getByLabelText('Note') as HTMLTextAreaElement).disabled,
     ).toBe(true)
+  })
+
+  it('renders the five local request-basis counters', async () => {
+    renderSheet(
+      makeItem({
+        local_requests: 5,
+        local_refunded_requests: 2,
+        local_estimated_requests: 3,
+        local_unknown_requests: 1,
+        local_multi_attempt_requests: 4,
+      }),
+    )
+    await screen.findByRole('dialog')
+
+    expect(
+      within(screen.getByTestId('local-basis-block')).getByText(
+        'Local request basis',
+      ),
+    ).toBeTruthy()
+    expect(localBasisLabel('requests')).toBe('Requests')
+    expect(localBasisValue('requests')).toBe('5')
+    expect(localBasisLabel('refunded_requests')).toBe('Refunded requests')
+    expect(localBasisValue('refunded_requests')).toBe('2')
+    expect(localBasisLabel('estimated_requests')).toBe('Estimated requests')
+    expect(localBasisValue('estimated_requests')).toBe('3')
+    expect(localBasisLabel('unknown_requests')).toBe('Unknown requests')
+    expect(localBasisValue('unknown_requests')).toBe('1')
+    expect(localBasisLabel('multi_attempt_requests')).toBe(
+      'Multi-attempt requests',
+    )
+    expect(localBasisValue('multi_attempt_requests')).toBe('4')
+  })
+
+  it('renders NULL local counters as —', async () => {
+    const nullCount = null as unknown as number
+    renderSheet(
+      makeItem({
+        local_requests: nullCount,
+        local_refunded_requests: nullCount,
+        local_estimated_requests: nullCount,
+        local_unknown_requests: nullCount,
+        local_multi_attempt_requests: nullCount,
+      }),
+    )
+    await screen.findByRole('dialog')
+
+    expect(localBasisValue('requests')).toBe('—')
+    expect(localBasisValue('refunded_requests')).toBe('—')
+    expect(localBasisValue('estimated_requests')).toBe('—')
+    expect(localBasisValue('unknown_requests')).toBe('—')
+    expect(localBasisValue('multi_attempt_requests')).toBe('—')
+  })
+
+  it('explains how the local counters relate to the totals', async () => {
+    renderSheet(makeItem())
+    await screen.findByRole('dialog')
+
+    expect(
+      screen.getByText(
+        'Refunded and estimated requests are included in the local totals. Unknown and multi-attempt requests are disclosed rather than corrected.',
+      ),
+    ).toBeTruthy()
   })
 })

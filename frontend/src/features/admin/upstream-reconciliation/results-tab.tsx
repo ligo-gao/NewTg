@@ -1,4 +1,4 @@
-import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 
 import { ApiError } from '@/api/errors'
@@ -8,9 +8,13 @@ import { FormAlert } from '@/shared/ui/form'
 import { StatusBadge } from '@/shared/ui/status-badge'
 
 import {
+  createIdempotencyKey,
   listItems,
   listRuns,
+  triggerRun,
   type ReconcileItem,
+  type ReconcileRunList,
+  type ReconcileRunResult,
   type ReconcileSeverity,
 } from './api'
 import { ItemSheet } from './item-sheet'
@@ -19,6 +23,8 @@ import {
   SEVERITY_ORDER,
   itemStatusLabel,
   itemStatusVariant,
+  runStatusLabel,
+  runStatusVariant,
   severityLabel,
   severityVariant,
 } from './status'
@@ -29,6 +35,9 @@ const ITEMS_QUERY_KEY = ['upstream-reconciliations', 'items'] as const
 
 /** 与服务端 offset 分页契约一致；筛选变化时回到第一页。 */
 const PAGE_SIZE = 20
+
+/** 有运行仍在跑时，运行列表与当前运行的明细每 5 秒刷新一次。 */
+const RUN_POLL_INTERVAL = 5000
 
 export interface ResultsTabProps {
   runId: number | null
@@ -53,6 +62,26 @@ function formatCount(value: number | null | undefined): string {
 function formatMinor(value: number | null | undefined): string {
   if (value === null || value === undefined) return '—'
   return `¥${(value / 100).toFixed(2)}`
+}
+
+/** 运行完成时刻按当前语言格式化；无效时间戳退回长破折号。 */
+function formatDateTime(iso: string | null | undefined, locale: string): string {
+  if (iso === null || iso === undefined || iso === '') return '—'
+  const timestamp = Date.parse(iso)
+  if (!Number.isFinite(timestamp)) return '—'
+  return new Intl.DateTimeFormat(locale, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(timestamp)
+}
+
+/** 触发结果的提示色与运行状态的严重度一致。 */
+function triggerTone(
+  status: ReconcileRunResult['status'],
+): 'success' | 'warning' | 'danger' {
+  if (status === 'failed') return 'danger'
+  if (status === 'partial') return 'warning'
+  return 'success'
 }
 
 function localTokenTotal(item: ReconcileItem): number {
@@ -86,7 +115,7 @@ function snapshotTokenTotal(item: ReconcileItem): number | null {
  * 表格的分页与严重度筛选全部交给服务端。
  */
 export function ResultsTab({ runId, onSelectRun, canManage }: ResultsTabProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const queryClient = useQueryClient()
   const [severity, setSeverity] = useState<ReconcileSeverity | null>(null)
   const [page, setPage] = useState(1)
@@ -97,8 +126,41 @@ export function ResultsTab({ runId, onSelectRun, canManage }: ResultsTabProps) {
     queryFn: ({ signal }) => listRuns({}, signal),
     retry: false,
     staleTime: 30_000,
+    // 只要列表里还有运行未结束就继续轮询；全部结束后立即停止。
+    refetchInterval: (query) =>
+      query.state.data?.items.some((run) => run.status === 'running')
+        ? RUN_POLL_INTERVAL
+        : false,
   })
   const runs = runsQuery.data?.items ?? []
+  const selectedRun =
+    runId === null ? null : (runs.find((run) => run.id === runId) ?? null)
+
+  // 手动触发对账是同步请求，可能持续到服务端 60s 超时；按钮自身承担等待态。
+  // 每次点击都生成新的幂等键：两次点击是两个意图，重放语义不能跨意图复用。
+  const triggerMutation = useMutation({
+    mutationFn: () =>
+      triggerRun(
+        selectedRun === null ? {} : { account_id: selectedRun.account_id },
+        createIdempotencyKey(),
+      ),
+    retry: false,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: RUNS_QUERY_KEY }),
+        queryClient.invalidateQueries({ queryKey: ITEMS_QUERY_KEY }),
+      ])
+      // `run_ids` 可能为空（没有启用账号）；即使不空，也以刷新后的列表为准，
+      // 因为列表才是「最新运行」的权威顺序（服务端按 started_at 降序）。
+      const refreshed = queryClient.getQueryData<ReconcileRunList>(RUNS_QUERY_KEY)
+      const newest = refreshed?.items[0]
+      if (newest === undefined) return
+      onSelectRun(newest.id)
+      setSeverity(null)
+      setPage(1)
+      setSelectedId(null)
+    },
+  })
 
   // 页面首次进入时没有选中运行：运行列表加载完成后选最新一条（服务端
   // 已按 started_at 降序返回）。只在 runId 仍为空时补选一次。
@@ -143,6 +205,9 @@ export function ResultsTab({ runId, onSelectRun, canManage }: ResultsTabProps) {
     },
     enabled: runId !== null,
     retry: false,
+    // 运行尚未结束时明细还在写入，跟随运行列表一起轮询；结束即停。
+    refetchInterval:
+      selectedRun?.status === 'running' ? RUN_POLL_INTERVAL : false,
     // 只在运行不变时沿用上一份数据（翻页 / 筛选）；换运行必须先清空表格，
     // 否则旧运行的行会挂在新运行的标题下并仍然可点。
     placeholderData: (previous, previousQuery) => {
@@ -205,11 +270,49 @@ export function ResultsTab({ runId, onSelectRun, canManage }: ResultsTabProps) {
                   start: run.window_start,
                   end: run.window_end,
                 })}
+                {' · '}
+                {runStatusLabel(run.status, t)}
               </option>
             ))}
           </select>
         </label>
+        {canManage ? (
+          <Button
+            className="h-10"
+            aria-busy={triggerMutation.isPending}
+            disabled={runsQuery.isPending || triggerMutation.isPending}
+            onClick={() => {
+              triggerMutation.mutate()
+            }}
+          >
+            {triggerMutation.isPending
+              ? t('admin.upstream_reconciliation.results.run_again_pending')
+              : t('admin.upstream_reconciliation.results.run_again')}
+          </Button>
+        ) : null}
       </div>
+
+      {triggerMutation.isError ? (
+        <FormAlert tone="danger">
+          {problemMessage(triggerMutation.error)}
+        </FormAlert>
+      ) : null}
+      {triggerMutation.isSuccess ? (
+        triggerMutation.data.run_ids.length === 0 ? (
+          <FormAlert tone="info">
+            {t('admin.upstream_reconciliation.results.run_again_no_accounts')}
+          </FormAlert>
+        ) : (
+          <FormAlert tone={triggerTone(triggerMutation.data.status)}>
+            {t('admin.upstream_reconciliation.results.run_again_summary', {
+              runs: triggerMutation.data.run_ids.length,
+              items: triggerMutation.data.items,
+              alerts: triggerMutation.data.alerts,
+              status: runStatusLabel(triggerMutation.data.status, t),
+            })}
+          </FormAlert>
+        )
+      ) : null}
 
       {runsQuery.isError ? (
         <FormAlert tone="danger">{problemMessage(runsQuery.error)}</FormAlert>
@@ -222,6 +325,38 @@ export function ResultsTab({ runId, onSelectRun, canManage }: ResultsTabProps) {
       {runId === null && runs.length > 0 ? (
         <FormAlert tone="info">
           {t('admin.upstream_reconciliation.results.select_hint')}
+        </FormAlert>
+      ) : null}
+
+      {selectedRun !== null ? (
+        <div
+          data-testid="run-status"
+          className="flex flex-wrap items-center gap-2 text-meta text-ink-2"
+        >
+          <StatusBadge variant={runStatusVariant(selectedRun.status)}>
+            {runStatusLabel(selectedRun.status, t)}
+          </StatusBadge>
+          <span>
+            {selectedRun.status === 'running' || selectedRun.finished_at == null
+              ? t('admin.upstream_reconciliation.results.run_still_running')
+              : t('admin.upstream_reconciliation.results.run_finished_at', {
+                  time: formatDateTime(selectedRun.finished_at, locale),
+                })}
+          </span>
+        </div>
+      ) : null}
+
+      {selectedRun !== null && selectedRun.error !== '' ? (
+        <FormAlert
+          tone={selectedRun.status === 'failed' ? 'danger' : 'warning'}
+        >
+          {selectedRun.error}
+        </FormAlert>
+      ) : null}
+
+      {selectedRun?.status === 'running' ? (
+        <FormAlert tone="info">
+          {t('admin.upstream_reconciliation.results.run_running_note')}
         </FormAlert>
       ) : null}
 

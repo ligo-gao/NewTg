@@ -8,7 +8,14 @@
 import type { TranslateFn } from '@/shared/lib/i18n-context'
 import type { StatusBadgeVariant } from '@/shared/ui/status-badge'
 
-import type { ReconcileItemStatus, ReconcileSeverity } from './api'
+import type {
+  ReconcileItemStatus,
+  ReconcileRun,
+  ReconcileSeverity,
+} from './api'
+
+/** 运行的生命周期状态（契约闭集 `ReconcileRun.status`）。 */
+export type ReconcileRunStatus = ReconcileRun['status']
 
 /** 严重度筛选条的固定顺序（也是计数请求的顺序）。 */
 export const SEVERITY_ORDER = [
@@ -60,12 +67,37 @@ export const ITEM_STATUS_LABEL_KEYS: Record<ReconcileItemStatus, string> = {
   resolved: 'admin.upstream_reconciliation.results.status_resolved',
 }
 
+/**
+ * 运行状态与明细状态是两套闭集：`running` 不属于明细，`open` 也不属于运行。
+ * 未知运行状态同样按 neutral + 原样文本兜底。
+ */
+export const RUN_STATUS_VARIANTS: Record<
+  ReconcileRunStatus,
+  StatusBadgeVariant
+> = {
+  running: 'info',
+  succeeded: 'success',
+  partial: 'warning',
+  failed: 'danger',
+}
+
+export const RUN_STATUS_LABEL_KEYS: Record<ReconcileRunStatus, string> = {
+  running: 'admin.upstream_reconciliation.results.run_status_running',
+  succeeded: 'admin.upstream_reconciliation.results.run_status_succeeded',
+  partial: 'admin.upstream_reconciliation.results.run_status_partial',
+  failed: 'admin.upstream_reconciliation.results.run_status_failed',
+}
+
 function isSeverity(value: string): value is ReconcileSeverity {
   return (SEVERITY_ORDER as readonly string[]).includes(value)
 }
 
 function isItemStatus(value: string): value is ReconcileItemStatus {
   return Object.hasOwn(ITEM_STATUS_VARIANTS, value)
+}
+
+function isRunStatus(value: string): value is ReconcileRunStatus {
+  return Object.hasOwn(RUN_STATUS_VARIANTS, value)
 }
 
 export function severityVariant(value: string): StatusBadgeVariant {
@@ -83,4 +115,13 @@ export function itemStatusVariant(value: string): StatusBadgeVariant {
 
 export function itemStatusLabel(value: string, t: TranslateFn): string {
   return isItemStatus(value) ? t(ITEM_STATUS_LABEL_KEYS[value]) : value
+}
+
+export function runStatusVariant(value: string): StatusBadgeVariant {
+  return isRunStatus(value) ? RUN_STATUS_VARIANTS[value] : 'neutral'
+}
+
+/** 未知运行状态原样显示（而不是把 i18n key 暴露给管理员）。 */
+export function runStatusLabel(value: string, t: TranslateFn): string {
+  return isRunStatus(value) ? t(RUN_STATUS_LABEL_KEYS[value]) : value
 }

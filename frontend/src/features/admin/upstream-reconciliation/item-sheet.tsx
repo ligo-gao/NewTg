@@ -112,6 +112,58 @@ function buildRows(item: ReconcileItem, t: (key: string) => string): ComparisonR
   ]
 }
 
+interface LocalBasisRow {
+  key: string
+  label: string
+  /** 契约里这五个计数非空，但格式化按 NULL 兜底，避免异常响应造出“null”。 */
+  value: number | null | undefined
+}
+
+/**
+ * 本地请求口径：`local_requests` 已在对照表里，此处再列一次是为了让五个
+ * 计数成套出现——差异解释要能从一个块里读完，而不是跨两处拼。
+ */
+function buildLocalBasisRows(
+  item: ReconcileItem,
+  t: (key: string) => string,
+): LocalBasisRow[] {
+  return [
+    {
+      key: 'requests',
+      label: t('admin.upstream_reconciliation.item.local_basis_requests'),
+      value: item.local_requests,
+    },
+    {
+      key: 'refunded_requests',
+      label: t(
+        'admin.upstream_reconciliation.item.local_basis_refunded_requests',
+      ),
+      value: item.local_refunded_requests,
+    },
+    {
+      key: 'estimated_requests',
+      label: t(
+        'admin.upstream_reconciliation.item.local_basis_estimated_requests',
+      ),
+      value: item.local_estimated_requests,
+    },
+    {
+      key: 'unknown_requests',
+      label: t(
+        'admin.upstream_reconciliation.item.local_basis_unknown_requests',
+      ),
+      value: item.local_unknown_requests,
+    },
+    {
+      key: 'multi_attempt_requests',
+      label: t(
+        'admin.upstream_reconciliation.item.local_basis_multi_attempt_requests',
+      ),
+      value: item.local_multi_attempt_requests,
+    },
+  ]
+}
+
 /**
  * 对账明细详情抽屉（任务 14）。
  *
@@ -165,6 +217,7 @@ export function ItemSheet({
   }
 
   const rows = item === null ? [] : buildRows(item, t)
+  const localBasisRows = item === null ? [] : buildLocalBasisRows(item, t)
   const formula =
     item === null
       ? ''
@@ -264,6 +317,29 @@ export function ItemSheet({
             <code className="mt-1 block whitespace-pre-wrap font-mono text-meta text-ink-2">
               {formula}
             </code>
+          </div>
+
+          <div className="flex flex-col gap-2" data-testid="local-basis-block">
+            <p className="text-meta font-medium text-ink-1">
+              {t('admin.upstream_reconciliation.item.local_basis_title')}
+            </p>
+            <dl className="divide-y divide-border-hairline rounded-lg border border-border-hairline">
+              {localBasisRows.map((row) => (
+                <div
+                  key={row.key}
+                  data-testid={`local-basis-row-${row.key}`}
+                  className="flex items-center justify-between gap-3 px-3 py-1.5"
+                >
+                  <dt className="text-body text-ink-1">{row.label}</dt>
+                  <dd className="font-mono tabular-nums text-body text-ink-1">
+                    {formatCount(row.value)}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+            <p className="text-meta text-ink-3">
+              {t('admin.upstream_reconciliation.item.local_basis_note')}
+            </p>
           </div>
 
           {!canManage ? (

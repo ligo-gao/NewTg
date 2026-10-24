@@ -15,7 +15,7 @@ import {
 
 import { renderWithProviders } from '@/test-support/providers'
 
-import type { ReconcileItem, ReconcileRun } from './api'
+import type { ReconcileItem, ReconcileRun, ReconcileRunResult } from './api'
 import { ResultsTab } from './results-tab'
 
 const ORIGIN = 'http://localhost:3000'
@@ -61,7 +61,11 @@ const RUNS: ReconcileRun[] = [
   },
 ]
 
-function makeRun(id: number, startedAt: string): ReconcileRun {
+function makeRun(
+  id: number,
+  startedAt: string,
+  overrides: Partial<ReconcileRun> = {},
+): ReconcileRun {
   return {
     id,
     account_id: 1,
@@ -76,6 +80,7 @@ function makeRun(id: number, startedAt: string): ReconcileRun {
     started_at: startedAt,
     finished_at: startedAt,
     error: '',
+    ...overrides,
   }
 }
 
@@ -133,6 +138,11 @@ function makeItem(overrides: Partial<ReconcileItem> = {}): ReconcileItem {
   }
 }
 
+interface TriggerCall {
+  body: unknown
+  idempotencyKey: string | null
+}
+
 interface ApiOptions {
   items?: ReconcileItem[]
   /** 按运行返回不同明细；缺省回退到 `items`。 */
@@ -145,6 +155,9 @@ interface ApiOptions {
   runs?: ReconcileRun[]
   onList?: (url: URL) => void
   onAck?: (body: unknown) => void
+  triggerResult?: ReconcileRunResult
+  triggerError?: { status: number; title: string; detail: string }
+  onTrigger?: (call: TriggerCall) => void
 }
 
 function installApi(options: ApiOptions = {}) {
@@ -216,6 +229,36 @@ function installApi(options: ApiOptions = {}) {
           note: '',
           updated_at: '2026-10-24T03:00:00Z',
         })
+      },
+    ),
+    http.post(
+      `${ORIGIN}/api/upstream-reconciliations/run`,
+      async ({ request }) => {
+        options.onTrigger?.({
+          body: await request.json(),
+          idempotencyKey: request.headers.get('Idempotency-Key'),
+        })
+        if (options.triggerError !== undefined) {
+          return HttpResponse.json(
+            {
+              type: 'about:blank',
+              title: options.triggerError.title,
+              detail: options.triggerError.detail,
+            },
+            {
+              status: options.triggerError.status,
+              headers: { 'Content-Type': 'application/problem+json' },
+            },
+          )
+        }
+        return HttpResponse.json(
+          options.triggerResult ?? {
+            run_ids: [],
+            items: 0,
+            alerts: 0,
+            status: 'succeeded',
+          },
+        )
       },
     ),
   )
@@ -628,8 +671,8 @@ describe('reconciliation results tab', () => {
       .map((option) => option.textContent)
     expect(labels).toEqual([
       'Select a run',
-      '#9 · 2026-10-22 – 2026-10-24',
-      '#8 · 2026-10-19 – 2026-10-21',
+      '#9 · 2026-10-22 – 2026-10-24 · Succeeded',
+      '#8 · 2026-10-19 – 2026-10-21 · Partial',
     ])
   })
 
@@ -647,5 +690,215 @@ describe('reconciliation results tab', () => {
     const raw = await screen.findByText('future_severity')
     const badge = raw.closest('[data-testid="status-badge"]')
     expect(badge?.getAttribute('data-variant')).toBe('neutral')
+  })
+
+  it('triggers a run for the selected account with a fresh idempotency key', async () => {
+    const runs = [RUN_100]
+    const calls: TriggerCall[] = []
+    const newRun = makeRun(300, '2026-10-05T02:00:00Z')
+    installApi({
+      runs,
+      items: [],
+      triggerResult: {
+        run_ids: [300],
+        items: 4,
+        alerts: 1,
+        status: 'succeeded',
+      },
+      onTrigger: (call) => {
+        calls.push(call)
+        // 第二次点击不重复插入同一条运行：下拉的 key 必须唯一。
+        if (!runs.some((run) => run.id === newRun.id)) runs.unshift(newRun)
+      },
+    })
+    await renderWithProviders(<ControlledResultsTab initialRunId={100} />, [
+      'common',
+      'admin',
+    ])
+    const user = userEvent.setup()
+
+    await screen.findByRole('option', { name: /#100/ })
+    await user.click(screen.getByRole('button', { name: 'Reconcile again' }))
+
+    await waitFor(() => expect(calls).toHaveLength(1))
+    // 选中运行的账号随请求体发出；幂等键非空。
+    expect(calls[0]?.body).toEqual({ account_id: 1 })
+    expect(calls[0]?.idempotencyKey).toBeTruthy()
+
+    // 成功后会重取运行列表并选中最新一条，同时给出响应摘要。
+    const select = screen.getByLabelText('Reconciliation run')
+    await waitFor(() =>
+      expect((select as HTMLSelectElement).value).toBe('300'),
+    )
+    expect(
+      await screen.findByText(
+        'Started 1 run(s) · 4 item(s) · 1 alert(s) · Succeeded',
+      ),
+    ).toBeTruthy()
+
+    // 等待第一次请求彻底收尾（按钮恢复可点），再发起第二次点击。
+    const triggerButton = await waitFor(() =>
+      screen.getByRole('button', { name: 'Reconcile again' }),
+    )
+    await user.click(triggerButton)
+    await waitFor(() => expect(calls).toHaveLength(2))
+    // 连续两次点击是两个意图：键必须不同，否则第二次会被当作重放。
+    expect(calls[1]?.idempotencyKey).toBeTruthy()
+    expect(calls[1]?.idempotencyKey).not.toBe(calls[0]?.idempotencyKey)
+  })
+  it('triggers all accounts when no run is selected and explains an empty result', async () => {
+    const calls: TriggerCall[] = []
+    installApi({
+      runs: [],
+      triggerResult: { run_ids: [], items: 0, alerts: 0, status: 'succeeded' },
+      onTrigger: (call) => {
+        calls.push(call)
+      },
+    })
+    renderTab(null)
+    const user = userEvent.setup()
+
+    const triggerButton = await screen.findByRole('button', {
+      name: 'Reconcile again',
+    })
+    await waitFor(() =>
+      expect((triggerButton as HTMLButtonElement).disabled).toBe(false),
+    )
+    await user.click(triggerButton)
+
+    await waitFor(() => expect(calls).toHaveLength(1))
+    expect(calls[0]?.body).toEqual({})
+    expect(
+      await screen.findByText('No enabled upstream account was reconciled.'),
+    ).toBeTruthy()
+    // 空 run_ids 不是「0 条明细」：不得渲染计数摘要。
+    expect(screen.queryByText(/0 item\(s\)/)).toBeNull()
+  })
+
+  it('shows the problem detail and keeps the selection when triggering fails', async () => {
+    installApi({
+      items: [],
+      triggerError: {
+        status: 422,
+        title: 'Unprocessable entity',
+        detail: 'no enabled account',
+      },
+    })
+    await renderWithProviders(<ControlledResultsTab initialRunId={9} />, [
+      'common',
+      'admin',
+    ])
+    const user = userEvent.setup()
+
+    await screen.findByRole('option', { name: /#8/ })
+    await user.click(screen.getByRole('button', { name: 'Reconcile again' }))
+
+    expect(await screen.findByText('no enabled account')).toBeTruthy()
+    // 失败不改变当前选中的运行。
+    expect(
+      (screen.getByLabelText('Reconciliation run') as HTMLSelectElement).value,
+    ).toBe('9')
+  })
+
+  it('hides the trigger button without settings:manage', async () => {
+    installApi({ items: [makeItem()] })
+    renderTab(9, { canManage: false })
+
+    await screen.findByTestId('item-row')
+    expect(
+      screen.queryByRole('button', { name: 'Reconcile again' }),
+    ).toBeNull()
+  })
+
+  it('renders a failed run’s raw error with a danger alert', async () => {
+    installApi({
+      runs: [
+        makeRun(11, '2026-10-05T02:00:00Z', {
+          status: 'failed',
+          error: 'insert failed: duplicate key',
+          finished_at: '2026-10-05T02:00:10Z',
+        }),
+      ],
+      items: [],
+    })
+    renderTab(11)
+
+    const message = await screen.findByText('insert failed: duplicate key')
+    const alert = message.closest('[role="alert"]')
+    expect(alert?.textContent).toContain('insert failed: duplicate key')
+    expect(alert?.className).toContain('text-danger')
+    expect(
+      within(await screen.findByTestId('run-status')).getByText('Failed'),
+    ).toBeTruthy()
+  })
+
+  it('renders a partial run’s reason with a warning alert', async () => {
+    installApi({
+      runs: [
+        makeRun(11, '2026-10-05T02:00:00Z', {
+          status: 'partial',
+          error: 'log_stream_lag',
+          finished_at: '2026-10-05T02:00:10Z',
+        }),
+      ],
+      items: [],
+    })
+    renderTab(11)
+
+    const message = await screen.findByText('log_stream_lag')
+    const alert = message.closest('[role="alert"]')
+    expect(alert?.textContent).toContain('log_stream_lag')
+    expect(alert?.className).toContain('text-warning')
+    expect(
+      within(await screen.findByTestId('run-status')).getByText('Partial'),
+    ).toBeTruthy()
+  })
+
+  it('discloses a running run and labels options with their statuses', async () => {
+    installApi({
+      runs: [
+        makeRun(12, '2026-10-06T02:00:00Z', {
+          status: 'running',
+          finished_at: null,
+        }),
+        makeRun(9, '2026-10-04T02:00:00Z'),
+      ],
+      items: [],
+    })
+    renderTab(12)
+
+    expect(
+      await screen.findByText(
+        'This run is still running; the item list is incomplete and will fill in.',
+      ),
+    ).toBeTruthy()
+    const status = await screen.findByTestId('run-status')
+    expect(within(status).getByText('Running')).toBeTruthy()
+    // finished_at 为空时给出运行中的说明，而不是破折号。
+    expect(within(status).getByText('Still running')).toBeTruthy()
+
+    expect(
+      screen.getAllByRole('option').map((option) => option.textContent),
+    ).toEqual([
+      'Select a run',
+      '#12 · 2026-10-01 – 2026-10-02 · Running',
+      '#9 · 2026-10-01 – 2026-10-02 · Succeeded',
+    ])
+  })
+
+  it('renders no error alert for a succeeded run with an empty error', async () => {
+    installApi({ runs: [makeRun(9, '2026-10-04T02:00:00Z')], items: [makeItem()] })
+    renderTab(9)
+
+    await screen.findByTestId('item-row')
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    const finished = new Intl.DateTimeFormat('en', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(Date.parse('2026-10-04T02:00:00Z'))
+    const status = screen.getByTestId('run-status')
+    expect(within(status).getByText('Succeeded')).toBeTruthy()
+    expect(within(status).getByText(`Finished ${finished}`)).toBeTruthy()
   })
 })
