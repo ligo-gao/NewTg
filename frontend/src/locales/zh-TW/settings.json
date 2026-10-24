@@ -168,6 +168,10 @@
         "enabled": "控制台",
         "require_auth": "控制台需要登入"
       },
+      "models": {
+        "enabled": "模型庫",
+        "require_auth": "模型庫頁需要登入"
+      },
       "pricing": {
         "enabled": "定價",
         "require_auth": "定價頁需要登入"

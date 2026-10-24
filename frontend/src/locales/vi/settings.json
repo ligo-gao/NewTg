@@ -168,6 +168,10 @@
         "enabled": "Bảng điều khiển",
         "require_auth": "Bảng điều khiển yêu cầu đăng nhập"
       },
+      "models": {
+        "enabled": "Mô hình",
+        "require_auth": "Mô hình yêu cầu đăng nhập"
+      },
       "pricing": {
         "enabled": "Bảng giá",
         "require_auth": "Bảng giá yêu cầu đăng nhập"

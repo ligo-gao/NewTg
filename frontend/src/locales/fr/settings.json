@@ -168,6 +168,10 @@
         "enabled": "Console",
         "require_auth": "La console nécessite une connexion"
       },
+      "models": {
+        "enabled": "Modèles",
+        "require_auth": "Les modèles nécessitent une connexion"
+      },
       "pricing": {
         "enabled": "Tarifs",
         "require_auth": "Les tarifs nécessitent une connexion"

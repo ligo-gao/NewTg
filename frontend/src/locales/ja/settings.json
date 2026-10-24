@@ -168,6 +168,10 @@
         "enabled": "コンソール",
         "require_auth": "コンソールにはサインインが必要"
       },
+      "models": {
+        "enabled": "モデルライブラリ",
+        "require_auth": "モデルライブラリにはサインインが必要"
+      },
       "pricing": {
         "enabled": "料金",
         "require_auth": "料金にはサインインが必要"

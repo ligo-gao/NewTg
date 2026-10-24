@@ -200,6 +200,8 @@ const NAV: SectionConfig = {
     }),
     toggle('nav.pricing.enabled', label('nav.pricing.enabled')),
     toggle('nav.pricing.require_auth', label('nav.pricing.require_auth')),
+    toggle('nav.models.enabled', label('nav.models.enabled')),
+    toggle('nav.models.require_auth', label('nav.models.require_auth')),
     toggle('nav.rankings.enabled', label('nav.rankings.enabled')),
     toggle('nav.rankings.require_auth', label('nav.rankings.require_auth')),
     toggle('nav.docs.enabled', label('nav.docs.enabled')),
