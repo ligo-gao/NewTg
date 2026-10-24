@@ -259,6 +259,23 @@ var EnumChecks = map[string][]string{
 	"worker_tasks.last_status": {"succeeded", "failed", "skipped"},
 	"worker_task_runs.status":  {"pending", "running", "succeeded", "failed"},
 	"worker_task_runs.trigger": {"schedule", "manual", "wakeup"},
+
+	// 上游用量对账（迁移 20261028090000–20261028090400，2026-10-24）：
+	// 账号状态 1=active / 2=disabled；快照来源 manual|csv；run 的触发者与
+	// 终态（running 在开跑时写入，succeeded/partial/failed 为终态）；
+	// 明细的差异等级与运营处置状态；完整性发现的严重度与处置状态。
+	// usage_source / usage_semantic 属日志库，登记在 EnumChecksLogs。
+	"upstream_accounts.status":                  {"1", "2"},
+	"upstream_usage_snapshots.source":           {"manual", "csv"},
+	"upstream_reconciliation_runs.triggered_by": {"worker", "manual"},
+	"upstream_reconciliation_runs.status":       {"running", "succeeded", "partial", "failed"},
+	"upstream_reconciliation_items.severity": {
+		"ok", "warn", "alert", "partial_snapshot",
+		"missing_snapshot", "missing_local", "local_expired",
+	},
+	"upstream_reconciliation_items.status": {"open", "acknowledged", "resolved"},
+	"usage_integrity_findings.severity":    {"info", "warn", "alert"},
+	"usage_integrity_findings.status":      {"open", "acknowledged", "resolved"},
 }
 
 // EnumChecksLogs 是日志库（migrations-logs 流）枚举列的「DB CHECK ↔ 期望值」对照表，
@@ -266,12 +283,18 @@ var EnumChecks = map[string][]string{
 //
 // 日志库与主库是物理分离的两个库（G7-R36），CHECK 必须在日志库连接上对账；
 // 主库的 EnumChecks 只覆盖主库 wantColumns 表集（M0 16 + M1 6 + M6c 2 + M6d 4
-// + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 + S1 1 + S4 1 + MJ-d 1 + W17-2 3 = 46 表），
-// 二者互不包含。日志库唯一的枚举型 CHECK
+// + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 + S1 1 + S4 1 + MJ-d 1 + W17-2 3
+// + 上游对账 5 = 51 表），二者互不包含。日志库唯一的枚举型 CHECK
 // 均登记于此（反向对账：日志库每个枚举 CHECK 必须在此有且仅有一个键）。
 var EnumChecksLogs = map[string][]string{
 	// usage_logs（platform-01 §12；smallint：0=refused / 1=success / 2=error / 3=refunded）
 	"usage_logs.status": {"0", "1", "2", "3"},
+
+	// usage_logs 对账维度（migrations-logs 20261028090500，2026-10-24）：
+	// usage_semantic 0=真实计量 / 1=估算，列可空（NULL = 迁移前历史行未知，
+	// 不得用 0 冒充）。usage_source 的 CHECK 是 BETWEEN 0 AND 3，PG 会规范化
+	// 为 >= / <= 比较式而非 IN/ANY，不呈枚举形态，故不登记于此。
+	"usage_logs.usage_semantic": {"0", "1"},
 
 	// audit_logs（§5；R3 冻结的四类事件分类）
 	"audit_logs.category": {"login", "security", "operation", "access_token"},

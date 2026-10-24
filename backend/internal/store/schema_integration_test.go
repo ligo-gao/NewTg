@@ -45,16 +45,23 @@ import (
 // 复核 I2 增加 claim_token 后 12 列），表数 42→43。
 // G-M6C-19 给 users 追加 payment_compliance_confirmed_at（modules-08 §3.4），
 // users 26→27。
+// 上游用量对账（2026-10-24，迁移 20261028090000–20261028090400）追加五表，
+// 表数 46→51；并给 channels 追加 upstream_account_id（24→25，可空 bigint +
+// FK → upstream_accounts ON DELETE RESTRICT）。新增表列数逐列取自 DDL：
+// upstream_accounts 10 列、upstream_usage_snapshots 18 列、
+// upstream_reconciliation_runs 13 列、upstream_reconciliation_items 36 列、
+// usage_integrity_findings 12 列。五表都以 GENERATED ALWAYS AS IDENTITY 作 id PK。
 //
 //	subscription_plans 17 列、subscriptions 26 列（含 R-D5-03 的 5 个快照列
 //	与 S4 的 3 个自动续费状态列）、
 //	subscription_pre_consume_records 5 列（R-D5-02 的 subscription_id）。
 var wantColumns = map[string]int{
-	"users":            27,
-	"api_tokens":       15,
-	"user_groups":      9,
-	"system_settings":  5,
-	"channels":         24,
+	"users":           27,
+	"api_tokens":      15,
+	"user_groups":     9,
+	"system_settings": 5,
+	// 24 列（M6d Task 7a）+ 上游对账归属列 upstream_account_id = 25。
+	"channels":         25,
 	"model_pricing":    13,
 	"group_pricing":    10,
 	"redemption_codes": 11,
@@ -131,6 +138,17 @@ var wantColumns = map[string]int{
 	"worker_tasks":      9,
 	"worker_task_locks": 7,
 	"worker_task_runs":  11,
+	// 上游用量对账五表（migrations 20261028090000–20261028090400）。
+	// 列数按 DDL 逐行计数：快照表的 token/请求/金额列与明细表的
+	// snapshot_*/delta_*/金额列都可空（NULL = 上游未报告，区别于真实的 0）；
+	// 明细表另有 11 个本地聚合列（NOT NULL DEFAULT 0）与 severity/status 两个处置列。
+	// account_id 在 upstream_reconciliation_items 上只是逻辑引用（无 FK），
+	// 归属以 run 开跑时固化；usage_integrity_findings.run_id 可空且 SET NULL。
+	"upstream_accounts":             10,
+	"upstream_usage_snapshots":      18,
+	"upstream_reconciliation_runs":  13,
+	"upstream_reconciliation_items": 36,
+	"usage_integrity_findings":      12,
 }
 
 // 四个部分唯一索引（platform-04 §3.3.3；名称钉死）。
@@ -221,6 +239,13 @@ var wantIdentityPKTables = []string{
 	"subscriptions",
 	// W17-2：运行历史是 append-only 事实行，用单列 identity 代理主键。
 	"worker_task_runs",
+	// 上游对账五表（迁移 20261028090000–20261028090400）：账号、快照、run、
+	// 明细与完整性发现都以 GENERATED ALWAYS AS IDENTITY 作单列 id PK。
+	"upstream_accounts",
+	"upstream_usage_snapshots",
+	"upstream_reconciliation_runs",
+	"upstream_reconciliation_items",
+	"usage_integrity_findings",
 }
 
 // identityPKExceptions：13 张「自然键/非 identity 例外」表的 PK（均非 identity）：
@@ -232,10 +257,10 @@ var wantIdentityPKTables = []string{
 //
 // 另有两张以 run_id（FK → rankings_snapshot_runs.id，V5）领头的复合自然键表
 // （runIDLedNaturalPKs），以及 uuid 代理主键表（uuidPKTables：id uuid
-// DEFAULT gen_random_uuid()，属「代理主键但非 identity」）。合起来：46 表
+// DEFAULT gen_random_uuid()，属「代理主键但非 identity」）。合起来：51 表
 // （M0 16 + M1 6 + M6c 2 + M6d 4 + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 + T4 2
-// + S1 1 + S4 1 + MJ-d 1 + W17-2 3）
-// = 25 张单列 id identity + 13 张自然键例外 + 5 张 uuid 代理键
+// + S1 1 + S4 1 + MJ-d 1 + W17-2 3 + 上游对账 5）
+// = 30 张单列 id identity + 13 张自然键例外 + 5 张 uuid 代理键
 // + 2 张 run_id 领头自然键 + 1 张自定义列名 identity（fact_id）；
 // **非 identity PK 的表恰 20 张**，由 TestMainSchemaNonIdentityPKSet 断言。
 var identityPKExceptions = map[string][]string{
@@ -292,8 +317,9 @@ var runIDLedNaturalPKs = map[string][]string{
 	"rankings_provider_stats": {"run_id", "author"},
 }
 
-// wantFKs 是 platform-04 §3.4 V5 的完整 FK 清单（V5 的 7 条 + C2 计费域 1 条；
-// M6d Task 1 新增 task_plugin_versions → task_plugins 一条）。
+// wantFKs 是全库真实 FK 清单：platform-04 §3.4 V5 的 6 条 + M6d Task 1 的
+// task_plugin_versions → task_plugins、T4 的两条批次关联、C2 计费域一条，
+// 以及上游对账新增的 5 条（account 三条 RESTRICT、明细 CASCADE、发现 SET NULL）。
 // 键形如 "<table>.<column>-><ref_table>.<ref_column>:<ON DELETE>"。
 var wantFKs = []string{
 	"api_tokens.user_id->users.id:CASCADE",
@@ -310,6 +336,15 @@ var wantFKs = []string{
 	// C2：事实账本的段必须存在；RESTRICT 阻止误删仍在账上的段
 	// （platform-01 §22.13.2 的唯一一条计费域 FK）。
 	"deployment_cost_facts.segment_id->deployment_billing_segments.segment_id:RESTRICT",
+	// 上游对账（迁移 20261028090000–20261028090400）：账号是渠道归属的
+	// 账期主体，RESTRICT 保证被渠道/快照/run 引用的账号不能被删除（历史
+	// 归属必须以当时为准）；明细随 run 级联删除，完整性发现独立于 run，
+	// run 删除时只置空 run_id（SET NULL）以保留发现本身。
+	"channels.upstream_account_id->upstream_accounts.id:RESTRICT",
+	"upstream_usage_snapshots.account_id->upstream_accounts.id:RESTRICT",
+	"upstream_reconciliation_runs.account_id->upstream_accounts.id:RESTRICT",
+	"upstream_reconciliation_items.run_id->upstream_reconciliation_runs.id:CASCADE",
+	"usage_integrity_findings.run_id->upstream_reconciliation_runs.id:SET NULL",
 }
 
 func openTestDB(t *testing.T) *sql.DB {
@@ -338,7 +373,7 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// TestMainSchemaTableCount：（a）主库用户表恰 46 张（M0 16 + M1 认证族 6 + M6c 2 + M6d 4 + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 + T4 2 + S1 1 + S4 1 + MJ-d 1 + W17-2 3，除 schema_migrations）。
+// TestMainSchemaTableCount：（a）主库用户表恰 51 张（M0 16 + M1 认证族 6 + M6c 2 + M6d 4 + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 + T4 2 + S1 1 + S4 1 + MJ-d 1 + W17-2 3 + 上游对账 5，除 schema_migrations）。
 func TestMainSchemaTableCount(t *testing.T) {
 	db := openTestDB(t)
 	rows, err := db.Query(`SELECT table_name FROM information_schema.tables
@@ -367,7 +402,7 @@ func TestMainSchemaTableCount(t *testing.T) {
 	}
 }
 
-// TestMainSchemaColumnCounts：（b）逐表列数 == 登记册计数（38 表，共 38 个断言）。
+// TestMainSchemaColumnCounts：（b）逐表列数 == 登记册计数（51 表，共 51 个断言）。
 func TestMainSchemaColumnCounts(t *testing.T) {
 	db := openTestDB(t)
 	for _, table := range sortedKeys(wantColumns) {
@@ -748,8 +783,8 @@ func TestMainSchemaNoFKOnFinancialTables(t *testing.T) {
 	}
 }
 
-// TestMainSchemaFKsMatchV5：全库真实 FK 恰 8 条（V5 的 7 条 + C2 计费域 1 条），
-// 引用列与 ON DELETE 逐条对齐。
+// TestMainSchemaFKsMatchV5：全库真实 FK 恰 15 条（V5 6 条 + M6d Task 1 1 条
+// + T4 2 条 + C2 1 条 + 上游对账 5 条），引用列与 ON DELETE 逐条对齐。
 func TestMainSchemaFKsMatchV5(t *testing.T) {
 	db := openTestDB(t)
 	rows, err := db.Query(`SELECT cl.relname,
@@ -854,7 +889,8 @@ func TestMainSchemaIdentityPK(t *testing.T) {
 		})
 	}
 
-	// (e.1) 23 张代理主键表（M0 10 + M1 6 + M6c 2 + M6d 1 + D1 2 + D5a 2）：单列 id 且 GENERATED ALWAYS AS IDENTITY。
+	// (e.1) 30 张单列 id identity 代理主键表（M0 10 + M1 6 + M6c 2 + M6d 2 + D1 2
+	// + D5a 2 + W17-2 1 + 上游对账 5）：单列 id 且 GENERATED ALWAYS AS IDENTITY。
 	for _, table := range wantIdentityPKTables {
 		table := table
 		t.Run(table, func(t *testing.T) {
@@ -1655,6 +1691,8 @@ func TestEnumChecksValuesSanity(t *testing.T) {
 		"vendors.status":       true,
 		"model_meta.status":    true,
 		"model_meta.name_rule": true,
+		// 上游对账：账号 status 是 smallint 枚举（1=active / 2=disabled）。
+		"upstream_accounts.status": true,
 	}
 	for key, members := range EnumChecks {
 		for _, m := range members {
