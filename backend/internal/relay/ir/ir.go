@@ -758,6 +758,13 @@ func encodeMessage(message contract.Message) ([]any, error) {
 	}
 	if len(toolCalls) > 0 {
 		obj["tool_calls"] = toolCalls
+		// DeepSeek 的 thinking 模式要求 assistant 的 tool_calls 消息回传
+		// reasoning_content；即使上游本次没有返回可读推理，也要回传空串，
+		// 否则后续轮次会被上游 400 拒绝（Claude Code 的工具循环会卡住）。
+		// 当前部署的其它 OpenAI 兼容上游（Kimi）已确认容忍该字段。
+		if reasoning == "" {
+			obj["reasoning_content"] = ""
+		}
 	}
 	if reasoning != "" {
 		// 与流式渲染器一致：推理单独走 reasoning_content（DeepSeek 兼容字段），

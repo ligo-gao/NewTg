@@ -955,6 +955,19 @@ func (s *Session) terminateDemoExemptLocked(
 	return nil
 }
 
+// failureAuditFields 把路由层记录的最后一次失败投影为 usage_logs 的
+// error_class / error_message。
+//
+// 只读取契约层已经脱敏的 RelayError（UpstreamStatusError 只含状态码与
+// 错误类），绝不回填上游响应体、URL 或凭据（GC-6）。没有失败事实时返回
+// 空串——例如客户端主动断开且所有上游尝试都成功，日志不应凭空指责上游。
+func failureAuditFields(rc *contract.RelayContext) (string, string) {
+	if rc == nil || rc.LastError == nil {
+		return "", ""
+	}
+	return rc.LastError.Class.String(), strings.TrimSpace(rc.LastError.Message)
+}
+
 // Refund 全额退回当前会话的预扣与增量扣减（幂等）。
 //
 // 「全额」包括两部分（billing-00 §6.2）：
@@ -1021,11 +1034,16 @@ func (s *Session) Refund() error {
 	// （T6 的 Saturator 按 request_id 幂等更新）。钱已经退回；日志失败
 	// 返回错误供上层告警，但会话仍标记 refunded（重试不会重复退款）。
 	if s.engine.saturator != nil {
+		// 失败落库：把路由层最后一次失败的类与安全摘要写进 refunded 行，
+		// 否则客户端只拿到一个 requestId，事后完全无法归因（用户报障即如此）。
+		errorClass, errorMessage := failureAuditFields(s.rc)
 		outcome := SettlementOutcome{
-			Cost:        0,
-			PreDeducted: preDeductedForLog,
-			Refunded:    refundedAmount,
-			Status:      UsageLogStatusRefunded,
+			Cost:         0,
+			PreDeducted:  preDeductedForLog,
+			Refunded:     refundedAmount,
+			Status:       UsageLogStatusRefunded,
+			ErrorClass:   errorClass,
+			ErrorMessage: errorMessage,
 		}
 		if logErr := s.engine.saturator.Saturate(ctx, nil, s.rc, outcome); logErr != nil {
 			s.refunded = true
@@ -1144,12 +1162,16 @@ func (s *Session) refundSubscriptionLocked(ctx context.Context) error {
 	metrics.ObserveRefund("sync", preDeductedForLog+consumedRefunded)
 
 	if s.engine.saturator != nil {
+		// 订阅来源的失败同样要留下 error_class/error_message（与钱包路径同口径）。
+		errorClass, errorMessage := failureAuditFields(s.rc)
 		outcome := SettlementOutcome{
 			Cost:          0,
 			PreDeducted:   preDeductedForLog,
 			Refunded:      preDeductedForLog + consumedRefunded,
 			Status:        UsageLogStatusRefunded,
 			FundingSource: contract.FundingSubscription,
+			ErrorClass:    errorClass,
+			ErrorMessage:  errorMessage,
 		}
 		if logErr := s.engine.saturator.Saturate(ctx, nil, s.rc, outcome); logErr != nil {
 			s.refunded = true

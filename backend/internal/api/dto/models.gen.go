@@ -4044,6 +4044,54 @@ func (e ListUsageLogsParamsStatus) Valid() bool {
 	}
 }
 
+// Defines values for GetUsageStatsByGroupParamsRange.
+const (
+	GetUsageStatsByGroupParamsRangeN14d GetUsageStatsByGroupParamsRange = "14d"
+	GetUsageStatsByGroupParamsRangeN24h GetUsageStatsByGroupParamsRange = "24h"
+	GetUsageStatsByGroupParamsRangeN30d GetUsageStatsByGroupParamsRange = "30d"
+	GetUsageStatsByGroupParamsRangeN7d  GetUsageStatsByGroupParamsRange = "7d"
+)
+
+// Valid indicates whether the value is a known member of the GetUsageStatsByGroupParamsRange enum.
+func (e GetUsageStatsByGroupParamsRange) Valid() bool {
+	switch e {
+	case GetUsageStatsByGroupParamsRangeN14d:
+		return true
+	case GetUsageStatsByGroupParamsRangeN24h:
+		return true
+	case GetUsageStatsByGroupParamsRangeN30d:
+		return true
+	case GetUsageStatsByGroupParamsRangeN7d:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetUsageStatsByGroupParamsStatus.
+const (
+	GetUsageStatsByGroupParamsStatusError    GetUsageStatsByGroupParamsStatus = "error"
+	GetUsageStatsByGroupParamsStatusRefunded GetUsageStatsByGroupParamsStatus = "refunded"
+	GetUsageStatsByGroupParamsStatusRefused  GetUsageStatsByGroupParamsStatus = "refused"
+	GetUsageStatsByGroupParamsStatusSuccess  GetUsageStatsByGroupParamsStatus = "success"
+)
+
+// Valid indicates whether the value is a known member of the GetUsageStatsByGroupParamsStatus enum.
+func (e GetUsageStatsByGroupParamsStatus) Valid() bool {
+	switch e {
+	case GetUsageStatsByGroupParamsStatusError:
+		return true
+	case GetUsageStatsByGroupParamsStatusRefunded:
+		return true
+	case GetUsageStatsByGroupParamsStatusRefused:
+		return true
+	case GetUsageStatsByGroupParamsStatusSuccess:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for GetUsageStatsByModelParamsRange.
 const (
 	GetUsageStatsByModelParamsRangeN14d GetUsageStatsByModelParamsRange = "14d"
@@ -4086,6 +4134,54 @@ func (e GetUsageStatsByModelParamsStatus) Valid() bool {
 	case GetUsageStatsByModelParamsStatusRefused:
 		return true
 	case GetUsageStatsByModelParamsStatusSuccess:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetUsageStatsByUserParamsRange.
+const (
+	GetUsageStatsByUserParamsRangeN14d GetUsageStatsByUserParamsRange = "14d"
+	GetUsageStatsByUserParamsRangeN24h GetUsageStatsByUserParamsRange = "24h"
+	GetUsageStatsByUserParamsRangeN30d GetUsageStatsByUserParamsRange = "30d"
+	GetUsageStatsByUserParamsRangeN7d  GetUsageStatsByUserParamsRange = "7d"
+)
+
+// Valid indicates whether the value is a known member of the GetUsageStatsByUserParamsRange enum.
+func (e GetUsageStatsByUserParamsRange) Valid() bool {
+	switch e {
+	case GetUsageStatsByUserParamsRangeN14d:
+		return true
+	case GetUsageStatsByUserParamsRangeN24h:
+		return true
+	case GetUsageStatsByUserParamsRangeN30d:
+		return true
+	case GetUsageStatsByUserParamsRangeN7d:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetUsageStatsByUserParamsStatus.
+const (
+	GetUsageStatsByUserParamsStatusError    GetUsageStatsByUserParamsStatus = "error"
+	GetUsageStatsByUserParamsStatusRefunded GetUsageStatsByUserParamsStatus = "refunded"
+	GetUsageStatsByUserParamsStatusRefused  GetUsageStatsByUserParamsStatus = "refused"
+	GetUsageStatsByUserParamsStatusSuccess  GetUsageStatsByUserParamsStatus = "success"
+)
+
+// Valid indicates whether the value is a known member of the GetUsageStatsByUserParamsStatus enum.
+func (e GetUsageStatsByUserParamsStatus) Valid() bool {
+	switch e {
+	case GetUsageStatsByUserParamsStatusError:
+		return true
+	case GetUsageStatsByUserParamsStatusRefunded:
+		return true
+	case GetUsageStatsByUserParamsStatusRefused:
+		return true
+	case GetUsageStatsByUserParamsStatusSuccess:
 		return true
 	default:
 		return false
@@ -5499,10 +5595,10 @@ type CreatedToken struct {
 	Group string `json:"group"`
 	Id    int64  `json:"id"`
 
-	// Key 完整明文 key（nkt- 前缀），仅此响应出现一次；服务端只存 SHA-256 哈希。
+	// Key 完整明文 key（sk- 前缀；历史令牌可能为 nkt-），仅此响应出现一次；服务端只存 SHA-256 哈希。
 	Key string `json:"key"`
 
-	// KeyMasked 形如 nkt-••••••••••••••••••••••••，用于列表展示。
+	// KeyMasked 形如 sk-••••••••••••••••••••••••，用于列表展示。
 	KeyMasked  string     `json:"key_masked"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 
@@ -9564,7 +9660,7 @@ type Token struct {
 	Group string `json:"group"`
 	Id    int64  `json:"id"`
 
-	// KeyMasked 形如 nkt-••••••••••••••••••••••••，用于列表展示。
+	// KeyMasked 形如 sk-••••••••••••••••••••••••，用于列表展示。
 	KeyMasked  string     `json:"key_masked"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 
@@ -10003,6 +10099,27 @@ type UsageLogPage struct {
 	Total int `json:"total"`
 }
 
+// UsageStatsByGroupItem defines model for UsageStatsByGroupItem.
+type UsageStatsByGroupItem struct {
+	Cost int64 `json:"cost"`
+
+	// Group 空分组归入 default；第 9 名起聚合为 other
+	Group string `json:"group"`
+
+	// Percent 十进制基点分配，合计为 100
+	Percent  float32 `json:"percent"`
+	Requests int64   `json:"requests"`
+	Tokens   int64   `json:"tokens"`
+}
+
+// UsageStatsByGroupResponse defines model for UsageStatsByGroupResponse.
+type UsageStatsByGroupResponse struct {
+	Items []UsageStatsByGroupItem `json:"items"`
+
+	// Total 窗口内总消费（积分）
+	Total int64 `json:"total"`
+}
+
 // UsageStatsByModelItem defines model for UsageStatsByModelItem.
 type UsageStatsByModelItem struct {
 	Cost int64 `json:"cost"`
@@ -10013,6 +10130,28 @@ type UsageStatsByModelItem struct {
 	// Percent 十进制基点分配，各扇区合计恰为 100
 	Percent float32 `json:"percent"`
 	Tokens  int64   `json:"tokens"`
+}
+
+// UsageStatsByUserItem defines model for UsageStatsByUserItem.
+type UsageStatsByUserItem struct {
+	Cost int64 `json:"cost"`
+
+	// Percent 十进制基点分配，合计为 100
+	Percent  float32 `json:"percent"`
+	Requests int64   `json:"requests"`
+	Tokens   int64   `json:"tokens"`
+	UserId   int64   `json:"user_id"`
+
+	// Username 用户已删除时为空串；第 9 名起聚合为 other
+	Username string `json:"username"`
+}
+
+// UsageStatsByUserResponse defines model for UsageStatsByUserResponse.
+type UsageStatsByUserResponse struct {
+	Items []UsageStatsByUserItem `json:"items"`
+
+	// Total 窗口内总消费（积分）
+	Total int64 `json:"total"`
 }
 
 // UsageStatsRates defines model for UsageStatsRates.
@@ -10033,12 +10172,23 @@ type UsageStatsRates struct {
 
 // UsageStatsSummary defines model for UsageStatsSummary.
 type UsageStatsSummary struct {
+	// ActiveUsers 窗口内去重用户数；非管理员恒为 1（0 行时为 0）
+	ActiveUsers           int64 `json:"active_users"`
 	CompletionTokensTotal int64 `json:"completion_tokens_total"`
 	CostTotal             int64 `json:"cost_total"`
-	PreDeductedTotal      int64 `json:"pre_deducted_total"`
-	PromptTokensTotal     int64 `json:"prompt_tokens_total"`
-	RefundedTotal         int64 `json:"refunded_total"`
-	RequestCount          int64 `json:"request_count"`
+
+	// LatencySamples 参与分位计算的样本数（只含 status=1 且 latency_ms>0）
+	LatencySamples int64 `json:"latency_samples"`
+
+	// P50LatencyMs 成功请求（status=1）的 P50 延迟，毫秒；无样本为 0
+	P50LatencyMs int64 `json:"p50_latency_ms"`
+
+	// P95LatencyMs 成功请求（status=1）的 P95 延迟，毫秒；无样本为 0
+	P95LatencyMs      int64 `json:"p95_latency_ms"`
+	PreDeductedTotal  int64 `json:"pre_deducted_total"`
+	PromptTokensTotal int64 `json:"prompt_tokens_total"`
+	RefundedTotal     int64 `json:"refunded_total"`
+	RequestCount      int64 `json:"request_count"`
 
 	// SuccessRate success / total；0 行时为 0（绝不 NaN）
 	SuccessRate float32 `json:"success_rate"`
@@ -11853,6 +12003,26 @@ type ListUsageLogsParamsRange string
 // ListUsageLogsParamsStatus defines parameters for ListUsageLogs.
 type ListUsageLogsParamsStatus string
 
+// GetUsageStatsByGroupParams defines parameters for GetUsageStatsByGroup.
+type GetUsageStatsByGroupParams struct {
+	Range   *GetUsageStatsByGroupParamsRange  `form:"range,omitempty" json:"range,omitempty"`
+	Start   *time.Time                        `form:"start,omitempty" json:"start,omitempty"`
+	End     *time.Time                        `form:"end,omitempty" json:"end,omitempty"`
+	Model   *string                           `form:"model,omitempty" json:"model,omitempty"`
+	Group   *string                           `form:"group,omitempty" json:"group,omitempty"`
+	TokenId *int64                            `form:"token_id,omitempty" json:"token_id,omitempty"`
+	Status  *GetUsageStatsByGroupParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+
+	// Username 仅 admin+logs:read；精确匹配
+	Username *string `form:"username,omitempty" json:"username,omitempty"`
+}
+
+// GetUsageStatsByGroupParamsRange defines parameters for GetUsageStatsByGroup.
+type GetUsageStatsByGroupParamsRange string
+
+// GetUsageStatsByGroupParamsStatus defines parameters for GetUsageStatsByGroup.
+type GetUsageStatsByGroupParamsStatus string
+
 // GetUsageStatsByModelParams defines parameters for GetUsageStatsByModel.
 type GetUsageStatsByModelParams struct {
 	Range   *GetUsageStatsByModelParamsRange  `form:"range,omitempty" json:"range,omitempty"`
@@ -11872,6 +12042,26 @@ type GetUsageStatsByModelParamsRange string
 
 // GetUsageStatsByModelParamsStatus defines parameters for GetUsageStatsByModel.
 type GetUsageStatsByModelParamsStatus string
+
+// GetUsageStatsByUserParams defines parameters for GetUsageStatsByUser.
+type GetUsageStatsByUserParams struct {
+	Range   *GetUsageStatsByUserParamsRange  `form:"range,omitempty" json:"range,omitempty"`
+	Start   *time.Time                       `form:"start,omitempty" json:"start,omitempty"`
+	End     *time.Time                       `form:"end,omitempty" json:"end,omitempty"`
+	Model   *string                          `form:"model,omitempty" json:"model,omitempty"`
+	Group   *string                          `form:"group,omitempty" json:"group,omitempty"`
+	TokenId *int64                           `form:"token_id,omitempty" json:"token_id,omitempty"`
+	Status  *GetUsageStatsByUserParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+
+	// Username 仅 admin+logs:read；精确匹配
+	Username *string `form:"username,omitempty" json:"username,omitempty"`
+}
+
+// GetUsageStatsByUserParamsRange defines parameters for GetUsageStatsByUser.
+type GetUsageStatsByUserParamsRange string
+
+// GetUsageStatsByUserParamsStatus defines parameters for GetUsageStatsByUser.
+type GetUsageStatsByUserParamsStatus string
 
 // GetUsageStatsRatesParams defines parameters for GetUsageStatsRates.
 type GetUsageStatsRatesParams struct {

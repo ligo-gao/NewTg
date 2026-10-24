@@ -490,6 +490,42 @@ const (
 	ErrConnectionTerminated
 )
 
+// String 返回 ErrorClass 的稳定标签（日志 / usage_logs / 指标标签共用）。
+//
+// 只用于服务端诊断与有界枚举分组，不面向客户端文案（客户端文案仍由
+// httpapi 的 mapRelayError 决定）。未知取值一律回落 "unknown"：新增枚举
+// 而忘记补标签时，宁可分组到 unknown，也不能让数字进入日志标签。
+func (c ErrorClass) String() string {
+	switch c {
+	case ErrRetryable:
+		return "retryable"
+	case ErrUpstreamAuth:
+		return "upstream_auth"
+	case ErrUpstreamRateLimit:
+		return "upstream_rate_limit"
+	case ErrUpstreamServer:
+		return "upstream_server"
+	case ErrParamInvalid:
+		return "param_invalid"
+	case ErrChannelConfig:
+		return "channel_config"
+	case ErrContentFilter:
+		return "content_filter"
+	case ErrInsufficientQuota:
+		return "insufficient_quota"
+	case ErrChannelError:
+		return "channel_error"
+	case ErrEndpointUnsupported:
+		return "endpoint_unsupported"
+	case ErrChannelTypeUnimplemented:
+		return "channel_type_unimplemented"
+	case ErrConnectionTerminated:
+		return "connection_terminated"
+	default:
+		return "unknown"
+	}
+}
+
 // RelayError 是三态判定的承载类型（v1.1 · 决议 E1）。
 type RelayError struct {
 	Class        ErrorClass

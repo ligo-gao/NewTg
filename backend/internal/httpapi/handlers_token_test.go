@@ -295,7 +295,7 @@ func TestTokenCreateReturnsKeyOnceAndIsIdempotent(t *testing.T) {
 	if got := resp.Created[0]["key"]; got != "nkt-"+strings.Repeat("A", 48) {
 		t.Fatalf("创建响应缺少明文 key: %v", got)
 	}
-	if got := resp.Created[0]["key_masked"]; got != "nkt-"+strings.Repeat("•", 24) {
+	if got := resp.Created[0]["key_masked"]; got != tokenstore.MaskedKey() {
 		t.Fatalf("key_masked = %v", got)
 	}
 
@@ -393,7 +393,7 @@ func TestTokenListNeverReturnsKeyMaterial(t *testing.T) {
 	if _, ok := item["key_hash"]; ok {
 		t.Fatal("列表响应不得包含 key_hash 字段")
 	}
-	if item["key_masked"] != "nkt-"+strings.Repeat("•", 24) {
+	if item["key_masked"] != tokenstore.MaskedKey() {
 		t.Fatalf("key_masked = %v", item["key_masked"])
 	}
 	if item["status"] != tokenstore.StatusEnabled {

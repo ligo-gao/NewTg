@@ -453,7 +453,7 @@ schemas:
         $ref: '#/schemas/TokenStatus'
       key_masked:
         type: string
-        description: 形如 nkt-••••••••••••••••••••••••，用于列表展示。
+        description: 形如 sk-••••••••••••••••••••••••，用于列表展示。
       remain_quota:
         type: integer
         format: int64
@@ -519,7 +519,7 @@ schemas:
         properties:
           key:
             type: string
-            description: 完整明文 key（nkt- 前缀），仅此响应出现一次；服务端只存 SHA-256 哈希。
+            description: 完整明文 key（sk- 前缀；历史令牌可能为 nkt-），仅此响应出现一次；服务端只存 SHA-256 哈希。
     description: 创建响应中的条目 = Token + 一次性明文 key。
 
   CreateTokenRequest:
@@ -1680,6 +1680,10 @@ schemas:
       - completion_tokens_total
       - pre_deducted_total
       - refunded_total
+      - p50_latency_ms
+      - p95_latency_ms
+      - latency_samples
+      - active_users
     properties:
       cost_total: { type: integer, format: int64 }
       request_count: { type: integer, format: int64 }
@@ -1692,6 +1696,22 @@ schemas:
       completion_tokens_total: { type: integer, format: int64 }
       pre_deducted_total: { type: integer, format: int64 }
       refunded_total: { type: integer, format: int64 }
+      p50_latency_ms:
+        type: integer
+        format: int64
+        description: 成功请求（status=1）的 P50 延迟，毫秒；无样本为 0
+      p95_latency_ms:
+        type: integer
+        format: int64
+        description: 成功请求（status=1）的 P95 延迟，毫秒；无样本为 0
+      latency_samples:
+        type: integer
+        format: int64
+        description: 参与分位计算的样本数（只含 status=1 且 latency_ms>0）
+      active_users:
+        type: integer
+        format: int64
+        description: 窗口内去重用户数；非管理员恒为 1（0 行时为 0）
 
   UsageStatsByModelItem:
     type: object
@@ -1704,6 +1724,63 @@ schemas:
       percent:
         type: number
         description: 十进制基点分配，各扇区合计恰为 100
+
+  UsageStatsByUserItem:
+    type: object
+    additionalProperties: false
+    required: [user_id, username, cost, requests, tokens, percent]
+    properties:
+      user_id: { type: integer, format: int64 }
+      username:
+        type: string
+        description: 用户已删除时为空串；第 9 名起聚合为 other
+      cost: { type: integer, format: int64 }
+      requests: { type: integer, format: int64 }
+      tokens: { type: integer, format: int64 }
+      percent:
+        type: number
+        description: 十进制基点分配，合计为 100
+
+  UsageStatsByUserResponse:
+    type: object
+    additionalProperties: false
+    required: [items, total]
+    properties:
+      items:
+        type: array
+        items:
+          $ref: '#/schemas/UsageStatsByUserItem'
+      total:
+        type: integer
+        format: int64
+        description: 窗口内总消费（积分）
+
+  UsageStatsByGroupItem:
+    type: object
+    additionalProperties: false
+    required: [group, cost, requests, tokens, percent]
+    properties:
+      group: { type: string, description: 空分组归入 default；第 9 名起聚合为 other }
+      cost: { type: integer, format: int64 }
+      requests: { type: integer, format: int64 }
+      tokens: { type: integer, format: int64 }
+      percent:
+        type: number
+        description: 十进制基点分配，合计为 100
+
+  UsageStatsByGroupResponse:
+    type: object
+    additionalProperties: false
+    required: [items, total]
+    properties:
+      items:
+        type: array
+        items:
+          $ref: '#/schemas/UsageStatsByGroupItem'
+      total:
+        type: integer
+        format: int64
+        description: 窗口内总消费（积分）
 
   UsageStatsTimeseriesItem:
     type: object

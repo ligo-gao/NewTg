@@ -4836,7 +4836,7 @@ export interface paths {
         };
         /**
          * 按 API 令牌只读查询自身最近用量明细
-         * @description 认证只接受 `Authorization: Bearer nkt-…`（只读令牌认证），不接受 Cookie、
+         * @description 认证只接受 `Authorization: Bearer sk-…`（兼容历史 `nkt-`；只读令牌认证），不接受 Cookie、
          *     `?key=` 或 `x-api-key`。**过期/额度耗尽的令牌仍可读，仅显式禁用返回 401**
          *     （过期/耗尽/非法/禁用统一 `invalid_token`，不区分原因）。
          *     数据范围是本令牌自身（`user_id` + `token_id`）：同用户的其它令牌与账户级
@@ -4943,6 +4943,46 @@ export interface paths {
          * @description percent 以十进制基点分配，合计恰为 100；0 行返回空数组。
          */
         get: operations["getUsageStatsByModel"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/usage-stats/by-user": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 用户消费分布（top 8 + other）
+         * @description 管理员 + logs:read 可见全站；其他角色只返回本人一行。percent 合计为 100。
+         */
+        get: operations["getUsageStatsByUser"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/usage-stats/by-group": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 分组消费分布（top 8 + other）
+         * @description 按 usage_logs.group 聚合，空分组归入 default；percent 合计为 100。
+         */
+        get: operations["getUsageStatsByGroup"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5757,7 +5797,7 @@ export interface components {
             id: number;
             name: string;
             status: components["schemas"]["TokenStatus"];
-            /** @description 形如 nkt-••••••••••••••••••••••••，用于列表展示。 */
+            /** @description 形如 sk-••••••••••••••••••••••••，用于列表展示。 */
             key_masked: string;
             /**
              * Format: int64
@@ -7201,7 +7241,7 @@ export interface components {
         };
         /** @description 创建响应中的条目 = Token + 一次性明文 key。 */
         CreatedToken: components["schemas"]["Token"] & {
-            /** @description 完整明文 key（nkt- 前缀），仅此响应出现一次；服务端只存 SHA-256 哈希。 */
+            /** @description 完整明文 key（sk- 前缀；历史令牌可能为 nkt-），仅此响应出现一次；服务端只存 SHA-256 哈希。 */
             key: string;
         };
         CreateTokenResponse: {
@@ -10271,6 +10311,26 @@ export interface components {
             pre_deducted_total: number;
             /** Format: int64 */
             refunded_total: number;
+            /**
+             * Format: int64
+             * @description 成功请求（status=1）的 P50 延迟，毫秒；无样本为 0
+             */
+            p50_latency_ms: number;
+            /**
+             * Format: int64
+             * @description 成功请求（status=1）的 P95 延迟，毫秒；无样本为 0
+             */
+            p95_latency_ms: number;
+            /**
+             * Format: int64
+             * @description 参与分位计算的样本数（只含 status=1 且 latency_ms>0）
+             */
+            latency_samples: number;
+            /**
+             * Format: int64
+             * @description 窗口内去重用户数；非管理员恒为 1（0 行时为 0）
+             */
+            active_users: number;
         };
         UsageStatsByModelItem: {
             /** @description 第 9 名起聚合为 other */
@@ -10281,6 +10341,48 @@ export interface components {
             tokens: number;
             /** @description 十进制基点分配，各扇区合计恰为 100 */
             percent: number;
+        };
+        UsageStatsByUserItem: {
+            /** Format: int64 */
+            user_id: number;
+            /** @description 用户已删除时为空串；第 9 名起聚合为 other */
+            username: string;
+            /** Format: int64 */
+            cost: number;
+            /** Format: int64 */
+            requests: number;
+            /** Format: int64 */
+            tokens: number;
+            /** @description 十进制基点分配，合计为 100 */
+            percent: number;
+        };
+        UsageStatsByUserResponse: {
+            items: components["schemas"]["UsageStatsByUserItem"][];
+            /**
+             * Format: int64
+             * @description 窗口内总消费（积分）
+             */
+            total: number;
+        };
+        UsageStatsByGroupItem: {
+            /** @description 空分组归入 default；第 9 名起聚合为 other */
+            group: string;
+            /** Format: int64 */
+            cost: number;
+            /** Format: int64 */
+            requests: number;
+            /** Format: int64 */
+            tokens: number;
+            /** @description 十进制基点分配，合计为 100 */
+            percent: number;
+        };
+        UsageStatsByGroupResponse: {
+            items: components["schemas"]["UsageStatsByGroupItem"][];
+            /**
+             * Format: int64
+             * @description 窗口内总消费（积分）
+             */
+            total: number;
         };
         UsageStatsTimeseriesItem: {
             /** @description UTC ISO 时间桶（YYYY-MM-DDTHH:MM:SSZ） */
@@ -19565,6 +19667,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UsageStatsByModelItem"][];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getUsageStatsByUser: {
+        parameters: {
+            query?: {
+                range?: "24h" | "7d" | "14d" | "30d";
+                start?: string;
+                end?: string;
+                model?: string;
+                group?: string;
+                token_id?: number;
+                status?: "success" | "error" | "refunded" | "refused";
+                /** @description 仅 admin+logs:read；精确匹配 */
+                username?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 用户消费分布 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageStatsByUserResponse"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getUsageStatsByGroup: {
+        parameters: {
+            query?: {
+                range?: "24h" | "7d" | "14d" | "30d";
+                start?: string;
+                end?: string;
+                model?: string;
+                group?: string;
+                token_id?: number;
+                status?: "success" | "error" | "refunded" | "refused";
+                /** @description 仅 admin+logs:read；精确匹配 */
+                username?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 分组消费分布 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageStatsByGroupResponse"];
                 };
             };
             401: components["responses"]["Error401"];

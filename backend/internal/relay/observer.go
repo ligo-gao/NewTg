@@ -61,35 +61,11 @@ func EndpointLabel(rc *contract.RelayContext) string {
 }
 
 // ErrorClassName 把冻结的 ErrorClass 映射为指标标签（有限枚举）。
+//
+// 单一来源在 contract.ErrorClass.String()：指标、usage_logs 与结构化日志
+// 必须共用同一批标签，否则同一个错误在不同视图里会分成两个分组。
 func ErrorClassName(class contract.ErrorClass) string {
-	switch class {
-	case contract.ErrRetryable:
-		return "retryable"
-	case contract.ErrUpstreamAuth:
-		return "upstream_auth"
-	case contract.ErrUpstreamRateLimit:
-		return "upstream_rate_limit"
-	case contract.ErrUpstreamServer:
-		return "upstream_server"
-	case contract.ErrParamInvalid:
-		return "param_invalid"
-	case contract.ErrChannelConfig:
-		return "channel_config"
-	case contract.ErrContentFilter:
-		return "content_filter"
-	case contract.ErrInsufficientQuota:
-		return "insufficient_quota"
-	case contract.ErrChannelError:
-		return "channel_error"
-	case contract.ErrEndpointUnsupported:
-		return "endpoint_unsupported"
-	case contract.ErrChannelTypeUnimplemented:
-		return "channel_type_unimplemented"
-	case contract.ErrConnectionTerminated:
-		return "connection_terminated"
-	default:
-		return "unknown"
-	}
+	return class.String()
 }
 
 // notifyAttempt 是观察者的唯一调用入口：nil 安全，不让观察失败进入热路径。

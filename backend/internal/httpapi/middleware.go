@@ -17,6 +17,7 @@ import (
 
 	"newtg/gateway/internal/api/dto"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/tokenstore"
 )
 
 // TokenLookup 是 auth.TokenLookup 的别名，使本包签名与 Task 4 契约逐字一致；
@@ -38,7 +39,7 @@ const (
 //
 // 双路径（security-01 §2.2、platform-03 §10.1）：
 //   - `__Host-nkt_sess` Cookie：服务端不透明会话，Redis 是权威存储；
-//   - `Authorization: Bearer nkt-…`：API 令牌，查询前先做 SHA-256。
+//   - `Authorization: Bearer sk-…`：API 令牌（兼容历史 `nkt-` 令牌），查询前先做 SHA-256。
 //
 // 失败一律返回同一个 401 problem+json，不区分「没带凭据 / Cookie 过期 / 令牌状态
 // 非法 / Redis 故障」。原因有二：任何差异化都会成为凭据有效性与会话存在性的探测
@@ -51,7 +52,7 @@ const (
 // 强制改密（must_change_password）：受限状态按用户记录在 Redis
 // （auth.SessionManager.PasswordChangeRequired），而不是写进会话 hash。原因是
 // 2FA challenge 等其它会话签发路径无需各自接线即可继承限制。Cookie 与 Bearer
-// 两条路径都会检查（管理员重置口令只吊销会话、不吊销 nkt- 令牌），受限身份仅
+// 两条路径都会检查（管理员重置口令只吊销会话、不吊销 sk- 令牌），受限身份仅
 // 放行登出/自读/改密/2FA 端点，其余一律 403 password_change_required；标记读取
 // 失败时 fail-closed（401，与 Get/Touch 的 Redis 故障口径一致）。
 func SessionAuth(m *auth.SessionManager, tokenStore TokenLookup) func(http.Handler) http.Handler {
@@ -103,7 +104,7 @@ func SessionAuth(m *auth.SessionManager, tokenStore TokenLookup) func(http.Handl
 				return
 			}
 			// 强制改密同样约束 Bearer 路径：管理员重置口令只吊销会话、不吊销
-			// nkt- 令牌；若此处不检查，旧令牌仍可访问全部管理端点，违背
+			// sk- 令牌；若此处不检查，旧令牌仍可访问全部管理端点，违背
 			// 「改密完成前不得访问其他受保护接口」（modules-01 F-01-03）。
 			restricted, err := m.PasswordChangeRequired(r.Context(), meta.UserID)
 			if err != nil {
@@ -262,21 +263,29 @@ func hasSessionCookie(r *http.Request) bool {
 	return ok
 }
 
-// bearerCredential 提取 `Authorization: Bearer nkt-…` 的明文令牌。
+// legacyTokenPrefix 是前缀切换前签发的令牌形态。鉴权按完整明文哈希，
+// 所以旧令牌不需要重签；只在凭据形态检查处保留兼容。
+const legacyTokenPrefix = "nkt-"
+
+// bearerCredential 提取 `Authorization: Bearer sk-…` 的明文令牌。
 //
-// 管理面只接受 nkt- 形态：legacy sk- 是 relay 面的兼容载体（relay-01 §3.2），
-// 不是管理 API 凭据。保留原始明文（含 nkt- 前缀）交给 HashTokenKey，
-// 与 Task 12 的 key_hash=SHA256(plain) 口径一致。
+// 规范前缀是 tokenstore.KeyPrefix（`sk-`）；历史 `nkt-` 令牌继续接受，
+// 否则切换前缀会让所有已签发令牌在管理面立刻失效。保留原始明文交给
+// HashTokenKey，与 key_hash=SHA256(plain) 口径一致。
 func bearerCredential(r *http.Request) (string, bool) {
 	parts := strings.SplitN(r.Header.Get("Authorization"), " ", 2)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 		return "", false
 	}
 	raw := strings.TrimSpace(parts[1])
-	if !strings.HasPrefix(raw, "nkt-") || len(raw) == len("nkt-") {
+	switch {
+	case strings.HasPrefix(raw, tokenstore.KeyPrefix):
+		return raw, len(raw) > len(tokenstore.KeyPrefix)
+	case strings.HasPrefix(raw, legacyTokenPrefix):
+		return raw, len(raw) > len(legacyTokenPrefix)
+	default:
 		return "", false
 	}
-	return raw, true
 }
 
 // isSafeMethod 按 RFC 9110 的安全方法集合判定（GET/HEAD/OPTIONS/TRACE）。

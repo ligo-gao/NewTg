@@ -17,7 +17,7 @@ import (
 // 本文件实现 /v1 中继路径的令牌鉴权中间件（relay-01 §3 / §3.6）。
 //
 // 与 SessionAuth 的分工：
-//   - SessionAuth 服务 /api/* 管理面（Cookie 会话或 nkt- Bearer，注入的角色来自会话）；
+//   - SessionAuth 服务 /api/* 管理面（Cookie 会话或 sk- Bearer，兼容 nkt-，注入的角色来自会话）；
 //   - RelayAuth 只服务 /v1/* 中继面：令牌是唯一身份来源，角色/状态必须回源
 //     users 表（令牌本身没有角色语义，relay-01 §3.4 的「用户被封禁」判定）。
 //
@@ -617,10 +617,12 @@ func addrInPrefixes(addr netip.Addr, prefixes []netip.Prefix) bool {
 
 // normalizeRelayTokenKey 实现 relay-01 §3.2 的令牌 key 归一化：
 //
-//  1. nkt-<48> 整段不切分（48 位 Base62 body 不含 '-'）；
-//  2. legacy sk-<key>[-<channelId>] 按首个 '-' 截断得到查询 key；
-//     末段纯数字时表示指定渠道（pin），从查询 key 中剥离；
-//  3. 裸 key 直用。
+//  1. 规范 sk-<48>：48 位 Base62 body 不含 '-'，按 legacy pin 规则切分后
+//     仍得到整段；
+//  2. 历史 nkt-<48> 整段不切分；
+//  3. legacy sk-<key>[-<channelId>] 的末段纯数字时表示指定渠道（pin），
+//     从查询 key 中剥离；
+//  4. 裸 key 直用。
 //
 // 必须与 relay 包的同名（未导出）逻辑保持一致：鉴权阶段与
 // BuildRelayContext 的重解析必须命中同一 key_hash。

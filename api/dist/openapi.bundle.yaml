@@ -10138,7 +10138,7 @@ paths:
       operationId: listUsageLogsByKey
       summary: 按 API 令牌只读查询自身最近用量明细
       description: |
-        认证只接受 `Authorization: Bearer nkt-…`（只读令牌认证），不接受 Cookie、
+        认证只接受 `Authorization: Bearer sk-…`（兼容历史 `nkt-`；只读令牌认证），不接受 Cookie、
         `?key=` 或 `x-api-key`。**过期/额度耗尽的令牌仍可读，仅显式禁用返回 401**
         （过期/耗尽/非法/禁用统一 `invalid_token`，不区分原因）。
         数据范围是本令牌自身（`user_id` + `token_id`）：同用户的其它令牌与账户级
@@ -10476,6 +10476,156 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/UsageStatsByModelItem'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/usage-stats/by-user:
+    get:
+      tags:
+        - user
+      operationId: getUsageStatsByUser
+      summary: 用户消费分布（top 8 + other）
+      description: 管理员 + logs:read 可见全站；其他角色只返回本人一行。percent 合计为 100。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: range
+          in: query
+          schema:
+            type: string
+            enum:
+              - 24h
+              - 7d
+              - 14d
+              - 30d
+            default: 24h
+        - name: start
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: model
+          in: query
+          schema:
+            type: string
+            maxLength: 128
+        - name: group
+          in: query
+          schema:
+            type: string
+            maxLength: 32
+        - name: token_id
+          in: query
+          schema:
+            type: integer
+            format: int64
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum:
+              - success
+              - error
+              - refunded
+              - refused
+        - name: username
+          in: query
+          schema:
+            type: string
+          description: 仅 admin+logs:read；精确匹配
+      responses:
+        '200':
+          description: 用户消费分布
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageStatsByUserResponse'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/usage-stats/by-group:
+    get:
+      tags:
+        - user
+      operationId: getUsageStatsByGroup
+      summary: 分组消费分布（top 8 + other）
+      description: 按 usage_logs.group 聚合，空分组归入 default；percent 合计为 100。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: range
+          in: query
+          schema:
+            type: string
+            enum:
+              - 24h
+              - 7d
+              - 14d
+              - 30d
+            default: 24h
+        - name: start
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: model
+          in: query
+          schema:
+            type: string
+            maxLength: 128
+        - name: group
+          in: query
+          schema:
+            type: string
+            maxLength: 32
+        - name: token_id
+          in: query
+          schema:
+            type: integer
+            format: int64
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum:
+              - success
+              - error
+              - refunded
+              - refused
+        - name: username
+          in: query
+          schema:
+            type: string
+          description: 仅 admin+logs:read；精确匹配
+      responses:
+        '200':
+          description: 分组消费分布
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageStatsByGroupResponse'
         '401':
           $ref: '#/components/responses/Error401'
         '403':
@@ -11609,9 +11759,9 @@ components:
     bearerToken:
       type: http
       scheme: bearer
-      bearerFormat: nkt-<token>
+      bearerFormat: sk-<token>
       description: |
-        API 令牌（明文仅创建时展示一次）。请求头：Authorization: Bearer nkt-…
+        API 令牌（明文仅创建时展示一次）。请求头：Authorization: Bearer sk-…（历史令牌可能为 nkt-）
   parameters:
     Page:
       x-go-name: PageQuery
@@ -12049,7 +12199,7 @@ components:
           $ref: '#/components/schemas/TokenStatus'
         key_masked:
           type: string
-          description: 形如 nkt-••••••••••••••••••••••••，用于列表展示。
+          description: 形如 sk-••••••••••••••••••••••••，用于列表展示。
         remain_quota:
           type: integer
           format: int64
@@ -15009,7 +15159,7 @@ components:
           properties:
             key:
               type: string
-              description: 完整明文 key（nkt- 前缀），仅此响应出现一次；服务端只存 SHA-256 哈希。
+              description: 完整明文 key（sk- 前缀；历史令牌可能为 nkt-），仅此响应出现一次；服务端只存 SHA-256 哈希。
       description: 创建响应中的条目 = Token + 一次性明文 key。
     CreateTokenResponse:
       type: object
@@ -21805,6 +21955,10 @@ components:
         - completion_tokens_total
         - pre_deducted_total
         - refunded_total
+        - p50_latency_ms
+        - p95_latency_ms
+        - latency_samples
+        - active_users
       properties:
         cost_total:
           type: integer
@@ -21829,6 +21983,22 @@ components:
         refunded_total:
           type: integer
           format: int64
+        p50_latency_ms:
+          type: integer
+          format: int64
+          description: 成功请求（status=1）的 P50 延迟，毫秒；无样本为 0
+        p95_latency_ms:
+          type: integer
+          format: int64
+          description: 成功请求（status=1）的 P95 延迟，毫秒；无样本为 0
+        latency_samples:
+          type: integer
+          format: int64
+          description: 参与分位计算的样本数（只含 status=1 且 latency_ms>0）
+        active_users:
+          type: integer
+          format: int64
+          description: 窗口内去重用户数；非管理员恒为 1（0 行时为 0）
     UsageStatsByModelItem:
       type: object
       additionalProperties: false
@@ -21850,6 +22020,90 @@ components:
         percent:
           type: number
           description: 十进制基点分配，各扇区合计恰为 100
+    UsageStatsByUserItem:
+      type: object
+      additionalProperties: false
+      required:
+        - user_id
+        - username
+        - cost
+        - requests
+        - tokens
+        - percent
+      properties:
+        user_id:
+          type: integer
+          format: int64
+        username:
+          type: string
+          description: 用户已删除时为空串；第 9 名起聚合为 other
+        cost:
+          type: integer
+          format: int64
+        requests:
+          type: integer
+          format: int64
+        tokens:
+          type: integer
+          format: int64
+        percent:
+          type: number
+          description: 十进制基点分配，合计为 100
+    UsageStatsByUserResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UsageStatsByUserItem'
+        total:
+          type: integer
+          format: int64
+          description: 窗口内总消费（积分）
+    UsageStatsByGroupItem:
+      type: object
+      additionalProperties: false
+      required:
+        - group
+        - cost
+        - requests
+        - tokens
+        - percent
+      properties:
+        group:
+          type: string
+          description: 空分组归入 default；第 9 名起聚合为 other
+        cost:
+          type: integer
+          format: int64
+        requests:
+          type: integer
+          format: int64
+        tokens:
+          type: integer
+          format: int64
+        percent:
+          type: number
+          description: 十进制基点分配，合计为 100
+    UsageStatsByGroupResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UsageStatsByGroupItem'
+        total:
+          type: integer
+          format: int64
+          description: 窗口内总消费（积分）
     UsageStatsTimeseriesItem:
       type: object
       additionalProperties: false

@@ -727,6 +727,10 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 
 			if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
 				succeeded = true // 交由调用方结算；defer 不得释放
+				// 清掉此前可重试失败留下的 LastError：后续若因客户端断开/
+				// 流式中断而退款，usage_logs 不能把「上一轮已重试掉的错误」
+				// 记成本次请求的失败原因。
+				WithRoute(rc, effective, attemptIndex, nil)
 				reportAttempt(candidate.ChannelID, channelType, prevChannelType,
 					attemptOK, contract.ErrUnknown, attemptIndex, attemptStarted)
 				return &AttemptResult{

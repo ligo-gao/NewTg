@@ -11,27 +11,27 @@ import (
 )
 
 var (
-	keyFormatRe  = regexp.MustCompile(`^nkt-[0-9A-Za-z]{48}$`)
+	keyFormatRe  = regexp.MustCompile(`^sk-[0-9A-Za-z]{48}$`)
 	hashFormatRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
 // TestGenerateKeyFormatAndMask 覆盖 brief (a) 的格式/哈希/掩码部分：
-// nkt- + 48 位 Base62；key_hash=SHA256(完整明文)；掩码恒为 nkt-+24×•。
+// sk- + 48 位 Base62；key_hash=SHA256(完整明文)；掩码恒为 sk-+24×•。
 func TestGenerateKeyFormatAndMask(t *testing.T) {
 	plain, keyHash, masked, err := GenerateKey()
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	if !keyFormatRe.MatchString(plain) {
-		t.Fatalf("明文 = %q，期望 nkt- + 48 位 Base62", plain)
+		t.Fatalf("明文 = %q，期望 sk- + 48 位 Base62", plain)
 	}
 	if !hashFormatRe.MatchString(keyHash) {
 		t.Fatalf("key_hash = %q，期望 64 位小写十六进制", keyHash)
 	}
 	if keyHash != auth.HashTokenKey(plain) {
-		t.Fatalf("key_hash 不是完整明文（含 nkt- 前缀）的 SHA-256：got=%s want=%s", keyHash, auth.HashTokenKey(plain))
+		t.Fatalf("key_hash 不是完整明文（含 sk- 前缀）的 SHA-256：got=%s want=%s", keyHash, auth.HashTokenKey(plain))
 	}
-	if want := "nkt-" + strings.Repeat("•", 24); masked != want {
+	if want := "sk-" + strings.Repeat("•", 24); masked != want {
 		t.Fatalf("masked = %q，期望 %q", masked, want)
 	}
 }

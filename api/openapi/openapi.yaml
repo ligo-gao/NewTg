@@ -511,6 +511,10 @@ paths:
     $ref: './paths/user.yaml#/paths/~1api~1usage-stats~1summary'
   /api/usage-stats/by-model:
     $ref: './paths/user.yaml#/paths/~1api~1usage-stats~1by-model'
+  /api/usage-stats/by-user:
+    $ref: './paths/user.yaml#/paths/~1api~1usage-stats~1by-user'
+  /api/usage-stats/by-group:
+    $ref: './paths/user.yaml#/paths/~1api~1usage-stats~1by-group'
   /api/usage-stats/timeseries:
     $ref: './paths/user.yaml#/paths/~1api~1usage-stats~1timeseries'
   /api/usage-stats/rates:

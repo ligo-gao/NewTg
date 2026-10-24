@@ -9,12 +9,14 @@ package httpapi
 // 安全断言（GC-6）：任何错误响应都不得出现 base_url、上游凭据或适配器原始错误文本。
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"iter"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -2355,5 +2357,98 @@ func TestRelayHandlerNilBillingFallsBackToStub(t *testing.T) {
 	second := h.billing(&contract.RelayContext{RequestID: "req-2"})
 	if second == first {
 		t.Fatal("nil factory must create a fresh stub per request（Stub 是单会话实例）")
+	}
+}
+
+// ---------- 中继失败日志（可观测性） ----------
+
+// TestRelayFailureDiagnostics 冻结从错误链提取的诊断字段：
+// 上游状态码/错误类/尝试次数必须能在不触碰响应体与 URL 的前提下拿到。
+func TestRelayFailureDiagnostics(t *testing.T) {
+	cases := []struct {
+		name         string
+		err          error
+		wantClass    string
+		wantUpstream int
+		wantAttempts int
+	}{
+		{
+			name:         "fast fail 400",
+			err:          &relay.FastFailError{Err: &relay.UpstreamStatusError{StatusCode: 400, Class: contract.ErrParamInvalid}},
+			wantClass:    "param_invalid",
+			wantUpstream: 400,
+			wantAttempts: 1,
+		},
+		{
+			name: "attempts exhausted",
+			err: &relay.AttemptsError{Attempts: 3, Last: &relay.RetryableError{
+				Err: &relay.UpstreamStatusError{StatusCode: 503, Class: contract.ErrUpstreamServer},
+			}},
+			wantClass:    "upstream_server",
+			wantUpstream: 503,
+			wantAttempts: 3,
+		},
+		{
+			name: "non upstream failure",
+			err:  errors.New("relay: 预扣费失败"),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			class, upstream, attempts := relayFailureDiagnostics(tc.err)
+			if class != tc.wantClass || upstream != tc.wantUpstream || attempts != tc.wantAttempts {
+				t.Fatalf("= (%q, %d, %d), want (%q, %d, %d)",
+					class, upstream, attempts, tc.wantClass, tc.wantUpstream, tc.wantAttempts)
+			}
+		})
+	}
+}
+
+// TestRelayUpstream400IsLoggedWithDiagnostics 端到端验证：上游 400 最终失败时
+// 打出一条可归因的结构化日志（request_id/channel/model/status/error_class/
+// upstream_status），且上游响应体绝不进入日志（GC-6）。
+func TestRelayUpstream400IsLoggedWithDiagnostics(t *testing.T) {
+	const upstreamBody = "secret upstream detail"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"` + upstreamBody + `","type":"invalid_request_error"}}`))
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	var buf bytes.Buffer
+	env.handler.log = slog.New(slog.NewJSONHandler(&buf, nil))
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gpt-test","messages":[{"role":"user","content":"hi"}]}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+	requestID := w.Header().Get("X-Request-ID")
+	if requestID == "" {
+		t.Fatal("400 响应必须带 X-Request-ID")
+	}
+
+	line := buf.String()
+	for _, want := range []string{
+		`"request_id":"` + requestID + `"`,
+		`"endpoint":"chat_completions"`,
+		`"model":"gpt-test"`,
+		`"channel_id":1`,
+		`"status":400`,
+		`"error_code":"invalid_request"`,
+		`"error_class":"param_invalid"`,
+		`"upstream_status":400`,
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("失败日志缺少 %s：%s", want, line)
+		}
+	}
+	if strings.Contains(line, upstreamBody) {
+		t.Fatalf("上游响应体不得进入日志（GC-6）：%s", line)
+	}
+	if strings.Contains(line, upstreamCredential) {
+		t.Fatalf("渠道凭据不得进入日志（GC-6）：%s", line)
 	}
 }

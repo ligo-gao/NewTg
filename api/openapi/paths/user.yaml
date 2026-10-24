@@ -1081,7 +1081,7 @@ paths:
       operationId: listUsageLogsByKey
       summary: 按 API 令牌只读查询自身最近用量明细
       description: |
-        认证只接受 `Authorization: Bearer nkt-…`（只读令牌认证），不接受 Cookie、
+        认证只接受 `Authorization: Bearer sk-…`（兼容历史 `nkt-`；只读令牌认证），不接受 Cookie、
         `?key=` 或 `x-api-key`。**过期/额度耗尽的令牌仍可读，仅显式禁用返回 401**
         （过期/耗尽/非法/禁用统一 `invalid_token`，不区分原因）。
         数据范围是本令牌自身（`user_id` + `token_id`）：同用户的其它令牌与账户级
@@ -1920,6 +1920,118 @@ paths:
                 type: array
                 items:
                   $ref: '../schemas/user.yaml#/schemas/UsageStatsByModelItem'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/usage-stats/by-user:
+    get:
+      tags: [user]
+      operationId: getUsageStatsByUser
+      summary: 用户消费分布（top 8 + other）
+      description: 管理员 + logs:read 可见全站；其他角色只返回本人一行。percent 合计为 100。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: range
+          in: query
+          schema:
+            type: string
+            enum: [24h, 7d, 14d, 30d]
+            default: 24h
+        - name: start
+          in: query
+          schema: { type: string, format: date-time }
+        - name: end
+          in: query
+          schema: { type: string, format: date-time }
+        - name: model
+          in: query
+          schema: { type: string, maxLength: 128 }
+        - name: group
+          in: query
+          schema: { type: string, maxLength: 32 }
+        - name: token_id
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [success, error, refunded, refused]
+        - name: username
+          in: query
+          schema: { type: string }
+          description: 仅 admin+logs:read；精确匹配
+      responses:
+        '200':
+          description: 用户消费分布
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/UsageStatsByUserResponse'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '422':
+          $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/usage-stats/by-group:
+    get:
+      tags: [user]
+      operationId: getUsageStatsByGroup
+      summary: 分组消费分布（top 8 + other）
+      description: 按 usage_logs.group 聚合，空分组归入 default；percent 合计为 100。
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      parameters:
+        - name: range
+          in: query
+          schema:
+            type: string
+            enum: [24h, 7d, 14d, 30d]
+            default: 24h
+        - name: start
+          in: query
+          schema: { type: string, format: date-time }
+        - name: end
+          in: query
+          schema: { type: string, format: date-time }
+        - name: model
+          in: query
+          schema: { type: string, maxLength: 128 }
+        - name: group
+          in: query
+          schema: { type: string, maxLength: 32 }
+        - name: token_id
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [success, error, refunded, refused]
+        - name: username
+          in: query
+          schema: { type: string }
+          description: 仅 admin+logs:read；精确匹配
+      responses:
+        '200':
+          description: 分组消费分布
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/UsageStatsByGroupResponse'
         '401':
           $ref: '../components/responses.yaml#/responses/Error401'
         '403':

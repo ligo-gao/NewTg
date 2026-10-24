@@ -939,3 +939,76 @@ func TestAnthropicStreamRendererSynthesizesToolUseID(t *testing.T) {
 		t.Fatalf("流式合成 id 回传 tool_result 被拒绝（id=%q）: %v", id, err)
 	}
 }
+
+func TestAnthropicToolResultMapsToToolRole(t *testing.T) {
+	body := `{"model":"m","max_tokens":8,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}]}`
+	req, err := ParseAnthropicRequest([]byte(body))
+	if err != nil {
+		t.Fatalf("ParseAnthropicRequest: %v", err)
+	}
+	if len(req.Messages) != 1 || req.Messages[0].Role != contract.RoleTool {
+		t.Fatalf("tool_result 必须归一化为 tool 角色：%+v", req.Messages)
+	}
+	if req.Messages[0].Content[0].Kind != contract.PartToolResult ||
+		metaString(req.Messages[0].Content[0].Meta, "tool_call_id") != "toolu_1" {
+		t.Fatalf("tool_result 内容 = %+v", req.Messages[0].Content[0])
+	}
+}
+
+func TestAnthropicSystemRoleInsideMessages(t *testing.T) {
+	body := `{"model":"m","max_tokens":8,"messages":[{"role":"system","content":"be nice"},{"role":"user","content":"hi"}]}`
+	req, err := ParseAnthropicRequest([]byte(body))
+	if err != nil {
+		t.Fatalf("ParseAnthropicRequest: %v", err)
+	}
+	if len(req.Messages) != 2 || req.Messages[0].Role != contract.RoleSystem {
+		t.Fatalf("messages 内的 system 角色必须被接受：%+v", req.Messages)
+	}
+	if req.Messages[0].Content[0].Text != "be nice" {
+		t.Fatalf("system content = %+v", req.Messages[0].Content)
+	}
+}
+
+// TestAnthropicMixedContentKeepsToolMessageAdjacent 冻结 OpenAI/DeepSeek 的
+// 消息相邻约束：assistant(tool_calls) 之后必须立刻是 tool 消息。
+//
+// Anthropic 把 tool_result 与正文放在同一条 user 消息里是合法形态；跨协议
+// 出站时必须先工具结果、后正文，否则 OpenAI 兼容上游会 400：
+// "messages with role 'tool' must be a response to a preceding message with
+// 'tool_calls'"（正文消息把 tool 与 assistant 隔开了）。
+func TestAnthropicMixedContentKeepsToolMessageAdjacent(t *testing.T) {
+	const reminder = "<system-reminder>note</system-reminder>"
+	body := `{"model":"m","max_tokens":8,"messages":[
+		{"role":"user","content":"start"},
+		{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"q":"x"}}]},
+		{"role":"user","content":[
+			{"type":"text","text":"` + reminder + `"},
+			{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}
+		]}
+	]}`
+	req, err := ParseAnthropicRequest([]byte(body))
+	if err != nil {
+		t.Fatalf("ParseAnthropicRequest: %v", err)
+	}
+	wantRoles := []contract.Role{
+		contract.RoleUser,
+		contract.RoleAssistant,
+		contract.RoleTool,
+		contract.RoleUser,
+	}
+	if len(req.Messages) != len(wantRoles) {
+		t.Fatalf("messages = %d, want %d: %+v", len(req.Messages), len(wantRoles), req.Messages)
+	}
+	for i, want := range wantRoles {
+		if req.Messages[i].Role != want {
+			t.Fatalf("messages[%d].Role = %q, want %q（tool 必须紧跟 assistant/tool_calls）",
+				i, req.Messages[i].Role, want)
+		}
+	}
+	if len(req.Messages[3].Content) != 1 || req.Messages[3].Content[0].Text != reminder {
+		t.Fatalf("正文不得丢失或串位：%+v", req.Messages[3].Content)
+	}
+	if metaString(req.Messages[2].Content[0].Meta, "tool_call_id") != "toolu_1" {
+		t.Fatalf("tool_result 未保留 tool_call_id：%+v", req.Messages[2].Content[0])
+	}
+}

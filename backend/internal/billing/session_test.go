@@ -2450,3 +2450,34 @@ func TestSessionDemoExemptSessionIdentityBoundary(t *testing.T) {
 		})
 	}
 }
+
+// TestFailureAuditFields 冻结失败落库时从路由层失败事实提取的审计字段。
+//
+// 失败请求的 usage_logs 行必须能回答「哪个错误类、上游说了什么（已脱敏）」；
+// 只读取契约层记录的安全摘要，绝不回填上游响应体或 URL。
+func TestFailureAuditFields(t *testing.T) {
+	rc := &contract.RelayContext{LastError: &contract.RelayError{
+		Class:      contract.ErrParamInvalid,
+		StatusCode: 400,
+		Message:    "relay: 上游返回 HTTP 400（class=5）",
+	}}
+	class, message := failureAuditFields(rc)
+	if class != "param_invalid" {
+		t.Fatalf("error_class = %q, want %q", class, "param_invalid")
+	}
+	if message != rc.LastError.Message {
+		t.Fatalf("error_message = %q, want %q", message, rc.LastError.Message)
+	}
+
+	for _, tc := range []struct {
+		name string
+		rc   *contract.RelayContext
+	}{
+		{"nil context", nil},
+		{"no last error", &contract.RelayContext{}},
+	} {
+		if class, message := failureAuditFields(tc.rc); class != "" || message != "" {
+			t.Fatalf("%s: = (%q, %q), want empty", tc.name, class, message)
+		}
+	}
+}

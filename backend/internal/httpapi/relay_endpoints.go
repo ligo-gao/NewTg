@@ -1011,7 +1011,9 @@ func (h *RelayHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	parsed, err := ir.ParseAnthropicRequest(body)
 	if err != nil {
-		// GC-6：解析器文本可能回显用户输入片段，对客户端只给固定文案。
+		// GC-6：解析器文本可能回显用户输入片段，对客户端只给固定文案；
+		// 服务端日志保留“哪个字段/块类型”这一层，便于定位客户端兼容性问题。
+		h.log.Warn("messages: invalid Anthropic request body", "error", err, "request_id", requestID)
 		writeErr(w, http.StatusBadRequest, requestID, "invalid_request", "invalid Anthropic request body")
 		return
 	}
@@ -1177,6 +1179,7 @@ func (h *RelayHandler) handleMessagesCountTokens(w http.ResponseWriter, r *http.
 	// 其余未建模字段仍保留在 parsed.Raw 里，由 BuildCountTokensRequest 原样透传。
 	parsed, err := ir.ParseAnthropicRequest(body)
 	if err != nil {
+		h.log.Warn("messages count_tokens: invalid Anthropic request body", "error", err, "request_id", requestID)
 		writeErr(w, http.StatusBadRequest, requestID, "invalid_request", "invalid Anthropic request body")
 		return
 	}
@@ -1286,21 +1289,22 @@ func (h *RelayHandler) handleMessagesCountTokens(w http.ResponseWriter, r *http.
 	resp, err := client.Do(upstreamReq)
 	if err != nil {
 		// 传输层失败：不把底层文本（可能含 URL）交给客户端。
+		h.logRelayFailure(rc, err)
 		writeErr(w, http.StatusBadGateway, requestID, "upstream_error", "upstream request failed")
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		class := adapter.ClassifyError(resp.StatusCode, nil)
-		status, _, message := relayUpstreamStatus(&relay.UpstreamStatusError{
-			StatusCode: resp.StatusCode,
-			Class:      class,
-		})
+		upstreamErr := &relay.UpstreamStatusError{StatusCode: resp.StatusCode, Class: class}
+		h.logRelayFailure(rc, upstreamErr)
+		status, _, message := relayUpstreamStatus(upstreamErr)
 		writeErr(w, status, requestID, "upstream_error", message)
 		return
 	}
 	tokens, err := counter.ParseCountTokensResponse(resp)
 	if err != nil {
+		h.logRelayFailure(rc, err)
 		writeErr(w, http.StatusBadGateway, requestID, "upstream_error",
 			"upstream returned an invalid count_tokens response")
 		return
@@ -1509,6 +1513,7 @@ func (h *RelayHandler) serveNativeJSON(w http.ResponseWriter, r *http.Request, r
 	}
 	resp, err := relay.Route(r.Context(), rc, deps)
 	if err != nil {
+		h.logRelayFailure(rc, err)
 		h.writeMessagesMappedError(w, rc.RequestID, err)
 		return
 	}
@@ -1570,6 +1575,7 @@ func (h *RelayHandler) serveNativeStream(w http.ResponseWriter, r *http.Request,
 	start := time.Now()
 	result, err := relay.ExecuteAttempts(r.Context(), rc, deps)
 	if err != nil {
+		h.logRelayFailure(rc, err)
 		h.writeMessagesMappedError(w, rc.RequestID, err)
 		return
 	}
@@ -2495,6 +2501,7 @@ func (h *RelayHandler) serveJSON(w http.ResponseWriter, r *http.Request, rc *con
 	resp, err := relay.Route(r.Context(), rc, deps)
 	if err != nil {
 		status = "error"
+		h.logRelayFailure(rc, err)
 		writeRelayMappedError(w, rc.RequestID, err)
 		return
 	}
@@ -2601,6 +2608,7 @@ func (h *RelayHandler) serveStream(w http.ResponseWriter, r *http.Request, rc *c
 	result, err := relay.ExecuteAttempts(r.Context(), rc, deps)
 	if err != nil {
 		status = "error"
+		h.logRelayFailure(rc, err)
 		writeRelayMappedError(w, rc.RequestID, err)
 		return
 	}
@@ -3418,6 +3426,52 @@ func writeRelayMappedError(w http.ResponseWriter, requestID string, err error) {
 		w.Header().Set("Retry-After", "1")
 	}
 	writeRelayError(w, status, requestID, code, message)
+}
+
+// relayFailureDiagnostics 从错误链提取可安全记录的上游诊断事实。
+//
+// GC-6：只返回枚举与数字，不返回 err.Error()——适配器/url.Error 的文本可能
+// 含 base_url 或凭据；上游响应体已在执行层丢弃，这里也不能补回来。
+func relayFailureDiagnostics(err error) (class string, upstreamStatus, attempts int) {
+	var attemptsErr *relay.AttemptsError
+	if errors.As(err, &attemptsErr) {
+		attempts = attemptsErr.Attempts
+	}
+	var upstream *relay.UpstreamStatusError
+	if errors.As(err, &upstream) {
+		if attempts == 0 {
+			attempts = 1
+		}
+		return relay.ErrorClassName(upstream.Class), upstream.StatusCode, attempts
+	}
+	return "", 0, attempts
+}
+
+// logRelayFailure 记录一次中继最终失败的结构化诊断行。
+//
+// 为什么必须在这里打：客户端只收到固定文案 + requestId（GC-6），失败请求
+// 也不一定写进 usage_logs（没有开启计费会话的失败没有日志行）。缺了这一行，
+// 用户报 requestId 时无法知道是哪个渠道、模型、上游状态码，排障只能靠猜。
+func (h *RelayHandler) logRelayFailure(rc *contract.RelayContext, err error) {
+	if h == nil || h.log == nil || rc == nil {
+		return
+	}
+	status, code, _ := mapRelayError(err)
+	class, upstreamStatus, attempts := relayFailureDiagnostics(err)
+	h.log.Warn("relay request failed",
+		"request_id", rc.RequestID,
+		"endpoint", relay.EndpointLabel(rc),
+		"model", rc.OriginModel,
+		"upstream_model", rc.UpstreamModel,
+		"channel_id", rc.ChannelID,
+		"channel_type", string(rc.ChannelType),
+		"stream", rc.Streaming,
+		"status", status,
+		"error_code", code,
+		"error_class", class,
+		"upstream_status", upstreamStatus,
+		"attempts", attempts,
+	)
 }
 
 // mapRelayError 把路由/执行错误映射为客户端状态码（relay-01 §9.3）。

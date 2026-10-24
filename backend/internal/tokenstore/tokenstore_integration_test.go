@@ -223,7 +223,7 @@ func TestIntegrationListSearchesNameOnly(t *testing.T) {
 		t.Fatalf("按名称搜索 total=%d，期望 1", total)
 	}
 
-	for _, keyword := range []string{key, strings.TrimPrefix(key, "nkt-"), key[len(key)-8:]} {
+	for _, keyword := range []string{key, strings.TrimPrefix(key, "sk-"), key[len(key)-8:]} {
 		_, total, err := st.List(ctx, userID, ListFilter{Keyword: keyword, Page: 1, PageSize: 20})
 		if err != nil {
 			t.Fatalf("List by key suffix: %v", err)
@@ -527,7 +527,7 @@ func TestIntegrationResetKeyAndDelete(t *testing.T) {
 	if newKey == oldKey {
 		t.Fatal("重置后明文未变化")
 	}
-	if masked != "nkt-"+strings.Repeat("•", 24) {
+	if masked != "sk-"+strings.Repeat("•", 24) {
 		t.Fatalf("masked = %q", masked)
 	}
 	if _, err := st.Resolve(ctx, oldHash); !errors.Is(err, ErrInvalidToken) {
@@ -601,8 +601,8 @@ func TestIntegrationResolveStatusSemantics(t *testing.T) {
 		t.Fatalf("meta = %+v，期望 RemainQuota=0 且非不限", meta)
 	}
 
-	// 完整明文哈希：去掉 nkt- 前缀的哈希不得命中。
-	trimmedHash := auth.HashTokenKey(strings.TrimPrefix(exhausted[0].Key, "nkt-"))
+	// 完整明文哈希：去掉 sk- 前缀的哈希不得命中。
+	trimmedHash := auth.HashTokenKey(strings.TrimPrefix(exhausted[0].Key, "sk-"))
 	if _, err := fresh.Resolve(ctx, trimmedHash); !errors.Is(err, ErrInvalidToken) {
 		t.Fatalf("去前缀哈希 err = %v，期望 ErrInvalidToken（必须哈希完整明文）", err)
 	}

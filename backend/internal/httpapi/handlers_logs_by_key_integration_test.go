@@ -346,11 +346,11 @@ func TestIntegrationLogsByKey(t *testing.T) {
 	t.Run("credential_forms", func(t *testing.T) {
 		plain := env.tokens["a1"].Plain
 		cases := map[string]map[string]string{
-			"no header":   {},
-			"cookie only": {"Cookie": auth.SessionCookieName + "=anything"},
-			"query key":   {},
-			"x-api-key":   {"X-Api-Key": plain},
-			"sk prefix":   {"Authorization": "Bearer sk-" + plain},
+			"no header":      {},
+			"cookie only":    {"Cookie": auth.SessionCookieName + "=anything"},
+			"query key":      {},
+			"x-api-key":      {"X-Api-Key": plain},
+			"unknown prefix": {"Authorization": "Bearer xsk-" + plain},
 		}
 		for name, headers := range cases {
 			target := "/api/logs/by-key"

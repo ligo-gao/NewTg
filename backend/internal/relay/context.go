@@ -208,7 +208,7 @@ func BuildRelayContext(ctx context.Context, principal *auth.Principal, req *http
 
 // ParseChannelPin 返回 legacy 令牌后缀指定的渠道 id（relay-01 §3.5）。
 //
-// 只有 legacy sk-<key>-<channelId> 形态带 pin；nkt-<48> 整段不切分（§3.2、G7-R51）。
+// 只有 legacy sk-<key>-<channelId> 形态带 pin；规范 sk-<48> 与历史 nkt-<48> 整段不切分（§3.2、G7-R51）。
 // 返回 (0, false) 表示没有 pin，调用方走普通路由。
 //
 // 控制器裁决 R-P2a：pin 不写进 RelayContext（它属于路由约束而非身份状态），
@@ -267,10 +267,12 @@ func credentialFromRequest(r *http.Request) (string, bool) {
 // normalizeTokenCredential 按 relay-01 §3.2 归一化「用于查询的令牌 key」，
 // 并按 §3.5 解析 legacy pin 后缀。规则顺序即语义：
 //
-//  1. nkt-<48> 整段不切分：48 位 Base62 body 不含 '-'，整段即查询 key。
-//  2. legacy sk- 按 '-' 切分：查询 key 取首个 '-' 之前的段（基线怪癖，照搬）；
-//     末段为纯数字时才作为渠道 id（G7-R51 裁决，2026-10-17）。
-//  3. 裸 key 直用。
+//  1. 规范 sk-<48>：48 位 Base62 body 不含 '-'，按 legacy pin 规则切分后
+//     仍得到整段。
+//  2. 历史 nkt-<48> 整段不切分。
+//  3. legacy sk-<key>[-<channelId>] 的末段为纯数字时才作为渠道 id
+//     （G7-R51 裁决，2026-10-17）。
+//  4. 裸 key 直用。
 //
 // 注意：pin 后缀必须从查询 key 中剥掉，否则会拿 sk-<key>-<channelId> 去哈希，
 // 永远查不到令牌。

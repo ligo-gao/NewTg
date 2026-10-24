@@ -179,6 +179,8 @@ func (h *UsageLogHandlers) RegisterUsageLogRoutes(mux *http.ServeMux, wrap func(
 	register("GET /api/usage-logs/{id}/prompt", h.handleUsageLogPrompt)
 	register("GET /api/usage-stats/summary", h.handleUsageStatsSummary)
 	register("GET /api/usage-stats/by-model", h.handleUsageStatsByModel)
+	register("GET /api/usage-stats/by-user", h.handleUsageStatsByUser)
+	register("GET /api/usage-stats/by-group", h.handleUsageStatsByGroup)
 	register("GET /api/usage-stats/timeseries", h.handleUsageStatsTimeseries)
 	register("GET /api/usage-stats/rates", h.handleUsageStatsRates)
 	register("GET /api/audit-logs", h.handleAuditLogList)
@@ -1558,6 +1560,13 @@ type usageSummaryResponse struct {
 	CompletionTokensTotal int64   `json:"completion_tokens_total"`
 	PreDeductedTotal      int64   `json:"pre_deducted_total"`
 	RefundedTotal         int64   `json:"refunded_total"`
+	// 成功请求的延迟分位（毫秒）。只统计 status=1 且 latency_ms>0 的行；
+	// 无样本时为 0，绝不返回 NaN 或伪造值。
+	P50LatencyMS   int64 `json:"p50_latency_ms"`
+	P95LatencyMS   int64 `json:"p95_latency_ms"`
+	LatencySamples int64 `json:"latency_samples"`
+	// 窗口内去重用户数。非管理员按 statsWhere 收窄后恒为 1（或 0 行时为 0）。
+	ActiveUsers int64 `json:"active_users"`
 }
 
 func (h *UsageLogHandlers) handleUsageStatsSummary(w http.ResponseWriter, r *http.Request) {
@@ -1587,6 +1596,33 @@ func (h *UsageLogHandlers) handleUsageStatsSummary(w http.ResponseWriter, r *htt
 	// 0 行时成功率定义为 0（绝不是 NaN）：前端直接渲染百分比。
 	if out.RequestCount > 0 {
 		out.SuccessRate = float64(success) / float64(out.RequestCount)
+	}
+
+	// 延迟分位只取成功请求：失败请求的 latency 是“失败得多快”，混进来会
+	// 让 P95 看起来变好。percentile_cont 忽略 NULL，仍显式过滤 0 值。
+	const latencyCond = `status = 1 AND latency_ms IS NOT NULL AND latency_ms > 0`
+	latencyWhere := where
+	if strings.TrimSpace(latencyWhere) == "" {
+		latencyWhere = " WHERE " + latencyCond
+	} else {
+		latencyWhere += " AND " + latencyCond
+	}
+	if err := h.logDB.QueryRowContext(r.Context(), `
+		SELECT COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms), 0)::bigint,
+		       COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms), 0)::bigint,
+		       count(*)
+		FROM usage_logs`+latencyWhere, args...).Scan(
+		&out.P50LatencyMS, &out.P95LatencyMS, &out.LatencySamples,
+	); err != nil {
+		h.log.Error("usage stats summary: latency query failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
+	if err := h.logDB.QueryRowContext(r.Context(),
+		`SELECT count(DISTINCT user_id) FROM usage_logs`+where, args...).Scan(&out.ActiveUsers); err != nil {
+		h.log.Error("usage stats summary: active users query failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -1649,18 +1685,191 @@ func (h *UsageLogHandlers) handleUsageStatsByModel(w http.ResponseWriter, r *htt
 // assignPercentBasisPoints 用十进制基点（1% = 100 bps）分配百分比，
 // 四舍五入后的残差补到第一大项，保证各扇区合计恰好 100.00。
 // 金额是 bigint，不能用 float64 乘除（大额会丢精度，R-M6-5）。
-func assignPercentBasisPoints(items []usageByModelItem, totalCost int64) {
-	if totalCost <= 0 {
-		for i := range items {
-			items[i].Percent = 0
-		}
+type usageByUserItem struct {
+	UserID   int64   `json:"user_id"`
+	Username string  `json:"username"`
+	Cost     int64   `json:"cost"`
+	Requests int64   `json:"requests"`
+	Tokens   int64   `json:"tokens"`
+	Percent  float64 `json:"percent"`
+}
+
+type usageByUserResponse struct {
+	Items []usageByUserItem `json:"items"`
+	Total int64             `json:"total"`
+}
+
+// handleUsageStatsByUser 按用户聚合消费。非管理员由 statsWhere 收窄为本人，
+// 因此只会返回自己的一行；管理员 + logs:read 才看得到全站。
+func (h *UsageLogHandlers) handleUsageStatsByUser(w http.ResponseWriter, r *http.Request) {
+	_, where, args, ok := h.statsWhere(w, r, r.URL.Query())
+	if !ok {
 		return
 	}
-	total := decimal.NewFromInt(totalCost)
-	bps := make([]int64, len(items))
-	used := int64(0)
+	rows, err := h.logDB.QueryContext(r.Context(), `
+		SELECT user_id, COALESCE(SUM(cost), 0), count(*),
+		       COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)
+		FROM usage_logs`+where+`
+		GROUP BY user_id ORDER BY SUM(cost) DESC, user_id ASC`, args...)
+	if err != nil {
+		h.log.Error("usage stats by-user: query failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
+	defer rows.Close()
+
+	all := make([]usageByUserItem, 0, 16)
+	var totalCost int64
+	for rows.Next() {
+		var item usageByUserItem
+		if err := rows.Scan(&item.UserID, &item.Cost, &item.Requests, &item.Tokens); err != nil {
+			h.log.Error("usage stats by-user: scan failed", "error", err)
+			writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+			return
+		}
+		totalCost += item.Cost
+		all = append(all, item)
+	}
+	if err := rows.Err(); err != nil {
+		h.log.Error("usage stats by-user: rows failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
+
+	items := all
+	if len(all) > 8 {
+		other := usageByUserItem{Username: "other"}
+		for _, item := range all[8:] {
+			other.Cost += item.Cost
+			other.Requests += item.Requests
+			other.Tokens += item.Tokens
+		}
+		items = append(append([]usageByUserItem{}, all[:8]...), other)
+	}
+
+	ids := make([]int64, 0, len(items))
+	for _, item := range items {
+		if item.UserID > 0 {
+			ids = append(ids, item.UserID)
+		}
+	}
+	names, err := h.usernamesFor(r, ids)
+	if err != nil {
+		// 用户名只是展示信息：主库查询失败时保留空串（前端显示 #id），
+		// 不让整个仪表台因为一次快照查询失败而 500。
+		h.log.Warn("usage stats by-user: username lookup failed", "error", err)
+	}
 	for i := range items {
-		bps[i] = decimal.NewFromInt(items[i].Cost).
+		if items[i].UserID > 0 {
+			items[i].Username = names[items[i].UserID]
+		}
+	}
+
+	costs := make([]int64, len(items))
+	for i := range items {
+		costs[i] = items[i].Cost
+	}
+	percents := percentBasisPoints(costs, totalCost)
+	for i := range items {
+		items[i].Percent = percents[i]
+	}
+	writeJSON(w, http.StatusOK, usageByUserResponse{Items: items, Total: totalCost})
+}
+
+type usageByGroupItem struct {
+	Group    string  `json:"group"`
+	Cost     int64   `json:"cost"`
+	Requests int64   `json:"requests"`
+	Tokens   int64   `json:"tokens"`
+	Percent  float64 `json:"percent"`
+}
+
+type usageByGroupResponse struct {
+	Items []usageByGroupItem `json:"items"`
+	Total int64              `json:"total"`
+}
+
+// handleUsageStatsByGroup 按用户分组聚合消费；空分组归入 default。
+func (h *UsageLogHandlers) handleUsageStatsByGroup(w http.ResponseWriter, r *http.Request) {
+	_, where, args, ok := h.statsWhere(w, r, r.URL.Query())
+	if !ok {
+		return
+	}
+	rows, err := h.logDB.QueryContext(r.Context(), `
+		SELECT COALESCE(NULLIF("group", ''), 'default') AS group_name,
+		       COALESCE(SUM(cost), 0), count(*),
+		       COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)
+		FROM usage_logs`+where+`
+		GROUP BY 1 ORDER BY SUM(cost) DESC, 1 ASC`, args...)
+	if err != nil {
+		h.log.Error("usage stats by-group: query failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
+	defer rows.Close()
+
+	all := make([]usageByGroupItem, 0, 16)
+	var totalCost int64
+	for rows.Next() {
+		var item usageByGroupItem
+		if err := rows.Scan(&item.Group, &item.Cost, &item.Requests, &item.Tokens); err != nil {
+			h.log.Error("usage stats by-group: scan failed", "error", err)
+			writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+			return
+		}
+		totalCost += item.Cost
+		all = append(all, item)
+	}
+	if err := rows.Err(); err != nil {
+		h.log.Error("usage stats by-group: rows failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
+
+	items := all
+	if len(all) > 8 {
+		other := usageByGroupItem{Group: "other"}
+		for _, item := range all[8:] {
+			other.Cost += item.Cost
+			other.Requests += item.Requests
+			other.Tokens += item.Tokens
+		}
+		items = append(append([]usageByGroupItem{}, all[:8]...), other)
+	}
+
+	costs := make([]int64, len(items))
+	for i := range items {
+		costs[i] = items[i].Cost
+	}
+	percents := percentBasisPoints(costs, totalCost)
+	for i := range items {
+		items[i].Percent = percents[i]
+	}
+	writeJSON(w, http.StatusOK, usageByGroupResponse{Items: items, Total: totalCost})
+}
+
+func assignPercentBasisPoints(items []usageByModelItem, totalCost int64) {
+	costs := make([]int64, len(items))
+	for i := range items {
+		costs[i] = items[i].Cost
+	}
+	percents := percentBasisPoints(costs, totalCost)
+	for i := range items {
+		items[i].Percent = percents[i]
+	}
+}
+
+// percentBasisPoints 是百分比分配的共用实现；调用方按自己的元素类型写回。
+func percentBasisPoints(costs []int64, totalCost int64) []float64 {
+	out := make([]float64, len(costs))
+	if totalCost <= 0 {
+		return out
+	}
+	total := decimal.NewFromInt(totalCost)
+	bps := make([]int64, len(costs))
+	used := int64(0)
+	for i, cost := range costs {
+		bps[i] = decimal.NewFromInt(cost).
 			Mul(decimal.NewFromInt(10000)).
 			DivRound(total, 0).IntPart()
 		used += bps[i]
@@ -1670,9 +1879,10 @@ func assignPercentBasisPoints(items []usageByModelItem, totalCost int64) {
 	if residual := int64(10000) - used; residual != 0 && len(bps) > 0 {
 		bps[0] += residual
 	}
-	for i := range items {
-		items[i].Percent = float64(bps[i]) / 100
+	for i := range bps {
+		out[i] = float64(bps[i]) / 100
 	}
+	return out
 }
 
 type usageTimeseriesItem struct {

@@ -229,9 +229,9 @@ func TestSessionAuthBearerRejectsUnusableToken(t *testing.T) {
 			authz:  "Bearer " + token,
 		},
 		{
-			name:   "legacy sk- token rejected on management path",
+			name:   "unknown token prefix rejected on management path",
 			lookup: &fakeTokenLookup{metas: map[string]*auth.TokenMeta{}},
-			authz:  "Bearer sk-not-a-management-token",
+			authz:  "Bearer xsk-not-a-management-token",
 		},
 		{
 			name:   "wrong auth scheme",
@@ -563,5 +563,26 @@ func TestOriginRefererCheckHostFallback(t *testing.T) {
 	req.Header.Set("Origin", "https://other.example.com")
 	if rr := serve(h, req); rr.Code != http.StatusForbidden {
 		t.Fatalf("不同 Host status = %d，期望 403", rr.Code)
+	}
+}
+
+func TestBearerCredentialPrefixes(t *testing.T) {
+	cases := []struct {
+		header string
+		want   bool
+	}{
+		{"Bearer sk-abc", true},
+		{"Bearer nkt-abc", true},
+		{"Bearer xsk-abc", false},
+		{"Bearer sk-", false},
+		{"Bearer nkt-", false},
+		{"Basic sk-abc", false},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", tc.header)
+		if _, ok := bearerCredential(req); ok != tc.want {
+			t.Fatalf("bearerCredential(%q) = %v, want %v", tc.header, ok, tc.want)
+		}
 	}
 }

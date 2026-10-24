@@ -2,7 +2,7 @@
 //
 // 端点面（D2-01..08 冻结）：
 //   - 挂根 mux 的精确模式，绕过 SessionAuth/CSRF/OriginRefererCheck；
-//   - 认证只接受 Authorization: Bearer nkt-…，不接受 Cookie / ?key= / x-api-key；
+//   - 认证只接受 Authorization: Bearer sk-…（兼容历史 nkt-），不接受 Cookie / ?key= / x-api-key；
 //   - token 级数据范围（user_id + token_id），固定最近 1000 条，无分页/筛选；
 //   - other / retry_chain 一律按 user 视图投影，error_message 固定打码；
 //   - 限流桶 rateLimit:v2:token:RO:<tokenID> 60 次/分钟，Redis 故障 fail-open。
@@ -75,7 +75,7 @@ func (h *UsageLogHandlers) handleLogsByKey(w http.ResponseWriter, r *http.Reques
 
 	raw, ok := bearerCredential(r)
 	if !ok {
-		// 缺头/形态不对（含 sk-、Basic、Cookie、?key=）一律同一 401，
+		// 缺头/形态不对（含未知前缀、Basic、Cookie、?key=）一律同一 401，
 		// 不区分原因，避免成为凭据形态与存在性的探测信道。
 		writeInvalidToken401(w)
 		return

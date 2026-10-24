@@ -175,13 +175,45 @@ func parseAnthropicMessages(raws []json.RawMessage) ([]contract.Message, error) 
 			role = contract.RoleUser
 		case "assistant":
 			role = contract.RoleAssistant
+		case "system":
+			// 规范 Anthropic 把 system 放在顶层，但 Claude Code 等客户端
+			// 会在 messages 数组里再带一条 system；归一化到 IR 的 system
+			// 角色，出站时再合并回顶层（Anthropic）或 system 消息（OpenAI）。
+			role = contract.RoleSystem
+		case "developer":
+			role = contract.RoleDeveloper
 		default:
-			// Anthropic 只有 user/assistant；system 已在顶层。
 			return nil, fmt.Errorf("messages[%d]: %w", i, paramErrf("不支持的消息角色 %q", msg.Role))
 		}
 		parts, err := parseAnthropicContent(msg.Content)
 		if err != nil {
 			return nil, fmt.Errorf("messages[%d]: %w", i, err)
+		}
+		// Anthropic 把 tool_result 放在 user 消息里；IR/OpenAI 用独立的 tool
+		// 角色。这里拆成两条消息，否则跨协议编码器会拒绝 user 里的
+		// PartToolResult（W18-B 的 tool_result 只能出现在 tool 角色消息）。
+		var toolParts, otherParts []contract.ContentPart
+		for _, part := range parts {
+			if part.Kind == contract.PartToolResult {
+				toolParts = append(toolParts, part)
+			} else {
+				otherParts = append(otherParts, part)
+			}
+		}
+		if len(toolParts) > 0 {
+			if role != contract.RoleUser {
+				return nil, fmt.Errorf("messages[%d]: %w", i, paramErrf("tool_result 只能出现在 user 消息"))
+			}
+			// OpenAI/DeepSeek 要求 tool 消息**紧跟**带 tool_calls 的 assistant
+			// 消息：同一 Anthropic user 消息里的正文若排在 tool 前面，就会把
+			// tool 与 assistant 隔开，上游直接 400（"messages with role 'tool'
+			// must be a response to a preceding message with 'tool_calls'"）。
+			// 因此先写 tool，再写同一 user turn 的其余正文；内容本身不丢失。
+			out = append(out, contract.Message{Role: contract.RoleTool, Content: toolParts})
+			if len(otherParts) > 0 {
+				out = append(out, contract.Message{Role: contract.RoleUser, Content: otherParts})
+			}
+			continue
 		}
 		out = append(out, contract.Message{Role: role, Content: parts})
 	}

@@ -730,3 +730,37 @@ func TestIRParseOpenAIRequestRejectsUnencodableToolMessages(t *testing.T) {
 		t.Fatalf("合法 tool 消息编码失败：%v", err)
 	}
 }
+
+func TestOpenAIEncoderEchoesEmptyReasoningForToolCalls(t *testing.T) {
+	req := &contract.Request{
+		Model:     "deepseek-flash",
+		RawFormat: FormatAnthropicMessages,
+		Messages: []contract.Message{{
+			Role: contract.RoleAssistant,
+			Content: []contract.ContentPart{{
+				Kind: contract.PartToolCall,
+				Text: `{"command":"pwd"}`,
+				Meta: map[string]any{"id": "call_1", "name": "Bash"},
+			}},
+		}},
+	}
+	body, err := BuildOpenAIRequestBody(req)
+	if err != nil {
+		t.Fatalf("BuildOpenAIRequestBody: %v", err)
+	}
+	var out struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Messages) != 1 {
+		t.Fatalf("messages = %d", len(out.Messages))
+	}
+	if out.Messages[0]["reasoning_content"] != "" {
+		t.Fatalf("assistant tool_calls 必须回传空 reasoning_content：%v", out.Messages[0])
+	}
+	if out.Messages[0]["tool_calls"] == nil {
+		t.Fatalf("tool_calls missing: %v", out.Messages[0])
+	}
+}

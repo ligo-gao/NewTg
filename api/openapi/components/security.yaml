@@ -10,6 +10,6 @@ securitySchemes:
   bearerToken:
     type: http
     scheme: bearer
-    bearerFormat: "nkt-<token>"
+    bearerFormat: "sk-<token>"
     description: |
-      API 令牌（明文仅创建时展示一次）。请求头：Authorization: Bearer nkt-…
+      API 令牌（明文仅创建时展示一次）。请求头：Authorization: Bearer sk-…（历史令牌可能为 nkt-）

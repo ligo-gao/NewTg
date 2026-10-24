@@ -999,3 +999,126 @@ func TestIntegrationAuditLogsScoping(t *testing.T) {
 		t.Fatalf("bad audit category status = %d, want 422", rec.Code)
 	}
 }
+
+// --- 仪表台核心指标与构成 ------------------------------------------------
+
+func TestIntegrationUsageStatsLatencyAndActiveUsers(t *testing.T) {
+	env := newUsageTestEnv(t)
+	userA, _ := ensureUsageTestUser(t, env, "lt")
+	userB, _ := ensureUsageTestUser(t, env, "lu")
+	group := fmt.Sprintf("lat-%d", time.Now().UnixNano()%1_000_000_000)
+	env.seed(t, usageSeed{UserID: userA, Group: group, Status: 1, Cost: 10, LatencyMS: 100})
+	env.seed(t, usageSeed{UserID: userA, Group: group, Status: 1, Cost: 10, LatencyMS: 200})
+	env.seed(t, usageSeed{UserID: userB, Group: group, Status: 1, Cost: 10, LatencyMS: 300})
+	// 失败请求的 latency 不参与分位；它仍计入成功率与活跃用户。
+	env.seed(t, usageSeed{UserID: userB, Group: group, Status: 2, Cost: 10, LatencyMS: 5000})
+
+	type summary struct {
+		P50LatencyMS   int64 `json:"p50_latency_ms"`
+		P95LatencyMS   int64 `json:"p95_latency_ms"`
+		LatencySamples int64 `json:"latency_samples"`
+		ActiveUsers    int64 `json:"active_users"`
+	}
+
+	path := "/api/usage-stats/summary?group=" + group
+	rec := env.do(t, http.MethodGet, path, usageAdminPrincipal(1, rbac.PermLogsRead))
+	all := decodeUsageJSON[summary](t, rec)
+	// [100,200,300] → p50=200, p95=290。
+	if all.P50LatencyMS != 200 || all.P95LatencyMS != 290 || all.LatencySamples != 3 || all.ActiveUsers != 2 {
+		t.Fatalf("admin latency/active = %+v, want p50=200 p95=290 samples=3 active=2", all)
+	}
+
+	// 普通用户只看自己的两行：[100,200] → p50=150, p95=195。
+	rec = env.do(t, http.MethodGet, path, userPrincipal(userA))
+	mine := decodeUsageJSON[summary](t, rec)
+	if mine.P50LatencyMS != 150 || mine.P95LatencyMS != 195 || mine.LatencySamples != 2 || mine.ActiveUsers != 1 {
+		t.Fatalf("user latency/active = %+v, want p50=150 p95=195 samples=2 active=1", mine)
+	}
+
+	// 空集必须返回 0，而不是 NaN 或 NULL 扫描错误。
+	rec = env.do(t, http.MethodGet, "/api/usage-stats/summary?username=nobody_latency__", usageAdminPrincipal(1, rbac.PermLogsRead))
+	empty := decodeUsageJSON[summary](t, rec)
+	if empty.P50LatencyMS != 0 || empty.P95LatencyMS != 0 || empty.LatencySamples != 0 || empty.ActiveUsers != 0 {
+		t.Fatalf("empty latency/active = %+v, want zeros", empty)
+	}
+}
+
+func TestIntegrationUsageStatsByUser(t *testing.T) {
+	env := newUsageTestEnv(t)
+	userA, nameA := ensureUsageTestUser(t, env, "bu")
+	userB, nameB := ensureUsageTestUser(t, env, "bv")
+	group := fmt.Sprintf("bu-%d", time.Now().UnixNano()%1_000_000_000)
+	env.seed(t, usageSeed{UserID: userA, Group: group, Status: 1, Cost: 70})
+	env.seed(t, usageSeed{UserID: userB, Group: group, Status: 1, Cost: 30})
+
+	type item struct {
+		UserID   int64   `json:"user_id"`
+		Username string  `json:"username"`
+		Cost     int64   `json:"cost"`
+		Requests int64   `json:"requests"`
+		Tokens   int64   `json:"tokens"`
+		Percent  float64 `json:"percent"`
+	}
+	type envelope struct {
+		Items []item `json:"items"`
+		Total int64  `json:"total"`
+	}
+
+	path := "/api/usage-stats/by-user?group=" + group
+	rec := env.do(t, http.MethodGet, path, usageAdminPrincipal(1, rbac.PermLogsRead))
+	body := decodeUsageJSON[envelope](t, rec)
+	if rec.Code != http.StatusOK || body.Total != 100 || len(body.Items) != 2 {
+		t.Fatalf("by-user = %d total=%d items=%d body=%s", rec.Code, body.Total, len(body.Items), rec.Body.String())
+	}
+	byName := map[string]item{}
+	for _, it := range body.Items {
+		byName[it.Username] = it
+	}
+	if byName[nameA].Cost != 70 || byName[nameA].Percent != 70 {
+		t.Fatalf("user A row = %+v", byName[nameA])
+	}
+	if byName[nameB].Cost != 30 || byName[nameB].Percent != 30 {
+		t.Fatalf("user B row = %+v", byName[nameB])
+	}
+
+	// 非管理员只能看到自己，百分比为 100。
+	rec = env.do(t, http.MethodGet, path, userPrincipal(userA))
+	mine := decodeUsageJSON[envelope](t, rec)
+	if len(mine.Items) != 1 || mine.Items[0].Username != nameA || mine.Items[0].Cost != 70 || mine.Items[0].Percent != 100 {
+		t.Fatalf("user by-user = %+v", mine)
+	}
+}
+
+func TestIntegrationUsageStatsByGroup(t *testing.T) {
+	env := newUsageTestEnv(t)
+	userA, _ := ensureUsageTestUser(t, env, "bg")
+	userB, _ := ensureUsageTestUser(t, env, "bh")
+	groupA := fmt.Sprintf("ga-%d", time.Now().UnixNano()%1_000_000_000)
+	groupB := fmt.Sprintf("gb-%d", time.Now().UnixNano()%1_000_000_000)
+	env.seed(t, usageSeed{UserID: userA, Group: groupA, Status: 1, Cost: 60})
+	env.seed(t, usageSeed{UserID: userB, Group: groupB, Status: 1, Cost: 40})
+
+	type item struct {
+		Group   string  `json:"group"`
+		Cost    int64   `json:"cost"`
+		Percent float64 `json:"percent"`
+	}
+	type envelope struct {
+		Items []item `json:"items"`
+		Total int64  `json:"total"`
+	}
+
+	for _, tc := range []struct {
+		group string
+		cost  int64
+	}{{groupA, 60}, {groupB, 40}} {
+		rec := env.do(t, http.MethodGet, "/api/usage-stats/by-group?group="+tc.group, usageAdminPrincipal(1, rbac.PermLogsRead))
+		body := decodeUsageJSON[envelope](t, rec)
+		if rec.Code != http.StatusOK || body.Total != tc.cost || len(body.Items) != 1 {
+			t.Fatalf("by-group(%s) = %d total=%d items=%d", tc.group, rec.Code, body.Total, len(body.Items))
+		}
+		if body.Items[0].Group != tc.group || body.Items[0].Cost != tc.cost || body.Items[0].Percent != 100 {
+			t.Fatalf("by-group(%s) item = %+v", tc.group, body.Items[0])
+		}
+	}
+}

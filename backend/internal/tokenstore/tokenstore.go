@@ -2,7 +2,7 @@
 //
 // 设计权威：docs/modules-02-API令牌-子功能设计.md（§1 字段、§2.9 自动分组、
 // §2.10 跨组重试、§2.13 自读用量）、docs/platform-01-数据库字段汇总.md §2
-// （api_tokens 15 列）。本计划冻结项：key = nkt- + 48 位 Base62（crypto/rand），
+// （api_tokens 15 列）。本计划冻结项：key = sk- + 48 位 Base62（crypto/rand），
 // DB 只存 SHA-256(完整明文)（GC-9）；列表只按 name 搜索（R-08）；缓存 TTL 60s +
 // token:changed:<id> pub/sub 即时失效（GC-11）。
 //
@@ -34,7 +34,7 @@ import (
 
 const (
 	// KeyPrefix 是冻结的令牌前缀（security-03 §2.6）。
-	KeyPrefix = "nkt-"
+	KeyPrefix = "sk-"
 	// KeyRandomLength 是前缀后的 Base62 随机串长度。
 	KeyRandomLength = 48
 
@@ -225,7 +225,7 @@ const base62Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrst
 // GenerateKey 生成 api_tokens 的明文/哈希/掩码。
 //
 // 随机源为 crypto/rand；使用拒绝采样（丢弃 >=248 的字节）避免取模偏置。
-// keyHash 哈希的是**完整明文**（含 nkt- 前缀），与 auth.HashTokenKey 同口径。
+// keyHash 哈希的是**完整明文**（含 sk- 前缀），与 auth.HashTokenKey 同口径。
 func GenerateKey() (plain, keyHash, masked string, err error) {
 	var sb strings.Builder
 	sb.Grow(len(KeyPrefix) + KeyRandomLength)
@@ -252,7 +252,7 @@ func GenerateKey() (plain, keyHash, masked string, err error) {
 	return plain, auth.HashTokenKey(plain), MaskedKey(), nil
 }
 
-// MaskedKey 返回列表/详情使用的固定掩码：nkt- + 24×•（U+2022）。
+// MaskedKey 返回列表/详情使用的固定掩码：sk- + 24×•（U+2022）。
 func MaskedKey() string { return KeyPrefix + strings.Repeat("•", 24) }
 
 // ---------------------------------------------------------------------------
