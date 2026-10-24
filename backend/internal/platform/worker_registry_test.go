@@ -5,7 +5,7 @@ package platform
 // 覆盖：
 //   - 同名任务启动期失败；
 //   - 白名单恰好是 billing-06 §13.5.1 冻结的 5 个任务 + spec §5.2.1 要求的
-//     holiday_sync（手工同步节假日日历）；
+//     holiday_sync（手工同步节假日日历）+ 上游对账补跑 upstream_usage_reconcile；
 //   - 只有绑定 Run 的任务才能被手动触发（否则触发会留下永不执行的 pending 行）。
 
 import (

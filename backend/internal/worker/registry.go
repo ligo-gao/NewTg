@@ -9,7 +9,8 @@
 //     外部循环（Scheduled=false 且 Run=nil）只出现在目录里，调度器不碰它们。
 //
 // 【为什么静态注册表而不是 DB 目录】任务名、周期、超时与白名单是代码契约
-// （billing-06 §13.5.1 冻结 5 个可手动触发任务）。允许 DB 增删任务等于开放
+// （billing-06 §13.5.1 冻结的 5 个 + spec 逐项追加的 holiday_sync、
+// upstream_usage_reconcile）。允许 DB 增删任务等于开放
 // 「任意任务名执行」入口，与 §13.5「不提供任意 SQL/命令/函数名」冲突。
 package worker
 
