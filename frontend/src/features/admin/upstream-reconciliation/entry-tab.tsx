@@ -405,16 +405,14 @@ export function EntryTab({ canManage }: { canManage: boolean }) {
     if (built.items.length === 0) return
 
     setValidationError(null)
-    // 基线取**提交时**的行快照，而不是 await 之后闭包里的 rows：保存期间
-    // 任何能把行改掉的路径都会让脏标记与基线脱节。
-    const submitted = rows
     try {
       const result = await saveMutation.mutateAsync({
         accountId: loaded.accountId,
         items: built.items,
       })
-      // 立即以「已保存」为基线，脏标记无需等待重取即可清除。
-      setBaseline(submitted)
+      // 立即以「已保存」为基线，脏标记无需等待重取即可清除。保存期间
+      // 账号/日期/Load 都被禁用，行不会被替换，这里读到的仍是提交时的行。
+      setBaseline(rows)
       setSavedCount(result.updated)
     } catch {
       // 失败文案由 `saveMutation.error` 渲染（RFC 7807 detail）。

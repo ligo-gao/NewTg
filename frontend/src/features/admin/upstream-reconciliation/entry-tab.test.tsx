@@ -385,8 +385,9 @@ describe('snapshot entry tab', () => {
 
     gate.resolve()
     await waitFor(() => expect(delivered).toBe(true))
-    // 让响应真正落到查询缓存并触发同步效果。
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    // 必须等到响应真正落到缓存并重渲染（加载提示消失）：在响应抵达前，
+    // 表格本来就只剩新增的这一行，三个断言会在「守卫被删掉」时同样成立。
+    await waitFor(() => expect(screen.queryByText('Loading snapshot…')).toBeNull())
 
     const rows = screen.getAllByTestId('entry-model-row')
     expect(rows).toHaveLength(1)
@@ -414,6 +415,29 @@ describe('snapshot entry tab', () => {
 
     // 拒绝丢弃后，受控 select 回到原值，行与编辑值不变。
     await waitFor(() => expect(select.value).toBe('1'))
+    expect(output.value).toBe('1200')
+    expect(screen.getByText('1 unsaved row(s)')).toBeTruthy()
+  })
+
+  it('keeps the date and edits when its discard confirmation is declined', async () => {
+    installSnapshotApi()
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+
+    await renderWithProviders(<EntryTab canManage />, ['common', 'admin'])
+    const user = userEvent.setup()
+    await loadDate('2026-10-23')
+
+    const rows = await screen.findAllByTestId('entry-model-row')
+    const first = rows[0]
+    if (first === undefined) throw new Error('missing first row')
+    const output = within(first).getByLabelText('Output tokens') as HTMLInputElement
+    await user.clear(output)
+    await user.type(output, '1200')
+
+    const dateInput = screen.getByLabelText('Usage date') as HTMLInputElement
+    fireEvent.change(dateInput, { target: { value: '2026-10-22' } })
+
+    await waitFor(() => expect(dateInput.value).toBe('2026-10-23'))
     expect(output.value).toBe('1200')
     expect(screen.getByText('1 unsaved row(s)')).toBeTruthy()
   })
