@@ -10,17 +10,17 @@ export interface ModelsPageProps {
   onSearchChange: (next: ModelsSearch, replace?: boolean) => void
 }
 
-export function ModelsPage({
-  search: _search,
-  onSearchChange: _onSearchChange,
-}: ModelsPageProps) {
+export function ModelsPage({ search }: ModelsPageProps) {
   return (
     <section className="flex flex-col gap-3">
-      <h1 className="text-2xl font-semibold">Model Library</h1>
-      <p className="text-muted">
+      <h1 className="text-page-title font-semibold text-ink-1">Model Library</h1>
+      <p className="text-body text-ink-2">
         Browse every model this gateway exposes, compare measured performance,
         and copy integration snippets.
       </p>
+      {search.q !== '' ? (
+        <p className="text-body text-ink-2">Searching for “{search.q}”.</p>
+      ) : null}
     </section>
   )
 }

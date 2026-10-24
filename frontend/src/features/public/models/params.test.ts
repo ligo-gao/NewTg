@@ -125,6 +125,16 @@ describe('models URL contract', () => {
     expect(validateModelsSearch({ q: 'x'.repeat(200) }).q).toHaveLength(128)
   })
 
+  it('caps capability and vendor lists at 50 entries', () => {
+    const caps = Array.from({ length: 60 }, (_, i) => `cap-${i}`).join(',')
+    const vendors = Array.from({ length: 60 }, (_, i) => `vendor-${i}`).join(',')
+    const search = validateModelsSearch({ cap: caps, vendor: vendors })
+    expect(search.cap.split(',')).toHaveLength(50)
+    expect(search.vendor.split(',')).toHaveLength(50)
+    expect(search.cap.split(',')[49]).toBe('cap-49')
+    expect(search.vendor.split(',')[49]).toBe('vendor-49')
+  })
+
   it('round-trips through the canonical form and detects dirty URLs', () => {
     const search = validateModelsSearch({
       q: 'gpt',
