@@ -30,6 +30,8 @@ x-app-env: &app-env
   PERF_METRICS_ENABLED: "${PERF_METRICS_ENABLED:-true}"
   PERF_METRICS_FLUSH_INTERVAL: "${PERF_METRICS_FLUSH_INTERVAL:-5m}"
   PERF_METRICS_RETENTION_DAYS: "${PERF_METRICS_RETENTION_DAYS:-400}"
+  # 独立指标库（与主库/日志库分离；未配置时 /api/model-perf 会 fail-closed）
+  PERF_METRICS_DSN: "postgres://newtg_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_METRICS_DB:-newtg_metrics}?sslmode=${DATABASE_TLS:-disable}"
   # 演示模式部署侧覆盖（控制端 W13 裁决 I2）：true/1 强制开启，false/0 强制
   # 关闭，空 = 跟随站点设置 site.demo.enabled。必须放在共享 env 里：gateway
   # 的守卫/额度/计费与 worker 的兜底结算要读到**同一个**有效值；只给一个角色
@@ -108,6 +110,8 @@ services:
       RUN_MODE: migrate
       DATABASE_URL: "postgres://newtg_migrate:${POSTGRES_MIGRATE_PASSWORD:?set POSTGRES_MIGRATE_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_DB:-newtg}?sslmode=${DATABASE_TLS:-disable}"
       DB_LOGS_DSN: "postgres://newtg_migrate:${POSTGRES_MIGRATE_PASSWORD:?set POSTGRES_MIGRATE_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_LOGS_DB:-newtg_logs}?sslmode=${DATABASE_TLS:-disable}"
+      # 迁移用 DDL 角色；运行时 gateway/worker 用 x-app-env 里的 newtg_app。
+      PERF_METRICS_DSN: "postgres://newtg_migrate:${POSTGRES_MIGRATE_PASSWORD:?set POSTGRES_MIGRATE_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_METRICS_DB:-newtg_metrics}?sslmode=${DATABASE_TLS:-disable}"
     depends_on:
       postgres:
         condition: service_healthy
