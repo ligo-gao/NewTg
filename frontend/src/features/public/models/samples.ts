@@ -213,6 +213,17 @@ function escapeShellSingleQuotes(value: string): string {
   return value.replace(/'/g, "'\\''")
 }
 
+/**
+ * 把值安全嵌入 Python / JavaScript 的双引号字面量。模型 ID 由上游目录
+ * 提供，可能带引号或反斜杠；不转义会生成语法错误的示例代码。
+ */
+function escapeDoubleQuoted(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+}
+
 function curlSample(spec: CallSpec, target: SampleTarget): string {
   const url = `${openaiBase(target.baseUrl)}${spec.path}`
   const auth = `  -H "Authorization: Bearer ${TOKEN}" \\`
@@ -239,7 +250,7 @@ function curlSample(spec: CallSpec, target: SampleTarget): string {
 }
 
 function pythonSample(spec: CallSpec, target: SampleTarget): string {
-  const modelId = String(spec.body.model)
+  const modelId = escapeDoubleQuoted(String(spec.body.model))
   const base = openaiBase(target.baseUrl)
 
   switch (spec.kind) {
@@ -348,7 +359,7 @@ print(resp.json()["results"])`
 }
 
 function nodeSample(spec: CallSpec, target: SampleTarget): string {
-  const modelId = String(spec.body.model)
+  const modelId = escapeDoubleQuoted(String(spec.body.model))
   const base = openaiBase(target.baseUrl)
   const client = `import OpenAI from "openai";
 

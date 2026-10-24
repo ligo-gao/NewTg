@@ -1,11 +1,21 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { PublicModelCard } from '@/features/public/pricing/api'
 import { useToastStore } from '@/shared/ui/toast'
 import { renderWithProviders } from '@/test-support/providers'
 
 import { CallDialog } from './call-dialog'
+
+afterEach(() => {
+  // `Object.defineProperty` is not undone by vitest's `restoreMocks`; remove
+  // the clipboard stub explicitly so it cannot leak into another suite.
+  Reflect.deleteProperty(
+    navigator as unknown as Record<string, unknown>,
+    'clipboard',
+  )
+  vi.restoreAllMocks()
+})
 
 const MODEL: PublicModelCard = {
   model_id: 'openai/gpt-5',
@@ -52,6 +62,8 @@ describe('CallDialog', () => {
 
     expect(screen.getByRole('dialog')).toBeTruthy()
     expect(screen.getByRole('heading', { name: 'Call GPT-5' })).toBeTruthy()
+    // Tablist has its own label instead of reusing the step-2 heading text.
+    expect(screen.getByRole('tablist', { name: 'Call GPT-5' })).toBeTruthy()
     expect(screen.getByText('openai/gpt-5 · POST /embeddings')).toBeTruthy()
     expect(screen.getByText(/https:\/\/gateway\.example\.com\/v1\/embeddings/)).toBeTruthy()
   })
@@ -155,6 +167,30 @@ describe('CallDialog', () => {
       tone: 'success',
       message: 'Copied',
     })
+  })
+
+  it('keeps every step reachable inside a bounded scroll container', async () => {
+    await renderWithProviders(
+      <CallDialog
+        open
+        onOpenChange={vi.fn()}
+        model={MODEL}
+        kind="chat"
+        serverAddress="https://gateway.example.com"
+        isLoggedIn
+      />,
+      ['public'],
+    )
+
+    const scroll = screen.getByTestId('call-dialog-scroll')
+    expect(scroll.className).toContain('overflow-y-auto')
+    expect(scroll.className).toContain('max-h-[72vh]')
+    // The response step scrolls with the body; the close control stays pinned
+    // outside the scroll container.
+    expect(scroll.textContent).toContain('Read the response')
+    expect(
+      scroll.contains(screen.getByRole('button', { name: 'Close' })),
+    ).toBe(false)
   })
 
   it('closes from the labelled close button', async () => {

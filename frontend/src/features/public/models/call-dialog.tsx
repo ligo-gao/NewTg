@@ -6,7 +6,7 @@
  * 密钥一律是占位符，base URL 只来自 `serverAddress`。
  */
 
-import { useEffect, useId, useState } from 'react'
+import { useId, useState } from 'react'
 
 import type { PublicModelCard } from '@/features/public/pricing/api'
 import { sampleTarget } from '@/features/public/pricing/code-samples'
@@ -45,15 +45,24 @@ export function CallDialog({
   const { t } = useI18n()
   const [tab, setTab] = useState<CallTab>('curl')
   const [stream, setStream] = useState(false)
-  const panelId = useId()
-  const push = useToastStore((state) => state.push)
-
-  // demo 口径：每次打开都回到 cURL + 非流式，换模型时也不沿用上一个模型的选择。
-  useEffect(() => {
-    if (!open) return
+  // demo 口径：每次打开都回到 cURL + 非流式。重置放在渲染期（state during
+  // render）而不是 effect：effect 在首帧之后才跑，重开时会先把上一个模型
+  // 的 Python/流式状态画出来一帧。
+  const [wasOpen, setWasOpen] = useState(open)
+  const [openedModel, setOpenedModel] = useState(model.model_id)
+  if (open && (!wasOpen || openedModel !== model.model_id)) {
+    setWasOpen(true)
+    setOpenedModel(model.model_id)
     setTab('curl')
     setStream(false)
-  }, [open, model.model_id])
+  } else if (!open && wasOpen) {
+    setWasOpen(false)
+  }
+  const panelId = useId()
+  const push = useToastStore((state) => state.push)
+  const heading = t('public.models.call.title', {
+    name: model.display_name || model.model_id,
+  })
 
   const spec = callSpec(kind, model.model_id, kind === 'chat' && stream)
   const target = sampleTarget(serverAddress)
@@ -73,14 +82,18 @@ export function CallDialog({
     <Dialog
       open={open}
       onOpenChange={onOpenChange}
-      title={t('public.models.call.title', {
-        name: model.display_name || model.model_id,
-      })}
+      title={heading}
       description={`${model.model_id} · ${spec.method} ${spec.path}`}
       panelClassName="max-w-none! xl:max-w-[880px]!"
       closeLabel={t('public.models.call.close')}
     >
-      <ol className="flex flex-col gap-5">
+      {/* Dialog 自身不滚动内容；这里给正文一个高度上限，短屏下标题与关闭
+          按钮保持固定，三步内容在正文内滚动，最后一步始终可达。 */}
+      <div
+        data-testid="call-dialog-scroll"
+        className="max-h-[72vh] overflow-y-auto pr-1"
+      >
+        <ol className="flex flex-col gap-5">
         <li className="flex flex-col gap-2">
           <div className="flex items-center gap-2">
             <span
@@ -122,7 +135,7 @@ export function CallDialog({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div
               role="tablist"
-              aria-label={t('public.models.call.step_send')}
+              aria-label={heading}
               onKeyDown={handleTabListKeyDown}
               className="inline-flex items-center gap-1 rounded-lg border border-border-hairline bg-surface-subtle p-1"
             >
@@ -213,11 +226,12 @@ export function CallDialog({
             <code>{spec.response}</code>
           </pre>
         </li>
-      </ol>
+        </ol>
 
-      <p className="mt-4 text-meta text-ink-3">
-        {t('public.models.call.note')}
-      </p>
+        <p className="mt-4 text-meta text-ink-3">
+          {t('public.models.call.note')}
+        </p>
+      </div>
     </Dialog>
   )
 }

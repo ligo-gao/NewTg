@@ -116,6 +116,17 @@ describe('callSample', () => {
     expect(sample).not.toContain(`"model": "vendor/it's-model"`)
   })
 
+  it('escapes quote-bearing model ids in the Python and Node samples', () => {
+    const spec = callSpec('chat', 'vendor/quote"model', false)
+
+    expect(callSample('python', spec, CONFIGURED)).toContain(
+      'model="vendor/quote\\"model"',
+    )
+    expect(callSample('node', spec, CONFIGURED)).toContain(
+      'model: "vendor/quote\\"model"',
+    )
+  })
+
   it('uses python requests and node fetch for rerank because the OpenAI SDK has no rerank', () => {
     const spec = callSpec('rerank', 'cohere/rerank-v3', false)
 
