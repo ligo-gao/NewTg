@@ -83,6 +83,22 @@ func requestMetricsList(
 	return rr
 }
 
+// assertBatchWindow 断言批量读收到的窗口长度与「end 约等于当前时刻」。
+// start 由 handler 用 end.Add(-window) 精确派生，因此长度可以精确比较；
+// end 与 now 之间留一分钟容差（请求调度/CI 抖动的上界）。
+func assertBatchWindow(t *testing.T, metrics *fakePublicModelMetrics, want time.Duration) {
+	t.Helper()
+	if !metrics.batchCalled {
+		t.Fatal("LoadPublicModelMetricsBatch 未被调用")
+	}
+	if got := metrics.batchEnd.Sub(metrics.batchStart); got != want {
+		t.Fatalf("batch window = %v, want %v", got, want)
+	}
+	if delta := time.Since(metrics.batchEnd); delta < -time.Minute || delta > time.Minute {
+		t.Fatalf("batch end = %v, not close to now (delta=%v)", metrics.batchEnd, delta)
+	}
+}
+
 func TestPublicMetricsListOnlyReturnsModelsWithData(t *testing.T) {
 	metrics := &fakePublicModelMetrics{batchData: map[string]store.PublicModelMetrics{
 		"openai/gpt-5": {
@@ -117,6 +133,7 @@ func TestPublicMetricsListOnlyReturnsModelsWithData(t *testing.T) {
 	if body.Range != "7d" {
 		t.Fatalf("range = %q", body.Range)
 	}
+	assertBatchWindow(t, metrics, 7*24*time.Hour)
 	if len(body.Items) != 2 {
 		t.Fatalf("items = %d, want 2 (body=%s)", len(body.Items), rr.Body.String())
 	}
@@ -161,6 +178,7 @@ func TestPublicMetricsListPassesVisibleModelsToBatch(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
 	}
+	assertBatchWindow(t, metrics, 24*time.Hour)
 
 	// 停用档案（status=2）的 image/dall-e 必须与列表端点一样被剔除，
 	// 不得进入 usage_logs 或 model_performance_tests 的批量查询。
@@ -269,5 +287,90 @@ func TestPublicMetricsListRejectsInvalidRange(t *testing.T) {
 	rr := requestMetricsList(t, handlers, "?range=30d", nil)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 (body=%s)", rr.Code, rr.Body.String())
+	}
+}
+
+func TestPublicMetricsListEmptyCatalogReturnsEmptyItems(t *testing.T) {
+	catalog := fixtureCatalog()
+	catalog.Models = nil
+	metrics := &fakePublicModelMetrics{}
+	perf := &fakePublicPerfStore{}
+	handlers := newMetricsListHandler(t, catalog, metrics, perf)
+
+	rr := requestMetricsList(t, handlers, "?range=7d", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var body PublicModelMetricsList
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// null 与 [] 在解码后分别是 nil 与非 nil 空切片：空目录必须下发 []
+	// （契约 required + 前端按数组渲染）。
+	if body.Items == nil {
+		t.Fatalf("items = null, want []（body=%s）", rr.Body.String())
+	}
+	if len(body.Items) != 0 {
+		t.Fatalf("items = %d, want 0", len(body.Items))
+	}
+	if metrics.batchCalled {
+		t.Fatal("空目录不应查询 usage_logs")
+	}
+	if len(perf.batchModels) != 0 {
+		t.Fatalf("空目录不应查询测速表: %v", perf.batchModels)
+	}
+}
+
+func TestPublicMetricsListDefaultsTo24h(t *testing.T) {
+	metrics := &fakePublicModelMetrics{}
+	handlers := newMetricsTestHandlerWithPerf(t, metrics, nil)
+
+	rr := requestMetricsList(t, handlers, "", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var body PublicModelMetricsList
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Range != "24h" {
+		t.Fatalf("range = %q, want 24h", body.Range)
+	}
+	assertBatchWindow(t, metrics, 24*time.Hour)
+}
+
+func TestPublicMetricsListETagChangesWithRangeAndPayload(t *testing.T) {
+	perf := &fakePublicPerfStore{batchTests: map[string]store.ModelPerformanceTest{
+		"openai/gpt-5": {
+			ID: 1, Model: "openai/gpt-5",
+			CreatedAt: time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC),
+		},
+	}}
+	handlers := newMetricsListHandler(t, metricsCatalog("openai/gpt-5"),
+		&fakePublicModelMetrics{}, perf)
+
+	daily := requestMetricsList(t, handlers, "?range=24h", nil)
+	if daily.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", daily.Code, daily.Body.String())
+	}
+	weekly := requestMetricsList(t, handlers, "?range=7d", nil)
+	if weekly.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", weekly.Code, weekly.Body.String())
+	}
+	if daily.Header().Get("ETag") == weekly.Header().Get("ETag") {
+		t.Fatalf("range 变化后 ETag 未变: %q", daily.Header().Get("ETag"))
+	}
+
+	// 同 range、同分钟，但主动测速身份变化 ⇒ 缓存键必须失效。
+	perf.batchTests["openai/gpt-5"] = store.ModelPerformanceTest{
+		ID: 2, Model: "openai/gpt-5",
+		CreatedAt: time.Date(2026, 10, 23, 12, 5, 0, 0, time.UTC),
+	}
+	afterProbe := requestMetricsList(t, handlers, "?range=24h", nil)
+	if afterProbe.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", afterProbe.Code, afterProbe.Body.String())
+	}
+	if afterProbe.Header().Get("ETag") == daily.Header().Get("ETag") {
+		t.Fatalf("测速身份变化后 ETag 未变: %q", afterProbe.Header().Get("ETag"))
 	}
 }

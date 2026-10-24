@@ -23,6 +23,9 @@ type fakePublicModelMetrics struct {
 	batchModels []string
 	batchData   map[string]store.PublicModelMetrics
 	batchErr    error
+	batchCalled bool
+	batchStart  time.Time
+	batchEnd    time.Time
 }
 
 func (f *fakePublicModelMetrics) LoadPublicModelMetrics(
@@ -40,9 +43,12 @@ func (f *fakePublicModelMetrics) LoadPublicModelMetrics(
 func (f *fakePublicModelMetrics) LoadPublicModelMetricsBatch(
 	_ context.Context,
 	models []string,
-	_, _ time.Time,
+	start, end time.Time,
 ) (map[string]store.PublicModelMetrics, error) {
+	f.batchCalled = true
 	f.batchModels = append([]string(nil), models...)
+	f.batchStart = start
+	f.batchEnd = end
 	if f.batchErr != nil {
 		return nil, f.batchErr
 	}

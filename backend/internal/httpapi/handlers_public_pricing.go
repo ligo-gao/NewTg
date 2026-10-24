@@ -3,8 +3,9 @@
 // 端点面：
 //
 //	GET /api/pricing                     → PublicPricingList
+//	GET /api/pricing/metrics             → PublicModelMetricsList（目录内批量指标）
 //	GET /api/pricing/{model_id}          → PublicModelDetail（URL 编码的 `/`）
-//	GET /api/pricing/{model_id}/metrics  → 404（P1，本任务只占位，不返回伪造数据）
+//	GET /api/pricing/{model_id}/metrics  → PublicModelMetrics（单模型指标）
 //
 // 与前缀 /api/model-pricing 的管理面严格分离（modules-06 G-5 命名空间裁决）：
 // 公开面只读、只返回展示字段，绝不出现 id/author/status/billing_expr/channel
