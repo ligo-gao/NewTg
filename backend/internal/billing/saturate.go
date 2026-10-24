@@ -330,6 +330,16 @@ type usageLogRow struct {
 	errorClass       sql.NullString
 	errorMessage     sql.NullString
 	other            string
+
+	// —— 上游对账维度（usage_logs 迁移 20261028090500）——
+	// usage_source/usage_semantic 可空：未知就是 NULL，不得用 0 冒充。
+	usageSource       sql.NullInt16
+	usageSemantic     sql.NullInt16
+	reasoningTokens   int
+	upstreamModel     sql.NullString
+	upstreamAccountID sql.NullInt64
+	responseID        sql.NullString
+	attempts          int
 }
 
 // Saturate 写入一条 usage_logs 记录（platform-01 §12 的 25 列）。
@@ -656,6 +666,47 @@ func buildUsageLogRow(fact *contract.UsageFact,
 		errorMessage:     nullString(truncateLogText(outcome.ErrorMessage, 500)),
 	}
 
+	// —— 上游对账维度（设计 §4.6）——
+	// 归属在事实产出时已冻结（relay.Route / 流式路径把 rc 的值复制进 fact），
+	// 这里只做事实 → 行的纯投影。worker 的退款占位 fact == nil 没有用量事实，
+	// 此时回落到 rc 的渠道组投影，让退款行仍能归属到当时的账号/上游模型；
+	// usage_source/usage_semantic 无从得知，保持 NULL（未知 ≠ 0）。
+	attempts := 1
+	if fact != nil && fact.Attempts > 0 {
+		attempts = fact.Attempts
+	}
+	row.attempts = attempts
+	if fact != nil {
+		row.usageSource = sql.NullInt16{Int16: int16(fact.Usage.Source), Valid: true}
+		row.usageSemantic = sql.NullInt16{
+			Int16: semanticFromPromptIncludesCache(fact.Usage.PromptIncludesCache),
+			Valid: true,
+		}
+		// PG 的 integer 是 32 位；负数按 0（未知）处理，与 token 列同口径。
+		row.reasoningTokens = clampTokenCount(fact.Usage.Reasoning)
+	}
+	upstreamModel := ""
+	upstreamAccountID := int64(0)
+	responseID := ""
+	if fact != nil {
+		upstreamModel = fact.UpstreamModel
+		upstreamAccountID = fact.UpstreamAccountID
+		responseID = fact.ResponseID
+	}
+	if strings.TrimSpace(upstreamModel) == "" {
+		upstreamModel = rc.UpstreamModel
+	}
+	if upstreamAccountID <= 0 {
+		upstreamAccountID = rc.UpstreamAccountID
+	}
+	if strings.TrimSpace(upstreamModel) != "" {
+		row.upstreamModel = sql.NullString{String: truncateLogText(upstreamModel, 128), Valid: true}
+	}
+	row.upstreamAccountID = sql.NullInt64{Int64: upstreamAccountID, Valid: upstreamAccountID > 0}
+	if strings.TrimSpace(responseID) != "" {
+		row.responseID = sql.NullString{String: truncateLogText(responseID, 128), Valid: true}
+	}
+
 	other, err := json.Marshal(buildUsageLogOther(rc, model, firstToken, outcome))
 	if err != nil {
 		// other 只由本文件构造（字符串/数字/嵌套 map），Marshal 失败只可能
@@ -665,6 +716,16 @@ func buildUsageLogRow(fact *contract.UsageFact,
 	}
 	row.other = string(other)
 	return row, nil
+}
+
+// semanticFromPromptIncludesCache 把「Prompt 是否已含 CacheRead」的关系布尔
+// 投影为 usage_semantic 枚举：0 = prompt 已含缓存（GPT 口径），1 = 缓存为独立
+// 维度（Claude/Gemini 口径）。与迁移的 CHECK (0,1) 一致。
+func semanticFromPromptIncludesCache(includes bool) int16 {
+	if includes {
+		return 0
+	}
+	return 1
 }
 
 // usageField 安全读取 Usage 的某个 int64 字段（fact 为 nil 时返回 0）。
@@ -871,7 +932,9 @@ func (l *DBLogger) writeUsageLog(ctx context.Context, row usageLogRow) (bool, er
 		row.group, row.promptTokens, row.completionTokens, row.cacheReadTokens,
 		row.cacheWriteTokens, row.preDeducted, row.cost, row.refunded,
 		row.latencyMS, row.firstTokenMS, row.stream, row.status,
-		row.errorClass, row.errorMessage, row.other); err != nil {
+		row.errorClass, row.errorMessage, row.other,
+		row.usageSource, row.usageSemantic, row.reasoningTokens,
+		row.upstreamModel, row.upstreamAccountID, row.responseID, row.attempts); err != nil {
 		return false, fmt.Errorf("insert usage log: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -880,7 +943,8 @@ func (l *DBLogger) writeUsageLog(ctx context.Context, row usageLogRow) (bool, er
 	return true, nil
 }
 
-// usageLogInsertSQL 显式列出 platform-01 §12 的 25 列。
+// usageLogInsertSQL 显式列出 platform-01 §12 的列清单，并在末尾追加
+// 20261028090500 迁移的七个对账维度列（列序与批处理路径逐列一致）。
 //
 // id 由 IDENTITY 生成，created_at 由数据库 now() 生成；token_name/upstream/
 // retry_chain 在 M3 无可靠来源，显式 NULL。列清单保持与迁移逐列同名，
@@ -891,12 +955,13 @@ INSERT INTO usage_logs (
     model, "group", prompt_tokens, completion_tokens, cache_read_tokens,
     cache_write_tokens, pre_deducted, cost, refunded, latency_ms,
     first_token_ms, stream, status, error_class, error_message,
-    retry_chain, other)
+    retry_chain, other, usage_source, usage_semantic, reasoning_tokens,
+    upstream_model, upstream_account_id, response_id, attempts)
 VALUES ($1::uuid, $2, $3, NULL, $4, NULL,
         $5, $6, $7, $8, $9,
         $10, $11, $12, $13, $14,
         $15, $16, $17, $18, $19,
-        NULL, $20::jsonb)`
+        NULL, $20::jsonb, $21, $22, $23, $24, $25, $26, $27)`
 
 // existingUsageLogStatuses 读取该 request_id 已存在的日志状态。
 //

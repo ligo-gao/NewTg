@@ -64,8 +64,12 @@ type RelayContext struct {
 	Credential    string
 	MultiKeyIndex int
 	UpstreamModel string
-	GroupRatio    float64
-	CreatedTime   time.Time // 渠道路由元数据的建渠道时点（v1.1 · 决议 F2，供 Azure 点号规则用）
+	// UpstreamAccountID 是本轮渠道归属的上游账号 id；0 = 未归属。
+	// 属于渠道组：由执行层每轮从渠道投影写入（relay-01 §7.4），
+	// 中继在产出 UsageFact 时复制进事实，日志只读事实。
+	UpstreamAccountID int64
+	GroupRatio        float64
+	CreatedTime       time.Time // 渠道路由元数据的建渠道时点（v1.1 · 决议 F2，供 Azure 点号规则用）
 
 	// —— 计费组（写入方：PriceSnapshot/QuotaEstimate/UsageFact/Discount 由计费接缝写；
 	//             QuotaClamp 由产生钳制的一方写、计费接缝汇总，见契约 §5.1）——

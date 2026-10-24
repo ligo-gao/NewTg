@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -375,5 +376,65 @@ func TestUsageLogConsumerRequiresDeps(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	if _, err := newUsageLogConsumer(UsageLogStreamDeps{LogsDB: db}); err == nil {
 		t.Fatal("newUsageLogConsumer(no redis) = nil error")
+	}
+}
+
+// TestUsageLogEventRoundTripsReconcileDimensions 验证对账维度经 Redis 批处理
+// 事件往返后逐字段保真（含 NULL 与零值语义）。
+func TestUsageLogEventRoundTripsReconcileDimensions(t *testing.T) {
+	src := int16(1)
+	model := "claude-sonnet-4"
+	account := int64(3)
+	resp := "msg_1"
+	ev := UsageLogEvent{
+		RequestID: "r", UserID: 1, Model: "m", Status: 1,
+		UsageSource: &src, UsageSemantic: &src, ReasoningTokens: 9,
+		UpstreamModel: &model, UpstreamAccountID: &account, ResponseID: &resp, Attempts: 3,
+	}
+	row := ev.usageLogRow()
+	back := eventFromUsageLogRow(row, time.Unix(0, 0), false, "")
+	if back.UsageSource == nil || *back.UsageSource != 1 ||
+		back.ReasoningTokens != 9 || back.Attempts != 3 ||
+		back.UpstreamAccountID == nil || *back.UpstreamAccountID != 3 ||
+		back.ResponseID == nil || *back.ResponseID != "msg_1" {
+		t.Fatalf("round trip lost dimensions: %+v", back)
+	}
+}
+
+// TestUsageLogEventReconcileFieldsAreOptional 锁定滚动发布兼容性：
+// 旧生产者（本版本之前）产出的事件没有对账维度键，必须解出零值；
+// 新生产者写零值时 omitempty 不得把这些键塞进事件，旧消费者才不会看到
+// 未预期的形状。落库投影还要把 Attempts 归一到 NOT NULL DEFAULT 1。
+func TestUsageLogEventReconcileFieldsAreOptional(t *testing.T) {
+	legacy := `{"request_id":"r","model":"m","status":1}`
+	var ev UsageLogEvent
+	if err := json.Unmarshal([]byte(legacy), &ev); err != nil {
+		t.Fatalf("unmarshal legacy event: %v", err)
+	}
+	if ev.UsageSource != nil || ev.UsageSemantic != nil || ev.ReasoningTokens != 0 ||
+		ev.UpstreamModel != nil || ev.UpstreamAccountID != nil ||
+		ev.ResponseID != nil || ev.Attempts != 0 {
+		t.Fatalf("legacy event did not decode to zero dimensions: %+v", ev)
+	}
+	row := ev.usageLogRow()
+	if row.usageSource.Valid || row.usageSemantic.Valid ||
+		row.upstreamModel.Valid || row.upstreamAccountID.Valid || row.responseID.Valid {
+		t.Fatalf("legacy event must leave nullable dimensions NULL: %+v", row)
+	}
+	if row.attempts != 1 {
+		t.Fatalf("legacy attempts = %d, want coerced default 1", row.attempts)
+	}
+
+	payload, err := json.Marshal(UsageLogEvent{RequestID: "r", Model: "m", Status: 1})
+	if err != nil {
+		t.Fatalf("marshal zero event: %v", err)
+	}
+	for _, key := range []string{
+		`"usage_source"`, `"usage_semantic"`, `"reasoning_tokens"`,
+		`"upstream_model"`, `"upstream_account_id"`, `"response_id"`, `"attempts"`,
+	} {
+		if strings.Contains(string(payload), key) {
+			t.Fatalf("zero-valued field %s leaked into the event JSON: %s", key, payload)
+		}
 	}
 }

@@ -469,8 +469,10 @@ type ChannelAssignment struct {
 	Credential    string
 	MultiKeyIndex int
 	UpstreamModel string
-	GroupRatio    float64
-	CreatedTime   time.Time
+	// UpstreamAccountID 是渠道归属的上游账号 id；0 = 未归属。
+	UpstreamAccountID int64
+	GroupRatio        float64
+	CreatedTime       time.Time
 	// AutoBan 是渠道级自动禁用开关（channels.auto_ban，默认 true）。
 	// 它**不写入 RelayContext**：自动禁用判定属于执行层失败回调的入参，
 	// 适配器/计费/日志都无需感知。执行层每轮从 assignment 直接读取，
@@ -489,6 +491,7 @@ func WithChannel(rc *contract.RelayContext, ch ChannelAssignment) {
 	rc.Credential = ch.Credential
 	rc.MultiKeyIndex = ch.MultiKeyIndex
 	rc.UpstreamModel = ch.UpstreamModel
+	rc.UpstreamAccountID = ch.UpstreamAccountID
 	rc.GroupRatio = ch.GroupRatio
 	rc.CreatedTime = ch.CreatedTime
 }
