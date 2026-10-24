@@ -21,6 +21,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -135,6 +136,9 @@ func NewPublicPricingHandlers(cfg PublicPricingHandlerConfig) (*PublicPricingHan
 // RegisterPublicPricingRoutes 注册公开目录端点（精确模式，绕过 SessionAuth）。
 func (h *PublicPricingHandlers) RegisterPublicPricingRoutes(rt *Router) {
 	rt.HandlePublic("GET /api/pricing", http.HandlerFunc(h.handlePublicPricingList))
+	// 批量指标必须注册在 `{model_id}` 之前：Go 1.22 的字面量模式本来就优先于
+	// 通配段，但相邻书写能让「/metrics 是列表子路径而不是模型名」一目了然。
+	rt.HandlePublic("GET /api/pricing/metrics", http.HandlerFunc(h.handlePublicPricingMetricsList))
 	rt.HandlePublic("GET /api/pricing/{model_id}", http.HandlerFunc(h.handlePublicPricingDetail))
 	rt.HandlePublic("GET /api/pricing/{model_id}/metrics", http.HandlerFunc(h.handlePublicPricingMetrics))
 	// 未匹配的定价子路径兜底（公开 404，而不是落进受保护 /api/ 子树）。
@@ -1373,6 +1377,24 @@ type PublicModelMetricsResponse struct {
 	LatestTest *PublicModelLatestTest `json:"latest_test"`
 }
 
+// PublicModelMetricsItem 是模型库列表页的单模型指标行。
+//
+// Summary 恒填（无样本时 sample_size=0，其余统计列为 null）；LatestTest 没有
+// 主动测速记录、测速库未装配或读取失败时为 null。
+type PublicModelMetricsItem struct {
+	ModelID    string                    `json:"model_id"`
+	Summary    PublicModelMetricsSummary `json:"summary"`
+	LatestTest *PublicModelLatestTest    `json:"latest_test"`
+}
+
+// PublicModelMetricsList 是 GET /api/pricing/metrics 的响应信封。
+// Items 恒为数组：空目录或窗口内没有任何样本/测速时输出 []，不是 null。
+type PublicModelMetricsList struct {
+	Range  string                   `json:"range"`
+	Window PublicModelMetricsWindow `json:"window"`
+	Items  []PublicModelMetricsItem `json:"items"`
+}
+
 const (
 	publicMetricsCacheControl = "public, max-age=60"
 	publicMetricsRange24h     = "24h"
@@ -1398,6 +1420,45 @@ func roundMillisPtr(value *float64) *float64 {
 	}
 	rounded := math.Round(*value)
 	return &rounded
+}
+
+// publicMetricsSummary 把一次 usage_logs 聚合转成公开汇总视图。
+//
+// 单模型与批量端点共用同一口径：延迟/TTFT 四舍五入到毫秒；无样本时所有
+// 统计列为 null（不是 0）；success_rate/failed_24h 只在有样本时下发；
+// TPS 用 completion_tokens / (latency_sum_ms/1000) 的近似值。
+func publicMetricsSummary(data store.PublicModelMetrics) PublicModelMetricsSummary {
+	summary := PublicModelMetricsSummary{
+		AvgLatencyMs: roundMillisPtr(data.AvgLatencyMs),
+		AvgTTFTMs:    roundMillisPtr(data.AvgTTFTMs),
+		SampleSize:   data.SampleSize,
+	}
+	if data.SampleSize > 0 {
+		successRate := float64(data.SuccessCount) / float64(data.SampleSize)
+		summary.SuccessRate = &successRate
+		failed := data.Failed24h
+		summary.Failed24h = &failed
+	}
+	if data.LatencySumMs > 0 {
+		tps := float64(data.CompletionTokens) / (float64(data.LatencySumMs) / 1000)
+		summary.TPS = &tps
+	}
+	return summary
+}
+
+// publicLatestTestView 把主动测速汇总行投影成公开视图（tested_at 归一为 UTC
+// RFC3339）。调用方只在确认存在记录时调用，因此返回非 nil。
+func publicLatestTestView(test store.ModelPerformanceTest) *PublicModelLatestTest {
+	return &PublicModelLatestTest{
+		TTFTMSP50:    test.TTFTMSP50,
+		TTFTMSP95:    test.TTFTMSP95,
+		LatencyMSP50: test.LatencyMSP50,
+		LatencyMSP95: test.LatencyMSP95,
+		TPS:          test.TPSAvg,
+		SuccessRate:  test.SuccessRate,
+		SampleSize:   test.Runs,
+		TestedAt:     test.CreatedAt.UTC().Format(time.RFC3339),
+	}
 }
 
 // publicMetricsETag 由模型、窗口、分钟桶与最近一次主动测速的身份派生。
@@ -1457,21 +1518,7 @@ func (h *PublicPricingHandlers) handlePublicPricingMetrics(w http.ResponseWriter
 		return
 	}
 
-	summary := PublicModelMetricsSummary{
-		AvgLatencyMs: roundMillisPtr(data.AvgLatencyMs),
-		AvgTTFTMs:    roundMillisPtr(data.AvgTTFTMs),
-		SampleSize:   data.SampleSize,
-	}
-	if data.SampleSize > 0 {
-		successRate := float64(data.SuccessCount) / float64(data.SampleSize)
-		summary.SuccessRate = &successRate
-		failed := data.Failed24h
-		summary.Failed24h = &failed
-	}
-	if data.LatencySumMs > 0 {
-		tps := float64(data.CompletionTokens) / (float64(data.LatencySumMs) / 1000)
-		summary.TPS = &tps
-	}
+	summary := publicMetricsSummary(data)
 
 	groups := make([]PublicGroupMetricsView, 0, len(data.Groups))
 	for _, group := range data.Groups {
@@ -1498,16 +1545,7 @@ func (h *PublicPricingHandlers) handlePublicPricingMetrics(w http.ResponseWriter
 		h.log.Warn("public pricing metrics: latest performance test unavailable; failing open",
 			"model", modelID, "error", perfErr)
 	} else if found {
-		latestTest = &PublicModelLatestTest{
-			TTFTMSP50:    test.TTFTMSP50,
-			TTFTMSP95:    test.TTFTMSP95,
-			LatencyMSP50: test.LatencyMSP50,
-			LatencyMSP95: test.LatencyMSP95,
-			TPS:          test.TPSAvg,
-			SuccessRate:  test.SuccessRate,
-			SampleSize:   test.Runs,
-			TestedAt:     test.CreatedAt.UTC().Format(time.RFC3339),
-		}
+		latestTest = publicLatestTestView(test)
 		testIdentity = strconv.FormatInt(test.ID, 10) + "@" +
 			test.CreatedAt.UTC().Format(time.RFC3339Nano)
 	}
@@ -1524,6 +1562,142 @@ func (h *PublicPricingHandlers) handlePublicPricingMetrics(w http.ResponseWriter
 	}
 
 	etag := publicMetricsETag(modelID, label, end, testIdentity)
+	w.Header().Set("Cache-Control", publicMetricsCacheControl)
+	w.Header().Set("ETag", etag)
+	if etagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+// publicMetricsListETag 由可见模型集合、窗口、分钟桶与每个模型最近一次主动
+// 测速的身份派生。
+//
+// 主动测速不进入 usage_logs 聚合，必须把它的 id/created_at 折进缓存键：否则
+// 管理员刚跑完一次测试，共享缓存仍会在 60 秒内回放旧值。测试身份排序后参与
+// 哈希，保证 map 迭代顺序不影响 ETag（同分钟同数据 → 同 ETag）。
+func publicMetricsListETag(
+	models []string,
+	window string,
+	at time.Time,
+	tests map[string]store.ModelPerformanceTest,
+) string {
+	identities := make([]string, 0, len(tests))
+	for model, test := range tests {
+		identities = append(identities, model+"@"+strconv.FormatInt(test.ID, 10)+"@"+
+			test.CreatedAt.UTC().Format(time.RFC3339Nano))
+	}
+	sort.Strings(identities)
+	minute := strconv.FormatInt(at.Unix()/60, 10)
+	material := strings.Join(models, "\x00") + "|" + window + "|" + minute + "|" +
+		strings.Join(identities, "\x00")
+	sum := sha256.Sum256([]byte(material))
+	return `"metrics-list-v1-` + hex.EncodeToString(sum[:])[:16] + `-` + minute + `"`
+}
+
+// latestTestsByModels 批量读取每个可见模型最近一次主动测速。
+//
+// 主动测速是独立事实源（主库），读取失败只告警并返回空 map：端点保持 200、
+// latest_test 全为 null（fail-open，与单模型端点同口径）。接缝未装配时同样
+// 只告警；空模型集合不触发查询。
+func (h *PublicPricingHandlers) latestTestsByModels(
+	ctx context.Context,
+	models []string,
+) map[string]store.ModelPerformanceTest {
+	if h.perf == nil {
+		h.log.Warn("public pricing metrics list: performance store not configured; latest_test omitted")
+		return nil
+	}
+	if len(models) == 0 {
+		return nil
+	}
+	tests, err := h.perf.LatestByModels(ctx, models)
+	if err != nil {
+		h.log.Warn("public pricing metrics list: latest performance tests unavailable; failing open",
+			"error", err)
+		return nil
+	}
+	return tests
+}
+
+// handlePublicPricingMetricsList 返回目录内所有模型的窗口汇总（模型库列表页）。
+//
+// 只输出窗口内有真实调用样本（sample_size > 0）或存在主动测速记录的可见模型；
+// 无数据的模型不出现在 items 中（定价列表仍能看到它们）。items 恒为数组。
+// 与单模型端点共用可见性规则、窗口解析、summary/latest_test 视图与 fail-open
+// 语义，并下发共享缓存头（public, max-age=60 + ETag）。
+func (h *PublicPricingHandlers) handlePublicPricingMetricsList(w http.ResponseWriter, r *http.Request) {
+	if !h.allowPublicRead(w, r) {
+		return
+	}
+	window, label, ok := parsePublicMetricsRange(r.URL.Query().Get("range"))
+	if !ok {
+		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid range")
+		return
+	}
+	if h.metrics == nil {
+		writeProblem(w, http.StatusServiceUnavailable, problemTypeMetricsUnavailable,
+			"Performance data unavailable")
+		return
+	}
+
+	catalog, err := h.repo.LoadPublicPricingCatalog(r.Context())
+	if err != nil {
+		h.log.Error("public pricing metrics list: load catalog failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+		return
+	}
+	// 与列表端点同一可见性规则（含 status=2 档案剔除）与目录顺序。
+	idx := newPublicCatalogIndex(catalog)
+	models := make([]string, 0, len(idx.models))
+	for _, model := range idx.models {
+		models = append(models, model.rec.Model)
+	}
+
+	end := time.Now().UTC()
+	start := end.Add(-window)
+
+	// 空目录不查日志库（批量方法本身也会短路，这里省掉一次跨库调用语义）。
+	metrics := make(map[string]store.PublicModelMetrics)
+	if len(models) > 0 {
+		metrics, err = h.metrics.LoadPublicModelMetricsBatch(r.Context(), models, start, end)
+		if err != nil {
+			h.log.Error("public pricing metrics list: load metrics failed", "error", err)
+			writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
+			return
+		}
+	}
+	tests := h.latestTestsByModels(r.Context(), models)
+
+	items := make([]PublicModelMetricsItem, 0, len(models))
+	for _, model := range idx.models {
+		data := metrics[model.rec.Model]
+		test, hasTest := tests[model.rec.Model]
+		// 无样本且无测速 = 窗口内没有可展示事实；不输出「全 null」占位行。
+		if data.SampleSize <= 0 && !hasTest {
+			continue
+		}
+		item := PublicModelMetricsItem{
+			ModelID: model.rec.Model,
+			Summary: publicMetricsSummary(data),
+		}
+		if hasTest {
+			item.LatestTest = publicLatestTestView(test)
+		}
+		items = append(items, item)
+	}
+
+	response := PublicModelMetricsList{
+		Range: label,
+		Window: PublicModelMetricsWindow{
+			Start: start.Format(time.RFC3339),
+			End:   end.Format(time.RFC3339),
+		},
+		Items: items,
+	}
+
+	etag := publicMetricsListETag(models, label, end, tests)
 	w.Header().Set("Cache-Control", publicMetricsCacheControl)
 	w.Header().Set("ETag", etag)
 	if etagMatches(r.Header.Get("If-None-Match"), etag) {

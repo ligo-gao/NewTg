@@ -48,6 +48,8 @@ paths:
     $ref: './paths/public.yaml#/paths/~1api~1home~1live-feed~1stream'
   /api/pricing:
     $ref: './paths/public.yaml#/paths/~1api~1pricing'
+  /api/pricing/metrics:
+    $ref: './paths/public.yaml#/paths/~1api~1pricing~1metrics'
   /api/pricing/{model_id}:
     $ref: './paths/public.yaml#/paths/~1api~1pricing~1{model_id}'
   /api/pricing/{model_id}/metrics:

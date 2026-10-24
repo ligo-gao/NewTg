@@ -627,6 +627,68 @@ paths:
           $ref: '#/components/responses/Error429'
         '500':
           $ref: '#/components/responses/Error500'
+  /api/pricing/metrics:
+    get:
+      tags:
+        - public
+      operationId: getPublicMetricsList
+      summary: 公开模型批量性能指标（模型库列表页）
+      description: |
+        一次返回目录内多个模型在窗口内的真实调用汇总（`usage_logs`）。可见
+        集合与 `/api/pricing` 相同（含 `model_meta.status=2` 档案剔除）。
+        只返回窗口内有真实调用样本（`sample_size > 0`）或存在主动测速记录的
+        可见模型：无数据的模型不出现在 `items` 中，空集是 200 + `items:[]`。
+        `summary` 恒填；只有测速、没有调用样本的模型 `sample_size: 0`，其余
+        统计列为 null（前端显示「—」，不得回退成 0）。
+        `latest_test` 是最近一次管理员主动测速（主库 `model_performance_tests`）
+        的 P50/P95、TPS 与成功率；没有记录、测速库未装配或读取失败时为 null
+        （fail-open，端点仍为 200，usage 汇总照常返回）。前端**优先**使用
+        `latest_test` 的 P50/P95 作为延迟展示来源；仅当没有主动测试记录时
+        才回退到真实调用均值（标注「Average」，此时 p95 为 null）。
+        响应带 ETag（模型集合 + 窗口 + 分钟桶 + 每条测速身份派生）与
+        `Cache-Control: public, max-age=60`；命中 `If-None-Match` 返回 304。
+      security: []
+      parameters:
+        - name: range
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - 24h
+              - 7d
+            default: 24h
+          description: 统计窗口；缺省 24h。
+      responses:
+        '200':
+          description: OK（空集也是 200 + items:[]）
+          headers:
+            ETag:
+              description: 模型集合 + 窗口 + 分钟桶 + 测速身份派生；60 秒陈旧容忍。
+              schema:
+                type: string
+            Cache-Control:
+              description: public, max-age=60
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicModelMetricsList'
+        '304':
+          description: If-None-Match 命中（无 body）
+        '400':
+          $ref: '#/components/responses/Error400'
+        '429':
+          $ref: '#/components/responses/Error429'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          description: 性能数据源未装配（type=metrics-unavailable）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
   /api/pricing/{model_id}:
     get:
       tags:
@@ -688,10 +750,11 @@ paths:
         SUM(completion_tokens) / (SUM(latency_ms)/1000)`（近似值）。
         无样本时对应字段为 null，前端显示「—」，不得回退成 0。
         样本少于 20 次由前端标注「样本不足」。
-        `latest_test` 是独立的兜底来源：最近一次管理员主动测速（主库
-        `model_performance_tests`）的 P50/P95、TPS 与成功率；没有记录、
-        测速库未装配或读取失败时为 null（fail-open，端点仍为 200）。前端
-        优先展示真实调用汇总，样本缺失时回退到 `latest_test` 并标注来源。
+        `latest_test` 是最近一次管理员主动测速（主库 `model_performance_tests`）
+        的 P50/P95、TPS 与成功率；没有记录、测速库未装配或读取失败时为 null
+        （fail-open，端点仍为 200）。前端**优先**使用 `latest_test` 的
+        P50/P95 作为延迟展示来源；仅当没有主动测试记录时才回退到真实调用
+        均值（标注「Average」，此时 p95 为 null）。
       security: []
       parameters:
         - name: model_id
@@ -13464,6 +13527,144 @@ components:
           $ref: '#/components/schemas/PublicFacets'
         meta:
           $ref: '#/components/schemas/PublicPricingMeta'
+    PublicModelMetricsWindow:
+      type: object
+      additionalProperties: false
+      required:
+        - start
+        - end
+      properties:
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+    PublicModelMetricsSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - sample_size
+      properties:
+        avg_latency_ms:
+          type: number
+          nullable: true
+          minimum: 0
+        avg_ttft_ms:
+          type: number
+          nullable: true
+          minimum: 0
+        success_rate:
+          type: number
+          nullable: true
+          minimum: 0
+          maximum: 1
+        tps:
+          type: number
+          nullable: true
+          minimum: 0
+        failed_24h:
+          type: integer
+          nullable: true
+          minimum: 0
+        sample_size:
+          type: integer
+          minimum: 0
+    PublicModelLatestTest:
+      type: object
+      additionalProperties: false
+      description: |
+        最近一次管理员主动测速的汇总。前端**优先**把它作为延迟/速度的展示来源
+        （P50/P95）；只有在没有任何主动测试记录时，才回退到真实调用均值并标注
+        「Average」（此时 p95 为 null）。可空统计列在样本不足时为 null——0 会
+        被读成「极快」，不能用 0 冒充缺失。
+      required:
+        - ttft_ms_p50
+        - ttft_ms_p95
+        - latency_ms_p50
+        - latency_ms_p95
+        - tps
+        - success_rate
+        - sample_size
+        - tested_at
+      properties:
+        ttft_ms_p50:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: 首字延迟 P50（毫秒）；无有效样本时为 null。
+        ttft_ms_p95:
+          type: integer
+          nullable: true
+          minimum: 0
+        latency_ms_p50:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: 端到端延迟 P50（毫秒）；无有效样本时为 null。
+        latency_ms_p95:
+          type: integer
+          nullable: true
+          minimum: 0
+        tps:
+          type: number
+          nullable: true
+          minimum: 0
+          description: 主动测试的平均输出速度（tokens/s）；无有效样本时为 null。
+        success_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: 成功次数 / 总运行次数。
+        sample_size:
+          type: integer
+          minimum: 0
+          description: 本次测试的运行次数（runs）。
+        tested_at:
+          type: string
+          format: date-time
+          description: 测试完成时刻（RFC3339，UTC）。
+    PublicModelMetricsItem:
+      type: object
+      additionalProperties: false
+      required:
+        - model_id
+        - summary
+        - latest_test
+      properties:
+        model_id:
+          type: string
+        summary:
+          $ref: '#/components/schemas/PublicModelMetricsSummary'
+        latest_test:
+          anyOf:
+            - $ref: '#/components/schemas/PublicModelLatestTest'
+            - enum:
+                - null
+          description: |
+            最近一次主动测速。前端**优先**使用这里的 P50/P95/TPS 作为延迟与
+            速度的展示来源；仅当该模型没有任何主动测试记录时，才回退到
+            `summary` 的真实调用均值（标注「Average」，且此时 p95 为 null）。
+            读取失败/测速库未装配时为 null（fail-open，端点仍为 200）。
+    PublicModelMetricsList:
+      type: object
+      additionalProperties: false
+      required:
+        - range
+        - window
+        - items
+      properties:
+        range:
+          type: string
+          enum:
+            - 24h
+            - 7d
+        window:
+          $ref: '#/components/schemas/PublicModelMetricsWindow'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicModelMetricsItem'
     PublicModelParameter:
       type: object
       additionalProperties: false
@@ -13565,55 +13766,6 @@ components:
           nullable: true
           minimum: 0
           maximum: 1
-    PublicModelLatestTest:
-      type: object
-      additionalProperties: false
-      required:
-        - ttft_ms_p50
-        - ttft_ms_p95
-        - latency_ms_p50
-        - latency_ms_p95
-        - tps
-        - success_rate
-        - sample_size
-        - tested_at
-      properties:
-        ttft_ms_p50:
-          type: integer
-          nullable: true
-          minimum: 0
-          description: 首字延迟 P50（毫秒）；无有效样本时为 null。
-        ttft_ms_p95:
-          type: integer
-          nullable: true
-          minimum: 0
-        latency_ms_p50:
-          type: integer
-          nullable: true
-          minimum: 0
-          description: 端到端延迟 P50（毫秒）；无有效样本时为 null。
-        latency_ms_p95:
-          type: integer
-          nullable: true
-          minimum: 0
-        tps:
-          type: number
-          nullable: true
-          minimum: 0
-          description: 主动测试的平均输出速度（tokens/s）；无有效样本时为 null。
-        success_rate:
-          type: number
-          minimum: 0
-          maximum: 1
-          description: 成功次数 / 总运行次数。
-        sample_size:
-          type: integer
-          minimum: 0
-          description: 本次测试的运行次数（runs）。
-        tested_at:
-          type: string
-          format: date-time
-          description: 测试完成时刻（RFC3339，UTC）。
     PublicModelMetrics:
       type: object
       additionalProperties: false
@@ -13629,48 +13781,9 @@ components:
             - 24h
             - 7d
         window:
-          type: object
-          additionalProperties: false
-          required:
-            - start
-            - end
-          properties:
-            start:
-              type: string
-              format: date-time
-            end:
-              type: string
-              format: date-time
+          $ref: '#/components/schemas/PublicModelMetricsWindow'
         summary:
-          type: object
-          additionalProperties: false
-          required:
-            - sample_size
-          properties:
-            avg_latency_ms:
-              type: number
-              nullable: true
-              minimum: 0
-            avg_ttft_ms:
-              type: number
-              nullable: true
-              minimum: 0
-            success_rate:
-              type: number
-              nullable: true
-              minimum: 0
-              maximum: 1
-            tps:
-              type: number
-              nullable: true
-              minimum: 0
-            failed_24h:
-              type: integer
-              nullable: true
-              minimum: 0
-            sample_size:
-              type: integer
-              minimum: 0
+          $ref: '#/components/schemas/PublicModelMetricsSummary'
         per_group:
           type: array
           items:
@@ -13682,9 +13795,10 @@ components:
                 - null
           description: |
             最近一次管理员主动测速（`model_performance_tests` 汇总行）的公开
-            投影。没有主动测试记录、测速库未装配或读取失败时为 null；这是一条
-            独立于 `usage_logs` 的兜底来源，前端在真实调用样本缺失/不足时回退
-            到它，并用「主动测试」标注来源。
+            投影。没有主动测试记录、测速库未装配或读取失败时为 null（fail-open）。
+            前端**优先**使用这里的 P50/P95 作为延迟展示来源；仅当没有主动测试
+            记录时才回退到 `summary` 的真实调用均值（标注「Average」，且此时
+            p95 为 null）。
     LoginEncryptionKeyResponse:
       type: object
       additionalProperties: false
