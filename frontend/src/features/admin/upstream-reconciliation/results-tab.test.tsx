@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
@@ -60,6 +61,36 @@ const RUNS: ReconcileRun[] = [
   },
 ]
 
+function makeRun(id: number, startedAt: string): ReconcileRun {
+  return {
+    id,
+    account_id: 1,
+    window_start: '2026-10-01',
+    window_end: '2026-10-02',
+    triggered_by: 'worker',
+    status: 'succeeded',
+    token_tolerance_bp: 50,
+    amount_tolerance_minor: 100,
+    quota_per_unit: 100,
+    timezone: 'Asia/Shanghai',
+    started_at: startedAt,
+    finished_at: startedAt,
+    error: '',
+  }
+}
+
+const RUN_100 = makeRun(100, '2026-10-03T02:00:00Z')
+const RUN_200 = makeRun(200, '2026-10-04T02:00:00Z')
+
+/** 请求在此 Promise 完成前不返回：用于观察占位 / 加载中的表格形态。 */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: () => void = () => undefined
+  const promise = new Promise<void>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
 function makeItem(overrides: Partial<ReconcileItem> = {}): ReconcileItem {
   return {
     id: 501,
@@ -104,6 +135,10 @@ function makeItem(overrides: Partial<ReconcileItem> = {}): ReconcileItem {
 
 interface ApiOptions {
   items?: ReconcileItem[]
+  /** 按运行返回不同明细；缺省回退到 `items`。 */
+  itemsByRun?: Record<string, ReconcileItem[]>
+  /** 明细请求在该 Promise 完成前不返回；按 URL 与运行 id 决定是否拦截。 */
+  listGate?: (url: URL, runId: string) => Promise<void> | undefined
   listTotal?: number
   severityCounts?: Partial<Record<string, number>>
   itemsError?: boolean
@@ -127,7 +162,7 @@ function installApi(options: ApiOptions = {}) {
     ),
     http.get(
       `${ORIGIN}/api/upstream-reconciliations/runs/:id/items`,
-      ({ request }) => {
+      async ({ request, params }) => {
         const url = new URL(request.url)
         if (url.searchParams.get('page_size') === '1') {
           const severity = url.searchParams.get('severity') ?? ''
@@ -139,8 +174,11 @@ function installApi(options: ApiOptions = {}) {
           })
         }
 
+        const runId = String(params.id)
         listCalls.push(url)
         options.onList?.(url)
+        const gate = options.listGate?.(url, runId)
+        if (gate !== undefined) await gate
         if (options.itemsError === true) {
           return HttpResponse.json(
             {
@@ -155,8 +193,9 @@ function installApi(options: ApiOptions = {}) {
           )
         }
 
-        const rows = (options.items ?? []).map((item) =>
-          state.acked ? { ...item, status: 'acknowledged' as const } : item,
+        const rows = (options.itemsByRun?.[runId] ?? options.items ?? []).map(
+          (item) =>
+            state.acked ? { ...item, status: 'acknowledged' as const } : item,
         )
         return HttpResponse.json({
           items: rows,
@@ -199,6 +238,24 @@ function renderTab(
     />,
     ['common', 'admin'],
   )
+}
+
+/** 页面在真实应用里持有 `runId`；测试里用受控包装复现运行切换。 */
+function ControlledResultsTab({ initialRunId }: { initialRunId: number }) {
+  const [runId, setRunId] = useState<number | null>(initialRunId)
+  return <ResultsTab runId={runId} onSelectRun={setRunId} canManage />
+}
+
+/** 按表头文字取单元格，避免把列位置写死在断言里。 */
+function tableCell(row: HTMLElement, columnLabel: string): string | null | undefined {
+  const table = row.closest('table')
+  if (table === null) throw new Error('row is not inside a table')
+  const headers = within(table).getAllByRole('columnheader')
+  const index = headers.findIndex(
+    (header) => header.textContent === columnLabel,
+  )
+  if (index < 0) throw new Error(`no column labelled ${columnLabel}`)
+  return within(row).getAllByRole('cell')[index]?.textContent
 }
 
 describe('reconciliation results tab', () => {
@@ -256,6 +313,114 @@ describe('reconciliation results tab', () => {
     expect(screen.getByText('Page 2 / 3')).toBeTruthy()
   })
 
+  it('returns to the first page when the severity filter changes', async () => {
+    const { listCalls } = installApi({
+      items: [makeItem()],
+      listTotal: 45,
+      severityCounts: { warn: 1 },
+    })
+    renderTab(9)
+    const user = userEvent.setup()
+
+    await screen.findByTestId('item-row')
+    const next = screen.getByRole('button', { name: 'Next' })
+    await waitFor(() => expect((next as HTMLButtonElement).disabled).toBe(false))
+    await user.click(next)
+    await waitFor(() => {
+      expect(
+        listCalls.some(
+          (url) =>
+            !url.searchParams.has('severity') &&
+            url.searchParams.get('p') === '2',
+        ),
+      ).toBe(true)
+    })
+
+    await user.click(screen.getByRole('button', { name: 'Warning (1)' }))
+
+    // 新筛选必须从第一页开始，不能继承旧筛选的页码。
+    await waitFor(() => {
+      expect(
+        listCalls.some(
+          (url) =>
+            url.searchParams.get('severity') === 'warn' &&
+            url.searchParams.get('p') === '1',
+        ),
+      ).toBe(true)
+    })
+  })
+
+  it('does not carry the previous run rows into a new run', async () => {
+    const gate = deferred()
+    installApi({
+      runs: [RUN_100, RUN_200],
+      itemsByRun: {
+        '100': [
+          makeItem({ id: 101, run_id: 100, upstream_model: 'run-100-model' }),
+        ],
+        '200': [
+          makeItem({ id: 201, run_id: 200, upstream_model: 'run-200-model' }),
+        ],
+      },
+      listGate: (_url, runId) => (runId === '200' ? gate.promise : undefined),
+    })
+    renderWithProviders(<ControlledResultsTab initialRunId={100} />, [
+      'common',
+      'admin',
+    ])
+    const user = userEvent.setup()
+
+    expect(await screen.findByText('run-100-model')).toBeTruthy()
+    await screen.findByRole('option', { name: /#200/ })
+    await user.selectOptions(
+      screen.getByLabelText('Reconciliation run'),
+      '200',
+    )
+
+    // 新运行的数据还没到：旧运行的行不得继续渲染，也不得被点开。
+    await waitFor(() => expect(screen.queryByText('run-100-model')).toBeNull())
+    expect(screen.queryByTestId('item-row')).toBeNull()
+    expect(
+      screen.queryByRole('button', { name: /^Open details for run-100/ }),
+    ).toBeNull()
+
+    gate.resolve()
+
+    expect(await screen.findByText('run-200-model')).toBeTruthy()
+    expect(screen.queryByText('run-100-model')).toBeNull()
+  })
+
+  it('closes the sheet while a same-run query shows placeholder data', async () => {
+    const gate = deferred()
+    installApi({
+      items: [makeItem()],
+      listTotal: 45,
+      severityCounts: { warn: 1 },
+      listGate: (url) =>
+        url.searchParams.get('severity') === 'warn' ? gate.promise : undefined,
+    })
+    renderTab(9)
+    const user = userEvent.setup()
+
+    await screen.findByTestId('item-row')
+    await user.click(
+      screen.getByRole('button', {
+        name: 'Open details for deepseek-chat on 2026-10-24',
+      }),
+    )
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+
+    // 抽屉打开时背景被设为 aria-hidden；筛选按钮仍在 DOM 中。
+    await user.click(
+      screen.getByRole('button', { name: 'Warning (1)', hidden: true }),
+    )
+
+    // 占位行不属于当前请求：抽屉不能继续展示占位数据里的明细。
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+
+    gate.resolve()
+  })
+
   it('opens the sheet with the six comparison rows', async () => {
     installApi({ items: [makeItem()], listTotal: 1 })
     renderTab(9)
@@ -309,8 +474,14 @@ describe('reconciliation results tab', () => {
     const user = userEvent.setup()
 
     const row = await screen.findByTestId('item-row')
-    // 差异率与上游 token、金额列都是 NULL，必须显示长破折号。
-    expect(within(row).getAllByText('—').length).toBeGreaterThan(0)
+    // 每个 NULL 维度自己的单元格都必须是长破折号（而不是「某处有一个 —」）。
+    expect(tableCell(row, 'Token delta (bp)')).toBe('—')
+    expect(tableCell(row, 'Upstream tokens')).toBe('—')
+    expect(tableCell(row, 'Revenue')).toBe('—')
+    expect(tableCell(row, 'Upstream cost')).toBe('—')
+    expect(tableCell(row, 'Margin')).toBe('—')
+    // 非 NULL 的本地合计仍按数字渲染，不能被 NULL 规则牵连。
+    expect(tableCell(row, 'Local tokens')).toBe('425')
     expect(row.textContent).not.toContain('NaN')
 
     await user.click(
@@ -324,6 +495,31 @@ describe('reconciliation results tab', () => {
     expect(cells[2]?.textContent).toBe('—')
     expect(cells[3]?.textContent).toBe('—')
     expect(dialog.textContent).not.toContain('NaN')
+  })
+
+  it('renders genuine zero values as 0, not —', async () => {
+    installApi({
+      items: [
+        makeItem({
+          snapshot_cache_hit_tokens: 0,
+          snapshot_cache_miss_tokens: 0,
+          snapshot_output_tokens: 0,
+          delta_token_bp: 0,
+          revenue_minor: 0,
+          upstream_cost_minor: 0,
+          margin_minor: 0,
+        }),
+      ],
+      listTotal: 1,
+    })
+    renderTab(9)
+
+    const row = await screen.findByTestId('item-row')
+    expect(tableCell(row, 'Token delta (bp)')).toBe('0')
+    expect(tableCell(row, 'Upstream tokens')).toBe('0')
+    expect(tableCell(row, 'Revenue')).toBe('¥0.00')
+    expect(tableCell(row, 'Upstream cost')).toBe('¥0.00')
+    expect(tableCell(row, 'Margin')).toBe('¥0.00')
   })
 
   it('acks an item and refreshes the list', async () => {

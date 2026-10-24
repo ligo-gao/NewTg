@@ -25,6 +25,14 @@ export interface ItemSheetProps {
 
 type AckStatus = NonNullable<ReconcileAckRequest['status']>
 
+/**
+ * 状态选择器只是 `acknowledged` / `resolved`：已解决的明细默认保持已解决，
+ * 其余（`open` 及未知值）默认落到 `acknowledged`。默认值不是一次隐式提交。
+ */
+function seedStatus(status: ReconcileItem['status'] | undefined): AckStatus {
+  return status === 'resolved' ? 'resolved' : 'acknowledged'
+}
+
 function problemMessage(error: unknown): string {
   if (error instanceof ApiError) return error.detail ?? error.title
   return error instanceof Error ? error.message : String(error)
@@ -118,7 +126,9 @@ export function ItemSheet({
   onAckSuccess,
 }: ItemSheetProps) {
   const { t } = useI18n()
-  const [status, setStatus] = useState<AckStatus>('acknowledged')
+  const [status, setStatus] = useState<AckStatus>(() =>
+    seedStatus(item?.status),
+  )
   const [note, setNote] = useState('')
 
   const itemId = item?.id ?? null
@@ -138,11 +148,14 @@ export function ItemSheet({
   const resetAck = ackMutation.reset
 
   // 切换到另一条明细时清空上一次的草稿与结果；同一明细刷新（确认后）则
-  // 保留刚输入的说明。
+  // 保留刚输入的说明。状态默认值只在**换明细**时按该条明细的状态播种：把
+  // `item?.status` 放进依赖会在确认成功、明细被重取后把刚输入的说明和
+  // 「已确认」提示一起清掉，而那时管理员正看着抽屉。
   useEffect(() => {
-    setStatus('acknowledged')
+    setStatus(seedStatus(item?.status))
     setNote('')
     resetAck()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 见上：种子只随明细身份变化
   }, [itemId, resetAck])
 
   function submit(event: FormEvent<HTMLFormElement>): void {

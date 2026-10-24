@@ -1,9 +1,4 @@
-import {
-  keepPreviousData,
-  useQueries,
-  useQuery,
-  useQueryClient,
-} from '@tanstack/react-query'
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 
 import { ApiError } from '@/api/errors'
@@ -148,14 +143,22 @@ export function ResultsTab({ runId, onSelectRun, canManage }: ResultsTabProps) {
     },
     enabled: runId !== null,
     retry: false,
-    placeholderData: keepPreviousData,
+    // 只在运行不变时沿用上一份数据（翻页 / 筛选）；换运行必须先清空表格，
+    // 否则旧运行的行会挂在新运行的标题下并仍然可点。
+    placeholderData: (previous, previousQuery) => {
+      if (previous === undefined) return undefined
+      const previousRunId = previousQuery?.queryKey[ITEMS_QUERY_KEY.length + 1]
+      return previousRunId === runId ? previous : undefined
+    },
   })
 
   const items = itemsQuery.data?.items ?? []
   const total = itemsQuery.data?.total ?? 0
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  // 占位数据（上一页 / 上一筛选）不是当前请求的结果：据此解析详情会让抽屉
+  // 显示一条不属于当前视图的明细。
   const selectedItem =
-    selectedId === null
+    selectedId === null || itemsQuery.isPlaceholderData
       ? null
       : (items.find((item) => item.id === selectedId) ?? null)
 

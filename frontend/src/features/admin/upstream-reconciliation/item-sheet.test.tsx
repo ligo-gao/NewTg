@@ -1,7 +1,8 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
-import { screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { useState } from 'react'
 import {
   afterAll,
   afterEach,
@@ -117,6 +118,23 @@ function comparisonCells(rowKey: string): HTMLElement[] {
     .map((cell) => cell as HTMLElement)
 }
 
+/** 同一条明细以新状态重新传入（确认成功后列表被失效重取）。 */
+function RefreshHarness() {
+  const [status, setStatus] = useState<ReconcileItem['status']>('open')
+  return (
+    <>
+      <button type="button" onClick={() => setStatus('acknowledged')}>
+        refresh item
+      </button>
+      <ItemSheet
+        item={makeItem({ status })}
+        onOpenChange={() => undefined}
+        canManage
+      />
+    </>
+  )
+}
+
 describe('reconciliation item sheet', () => {
   it('renders the six comparison rows with API values', async () => {
     renderSheet(makeItem())
@@ -201,6 +219,36 @@ describe('reconciliation item sheet', () => {
     await waitFor(() => expect(onAckSuccess).toHaveBeenCalledTimes(1))
   })
 
+  it('keeps a resolved item resolved when the status is untouched', async () => {
+    const calls: AckCall[] = []
+    installAckApi((call) => {
+      calls.push(call)
+    })
+    renderSheet(makeItem({ status: 'resolved' }))
+    const user = userEvent.setup()
+
+    await screen.findByRole('dialog')
+    expect(
+      (screen.getByLabelText('New status') as HTMLSelectElement).value,
+    ).toBe('resolved')
+
+    await user.click(
+      screen.getByRole('button', { name: 'Save acknowledgement' }),
+    )
+
+    await waitFor(() => expect(calls).toHaveLength(1))
+    expect(calls[0]?.body).toEqual({ status: 'resolved', note: '' })
+  })
+
+  it('seeds an open item as acknowledged', async () => {
+    renderSheet(makeItem({ status: 'open' }))
+
+    await screen.findByRole('dialog')
+    expect(
+      (screen.getByLabelText('New status') as HTMLSelectElement).value,
+    ).toBe('acknowledged')
+  })
+
   it('submits the selected status and the typed note', async () => {
     const calls: AckCall[] = []
     installAckApi((call) => {
@@ -224,6 +272,29 @@ describe('reconciliation item sheet', () => {
       status: 'resolved',
       note: 'checked with provider',
     })
+  })
+
+  it('keeps the draft and the success alert when the same item refreshes after an ack', async () => {
+    installAckApi()
+    await renderWithProviders(<RefreshHarness />, ['common', 'admin'])
+    const user = userEvent.setup()
+
+    await screen.findByRole('dialog')
+    await user.type(screen.getByLabelText('Note'), 'checked with provider')
+    await user.click(
+      screen.getByRole('button', { name: 'Save acknowledgement' }),
+    )
+    await screen.findByText('Acknowledgement saved.')
+
+    // 确认成功后列表被失效重取，同一条明细以新状态再次传入。这只是刷新，
+    // 不是换了一条明细：刚输入的说明与「已保存」提示必须留在抽屉里。
+    // 抽屉打开时背景是 aria-hidden，按钮不在可访问树里，只能用文本查询。
+    fireEvent.click(screen.getByText('refresh item'))
+
+    expect(
+      (screen.getByLabelText('Note') as HTMLTextAreaElement).value,
+    ).toBe('checked with provider')
+    expect(screen.getByText('Acknowledgement saved.')).toBeTruthy()
   })
 
   it('disables the ack controls without settings:manage', async () => {
