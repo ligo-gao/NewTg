@@ -1139,10 +1139,12 @@ func TestIntegrationUsageStatsByGroup(t *testing.T) {
 func TestIntegrationUsageStatsByToken(t *testing.T) {
 	env := newUsageTestEnv(t)
 	userA, _ := ensureUsageTestUser(t, env, "btt")
+	userB, _ := ensureUsageTestUser(t, env, "btu")
 	tokenA, tokenB := int64(910001), int64(910002)
 	group := fmt.Sprintf("btt-%d", time.Now().UnixNano()%1_000_000_000)
 	env.seed(t, usageSeed{UserID: userA, Group: group, Status: 1, Cost: 70, TokenID: &tokenA, TokenName: "prod-key"})
-	env.seed(t, usageSeed{UserID: userA, Group: group, Status: 1, Cost: 30, TokenID: &tokenB, TokenName: "batch-01"})
+	// 第二个用户的同组行：若用户维度过滤失效，普通用户的响应会多出一项。
+	env.seed(t, usageSeed{UserID: userB, Group: group, Status: 1, Cost: 30, TokenID: &tokenB, TokenName: "batch-01"})
 
 	type item struct {
 		TokenID   int64   `json:"token_id"`
@@ -1172,8 +1174,83 @@ func TestIntegrationUsageStatsByToken(t *testing.T) {
 	// A normal user is scoped to their own rows, and percent is re-based to 100.
 	rec = env.do(t, http.MethodGet, "/api/usage-stats/by-token?group="+group, userPrincipal(userA))
 	mine := decodeUsageJSON[envelope](t, rec)
-	if len(mine.Items) != 2 || mine.Items[0].Percent != 70 || mine.Total != 100 {
+	if len(mine.Items) != 1 || mine.Total != 70 ||
+		mine.Items[0].TokenID != tokenA || mine.Items[0].Percent != 100 {
 		t.Fatalf("user by-token = %+v", mine)
+	}
+}
+
+// TestIntegrationUsageStatsByTokenOtherBucketAndNames 覆盖 by-token 的
+// other 桶 / 无令牌桶 / Requests/Tokens 聚合，并证明令牌名来自主库 api_tokens：
+// 线上写入路径把 usage_logs.token_name 写成 NULL，这里保持该列为 NULL。
+func TestIntegrationUsageStatsByTokenOtherBucketAndNames(t *testing.T) {
+	env := newUsageTestEnv(t)
+	userID, _ := ensureUsageTestUser(t, env, "btn")
+	group := fmt.Sprintf("btn-%d", time.Now().UnixNano()%1_000_000_000)
+
+	// 9 个令牌桶 + 1 个无令牌桶 = 10 个桶；前 8 名之外聚合为 other。
+	// 无令牌桶取最高消费，保证它留在前 8 名内可被单独断言。
+	costs := []int64{900, 800, 700, 600, 500, 400, 300, 200, 100}
+	tokenIDs := make([]int64, len(costs))
+	for i, cost := range costs {
+		tokenID := int64(0)
+		if err := env.mainDB.QueryRow(`INSERT INTO api_tokens (user_id, name, key_hash, "group")
+			VALUES ($1, $2, $3, 'default') RETURNING id`,
+			userID, fmt.Sprintf("tk-%d", i+1),
+			fmt.Sprintf("it-btn-%d-%d", time.Now().UnixNano(), i)).Scan(&tokenID); err != nil {
+			t.Fatalf("insert api_token %d: %v", i+1, err)
+		}
+		tokenIDs[i] = tokenID
+		tid := tokenID
+		env.seed(t, usageSeed{
+			UserID: userID, Group: group, Status: 1, Cost: cost,
+			TokenID: &tid, PromptTokens: i + 1, Completion: i + 1,
+		})
+	}
+	t.Cleanup(func() {
+		for _, id := range tokenIDs {
+			_, _ = env.mainDB.Exec(`DELETE FROM api_tokens WHERE id = $1`, id)
+		}
+	})
+	env.seed(t, usageSeed{UserID: userID, Group: group, Status: 1, Cost: 950, PromptTokens: 5, Completion: 5})
+
+	type item struct {
+		TokenID   int64   `json:"token_id"`
+		TokenName string  `json:"token_name"`
+		Cost      int64   `json:"cost"`
+		Requests  int64   `json:"requests"`
+		Tokens    int64   `json:"tokens"`
+		Percent   float64 `json:"percent"`
+	}
+	type envelope struct {
+		Items []item `json:"items"`
+		Total int64  `json:"total"`
+	}
+
+	rec := env.do(t, http.MethodGet, "/api/usage-stats/by-token?group="+group, usageAdminPrincipal(1, rbac.PermLogsRead))
+	body := decodeUsageJSON[envelope](t, rec)
+	// 总消费 950 + 4500；10 个桶收敛为 9 项（前 8 + other）。
+	if rec.Code != http.StatusOK || body.Total != 5450 || len(body.Items) != 9 {
+		t.Fatalf("by-token other = %d total=%d items=%d body=%s", rec.Code, body.Total, len(body.Items), rec.Body.String())
+	}
+
+	noToken := body.Items[0]
+	if noToken.TokenID != 0 || noToken.TokenName != "" || noToken.Cost != 950 ||
+		noToken.Requests != 1 || noToken.Tokens != 10 {
+		t.Fatalf("no-token bucket = %+v", noToken)
+	}
+	for i := 1; i <= 7; i++ {
+		got := body.Items[i]
+		want := fmt.Sprintf("tk-%d", i)
+		if got.TokenID != tokenIDs[i-1] || got.TokenName != want || got.Cost != costs[i-1] ||
+			got.Requests != 1 || got.Tokens != int64(2*i) {
+			t.Fatalf("rank %d item = %+v, want name=%s cost=%d", i+1, got, want, costs[i-1])
+		}
+	}
+	other := body.Items[8]
+	if other.TokenID != 0 || other.TokenName != "other" || other.Cost != 300 ||
+		other.Requests != 2 || other.Tokens != 34 {
+		t.Fatalf("other bucket = %+v", other)
 	}
 }
 

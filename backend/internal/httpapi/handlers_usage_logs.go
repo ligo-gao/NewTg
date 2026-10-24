@@ -804,6 +804,45 @@ func (h *UsageLogHandlers) usernamesFor(r *http.Request, ids []int64) (map[int64
 	return out, rows.Err()
 }
 
+// tokenNamesFor 批量读取令牌名，避免 N+1。令牌名以主库 api_tokens 为准：
+// usage_logs.token_name 在线上写入路径中恒为 NULL（RelayContext 不携带令牌名），
+// 该列只是不可依赖的历史快照。
+func (h *UsageLogHandlers) tokenNamesFor(r *http.Request, ids []int64) (map[int64]string, error) {
+	out := make(map[int64]string, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	uniq := make([]int64, 0, len(ids))
+	seen := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			uniq = append(uniq, id)
+		}
+	}
+	placeholders := make([]string, len(uniq))
+	args := make([]any, len(uniq))
+	for i, id := range uniq {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+	rows, err := h.db.QueryContext(r.Context(),
+		`SELECT id, name FROM api_tokens WHERE id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		out[id] = name
+	}
+	return out, rows.Err()
+}
+
 // --- 列表 -----------------------------------------------------------------
 
 type usageLogPage struct {
@@ -2427,7 +2466,8 @@ type usageByTokenResponse struct {
 }
 
 // handleUsageStatsByToken 按 API 令牌聚合消费；无令牌的行归入 token_id=0，
-// 第 9 名起聚合为 other（token_name="other"，token_id=0）。
+// 第 9 名起聚合为 other（token_name="other"，token_id=0）。令牌名在读取时
+// 从主库 api_tokens 补齐（usage_logs.token_name 线上恒为 NULL）。
 func (h *UsageLogHandlers) handleUsageStatsByToken(w http.ResponseWriter, r *http.Request) {
 	_, where, args, ok := h.statsWhere(w, r, r.URL.Query())
 	if !ok {
@@ -2477,6 +2517,26 @@ func (h *UsageLogHandlers) handleUsageStatsByToken(w http.ResponseWriter, r *htt
 			other.Tokens += item.Tokens
 		}
 		items = append(append([]usageByTokenItem{}, all[:8]...), other)
+	}
+
+	// usage_logs.token_name 线上恒为 NULL，令牌名改从主库补齐；查名失败只记日志，
+	// 不让统计请求失败（与列表接口的 usernamesFor 同一非致命策略）。
+	missing := make([]int64, 0, len(items))
+	for _, item := range items {
+		if item.TokenID > 0 && item.TokenName == "" {
+			missing = append(missing, item.TokenID)
+		}
+	}
+	if names, err := h.tokenNamesFor(r, missing); err != nil {
+		h.log.Error("usage stats by-token: token name lookup failed", "error", err)
+	} else {
+		for i := range items {
+			if items[i].TokenID > 0 && items[i].TokenName == "" {
+				if name, ok := names[items[i].TokenID]; ok {
+					items[i].TokenName = name
+				}
+			}
+		}
 	}
 
 	costs := make([]int64, len(items))
