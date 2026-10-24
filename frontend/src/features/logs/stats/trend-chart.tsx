@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { formatCredits } from '@/shared/lib/format'
 import { useI18n } from '@/shared/lib/i18n-context'
@@ -42,6 +42,13 @@ export function TrendChart({ rows, granularity }: TrendChartProps) {
   const { t, locale } = useI18n()
   const [hover, setHover] = useState<number | null>(null)
 
+  // A new window or granularity means the old hover index points at a bucket
+  // that may no longer exist (or means something else), so drop it instead of
+  // leaving a tooltip pinned with no pointer over the chart.
+  useEffect(() => {
+    setHover(null)
+  }, [rows.length, granularity])
+
   const insights = trendInsights(rows)
   const maxCost = Math.max(...rows.map((row) => row.cost), 1)
   const maxRequests = Math.max(...rows.map((row) => row.requests), 1)
@@ -54,6 +61,18 @@ export function TrendChart({ rows, granularity }: TrendChartProps) {
     gridTemplateColumns: `repeat(${String(rows.length)}, minmax(0, 1fr))`,
     gap: '2px',
   }
+  // Keep the tooltip inside the card at both edges: the first and last three
+  // buckets shift their anchor instead of centering on it. A class (not an
+  // inline transform) so Tailwind's own translate variables compose with the
+  // positioning and with `left`.
+  const tipShift =
+    hover === null
+      ? '-translate-x-1/2'
+      : hover < 3
+        ? '-translate-x-[12%]'
+        : hover >= rows.length - 3
+          ? '-translate-x-[88%]'
+          : '-translate-x-1/2'
 
   if (rows.length === 0) return null
 
@@ -95,34 +114,38 @@ export function TrendChart({ rows, granularity }: TrendChartProps) {
                 style={{ top: `${String(percent)}%` }}
               />
             ))}
-            <div className="absolute inset-0 grid h-full items-end" style={barColumns}>
+            <div className="absolute inset-0 grid h-full grid-rows-1" style={barColumns}>
               {rows.map((row, index) => (
                 <div
                   key={row.bucket}
-                  data-testid="trend-bar-cost"
-                  data-zero={row.cost === 0 ? 'true' : 'false'}
-                  title={`${formatBucketTick(row.bucket, granularity, locale)} · ${formatCredits(row.cost, locale)} ${t('logs.usage.credits')} · ${formatCount(row.requests, locale)}`}
-                  style={{ height: barHeight(row.cost, maxCost), minHeight: 2 }}
-                  className={
-                    row.cost === 0
-                      ? `${BAR_BASE} bg-border-hairline`
-                      : `${BAR_BASE} bg-[var(--chart-cat-1)]`
-                  }
+                  className="flex h-full min-w-0 flex-col justify-end"
                   onMouseEnter={() => {
                     setHover(index)
                   }}
-                />
+                >
+                  <div
+                    data-testid="trend-bar-cost"
+                    data-zero={row.cost === 0 ? 'true' : 'false'}
+                    title={`${formatBucketTick(row.bucket, granularity, locale)} · ${formatCredits(row.cost, locale)} ${t('logs.usage.credits')} · ${formatCount(row.requests, locale)}`}
+                    style={{ height: barHeight(row.cost, maxCost), minHeight: 2 }}
+                    className={`w-full ${
+                      row.cost === 0
+                        ? `${BAR_BASE} bg-border-hairline`
+                        : `${BAR_BASE} bg-[var(--chart-cat-1)]`
+                    }`}
+                  />
+                </div>
               ))}
             </div>
             {insights.averageCost > 0 ? (
               <div
                 data-testid="trend-avg"
-                className="absolute inset-x-0 border-t border-dashed border-ink-3"
+                className="pointer-events-none absolute inset-x-0 border-t border-dashed border-ink-3"
                 style={{
                   top: `${String((1 - insights.averageCost / maxCost) * 100)}%`,
                 }}
               >
-                <span className="absolute right-0 -translate-y-1/2 bg-surface-card px-1 text-badge tabular-nums text-ink-3">
+                <span className="pointer-events-none absolute right-0 -translate-y-1/2 bg-surface-card px-1 text-badge tabular-nums text-ink-3">
                   {t('logs.usage.stats.chart.average', {
                     value: compact(insights.averageCost, locale),
                   })}
@@ -132,7 +155,7 @@ export function TrendChart({ rows, granularity }: TrendChartProps) {
             {hover !== null && active !== null ? (
               <div
                 data-testid="trend-tip"
-                className="pointer-events-none absolute top-0 z-10 -translate-x-1/2 rounded-md border border-border-hairline bg-surface-card px-2 py-1 text-badge whitespace-nowrap shadow-sm"
+                className={`pointer-events-none absolute top-0 z-10 ${tipShift} rounded-md border border-border-hairline bg-surface-card px-2 py-1 text-badge whitespace-nowrap shadow-sm`}
                 style={{
                   left: `${String(((hover + 0.5) / rows.length) * 100)}%`,
                 }}
@@ -174,26 +197,30 @@ export function TrendChart({ rows, granularity }: TrendChartProps) {
                 style={{ top: `${String(percent)}%` }}
               />
             ))}
-            <div className="absolute inset-0 grid h-full items-end" style={barColumns}>
+            <div className="absolute inset-0 grid h-full grid-rows-1" style={barColumns}>
               {rows.map((row, index) => (
                 <div
                   key={row.bucket}
-                  data-testid="trend-bar-requests"
-                  data-zero={row.requests === 0 ? 'true' : 'false'}
-                  title={`${formatBucketTick(row.bucket, granularity, locale)} · ${formatCount(row.requests, locale)} ${t('logs.usage.stats.columns.requests')}`}
-                  style={{
-                    height: barHeight(row.requests, maxRequests),
-                    minHeight: 2,
-                  }}
-                  className={
-                    row.requests === 0
-                      ? `${BAR_BASE} bg-border-hairline`
-                      : `${BAR_BASE} bg-[var(--chart-cat-2)]`
-                  }
+                  className="flex h-full min-w-0 flex-col justify-end"
                   onMouseEnter={() => {
                     setHover(index)
                   }}
-                />
+                >
+                  <div
+                    data-testid="trend-bar-requests"
+                    data-zero={row.requests === 0 ? 'true' : 'false'}
+                    title={`${formatBucketTick(row.bucket, granularity, locale)} · ${formatCount(row.requests, locale)} ${t('logs.usage.stats.columns.requests')}`}
+                    style={{
+                      height: barHeight(row.requests, maxRequests),
+                      minHeight: 2,
+                    }}
+                    className={`w-full ${
+                      row.requests === 0
+                        ? `${BAR_BASE} bg-border-hairline`
+                        : `${BAR_BASE} bg-[var(--chart-cat-2)]`
+                    }`}
+                  />
+                </div>
               ))}
             </div>
           </div>
@@ -212,17 +239,19 @@ export function TrendChart({ rows, granularity }: TrendChartProps) {
             {tickIndexes.map((index, tickPosition) => {
               const row = rows[index]
               if (row === undefined) return null
+              const isFirst = tickPosition === 0
+              const isLast = tickPosition === tickIndexes.length - 1
+              // Thin out the odd ticks on narrow viewports so the nowrap labels
+              // cannot collide; every tick stays in the DOM and the first and
+              // last stay visible at every width.
+              const isDense = !isFirst && !isLast && index % (step * 2) !== 0
               return (
                 <span
                   key={row.bucket}
                   data-testid="trend-x-tick"
-                  className={`text-badge leading-none text-ink-3 ${
-                    tickPosition === 0
-                      ? 'text-left'
-                      : tickPosition === tickIndexes.length - 1
-                        ? 'text-right'
-                        : 'text-center'
-                  }`}
+                  className={`whitespace-nowrap text-badge leading-none text-ink-3 ${
+                    isFirst ? 'text-left' : isLast ? 'text-right' : 'text-center'
+                  } ${isDense ? 'hidden sm:inline' : ''}`}
                   style={{ gridColumn: index + 1 }}
                 >
                   {formatBucketTick(row.bucket, granularity, locale)}

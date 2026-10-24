@@ -61,6 +61,25 @@ describe('trend chart', () => {
     expect(ticks.length).toBeLessThanOrEqual(7)
   })
 
+  it('handles an all-zero window and a single bucket without dividing by zero', () => {
+    const allZero = hours(24).map((row) => ({ ...row, cost: 0, requests: 0 }))
+    const { unmount } = renderWithProviders(<TrendChart rows={allZero} granularity="hour" />)
+
+    expect(screen.queryByTestId('trend-avg')).toBeNull()
+    const bars = screen.getAllByTestId('trend-bar-cost')
+    expect(bars).toHaveLength(24)
+    for (const bar of bars) {
+      expect(bar.dataset.zero).toBe('true')
+      expect(bar.style.height).toBe('2px')
+    }
+
+    unmount()
+    renderWithProviders(
+      <TrendChart rows={[{ bucket: '2026-10-24T01:00:00Z', cost: 42, requests: 1 }]} granularity="hour" />,
+    )
+    expect(screen.getByTestId('trend-bar-cost').style.height).toBe('100%')
+  })
+
   it('shows the bucket values on hover', async () => {
     const user = userEvent.setup()
     renderWithProviders(<TrendChart rows={ROWS} granularity="hour" />)
