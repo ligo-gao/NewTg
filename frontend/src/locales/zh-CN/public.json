@@ -88,6 +88,7 @@
   "status.unavailable_hint": "无法访问状态探测接口。",
   "status.retry": "重试",
   "nav.console": "控制台",
+  "nav.models": "模型库",
   "nav.rankings": "排行榜",
   "nav.sign_up": "注册",
   "nav.open_menu": "打开导航",

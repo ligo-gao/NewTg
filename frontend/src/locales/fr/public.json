@@ -88,6 +88,7 @@
   "status.unavailable_hint": "La sonde d'état est injoignable.",
   "status.retry": "Réessayer",
   "nav.console": "Console",
+  "nav.models": "Modèles",
   "nav.rankings": "Classements",
   "nav.sign_up": "S'inscrire",
   "nav.open_menu": "Ouvrir la navigation",

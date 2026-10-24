@@ -38,6 +38,7 @@ import { Route as Errors500RouteImport } from './routes/_errors/500'
 import { Route as Errors503RouteImport } from './routes/_errors/503'
 import { Route as AnnouncementsIdRouteImport } from './routes/announcements/$id'
 import { Route as LegalDocRouteImport } from './routes/legal.$doc'
+import { Route as ModelsIndexRouteImport } from './routes/models/index'
 import { Route as PricingIndexRouteImport } from './routes/pricing/index'
 import { Route as PricingModelIdRouteImport } from './routes/pricing/$modelId'
 import { Route as RankingsIndexRouteImport } from './routes/rankings/index'
@@ -206,6 +207,11 @@ const LegalDocRoute = LegalDocRouteImport.update({
   path: '/legal/$doc',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ModelsIndexRoute = ModelsIndexRouteImport.update({
+  id: '/models/',
+  path: '/models/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const PricingIndexRoute = PricingIndexRouteImport.update({
   id: '/pricing/',
   path: '/pricing/',
@@ -367,6 +373,7 @@ export interface FileRoutesByFullPath {
   '/announcements/$id': typeof AnnouncementsIdRoute
   '/legal/$doc': typeof LegalDocRoute
   '/pricing/$modelId': typeof PricingModelIdRoute
+  '/models/': typeof ModelsIndexRoute
   '/pricing/': typeof PricingIndexRoute
   '/rankings/': typeof RankingsIndexRoute
   '/admin/models': typeof ConsoleAdminModelsRoute
@@ -419,6 +426,7 @@ export interface FileRoutesByTo {
   '/announcements/$id': typeof AnnouncementsIdRoute
   '/legal/$doc': typeof LegalDocRoute
   '/pricing/$modelId': typeof PricingModelIdRoute
+  '/models': typeof ModelsIndexRoute
   '/pricing': typeof PricingIndexRoute
   '/rankings': typeof RankingsIndexRoute
   '/admin/models': typeof ConsoleAdminModelsRoute
@@ -474,6 +482,7 @@ export interface FileRoutesById {
   '/announcements/$id': typeof AnnouncementsIdRoute
   '/legal/$doc': typeof LegalDocRoute
   '/pricing/$modelId': typeof PricingModelIdRoute
+  '/models/': typeof ModelsIndexRoute
   '/pricing/': typeof PricingIndexRoute
   '/rankings/': typeof RankingsIndexRoute
   '/_console/admin/models': typeof ConsoleAdminModelsRoute
@@ -529,6 +538,7 @@ export interface FileRouteTypes {
     | '/announcements/$id'
     | '/legal/$doc'
     | '/pricing/$modelId'
+    | '/models/'
     | '/pricing/'
     | '/rankings/'
     | '/admin/models'
@@ -581,6 +591,7 @@ export interface FileRouteTypes {
     | '/announcements/$id'
     | '/legal/$doc'
     | '/pricing/$modelId'
+    | '/models'
     | '/pricing'
     | '/rankings'
     | '/admin/models'
@@ -635,6 +646,7 @@ export interface FileRouteTypes {
     | '/announcements/$id'
     | '/legal/$doc'
     | '/pricing/$modelId'
+    | '/models/'
     | '/pricing/'
     | '/rankings/'
     | '/_console/admin/models'
@@ -679,6 +691,7 @@ export interface RootRouteChildren {
   AnnouncementsIdRoute: typeof AnnouncementsIdRoute
   LegalDocRoute: typeof LegalDocRoute
   PricingModelIdRoute: typeof PricingModelIdRoute
+  ModelsIndexRoute: typeof ModelsIndexRoute
   PricingIndexRoute: typeof PricingIndexRoute
   RankingsIndexRoute: typeof RankingsIndexRoute
 }
@@ -886,6 +899,13 @@ declare module '@tanstack/react-router' {
       path: '/legal/$doc'
       fullPath: '/legal/$doc'
       preLoaderRoute: typeof LegalDocRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/models/': {
+      id: '/models/'
+      path: '/models'
+      fullPath: '/models/'
+      preLoaderRoute: typeof ModelsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/pricing/': {
@@ -1157,6 +1177,7 @@ const rootRouteChildren: RootRouteChildren = {
   AnnouncementsIdRoute: AnnouncementsIdRoute,
   LegalDocRoute: LegalDocRoute,
   PricingModelIdRoute: PricingModelIdRoute,
+  ModelsIndexRoute: ModelsIndexRoute,
   PricingIndexRoute: PricingIndexRoute,
   RankingsIndexRoute: RankingsIndexRoute,
 }

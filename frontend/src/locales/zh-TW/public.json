@@ -88,6 +88,7 @@
   "status.unavailable_hint": "無法存取狀態探測介面。",
   "status.retry": "重試",
   "nav.console": "控制台",
+  "nav.models": "模型庫",
   "nav.rankings": "排行榜",
   "nav.sign_up": "註冊",
   "nav.open_menu": "開啟導覽",

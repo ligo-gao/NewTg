@@ -10,13 +10,14 @@ import {
 /**
  * F-09-34 navigation visibility (modules-09 C3).
  *
- * Single source of truth for the six public nav entries. The header, the
+ * Single source of truth for the seven public nav entries. The header, the
  * mobile drawer and the route guard helpers below all consume this module, so
  * "is this entry visible" cannot drift between them.
  */
 export type PublicNavKey =
   | 'home'
   | 'console'
+  | 'models'
   | 'pricing'
   | 'rankings'
   | 'docs'
@@ -32,6 +33,7 @@ export interface PublicNavItem {
 export const PUBLIC_NAV_ORDER: readonly PublicNavKey[] = [
   'home',
   'console',
+  'models',
   'pricing',
   'rankings',
   'docs',
@@ -41,6 +43,7 @@ export const PUBLIC_NAV_ORDER: readonly PublicNavKey[] = [
 export const PUBLIC_NAV_HREFS: Record<PublicNavKey, string> = {
   home: '/',
   console: '/dashboard',
+  models: '/models',
   pricing: '/pricing',
   rankings: '/rankings',
   docs: '/docs',
@@ -179,6 +182,7 @@ export function publicRouteGuardRedirect(
 /** Maps a public pathname to its nav section; unknown paths are unguarded. */
 export function sectionForPath(pathname: string): PublicNavKey | null {
   if (pathname === '/') return 'home'
+  if (pathname === '/models' || pathname.startsWith('/models/')) return 'models'
   if (pathname === '/pricing' || pathname.startsWith('/pricing/')) return 'pricing'
   if (pathname === '/rankings' || pathname.startsWith('/rankings/')) return 'rankings'
   if (pathname === '/docs') return 'docs'

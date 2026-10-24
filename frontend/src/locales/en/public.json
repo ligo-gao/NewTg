@@ -88,6 +88,7 @@
   "status.unavailable_hint": "The status probe could not be reached.",
   "status.retry": "Retry",
   "nav.console": "Console",
+  "nav.models": "Models",
   "nav.rankings": "Rankings",
   "nav.sign_up": "Sign up",
   "nav.open_menu": "Open navigation",

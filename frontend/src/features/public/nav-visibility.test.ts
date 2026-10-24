@@ -12,6 +12,7 @@ import {
 const FULL_NAV = {
   home: { enabled: true, require_auth: false },
   console: { enabled: true, require_auth: true },
+  models: { enabled: true, require_auth: false },
   pricing: { enabled: true, require_auth: false },
   rankings: { enabled: true, require_auth: false },
   docs: { enabled: true, require_auth: false },
@@ -67,6 +68,7 @@ describe('nav visibility matrix (TC-F-09-34-01)', () => {
     expect(items.map((item) => item.key)).toEqual([
       'home',
       'console',
+      'models',
       'pricing',
       'docs',
       'about',
@@ -81,6 +83,7 @@ describe('nav visibility matrix (TC-F-09-34-01)', () => {
     const off = {
       home: { enabled: false, require_auth: false },
       console: { enabled: false, require_auth: true },
+      models: { enabled: false, require_auth: false },
       pricing: { enabled: false, require_auth: false },
       rankings: { enabled: false, require_auth: false },
       docs: { enabled: false, require_auth: false },
@@ -112,5 +115,18 @@ describe('direct-link guard (F-09-35)', () => {
 
   it('does not guard unknown public paths', () => {
     expect(publicRouteGuardRedirect('/legal/terms', '', FULL_NAV, false)).toBeNull()
+  })
+
+  it('silently sends a disabled model library back home', () => {
+    const nav = { ...FULL_NAV, models: { enabled: false, require_auth: false } }
+    expect(publicRouteGuardRedirect('/models', '', nav, true)).toBe('/')
+  })
+
+  it('redirects guests to sign-in when the model library requires auth', () => {
+    const nav = { ...FULL_NAV, models: { enabled: true, require_auth: true } }
+    expect(publicRouteGuardRedirect('/models', '?cap=vision', nav, false)).toBe(
+      '/sign-in?redirect=%2Fmodels%3Fcap%3Dvision',
+    )
+    expect(publicRouteGuardRedirect('/models', '?cap=vision', nav, true)).toBeNull()
   })
 })

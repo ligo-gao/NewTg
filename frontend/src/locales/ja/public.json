@@ -88,6 +88,7 @@
   "status.unavailable_hint": "状態プローブに到達できませんでした。",
   "status.retry": "再試行",
   "nav.console": "コンソール",
+  "nav.models": "モデルライブラリ",
   "nav.rankings": "ランキング",
   "nav.sign_up": "新規登録",
   "nav.open_menu": "ナビゲーションを開く",
