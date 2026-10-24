@@ -63,6 +63,13 @@
   --neutral-bg: #f1f2f4;
   --neutral-line: #dde1e8;
 
+  /* Failure triage verdicts — which party owns the failure: the caller, the
+     upstream channel, or this gateway. Values come from the console redesign
+     demo and are not part of the modules-00 status semantics. */
+  --verdict-user: #0e6e8c;
+  --verdict-channel: #8a6100;
+  --verdict-gateway: #9b2233;
+
   /* Amount semantics — §4.6.3 */
   --amount-out: #dc2626;
   --amount-in: #15803d;
@@ -198,6 +205,11 @@
   --neutral-fg: #9aa3af;
   --neutral-bg: #23282f;
   --neutral-line: #3a4150;
+
+  /* Failure triage verdicts — dark column. */
+  --verdict-user: #4db6d1;
+  --verdict-channel: #d9a441;
+  --verdict-gateway: #e5798a;
 
   /* Amount semantics — §4.6.3 dark column */
   --amount-out: #f87171;

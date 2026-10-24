@@ -23,6 +23,7 @@ import (
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/rbac"
 )
 
@@ -1119,6 +1120,459 @@ func TestIntegrationUsageStatsByGroup(t *testing.T) {
 		}
 		if body.Items[0].Group != tc.group || body.Items[0].Cost != tc.cost || body.Items[0].Percent != 100 {
 			t.Fatalf("by-group(%s) item = %+v", tc.group, body.Items[0])
+		}
+	}
+}
+
+// --- 失败排障（Task 5） ---------------------------------------------------
+
+const (
+	triageRefundedOther = `{
+		"admin_info": {
+			"triage": {
+				"endpoint": "/v1/messages",
+				"channel_type": "openai",
+				"upstream_status": 400,
+				"attempts": 1,
+				"request_structure": "valid",
+				"conversion": [{"stage": "request", "from": "anthropic", "to": "openai"}]
+			}
+		}
+	}`
+	triageRefundedChain = `[{"attempt":"1/1","channel_id":7,"upstream":"openai","error_class":"upstream_4xx","latency_ms":120,"upstream_status":400}]`
+)
+
+type triageJSON struct {
+	Found     bool   `json:"found"`
+	RequestID string `json:"request_id"`
+	Log       *struct {
+		Status       string           `json:"status"`
+		ErrorMessage *string          `json:"error_message"`
+		RetryChain   []map[string]any `json:"retry_chain"`
+		Other        map[string]any   `json:"other"`
+	} `json:"log"`
+	Evidence *struct {
+		Endpoint         string           `json:"endpoint"`
+		RouteFrom        string           `json:"route_from"`
+		RouteTo          string           `json:"route_to"`
+		Conversion       []map[string]any `json:"conversion"`
+		UpstreamStatus   int              `json:"upstream_status"`
+		Attempts         int              `json:"attempts"`
+		ChannelType      string           `json:"channel_type"`
+		ChannelID        *int64           `json:"channel_id"`
+		RequestStructure string           `json:"request_structure"`
+		RejectStage      string           `json:"reject_stage"`
+		Billing          map[string]any   `json:"billing"`
+		ErrorClass       string           `json:"error_class"`
+		CreatedAt        string           `json:"created_at"`
+	} `json:"evidence"`
+	Verdict *struct {
+		Owner   string `json:"owner"`
+		Sub     string `json:"sub"`
+		Rule    string `json:"rule"`
+		Signals []struct {
+			Code   string         `json:"code"`
+			Vote   string         `json:"vote"`
+			Params map[string]any `json:"params"`
+		} `json:"signals"`
+	} `json:"verdict"`
+}
+
+func (env *usageTestEnv) triage(t *testing.T, requestID string, p *auth.Principal) (*httptest.ResponseRecorder, triageJSON) {
+	t.Helper()
+	rec := env.do(t, http.MethodGet, "/api/usage-logs/triage/"+requestID, p)
+	return rec, decodeUsageJSON[triageJSON](t, rec)
+}
+
+type triageRecentBody struct {
+	Items []struct {
+		RequestID string `json:"request_id"`
+		Status    string `json:"status"`
+		Owner     string `json:"owner"`
+		Sub       string `json:"sub"`
+		Rule      string `json:"rule"`
+		CreatedAt string `json:"created_at"`
+	} `json:"items"`
+	Counts struct {
+		User    int `json:"user"`
+		Channel int `json:"channel"`
+		Gateway int `json:"gateway"`
+		Unknown int `json:"unknown"`
+		Total   int `json:"total"`
+	} `json:"counts"`
+}
+
+func (env *usageTestEnv) recentFailures(t *testing.T, query string, p *auth.Principal) (*httptest.ResponseRecorder, triageRecentBody) {
+	t.Helper()
+	rec := env.do(t, http.MethodGet, "/api/usage-logs/triage/recent?"+query, p)
+	return rec, decodeUsageJSON[triageRecentBody](t, rec)
+}
+
+func TestIntegrationRequestTriageDetail(t *testing.T) {
+	env := newUsageTestEnv(t)
+	userID, _ := ensureUsageTestUser(t, env, "tr")
+	requestID := newRequestID(t)
+	now := time.Now().UTC()
+	// 终态行比 success 行更旧：只按「最新一行」会选错，必须按终态优先级。
+	env.seed(t, usageSeed{
+		UserID: userID, RequestID: requestID,
+		Status: billing.UsageLogStatusRefunded, ChannelID: 7,
+		Other: triageRefundedOther, RetryChain: triageRefundedChain,
+		ErrorClass: "upstream_4xx", CreatedAt: now.Add(-2 * time.Minute),
+	})
+	env.seed(t, usageSeed{
+		UserID: userID, RequestID: requestID,
+		Status: billing.UsageLogStatusSuccess, CreatedAt: now.Add(-time.Minute),
+	})
+
+	rec, body := env.triage(t, requestID, usageAdminPrincipal(1, rbac.PermLogsRead))
+	if rec.Code != http.StatusOK || !body.Found {
+		t.Fatalf("triage status/found = %d/%v body=%s", rec.Code, body.Found, rec.Body.String())
+	}
+	if body.RequestID != requestID {
+		t.Fatalf("request_id = %q, want %q", body.RequestID, requestID)
+	}
+	if body.Log == nil || body.Log.Status != "refunded" {
+		t.Fatalf("log = %+v, want refunded terminal row", body.Log)
+	}
+	if body.Log.Other["admin_info"] == nil {
+		t.Fatalf("admin response missing admin_info: %v", body.Log.Other)
+	}
+	if body.Verdict == nil {
+		t.Fatalf("missing verdict: %s", rec.Body.String())
+	}
+	if body.Verdict.Owner != "gateway" || body.Verdict.Rule != "GW-01" || body.Verdict.Sub != "protocol_conversion" {
+		t.Fatalf("verdict = %+v, want gateway/GW-01/protocol_conversion", *body.Verdict)
+	}
+	if len(body.Verdict.Signals) < 2 {
+		t.Fatalf("signals = %d, want >= 2", len(body.Verdict.Signals))
+	}
+	ev := body.Evidence
+	if ev == nil {
+		t.Fatalf("missing evidence: %s", rec.Body.String())
+	}
+	if ev.Endpoint != "/v1/messages" || ev.ChannelType != "openai" || ev.ChannelID == nil || *ev.ChannelID != 7 {
+		t.Fatalf("evidence endpoint/channel = %+v", ev)
+	}
+	if ev.RouteFrom != "anthropic" || ev.RouteTo != "openai" || len(ev.Conversion) != 1 {
+		t.Fatalf("evidence conversion = %+v", ev)
+	}
+	if ev.UpstreamStatus != 400 || ev.Attempts != 1 {
+		t.Fatalf("evidence status/attempts = %d/%d", ev.UpstreamStatus, ev.Attempts)
+	}
+	if ev.RequestStructure != "valid" || ev.RejectStage != "" {
+		t.Fatalf("evidence structure/stage = %q/%q", ev.RequestStructure, ev.RejectStage)
+	}
+	if ev.ErrorClass != "upstream_4xx" || ev.Billing["cost"] == nil {
+		t.Fatalf("evidence class/billing = %+v", ev)
+	}
+
+	// 32 位无连字符拼写必须命中同一行（$1::uuid 绑定）。
+	compact := strings.ReplaceAll(requestID, "-", "")
+	rec, compactBody := env.triage(t, compact, usageAdminPrincipal(1, rbac.PermLogsRead))
+	if rec.Code != http.StatusOK || !compactBody.Found || compactBody.RequestID != requestID {
+		t.Fatalf("compact uuid = %d found=%v id=%q", rec.Code, compactBody.Found, compactBody.RequestID)
+	}
+
+	// 非管理员：403，响应体不得含 admin_info。
+	rec, _ = env.triage(t, requestID, userPrincipal(userID))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("non-admin status = %d, want 403", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "admin_info") {
+		t.Fatalf("non-admin body leaked admin_info: %s", rec.Body.String())
+	}
+	// admin 但缺 logs:read：同样 403（不收敛成本人范围）。
+	rec, _ = env.triage(t, requestID, usageAdminPrincipal(1, rbac.PermUsersRead))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("admin without logs:read status = %d, want 403", rec.Code)
+	}
+
+	// 不存在的 UUID：200 + found=false，不是 404。
+	unknown := newRequestID(t)
+	rec, missing := env.triage(t, unknown, usageAdminPrincipal(1, rbac.PermLogsRead))
+	if rec.Code != http.StatusOK || missing.Found {
+		t.Fatalf("unknown uuid = %d found=%v, want 200/false", rec.Code, missing.Found)
+	}
+	if missing.Log != nil || missing.Evidence != nil || missing.Verdict != nil {
+		t.Fatalf("unknown uuid leaked payload: %s", rec.Body.String())
+	}
+
+	// 非法 id：422（不是 404）。
+	for _, malformed := range []string{"not-a-uuid", "1234", strings.ReplaceAll(requestID, "-", "") + "00"} {
+		rec, _ = env.triage(t, malformed, usageAdminPrincipal(1, rbac.PermLogsRead))
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("malformed id %q status = %d, want 422 body=%s", malformed, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestIntegrationRequestTriageRefusal(t *testing.T) {
+	env := newUsageTestEnv(t)
+	userID, _ := ensureUsageTestUser(t, env, "tf")
+	requestID := newRequestID(t)
+	env.seed(t, usageSeed{
+		UserID: userID, RequestID: requestID,
+		Status: billing.UsageLogStatusRefused,
+		Other:  `{"admin_info":{"triage":{"stage":"quota","endpoint":"/v1/chat/completions","request_structure":"valid"}}}`,
+	})
+
+	rec, body := env.triage(t, requestID, usageAdminPrincipal(1, rbac.PermLogsRead))
+	if rec.Code != http.StatusOK || !body.Found {
+		t.Fatalf("refusal triage = %d found=%v body=%s", rec.Code, body.Found, rec.Body.String())
+	}
+	if body.Log == nil || body.Log.Status != "refused" {
+		t.Fatalf("refusal log = %+v", body.Log)
+	}
+	if body.Verdict == nil || body.Verdict.Owner != "user" || body.Verdict.Rule != "USR-02" || body.Verdict.Sub != "quota" {
+		t.Fatalf("refusal verdict = %+v, want user/USR-02/quota", body.Verdict)
+	}
+	if body.Evidence == nil || body.Evidence.RejectStage != "quota" || body.Evidence.UpstreamStatus != 0 || body.Evidence.Attempts != 0 {
+		t.Fatalf("refusal evidence = %+v", body.Evidence)
+	}
+	var refusedSignal bool
+	for _, sig := range body.Verdict.Signals {
+		if sig.Code == "refused_before_upstream" && sig.Vote == "user" {
+			if stage, _ := sig.Params["stage"].(string); stage == "quota" {
+				refusedSignal = true
+			}
+		}
+	}
+	if !refusedSignal {
+		t.Fatalf("missing refused_before_upstream quota signal: %+v", body.Verdict.Signals)
+	}
+}
+
+func TestIntegrationRecentFailures(t *testing.T) {
+	env := newUsageTestEnv(t)
+	userID, _ := ensureUsageTestUser(t, env, "tl")
+	at := time.Now().UTC().Add(-72 * time.Hour).Truncate(time.Second)
+
+	gatewayID := newRequestID(t)
+	env.seed(t, usageSeed{
+		UserID: userID, RequestID: gatewayID, Status: billing.UsageLogStatusRefunded,
+		ChannelID: 7, Other: triageRefundedOther, RetryChain: triageRefundedChain,
+		CreatedAt: at,
+	})
+	userReqID := newRequestID(t)
+	env.seed(t, usageSeed{
+		UserID: userID, RequestID: userReqID, Status: billing.UsageLogStatusRefused,
+		Other:     `{"admin_info":{"triage":{"stage":"quota"}}}`,
+		CreatedAt: at.Add(time.Second),
+	})
+	// 同一窄窗口内的成功行不得出现在「最近失败」里。
+	env.seed(t, usageSeed{
+		UserID: userID, Status: billing.UsageLogStatusSuccess, CreatedAt: at.Add(2 * time.Second),
+	})
+
+	start := at.Add(-time.Minute).Format(time.RFC3339)
+	end := at.Add(time.Minute).Format(time.RFC3339)
+	window := "start=" + start + "&end=" + end
+
+	type recentBody struct {
+		Items []struct {
+			RequestID string `json:"request_id"`
+			Status    string `json:"status"`
+			Owner     string `json:"owner"`
+			Sub       string `json:"sub"`
+			Rule      string `json:"rule"`
+			Model     string `json:"model"`
+			CreatedAt string `json:"created_at"`
+		} `json:"items"`
+		Counts struct {
+			User    int `json:"user"`
+			Channel int `json:"channel"`
+			Gateway int `json:"gateway"`
+			Unknown int `json:"unknown"`
+			Total   int `json:"total"`
+		} `json:"counts"`
+		Window struct {
+			Start string `json:"start"`
+			End   string `json:"end"`
+		} `json:"window"`
+	}
+
+	rec := env.do(t, http.MethodGet, "/api/usage-logs/triage/recent?"+window, usageAdminPrincipal(1, rbac.PermLogsRead))
+	body := decodeUsageJSON[recentBody](t, rec)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("recent status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(body.Items) != 2 {
+		t.Fatalf("recent items = %d, want 2 (success excluded) body=%s", len(body.Items), rec.Body.String())
+	}
+	if body.Counts.Total != len(body.Items) || body.Counts.Gateway != 1 || body.Counts.User != 1 || body.Counts.Channel != 0 || body.Counts.Unknown != 0 {
+		t.Fatalf("recent counts = %+v, want total=2 gateway=1 user=1", body.Counts)
+	}
+	if body.Window.Start == "" || body.Window.End == "" {
+		t.Fatalf("recent window missing: %+v", body.Window)
+	}
+	byID := map[string]string{}
+	for _, item := range body.Items {
+		byID[item.RequestID] = item.Owner + "/" + item.Rule
+	}
+	if byID[gatewayID] != "gateway/GW-01" || byID[userReqID] != "user/USR-02" {
+		t.Fatalf("recent verdicts = %v", byID)
+	}
+
+	// owner 过滤只影响返回条目与 counts。
+	rec = env.do(t, http.MethodGet, "/api/usage-logs/triage/recent?owner=gateway&"+window, usageAdminPrincipal(1, rbac.PermLogsRead))
+	filtered := decodeUsageJSON[recentBody](t, rec)
+	if rec.Code != http.StatusOK || len(filtered.Items) != 1 || filtered.Items[0].RequestID != gatewayID {
+		t.Fatalf("gateway filter = %d %+v", rec.Code, filtered.Items)
+	}
+	if filtered.Counts.Total != 1 || filtered.Counts.Gateway != 1 {
+		t.Fatalf("gateway filter counts = %+v", filtered.Counts)
+	}
+	rec = env.do(t, http.MethodGet, "/api/usage-logs/triage/recent?owner=channel&"+window, usageAdminPrincipal(1, rbac.PermLogsRead))
+	empty := decodeUsageJSON[recentBody](t, rec)
+	if rec.Code != http.StatusOK || len(empty.Items) != 0 || empty.Counts.Total != 0 {
+		t.Fatalf("channel filter = %d items=%d counts=%+v", rec.Code, len(empty.Items), empty.Counts)
+	}
+
+	// 参数校验：非法 limit/owner/range 都是 422。
+	for _, query := range []string{"limit=51", "limit=0", "limit=abc", "owner=ops"} {
+		rec = env.do(t, http.MethodGet, "/api/usage-logs/triage/recent?"+query, usageAdminPrincipal(1, rbac.PermLogsRead))
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("recent %s status = %d, want 422 body=%s", query, rec.Code, rec.Body.String())
+		}
+	}
+	rec = env.do(t, http.MethodGet, "/api/usage-logs/triage/recent?range=1y", usageAdminPrincipal(1, rbac.PermLogsRead))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("recent bad range status = %d, want 422", rec.Code)
+	}
+
+	// 非管理员 / 无 logs:read → 403。
+	rec = env.do(t, http.MethodGet, "/api/usage-logs/triage/recent?"+window, userPrincipal(userID))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("recent non-admin status = %d, want 403", rec.Code)
+	}
+	rec = env.do(t, http.MethodGet, "/api/usage-logs/triage/recent?"+window, usageAdminPrincipal(1, rbac.PermUsersRead))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("recent admin without logs:read status = %d, want 403", rec.Code)
+	}
+}
+
+// 缺少 admin_info.triage 的历史行（含 90 天保留期内的旧数据）必须仍然
+// 下发 evidence，且 conversion 序列化为 [] 而不是 null——前端按
+// TriageConversionStep[] 直接 map。
+func TestIntegrationRequestTriageMissingTriage(t *testing.T) {
+	env := newUsageTestEnv(t)
+	userID, _ := ensureUsageTestUser(t, env, "tn")
+	requestID := newRequestID(t)
+	env.seed(t, usageSeed{
+		UserID: userID, RequestID: requestID,
+		Status: billing.UsageLogStatusError,
+		Other:  `{"admin_info":{"route":"/v1/messages"}}`,
+	})
+
+	rec, body := env.triage(t, requestID, usageAdminPrincipal(1, rbac.PermLogsRead))
+	if rec.Code != http.StatusOK || !body.Found {
+		t.Fatalf("triage = %d found=%v body=%s", rec.Code, body.Found, rec.Body.String())
+	}
+	if body.Evidence == nil {
+		t.Fatalf("missing evidence: %s", rec.Body.String())
+	}
+	if body.Evidence.Conversion == nil || len(body.Evidence.Conversion) != 0 {
+		t.Fatalf("conversion = %#v, want empty non-null array", body.Evidence.Conversion)
+	}
+	raw := rec.Body.String()
+	if strings.Contains(raw, `"conversion":null`) {
+		t.Fatalf("conversion serialised as null: %s", raw)
+	}
+	if !strings.Contains(raw, `"conversion":[]`) {
+		t.Fatalf("conversion not serialised as []: %s", raw)
+	}
+}
+
+// limit 小于窗口内失败行数时，counts 只统计本次返回的 items，total 等于
+// len(items)；顺带验证 status=2 渲染为 "error"。
+func TestIntegrationRecentFailuresLimitBelowRows(t *testing.T) {
+	env := newUsageTestEnv(t)
+	userID, _ := ensureUsageTestUser(t, env, "tq")
+	at := time.Now().UTC().Add(-72 * time.Hour).Truncate(time.Second)
+	for i := 0; i < 3; i++ {
+		env.seed(t, usageSeed{
+			UserID:    userID,
+			Status:    billing.UsageLogStatusError,
+			CreatedAt: at.Add(time.Duration(i) * time.Minute),
+		})
+	}
+	window := "start=" + at.Add(-time.Minute).Format(time.RFC3339) +
+		"&end=" + at.Add(5*time.Minute).Format(time.RFC3339)
+
+	rec, body := env.recentFailures(t, window+"&limit=1", usageAdminPrincipal(1, rbac.PermLogsRead))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("recent status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(body.Items) != 1 {
+		t.Fatalf("items = %d, want 1 body=%s", len(body.Items), rec.Body.String())
+	}
+	if body.Items[0].Status != "error" {
+		t.Fatalf("item status = %q, want error", body.Items[0].Status)
+	}
+	if body.Counts.Total != len(body.Items) {
+		t.Fatalf("counts.total = %d, want %d", body.Counts.Total, len(body.Items))
+	}
+	if sum := body.Counts.User + body.Counts.Channel + body.Counts.Gateway + body.Counts.Unknown; sum != len(body.Items) {
+		t.Fatalf("counts sum = %d, want %d (counts=%+v)", sum, len(body.Items), body.Counts)
+	}
+}
+
+// 同一 request_id 有重复行时，列表与详情必须用同一终态优先级挑行：
+// 更旧的 refunded 行胜过更新的 error 行，两个端点都报 refunded/gateway。
+func TestIntegrationRecentFailuresDuplicateRows(t *testing.T) {
+	env := newUsageTestEnv(t)
+	userID, _ := ensureUsageTestUser(t, env, "td")
+	requestID := newRequestID(t)
+	at := time.Now().UTC().Add(-72 * time.Hour).Truncate(time.Second)
+	env.seed(t, usageSeed{
+		UserID: userID, RequestID: requestID,
+		Status: billing.UsageLogStatusRefunded, ChannelID: 7,
+		Other: triageRefundedOther, RetryChain: triageRefundedChain,
+		CreatedAt: at,
+	})
+	// 更新的一行是 error：按「最新一行」会得到不同判定。
+	env.seed(t, usageSeed{
+		UserID: userID, RequestID: requestID,
+		Status:    billing.UsageLogStatusError,
+		CreatedAt: at.Add(time.Minute),
+	})
+	window := "start=" + at.Add(-time.Minute).Format(time.RFC3339) +
+		"&end=" + at.Add(2*time.Minute).Format(time.RFC3339)
+
+	rec, body := env.recentFailures(t, window, usageAdminPrincipal(1, rbac.PermLogsRead))
+	if rec.Code != http.StatusOK || len(body.Items) != 1 {
+		t.Fatalf("recent = %d items=%d body=%s", rec.Code, len(body.Items), rec.Body.String())
+	}
+	item := body.Items[0]
+	if item.Status != "refunded" || item.Owner != "gateway" || item.Rule != "GW-01" {
+		t.Fatalf("recent item = %+v, want refunded/gateway/GW-01", item)
+	}
+
+	rec, detail := env.triage(t, requestID, usageAdminPrincipal(1, rbac.PermLogsRead))
+	if rec.Code != http.StatusOK || !detail.Found || detail.Log == nil {
+		t.Fatalf("detail = %d found=%v body=%s", rec.Code, detail.Found, rec.Body.String())
+	}
+	if detail.Log.Status != item.Status || detail.Verdict == nil ||
+		detail.Verdict.Owner != item.Owner || detail.Verdict.Rule != item.Rule {
+		t.Fatalf("detail verdict = %+v (log=%s), want match recent item %+v", detail.Verdict, detail.Log.Status, item)
+	}
+}
+
+// 日志库句柄缺失必须是 503（可重试），绝不能塌缩成 500。
+func TestIntegrationRequestTriageLogDBUnavailable(t *testing.T) {
+	h := &UsageLogHandlers{log: slog.New(slog.NewTextHandler(io.Discard, nil)), now: time.Now}
+	mux := http.NewServeMux()
+	h.RegisterUsageLogRoutes(mux, nil)
+	for _, path := range []string{
+		"/api/usage-logs/triage/" + newRequestID(t),
+		"/api/usage-logs/triage/recent",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, http.NoBody)
+		req = req.WithContext(auth.WithPrincipal(req.Context(), usageAdminPrincipal(1, rbac.PermLogsRead)))
+		rec := serve(mux, req)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s status = %d, want 503 body=%s", path, rec.Code, rec.Body.String())
 		}
 	}
 }

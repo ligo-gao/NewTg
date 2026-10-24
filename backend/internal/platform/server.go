@@ -157,7 +157,7 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	// Resource 无法还原 *sql.DB / *redis.Client，此时保持 health-only mux
 	// （既有测试不触真 PG/Redis）。assembly 携带真实计费引擎工厂；nil 时中继
 	// 回退 M2 桩（测试装配）。
-	mountRelayRoutes(mux, cfg, db, redisRes, assembly)
+	mountRelayRoutes(mux, cfg, db, logsSQL, redisRes, assembly)
 	// W10-METRICS：指标中间件在最外层，测量包含安全响应头在内的完整服务时长；
 	// route 标签由内层 ServeMux 写入 r.Pattern（不会取原始 path）。
 	// mjPathRewrite 与 SecurityHeaders 保持在指标层内侧（feat/domains 的挂载顺序）。
@@ -263,7 +263,10 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 // 只有生产资源（OpenDB 的 *sql.DB、OpenRedis 的 redisResource）才能构造仓储与
 // 密钥封装；测试 path 的 stubResource 无法还原具体类型，此时静默跳过——
 // 这不是降级（生产永远命中具体类型），而是为了保持 M0 单测的 GC-8 隔离。
-func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource, assembly *gatewayAssembly) {
+// logsSQL 是独立的日志库连接（可为 nil：探针-only/测试装配），只用于
+// Task 3b 的拒绝落库。
+func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db Resource, logsSQL *sql.DB,
+	rds Resource, assembly *gatewayAssembly) {
 	sqlDB, ok := db.(*sql.DB)
 	if !ok || sqlDB == nil {
 		return
@@ -312,6 +315,12 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource, 
 		attemptReporter = assembly.AttemptFailureReporter
 		rateLimiter = assembly.RateLimiter
 	}
+	// Task 3b：中继前拒绝的落库接缝。日志库未装配（探针-only/测试）时保持
+	// nil（no-op）——nil *sql.DB 构造出的 DBLogger 会在首次使用时 panic。
+	var refusals httpapi.RefusalRecorder
+	if logsSQL != nil {
+		refusals = billing.NewDBLogger(logsSQL)
+	}
 	relayHandler := httpapi.NewRelayHandler(httpapi.RelayHandlerOptions{
 		Channels:        channelRepo,
 		Tokens:          tokenRepo,
@@ -330,6 +339,8 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db, rds Resource, 
 		AttemptFailureReporter: attemptReporter,
 		// W7/M5-b：三档准入桶（B11 → B10 → B12）与 429/500 错误出口。
 		RateLimiter: rateLimiter,
+		// Task 3b：中继前拒绝（鉴权/结构/准入/配额/限流）的 usage_logs 行。
+		Refusals: refusals,
 	})
 	relayHandler.Register(mux)
 	// 任务数据面（M6d Task 6a）：/v1/tasks* 与中继共用同一 RelayAuth

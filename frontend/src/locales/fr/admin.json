@@ -1715,5 +1715,284 @@
       "cap_notice": "Affichage des {count} abonnements les plus récents. Les instances plus anciennes ne sont pas affichées.",
       "order_ref": "#{id}"
     }
+  },
+  "failure_triage": {
+    "title": "Triage des échecs",
+    "subtitle": "Collez un requestId extrait d'une erreur client pour déterminer qui doit traiter cet échec.",
+    "desktop_only": "Cette page est disponible sur les écrans de bureau (1024 px et plus).",
+    "search": {
+      "label": "requestId",
+      "placeholder": "Collez un requestId, par ex. 6de20d22…",
+      "submit": "Rechercher",
+      "invalid": "Ce requestId n'est pas valide. Collez l'identifiant hexadécimal de 32 caractères, avec ou sans tirets."
+    },
+    "rail": {
+      "heading": "Échecs récents",
+      "count": "{count} derniers",
+      "window": "Fenêtre analysée : {start} – {end}",
+      "tab_all": "Tous",
+      "tab_user": "Requête utilisateur",
+      "tab_channel": "Canal amont",
+      "tab_gateway": "Passerelle",
+      "empty": "Aucun échec pour ce responsable.",
+      "footer": "Données conservées 90 jours · Réservé aux administrateurs"
+    },
+    "totals": {
+      "lead": "{count} échecs les plus récents",
+      "user": "Requête utilisateur {count}",
+      "channel": "Canal amont {count}",
+      "gateway": "Passerelle {count}",
+      "unknown": "Preuves insuffisantes {count}",
+      "lead_filtered": "{count} derniers échecs · {owner}"
+    },
+    "sections": {
+      "evidence": "Éléments de preuve",
+      "actions": "Actions suggérées"
+    },
+    "stamp": {
+      "owner_label": "Responsable",
+      "sub_label": "Sous-type · {sub}"
+    },
+    "case": {
+      "copy_request_id": "Copier",
+      "copied": "Copié dans le presse-papiers.",
+      "copy_failed": "Impossible de copier dans le presse-papiers."
+    },
+    "empty": {
+      "heading": "Collez un requestId pour commencer",
+      "body": "Le dossier affiche la conclusion, les éléments de preuve et les prochaines étapes."
+    },
+    "not_found": {
+      "heading": "Aucune entrée de journal pour ce requestId",
+      "hint_1": "Certains refus avant le relais ne sont pas enregistrés : par exemple, les requêtes arrêtées par le middleware d'authentification ou par une politique n'atteignent jamais le relais et ne laissent donc aucune entrée de journal.",
+      "hint_2": "Le requestId a été copié de façon incomplète ou ne correspond pas au format affiché par le client.",
+      "hint_3": "La période de conservation des journaux (90 jours) est dépassée."
+    },
+    "error": {
+      "recent": "Impossible de charger les échecs récents.",
+      "case": "Impossible de charger ce dossier.",
+      "retry": "Réessayer"
+    },
+    "facts": {
+      "model": "Modèle",
+      "upstream_model": "Modèle amont",
+      "channel": "Canal",
+      "endpoint": "Point de terminaison",
+      "route": "Chemin de protocole",
+      "upstream_status": "Statut amont",
+      "attempts": "Tentatives",
+      "billing": "Facturation"
+    },
+    "values": {
+      "upstream_none": "Aucune réponse amont",
+      "attempts_none": "0 (non envoyée)",
+      "attempts": "{count}×",
+      "route_not_reached": "Jamais arrivée en amont",
+      "route_direct": "Aucune ({from} → {to})",
+      "billing_refunded": "Remboursé",
+      "billing_charged": "Facturé",
+      "billing_none": "Non facturé",
+      "channel": "{type} · ID {id}",
+      "protocol_unknown": "Protocole inconnu"
+    },
+    "owner": {
+      "user": "Requête utilisateur",
+      "channel": "Canal amont",
+      "gateway": "Passerelle",
+      "unknown": "Preuves insuffisantes"
+    },
+    "vote": {
+      "user": "Désigne l'utilisateur",
+      "channel": "Désigne le canal",
+      "gateway": "Désigne la passerelle",
+      "exclude-user": "Exclut l'utilisateur",
+      "exclude-channel": "Exclut le canal",
+      "neutral": "Neutre"
+    },
+    "rule": {
+      "USR-01": {
+        "title": "La requête de l'utilisateur est invalide",
+        "summary": "La vérification de structure avant relais a rejeté la requête d'origine de l'appelant : la défaillance appartient à la requête utilisateur."
+      },
+      "USR-02": {
+        "title": "La passerelle a refusé la requête avant l'amont",
+        "summary": "La requête a été refusée localement (quota, débit, authentification ou admission) avant toute tentative en amont ; aucun canal n'est impliqué."
+      },
+      "CH-01": {
+        "title": "Le canal amont a rejeté ses identifiants",
+        "summary": "L'amont a répondu 401/403 sur les identifiants du canal, indépendamment du corps de la requête."
+      },
+      "CH-02": {
+        "title": "Le canal amont renvoie des erreurs serveur",
+        "summary": "L'amont a continué de répondre 5xx après plusieurs tentatives et le basculement n'a pas trouvé de canal sain."
+      },
+      "GW-01": {
+        "title": "La conversion de protocole a rendu la requête invalide",
+        "summary": "La structure de la requête d'origine était valide, mais un 4xx est apparu après la conversion de protocole de la passerelle ; la couche de conversion est la seule variable nouvelle."
+      },
+      "GW-02": {
+        "title": "La passerelle n'implémente pas cette capacité",
+        "summary": "La requête a atteint une capacité non implémentée (point de terminaison ou type de canal) ; la défaillance est de notre côté."
+      },
+      "UNKNOWN": {
+        "title": "Les preuves sont insuffisantes pour désigner un responsable",
+        "summary": "Les faits enregistrés ne désignent clairement ni l'utilisateur, ni le canal amont, ni la passerelle. Poursuivez avec les éléments ci-dessous et les journaux du conteneur."
+      }
+    },
+    "sub": {
+      "request_structure": "Structure de la requête",
+      "quota": "Quota insuffisant",
+      "rate_limit": "Débit limité",
+      "auth": "Échec d'authentification",
+      "model_admission": "Admission du modèle",
+      "channel_selection": "Sélection du canal",
+      "upstream_auth": "Identifiants amont",
+      "upstream_server": "Amont 5xx",
+      "protocol_conversion": "Conversion de protocole",
+      "unsupported": "Capacité non implémentée",
+      "insufficient_evidence": "Preuves insuffisantes",
+      "unknown": "Cause inconnue"
+    },
+    "signal": {
+      "request_structure_invalid": {
+        "fact": "La structure de la requête d'origine est invalide",
+        "note": "La passerelle a jugé le corps d'origine invalide avant de le relayer."
+      },
+      "request_structure_valid": {
+        "fact": "La structure de la requête d'origine est valide",
+        "note": "Le corps d'origine a été analysé conformément au schéma attendu ; cela n'exclut pas un problème sémantique dans la requête."
+      },
+      "request_structure_unverified": {
+        "fact": "La structure de la requête n'a pas été vérifiée",
+        "note": "Aucune conclusion de vérification n'a été enregistrée ; on ne peut donc pas écarter le côté utilisateur."
+      },
+      "refused_before_upstream": {
+        "fact": "La passerelle a refusé la requête avant l'amont ({stage})",
+        "note": "Le refus a eu lieu avant la sélection d'un canal ; aucune requête amont n'a été émise."
+      },
+      "no_upstream_attempt": {
+        "fact": "Aucune requête amont n'a été émise",
+        "note": "La passerelle a traité la requête localement ; l'amont n'a pas participé à cette défaillance."
+      },
+      "no_upstream_response": {
+        "fact": "Aucune réponse amont (tentatives : {attempts})",
+        "note": "La requête est partie mais aucune réponse n'est revenue : erreur réseau ou délai d'attente possible."
+      },
+      "no_upstream_server_error": {
+        "fact": "Aucun 5xx ni délai d'attente (tentatives : {attempts})",
+        "note": "Aucun signe de panne serveur en amont ; l'état du canal peut être écarté."
+      },
+      "upstream_status": {
+        "fact": "L'amont a répondu {upstream_status}",
+        "note": "Ce code seul ne permet pas de distinguer un problème de requête d'un problème de canal."
+      },
+      "upstream_auth_rejected": {
+        "fact": "L'amont a répondu {upstream_status} et rejeté les identifiants",
+        "note": "L'échec d'authentification précède le traitement du contenu de la requête."
+      },
+      "upstream_server_error": {
+        "fact": "L'amont a répondu {upstream_status}",
+        "note": "Erreur serveur en amont : le canal est en cause."
+      },
+      "attempt_count": {
+        "fact": "Tentatives en amont : {attempts}",
+        "note": "Le nombre de tentatives indique si des réessais et un basculement ont eu lieu."
+      },
+      "conversion_applied": {
+        "fact": "Conversion de protocole : {from} → {to}",
+        "note": "La passerelle a réécrit le format ; la couche de conversion est la variable nouvelle de cette requête."
+      },
+      "conversion_absent": {
+        "fact": "Aucune conversion de protocole : {from} → {to}",
+        "note": "Le corps est relayé dans son format d'origine ; la passerelle ne l'a pas réécrit."
+      },
+      "error_class": {
+        "fact": "Classe d'erreur : {class}",
+        "note": "Cette classe seule ne permet pas de désigner un responsable."
+      },
+      "error_class_unsupported": {
+        "fact": "Capacité non implémentée : {class}",
+        "note": "Ce point de terminaison ou type de canal n'est pas encore pris en charge par la passerelle."
+      },
+      "unknown": {
+        "fact": "Élément de preuve non reconnu",
+        "note": "Cet élément n'est pas encore documenté dans cette version de l'interface ; consultez les journaux du conteneur."
+      }
+    },
+    "action": {
+      "user": {
+        "1": {
+          "title": "Copier le résumé de diagnostic",
+          "note": "Transmettez la conclusion, le requestId et les preuves à l'utilisateur.",
+          "button": "Copier"
+        },
+        "2": {
+          "title": "Ouvrir les journaux d'usage",
+          "note": "Vérifiez la ligne enregistrée et sa chaîne de réessais.",
+          "button": "Ouvrir"
+        },
+        "3": {
+          "title": "Copier un modèle de réponse",
+          "note": "Une réponse prête à envoyer qui explique le problème de la requête.",
+          "button": "Copier"
+        }
+      },
+      "channel": {
+        "1": {
+          "title": "Copier le résumé de diagnostic",
+          "note": "Transmettez la conclusion et les preuves au responsable du canal.",
+          "button": "Copier"
+        },
+        "2": {
+          "title": "Ouvrir les réglages du canal",
+          "note": "Retestez les identifiants ou désactivez le canal jusqu'à son rétablissement.",
+          "button": "Ouvrir"
+        },
+        "3": {
+          "title": "Copier le requestId",
+          "note": "Joignez-le lors de l'escalade vers le fournisseur amont.",
+          "button": "Copier l'ID"
+        }
+      },
+      "gateway": {
+        "1": {
+          "title": "Copier le résumé de diagnostic",
+          "note": "Joignez le requestId, le chemin de protocole et les preuves au ticket.",
+          "button": "Copier"
+        },
+        "2": {
+          "title": "Ouvrir les journaux d'usage",
+          "note": "Vérifiez la ligne enregistrée et sa chaîne de réessais.",
+          "button": "Ouvrir"
+        },
+        "3": {
+          "title": "Copier la règle appliquée",
+          "note": "Joignez la règle au correctif ou au post-mortem.",
+          "button": "Copier"
+        }
+      },
+      "unknown": {
+        "1": {
+          "title": "Copier le résumé de diagnostic",
+          "note": "Partagez ce qui est connu avant d'escalader.",
+          "button": "Copier"
+        },
+        "2": {
+          "title": "Ouvrir les journaux d'usage",
+          "note": "Inspectez la ligne enregistrée et sa chaîne de réessais.",
+          "button": "Ouvrir"
+        },
+        "3": {
+          "title": "Copier le requestId",
+          "note": "Utilisez-le pour corréler les journaux du conteneur.",
+          "button": "Copier l'ID"
+        }
+      }
+    },
+    "copy": {
+      "summary": "{title}\n\n{summary}\n\nrequestId : {requestId}\nRègle : {rule}",
+      "reply": "À propos de la requête {requestId} : {summary}\n\nCorrigez la requête puis réessayez.",
+      "rule_text": "{rule} · {summary}"
+    }
   }
 }

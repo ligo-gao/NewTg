@@ -302,6 +302,9 @@ type relayTestEnv struct {
 	billing  *recordingBilling
 	sealer   *SecretSealer
 	accessMu sync.Mutex
+	// captureRC 在计费会话构造时收到本次请求的 RelayContext（测试可在请求
+	// 结束后断言执行层写入的证据，如 Attempts）。
+	captureRC func(*contract.RelayContext)
 }
 
 func sealedTestCredentials(t *testing.T, sealer *SecretSealer) []byte {
@@ -363,15 +366,22 @@ func newRelayTestEnv(t *testing.T, upstream *httptest.Server, channels *fakeRela
 	access := &fakeRelayAccess{role: "admin", status: "enabled"}
 	billing := newRecordingBilling()
 
+	env := &relayTestEnv{channels: channels, tokens: tokenStore, access: access, billing: billing, sealer: sealer}
 	h := NewRelayHandler(RelayHandlerOptions{
 		Channels: channels,
 		Tokens:   tokenStore,
 		Access:   access,
 		Sealer:   sealer,
 		Client:   upstream.Client(),
-		Billing:  func(*contract.RelayContext) contract.BillingSession { return billing },
+		Billing: func(rc *contract.RelayContext) contract.BillingSession {
+			if env.captureRC != nil {
+				env.captureRC(rc)
+			}
+			return billing
+		},
 	})
-	return &relayTestEnv{handler: h, channels: channels, tokens: tokenStore, access: access, billing: billing, sealer: sealer}
+	env.handler = h
+	return env
 }
 
 // do 发送一个经 RelayHandler mux 的请求。
@@ -2424,6 +2434,8 @@ func TestRelayUpstream400IsLoggedWithDiagnostics(t *testing.T) {
 	env := newRelayTestEnv(t, upstream, nil)
 	var buf bytes.Buffer
 	env.handler.log = slog.New(slog.NewJSONHandler(&buf, nil))
+	var captured *contract.RelayContext
+	env.captureRC = func(rc *contract.RelayContext) { captured = rc }
 
 	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions",
 		`{"model":"gpt-test","messages":[{"role":"user","content":"hi"}]}`)
@@ -2455,6 +2467,434 @@ func TestRelayUpstream400IsLoggedWithDiagnostics(t *testing.T) {
 	}
 	if strings.Contains(line, upstreamCredential) {
 		t.Fatalf("渠道凭据不得进入日志（GC-6）：%s", line)
+	}
+
+	// 执行层证据：一次 400 失败（不重试）恰好留下一条 Attempt，且带有上游状态码。
+	if captured == nil {
+		t.Fatal("计费工厂必须收到本次请求的 RelayContext")
+	}
+	if len(captured.Attempts) != 1 {
+		t.Fatalf("Attempts = %d, want 1（400 不重试）；records=%+v", len(captured.Attempts), captured.Attempts)
+	}
+	if got := captured.Attempts[0].UpstreamStatus; got != http.StatusBadRequest {
+		t.Fatalf("Attempts[0].UpstreamStatus = %d, want 400", got)
+	}
+	if got := captured.Attempts[0].ChannelID; got != int(relayTestChannelID) {
+		t.Fatalf("Attempts[0].ChannelID = %d, want %d", got, relayTestChannelID)
+	}
+}
+
+// ---------- Task 3b：中继前拒绝落库 ----------
+
+// fakeRefusalRecorder 是 RefusalRecorder 的内存 fake：本组测试不连数据库。
+type fakeRefusalRecorder struct {
+	mu         sync.Mutex
+	refusals   []billing.Refusal
+	err        error
+	panicValue any // 非 nil 时 RecordRefusal 直接 panic（验证落库永不阻断响应）
+}
+
+func (f *fakeRefusalRecorder) RecordRefusal(_ context.Context, in billing.Refusal) error {
+	if f.panicValue != nil {
+		panic(f.panicValue)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.refusals = append(f.refusals, in)
+	return f.err
+}
+
+func (f *fakeRefusalRecorder) snapshot() []billing.Refusal {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]billing.Refusal(nil), f.refusals...)
+}
+
+// TestRelayRefusalRecordedForMalformedChatBody：请求体解析失败必须在写 400
+// 之前留下恰一条 request_structure 拒绝行，且 HTTP 响应保持不变。
+func TestRelayRefusalRecordedForMalformedChatBody(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("malformed body must not reach upstream")
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	rec := &fakeRefusalRecorder{}
+	env.handler.refusals = rec
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions", `{"model":`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"code":"invalid_request"`) ||
+		!strings.Contains(w.Body.String(), "invalid OpenAI request body") {
+		t.Fatalf("响应体被改变：%s", w.Body.String())
+	}
+
+	refusals := rec.snapshot()
+	if len(refusals) != 1 {
+		t.Fatalf("refusals = %d, want 1", len(refusals))
+	}
+	got := refusals[0]
+	if got.Stage != billing.RefusalStageRequestStructure {
+		t.Fatalf("stage = %q, want %q", got.Stage, billing.RefusalStageRequestStructure)
+	}
+	if got.Endpoint != "chat_completions" {
+		t.Fatalf("endpoint = %q, want chat_completions", got.Endpoint)
+	}
+	if got.Structure != "invalid" {
+		t.Fatalf("structure = %q, want invalid", got.Structure)
+	}
+	// 身份来自 Principal（鉴权中间件已在 handler 之前完成）。
+	if got.UserID != relayTestUserID || got.TokenID == nil || *got.TokenID != relayTestTokenID {
+		t.Fatalf("identity = (%d, %v), want (%d, %d)", got.UserID, got.TokenID, relayTestUserID, relayTestTokenID)
+	}
+	// 落库 request_id 与响应头同源：用户报 requestId 必须能查回同一行。
+	if got.RequestID == "" || got.RequestID != w.Header().Get("X-Request-ID") {
+		t.Fatalf("request_id = %q, header = %q", got.RequestID, w.Header().Get("X-Request-ID"))
+	}
+}
+
+// TestRelayRefusalRecordedForMalformedMessagesBody：/v1/messages 的解析失败
+// 走同一接缝，stage 为 request_structure。
+func TestRelayRefusalRecordedForMalformedMessagesBody(t *testing.T) {
+	env, _ := messagesTestEnv(t, contract.ChannelTypeAnthropic, func(http.ResponseWriter, *http.Request) {
+		t.Error("malformed body must not reach upstream")
+	})
+	rec := &fakeRefusalRecorder{}
+	env.handler.refusals = rec
+
+	w := env.do(t, http.MethodPost, "/v1/messages", `{"model":`, messagesHeaders())
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+
+	refusals := rec.snapshot()
+	if len(refusals) != 1 {
+		t.Fatalf("refusals = %d, want 1", len(refusals))
+	}
+	if refusals[0].Stage != billing.RefusalStageRequestStructure {
+		t.Fatalf("stage = %q, want %q", refusals[0].Stage, billing.RefusalStageRequestStructure)
+	}
+	if refusals[0].Endpoint != "messages" {
+		t.Fatalf("endpoint = %q, want messages", refusals[0].Endpoint)
+	}
+	if refusals[0].RequestID != w.Header().Get("X-Request-ID") {
+		t.Fatalf("request_id = %q, header = %q", refusals[0].RequestID, w.Header().Get("X-Request-ID"))
+	}
+}
+
+// TestRelayRefusalRecordedForQuota：PreConsume 的 402 经由 post-rc 漏斗记录为
+// quota；此时执行层尚未产生任何 Attempt。
+func TestRelayRefusalRecordedForQuota(t *testing.T) {
+	env, _ := messagesTestEnv(t, contract.ChannelTypeAnthropic, func(http.ResponseWriter, *http.Request) {
+		t.Error("quota rejection must not reach upstream")
+	})
+	rec := &fakeRefusalRecorder{}
+	env.handler.refusals = rec
+	var captured *contract.RelayContext
+	env.captureRC = func(rc *contract.RelayContext) { captured = rc }
+	// 桩的上限小于 max_tokens → PreConsume 返回 402 语义。
+	env.billing.stub = billingseam.NewStubWithLimit(1)
+
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
+		messagesHeaders())
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402; body=%s", w.Code, w.Body.String())
+	}
+
+	refusals := rec.snapshot()
+	if len(refusals) != 1 {
+		t.Fatalf("refusals = %d, want 1", len(refusals))
+	}
+	got := refusals[0]
+	if got.Stage != billing.RefusalStageQuota {
+		t.Fatalf("stage = %q, want %q", got.Stage, billing.RefusalStageQuota)
+	}
+	if captured == nil {
+		t.Fatal("计费工厂必须收到本次请求的 RelayContext")
+	}
+	if len(captured.Attempts) != 0 {
+		t.Fatalf("Attempts = %d, want 0（配额拒绝发生在任何上游调用之前）", len(captured.Attempts))
+	}
+	if got.Model != "claude-test" || got.Endpoint != "messages" {
+		t.Fatalf("refusal = %+v, want model=claude-test endpoint=messages", got)
+	}
+	if got.RequestID != w.Header().Get("X-Request-ID") {
+		t.Fatalf("request_id = %q, header = %q", got.RequestID, w.Header().Get("X-Request-ID"))
+	}
+}
+
+// TestLogRelayFailureRefusalGuards 直接驱动 post-rc 漏斗的拒绝记录，逐条钉住
+// 「已到达上游绝不记为用户拒绝」的守卫。它不经过 HTTP/执行层，因此每条用例
+// 的结果只由 logRelayFailure 里的守卫决定——删掉守卫就会红。
+func TestLogRelayFailureRefusalGuards(t *testing.T) {
+	// 429 + ErrUpstreamRateLimit 是唯一能被 mapRelayError 映射成 429 的形态
+	//（FastFail 包着 UpstreamStatusError），因此它既能进入 stage 分支，又带有
+	// 非零 upstreamStatus——正是 upstreamStatus 守卫存在的理由。
+	upstream429 := &relay.FastFailError{Err: &relay.UpstreamStatusError{
+		StatusCode: http.StatusTooManyRequests,
+		Class:      contract.ErrUpstreamRateLimit,
+	}}
+	quota402 := &relay.FastFailError{Err: billing.ErrInsufficientQuota}
+
+	cases := []struct {
+		name      string
+		attempts  []contract.AttemptRecord
+		err       error
+		wantCount int
+		wantStage string
+	}{
+		{
+			// 对照组：没有任何上游证据的 402 必须被记录为 quota。
+			// 删掉下游两个负向用例的对照，它们「0 条」的断言就没有意义。
+			name:      "control_quota_without_upstream_evidence",
+			err:       quota402,
+			wantCount: 1,
+			wantStage: billing.RefusalStageQuota,
+		},
+		{
+			// 钉住 len(rc.Attempts) != 0 守卫：执行层已记录过上游尝试，
+			// 即使错误本身映射为 402 也不得记成用户拒绝。
+			name:      "attempts_present_suppresses_refusal",
+			attempts:  []contract.AttemptRecord{{UpstreamStatus: http.StatusTooManyRequests}},
+			err:       quota402,
+			wantCount: 0,
+		},
+		{
+			// 钉住 upstreamStatus != 0 守卫：没有 Attempt 但错误链含上游状态码
+			//（count_tokens 形状）时，429 映射也不得落成 rate_limit 拒绝。
+			name:      "upstream_status_present_suppresses_refusal",
+			err:       upstream429,
+			wantCount: 0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &fakeRefusalRecorder{}
+			h := &RelayHandler{log: slog.New(slog.NewTextHandler(io.Discard, nil)), refusals: rec}
+			rc := &contract.RelayContext{
+				RequestID:   "0123456789abcdef0123456789abcdef",
+				UserID:      7,
+				TokenID:     9,
+				OriginModel: "claude-test",
+				RequestPath: "/v1/messages",
+				Attempts:    tc.attempts,
+			}
+			r := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+			h.logRelayFailure(r, rc, tc.err)
+
+			got := rec.snapshot()
+			if len(got) != tc.wantCount {
+				t.Fatalf("refusals = %+v, want %d", got, tc.wantCount)
+			}
+			if tc.wantCount == 0 {
+				return
+			}
+			if got[0].Stage != tc.wantStage {
+				t.Fatalf("stage = %q, want %q", got[0].Stage, tc.wantStage)
+			}
+			if got[0].RequestID != rc.RequestID {
+				t.Fatalf("request_id = %q, want %q", got[0].RequestID, rc.RequestID)
+			}
+			if got[0].UserID != int64(rc.UserID) {
+				t.Fatalf("user_id = %d, want %d", got[0].UserID, rc.UserID)
+			}
+		})
+	}
+}
+
+// TestRelayRefusalNotRecordedForUpstream5xx 是补充用例（不作承重）：上游 5xx
+// 聚合为 502，端到端确认整条链路不会留下拒绝行。
+func TestRelayRefusalNotRecordedForUpstream5xx(t *testing.T) {
+	env, counter := messagesTestEnv(t, contract.ChannelTypeAnthropic, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"type":"error","error":{"type":"api_error","message":"boom"}}`)
+	})
+	rec := &fakeRefusalRecorder{}
+	env.handler.refusals = rec
+
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
+		messagesHeaders())
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body=%s", w.Code, w.Body.String())
+	}
+	if counter.count() == 0 {
+		t.Fatal("本用例应实际触达上游")
+	}
+	if got := rec.snapshot(); len(got) != 0 {
+		t.Fatalf("refusals = %+v, want 0（到达上游的失败不得记为用户拒绝）", got)
+	}
+}
+
+// TestRelayRefusalNilRecorderIsNoop：未装配日志库时拒绝记录是 no-op，
+// 响应与接线前一致（不 panic）。
+func TestRelayRefusalNilRecorderIsNoop(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("malformed body must not reach upstream")
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	env.handler.refusals = nil
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions", `{"model":`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "invalid OpenAI request body") {
+		t.Fatalf("响应体被改变：%s", w.Body.String())
+	}
+}
+
+// TestRelayRefusalRecordedForEntryRateLimit：入口限流直接写 429（不经过
+// logRelayFailure），仍需记录 stage=rate_limit。
+func TestRelayRefusalRecordedForEntryRateLimit(t *testing.T) {
+	env, counter := messagesTestEnv(t, contract.ChannelTypeAnthropic, func(http.ResponseWriter, *http.Request) {
+		t.Error("rate-limited request must not reach upstream")
+	})
+	rec := &fakeRefusalRecorder{}
+	env.handler.refusals = rec
+	env.handler.rateLimiter = &countTokensCallLimiter{}
+	env.handler.config = mapConfig{
+		"rl.user_model_rpm":  json.RawMessage("1"),
+		"rl.token_rpm":       json.RawMessage("1"),
+		"rl.user_global_rpm": json.RawMessage("1"),
+	}
+
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
+		messagesHeaders())
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body=%s", w.Code, w.Body.String())
+	}
+	if counter.count() != 0 {
+		t.Fatalf("rate-limited request reached upstream %d times", counter.count())
+	}
+	refusals := rec.snapshot()
+	if len(refusals) != 1 {
+		t.Fatalf("refusals = %d, want 1", len(refusals))
+	}
+	if refusals[0].Stage != billing.RefusalStageRateLimit {
+		t.Fatalf("stage = %q, want %q", refusals[0].Stage, billing.RefusalStageRateLimit)
+	}
+	if refusals[0].RequestID != w.Header().Get("X-Request-ID") {
+		t.Fatalf("request_id = %q, header = %q", refusals[0].RequestID, w.Header().Get("X-Request-ID"))
+	}
+}
+
+// TestRelayRefusalRecordsValidRequestStructure：请求体解析并校验成功、随后在
+// 任何上游调用之前被拒绝时，拒绝行必须带出真实的结构证据 "valid"——而不是
+// 恒为 ""（未校验）。入口限流点是最直接的「已解析、未触达上游」样本。
+func TestRelayRefusalRecordsValidRequestStructure(t *testing.T) {
+	env, counter := messagesTestEnv(t, contract.ChannelTypeAnthropic, func(http.ResponseWriter, *http.Request) {
+		t.Error("rate-limited request must not reach upstream")
+	})
+	rec := &fakeRefusalRecorder{}
+	env.handler.refusals = rec
+	env.handler.rateLimiter = &countTokensCallLimiter{}
+	env.handler.config = mapConfig{
+		"rl.user_model_rpm":  json.RawMessage("1"),
+		"rl.token_rpm":       json.RawMessage("1"),
+		"rl.user_global_rpm": json.RawMessage("1"),
+	}
+
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
+		messagesHeaders())
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body=%s", w.Code, w.Body.String())
+	}
+	if counter.count() != 0 {
+		t.Fatalf("rate-limited request reached upstream %d times", counter.count())
+	}
+	refusals := rec.snapshot()
+	if len(refusals) != 1 {
+		t.Fatalf("refusals = %d, want 1", len(refusals))
+	}
+	if refusals[0].Structure != "valid" {
+		t.Fatalf("structure = %q, want valid（已解析请求必须带出真实结构证据）", refusals[0].Structure)
+	}
+}
+
+// TestRelayRefusalNotRecordedForDemoRelayQuota：演示站两层日额度是站点级
+// 容量（全站保险丝），不是调用方的配额；该 429 不得写成用户拒绝。
+func TestRelayRefusalNotRecordedForDemoRelayQuota(t *testing.T) {
+	env, counter := messagesTestEnv(t, contract.ChannelTypeAnthropic, func(http.ResponseWriter, *http.Request) {
+		t.Error("demo-quota rejection must not reach upstream")
+	})
+	rec := &fakeRefusalRecorder{}
+	env.handler.refusals = rec
+	// countTokensCallLimiter 恒拒绝：演示额度路径的第一个桶即命中，产出
+	// demoRelayQuotaExceededCode 的 429。
+	env.handler.rateLimiter = &countTokensCallLimiter{}
+	env.handler.config = mapConfig{
+		keyDemoEnabled:          configBool(true),
+		keyDemoRelayPerIPDaily:  configInt(20),
+		keyDemoRelayGlobalDaily: configInt(2000),
+	}
+
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
+		messagesHeaders())
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body=%s", w.Code, w.Body.String())
+	}
+	// Claude 形信封不携带 code 字段，按固定文案确认这是演示额度拒绝。
+	if !strings.Contains(w.Body.String(), "daily demo relay quota for this IP") {
+		t.Fatalf("body 不是演示额度拒绝：%s", w.Body.String())
+	}
+	if counter.count() != 0 {
+		t.Fatalf("demo-quota request reached upstream %d times", counter.count())
+	}
+	if got := rec.snapshot(); len(got) != 0 {
+		t.Fatalf("refusals = %+v, want 0（站点容量不得记成用户拒绝）", got)
+	}
+}
+
+// TestRelayRefusalRecorderErrorDoesNotAlterResponse：落库返回错误只记日志，
+// 对客户端的响应（状态码与正文）必须与成功记录时逐字一致。
+func TestRelayRefusalRecorderErrorDoesNotAlterResponse(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("malformed body must not reach upstream")
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	env.handler.refusals = &fakeRefusalRecorder{err: errors.New("logs db unavailable")}
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions", `{"model":`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"code":"invalid_request"`) ||
+		!strings.Contains(w.Body.String(), "invalid OpenAI request body") {
+		t.Fatalf("响应体被改变：%s", w.Body.String())
+	}
+}
+
+// TestRelayRefusalRecorderPanicDoesNotAlterResponse：落库实现 panic 也不能
+// 阻断调用方写响应——客户端必须仍然拿到那条 400，而不是断连。
+func TestRelayRefusalRecorderPanicDoesNotAlterResponse(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("malformed body must not reach upstream")
+	}))
+	defer upstream.Close()
+
+	env := newRelayTestEnv(t, upstream, nil)
+	env.handler.refusals = &fakeRefusalRecorder{panicValue: "recorder exploded"}
+
+	w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions", `{"model":`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"code":"invalid_request"`) ||
+		!strings.Contains(w.Body.String(), "invalid OpenAI request body") {
+		t.Fatalf("响应体被改变：%s", w.Body.String())
 	}
 }
 
@@ -2564,12 +3004,11 @@ func TestChatStreamSettlementFailureIsReported(t *testing.T) {
 }
 
 // TestChatPostChargeLogFailureStillDelivers 覆盖 Important-2：资金已提交、
-// hold 已关闭，只有 usage_logs 写入失败——钱已经收上来了，必须照常交付
-// 响应（200），否则客户端重试会二次扣费。结算失败证据仍然留日志。
+// hold 已关闭，仅 usage_logs 写入失败时不得返回 5xx——客户端重试会二次扣费。
 func TestChatPostChargeLogFailureStillDelivers(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"id":"c2","object":"chat.completion","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"delivered"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`)
+		_, _ = io.WriteString(w, `{"id":"x","object":"chat.completion","created":1,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"delivered"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
 	}))
 	defer upstream.Close()
 
@@ -2585,6 +3024,9 @@ func TestChatPostChargeLogFailureStillDelivers(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "delivered") {
 		t.Fatalf("body = %s, want 已交付的上游响应", w.Body.String())
+	}
+	if !strings.Contains(logs.String(), "billing settlement failed") {
+		t.Fatalf("logs = %s, want settlement failure 证据", logs.String())
 	}
 	if !strings.Contains(logs.String(), "error_class=log_write_failed") {
 		t.Fatalf("logs = %s, want error_class=log_write_failed", logs.String())

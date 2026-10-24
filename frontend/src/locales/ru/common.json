@@ -995,6 +995,7 @@
   "nav.redemption_codes": "Коды погашения",
   "nav.models": "Модели и поставщики",
   "nav.performance": "Производительность",
+  "nav.failure_triage": "Разбор сбоев",
   "announcement_popup": {
     "confirm": "Понятно",
     "category_label": "Тип объявления",

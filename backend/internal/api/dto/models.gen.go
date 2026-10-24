@@ -1992,6 +1992,30 @@ func (e RankingsStatus) Valid() bool {
 	}
 }
 
+// Defines values for RecentFailureItemStatus.
+const (
+	RecentFailureItemStatusError    RecentFailureItemStatus = "error"
+	RecentFailureItemStatusRefunded RecentFailureItemStatus = "refunded"
+	RecentFailureItemStatusRefused  RecentFailureItemStatus = "refused"
+	RecentFailureItemStatusSuccess  RecentFailureItemStatus = "success"
+)
+
+// Valid indicates whether the value is a known member of the RecentFailureItemStatus enum.
+func (e RecentFailureItemStatus) Valid() bool {
+	switch e {
+	case RecentFailureItemStatusError:
+		return true
+	case RecentFailureItemStatusRefunded:
+		return true
+	case RecentFailureItemStatusRefused:
+		return true
+	case RecentFailureItemStatusSuccess:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for RedemptionCodeCodeMask.
 const (
 	RedemptionCodeCodeMaskEmpty RedemptionCodeCodeMask = "••••••"
@@ -2862,6 +2886,114 @@ func (e TopupOrderViewStatus) Valid() bool {
 	}
 }
 
+// Defines values for TriageEvidenceRequestStructure.
+const (
+	TriageEvidenceRequestStructureEmpty   TriageEvidenceRequestStructure = ""
+	TriageEvidenceRequestStructureInvalid TriageEvidenceRequestStructure = "invalid"
+	TriageEvidenceRequestStructureValid   TriageEvidenceRequestStructure = "valid"
+)
+
+// Valid indicates whether the value is a known member of the TriageEvidenceRequestStructure enum.
+func (e TriageEvidenceRequestStructure) Valid() bool {
+	switch e {
+	case TriageEvidenceRequestStructureEmpty:
+		return true
+	case TriageEvidenceRequestStructureInvalid:
+		return true
+	case TriageEvidenceRequestStructureValid:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TriageOwner.
+const (
+	TriageOwnerChannel TriageOwner = "channel"
+	TriageOwnerGateway TriageOwner = "gateway"
+	TriageOwnerUnknown TriageOwner = "unknown"
+	TriageOwnerUser    TriageOwner = "user"
+)
+
+// Valid indicates whether the value is a known member of the TriageOwner enum.
+func (e TriageOwner) Valid() bool {
+	switch e {
+	case TriageOwnerChannel:
+		return true
+	case TriageOwnerGateway:
+		return true
+	case TriageOwnerUnknown:
+		return true
+	case TriageOwnerUser:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TriageRule.
+const (
+	CH01    TriageRule = "CH-01"
+	CH02    TriageRule = "CH-02"
+	GW01    TriageRule = "GW-01"
+	GW02    TriageRule = "GW-02"
+	UNKNOWN TriageRule = "UNKNOWN"
+	USR01   TriageRule = "USR-01"
+	USR02   TriageRule = "USR-02"
+)
+
+// Valid indicates whether the value is a known member of the TriageRule enum.
+func (e TriageRule) Valid() bool {
+	switch e {
+	case CH01:
+		return true
+	case CH02:
+		return true
+	case GW01:
+		return true
+	case GW02:
+		return true
+	case UNKNOWN:
+		return true
+	case USR01:
+		return true
+	case USR02:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TriageVote.
+const (
+	TriageVoteChannel        TriageVote = "channel"
+	TriageVoteExcludeChannel TriageVote = "exclude-channel"
+	TriageVoteExcludeUser    TriageVote = "exclude-user"
+	TriageVoteGateway        TriageVote = "gateway"
+	TriageVoteNeutral        TriageVote = "neutral"
+	TriageVoteUser           TriageVote = "user"
+)
+
+// Valid indicates whether the value is a known member of the TriageVote enum.
+func (e TriageVote) Valid() bool {
+	switch e {
+	case TriageVoteChannel:
+		return true
+	case TriageVoteExcludeChannel:
+		return true
+	case TriageVoteExcludeUser:
+		return true
+	case TriageVoteGateway:
+		return true
+	case TriageVoteNeutral:
+		return true
+	case TriageVoteUser:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for TwoFABackupCodesResponseTotpEnabled.
 const (
 	TwoFABackupCodesResponseTotpEnabledTrue TwoFABackupCodesResponseTotpEnabled = true
@@ -2993,16 +3125,16 @@ func (e UserNotificationLocale) Valid() bool {
 
 // Defines values for UserRole.
 const (
-	Admin UserRole = "admin"
-	User  UserRole = "user"
+	UserRoleAdmin UserRole = "admin"
+	UserRoleUser  UserRole = "user"
 )
 
 // Valid indicates whether the value is a known member of the UserRole enum.
 func (e UserRole) Valid() bool {
 	switch e {
-	case Admin:
+	case UserRoleAdmin:
 		return true
-	case User:
+	case UserRoleUser:
 		return true
 	default:
 		return false
@@ -4038,6 +4170,30 @@ func (e ListUsageLogsParamsStatus) Valid() bool {
 	case ListUsageLogsParamsStatusRefused:
 		return true
 	case ListUsageLogsParamsStatusSuccess:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListRecentFailuresParamsRange.
+const (
+	ListRecentFailuresParamsRangeN14d ListRecentFailuresParamsRange = "14d"
+	ListRecentFailuresParamsRangeN24h ListRecentFailuresParamsRange = "24h"
+	ListRecentFailuresParamsRangeN30d ListRecentFailuresParamsRange = "30d"
+	ListRecentFailuresParamsRangeN7d  ListRecentFailuresParamsRange = "7d"
+)
+
+// Valid indicates whether the value is a known member of the ListRecentFailuresParamsRange enum.
+func (e ListRecentFailuresParamsRange) Valid() bool {
+	switch e {
+	case ListRecentFailuresParamsRangeN14d:
+		return true
+	case ListRecentFailuresParamsRangeN24h:
+		return true
+	case ListRecentFailuresParamsRangeN30d:
+		return true
+	case ListRecentFailuresParamsRangeN7d:
 		return true
 	default:
 		return false
@@ -8806,6 +8962,49 @@ type RankingsWindow struct {
 	Start time.Time `json:"start"`
 }
 
+// RecentFailureCounts 只统计本次返回的 items，不是窗口全量总数。
+type RecentFailureCounts struct {
+	Channel int `json:"channel"`
+	Gateway int `json:"gateway"`
+	Total   int `json:"total"`
+	Unknown int `json:"unknown"`
+	User    int `json:"user"`
+}
+
+// RecentFailureItem defines model for RecentFailureItem.
+type RecentFailureItem struct {
+	ChannelId int64     `json:"channel_id"`
+	CreatedAt time.Time `json:"created_at"`
+	Model     string    `json:"model"`
+
+	// Owner 责任方：user = 调用方请求（结构非法、额度/鉴权等前置拒绝）；
+	// channel = 上游渠道；gateway = 网关自身；unknown = 证据不足以归责。
+	Owner     TriageOwner        `json:"owner"`
+	RequestId openapi_types.UUID `json:"request_id"`
+
+	// Rule 命中的稳定规则编号（前端按编号取字典文案）。
+	Rule   TriageRule              `json:"rule"`
+	Status RecentFailureItemStatus `json:"status"`
+	Sub    string                  `json:"sub"`
+}
+
+// RecentFailureItemStatus defines model for RecentFailureItem.Status.
+type RecentFailureItemStatus string
+
+// RecentFailureWindow defines model for RecentFailureWindow.
+type RecentFailureWindow struct {
+	End   time.Time `json:"end"`
+	Start time.Time `json:"start"`
+}
+
+// RecentFailures defines model for RecentFailures.
+type RecentFailures struct {
+	// Counts 只统计本次返回的 items，不是窗口全量总数。
+	Counts RecentFailureCounts `json:"counts"`
+	Items  []RecentFailureItem `json:"items"`
+	Window RecentFailureWindow `json:"window"`
+}
+
 // RedeemCodeRequest defines model for RedeemCodeRequest.
 type RedeemCodeRequest struct {
 	// Code 用户输入原样提交；服务端归一化后再哈希
@@ -8970,6 +9169,18 @@ type RenameDeploymentResponse struct {
 	DeploymentId string `json:"deployment_id"`
 	Name         string `json:"name"`
 	Status       string `json:"status"`
+}
+
+// RequestTriage `found: false` 时只有 found 与 request_id（过期删除与从未存在不可区分）；
+// `found: true` 时 log / evidence / verdict 均出现。
+type RequestTriage struct {
+	// Evidence 判定所依据的已落库事实。`upstream_status` 为 0 表示没有拿到上游响应
+	// （不是错误）；`conversion` 恒为数组（可为空）。
+	Evidence  *TriageEvidence    `json:"evidence,omitempty"`
+	Found     bool               `json:"found"`
+	Log       *UsageLogDetail    `json:"log,omitempty"`
+	RequestId openapi_types.UUID `json:"request_id"`
+	Verdict   *TriageVerdict     `json:"verdict,omitempty"`
 }
 
 // ResetPasswordResponse 管理员重置口令的响应；审计只记录"发生了重置"，绝不含口令材料。
@@ -9833,6 +10044,96 @@ type TopupProviderConfig struct {
 	// PublishableKey Stripe 公开密钥（P-17 冻结键名 `pay.stripe.publishable_key`）
 	PublishableKey *string `json:"publishable_key,omitempty"`
 }
+
+// TriageBilling defines model for TriageBilling.
+type TriageBilling struct {
+	Cost        int64  `json:"cost"`
+	PreDeducted *int64 `json:"pre_deducted,omitempty"`
+	Refunded    int64  `json:"refunded"`
+}
+
+// TriageConversionStep defines model for TriageConversionStep.
+type TriageConversionStep struct {
+	From  string `json:"from"`
+	Stage string `json:"stage"`
+	To    string `json:"to"`
+}
+
+// TriageEvidence 判定所依据的已落库事实。`upstream_status` 为 0 表示没有拿到上游响应
+// （不是错误）；`conversion` 恒为数组（可为空）。
+type TriageEvidence struct {
+	// Attempts 上游尝试次数（retry_chain 长度；无重试链时取 triage.attempts）。
+	Attempts    int                    `json:"attempts"`
+	Billing     TriageBilling          `json:"billing"`
+	ChannelId   int64                  `json:"channel_id"`
+	ChannelType string                 `json:"channel_type"`
+	Conversion  []TriageConversionStep `json:"conversion"`
+	CreatedAt   time.Time              `json:"created_at"`
+
+	// Endpoint 中继端点（如 /v1/messages）；缺失时为空串。
+	Endpoint string `json:"endpoint"`
+
+	// ErrorClass usage_logs.error_class 的已持久化分类；无分类时为空串。
+	ErrorClass string `json:"error_class"`
+
+	// RejectStage 网关本地拒绝的阶段（quota|rate_limit|auth|request_structure|
+	// model_admission|channel_selection）；非拒绝行为空串。
+	RejectStage string `json:"reject_stage"`
+
+	// RequestStructure 中继前结构校验结论；空串表示未校验。
+	RequestStructure TriageEvidenceRequestStructure `json:"request_structure"`
+
+	// RouteFrom 协议转换的起点标签；未发生转换时为空串。
+	RouteFrom string `json:"route_from"`
+
+	// RouteTo 协议转换的终点标签；未发生转换时为空串。
+	RouteTo string `json:"route_to"`
+
+	// UpstreamStatus 最近一次非零上游响应状态码；0 = 没有拿到响应。
+	UpstreamStatus int `json:"upstream_status"`
+}
+
+// TriageEvidenceRequestStructure 中继前结构校验结论；空串表示未校验。
+type TriageEvidenceRequestStructure string
+
+// TriageOwner 责任方：user = 调用方请求（结构非法、额度/鉴权等前置拒绝）；
+// channel = 上游渠道；gateway = 网关自身；unknown = 证据不足以归责。
+type TriageOwner string
+
+// TriageRule 命中的稳定规则编号（前端按编号取字典文案）。
+type TriageRule string
+
+// TriageSignal defines model for TriageSignal.
+type TriageSignal struct {
+	// Code 稳定信号码（15 个之一）；前端按 code 本地化，服务端不下发自然语言。
+	Code string `json:"code"`
+
+	// Params 可选；缺省表示该信号没有可插值的小值。只含分类时刻已知的小值
+	// （状态码、计数、阶段、协议标签），不含自由文本。
+	Params *map[string]interface{} `json:"params,omitempty"`
+
+	// Vote 判定依据的投票方向。user/channel/gateway 指向责任方；exclude-*
+	// 表示已排除某一方；neutral 表示该事实本身无法区分责任方。
+	Vote TriageVote `json:"vote"`
+}
+
+// TriageVerdict defines model for TriageVerdict.
+type TriageVerdict struct {
+	// Owner 责任方：user = 调用方请求（结构非法、额度/鉴权等前置拒绝）；
+	// channel = 上游渠道；gateway = 网关自身；unknown = 证据不足以归责。
+	Owner TriageOwner `json:"owner"`
+
+	// Rule 命中的稳定规则编号（前端按编号取字典文案）。
+	Rule    TriageRule     `json:"rule"`
+	Signals []TriageSignal `json:"signals"`
+
+	// Sub 规则内的稳定细分原因（如 quota / protocol_conversion）。
+	Sub string `json:"sub"`
+}
+
+// TriageVote 判定依据的投票方向。user/channel/gateway 指向责任方；exclude-*
+// 表示已排除某一方；neutral 表示该事实本身无法区分责任方。
+type TriageVote string
 
 // TwoFABackupCodesResponse defines model for TwoFABackupCodesResponse.
 type TwoFABackupCodesResponse struct {
@@ -12002,6 +12303,21 @@ type ListUsageLogsParamsRange string
 
 // ListUsageLogsParamsStatus defines parameters for ListUsageLogs.
 type ListUsageLogsParamsStatus string
+
+// ListRecentFailuresParams defines parameters for ListRecentFailures.
+type ListRecentFailuresParams struct {
+	// Range 预设时间窗口；缺省 24h。
+	Range *ListRecentFailuresParamsRange `form:"range,omitempty" json:"range,omitempty"`
+
+	// Limit 返回条目上限（1–50）；缺省 20。
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Owner 只保留该责任方的条目；缺省不过滤。
+	Owner *TriageOwner `form:"owner,omitempty" json:"owner,omitempty"`
+}
+
+// ListRecentFailuresParamsRange defines parameters for ListRecentFailures.
+type ListRecentFailuresParamsRange string
 
 // GetUsageStatsByGroupParams defines parameters for GetUsageStatsByGroup.
 type GetUsageStatsByGroupParams struct {

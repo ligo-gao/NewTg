@@ -10333,6 +10333,108 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '500':
           $ref: '#/components/responses/Error500'
+  /api/usage-logs/triage/recent:
+    get:
+      tags:
+        - admin
+      operationId: listRecentFailures
+      x-required-permission: logs:read
+      summary: 最近失败列表（可按责任方过滤）
+      description: |
+        返回窗口内最近的失败条目（status 非 success）。同一 requestId 只列
+        一次。`counts` 只统计本次返回的 `items`——UI 文案为「最近 N 条」，
+        不是整个窗口的全量总数。`owner` 缺省返回全部责任方。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: range
+          in: query
+          description: 预设时间窗口；缺省 24h。
+          schema:
+            type: string
+            enum:
+              - 24h
+              - 7d
+              - 14d
+              - 30d
+            default: 24h
+        - name: limit
+          in: query
+          description: 返回条目上限（1–50）；缺省 20。
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+        - name: owner
+          in: query
+          description: 只保留该责任方的条目；缺省不过滤。
+          schema:
+            $ref: '#/components/schemas/TriageOwner'
+      responses:
+        '200':
+          description: 最近失败条目 + 本次返回条目的责任方计数。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecentFailures'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/usage-logs/triage/{request_id}:
+    get:
+      tags:
+        - admin
+      operationId: getRequestTriage
+      x-required-permission: logs:read
+      summary: 按 requestId 判定失败责任方（用户请求 / 上游渠道 / 网关自身）
+      description: |
+        管理员粘贴客户端错误报告里的 requestId，得到责任方判定与判定依据。
+        `request_id` 只接受 UUID 的 32 位十六进制或带连字符拼写（其它形式
+        422）。格式正确但查无此 ID——包括已超过 90 天保留期——返回
+        200 + `found: false`，以便「从未存在」与「已过期删除」不可区分。
+
+        证据全部来自已落库事实：`usage_logs.retry_chain` 与
+        `other.admin_info.triage`。`verdict.signals` 是判定依据的原子事实
+        列表；`params` 缺省表示该信号没有可插值的小值。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          description: 请求 ID（UUID；32 位十六进制或 36 位带连字符均可）。
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 判定结果；格式正确但查无此 ID 时为 found=false（不是 404）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestTriage'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
   /api/usage-stats/summary:
     get:
       tags:
@@ -21944,6 +22046,284 @@ components:
               type: object
               additionalProperties: true
               description: 按角色投影后的 other（user 仅 public 键；admin 含 admin_info/root_info）
+    TriageOwner:
+      type: string
+      enum:
+        - user
+        - channel
+        - gateway
+        - unknown
+      description: |
+        责任方：user = 调用方请求（结构非法、额度/鉴权等前置拒绝）；
+        channel = 上游渠道；gateway = 网关自身；unknown = 证据不足以归责。
+    TriageRule:
+      type: string
+      enum:
+        - USR-01
+        - USR-02
+        - CH-01
+        - CH-02
+        - GW-01
+        - GW-02
+        - UNKNOWN
+      description: 命中的稳定规则编号（前端按编号取字典文案）。
+    RecentFailureItem:
+      type: object
+      additionalProperties: false
+      required:
+        - request_id
+        - created_at
+        - model
+        - channel_id
+        - status
+        - owner
+        - sub
+        - rule
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        model:
+          type: string
+        channel_id:
+          type: integer
+          format: int64
+          nullable: true
+        status:
+          type: string
+          enum:
+            - success
+            - error
+            - refunded
+            - refused
+        owner:
+          $ref: '#/components/schemas/TriageOwner'
+        sub:
+          type: string
+        rule:
+          $ref: '#/components/schemas/TriageRule'
+    RecentFailureCounts:
+      type: object
+      additionalProperties: false
+      description: 只统计本次返回的 items，不是窗口全量总数。
+      required:
+        - user
+        - channel
+        - gateway
+        - unknown
+        - total
+      properties:
+        user:
+          type: integer
+        channel:
+          type: integer
+        gateway:
+          type: integer
+        unknown:
+          type: integer
+        total:
+          type: integer
+    RecentFailureWindow:
+      type: object
+      additionalProperties: false
+      required:
+        - start
+        - end
+      properties:
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+    RecentFailures:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - counts
+        - window
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RecentFailureItem'
+        counts:
+          $ref: '#/components/schemas/RecentFailureCounts'
+        window:
+          $ref: '#/components/schemas/RecentFailureWindow'
+    TriageConversionStep:
+      type: object
+      additionalProperties: false
+      required:
+        - stage
+        - from
+        - to
+      properties:
+        stage:
+          type: string
+        from:
+          type: string
+        to:
+          type: string
+    TriageBilling:
+      type: object
+      additionalProperties: false
+      required:
+        - cost
+        - refunded
+      properties:
+        cost:
+          type: integer
+          format: int64
+        pre_deducted:
+          type: integer
+          format: int64
+          nullable: true
+        refunded:
+          type: integer
+          format: int64
+    TriageEvidence:
+      type: object
+      additionalProperties: false
+      description: |
+        判定所依据的已落库事实。`upstream_status` 为 0 表示没有拿到上游响应
+        （不是错误）；`conversion` 恒为数组（可为空）。
+      required:
+        - endpoint
+        - route_from
+        - route_to
+        - conversion
+        - upstream_status
+        - attempts
+        - channel_type
+        - channel_id
+        - request_structure
+        - reject_stage
+        - billing
+        - error_class
+        - created_at
+      properties:
+        endpoint:
+          type: string
+          description: 中继端点（如 /v1/messages）；缺失时为空串。
+        route_from:
+          type: string
+          description: 协议转换的起点标签；未发生转换时为空串。
+        route_to:
+          type: string
+          description: 协议转换的终点标签；未发生转换时为空串。
+        conversion:
+          type: array
+          items:
+            $ref: '#/components/schemas/TriageConversionStep'
+        upstream_status:
+          type: integer
+          description: 最近一次非零上游响应状态码；0 = 没有拿到响应。
+        attempts:
+          type: integer
+          description: 上游尝试次数（retry_chain 长度；无重试链时取 triage.attempts）。
+        channel_type:
+          type: string
+        channel_id:
+          type: integer
+          format: int64
+          nullable: true
+        request_structure:
+          type: string
+          enum:
+            - valid
+            - invalid
+            - ''
+          description: 中继前结构校验结论；空串表示未校验。
+        reject_stage:
+          type: string
+          description: |
+            网关本地拒绝的阶段（quota|rate_limit|auth|request_structure|
+            model_admission|channel_selection）；非拒绝行为空串。
+        billing:
+          $ref: '#/components/schemas/TriageBilling'
+        error_class:
+          type: string
+          description: usage_logs.error_class 的已持久化分类；无分类时为空串。
+        created_at:
+          type: string
+          format: date-time
+    TriageVote:
+      type: string
+      enum:
+        - user
+        - channel
+        - gateway
+        - exclude-user
+        - exclude-channel
+        - neutral
+      description: |
+        判定依据的投票方向。user/channel/gateway 指向责任方；exclude-*
+        表示已排除某一方；neutral 表示该事实本身无法区分责任方。
+    TriageSignal:
+      type: object
+      additionalProperties: false
+      required:
+        - code
+        - vote
+      properties:
+        code:
+          type: string
+          description: 稳定信号码（15 个之一）；前端按 code 本地化，服务端不下发自然语言。
+        vote:
+          $ref: '#/components/schemas/TriageVote'
+        params:
+          type: object
+          additionalProperties: true
+          description: |
+            可选；缺省表示该信号没有可插值的小值。只含分类时刻已知的小值
+            （状态码、计数、阶段、协议标签），不含自由文本。
+    TriageVerdict:
+      type: object
+      additionalProperties: false
+      required:
+        - owner
+        - sub
+        - rule
+        - signals
+      properties:
+        owner:
+          $ref: '#/components/schemas/TriageOwner'
+        sub:
+          type: string
+          description: 规则内的稳定细分原因（如 quota / protocol_conversion）。
+        rule:
+          $ref: '#/components/schemas/TriageRule'
+        signals:
+          type: array
+          minItems: 2
+          items:
+            $ref: '#/components/schemas/TriageSignal'
+    RequestTriage:
+      type: object
+      additionalProperties: false
+      required:
+        - found
+        - request_id
+      description: |
+        `found: false` 时只有 found 与 request_id（过期删除与从未存在不可区分）；
+        `found: true` 时 log / evidence / verdict 均出现。
+      properties:
+        found:
+          type: boolean
+        request_id:
+          type: string
+          format: uuid
+        log:
+          $ref: '#/components/schemas/UsageLogDetail'
+        evidence:
+          $ref: '#/components/schemas/TriageEvidence'
+        verdict:
+          $ref: '#/components/schemas/TriageVerdict'
     UsageStatsSummary:
       type: object
       additionalProperties: false

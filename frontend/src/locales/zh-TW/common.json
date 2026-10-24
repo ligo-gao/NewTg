@@ -995,6 +995,7 @@
   "nav.redemption_codes": "兌換碼",
   "nav.models": "模型與供應商",
   "nav.performance": "效能管理",
+  "nav.failure_triage": "失敗排障",
   "announcement_popup": {
     "confirm": "知道了",
     "category_label": "公告類型",

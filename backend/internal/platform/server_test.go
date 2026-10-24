@@ -362,7 +362,7 @@ func TestMountRelayRoutesConcreteResources(t *testing.T) {
 	defer func() { _ = rdb.Close() }()
 
 	mux := http.NewServeMux()
-	mountRelayRoutes(mux, gatewayTestConfig("127.0.0.1:0"), sqlDB, redisResource{client: rdb}, nil)
+	mountRelayRoutes(mux, gatewayTestConfig("127.0.0.1:0"), sqlDB, nil, redisResource{client: rdb}, nil)
 
 	cases := []struct {
 		method string
@@ -385,7 +385,7 @@ func TestMountRelayRoutesConcreteResources(t *testing.T) {
 func TestMountRelayRoutesSkipsStubResources(t *testing.T) {
 	mux := http.NewServeMux()
 	mountRelayRoutes(mux, gatewayTestConfig("127.0.0.1:0"),
-		&stubResource{name: "db"}, &stubResource{name: "redis"}, nil)
+		&stubResource{name: "db"}, nil, &stubResource{name: "redis"}, nil)
 
 	for _, path := range []string{"/v1/models", "/v1/chat/completions", "/pg/chat/completions", "/api/channels"} {
 		if _, pattern := mux.Handler(httptest.NewRequest(http.MethodGet, path, nil)); pattern != "" {

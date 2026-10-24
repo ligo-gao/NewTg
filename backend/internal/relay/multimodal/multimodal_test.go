@@ -25,6 +25,8 @@ import (
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/relay"
 	"newtg/gateway/internal/relay/adapters"
+	"newtg/gateway/internal/relay/ir"
+	"newtg/gateway/internal/triage"
 )
 
 // ---------- fake billing ----------
@@ -913,6 +915,85 @@ func TestGeminiEmbeddingPath(t *testing.T) {
 	if len(facts) != 1 || facts[0].Usage.Prompt <= 0 {
 		t.Fatalf("gemini embedding fact = %+v, want estimated Prompt>0", facts)
 	}
+}
+
+// TestGeminiNativeEmbeddingNoFalseConversion 钉死 NF-1：Gemini 原生嵌入路径
+// （:embedContent / :batchEmbedContents）的 body 原样透传，入站协议必须如实
+// 标成 Gemini，不得记录 `openai → gemini_generate_content` 的请求转换，
+// 4xx 也就不会误判成网关责任的 GW-01。
+//
+// 对照组 `/v1/engines/{m}/embeddings`：入站是 OpenAI input，适配器确实把它
+// 翻译成 Gemini content.parts，因此必须仍记录一步转换（4xx → GW-01）。
+func TestGeminiNativeEmbeddingNoFalseConversion(t *testing.T) {
+	drive := func(t *testing.T, path string, body []byte) (*contract.RelayContext, bool) {
+		t.Helper()
+		hit := false
+		env := newTestEnv(t, contract.ChannelTypeGemini, func(w http.ResponseWriter, _ *http.Request) {
+			hit = true
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":400,"message":"bad"}}`))
+		})
+		request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		rc := &contract.RelayContext{
+			RequestID:   "gemini-embed",
+			OriginModel: "text-embedding-004",
+			RequestPath: path,
+			Request:     &contract.Request{Model: "text-embedding-004", Raw: body},
+		}
+		env.dispatcher.Handle(httptest.NewRecorder(), request, rc, contract.EndpointEmbeddings)
+		return rc, hit
+	}
+
+	t.Run("native embedContent records no request step", func(t *testing.T) {
+		body := []byte(`{"content":{"parts":[{"text":"hello"}]}}`)
+		rc, hit := drive(t, "/v1beta/models/text-embedding-004:embedContent", body)
+		if !hit {
+			t.Fatal("上游未被调用：测试没有走到请求转换生产者接缝")
+		}
+		if rc.Request == nil || len(rc.ConversionChain) != 0 {
+			t.Fatalf("ConversionChain = %+v, want no request step（body 未被重编码）", rc.ConversionChain)
+		}
+		if rc.Request.RawFormat != ir.FormatGeminiGenerateContent {
+			t.Fatalf("Request.RawFormat = %#v, want gemini native", rc.Request)
+		}
+		verdict := triage.Classify(triage.Evidence{
+			UpstreamStatus:   400,
+			Attempts:         1,
+			ConversionSteps:  len(rc.ConversionChain),
+			RequestStructure: "valid",
+		})
+		if verdict.Rule == "GW-01" || verdict.Owner != triage.OwnerUnknown {
+			t.Fatalf("verdict = %+v, 原生嵌入的 4xx 不得判 GW-01", verdict)
+		}
+	})
+
+	t.Run("engines embedding still records the translation", func(t *testing.T) {
+		body := []byte(`{"input":"hello"}`)
+		rc, hit := drive(t, "/v1/engines/text-embedding-004/embeddings", body)
+		if !hit {
+			t.Fatal("上游未被调用：engines 路径没有走到请求转换生产者接缝")
+		}
+		if len(rc.ConversionChain) != 1 {
+			t.Fatalf("ConversionChain = %+v, want exactly one request step", rc.ConversionChain)
+		}
+		step := rc.ConversionChain[0]
+		if step.Stage != "request" || step.From != ir.FormatOpenAIChat || step.To != ir.FormatGeminiGenerateContent {
+			t.Fatalf("request step = %+v, want request openai→gemini_generate_content", step)
+		}
+		verdict := triage.Classify(triage.Evidence{
+			UpstreamStatus:   400,
+			Attempts:         1,
+			ConversionSteps:  len(rc.ConversionChain),
+			RouteFrom:        string(step.From),
+			RouteTo:          string(step.To),
+			RequestStructure: "valid",
+		})
+		if verdict.Rule != "GW-01" || verdict.Owner != triage.OwnerGateway {
+			t.Fatalf("verdict = %+v, engines 形态的真实转换 + 4xx 应判 GW-01", verdict)
+		}
+	})
 }
 
 // signalingWriter 在首次 Write 时关闭 first，用于断言二进制响应是分块

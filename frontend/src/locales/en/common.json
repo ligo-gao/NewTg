@@ -995,6 +995,7 @@
   "nav.redemption_codes": "Redemption Codes",
   "nav.models": "Models & Vendors",
   "nav.performance": "Performance",
+  "nav.failure_triage": "Failure triage",
   "announcement_popup": {
     "confirm": "Got it",
     "category_label": "Announcement type",

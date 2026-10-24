@@ -30,18 +30,30 @@ func testUsageFact() *contract.UsageFact {
 }
 
 // testRelayContext 返回一份带渠道/分组/钳制/折扣的请求上下文。
+//
+// 带一条成功尝试：排障证据（retry_chain 与 admin_info.triage）需要 Attempts
+// 才有内容，投影用例统一以此为基准。
 func testRelayContext() *contract.RelayContext {
 	return &contract.RelayContext{
-		RequestID:     "0b6f5f3e-5f4e-4d3c-8b2a-1f0e9d8c7b6a",
-		UserID:        7,
-		TokenID:       11,
-		UsingGroup:    "vip",
-		UserGroup:     "default",
-		OriginModel:   "gpt-4o",
-		UpstreamModel: "gpt-4o-2024-08-06",
-		RequestPath:   "/v1/chat/completions",
-		ChannelID:     42,
-		Discount:      0.8,
+		RequestID:        "0b6f5f3e-5f4e-4d3c-8b2a-1f0e9d8c7b6a",
+		UserID:           7,
+		TokenID:          11,
+		UsingGroup:       "vip",
+		UserGroup:        "default",
+		OriginModel:      "gpt-4o",
+		UpstreamModel:    "gpt-4o-2024-08-06",
+		RequestPath:      "/v1/chat/completions",
+		RequestStructure: "valid",
+		ChannelID:        42,
+		ChannelType:      contract.ChannelTypeOpenAI,
+		Discount:         0.8,
+		Attempts: []contract.AttemptRecord{{
+			Index:          0,
+			ChannelID:      42,
+			ChannelType:    contract.ChannelTypeOpenAI,
+			UpstreamStatus: 200,
+			LatencyMS:      120,
+		}},
 		QuotaClamp: &contract.QuotaClamp{
 			Op: "QuotaFromFloatChecked", Kind: contract.ClampOverflow,
 			Original: 1e12, Clamped: contract.MaxQuota,
@@ -102,6 +114,364 @@ func TestSaturateRowProjection(t *testing.T) {
 	if row.status != UsageLogStatusSuccess {
 		t.Fatalf("status = %d", row.status)
 	}
+
+	// retry_chain 由 Attempts 投影而来：非 NULL，且每个元素的键集合固定
+	// （排障读取方按这些键取值，缺键会让证据静默丢失）。
+	if !row.retryChain.Valid {
+		t.Fatal("有 Attempts 时 retry_chain 不应为 NULL")
+	}
+	var chain []map[string]any
+	if err := json.Unmarshal([]byte(row.retryChain.String), &chain); err != nil {
+		t.Fatalf("retry_chain 不是 JSON 数组: %v (%s)", err, row.retryChain.String)
+	}
+	if len(chain) != 1 {
+		t.Fatalf("retry_chain 长度 = %d, want 1", len(chain))
+	}
+	wantChainKeys := []string{
+		"attempt", "channel_id", "upstream",
+		"error_class", "latency_ms", "upstream_status",
+	}
+	for _, key := range wantChainKeys {
+		if _, ok := chain[0][key]; !ok {
+			t.Fatalf("retry_chain[0] 缺键 %q: %v", key, chain[0])
+		}
+	}
+	if len(chain[0]) != len(wantChainKeys) {
+		t.Fatalf("retry_chain[0] 键数 = %d, want %d: %v",
+			len(chain[0]), len(wantChainKeys), chain[0])
+	}
+	// decision 是路由层决策，AttemptRecord 尚未携带 → 不得凭序号推断写入。
+	if _, ok := chain[0]["decision"]; ok {
+		t.Fatalf("retry_chain[0] 不得合成 decision: %v", chain[0])
+	}
+}
+
+// TestBuildRetryChain 验证 Attempts → retry_chain 的投影：
+// 空切片写 NULL、单条/多条的顺序与标签、以及防御性截断。
+func TestBuildRetryChain(t *testing.T) {
+	t.Run("nil context", func(t *testing.T) {
+		chain, err := buildRetryChain(nil)
+		if err != nil {
+			t.Fatalf("buildRetryChain(nil): %v", err)
+		}
+		if chain != "" {
+			t.Fatalf("nil 上下文应返回空串（写 NULL），得到 %q", chain)
+		}
+	})
+
+	t.Run("empty attempts", func(t *testing.T) {
+		chain, err := buildRetryChain(&contract.RelayContext{})
+		if err != nil {
+			t.Fatalf("buildRetryChain(empty): %v", err)
+		}
+		if chain != "" {
+			t.Fatalf("空 Attempts 应返回空串（写 NULL），得到 %q", chain)
+		}
+	})
+
+	t.Run("single", func(t *testing.T) {
+		rc := &contract.RelayContext{
+			ChannelType: contract.ChannelTypeOpenAI,
+			Attempts: []contract.AttemptRecord{{
+				Index:          0,
+				ChannelID:      42,
+				ChannelType:    contract.ChannelTypeOpenAI,
+				UpstreamStatus: 429,
+				ErrorClass:     contract.ErrUpstreamRateLimit,
+				LatencyMS:      87,
+			}},
+		}
+		chain, err := buildRetryChain(rc)
+		if err != nil {
+			t.Fatalf("buildRetryChain(single): %v", err)
+		}
+		steps := decodeRetryChain(t, chain)
+		if len(steps) != 1 {
+			t.Fatalf("steps = %d, want 1", len(steps))
+		}
+		step := steps[0]
+		if got := step["attempt"]; got != "1/1" {
+			t.Fatalf("attempt = %v, want 1/1", got)
+		}
+		if got := step["channel_id"]; got != float64(42) {
+			t.Fatalf("channel_id = %v, want 42", got)
+		}
+		if got := step["upstream"]; got != "openai" {
+			t.Fatalf("upstream = %v, want openai", got)
+		}
+		if _, ok := step["decision"]; ok {
+			t.Fatalf("不得合成路由决策 decision: %v", step)
+		}
+		if got := step["error_class"]; got != "upstream_rate_limit" {
+			t.Fatalf("error_class = %v, want upstream_rate_limit", got)
+		}
+		if got := step["latency_ms"]; got != float64(87) {
+			t.Fatalf("latency_ms = %v, want 87", got)
+		}
+		if got := step["upstream_status"]; got != float64(429) {
+			t.Fatalf("upstream_status = %v, want 429", got)
+		}
+	})
+
+	t.Run("multiple", func(t *testing.T) {
+		rc := &contract.RelayContext{
+			ChannelType: contract.ChannelTypeAnthropic,
+			Attempts: []contract.AttemptRecord{
+				{Index: 0, ChannelID: 1, UpstreamStatus: 500, ErrorClass: contract.ErrUpstreamServer, LatencyMS: 10},
+				{Index: 1, ChannelID: 2, UpstreamStatus: 0, ErrorClass: contract.ErrRetryable, LatencyMS: 20},
+			},
+		}
+		chain, err := buildRetryChain(rc)
+		if err != nil {
+			t.Fatalf("buildRetryChain(multiple): %v", err)
+		}
+		steps := decodeRetryChain(t, chain)
+		if len(steps) != 2 {
+			t.Fatalf("steps = %d, want 2", len(steps))
+		}
+		if got := steps[0]["attempt"]; got != "1/2" {
+			t.Fatalf("steps[0].attempt = %v, want 1/2", got)
+		}
+		if got := steps[1]["attempt"]; got != "2/2" {
+			t.Fatalf("steps[1].attempt = %v, want 2/2", got)
+		}
+		for i, step := range steps {
+			if _, ok := step["decision"]; ok {
+				t.Fatalf("steps[%d] 不得合成路由决策 decision: %v", i, step)
+			}
+		}
+		// upstream 取请求级渠道类型（结算时最终解析出的渠道族）。
+		for i, step := range steps {
+			if got := step["upstream"]; got != "anthropic" {
+				t.Fatalf("steps[%d].upstream = %v, want anthropic", i, got)
+			}
+		}
+		if got := steps[1]["upstream_status"]; got != float64(0) {
+			t.Fatalf("steps[1].upstream_status = %v, want 0（未拿到响应）", got)
+		}
+	})
+
+	t.Run("truncated to eight", func(t *testing.T) {
+		rc := &contract.RelayContext{ChannelType: contract.ChannelTypeOpenAI}
+		for i := 0; i < 10; i++ {
+			rc.Attempts = append(rc.Attempts, contract.AttemptRecord{Index: i, ChannelID: i + 1})
+		}
+		chain, err := buildRetryChain(rc)
+		if err != nil {
+			t.Fatalf("buildRetryChain(truncated): %v", err)
+		}
+		steps := decodeRetryChain(t, chain)
+		if len(steps) != 8 {
+			t.Fatalf("steps = %d, want 8（与 relay 侧上界一致）", len(steps))
+		}
+		if got := steps[7]["attempt"]; got != "8/8" {
+			t.Fatalf("steps[7].attempt = %v, want 8/8", got)
+		}
+	})
+}
+
+// TestSaturateOtherTriage 验证 admin_info.triage 的证据投影：
+// endpoint/channel_type/attempts/request_structure、upstream_status 的省略语义、
+// 以及 conversion 的条数与字符串截断上界。
+func TestSaturateOtherTriage(t *testing.T) {
+	t.Run("projects evidence", func(t *testing.T) {
+		rc := testRelayContext()
+		rc.Attempts = []contract.AttemptRecord{
+			{Index: 0, ChannelID: 42, UpstreamStatus: 500, ErrorClass: contract.ErrUpstreamServer, LatencyMS: 100},
+			{Index: 1, ChannelID: 43, UpstreamStatus: 0, ErrorClass: contract.ErrRetryable, LatencyMS: 20},
+		}
+		long := strings.Repeat("转", 100)
+		rc.ConversionChain = []contract.ConversionStepEntry{
+			{Stage: "protocol_convert", From: contract.RelayFormat("anthropic"), To: contract.RelayFormat("openai")},
+			{Stage: long, From: contract.RelayFormat(long), To: contract.RelayFormat("openai")},
+			{Stage: "s3"}, {Stage: "s4"}, {Stage: "s5"},
+		}
+
+		triage := triageInfoOf(t, rc)
+
+		if got := triage["endpoint"]; got != "chat_completions" {
+			t.Fatalf("endpoint = %v, want chat_completions", got)
+		}
+		if got := triage["channel_type"]; got != "openai" {
+			t.Fatalf("channel_type = %v, want openai", got)
+		}
+		// 最近一次拿到的上游响应（末轮 0 = 网络错误，不覆盖之前的 500）。
+		if got := triage["upstream_status"]; got != 500 {
+			t.Fatalf("upstream_status = %v, want 500", got)
+		}
+		if got := triage["attempts"]; got != 2 {
+			t.Fatalf("attempts = %v, want 2", got)
+		}
+		if got := triage["request_structure"]; got != "valid" {
+			t.Fatalf("request_structure = %v, want valid", got)
+		}
+
+		conversion, ok := triage["conversion"].([]map[string]any)
+		if !ok {
+			t.Fatalf("conversion = %T, want array: %v", triage["conversion"], triage)
+		}
+		if len(conversion) != 4 {
+			t.Fatalf("conversion 条数 = %d, want 4（上限）", len(conversion))
+		}
+		first := conversion[0]
+		wantKeys := []string{"stage", "from", "to"}
+		for _, key := range wantKeys {
+			if _, ok := first[key]; !ok {
+				t.Fatalf("conversion[0] 缺键 %q: %v", key, first)
+			}
+		}
+		if len(first) != len(wantKeys) {
+			t.Fatalf("conversion[0] 键数 = %d, want %d: %v", len(first), len(wantKeys), first)
+		}
+		if got := first["stage"]; got != "protocol_convert" {
+			t.Fatalf("conversion[0].stage = %v", got)
+		}
+		if got := first["from"]; got != "anthropic" {
+			t.Fatalf("conversion[0].from = %v", got)
+		}
+		if got := first["to"]; got != "openai" {
+			t.Fatalf("conversion[0].to = %v", got)
+		}
+		second := conversion[1]
+		if got, want := len([]rune(second["stage"].(string))), 64; got != want {
+			t.Fatalf("conversion[1].stage runes = %d, want %d", got, want)
+		}
+		if got, want := len([]rune(second["from"].(string))), 64; got != want {
+			t.Fatalf("conversion[1].from runes = %d, want %d", got, want)
+		}
+	})
+
+	t.Run("omits upstream status without response", func(t *testing.T) {
+		rc := testRelayContext()
+		rc.Attempts = []contract.AttemptRecord{{Index: 0, ChannelID: 42, UpstreamStatus: 0, ErrorClass: contract.ErrRetryable}}
+		triage := triageInfoOf(t, rc)
+		if _, ok := triage["upstream_status"]; ok {
+			t.Fatalf("upstream_status==0 必须省略，得到 %v", triage["upstream_status"])
+		}
+		if got := triage["attempts"]; got != 1 {
+			t.Fatalf("attempts = %v, want 1", got)
+		}
+	})
+
+	t.Run("dedupes consecutive identical conversion steps", func(t *testing.T) {
+		rc := testRelayContext()
+		request := contract.ConversionStepEntry{
+			Stage: "request",
+			From:  contract.RelayFormat("openai"),
+			To:    contract.RelayFormat("anthropic_messages"),
+		}
+		response := contract.ConversionStepEntry{
+			Stage: "protocol_convert",
+			From:  contract.RelayFormat("anthropic"),
+			To:    contract.RelayFormat("openai"),
+		}
+		// 同一渠道重试会重复追加 request 步；响应方向的 protocol_convert
+		// 是不同 stage，必须保留。
+		rc.ConversionChain = []contract.ConversionStepEntry{request, request, request, response, response}
+
+		triage := triageInfoOf(t, rc)
+		conversion, ok := triage["conversion"].([]map[string]any)
+		if !ok {
+			t.Fatalf("conversion = %T, want array: %v", triage["conversion"], triage)
+		}
+		if len(conversion) != 2 {
+			t.Fatalf("conversion 条数 = %d, want 2（相邻重复去重、不同 stage 保留）: %v", len(conversion), conversion)
+		}
+		if conversion[0]["stage"] != "request" || conversion[1]["stage"] != "protocol_convert" {
+			t.Fatalf("conversion stages = %v/%v, want request/protocol_convert", conversion[0]["stage"], conversion[1]["stage"])
+		}
+	})
+
+	t.Run("no attempts", func(t *testing.T) {
+		rc := &contract.RelayContext{RequestPath: "/v1/messages"}
+		triage := triageInfoOf(t, rc)
+		if got := triage["endpoint"]; got != "messages" {
+			t.Fatalf("endpoint = %v, want messages", got)
+		}
+		if got := triage["attempts"]; got != 0 {
+			t.Fatalf("attempts = %v, want 0", got)
+		}
+		if _, ok := triage["upstream_status"]; ok {
+			t.Fatal("没有尝试时不得写 upstream_status")
+		}
+		if _, ok := triage["request_structure"]; !ok {
+			t.Fatal("request_structure 键必须固定存在（空串 = 未校验）")
+		}
+	})
+}
+
+// TestSaturateInsertArgs 钉死 21 个绑参的顺序：writeUsageLog 与 Task 3 的
+// RecordRefusal 共用本函数，顺序错位会把证据写进错误的列。
+func TestSaturateInsertArgs(t *testing.T) {
+	row := usageLogRow{
+		requestID:        "0b6f5f3e-5f4e-4d3c-8b2a-1f0e9d8c7b6a",
+		userID:           7,
+		tokenID:          sql.NullInt64{Int64: 11, Valid: true},
+		channelID:        sql.NullInt64{Int64: 42, Valid: true},
+		model:            "gpt-4o",
+		group:            sql.NullString{String: "vip", Valid: true},
+		promptTokens:     1000,
+		completionTokens: 200,
+		cacheReadTokens:  300,
+		cacheWriteTokens: 40,
+		preDeducted:      500,
+		cost:             321,
+		refunded:         179,
+		latencyMS:        sql.NullInt64{Int64: 4567, Valid: true},
+		firstTokenMS:     sql.NullInt64{Int64: 123, Valid: true},
+		stream:           true,
+		status:           UsageLogStatusSuccess,
+		errorClass:       sql.NullString{String: "upstream_server", Valid: true},
+		errorMessage:     sql.NullString{String: "boom", Valid: true},
+		retryChain:       sql.NullString{String: `[{"attempt":"1/1"}]`, Valid: true},
+		other:            `{"billing_source":"wallet"}`,
+	}
+	args := usageLogInsertArgs(row)
+	if len(args) != 21 {
+		t.Fatalf("参数个数 = %d, want 21", len(args))
+	}
+	// 顺序 = usageLogInsertSQL 的 $1..$21；token_name/upstream 是 SQL 常量
+	// NULL，不占绑定参数。
+	want := []any{
+		row.requestID, row.userID, row.tokenID, row.channelID, row.model,
+		row.group, row.promptTokens, row.completionTokens, row.cacheReadTokens,
+		row.cacheWriteTokens, row.preDeducted, row.cost, row.refunded,
+		row.latencyMS, row.firstTokenMS, row.stream, row.status,
+		row.errorClass, row.errorMessage, row.retryChain, row.other,
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Fatalf("args[%d] = %#v, want %#v", i, args[i], want[i])
+		}
+	}
+}
+
+// decodeRetryChain 解析 retry_chain JSON 数组。
+func decodeRetryChain(t *testing.T, chain string) []map[string]any {
+	t.Helper()
+	if chain == "" {
+		t.Fatal("retry_chain 为空串，期望 JSON 数组")
+	}
+	var steps []map[string]any
+	if err := json.Unmarshal([]byte(chain), &steps); err != nil {
+		t.Fatalf("retry_chain 不是 JSON 数组: %v (%s)", err, chain)
+	}
+	return steps
+}
+
+// triageInfoOf 从 buildUsageLogOther 的结果中取出 admin_info.triage。
+func triageInfoOf(t *testing.T, rc *contract.RelayContext) map[string]any {
+	t.Helper()
+	other := buildUsageLogOther(rc, "gpt-4o", sql.NullInt64{}, SettlementOutcome{})
+	admin, ok := other["admin_info"].(map[string]any)
+	if !ok {
+		t.Fatalf("admin_info = %T, want object: %v", other["admin_info"], other)
+	}
+	triage, ok := admin["triage"].(map[string]any)
+	if !ok {
+		t.Fatalf("admin_info.triage = %T, want object: %v", admin["triage"], admin)
+	}
+	return triage
 }
 
 // TestSaturateRowNullsAndForcing 验证可空列/强制归零语义。
@@ -135,6 +505,10 @@ func TestSaturateRowNullsAndForcing(t *testing.T) {
 	}
 	if !row.errorMessage.Valid || row.errorMessage.String != "boom" {
 		t.Fatalf("errorMessage = %+v", row.errorMessage)
+	}
+	// 没有 Attempts（未到达上游）时 retry_chain 必须是 NULL，不能编造空数组。
+	if row.retryChain.Valid {
+		t.Fatalf("无 Attempts 时 retry_chain 应为 NULL: %+v", row.retryChain)
 	}
 
 	// refunded 状态同样强制 cost=0（worker 兜底退款）。

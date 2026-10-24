@@ -1715,5 +1715,284 @@
       "cap_notice": "最新の {count} 件のサブスクリプションのみ表示しています。それ以前のものは表示されません。",
       "order_ref": "#{id}"
     }
+  },
+  "failure_triage": {
+    "title": "失敗の切り分け",
+    "subtitle": "クライアントのエラーにある requestId を貼り付け、この失敗の担当を判定します。",
+    "desktop_only": "このページはデスクトップ画面（1024px 以上）で利用できます。",
+    "search": {
+      "label": "requestId",
+      "placeholder": "requestId を貼り付け（例: 6de20d22…）",
+      "submit": "検索",
+      "invalid": "requestId の形式が正しくありません。32 桁の 16 進数 ID をハイフンあり・なしのどちらでも貼り付けてください。"
+    },
+    "rail": {
+      "heading": "最近の失敗",
+      "count": "直近 {count} 件",
+      "window": "走査範囲: {start} – {end}",
+      "tab_all": "すべて",
+      "tab_user": "ユーザーリクエスト",
+      "tab_channel": "上流チャネル",
+      "tab_gateway": "ゲートウェイ",
+      "empty": "この担当の失敗はありません。",
+      "footer": "データ保持期間は 90 日 · 管理者のみ表示"
+    },
+    "totals": {
+      "lead": "直近の失敗 {count} 件",
+      "user": "ユーザーリクエスト {count}",
+      "channel": "上流チャネル {count}",
+      "gateway": "ゲートウェイ {count}",
+      "unknown": "証拠不足 {count}",
+      "lead_filtered": "直近 {count} 件 · {owner}"
+    },
+    "sections": {
+      "evidence": "判定根拠",
+      "actions": "推奨アクション"
+    },
+    "stamp": {
+      "owner_label": "担当",
+      "sub_label": "サブタイプ · {sub}"
+    },
+    "case": {
+      "copy_request_id": "コピー",
+      "copied": "クリップボードにコピーしました。",
+      "copy_failed": "クリップボードにコピーできませんでした。"
+    },
+    "empty": {
+      "heading": "requestId を貼り付けて開始",
+      "body": "ケースファイルに結論・判定根拠・次の対応が表示されます。"
+    },
+    "not_found": {
+      "heading": "この requestId のログはありません",
+      "hint_1": "中継前に拒否された一部のリクエストは記録されません。たとえば認証ミドルウェアやポリシーで止められたリクエストはリレーに到達しないため、ログが残りません。",
+      "hint_2": "requestId のコピーが不完全か、クライアントが表示する形式と一致していません。",
+      "hint_3": "ログの保持期間（90 日）を過ぎています。"
+    },
+    "error": {
+      "recent": "最近の失敗を読み込めませんでした。",
+      "case": "このケースを読み込めませんでした。",
+      "retry": "再試行"
+    },
+    "facts": {
+      "model": "モデル",
+      "upstream_model": "上流モデル",
+      "channel": "チャネル",
+      "endpoint": "エンドポイント",
+      "route": "プロトコル経路",
+      "upstream_status": "上流ステータス",
+      "attempts": "試行回数",
+      "billing": "課金"
+    },
+    "values": {
+      "upstream_none": "上流からの応答なし",
+      "attempts_none": "0（未送信）",
+      "attempts": "{count} 回",
+      "route_not_reached": "上流に到達せず",
+      "route_direct": "なし（{from} → {to}）",
+      "billing_refunded": "返金済み",
+      "billing_charged": "課金済み",
+      "billing_none": "未課金",
+      "channel": "{type} · ID {id}",
+      "protocol_unknown": "不明なプロトコル"
+    },
+    "owner": {
+      "user": "ユーザーリクエスト",
+      "channel": "上流チャネル",
+      "gateway": "ゲートウェイ",
+      "unknown": "証拠不足"
+    },
+    "vote": {
+      "user": "ユーザーを指す",
+      "channel": "チャネルを指す",
+      "gateway": "ゲートウェイを指す",
+      "exclude-user": "ユーザーを除外",
+      "exclude-channel": "チャネルを除外",
+      "neutral": "中立"
+    },
+    "rule": {
+      "USR-01": {
+        "title": "ユーザーリクエストが不正です",
+        "summary": "リレー前の構造検証で呼び出し元の元のリクエストが拒否されました。ユーザーリクエスト側の責任です。"
+      },
+      "USR-02": {
+        "title": "ゲートウェイが上流に送る前に拒否しました",
+        "summary": "クォータ・レート制限・認証・准入のいずれかでローカルに拒否され、上流への呼び出しは発生していません。"
+      },
+      "CH-01": {
+        "title": "上流チャネルが認証情報を拒否しました",
+        "summary": "上流がチャネルの認証情報に対して 401/403 を返しました。リクエスト本文とは無関係です。"
+      },
+      "CH-02": {
+        "title": "上流チャネルがサーバーエラーを返し続けています",
+        "summary": "複数回の試行後も上流は 5xx を返し、フェイルオーバーでも正常なチャネルが見つかりませんでした。"
+      },
+      "GW-01": {
+        "title": "プロトコル変換がリクエストを不正にしました",
+        "summary": "元のリクエスト構造は有効でしたが、ゲートウェイのプロトコル変換後に 4xx が発生しました。変換層が今回の唯一の新しい変数です。"
+      },
+      "GW-02": {
+        "title": "ゲートウェイで未実装の機能です",
+        "summary": "未実装の機能（エンドポイントまたはチャネル種別）に到達し、ゲートウェイ側で失敗しました。"
+      },
+      "UNKNOWN": {
+        "title": "担当を特定する証拠が足りません",
+        "summary": "保存された事実だけではユーザー・上流チャネル・ゲートウェイのいずれとも断定できません。下の判定根拠とコンテナログを確認してください。"
+      }
+    },
+    "sub": {
+      "request_structure": "リクエスト構造",
+      "quota": "クォータ不足",
+      "rate_limit": "レート制限",
+      "auth": "認証失敗",
+      "model_admission": "モデルの受け入れ",
+      "channel_selection": "チャネル選択",
+      "upstream_auth": "上流認証情報",
+      "upstream_server": "上流 5xx",
+      "protocol_conversion": "プロトコル変換",
+      "unsupported": "機能未実装",
+      "insufficient_evidence": "証拠不足",
+      "unknown": "不明な原因"
+    },
+    "signal": {
+      "request_structure_invalid": {
+        "fact": "元のリクエスト構造が不正です",
+        "note": "ゲートウェイが転送前に元の本文を不正と判定しました。"
+      },
+      "request_structure_valid": {
+        "fact": "元のリクエスト構造は有効です",
+        "note": "元の本文は想定されたスキーマに沿って解析できました。ただし、リクエストに意味上の問題がないことは示していません。"
+      },
+      "request_structure_unverified": {
+        "fact": "リクエスト構造は未検証です",
+        "note": "構造検証の結論が保存されていないため、ユーザー側を除外できません。"
+      },
+      "refused_before_upstream": {
+        "fact": "ゲートウェイが上流に送る前に拒否しました（{stage}）",
+        "note": "拒否はチャネル選択より前に発生し、上流へのリクエストはありません。"
+      },
+      "no_upstream_attempt": {
+        "fact": "上流へのリクエストはありません",
+        "note": "ゲートウェイがローカルで処理を完結し、上流は関与していません。"
+      },
+      "no_upstream_response": {
+        "fact": "上流からの応答がありません（試行 {attempts} 回）",
+        "note": "リクエストは送信されましたが応答がありません。ネットワークエラーやタイムアウトの可能性があります。"
+      },
+      "no_upstream_server_error": {
+        "fact": "5xx もタイムアウトもありません（試行 {attempts} 回）",
+        "note": "上流のサーバー障害の兆候はなく、チャネルの健全性は除外できます。"
+      },
+      "upstream_status": {
+        "fact": "上流が {upstream_status} を返しました",
+        "note": "このステータスだけではリクエスト内容とチャネルの問題を区別できません。"
+      },
+      "upstream_auth_rejected": {
+        "fact": "上流が {upstream_status} を返し、認証情報を拒否しました",
+        "note": "認証失敗はリクエスト内容の処理より前に発生しています。"
+      },
+      "upstream_server_error": {
+        "fact": "上流が {upstream_status} を返しました",
+        "note": "上流のサーバーエラーで、チャネル側の責任です。"
+      },
+      "attempt_count": {
+        "fact": "上流への試行回数: {attempts}",
+        "note": "試行回数は、再試行やフェイルオーバーが発生したかを示します。"
+      },
+      "conversion_applied": {
+        "fact": "プロトコル変換あり: {from} → {to}",
+        "note": "ゲートウェイが形式を書き換えました。変換層が今回の新しい変数です。"
+      },
+      "conversion_absent": {
+        "fact": "プロトコル変換なし: {from} → {to}",
+        "note": "本文は元の形式で転送され、ゲートウェイは書き換えていません。"
+      },
+      "error_class": {
+        "fact": "エラークラス: {class}",
+        "note": "このクラスだけでは担当を特定できません。"
+      },
+      "error_class_unsupported": {
+        "fact": "未実装の機能: {class}",
+        "note": "このエンドポイントまたはチャネル種別はゲートウェイ側で未対応です。"
+      },
+      "unknown": {
+        "fact": "未認識の判定根拠",
+        "note": "この判定根拠はこのバージョンの画面文言に未収録です。コンテナログと合わせて確認してください。"
+      }
+    },
+    "action": {
+      "user": {
+        "1": {
+          "title": "診断サマリーをコピー",
+          "note": "結論・requestId・判定根拠をユーザーに共有します。",
+          "button": "コピー"
+        },
+        "2": {
+          "title": "利用ログを開く",
+          "note": "保存されたリクエスト行と再試行チェーンを確認します。",
+          "button": "開く"
+        },
+        "3": {
+          "title": "返信テンプレートをコピー",
+          "note": "リクエストの問題を説明する返信文です。",
+          "button": "コピー"
+        }
+      },
+      "channel": {
+        "1": {
+          "title": "診断サマリーをコピー",
+          "note": "結論と判定根拠をチャネル管理者に共有します。",
+          "button": "コピー"
+        },
+        "2": {
+          "title": "チャネル設定を開く",
+          "note": "認証情報を再テストするか、復旧までチャネルを無効にします。",
+          "button": "開く"
+        },
+        "3": {
+          "title": "requestId をコピー",
+          "note": "上流プロバイダーへエスカレーションする際に添付します。",
+          "button": "ID をコピー"
+        }
+      },
+      "gateway": {
+        "1": {
+          "title": "診断サマリーをコピー",
+          "note": "requestId・プロトコル経路・判定根拠を issue に記載します。",
+          "button": "コピー"
+        },
+        "2": {
+          "title": "利用ログを開く",
+          "note": "保存されたリクエスト行と再試行チェーンを確認します。",
+          "button": "開く"
+        },
+        "3": {
+          "title": "適用ルールをコピー",
+          "note": "修正やポストモーテムにルールを添付します。",
+          "button": "コピー"
+        }
+      },
+      "unknown": {
+        "1": {
+          "title": "診断サマリーをコピー",
+          "note": "エスカレーション前に判明している事実を共有します。",
+          "button": "コピー"
+        },
+        "2": {
+          "title": "利用ログを開く",
+          "note": "保存されたリクエスト行と再試行チェーンを確認します。",
+          "button": "開く"
+        },
+        "3": {
+          "title": "requestId をコピー",
+          "note": "コンテナログとの照合に使用します。",
+          "button": "ID をコピー"
+        }
+      }
+    },
+    "copy": {
+      "summary": "{title}\n\n{summary}\n\nrequestId: {requestId}\nルール: {rule}",
+      "reply": "お問い合わせのリクエスト {requestId} について: {summary}\n\nリクエストを修正して再試行してください。",
+      "rule_text": "{rule} · {summary}"
+    }
   }
 }

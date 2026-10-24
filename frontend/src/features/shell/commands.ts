@@ -45,6 +45,7 @@ export type CommandRoutePath =
   | '/admin/system/deployments'
   | '/admin/system/task-plugins'
   | '/admin/system/performance'
+  | '/admin/system/failure-triage'
 
 export interface CommandDefinition {
   id: string
@@ -356,6 +357,17 @@ export const COMMANDS: readonly CommandDefinition[] = [
     requiredPermission: 'settings:manage',
     analyticsId: 'nav.admin_performance',
     to: '/admin/system/performance',
+  },
+  {
+    id: 'admin-failure-triage',
+    kind: 'route',
+    group: 'pages',
+    labelKey: 'common.nav.failure_triage',
+    keywords: ['admin', 'triage', 'failure', 'request id', 'diagnose', 'logs'],
+    requiredRole: 'admin',
+    requiredPermission: 'logs:read',
+    analyticsId: 'nav.admin_failure_triage',
+    to: '/admin/system/failure-triage',
   },
   {
     id: 'copy-page-url',

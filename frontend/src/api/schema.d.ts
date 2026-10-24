@@ -4914,6 +4914,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/usage-logs/triage/recent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 最近失败列表（可按责任方过滤）
+         * @description 返回窗口内最近的失败条目（status 非 success）。同一 requestId 只列
+         *     一次。`counts` 只统计本次返回的 `items`——UI 文案为「最近 N 条」，
+         *     不是整个窗口的全量总数。`owner` 缺省返回全部责任方。
+         */
+        get: operations["listRecentFailures"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/usage-logs/triage/{request_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 按 requestId 判定失败责任方（用户请求 / 上游渠道 / 网关自身）
+         * @description 管理员粘贴客户端错误报告里的 requestId，得到责任方判定与判定依据。
+         *     `request_id` 只接受 UUID 的 32 位十六进制或带连字符拼写（其它形式
+         *     422）。格式正确但查无此 ID——包括已超过 90 天保留期——返回
+         *     200 + `found: false`，以便「从未存在」与「已过期删除」不可区分。
+         *
+         *     证据全部来自已落库事实：`usage_logs.retry_chain` 与
+         *     `other.admin_info.triage`。`verdict.signals` 是判定依据的原子事实
+         *     列表；`params` 缺省表示该信号没有可插值的小值。
+         */
+        get: operations["getRequestTriage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/usage-stats/summary": {
         parameters: {
             query?: never;
@@ -10295,6 +10344,135 @@ export interface components {
             other: {
                 [key: string]: unknown;
             };
+        };
+        /**
+         * @description 责任方：user = 调用方请求（结构非法、额度/鉴权等前置拒绝）；
+         *     channel = 上游渠道；gateway = 网关自身；unknown = 证据不足以归责。
+         * @enum {string}
+         */
+        TriageOwner: "user" | "channel" | "gateway" | "unknown";
+        /**
+         * @description 命中的稳定规则编号（前端按编号取字典文案）。
+         * @enum {string}
+         */
+        TriageRule: "USR-01" | "USR-02" | "CH-01" | "CH-02" | "GW-01" | "GW-02" | "UNKNOWN";
+        RecentFailureItem: {
+            /** Format: uuid */
+            request_id: string;
+            /** Format: date-time */
+            created_at: string;
+            model: string;
+            /** Format: int64 */
+            channel_id: number | null;
+            /** @enum {string} */
+            status: "success" | "error" | "refunded" | "refused";
+            owner: components["schemas"]["TriageOwner"];
+            sub: string;
+            rule: components["schemas"]["TriageRule"];
+        };
+        /** @description 只统计本次返回的 items，不是窗口全量总数。 */
+        RecentFailureCounts: {
+            user: number;
+            channel: number;
+            gateway: number;
+            unknown: number;
+            total: number;
+        };
+        RecentFailureWindow: {
+            /** Format: date-time */
+            start: string;
+            /** Format: date-time */
+            end: string;
+        };
+        RecentFailures: {
+            items: components["schemas"]["RecentFailureItem"][];
+            counts: components["schemas"]["RecentFailureCounts"];
+            window: components["schemas"]["RecentFailureWindow"];
+        };
+        TriageConversionStep: {
+            stage: string;
+            from: string;
+            to: string;
+        };
+        TriageBilling: {
+            /** Format: int64 */
+            cost: number;
+            /** Format: int64 */
+            pre_deducted?: number | null;
+            /** Format: int64 */
+            refunded: number;
+        };
+        /**
+         * @description 判定所依据的已落库事实。`upstream_status` 为 0 表示没有拿到上游响应
+         *     （不是错误）；`conversion` 恒为数组（可为空）。
+         */
+        TriageEvidence: {
+            /** @description 中继端点（如 /v1/messages）；缺失时为空串。 */
+            endpoint: string;
+            /** @description 协议转换的起点标签；未发生转换时为空串。 */
+            route_from: string;
+            /** @description 协议转换的终点标签；未发生转换时为空串。 */
+            route_to: string;
+            conversion: components["schemas"]["TriageConversionStep"][];
+            /** @description 最近一次非零上游响应状态码；0 = 没有拿到响应。 */
+            upstream_status: number;
+            /** @description 上游尝试次数（retry_chain 长度；无重试链时取 triage.attempts）。 */
+            attempts: number;
+            channel_type: string;
+            /** Format: int64 */
+            channel_id: number | null;
+            /**
+             * @description 中继前结构校验结论；空串表示未校验。
+             * @enum {string}
+             */
+            request_structure: "valid" | "invalid" | "";
+            /**
+             * @description 网关本地拒绝的阶段（quota|rate_limit|auth|request_structure|
+             *     model_admission|channel_selection）；非拒绝行为空串。
+             */
+            reject_stage: string;
+            billing: components["schemas"]["TriageBilling"];
+            /** @description usage_logs.error_class 的已持久化分类；无分类时为空串。 */
+            error_class: string;
+            /** Format: date-time */
+            created_at: string;
+        };
+        /**
+         * @description 判定依据的投票方向。user/channel/gateway 指向责任方；exclude-*
+         *     表示已排除某一方；neutral 表示该事实本身无法区分责任方。
+         * @enum {string}
+         */
+        TriageVote: "user" | "channel" | "gateway" | "exclude-user" | "exclude-channel" | "neutral";
+        TriageSignal: {
+            /** @description 稳定信号码（15 个之一）；前端按 code 本地化，服务端不下发自然语言。 */
+            code: string;
+            vote: components["schemas"]["TriageVote"];
+            /**
+             * @description 可选；缺省表示该信号没有可插值的小值。只含分类时刻已知的小值
+             *     （状态码、计数、阶段、协议标签），不含自由文本。
+             */
+            params?: {
+                [key: string]: unknown;
+            };
+        };
+        TriageVerdict: {
+            owner: components["schemas"]["TriageOwner"];
+            /** @description 规则内的稳定细分原因（如 quota / protocol_conversion）。 */
+            sub: string;
+            rule: components["schemas"]["TriageRule"];
+            signals: components["schemas"]["TriageSignal"][];
+        };
+        /**
+         * @description `found: false` 时只有 found 与 request_id（过期删除与从未存在不可区分）；
+         *     `found: true` 时 log / evidence / verdict 均出现。
+         */
+        RequestTriage: {
+            found: boolean;
+            /** Format: uuid */
+            request_id: string;
+            log?: components["schemas"]["UsageLogDetail"];
+            evidence?: components["schemas"]["TriageEvidence"];
+            verdict?: components["schemas"]["TriageVerdict"];
         };
         UsageStatsSummary: {
             /** Format: int64 */
@@ -19605,6 +19783,68 @@ export interface operations {
                 };
             };
             500: components["responses"]["Error500"];
+        };
+    };
+    listRecentFailures: {
+        parameters: {
+            query?: {
+                /** @description 预设时间窗口；缺省 24h。 */
+                range?: "24h" | "7d" | "14d" | "30d";
+                /** @description 返回条目上限（1–50）；缺省 20。 */
+                limit?: number;
+                /** @description 只保留该责任方的条目；缺省不过滤。 */
+                owner?: components["schemas"]["TriageOwner"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 最近失败条目 + 本次返回条目的责任方计数。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecentFailures"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    getRequestTriage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 请求 ID（UUID；32 位十六进制或 36 位带连字符均可）。 */
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 判定结果；格式正确但查无此 ID 时为 found=false（不是 404）。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestTriage"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
         };
     };
     getUsageStatsSummary: {

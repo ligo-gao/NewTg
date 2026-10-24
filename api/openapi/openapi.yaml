@@ -507,6 +507,12 @@ paths:
     $ref: './paths/user.yaml#/paths/~1api~1usage-logs~1{id}'
   /api/usage-logs/{id}/prompt:
     $ref: './paths/user.yaml#/paths/~1api~1usage-logs~1{id}~1prompt'
+  # 失败排障（admin console 后端；logs:read）。literal `recent` 必须先于
+  # `{request_id}` 声明；Go ServeMux 让字面量段优先，两者可共存。
+  /api/usage-logs/triage/recent:
+    $ref: './paths/admin.yaml#/paths/~1api~1usage-logs~1triage~1recent'
+  /api/usage-logs/triage/{request_id}:
+    $ref: './paths/admin.yaml#/paths/~1api~1usage-logs~1triage~1{request_id}'
   /api/usage-stats/summary:
     $ref: './paths/user.yaml#/paths/~1api~1usage-stats~1summary'
   /api/usage-stats/by-model:

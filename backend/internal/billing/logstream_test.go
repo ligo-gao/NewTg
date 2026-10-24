@@ -135,6 +135,16 @@ func TestUsageLogEventRoundTrip(t *testing.T) {
 	if got.errorClass != row.errorClass || got.errorMessage != row.errorMessage {
 		t.Fatalf("error fields drifted: %+v vs %+v", got, row)
 	}
+	// 排障证据必须随事件穿过 Redis 传输表示（JSON 往返）后仍可还原。
+	if !row.retryChain.Valid {
+		t.Fatal("测试前置：retry_chain 应为非 NULL")
+	}
+	if event.RetryChain == nil || *event.RetryChain != row.retryChain.String {
+		t.Fatalf("retry_chain 未随事件携带: %+v", event.RetryChain)
+	}
+	if got.retryChain != row.retryChain {
+		t.Fatalf("retry_chain drifted: %+v vs %+v", got.retryChain, row.retryChain)
+	}
 	if got.other != row.other {
 		t.Fatalf("other drifted: %q vs %q", got.other, row.other)
 	}
