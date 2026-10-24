@@ -677,6 +677,95 @@ func TestIntegrationUsageLogDetailVisibility(t *testing.T) {
 	}
 }
 
+// --- 令牌名补齐 -----------------------------------------------------------
+
+// TestIntegrationUsageLogTokenNames 覆盖列表/详情的令牌名补齐。线上写入路径
+// （saturate / logstream）把 usage_logs.token_name 恒写成 NULL，该列不可依赖；
+// 读路径必须从主库 api_tokens 批量补齐。已存在的快照不得被覆盖，查不到的
+// token_id 保持空名，请求仍返回 200。
+func TestIntegrationUsageLogTokenNames(t *testing.T) {
+	env := newUsageTestEnv(t)
+	userID, _ := ensureUsageTestUser(t, env, "utk")
+	group := fmt.Sprintf("utk-%d", time.Now().UnixNano()%1_000_000_000)
+
+	tokenName := fmt.Sprintf("prod-key-%d", time.Now().UnixNano()%1_000_000_000)
+	var tokenID int64
+	if err := env.mainDB.QueryRow(`INSERT INTO api_tokens (user_id, name, key_hash, "group")
+		VALUES ($1, $2, $3, 'default') RETURNING id`,
+		userID, tokenName, fmt.Sprintf("it-utk-%d", time.Now().UnixNano())).Scan(&tokenID); err != nil {
+		t.Fatalf("insert api_token: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = env.mainDB.Exec(`DELETE FROM api_tokens WHERE id = $1`, tokenID)
+	})
+
+	// 第一行按线上口径写入 token_name=NULL；第二行带历史快照；第三行的
+	// token_id 在主库没有对应行。
+	namedID := env.seed(t, usageSeed{UserID: userID, Group: group, TokenID: &tokenID})
+	snapshotID := env.seed(t, usageSeed{UserID: userID, Group: group, TokenID: &tokenID, TokenName: "legacy-snapshot"})
+	orphanTokenID := int64(980001)
+	orphanID := env.seed(t, usageSeed{UserID: userID, Group: group, TokenID: &orphanTokenID})
+
+	type listItem struct {
+		ID        int64   `json:"id"`
+		TokenID   *int64  `json:"token_id"`
+		TokenName *string `json:"token_name"`
+	}
+	deref := func(value *string) string {
+		if value == nil {
+			return ""
+		}
+		return *value
+	}
+
+	p := usageAdminPrincipal(1, rbac.PermLogsRead)
+	rec := env.do(t, http.MethodGet, "/api/usage-logs?group="+group+"&page_size=100", p)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	list := decodeUsageJSON[struct {
+		Items []listItem `json:"items"`
+		Total int64      `json:"total"`
+	}](t, rec)
+	if list.Total != 3 || len(list.Items) != 3 {
+		t.Fatalf("list total=%d items=%d, want 3/3 body=%s", list.Total, len(list.Items), rec.Body.String())
+	}
+	byID := make(map[int64]listItem, len(list.Items))
+	for _, item := range list.Items {
+		byID[item.ID] = item
+	}
+	if got := byID[namedID]; deref(got.TokenName) != tokenName {
+		t.Fatalf("list token_name = %q, want %q (row %+v)", deref(got.TokenName), tokenName, got)
+	}
+	if got := byID[snapshotID]; deref(got.TokenName) != "legacy-snapshot" {
+		t.Fatalf("list must keep stored snapshot, got %q", deref(got.TokenName))
+	}
+	if got := byID[orphanID]; deref(got.TokenName) != "" {
+		t.Fatalf("list missing-token row token_name = %q, want empty", deref(got.TokenName))
+	}
+
+	for _, tc := range []struct {
+		name string
+		id   int64
+		want string
+	}{
+		{"named", namedID, tokenName},
+		{"snapshot", snapshotID, "legacy-snapshot"},
+		{"orphan", orphanID, ""},
+	} {
+		rec := env.do(t, http.MethodGet, fmt.Sprintf("/api/usage-logs/%d", tc.id), p)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s detail status = %d, want 200 body=%s", tc.name, rec.Code, rec.Body.String())
+		}
+		detail := decodeUsageJSON[struct {
+			TokenName *string `json:"token_name"`
+		}](t, rec)
+		if got := deref(detail.TokenName); got != tc.want {
+			t.Fatalf("%s detail token_name = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 // --- Prompt 无载体 --------------------------------------------------------
 
 func TestIntegrationUsageLogPromptNoCarrier(t *testing.T) {
