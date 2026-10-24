@@ -392,8 +392,9 @@ describe('reconciliation results tab', () => {
 
   it('closes the sheet while a same-run query shows placeholder data', async () => {
     const gate = deferred()
+    const rows = [makeItem()]
     installApi({
-      items: [makeItem()],
+      items: rows,
       listTotal: 45,
       severityCounts: { warn: 1 },
       listGate: (url) =>
@@ -409,6 +410,8 @@ describe('reconciliation results tab', () => {
       }),
     )
     expect(await screen.findByRole('dialog')).toBeTruthy()
+    // 先写一段草稿：若抽屉在刷新后自己弹回来，这段说明必然已被重置清空。
+    await user.type(screen.getByLabelText('Note'), 'draft before filter')
 
     // 抽屉打开时背景被设为 aria-hidden；筛选按钮仍在 DOM 中。
     await user.click(
@@ -418,7 +421,40 @@ describe('reconciliation results tab', () => {
     // 占位行不属于当前请求：抽屉不能继续展示占位数据里的明细。
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
 
+    // 刷新数据里多一行标记：它出现即证明新数据已经落到表格，占位窗口随之结束。
+    rows.push(makeItem({ id: 502, upstream_model: 'refreshed-row' }))
     gate.resolve()
+
+    await screen.findByTestId('item-row')
+    expect(await screen.findByText('refreshed-row')).toBeTruthy()
+    // 刷新结果到达后抽屉必须保持关闭，而不是带着被重置清空的草稿重新打开。
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('keeps the same run’s rows on screen while a new filter loads', async () => {
+    const gate = deferred()
+    const rows = [makeItem({ upstream_model: 'placeholder-kept' })]
+    installApi({
+      items: rows,
+      severityCounts: { warn: 1 },
+      listGate: (url) =>
+        url.searchParams.get('severity') === 'warn' ? gate.promise : undefined,
+    })
+    await renderTab(9)
+    const user = userEvent.setup()
+
+    await screen.findByTestId('item-row')
+    await user.click(screen.getByRole('button', { name: 'Warning (1)' }))
+
+    // 同一运行内换筛选：新请求完成前沿用上一页数据，行不能消失。
+    expect(screen.getByText('placeholder-kept')).toBeTruthy()
+    expect(screen.getAllByTestId('item-row').length).toBeGreaterThan(0)
+
+    // 放行后返回一份新数据（多一行标记），用以证明刷新结果真的到了。
+    rows.push(makeItem({ id: 502, upstream_model: 'refreshed-row' }))
+    gate.resolve()
+    expect(await screen.findByText('refreshed-row')).toBeTruthy()
+    expect(screen.getByText('placeholder-kept')).toBeTruthy()
   })
 
   it('opens the sheet with the six comparison rows', async () => {

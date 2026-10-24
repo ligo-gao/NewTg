@@ -135,6 +135,22 @@ function RefreshHarness() {
   )
 }
 
+/** 抽屉常驻挂载、内容随 `item` 打开：复现「关闭态收到明细」的生产路径。 */
+function SeedHarness() {
+  const [item, setItem] = useState<ReconcileItem | null>(null)
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setItem(makeItem({ status: 'resolved' }))}
+      >
+        open item
+      </button>
+      <ItemSheet item={item} onOpenChange={() => undefined} canManage />
+    </>
+  )
+}
+
 describe('reconciliation item sheet', () => {
   it('renders the six comparison rows with API values', async () => {
     renderSheet(makeItem())
@@ -247,6 +263,17 @@ describe('reconciliation item sheet', () => {
     expect(
       (screen.getByLabelText('New status') as HTMLSelectElement).value,
     ).toBe('acknowledged')
+  })
+
+  it('seeds the status when a closed sheet receives its item', async () => {
+    await renderWithProviders(<SeedHarness />, ['common', 'admin'])
+
+    // 抽屉打开时背景被设为 aria-hidden，按钮不在可访问树里，只能用文本查询。
+    fireEvent.click(screen.getByText('open item'))
+
+    expect(
+      (screen.getByLabelText('New status') as HTMLSelectElement).value,
+    ).toBe('resolved')
   })
 
   it('submits the selected status and the typed note', async () => {

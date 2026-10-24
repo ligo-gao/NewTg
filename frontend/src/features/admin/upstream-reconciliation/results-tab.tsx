@@ -162,6 +162,12 @@ export function ResultsTab({ runId, onSelectRun, canManage }: ResultsTabProps) {
       ? null
       : (items.find((item) => item.id === selectedId) ?? null)
 
+  // 占位窗口里抽屉被守卫收起；不清掉选中项，数据一到抽屉就会带着被重置清空
+  // 的草稿自己弹回来。
+  useEffect(() => {
+    if (itemsQuery.isPlaceholderData) setSelectedId(null)
+  }, [itemsQuery.isPlaceholderData])
+
   function chooseSeverity(next: ReconcileSeverity | null): void {
     setSeverity(next)
     setPage(1)
