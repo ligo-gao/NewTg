@@ -175,12 +175,23 @@ func TestRunnerMarksExpiredWindow(t *testing.T) {
 	ago := now.AddDate(0, 0, -100) // older than the default 90-day retention
 	r.settings.(*fakeSettings).s.LookbackDays = 120
 	// Local logs for that date are gone; only the upstream snapshot remains.
+	// 金额非 nil，用来钉住 SnapshotAmountMinor 在「不做比较」的分支上也会
+	// 透传（若赋值被挪进 compare 分支，这里会变 nil）。
+	amount := int64(1234)
 	r.usage.(*fakeUsage).rows = nil
-	r.snapshots.(*fakeSnapshots).rows = []store.UpstreamSnapshot{{AccountID: 1, UsageDate: ago, UpstreamModel: "A"}}
+	r.snapshots.(*fakeSnapshots).rows = []store.UpstreamSnapshot{{
+		AccountID: 1, UsageDate: ago, UpstreamModel: "A", AmountMinor: &amount,
+	}}
 	_, _ = r.Run(context.Background(), "manual", nil)
 	item := st.items[0][0]
 	if item.Severity != "local_expired" {
 		t.Fatalf("severity = %s, want local_expired", item.Severity)
+	}
+	if item.SnapshotAmountMinor == nil || *item.SnapshotAmountMinor != amount {
+		t.Fatalf("expired item snapshot_amount_minor = %v, want %d", item.SnapshotAmountMinor, amount)
+	}
+	if item.UpstreamCostMinor == nil || *item.UpstreamCostMinor != amount {
+		t.Fatalf("expired item upstream_cost_minor = %v, want %d", item.UpstreamCostMinor, amount)
 	}
 	// local_expired 必须在 Compare 之前短路：这个快照的 token 维度全为
 	// nil，若真的比较过，SnapshotPartial 会变成 true。
@@ -296,6 +307,56 @@ func TestRunnerRecordsInclusiveLocalDateWindow(t *testing.T) {
 	}
 	if want := time.Date(2026, 10, 23, 16, 0, 0, 0, time.UTC); !run.WindowEnd.Equal(want) {
 		t.Fatalf("window_end instant = %s, want %s", run.WindowEnd, want)
+	}
+}
+
+// today 必须取自账号时区。now=2026-10-24T20:00Z 在 Shanghai 已是 10-25：
+// 若误把 now 当本地时间（localNow := now，但仍用 loc 构造日界、仍传 tz
+// 字符串），窗口会整体前移一天，而只比较 tz 或 UTC 同日期的测试发现不了。
+func TestRunnerDerivesTodayFromAccountTimeZoneNotUTC(t *testing.T) {
+	now := time.Date(2026, 10, 24, 20, 0, 0, 0, time.UTC)
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	usage := &fakeUsage{latest: now.Add(-time.Minute)}
+	st := &fakeRunStore{}
+	r, err := NewRunner(RunnerConfig{
+		Accounts:  &fakeAccounts{accounts: []store.UpstreamAccount{{ID: 1, Status: 1, Timezone: "Asia/Shanghai"}}},
+		Snapshots: &fakeSnapshots{},
+		Usage:     usage,
+		Store:     st,
+		Settings: &fakeSettings{s: Settings{
+			Enabled: true, LookbackDays: 3, TokenBP: 100,
+			MinDeltaTokens: 1000, AmountToleranceMinor: 100, QuotaPerUnit: 100,
+		}},
+		Clock: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+	if _, err := r.Run(context.Background(), "manual", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	run := st.runs[0]
+	if got := run.WindowStart.In(loc).Format("2006-01-02"); got != "2026-10-22" {
+		t.Fatalf("window_start = %s, want 2026-10-22 (today is 10-25 in Shanghai, not 10-24 UTC)", got)
+	}
+	if got := run.WindowEnd.In(loc).Format("2006-01-02"); got != "2026-10-25" {
+		t.Fatalf("window_end = %s, want 2026-10-25", got)
+	}
+	if usage.gotTZ != "Asia/Shanghai" {
+		t.Fatalf("aggregate tz = %q, want Asia/Shanghai", usage.gotTZ)
+	}
+	wantStart := time.Date(2026, 10, 21, 16, 0, 0, 0, time.UTC) // 2026-10-22 00:00 +08
+	wantEnd := time.Date(2026, 10, 25, 16, 0, 0, 0, time.UTC)   // 2026-10-26 00:00 +08
+	if !usage.gotStart.Equal(wantStart) || !usage.gotEnd.Equal(wantEnd) {
+		t.Fatalf("aggregate window = [%s, %s), want [%s, %s)",
+			usage.gotStart, usage.gotEnd, wantStart, wantEnd)
+	}
+	if got := usage.gotEnd.Sub(usage.gotStart); got != 96*time.Hour {
+		t.Fatalf("window length = %s, want 96h (lookback 3 = today + 3 prior days)", got)
 	}
 }
 
