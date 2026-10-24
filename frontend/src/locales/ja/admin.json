@@ -1579,7 +1579,7 @@
       "trend_title": "トークン差分の推移",
       "trend_series": "トークン差分 (bp)",
       "tolerance": "許容範囲 ±{bp} bp",
-      "retry": "再試行"
+      "retry_for": "{metric}を再試行"
     },
     "entry": {
       "account": "アップストリームアカウント",

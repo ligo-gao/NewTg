@@ -1,7 +1,7 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
-import { screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import {
   afterAll,
   afterEach,
@@ -72,17 +72,19 @@ interface ApiOptions {
 
 function installApi(options: ApiOptions = {}) {
   const summaryCalls: URL[] = []
+  const runsCalls: URL[] = []
   const runs = options.runs ?? [makeRun()]
 
   server.use(
-    http.get(`${ORIGIN}/api/upstream-reconciliations/runs`, () =>
-      HttpResponse.json({
+    http.get(`${ORIGIN}/api/upstream-reconciliations/runs`, ({ request }) => {
+      runsCalls.push(new URL(request.url))
+      return HttpResponse.json({
         items: runs,
         total: runs.length,
         page: 1,
         page_size: 20,
-      }),
-    ),
+      })
+    }),
     http.get(`${ORIGIN}/api/upstream-reconciliations/summary`, ({ request }) => {
       const url = new URL(request.url)
       summaryCalls.push(url)
@@ -110,7 +112,7 @@ function installApi(options: ApiOptions = {}) {
     }),
   )
 
-  return { summaryCalls }
+  return { summaryCalls, runsCalls }
 }
 
 function renderTab(runId: number | null) {
@@ -350,16 +352,106 @@ describe('reconciliation overview tab', () => {
     )
   })
 
+  it('renders genuine zeros as 0 and ¥0.00 rather than —', async () => {
+    installApi({
+      days: [
+        makeDay({
+          usage_date: '2026-10-22',
+          delta_token_bp: 0,
+          revenue_minor: 0,
+          upstream_cost_minor: 0,
+          margin_minor: 0,
+        }),
+      ],
+    })
+    await renderTab(9)
+
+    // 0 是真实值；只有 NULL 才渲染 —。四个格式化器必须都保留 0。
+    await screen.findByTestId('overview-revenue-value')
+    expect(kpiValue('overview-revenue')).toBe('¥0.00')
+    expect(kpiValue('overview-upstream-cost')).toBe('¥0.00')
+    expect(kpiValue('overview-margin')).toBe('¥0.00')
+    expect(kpiValue('overview-delta-bp')).toBe('0')
+    expect(screen.getByTestId('overview-delta-bp-subline').textContent).toBe(
+      'Worst day: 2026-10-22',
+    )
+  })
+
+  it('breaks a worst-day tie with the earlier date', async () => {
+    installApi({
+      days: [
+        // 服务端顺序把较晚的一天放在前面；绝对值相同（100）时必须选 10-22。
+        makeDay({ usage_date: '2026-10-23', delta_token_bp: 100 }),
+        makeDay({ usage_date: '2026-10-22', delta_token_bp: -100 }),
+      ],
+    })
+    await renderTab(9)
+
+    await screen.findByTestId('overview-delta-bp-value')
+    expect(kpiValue('overview-delta-bp')).toBe('-100')
+    expect(screen.getByTestId('overview-delta-bp-subline').textContent).toBe(
+      'Worst day: 2026-10-22',
+    )
+  })
+
+  it('shows the hovered day value through the chart tooltip', async () => {
+    installApi({
+      days: [
+        makeDay({ usage_date: '2026-10-22', delta_token_bp: 100 }),
+        makeDay({ usage_date: '2026-10-23', delta_token_bp: 200 }),
+        makeDay({ usage_date: '2026-10-24', delta_token_bp: 300 }),
+      ],
+    })
+    const { container } = await renderTab(9)
+    await screen.findByTestId('analytics-chart')
+    const svg = screen.getByRole('img')
+    // jsdom 不做布局：viewBox 是 320×180，最后一点在 x=312。
+    vi.spyOn(svg, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 320,
+      bottom: 180,
+      width: 320,
+      height: 180,
+      toJSON: () => ({}),
+    })
+
+    fireEvent.mouseMove(svg, { clientX: 312 })
+    expect(screen.getByTestId('analytics-chart-tooltip').textContent).toBe(
+      '300 bp',
+    )
+    expect(container.querySelector('line[data-crosshair="true"]')).not.toBeNull()
+  })
+
   it('asks for a run in the results tab when no run is selected', async () => {
-    const { summaryCalls } = installApi()
+    const { summaryCalls, runsCalls } = installApi()
     await renderTab(null)
 
     expect(
       screen.getByText('Choose a run in the Results tab to see its overview.'),
     ).toBeTruthy()
     expect(screen.queryByTestId('analytics-chart')).toBeNull()
-    // 没有 run 就不该发汇总请求（runs 列表也不需要）。
+    // 没有 run 就两个请求都不发：汇总没有 run_id，运行列表也只服务于容差带。
+    // 让出一轮事件循环，否则任何挂载即发的请求都还来不及到达 MSW。
+    await new Promise((resolve) => setTimeout(resolve, 50))
     expect(summaryCalls).toHaveLength(0)
+    expect(runsCalls).toHaveLength(0)
+  })
+
+  it('sends the selected run id and the documented runs page parameters', async () => {
+    // 用一个非默认 run id：把 run_id 写死成 9 的实现会在这里暴露。
+    const { summaryCalls, runsCalls } = installApi({
+      runs: [makeRun({ id: 42 })],
+      days: [makeDay({ usage_date: '2026-10-22', delta_token_bp: 10 })],
+    })
+    await renderTab(42)
+
+    await screen.findByTestId('analytics-chart')
+    expect(summaryCalls[0]?.searchParams.get('run_id')).toBe('42')
+    expect(runsCalls[0]?.searchParams.get('p')).toBe('1')
+    expect(runsCalls[0]?.searchParams.get('page_size')).toBe('20')
   })
 
   it('renders an empty state for a run with no days', async () => {
@@ -380,6 +472,16 @@ describe('reconciliation overview tab', () => {
     const user = userEvent.setup()
 
     expect(await screen.findByText('summary store unavailable')).toBeTruthy()
+    // 四张卡片的错误重试按钮必须有各自的名称，不能都叫「Retry」。
+    const names = screen.getAllByRole('button').map((button) => button.textContent)
+    expect(names).toEqual([
+      'Retry Revenue',
+      'Retry Upstream cost',
+      'Retry Margin',
+      'Retry Token delta',
+    ])
+    expect(new Set(names).size).toBe(4)
+
     // StatCard 的错误态保留重试入口；点击后重新请求汇总。
     const retry = screen.getByTestId('overview-revenue-retry')
     const before = summaryCalls.length

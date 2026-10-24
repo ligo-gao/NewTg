@@ -1579,7 +1579,7 @@
       "trend_title": "Xu hướng chênh lệch token",
       "trend_series": "Chênh lệch token (bp)",
       "tolerance": "Dung sai ±{bp} bp",
-      "retry": "Thử lại"
+      "retry_for": "Thử lại {metric}"
     },
     "entry": {
       "account": "Tài khoản nhà cung cấp",

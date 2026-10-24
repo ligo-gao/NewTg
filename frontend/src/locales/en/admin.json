@@ -1579,7 +1579,7 @@
       "trend_title": "Token delta trend",
       "trend_series": "Token delta (bp)",
       "tolerance": "Tolerance ±{bp} bp",
-      "retry": "Retry"
+      "retry_for": "Retry {metric}"
     },
     "entry": {
       "account": "Upstream account",

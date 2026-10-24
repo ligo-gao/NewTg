@@ -1579,7 +1579,7 @@
       "trend_title": "Token 差異趨勢",
       "trend_series": "Token 差異（bp）",
       "tolerance": "容差 ±{bp} bp",
-      "retry": "重試"
+      "retry_for": "重試{metric}"
     },
     "entry": {
       "account": "上游帳號",

@@ -1579,7 +1579,7 @@
       "trend_title": "Tendance de l’écart de tokens",
       "trend_series": "Écart de tokens (bp)",
       "tolerance": "Tolérance ±{bp} bp",
-      "retry": "Réessayer"
+      "retry_for": "Réessayer {metric}"
     },
     "entry": {
       "account": "Compte fournisseur",

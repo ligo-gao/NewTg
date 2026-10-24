@@ -1,5 +1,5 @@
-import { screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
 import type { ChartConfig, ChartSeries } from '@/shared/lib/chart-data'
@@ -26,6 +26,24 @@ const series: ChartSeries[] = [
 ]
 
 const config: ChartConfig = { kind: 'line', unit: 'credits' }
+
+/**
+ * jsdom 不做布局，`getBoundingClientRect()` 默认全为 0；给 SVG 固定一个
+ * 320×180 的盒子（与 viewBox 一致），指针坐标才能换算回绘图坐标。
+ */
+function mockChartBox(svg: SVGSVGElement): void {
+  vi.spyOn(svg, 'getBoundingClientRect').mockReturnValue({
+    x: 0,
+    y: 0,
+    left: 0,
+    top: 0,
+    right: 320,
+    bottom: 180,
+    width: 320,
+    height: 180,
+    toJSON: () => ({}),
+  })
+}
 
 describe('AnalyticsChart', () => {
   it('renders an empty state for an empty series list without crashing', async () => {
@@ -144,6 +162,143 @@ describe('AnalyticsChart', () => {
     expect(screen.getByRole('img').getAttribute('aria-label')).not.toContain(
       'Tolerance',
     )
+  })
+
+  it('names a shared reference label only once in the aria summary', async () => {
+    await renderWithProviders(
+      <AnalyticsChart
+        series={series}
+        config={config}
+        // 两条带共用「±」标签：摘要里不能重复播报同一个名字。
+        referenceLines={[
+          { value: 50, label: 'Tolerance ±50 bp' },
+          { value: -50, label: 'Tolerance ±50 bp' },
+        ]}
+      />,
+    )
+
+    expect(screen.getByRole('img').getAttribute('aria-label')).toBe(
+      'line chart with 1 series: Credits. Unit: credits. Tolerance ±50 bp',
+    )
+  })
+
+  it('places the +tolerance line strictly above the -tolerance line inside the plot', async () => {
+    const { container } = await renderWithProviders(
+      <AnalyticsChart
+        series={series}
+        config={{ ...config, domain: [-100, 100] }}
+        referenceLines={[
+          { value: 50, label: 'Tolerance +50 bp' },
+          { value: -50, label: 'Tolerance -50 bp' },
+        ]}
+      />,
+    )
+
+    const svg = screen.getByRole('img')
+    // 竖直的 Y 轴给出绘图区的上下边界（PLOT_TOP / BASELINE_Y）。
+    const axis = [...svg.querySelectorAll('line')].find(
+      (line) => line.getAttribute('x1') === line.getAttribute('x2'),
+    )
+    expect(axis).not.toBeUndefined()
+    const top = Number(axis?.getAttribute('y1'))
+    const bottom = Number(axis?.getAttribute('y2'))
+
+    const lines = container.querySelectorAll('line[data-reference-line="true"]')
+    expect(lines).toHaveLength(2)
+    // 绘制顺序即 +tolerance、−tolerance：纵坐标更小 = 画得更靠上。
+    const plusY = Number(lines[0]?.getAttribute('y1'))
+    const minusY = Number(lines[1]?.getAttribute('y1'))
+    expect(plusY).toBeLessThan(minusY)
+    for (const y of [plusY, minusY]) {
+      expect(y).toBeGreaterThanOrEqual(top)
+      expect(y).toBeLessThanOrEqual(bottom)
+    }
+  })
+
+  it('shows the nearest point on hover and clears it on leave', async () => {
+    const { container } = await renderWithProviders(
+      <AnalyticsChart series={series} config={config} tooltip />,
+    )
+    const svg = container.querySelector('svg')
+    expect(svg).not.toBeNull()
+    if (svg === null) throw new Error('chart svg missing')
+    mockChartBox(svg)
+
+    // 两个点分别在 viewBox 的 x=44 与 x=312；pointer 在右端选后者（值 30）。
+    fireEvent.mouseMove(svg, { clientX: 312 })
+    expect(screen.getByTestId('analytics-chart-tooltip').textContent).toBe(
+      '30 credits',
+    )
+    expect(container.querySelector('line[data-crosshair="true"]')).not.toBeNull()
+    expect(
+      container.querySelector('circle[data-hover-marker="true"]'),
+    ).not.toBeNull()
+
+    // 靠左端的指针选第一个点（值 10）：取「最近」而不是固定索引。
+    fireEvent.mouseMove(svg, { clientX: 50 })
+    expect(screen.getByTestId('analytics-chart-tooltip').textContent).toBe(
+      '10 credits',
+    )
+
+    fireEvent.mouseLeave(svg)
+    expect(screen.queryByTestId('analytics-chart-tooltip')).toBeNull()
+    expect(container.querySelector('line[data-crosshair="true"]')).toBeNull()
+  })
+
+  it('moves the selection with the keyboard and announces it politely', async () => {
+    await renderWithProviders(
+      <AnalyticsChart series={series} config={config} tooltip />,
+    )
+    const svg = screen.getByRole('img')
+    const live = screen.getByTestId('analytics-chart-live')
+
+    expect(svg.getAttribute('tabindex')).toBe('0')
+    expect(live.getAttribute('aria-live')).toBe('polite')
+
+    fireEvent.keyDown(svg, { key: 'ArrowRight' })
+    expect(live.textContent).toContain('10 credits')
+    fireEvent.keyDown(svg, { key: 'ArrowRight' })
+    expect(live.textContent).toContain('30 credits')
+
+    // 已到最后一个点：再按右方向键被 clamp 在末端。
+    fireEvent.keyDown(svg, { key: 'ArrowRight' })
+    expect(live.textContent).toContain('30 credits')
+
+    fireEvent.keyDown(svg, { key: 'Home' })
+    expect(live.textContent).toContain('10 credits')
+    fireEvent.keyDown(svg, { key: 'End' })
+    expect(live.textContent).toContain('30 credits')
+
+    fireEvent.keyDown(svg, { key: 'Escape' })
+    expect(screen.queryByTestId('analytics-chart-tooltip')).toBeNull()
+    expect(live.textContent).toBe('')
+
+    // 重新选中后失焦也必须清除。
+    fireEvent.keyDown(svg, { key: 'ArrowRight' })
+    expect(screen.getByTestId('analytics-chart-tooltip')).not.toBeNull()
+    fireEvent.blur(svg)
+    expect(screen.queryByTestId('analytics-chart-tooltip')).toBeNull()
+  })
+
+  it('adds no interactive affordance when the tooltip prop is absent', async () => {
+    const { container } = await renderWithProviders(
+      <AnalyticsChart series={series} config={config} />,
+    )
+    const svg = container.querySelector('svg')
+    expect(svg).not.toBeNull()
+    if (svg === null) throw new Error('chart svg missing')
+
+    // 关闭时 DOM 与旧版一致：没有 tabindex、没有 live region、没有浮层。
+    expect(svg.hasAttribute('tabindex')).toBe(false)
+    expect(container.querySelector('[aria-live]')).toBeNull()
+    expect(container.querySelector('[data-testid="analytics-chart-tooltip"]')).toBeNull()
+    expect(container.querySelector('[data-crosshair]')).toBeNull()
+
+    mockChartBox(svg)
+    fireEvent.mouseMove(svg, { clientX: 312 })
+    fireEvent.keyDown(svg, { key: 'ArrowRight' })
+    expect(container.querySelector('[data-testid="analytics-chart-tooltip"]')).toBeNull()
+    expect(container.querySelector('[data-crosshair]')).toBeNull()
   })
 
   it('keeps the public props contract independent of the renderer', async () => {

@@ -1,4 +1,10 @@
-import { useMemo } from 'react'
+import {
+  useMemo,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
 
 import {
   formatAxis,
@@ -29,6 +35,12 @@ export interface AnalyticsChartProps {
    * `aria-label` 摘要里，保证信息不只靠颜色/虚线传达。
    */
   referenceLines?: { value: number; label: string }[]
+  /**
+   * Opt-in hover/keyboard readout. 关闭时组件渲染的 DOM 与旧版完全一致（没有
+   * tabindex、事件处理器或额外节点）；开启后悬停/方向键选中最近的数据点，
+   * 显示十字线、标记与数值标签，并通过 aria-live 播报。
+   */
+  tooltip?: boolean
 }
 
 const VIEW_WIDTH = 320
@@ -55,6 +67,15 @@ interface ParsedPoint {
   ts: string
   ms: number
   value: number
+}
+
+/** 可被悬停/键盘选中的数据点（已换算成绘图坐标）。 */
+interface HoverPoint {
+  ts: string
+  value: number
+  x: number
+  y: number
+  color: string
 }
 
 interface ChartModel {
@@ -141,19 +162,21 @@ export function AnalyticsChart({
   series,
   config,
   referenceLines,
+  tooltip,
 }: AnalyticsChartProps) {
   const { t, locale } = useI18n()
+  const [selected, setSelected] = useState<number | null>(null)
   const model = useMemo(
     () => buildModel(series, config.kind, config.domain),
     [series, config.kind, config.domain],
   )
 
   // 参考线标签是纯文本替代的一部分：读屏用户听得到「容差 ±50 bp」，
-  // 不必依赖视觉上的虚线位置。
+  // 不必依赖视觉上的虚线位置。相同标签只播报一次（± 带共用一个标签）。
   const referenceSummary =
     referenceLines === undefined
       ? ''
-      : referenceLines.map((line) => line.label).join(', ')
+      : [...new Set(referenceLines.map((line) => line.label))].join(', ')
   const baseAriaLabel = t('common.chart.aria', {
     kind: config.kind,
     count: series.length,
@@ -191,18 +214,116 @@ export function AnalyticsChart({
     ...new Set([0, Math.floor((bucketCount - 1) / 2), bucketCount - 1]),
   ]
 
+  // 悬停/键盘读出的候选集：所有序列的点按绘图 x 升序，方向键顺序与视觉
+  // 从左到右一致；多序列同 x 时保留声明顺序。
+  const hoverPoints: HoverPoint[] = seriesPoints
+    .flatMap((points, seriesIndex) =>
+      points.flatMap((point) => {
+        const bucket = bucketIndex.get(point.ms)
+        if (bucket === undefined) return []
+        return [
+          {
+            ts: point.ts,
+            value: point.value,
+            x: xForIndex(bucket, bucketCount),
+            y: yFor(point.value, min, max),
+            color: colorForSeries(seriesIndex),
+          },
+        ]
+      }),
+    )
+    .sort((a, b) => a.x - b.x)
+
+  // 读取时再 clamp 一次：数据换窗口导致候选集缩短时，保留的索引不会越界。
+  const clampedSelection =
+    selected === null
+      ? null
+      : Math.min(Math.max(selected, 0), Math.max(hoverPoints.length - 1, 0))
+  const active =
+    tooltip === true && clampedSelection !== null
+      ? (hoverPoints[clampedSelection] ?? null)
+      : null
+
+  /** 指针位置换算到 viewBox 坐标后，取水平距离最近的数据点。 */
+  function selectNearest(svg: SVGSVGElement, clientX: number): void {
+    if (hoverPoints.length === 0) return
+    const bounds = svg.getBoundingClientRect()
+    if (bounds.width === 0) return
+    const x = ((clientX - bounds.left) / bounds.width) * VIEW_WIDTH
+    let nearest = 0
+    let best = Number.POSITIVE_INFINITY
+    hoverPoints.forEach((point, index) => {
+      const distance = Math.abs(point.x - x)
+      if (distance < best) {
+        best = distance
+        nearest = index
+      }
+    })
+    setSelected(nearest)
+  }
+
+  // 鼠标与指针事件都接：测试环境（jsdom）没有完整 PointerEvent 实现，
+  // 真实设备上触摸走 pointerdown，鼠标走 pointermove/mousemove。
+  function handlePointerMove(
+    event: ReactPointerEvent<SVGSVGElement> | ReactMouseEvent<SVGSVGElement>,
+  ): void {
+    selectNearest(event.currentTarget, event.clientX)
+  }
+
+  function handleKeyDown(event: ReactKeyboardEvent<SVGSVGElement>): void {
+    if (hoverPoints.length === 0) return
+    const last = hoverPoints.length - 1
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault()
+      // 尚未选中时从右端进入；之后逐步左移并 clamp 到 0。
+      setSelected((current) =>
+        current === null ? last : Math.max(0, current - 1),
+      )
+      return
+    }
+    if (event.key === 'ArrowRight') {
+      event.preventDefault()
+      setSelected((current) =>
+        current === null ? 0 : Math.min(last, current + 1),
+      )
+      return
+    }
+    if (event.key === 'Home') {
+      event.preventDefault()
+      setSelected(0)
+      return
+    }
+    if (event.key === 'End') {
+      event.preventDefault()
+      setSelected(last)
+      return
+    }
+    if (event.key === 'Escape') {
+      setSelected(null)
+    }
+  }
+
   return (
     <div
       data-testid="analytics-chart"
       data-kind={config.kind}
       data-series-count={series.length}
-      className="w-full"
+      // 只有需要定位浮层时才加 relative：关闭 tooltip 时包装层与旧版一致。
+      className={tooltip === true ? 'relative w-full' : 'w-full'}
     >
       <svg
         role="img"
         aria-label={ariaLabel}
         viewBox={`0 0 ${VIEW_WIDTH} ${VIEW_HEIGHT}`}
         className="h-auto w-full"
+        tabIndex={tooltip === true ? 0 : undefined}
+        onPointerMove={tooltip === true ? handlePointerMove : undefined}
+        onMouseMove={tooltip === true ? handlePointerMove : undefined}
+        onPointerLeave={tooltip === true ? () => setSelected(null) : undefined}
+        onMouseLeave={tooltip === true ? () => setSelected(null) : undefined}
+        onPointerDown={tooltip === true ? handlePointerMove : undefined}
+        onKeyDown={tooltip === true ? handleKeyDown : undefined}
+        onBlur={tooltip === true ? () => setSelected(null) : undefined}
       >
         {/* Axes: a single Y axis (web-00 §10.2 forbids dual Y axes). */}
         <line
@@ -418,7 +539,65 @@ export function AnalyticsChart({
             />
           )
         })}
+        {active !== null ? (
+          // 选中态的画内标记：十字线共用绘图区高度，圆点落在数据值上。
+          <g data-testid="analytics-chart-selection">
+            <line
+              data-crosshair="true"
+              x1={active.x}
+              y1={PLOT_TOP}
+              x2={active.x}
+              y2={BASELINE_Y}
+              stroke="var(--ink-3)"
+              strokeDasharray="3 4"
+            />
+            <circle
+              data-hover-marker="true"
+              cx={active.x}
+              cy={active.y}
+              r={3.5}
+              fill={active.color}
+              stroke="var(--surface-card)"
+              strokeWidth={2}
+            />
+          </g>
+        ) : null}
       </svg>
+
+      {/* 屏幕阅读器播报选中值；视觉用户看到的是下方浮层标签。 */}
+      {tooltip === true ? (
+        <p
+          data-testid="analytics-chart-live"
+          aria-live="polite"
+          className="sr-only"
+        >
+          {active === null
+            ? ''
+            : `${formatAxis(active.ts, locale)} · ${formatTick(active.value, locale)} ${config.unit}`}
+        </p>
+      ) : null}
+
+      {/* 数值标签贴近选中点；靠近绘图区右/上边缘时翻到另一侧，避免溢出。 */}
+      {active !== null ? (
+        <div
+          data-testid="analytics-chart-tooltip"
+          className={[
+            'pointer-events-none absolute z-10 rounded-md border border-border-hairline bg-surface-card px-2 py-1 text-badge shadow-sm',
+            active.x > PLOT_LEFT + PLOT_WIDTH * 0.65
+              ? '-translate-x-full -ml-1'
+              : 'ml-1',
+            active.y < PLOT_TOP + 24 ? 'mt-1' : '-translate-y-full -mt-1',
+          ].join(' ')}
+          style={{
+            left: `${(active.x / VIEW_WIDTH) * 100}%`,
+            top: `${(active.y / VIEW_HEIGHT) * 100}%`,
+          }}
+        >
+          <span className="font-mono tabular-nums text-ink-1">
+            {formatTick(active.value, locale)} {config.unit}
+          </span>
+        </div>
+      ) : null}
 
       {/* Relief rule / GC-4: the table is the equivalent text alternative for
           every rendered series, including buckets the axes label sparsely. */}

@@ -217,7 +217,16 @@ export function OverviewTab({ runId }: OverviewTabProps) {
   const retry = (): void => {
     void summaryQuery.refetch()
   }
-  const retryLabel = t('admin.upstream_reconciliation.overview.retry')
+  // 每个卡片的错误重试按钮必须可区分：读屏/键盘用户听到的是「Retry 收入」，
+  // 而不是四个一模一样的「Retry」。
+  const retryLabelFor = (metric: string): string =>
+    t('admin.upstream_reconciliation.overview.retry_for', { metric })
+  const revenueLabel = t('admin.upstream_reconciliation.overview.revenue')
+  const upstreamCostLabel = t(
+    'admin.upstream_reconciliation.overview.upstream_cost',
+  )
+  const marginLabel = t('admin.upstream_reconciliation.overview.margin')
+  const deltaLabel = t('admin.upstream_reconciliation.overview.delta_bp')
   const loading = summaryQuery.isPending
   const failed = summaryQuery.isError
   const hasDays = days !== undefined && days.length > 0
@@ -239,34 +248,34 @@ export function OverviewTab({ runId }: OverviewTabProps) {
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
             <StatCard
               testId="overview-revenue"
-              label={t('admin.upstream_reconciliation.overview.revenue')}
+              label={revenueLabel}
               value={formatMinor(kpis.revenue)}
               loading={loading}
               error={failed}
               onRetry={retry}
-              retryLabel={retryLabel}
+              retryLabel={retryLabelFor(revenueLabel)}
             />
             <StatCard
               testId="overview-upstream-cost"
-              label={t('admin.upstream_reconciliation.overview.upstream_cost')}
+              label={upstreamCostLabel}
               value={formatMinor(kpis.upstreamCost)}
               loading={loading}
               error={failed}
               onRetry={retry}
-              retryLabel={retryLabel}
+              retryLabel={retryLabelFor(upstreamCostLabel)}
             />
             <StatCard
               testId="overview-margin"
-              label={t('admin.upstream_reconciliation.overview.margin')}
+              label={marginLabel}
               value={formatMinor(kpis.margin)}
               loading={loading}
               error={failed}
               onRetry={retry}
-              retryLabel={retryLabel}
+              retryLabel={retryLabelFor(marginLabel)}
             />
             <StatCard
               testId="overview-delta-bp"
-              label={t('admin.upstream_reconciliation.overview.delta_bp')}
+              label={deltaLabel}
               value={formatBp(kpis.delta?.value ?? null)}
               unit="bp"
               subline={
@@ -279,7 +288,7 @@ export function OverviewTab({ runId }: OverviewTabProps) {
               loading={loading}
               error={failed}
               onRetry={retry}
-              retryLabel={retryLabel}
+              retryLabel={retryLabelFor(deltaLabel)}
             />
           </div>
 
@@ -292,6 +301,7 @@ export function OverviewTab({ runId }: OverviewTabProps) {
                 series={chart.series}
                 config={chart.config}
                 referenceLines={chart.referenceLines}
+                tooltip
               />
             </section>
           ) : null}

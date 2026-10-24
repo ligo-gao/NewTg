@@ -1579,7 +1579,7 @@
       "trend_title": "Динамика расхождения токенов",
       "trend_series": "Расхождение токенов (bp)",
       "tolerance": "Допуск ±{bp} bp",
-      "retry": "Повторить"
+      "retry_for": "Повторить {metric}"
     },
     "entry": {
       "account": "Аккаунт провайдера",
