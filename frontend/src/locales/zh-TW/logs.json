@@ -182,10 +182,63 @@
       "spend_tooltip": "預扣 {pre} / 退回 {refunded}",
       "by_model": "模型分布",
       "other": "其他",
-      "trend": "消費趨勢",
-      "trend_series": "消費",
+      "trend": "消費與請求",
       "view_table": "檢視資料表",
-      "trend_table_caption": "消費趨勢資料表",
+      "trend_table_caption": "消費與請求資料表",
+      "chart": {
+        "average": "均值 {value}",
+        "sub": "同一時間軸，兩條獨立量綱；懸停任一時段檢視數值",
+        "cost_series": "消費 · 積分",
+        "request_series": "請求 · 次",
+        "peak": "峰值 {time} · {cost} 積分（{percent}%）",
+        "active": "有流量 {active} / {total} {unit}",
+        "average_hour": "平均 {value} 積分 / 小時",
+        "average_day": "平均 {value} 積分 / 天",
+        "zero_note": "{count} 個時段為 0，位置保留",
+        "unit_hour": "小時",
+        "unit_day": "天"
+      },
+      "kpi": {
+        "success": "成功率",
+        "tokens": "Tokens",
+        "latency": "延遲 P50",
+        "active": "活躍使用者",
+        "foot": {
+          "pre_refund": "預扣 {pre} · 退款 {refunded}",
+          "avg_request": "平均每請求 {value} 積分 · 退款 {refunded}",
+          "status_counts": "成功 {success} · 失敗 {error} · 退款 {refunded} · 拒絕 {refused}",
+          "failures_admin": "{count} 筆失敗記錄 → 失敗排障",
+          "failures_user": "{count} 筆失敗記錄 → 檢視明細",
+          "token_split": "輸入 {input} · 輸出 {output}",
+          "p95": "P95 {p95} · 樣本 {samples}",
+          "active_note": "視窗內去重"
+        }
+      },
+      "rail": {
+        "title": "視窗摘要",
+        "sub": "同一篩選條件下的聚合口徑",
+        "peak": "峰值時段",
+        "peak_share": "佔視窗消費",
+        "active": "有流量時段",
+        "avg_hour": "平均每小時",
+        "avg_day": "平均每天",
+        "avg_request": "平均每請求",
+        "rpm": "RPM",
+        "tpm": "TPM",
+        "rpm_value": "{avg} 平均 · {peak} 峰值",
+        "tpm_value": "{avg} 平均",
+        "active_list": "活躍時段",
+        "active_columns": "消費 / 請求",
+        "hours_value": "{active} / {total} {unit}"
+      },
+      "token": {
+        "title": "Token 結構",
+        "sub": "輸入與輸出合計 {total}",
+        "cache": "快取讀取",
+        "note": "平均每次請求 {avg} tokens；輸入是輸出的 {ratio} 倍",
+        "note_no_ratio": "平均每次請求 {avg} tokens"
+      },
+      "source_note": "資料口徑：積分 = 預扣 − 退款；成功率 = 成功請求 / 總請求；延遲分位僅統計成功且耗時大於 0 的請求。聚合視窗與上方篩選一致。",
       "granularity_hour": "按小時彙總",
       "granularity_day": "按天彙總",
       "empty": "暫無統計資料",
@@ -204,6 +257,32 @@
         "rpm_avg": "平均 RPM",
         "rpm_peak": "峰值 RPM",
         "tpm_avg": "平均 TPM"
+      },
+      "model": {
+        "sub": "按消費排序 · 第 {n} 名之後歸入其他",
+        "tag": "{count} 個模型"
+      },
+      "group": {
+        "title": "分組用量",
+        "sub": "{count} 個分組 · 按消費"
+      },
+      "user": {
+        "title": "使用者排行",
+        "sub": "{count} 位活躍使用者 · 按消費"
+      },
+      "token_key": {
+        "title": "權杖用量",
+        "sub": "按您的 API 權杖拆分",
+        "tag": "{count} 個權杖",
+        "note": "權杖額度用盡時，請求會在入口被拒絕並記為「已拒絕」。",
+        "unassigned": "未指明權杖"
+      },
+      "fail": {
+        "title": "最近失敗",
+        "sub": "按時間倒序",
+        "tag": "{shown} / {total}",
+        "view_all": "檢視全部 {total} 筆失敗明細",
+        "empty": "視窗內沒有失敗請求"
       }
     }
   },

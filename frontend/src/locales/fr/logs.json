@@ -182,10 +182,63 @@
       "spend_tooltip": "Pré-débité {pre} / remboursé {refunded}",
       "by_model": "Répartition par modèle",
       "other": "Autre",
-      "trend": "Évolution de la consommation",
-      "trend_series": "Coût",
+      "trend": "Dépenses et requêtes",
       "view_table": "Voir le tableau de données",
-      "trend_table_caption": "Tableau de données de l’évolution de la consommation",
+      "trend_table_caption": "Tableau de données des dépenses et des requêtes",
+      "chart": {
+        "average": "Moy. {value}",
+        "sub": "Un seul axe temporel, deux échelles indépendantes ; survolez un intervalle pour voir ses valeurs",
+        "cost_series": "Dépenses · crédits",
+        "request_series": "Requêtes · nombre",
+        "peak": "Pic {time} · {cost} crédits ({percent} %)",
+        "active": "Actif {active} / {total} {unit}",
+        "average_hour": "Moy. {value} crédits / heure",
+        "average_day": "Moy. {value} crédits / jour",
+        "zero_note": "{count} intervalles à zéro ; positions conservées",
+        "unit_hour": "heures",
+        "unit_day": "jours"
+      },
+      "kpi": {
+        "success": "Taux de réussite",
+        "tokens": "Tokens",
+        "latency": "Latence P50",
+        "active": "Utilisateurs actifs",
+        "foot": {
+          "pre_refund": "Pré-débité {pre} · Remboursé {refunded}",
+          "avg_request": "{value} crédits par requête · Remboursé {refunded}",
+          "status_counts": "Succès {success} · Échec {error} · Remboursé {refunded} · Refusé {refused}",
+          "failures_admin": "{count} échecs → Diagnostic des échecs",
+          "failures_user": "{count} échecs → Voir le détail",
+          "token_split": "Entrée {input} · Sortie {output}",
+          "p95": "P95 {p95} · {samples} échantillons",
+          "active_note": "Distincts sur la fenêtre"
+        }
+      },
+      "rail": {
+        "title": "Résumé de la fenêtre",
+        "sub": "Agrégats selon les filtres actuels",
+        "peak": "Intervalle de pointe",
+        "peak_share": "Part des dépenses",
+        "active": "Intervalles actifs",
+        "avg_hour": "Moyenne par heure",
+        "avg_day": "Moyenne par jour",
+        "avg_request": "Moyenne par requête",
+        "rpm": "RPM",
+        "tpm": "TPM",
+        "rpm_value": "{avg} moy. · {peak} pic",
+        "tpm_value": "{avg} moy.",
+        "active_list": "Intervalles actifs",
+        "active_columns": "Dépenses / requêtes",
+        "hours_value": "{active} / {total} {unit}"
+      },
+      "token": {
+        "title": "Répartition des tokens",
+        "sub": "Entrée et sortie, total {total}",
+        "cache": "Lecture du cache",
+        "note": "{avg} tokens par requête ; l'entrée est {ratio}× la sortie",
+        "note_no_ratio": "{avg} tokens par requête"
+      },
+      "source_note": "Crédits = pré-débité − remboursé ; taux de réussite = requêtes réussies / requêtes totales ; les percentiles de latence ne comptent que les requêtes réussies dont la latence > 0. La fenêtre correspond aux filtres ci-dessus.",
       "granularity_hour": "Par heure",
       "granularity_day": "Par jour",
       "empty": "Aucune statistique",
@@ -204,6 +257,32 @@
         "rpm_avg": "RPM moyen",
         "rpm_peak": "RPM max",
         "tpm_avg": "TPM moyen"
+      },
+      "model": {
+        "sub": "Trié par dépenses · rangs 1–{n}, le reste regroupé dans « Autre »",
+        "tag": "{count} modèles"
+      },
+      "group": {
+        "title": "Utilisation par groupe",
+        "sub": "{count} groupes · par dépenses"
+      },
+      "user": {
+        "title": "Classement des utilisateurs",
+        "sub": "{count} utilisateurs actifs · par dépenses"
+      },
+      "token_key": {
+        "title": "Utilisation des jetons",
+        "sub": "Réparti par vos jetons API",
+        "tag": "{count} jetons",
+        "note": "Lorsque le quota d'un jeton est épuisé, les requêtes sont refusées à l'entrée et enregistrées comme « refusé ».",
+        "unassigned": "Sans jeton"
+      },
+      "fail": {
+        "title": "Échecs récents",
+        "sub": "Plus récents d'abord",
+        "tag": "{shown} / {total}",
+        "view_all": "Voir les {total} échecs",
+        "empty": "Aucune requête en échec sur cette fenêtre"
       }
     }
   },
