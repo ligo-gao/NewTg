@@ -273,6 +273,32 @@ describe('usage logs list', () => {
     expect(screen.queryByRole('columnheader', { name: 'User' })).toBeNull()
   })
 
+  it('shows the request id column to every role and hides the group filter from users', async () => {
+    installScenario({ list: () => jsonResponse(page([USER_ROW])) })
+    renderWithProviders(<PageHarness />)
+
+    await screen.findByText('gpt-4o')
+    expect(screen.getByRole('columnheader', { name: 'Request ID' })).toBeTruthy()
+    expect(screen.getByText('9f3a8d2e…')).toBeTruthy()
+    expect(screen.queryByLabelText('Group')).toBeNull()
+  })
+
+  it('keeps a user-supplied group filter visible as a removable chip', async () => {
+    const user = userEvent.setup()
+    const requests = installScenario({
+      list: () => jsonResponse(page([USER_ROW])),
+    })
+    renderWithProviders(<PageHarness initial={{ group: 'vip' }} />)
+
+    await screen.findByText('gpt-4o')
+    await user.click(screen.getByRole('button', { name: 'Group: vip ×' }))
+    await waitFor(() => {
+      expect(
+        latestRequest(requests, '/api/usage-logs')?.url.searchParams.get('group'),
+      ).toBeNull()
+    })
+  })
+
   it('syncs the status filter to the URL and resets to page 1', async () => {
     const user = userEvent.setup()
     const changes: UsageLogSearch[] = []
@@ -327,9 +353,10 @@ describe('usage logs list', () => {
     )
   })
 
-  it('debounces the group and token filters by 300ms', async () => {
+  it('debounces the group and token filters by 300ms (admin)', async () => {
     const user = userEvent.setup()
     const requests = installScenario({
+      me: ME_ADMIN,
       list: () => jsonResponse(page([USER_ROW])),
     })
     renderWithProviders(<PageHarness />)

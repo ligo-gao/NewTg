@@ -519,7 +519,10 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
   }
 
   const columnCount =
-    7 + (capabilities.isAdmin ? 1 : 0) + (capabilities.canFilterByUsername ? 1 : 0)
+    7 +
+    (capabilities.isAdmin ? 1 : 0) +
+    (capabilities.canFilterByUsername ? 1 : 0) +
+    1
 
   return (
     <section className="mx-auto flex max-w-[1520px] flex-col gap-4">
@@ -611,16 +614,18 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
             className="h-9 w-44"
           />
 
-          <TextField
-            id="logs-group"
-            label={t('logs.usage.filters.group')}
-            placeholder={t('logs.usage.filters.group_placeholder')}
-            value={groupDraft}
-            onChange={(event) => {
-              setGroupDraft(event.target.value)
-            }}
-            className="h-9 w-36"
-          />
+          {capabilities.isAdmin ? (
+            <TextField
+              id="logs-group"
+              label={t('logs.usage.filters.group')}
+              placeholder={t('logs.usage.filters.group_placeholder')}
+              value={groupDraft}
+              onChange={(event) => {
+                setGroupDraft(event.target.value)
+              }}
+              className="h-9 w-36"
+            />
+          ) : null}
 
           <TextField
             id="logs-token"
@@ -894,6 +899,9 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
                     {t('logs.usage.columns.user')}
                   </th>
                 ) : null}
+                <th scope="col" className="px-4 py-2">
+                  {t('logs.usage.columns.request_id')}
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -1011,6 +1019,25 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
                         {row.username ?? '—'}
                       </td>
                     ) : null}
+                    <td className="px-4 py-2">
+                      <span
+                        className="font-mono text-badge text-ink-2"
+                        title={row.request_id}
+                      >
+                        {row.request_id.slice(0, 8)}…
+                      </span>
+                      <button
+                        type="button"
+                        aria-label={t('logs.usage.copy.request_id')}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          copy(row.request_id)
+                        }}
+                        className="ml-2 rounded px-1 text-ink-3 hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                      >
+                        ⧉
+                      </button>
+                    </td>
                   </tr>
                 )
               })}
