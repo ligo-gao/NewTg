@@ -6300,7 +6300,7 @@ export interface components {
             window_start: string;
             /**
              * Format: date
-             * @description 开区间右端（window_end > window_start，迁移 CHECK）。
+             * @description 闭区间右端（含当日，即本次对账覆盖的最后一天）；迁移 CHECK 要求 window_end > window_start。
              */
             window_end: string;
             /** @enum {string} */
