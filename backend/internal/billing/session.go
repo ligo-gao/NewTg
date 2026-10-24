@@ -374,6 +374,19 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) (err error) {
 		}
 	}
 
+	// 付费模型不得零预扣：估算为 0（无本地估算器/零价维度/空请求）不是
+	// 免费事实，staticallyZeroPriced 已在上面用定价数据判定过免费。
+	// 下限把「估算不可靠」变成「至少冻结可验证的一笔」，让零余额用户在
+	// 触达上游之前被账本的 balance >= n 条件拒绝。
+	minHold, err := s.engine.minPreConsumeQuota()
+	if err != nil {
+		return err
+	}
+	budget, err = applyPreConsumeFloor(budget, minHold)
+	if err != nil {
+		return err
+	}
+
 	// S4a：每请求解析并冻结资金来源（billing-04 §3.3）。信任旁路与来源
 	// 选择正交——旁路只影响「扣多少」，不影响「从哪扣」；但订阅侧永不
 	// 旁路（订阅是有限额账户，必须真实扣，billing-00 §6.4）。因此先选源：
@@ -390,13 +403,6 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) (err error) {
 		}
 		if trusted {
 			s.trusted = true
-			s.fundingSource = contract.FundingWallet
-			succeeded = true
-			return nil
-		}
-		if budget == 0 {
-			// 估算为 0（无计费用量/零价）：不产生 hold。结算时若真实用量
-			// 为正，走「少补」直接扣减（billing-00 §6.5：少补存在）。
 			s.fundingSource = contract.FundingWallet
 			succeeded = true
 			return nil
@@ -2079,6 +2085,25 @@ func estimateImageCount(est contract.QuotaEstimate) int {
 		return imageCountUnset
 	}
 	return min(n, maxImageN)
+}
+
+// applyPreConsumeFloor 对付费模型的预扣预算施加下限。
+// 下限为 0 时零预算 fail-closed：不允许回到「无 hold 出站」的旧行为。
+func applyPreConsumeFloor(budget, floor int64) (int64, error) {
+	if budget < 0 {
+		return 0, fmt.Errorf("%w: negative pre-consume budget %d", ErrInvalidConfig, budget)
+	}
+	if floor < 0 {
+		return 0, fmt.Errorf("%w: negative pre-consume floor %d", ErrInvalidConfig, floor)
+	}
+	if budget >= floor && budget > 0 {
+		return budget, nil
+	}
+	budget = floor
+	if budget == 0 {
+		return 0, fmt.Errorf("%w: paid model produced zero pre-consume budget", ErrInvalidConfig)
+	}
+	return budget, nil
 }
 
 // tokenExprVars 是表达式中的 token 计价变量（契约 §4.1 冻结集合）。

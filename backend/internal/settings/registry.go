@@ -423,6 +423,8 @@ func buildRegistry() []Setting {
 			validate(positiveFiniteNumber)),
 		def("billing.free_model_preconsume_trust_credits", "billing", TypeInt, int64(0),
 			minInt(0), maxInt(1000000000000)),
+		def("billing.min_pre_consume_quota", "billing", TypeInt, int64(1),
+			minInt(0), maxInt(1000000000)),
 		def("billing.display_token_stat_enabled", "billing", TypeBool, true, public()),
 		def("billing.expose_group_ratios", "billing", TypeBool, false),
 		def("billing.group_group_ratio", "billing", TypeObject, map[string]any{}, validate(validateNestedRatioMap)),

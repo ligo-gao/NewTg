@@ -1061,12 +1061,12 @@ func TestSessionTieredZeroEstimateIsNotFree(t *testing.T) {
 	}
 	s := newBillingTestSession(e, userID, req, snap)
 
-	// 估算 P=0 → 预算 0，不写 hold；但请求不是免费模型。
+	// 估算 P=0 → 预算被预扣下限抬到 1 积分（不是免费模型，也不是零 hold）。
 	if err := s.PreConsume(contract.QuotaEstimate{Model: "tiered", MaxTokens: intPtr(100)}); err != nil {
 		t.Fatalf("PreConsume: %v", err)
 	}
-	if s.Reserved() != 0 {
-		t.Fatalf("Reserved = %d, want 0", s.Reserved())
+	if s.Reserved() != 1 {
+		t.Fatalf("Reserved = %d, want 1（付费模型预扣下限）", s.Reserved())
 	}
 	// 真实用量 1M tokens：表达式 p*1 → 1M/1e6 × QPU(100) = 100 积分。
 	fact := contract.UsageFact{Usage: contract.Usage{
@@ -1552,12 +1552,12 @@ func TestSessionPaidRatioZeroEstimateNotFree(t *testing.T) {
 		e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, sat)
 		s := newBillingTestSession(e, userID, req, ratioSnapshot(100, 100))
 
-		// 估算 P=0：预算 0、不写 hold，但模型仍是付费模型。
+		// 估算 P=0：预算被预扣下限抬到 1 积分，但模型仍是付费模型。
 		if err := s.PreConsume(contract.QuotaEstimate{Model: "paid"}); err != nil {
 			t.Fatalf("PreConsume: %v", err)
 		}
-		if s.Reserved() != 0 {
-			t.Fatalf("Reserved = %d, want 0", s.Reserved())
+		if s.Reserved() != 1 {
+			t.Fatalf("Reserved = %d, want 1（付费模型预扣下限）", s.Reserved())
 		}
 		if s.freeModel {
 			t.Fatal("session classified as free, want paid")
@@ -1599,7 +1599,8 @@ func TestSessionPaidRatioZeroEstimateNotFree(t *testing.T) {
 			t.Fatalf("balance = %d, want 400（总扣 100）", got)
 		}
 		notes := walletNotes(t, db, req)
-		want := []string{"", "billing:settle"} // 增量行无标记；结算行带结案标记
+		// 预扣下限行（无标记）→ 增量行（无标记）→ 结算行（带结案标记）。
+		want := []string{"", "", "billing:settle"}
 		if len(notes) != len(want) {
 			t.Fatalf("notes = %v, want %v", notes, want)
 		}
@@ -2479,5 +2480,97 @@ func TestFailureAuditFields(t *testing.T) {
 		if class, message := failureAuditFields(tc.rc); class != "" || message != "" {
 			t.Fatalf("%s: = (%q, %q), want empty", tc.name, class, message)
 		}
+	}
+}
+
+// TestSessionPreConsumeZeroEstimatePaidModelRejectsEmptyWallet 是零预扣漏洞的
+// 回归护栏：付费模型即使估算为 0，也必须产生至少 1 积分预算，让零余额用户
+// 在触达上游之前被 402 拒绝。
+func TestSessionPreConsumeZeroEstimatePaidModelRejectsEmptyWallet(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 0)
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	req := testRequestID("pre-zero-paid")
+	// completion 价为 0：本用例只考察「估算为 0 的付费模型」，不随 Task 3
+	// 的输出预留默认值变化。
+	s := newBillingTestSession(e, userID, req, ratioSnapshot(100, 0))
+
+	err := s.PreConsume(contract.QuotaEstimate{Model: "m"})
+	if !errors.Is(err, ErrInsufficientQuota) {
+		t.Fatalf("err = %v, want ErrInsufficientQuota", err)
+	}
+	var qe *QuotaError
+	if !errors.As(err, &qe) {
+		t.Fatalf("err type = %T, want *QuotaError", err)
+	}
+	if qe.Required < 1 {
+		t.Fatalf("Required = %d, want >= 1（付费模型不得零预扣）", qe.Required)
+	}
+	if qe.Available != 0 {
+		t.Fatalf("Available = %d, want 0", qe.Available)
+	}
+	if got := userBalance(t, db, userID); got != 0 {
+		t.Fatalf("balance = %d, want 0", got)
+	}
+	if rows := readWalletRows(t, db, req); len(rows) != 0 {
+		t.Fatalf("rows = %d, want 0（预扣失败不得写流水）", len(rows))
+	}
+}
+
+// TestSessionPreConsumeZeroBudgetFailsClosedWhenFloorDisabled 固定配置语义：
+// 管理员把下限关到 0 时，付费模型的零预算必须失败关闭，而不是回到漏洞。
+func TestSessionPreConsumeZeroBudgetFailsClosedWhenFloorDisabled(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 100)
+	cfg := mapConfig{
+		ConfigPreConsumeRatio:    json.RawMessage("1.0"),
+		ConfigTrustQuotaUSD:      json.RawMessage("0"),
+		ConfigMinPreConsumeQuota: json.RawMessage("0"),
+	}
+	e := NewEngine(gormDB, nil, nil, cfg, nil, nil, nil)
+	s := newBillingTestSession(e, userID, testRequestID("pre-zero-floor-off"), ratioSnapshot(100, 0))
+
+	err := s.PreConsume(contract.QuotaEstimate{Model: "m"})
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("err = %v, want ErrInvalidConfig", err)
+	}
+}
+
+// TestApplyPreConsumeFloor 固定下限的纯函数语义。
+func TestApplyPreConsumeFloor(t *testing.T) {
+	tests := []struct {
+		name    string
+		budget  int64
+		floor   int64
+		want    int64
+		wantErr bool
+	}{
+		{"zero lifted to floor", 0, 1, 1, false},
+		{"positive kept", 5, 1, 5, false},
+		{"zero with floor disabled fails closed", 0, 0, 0, true},
+		{"negative rejected", -1, 1, 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := applyPreConsumeFloor(tt.budget, tt.floor)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Fatalf("budget = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSessionFreeModelZeroBalanceStillAllowed 保证下限不误伤免费模型。
+func TestSessionFreeModelZeroBalanceStillAllowed(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 0)
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, nil)
+	s := newBillingTestSession(e, userID, testRequestID("pre-free-zero"), ratioSnapshot(0, 0))
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume(free) = %v, want nil（免费模型不受付费下限约束）", err)
 	}
 }

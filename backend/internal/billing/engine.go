@@ -205,6 +205,11 @@ const (
 	// ConfigFreeModelPreconsumeTrustCredits 是免费模型的可信用户阈值（历史累计
 	// 消费积分，默认 0 = 一律预扣）。
 	ConfigFreeModelPreconsumeTrustCredits = "billing.free_model_preconsume_trust_credits"
+
+	// ConfigMinPreConsumeQuota 是付费模型预扣预算的下限（积分）。估算为 0 的
+	// 付费模型必须至少冻结这么多，否则零余额用户可以零预扣出站。
+	// 0 = 关闭下限；此时零预算按 fail-closed 处理（见 applyPreConsumeFloor）。
+	ConfigMinPreConsumeQuota = "billing.min_pre_consume_quota"
 )
 
 const (
@@ -215,6 +220,11 @@ const (
 	defaultFreeModelPreconsumeEnabled    = true
 	defaultFreeModelPreconsumeMultiplier = "1.00"
 	defaultFreeModelPreconsumeTrust      = int64(0)
+
+	// defaultMinPreConsumeQuota 是付费模型预扣下限的默认值。1 积分足以让
+	// 零余额用户在账本的 balance >= n 条件上被拒绝，又不改变有余额用户的
+	// 结算结果（hold 在 Terminate 时全额退回或抵扣）。
+	defaultMinPreConsumeQuota = int64(1)
 
 	// historyConsumptionTTL 是「历史累计消费」的缓存时长。
 	//
@@ -552,6 +562,18 @@ func (e *Engine) freeModelPreconsumeTrustCredits() (int64, error) {
 	}
 	if n < 0 {
 		return 0, fmt.Errorf("%w: %s must be >= 0", ErrInvalidConfig, ConfigFreeModelPreconsumeTrustCredits)
+	}
+	return n, nil
+}
+
+// minPreConsumeQuota 返回付费模型预扣下限（默认 1 积分，0 = 关闭）。
+func (e *Engine) minPreConsumeQuota() (int64, error) {
+	n, err := e.configInt64(ConfigMinPreConsumeQuota, defaultMinPreConsumeQuota)
+	if err != nil {
+		return 0, err
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("%w: %s must be >= 0", ErrInvalidConfig, ConfigMinPreConsumeQuota)
 	}
 	return n, nil
 }
