@@ -26,7 +26,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
@@ -481,6 +480,3 @@ func parseUpstreamDate(raw string) (time.Time, bool) {
 func upstreamNegative(value *int64) bool {
 	return value != nil && *value < 0
 }
-
-// 确保 utf8 被使用（upstream_model 的长度按 rune 计）。
-var _ = utf8.RuneCountInString

@@ -237,9 +237,10 @@ const (
 
 	// 上游用量对账（上游用量对账设计 §4.4；Task 8/9）。账号增删改与快照批量
 	// upsert 都是管理配置/台账写入，归 operation。detail 只允许 id/name、
-	// 写入行数与 account_id/usage_date 区间这类非秘密事实；账号 note 与
-	// console_url 的正文、快照逐行内容都不进入审计（审计保留 12 个月，
-	// 不应成为台账数据的第二副本）。一次批量 upsert 只写一条事件。
+	// 写入行数与 account_id/usage_date 区间这类非秘密事实。账号 before/after
+	// 快照会记录自由文本 note（与用户审计记录 email/remark 的既有先例一致，
+	// 审计保留 12 个月）；console_url 正文只投影为「是否填写」布尔，快照
+	// 逐行内容不进入审计。一次批量 upsert 只写一条事件。
 	ActionUpstreamAccountCreate  = "upstream_account.create"
 	ActionUpstreamAccountUpdate  = "upstream_account.update"
 	ActionUpstreamAccountDelete  = "upstream_account.delete"
