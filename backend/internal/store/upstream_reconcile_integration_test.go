@@ -369,6 +369,16 @@ func TestInsertItemsRejectsDuplicateModelDay(t *testing.T) {
 	if items[0].RevenueMinor == nil || *items[0].RevenueMinor != revenue || items[0].Status != "open" {
 		t.Fatalf("item = %+v, want open with revenue 500", items[0])
 	}
+	// 只查 count 会漏掉「::date 加错参数」这类串列错误：模型名被当成日期时，
+	// Postgres 要么直接报错，要么把可解析的模型名写进 usage_date。两个键值
+	// 都必须原样往返。
+	if items[0].UpstreamModel != item.UpstreamModel {
+		t.Fatalf("upstream_model = %q, want %q", items[0].UpstreamModel, item.UpstreamModel)
+	}
+	if !items[0].UsageDate.Equal(item.UsageDate) {
+		t.Fatalf("usage_date = %s, want %s", items[0].UsageDate.Format("2006-01-02"),
+			item.UsageDate.Format("2006-01-02"))
+	}
 	if warnItems, _, err := repo.ListItems(ctx, runID, "warn", "", 1, 20); err != nil || len(warnItems) != 1 {
 		t.Fatalf("severity filter = %d rows, %v; want 1", len(warnItems), err)
 	}
