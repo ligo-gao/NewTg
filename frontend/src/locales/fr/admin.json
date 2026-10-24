@@ -1566,8 +1566,20 @@
       "tab_accounts": "Comptes fournisseurs",
       "placeholder_entry": "La saisie des instantanés n’est pas encore disponible.",
       "placeholder_results": "Les résultats du rapprochement ne sont pas encore disponibles.",
-      "placeholder_overview": "La vue d’ensemble n’est pas encore disponible.",
       "placeholder_accounts": "Les comptes fournisseurs ne sont pas encore disponibles."
+    },
+    "overview": {
+      "no_run": "Choisissez une exécution dans l’onglet Résultats pour voir son aperçu.",
+      "empty": "Cette exécution n’a aucun jour de rapprochement à afficher.",
+      "revenue": "Revenus",
+      "upstream_cost": "Coût amont",
+      "margin": "Marge",
+      "delta_bp": "Écart de tokens",
+      "delta_worst_day": "Pire jour : {date}",
+      "trend_title": "Tendance de l’écart de tokens",
+      "trend_series": "Écart de tokens (bp)",
+      "tolerance": "Tolérance ±{bp} bp",
+      "retry": "Réessayer"
     },
     "entry": {
       "account": "Compte fournisseur",

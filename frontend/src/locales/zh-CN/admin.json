@@ -1566,8 +1566,20 @@
       "tab_accounts": "上游账号",
       "placeholder_entry": "快照录入分区尚未开放。",
       "placeholder_results": "对账结果分区尚未开放。",
-      "placeholder_overview": "总览分区尚未开放。",
       "placeholder_accounts": "上游账号分区尚未开放。"
+    },
+    "overview": {
+      "no_run": "请在“对账结果”中选择一次运行，以查看其概览。",
+      "empty": "本次运行没有可绘制的对账日期。",
+      "revenue": "收入",
+      "upstream_cost": "上游成本",
+      "margin": "毛利",
+      "delta_bp": "Token 差异",
+      "delta_worst_day": "最差日期：{date}",
+      "trend_title": "Token 差异趋势",
+      "trend_series": "Token 差异（bp）",
+      "tolerance": "容差 ±{bp} bp",
+      "retry": "重试"
     },
     "entry": {
       "account": "上游账号",

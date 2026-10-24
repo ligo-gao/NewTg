@@ -1566,8 +1566,20 @@
       "tab_accounts": "上游帳號",
       "placeholder_entry": "快照輸入分區尚未開放。",
       "placeholder_results": "對帳結果分區尚未開放。",
-      "placeholder_overview": "總覽分區尚未開放。",
       "placeholder_accounts": "上游帳號分區尚未開放。"
+    },
+    "overview": {
+      "no_run": "請在「對帳結果」中選擇一次執行，以查看其概覽。",
+      "empty": "本次執行沒有可繪製的對帳日期。",
+      "revenue": "收入",
+      "upstream_cost": "上游成本",
+      "margin": "毛利",
+      "delta_bp": "Token 差異",
+      "delta_worst_day": "最差日期：{date}",
+      "trend_title": "Token 差異趨勢",
+      "trend_series": "Token 差異（bp）",
+      "tolerance": "容差 ±{bp} bp",
+      "retry": "重試"
     },
     "entry": {
       "account": "上游帳號",

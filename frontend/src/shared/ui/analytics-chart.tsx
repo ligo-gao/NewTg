@@ -23,6 +23,12 @@ import { useI18n } from '@/shared/lib/i18n-context'
 export interface AnalyticsChartProps {
   series: ChartSeries[]
   config: ChartConfig
+  /**
+   * 水平参考线（例如对账容差带）。它们画在绘图区内、共用同一根 Y 轴，
+   * 只是视觉参考而不是第二个数据序列，因此不进入 `series`。标签会追加到
+   * `aria-label` 摘要里，保证信息不只靠颜色/虚线传达。
+   */
+  referenceLines?: { value: number; label: string }[]
 }
 
 const VIEW_WIDTH = 320
@@ -131,19 +137,33 @@ function formatTick(value: number, locale: string): string {
   }).format(value)
 }
 
-export function AnalyticsChart({ series, config }: AnalyticsChartProps) {
+export function AnalyticsChart({
+  series,
+  config,
+  referenceLines,
+}: AnalyticsChartProps) {
   const { t, locale } = useI18n()
   const model = useMemo(
     () => buildModel(series, config.kind, config.domain),
     [series, config.kind, config.domain],
   )
 
-  const ariaLabel = t('common.chart.aria', {
+  // 参考线标签是纯文本替代的一部分：读屏用户听得到「容差 ±50 bp」，
+  // 不必依赖视觉上的虚线位置。
+  const referenceSummary =
+    referenceLines === undefined
+      ? ''
+      : referenceLines.map((line) => line.label).join(', ')
+  const baseAriaLabel = t('common.chart.aria', {
     kind: config.kind,
     count: series.length,
     series: series.map((item) => item.label).join(', '),
     unit: config.unit,
   })
+  const ariaLabel =
+    referenceSummary === ''
+      ? baseAriaLabel
+      : `${baseAriaLabel} ${referenceSummary}`
 
   if (!model.hasData) {
     return (
@@ -243,6 +263,26 @@ export function AnalyticsChart({ series, config }: AnalyticsChartProps) {
             >
               {formatAxis(new Date(bucket).toISOString(), locale)}
             </text>
+          )
+        })}
+        {/* 参考线共用现有 Y 轴：clamp 到绘图区，绝不另起一根轴。虚线色
+            使用非文本专用的 --ink-4，避免与分类色混淆。 */}
+        {(referenceLines ?? []).map((line, index) => {
+          const y = Math.min(
+            Math.max(yFor(line.value, min, max), PLOT_TOP),
+            BASELINE_Y,
+          )
+          return (
+            <line
+              key={`${line.value}-${String(index)}`}
+              data-reference-line="true"
+              x1={PLOT_LEFT}
+              y1={y}
+              x2={PLOT_LEFT + PLOT_WIDTH}
+              y2={y}
+              stroke="var(--ink-4)"
+              strokeDasharray="4 4"
+            />
           )
         })}
         {seriesPoints.map((points, seriesIndex) => {

@@ -9,6 +9,7 @@ import { handleTabListKeyDown } from '@/shared/lib/roving-focus'
 import { FormAlert } from '@/shared/ui/form'
 
 import { EntryTab } from './entry-tab'
+import { OverviewTab } from './overview-tab'
 import { ResultsTab } from './results-tab'
 import {
   hasSettingsManage,
@@ -108,11 +109,7 @@ export function UpstreamReconciliationPage() {
             canManage={canManage}
           />
         ) : null}
-        {tab === 'overview' ? (
-          <TabPlaceholder
-            message={t('admin.upstream_reconciliation.page.placeholder_overview')}
-          />
-        ) : null}
+        {tab === 'overview' ? <OverviewTab runId={runId} /> : null}
         {tab === 'accounts' ? (
           <TabPlaceholder
             message={t('admin.upstream_reconciliation.page.placeholder_accounts')}

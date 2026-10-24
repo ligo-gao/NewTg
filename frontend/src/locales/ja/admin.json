@@ -1566,8 +1566,20 @@
       "tab_accounts": "アップストリームアカウント",
       "placeholder_entry": "スナップショット入力はまだ利用できません。",
       "placeholder_results": "照合結果はまだ利用できません。",
-      "placeholder_overview": "概要はまだ利用できません。",
       "placeholder_accounts": "アップストリームアカウントはまだ利用できません。"
+    },
+    "overview": {
+      "no_run": "概要を表示するには「照合結果」で実行を選択してください。",
+      "empty": "この実行にはグラフ化できる照合日がありません。",
+      "revenue": "売上",
+      "upstream_cost": "上流コスト",
+      "margin": "粗利",
+      "delta_bp": "トークン差分",
+      "delta_worst_day": "最悪日: {date}",
+      "trend_title": "トークン差分の推移",
+      "trend_series": "トークン差分 (bp)",
+      "tolerance": "許容範囲 ±{bp} bp",
+      "retry": "再試行"
     },
     "entry": {
       "account": "アップストリームアカウント",

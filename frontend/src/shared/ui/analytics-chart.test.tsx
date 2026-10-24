@@ -104,6 +104,48 @@ describe('AnalyticsChart', () => {
     expect(table.textContent).toContain('30')
   })
 
+  it('draws dashed reference lines and appends their labels to the summary', async () => {
+    const { container } = await renderWithProviders(
+      <AnalyticsChart
+        series={series}
+        config={config}
+        referenceLines={[
+          { value: 50, label: 'Tolerance +50 bp' },
+          { value: -50, label: 'Tolerance -50 bp' },
+        ]}
+      />,
+    )
+
+    // 参考线是水平虚线，共享同一根 Y 轴：竖向轴线仍然只有一条。
+    const reference = container.querySelectorAll('line[data-reference-line="true"]')
+    expect(reference).toHaveLength(2)
+    reference.forEach((line) => {
+      expect(line.getAttribute('stroke-dasharray')).not.toBeNull()
+    })
+    const verticals = [...container.querySelectorAll('svg line')].filter(
+      (line) => line.getAttribute('x1') === line.getAttribute('x2'),
+    )
+    expect(verticals).toHaveLength(1)
+
+    const label = screen.getByRole('img').getAttribute('aria-label') ?? ''
+    expect(label).toContain('Tolerance +50 bp')
+    expect(label).toContain('Tolerance -50 bp')
+  })
+
+  it('renders no reference lines when the prop is absent', async () => {
+    // 回归护栏：不传 referenceLines 时必须与旧行为完全一致。
+    const { container } = await renderWithProviders(
+      <AnalyticsChart series={series} config={config} />,
+    )
+
+    expect(container.querySelectorAll('line[data-reference-line="true"]')).toHaveLength(
+      0,
+    )
+    expect(screen.getByRole('img').getAttribute('aria-label')).not.toContain(
+      'Tolerance',
+    )
+  })
+
   it('keeps the public props contract independent of the renderer', async () => {
     // A future chart library must slot in behind exactly these two props.
     const props: AnalyticsChartProps = { series, config }

@@ -1566,8 +1566,20 @@
       "tab_accounts": "Upstream accounts",
       "placeholder_entry": "Snapshot entry is not available yet.",
       "placeholder_results": "Reconciliation results are not available yet.",
-      "placeholder_overview": "The overview is not available yet.",
       "placeholder_accounts": "Upstream accounts are not available yet."
+    },
+    "overview": {
+      "no_run": "Choose a run in the Results tab to see its overview.",
+      "empty": "This run has no reconciliation days to chart.",
+      "revenue": "Revenue",
+      "upstream_cost": "Upstream cost",
+      "margin": "Margin",
+      "delta_bp": "Token delta",
+      "delta_worst_day": "Worst day: {date}",
+      "trend_title": "Token delta trend",
+      "trend_series": "Token delta (bp)",
+      "tolerance": "Tolerance ±{bp} bp",
+      "retry": "Retry"
     },
     "entry": {
       "account": "Upstream account",

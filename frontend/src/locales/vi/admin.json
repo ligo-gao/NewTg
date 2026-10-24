@@ -1566,8 +1566,20 @@
       "tab_accounts": "Tài khoản nhà cung cấp",
       "placeholder_entry": "Phần nhập ảnh chụp chưa khả dụng.",
       "placeholder_results": "Kết quả đối soát chưa khả dụng.",
-      "placeholder_overview": "Tổng quan chưa khả dụng.",
       "placeholder_accounts": "Tài khoản nhà cung cấp chưa khả dụng."
+    },
+    "overview": {
+      "no_run": "Chọn một lần chạy trong tab Kết quả để xem tổng quan.",
+      "empty": "Lần chạy này không có ngày đối soát nào để vẽ biểu đồ.",
+      "revenue": "Doanh thu",
+      "upstream_cost": "Chi phí thượng nguồn",
+      "margin": "Biên lợi nhuận",
+      "delta_bp": "Chênh lệch token",
+      "delta_worst_day": "Ngày tệ nhất: {date}",
+      "trend_title": "Xu hướng chênh lệch token",
+      "trend_series": "Chênh lệch token (bp)",
+      "tolerance": "Dung sai ±{bp} bp",
+      "retry": "Thử lại"
     },
     "entry": {
       "account": "Tài khoản nhà cung cấp",
