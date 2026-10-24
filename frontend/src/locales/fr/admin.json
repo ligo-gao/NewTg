@@ -1599,7 +1599,9 @@
       "error_model": "Saisissez un nom de modèle pour chaque ligne.",
       "error_negative": "Les jetons et les montants ne peuvent pas être négatifs.",
       "error_integer": "Les jetons et les requêtes doivent être des nombres entiers.",
-      "error_amount": "Saisissez un montant valide."
+      "error_amount": "Saisissez un montant valide.",
+      "confirm_discard": "Abandonner les modifications non enregistrées de l’instantané ?",
+      "error_duplicate_model": "Ce modèle figure déjà dans le tableau"
     }
   },
   "subscriptions": {

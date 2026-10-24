@@ -2,7 +2,15 @@ import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
 
@@ -12,7 +20,10 @@ const ORIGIN = 'http://localhost:3000'
 const server = setupServer()
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
-afterEach(() => server.resetHandlers())
+afterEach(() => {
+  server.resetHandlers()
+  vi.restoreAllMocks()
+})
 afterAll(() => server.close())
 
 const ACCOUNT = {
@@ -64,6 +75,8 @@ const SNAPSHOTS = [
 interface SnapshotApiOptions {
   onSnapshot?: (url: URL) => void
   onPut?: (body: Record<string, unknown>) => void
+  /** 保存请求在此 Promise 完成前不返回，用于断言保存进行中的 UI 状态。 */
+  putGate?: Promise<void>
 }
 
 function installSnapshotApi(options: SnapshotApiOptions = {}) {
@@ -83,9 +96,18 @@ function installSnapshotApi(options: SnapshotApiOptions = {}) {
     http.put(`${ORIGIN}/api/upstream-snapshots`, async ({ request }) => {
       const body = (await request.json()) as Record<string, unknown>
       options.onPut?.(body)
+      await options.putGate
       return HttpResponse.json({ updated: 1 })
     }),
   )
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: () => void = () => undefined
+  const promise = new Promise<void>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
 }
 
 /** 选中账号后填入日期并加载当日快照。 */
@@ -218,5 +240,209 @@ describe('snapshot entry tab', () => {
       (within(first).getByLabelText('Output tokens') as HTMLInputElement)
         .disabled,
     ).toBe(true)
+  })
+
+  it('renders loaded model names as read-only text', async () => {
+    installSnapshotApi()
+    await renderWithProviders(<EntryTab canManage />, ['common', 'admin'])
+    await loadDate('2026-10-23')
+
+    const rows = await screen.findAllByTestId('entry-model-row')
+    const first = rows[0]
+    if (first === undefined) throw new Error('missing first row')
+
+    // 模型名不是输入框：重命名只会 upsert 出一条新行，旧行无法删除。
+    const modelCell = first.querySelector('td')
+    if (modelCell === null) throw new Error('missing model cell')
+    expect(modelCell.querySelector('input')).toBeNull()
+    expect(within(first).queryByRole('textbox', { name: 'Model' })).toBeNull()
+    expect(within(first).getByText('deepseek-chat')).toBeTruthy()
+
+    // 其余单元格仍是可编辑输入框。
+    expect(within(first).getByLabelText('Output tokens').tagName).toBe('INPUT')
+    expect(within(first).getByLabelText('Amount (¥)').tagName).toBe('INPUT')
+  })
+
+  it('keeps the row mounted and focused while typing in a numeric cell', async () => {
+    installSnapshotApi()
+    await renderWithProviders(<EntryTab canManage />, ['common', 'admin'])
+    const user = userEvent.setup()
+    await loadDate('2026-10-23')
+
+    const rows = await screen.findAllByTestId('entry-model-row')
+    const first = rows[0]
+    if (first === undefined) throw new Error('missing first row')
+    const output = within(first).getByLabelText('Output tokens')
+
+    await user.clear(output)
+    await user.type(output, '1200')
+
+    // 每次按键都重渲染，行不能被重新挂载（否则焦点与输入会丢失）。
+    expect(screen.getAllByTestId('entry-model-row')[0]).toBe(first)
+    expect((output as HTMLInputElement).value).toBe('1200')
+    expect(document.activeElement).toBe(output)
+  })
+
+  it('disables the cell inputs while a save is in flight', async () => {
+    const gate = deferred()
+    installSnapshotApi({ putGate: gate.promise })
+    await renderWithProviders(<EntryTab canManage />, ['common', 'admin'])
+    const user = userEvent.setup()
+    await loadDate('2026-10-23')
+
+    const rows = await screen.findAllByTestId('entry-model-row')
+    const first = rows[0]
+    if (first === undefined) throw new Error('missing first row')
+    const output = within(first).getByLabelText('Output tokens') as HTMLInputElement
+    const amount = within(first).getByLabelText('Amount (¥)') as HTMLInputElement
+
+    await user.clear(output)
+    await user.type(output, '1200')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(output.disabled).toBe(true))
+    expect(amount.disabled).toBe(true)
+
+    gate.resolve()
+    await waitFor(() => expect(output.disabled).toBe(false))
+    expect(amount.disabled).toBe(false)
+  })
+
+  it('keeps unsaved edits when the discard confirmation is declined', async () => {
+    let snapshotCalls = 0
+    installSnapshotApi({
+      onSnapshot: () => {
+        snapshotCalls += 1
+      },
+    })
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+
+    await renderWithProviders(<EntryTab canManage />, ['common', 'admin'])
+    const user = userEvent.setup()
+    await loadDate('2026-10-23')
+    expect(snapshotCalls).toBe(1)
+
+    const rows = await screen.findAllByTestId('entry-model-row')
+    const first = rows[0]
+    if (first === undefined) throw new Error('missing first row')
+    const output = within(first).getByLabelText('Output tokens')
+
+    await user.clear(output)
+    await user.type(output, '1200')
+    await user.click(screen.getByRole('button', { name: 'Load' }))
+
+    expect(confirmSpy).toHaveBeenCalledWith(
+      'Discard unsaved snapshot edits?',
+    )
+    // 拒绝后：不发新 GET，行与编辑值保持原样。
+    expect(snapshotCalls).toBe(1)
+    expect(screen.getAllByTestId('entry-model-row')[0]).toBe(first)
+    expect((output as HTMLInputElement).value).toBe('1200')
+    expect(screen.getByText('1 unsaved row(s)')).toBeTruthy()
+  })
+
+  it('reloads and drops edits when the discard confirmation is accepted', async () => {
+    let snapshotCalls = 0
+    installSnapshotApi({
+      onSnapshot: () => {
+        snapshotCalls += 1
+      },
+    })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    await renderWithProviders(<EntryTab canManage />, ['common', 'admin'])
+    const user = userEvent.setup()
+    await loadDate('2026-10-23')
+
+    const rows = await screen.findAllByTestId('entry-model-row')
+    const first = rows[0]
+    if (first === undefined) throw new Error('missing first row')
+    const output = within(first).getByLabelText('Output tokens') as HTMLInputElement
+
+    await user.clear(output)
+    await user.type(output, '1200')
+    await user.click(screen.getByRole('button', { name: 'Load' }))
+
+    await waitFor(() => expect(snapshotCalls).toBe(2))
+    await waitFor(() => {
+      const reloaded = screen.getAllByTestId('entry-model-row')
+      const reloadedFirst = reloaded[0]
+      if (reloadedFirst === undefined) throw new Error('missing reloaded row')
+      expect(
+        (
+          within(reloadedFirst).getByLabelText(
+            'Output tokens',
+          ) as HTMLInputElement
+        ).value,
+      ).toBe('800')
+    })
+    expect(screen.getByText('0 unsaved row(s)')).toBeTruthy()
+  })
+
+  it('keeps duplicate text and reports it instead of adding a second row', async () => {
+    installSnapshotApi()
+    await renderWithProviders(<EntryTab canManage />, ['common', 'admin'])
+    const user = userEvent.setup()
+    await loadDate('2026-10-23')
+    await screen.findAllByTestId('entry-model-row')
+
+    const addInput = screen.getByLabelText('Add model') as HTMLInputElement
+    const addButton = screen.getByRole('button', { name: 'Add' })
+
+    await user.type(addInput, 'deepseek-chat')
+    await user.click(addButton)
+
+    expect(
+      await screen.findByText('This model is already in the table'),
+    ).toBeTruthy()
+    expect(addInput.value).toBe('deepseek-chat')
+    expect(screen.getAllByTestId('entry-model-row')).toHaveLength(2)
+
+    // 修改输入即清除提示；新模型仍能正常添加。
+    await user.clear(addInput)
+    await user.type(addInput, 'deepseek-coder')
+    expect(
+      screen.queryByText('This model is already in the table'),
+    ).toBeNull()
+    await user.click(addButton)
+
+    expect(screen.getAllByTestId('entry-model-row')).toHaveLength(3)
+    expect(screen.getByText('deepseek-coder')).toBeTruthy()
+  })
+
+  it('disables Add until both an account and a date are selected', async () => {
+    installSnapshotApi()
+    await renderWithProviders(<EntryTab canManage />, ['common', 'admin'])
+    const user = userEvent.setup()
+
+    const addInput = screen.getByLabelText('Add model') as HTMLInputElement
+    const addButton = screen.getByRole('button', {
+      name: 'Add',
+    }) as HTMLButtonElement
+
+    // 账号尚未加载/选中。
+    expect(screen.getByLabelText('Upstream account')).toBeInstanceOf(
+      HTMLSelectElement,
+    )
+    expect(addButton.disabled).toBe(true)
+    expect(addInput.disabled).toBe(true)
+
+    await screen.findByRole('option', { name: 'DeepSeek' })
+    const dateInput = screen.getByLabelText('Usage date')
+    const accountSelect = screen.getByLabelText(
+      'Upstream account',
+    ) as HTMLSelectElement
+    await waitFor(() => expect(accountSelect.value).toBe('1'))
+
+    // 日期为空时同样不可添加。
+    fireEvent.change(dateInput, { target: { value: '' } })
+    await waitFor(() => expect(addButton.disabled).toBe(true))
+    expect(addInput.disabled).toBe(true)
+
+    // 账号 + 日期齐备、且模型名非空后才可添加。
+    fireEvent.change(dateInput, { target: { value: '2026-10-24' } })
+    await user.type(addInput, 'deepseek-chat')
+    await waitFor(() => expect(addButton.disabled).toBe(false))
+    expect(addInput.disabled).toBe(false)
   })
 })

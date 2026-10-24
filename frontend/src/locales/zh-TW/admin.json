@@ -1599,7 +1599,9 @@
       "error_model": "請為每一列填寫模型名稱。",
       "error_negative": "token 數與金額不能為負數。",
       "error_integer": "token 數與請求數必須為整數。",
-      "error_amount": "請輸入有效金額。"
+      "error_amount": "請輸入有效金額。",
+      "confirm_discard": "確定要捨棄未儲存的快照編輯嗎？",
+      "error_duplicate_model": "此模型已在表格中"
     }
   },
   "subscriptions": {

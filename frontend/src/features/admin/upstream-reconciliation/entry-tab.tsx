@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { ApiError } from '@/api/errors'
 import { useI18n } from '@/shared/lib/i18n-context'
@@ -73,8 +73,10 @@ type BuildResult =
 const CELL_INPUT_CLASSES =
   'h-9 w-28 rounded-lg border border-border-default bg-surface-card px-2 text-right font-mono text-meta text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50'
 
-const MODEL_INPUT_CLASSES =
-  'h-9 w-48 rounded-lg border border-border-default bg-surface-card px-2 text-left font-mono text-meta text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50'
+const MODEL_CELL_CLASSES = 'font-mono text-meta text-ink-1'
+
+/** 可编辑的计数维度补丁；模型名固定于新增时，不在此类型内。 */
+type CountPatch = Partial<Record<CountField, number | null>>
 
 function emptyRow(): EntryRow {
   return {
@@ -222,6 +224,7 @@ export function EntryTab({ canManage }: { canManage: boolean }) {
   const [baseline, setBaseline] = useState<EntryRow[]>([])
   const [newModel, setNewModel] = useState('')
   const [validationError, setValidationError] = useState<string | null>(null)
+  const [addError, setAddError] = useState<string | null>(null)
   const [savedCount, setSavedCount] = useState<number | null>(null)
 
   const accountsQuery = useQuery({
@@ -261,20 +264,26 @@ export function EntryTab({ canManage }: { canManage: boolean }) {
     refetchOnWindowFocus: false,
   })
 
-  const snapshots = snapshotsQuery.data?.items
-  useEffect(() => {
-    if (snapshots === undefined) return
-    const next = snapshots.map(fromSnapshot)
-    setRows(next)
-    setBaseline(next)
-    setValidationError(null)
-  }, [snapshots])
-
   const dirtyFlags = useMemo(
     () => rows.map((row, index) => isRowDirty(row, baseline[index])),
     [rows, baseline],
   )
   const dirtyCount = dirtyFlags.filter(Boolean).length
+  // 效果只在 `snapshots` 身份变化时运行；用 ref 读取最新脏计数，避免把
+  // dirtyCount 加入依赖后在保存成功（脏计数归零）时用旧响应覆盖新基线。
+  const dirtyCountRef = useRef(0)
+  dirtyCountRef.current = dirtyCount
+
+  const snapshots = snapshotsQuery.data?.items
+  useEffect(() => {
+    if (snapshots === undefined) return
+    // 未保存的编辑优先于任何后台重取：否则一次迟到的响应会静默清空表格。
+    if (dirtyCountRef.current > 0) return
+    const next = snapshots.map(fromSnapshot)
+    setRows(next)
+    setBaseline(next)
+    setValidationError(null)
+  }, [snapshots])
 
   const saveMutation = useMutation({
     mutationFn: (payload: {
@@ -290,11 +299,35 @@ export function EntryTab({ canManage }: { canManage: boolean }) {
     },
   })
 
+  /** 有未保存编辑时，丢弃前须经管理员确认；拒绝则不做任何状态变更。 */
+  function confirmDiscard(): boolean {
+    if (dirtyCount === 0) return true
+    return globalThis.confirm(
+      t('admin.upstream_reconciliation.entry.confirm_discard'),
+    )
+  }
+
   async function load(): Promise<void> {
     if (accountId === null || date === '') return
+    const discarding = dirtyCount > 0
+    if (!confirmDiscard()) return
     setValidationError(null)
     setSavedCount(null)
     if (loaded !== null && loaded.accountId === accountId && loaded.date === date) {
+      // 确认丢弃后必须先从当前缓存恢复干净基线：重取若与上次结构相同，
+      // React Query 会复用同一 data 引用，同步效果便不会再次运行。
+      if (discarding) {
+        const current = snapshotsQuery.data?.items
+        if (current !== undefined) {
+          const restored = current.map(fromSnapshot)
+          setRows(restored)
+          setBaseline(restored)
+          setValidationError(null)
+        } else {
+          setRows([])
+          setBaseline([])
+        }
+      }
       await snapshotsQuery.refetch()
       return
     }
@@ -314,33 +347,41 @@ export function EntryTab({ canManage }: { canManage: boolean }) {
     setSavedCount(null)
   }
 
+  /**
+   * 只接受计数与金额的补丁：模型名在新增时固定，避免一次「重命名」变成
+   * 新行 upsert 而把旧行（连同旧计数）留在服务端。
+   */
   function updateRow(
     index: number,
-    change: (row: EntryRow) => EntryRow,
+    patch: CountPatch & { amount_yuan?: string },
   ): void {
-    setRows((prev) => prev.map((row, i) => (i === index ? change(row) : row)))
+    setRows((prev) =>
+      prev.map((row, i) => (i === index ? { ...row, ...patch } : row)),
+    )
     setValidationError(null)
     setSavedCount(null)
   }
 
   function updateCount(index: number, field: CountField, raw: string): void {
-    updateRow(index, (row) => {
-      const next = { ...row }
-      next[field] = parseCount(raw)
-      return next
-    })
+    const patch: CountPatch = {}
+    patch[field] = parseCount(raw)
+    updateRow(index, patch)
   }
 
   function addRow(): void {
     const model = newModel.trim()
     if (model === '') return
     // 同一日期同一模型是 upsert 主键；重复添加只会让表格出现两行同键数据。
+    // 保留输入文本，让管理员改掉或删掉重复的名字即可。
     if (rows.some((row) => row.upstream_model.trim() === model)) {
-      setNewModel('')
+      setAddError(
+        t('admin.upstream_reconciliation.entry.error_duplicate_model'),
+      )
       return
     }
     setRows((prev) => [...prev, { ...emptyRow(), upstream_model: model }])
     setNewModel('')
+    setAddError(null)
     setValidationError(null)
     setSavedCount(null)
   }
@@ -391,7 +432,9 @@ export function EntryTab({ canManage }: { canManage: boolean }) {
             value={accountId === null ? '' : String(accountId)}
             onChange={(event) => {
               const next = Number(event.target.value)
+              if (!confirmDiscard()) return
               setAccountId(Number.isInteger(next) && next > 0 ? next : null)
+              setAddError(null)
               clearLoaded()
             }}
             disabled={accountsQuery.isPending}
@@ -414,7 +457,9 @@ export function EntryTab({ canManage }: { canManage: boolean }) {
             type="date"
             value={date}
             onChange={(event) => {
+              if (!confirmDiscard()) return
               setDate(event.target.value)
+              setAddError(null)
               clearLoaded()
             }}
           />
@@ -438,8 +483,10 @@ export function EntryTab({ canManage }: { canManage: boolean }) {
                 placeholder={t(
                   'admin.upstream_reconciliation.entry.model_placeholder',
                 )}
+                disabled={accountId === null || date === ''}
                 onChange={(event) => {
                   setNewModel(event.target.value)
+                  setAddError(null)
                 }}
                 onKeyDown={(event) => {
                   if (event.key !== 'Enter') return
@@ -451,7 +498,9 @@ export function EntryTab({ canManage }: { canManage: boolean }) {
             <Button
               variant="secondary"
               className="h-10"
-              disabled={newModel.trim() === ''}
+              disabled={
+                newModel.trim() === '' || accountId === null || date === ''
+              }
               onClick={addRow}
             >
               {t('admin.upstream_reconciliation.entry.add')}
@@ -459,6 +508,10 @@ export function EntryTab({ canManage }: { canManage: boolean }) {
           </>
         ) : null}
       </div>
+
+      {addError !== null ? (
+        <FormAlert tone="danger">{addError}</FormAlert>
+      ) : null}
 
       {accountsQuery.isError ? (
         <FormAlert tone="danger">
@@ -536,21 +589,9 @@ export function EntryTab({ canManage }: { canManage: boolean }) {
                   className="border-t border-border-hairline"
                 >
                   <td className="px-2 py-1.5">
-                    <input
-                      aria-label={t(
-                        'admin.upstream_reconciliation.entry.col_model',
-                      )}
-                      value={row.upstream_model}
-                      disabled={!canManage}
-                      onChange={(event) => {
-                        const value = event.target.value
-                        updateRow(index, (current) => ({
-                          ...current,
-                          upstream_model: value,
-                        }))
-                      }}
-                      className={MODEL_INPUT_CLASSES}
-                    />
+                    <span className={MODEL_CELL_CLASSES}>
+                      {row.upstream_model}
+                    </span>
                   </td>
                   {COUNT_FIELDS.map((field) => (
                     <td key={field} className="px-2 py-1.5 text-right">
@@ -561,7 +602,7 @@ export function EntryTab({ canManage }: { canManage: boolean }) {
                         step={1}
                         aria-label={t(COUNT_LABEL_KEYS[field])}
                         value={row[field] ?? ''}
-                        disabled={!canManage}
+                        disabled={!canManage || saveMutation.isPending}
                         onChange={(event) => {
                           updateCount(index, field, event.target.value)
                         }}
@@ -577,13 +618,9 @@ export function EntryTab({ canManage }: { canManage: boolean }) {
                         'admin.upstream_reconciliation.entry.col_amount',
                       )}
                       value={row.amount_yuan}
-                      disabled={!canManage}
+                      disabled={!canManage || saveMutation.isPending}
                       onChange={(event) => {
-                        const value = event.target.value
-                        updateRow(index, (current) => ({
-                          ...current,
-                          amount_yuan: value,
-                        }))
+                        updateRow(index, { amount_yuan: event.target.value })
                       }}
                       className={CELL_INPUT_CLASSES}
                     />

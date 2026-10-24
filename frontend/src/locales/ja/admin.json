@@ -1599,7 +1599,9 @@
       "error_model": "すべての行にモデル名を入力してください。",
       "error_negative": "トークン数と金額に負の値は指定できません。",
       "error_integer": "トークン数とリクエスト数は整数で入力してください。",
-      "error_amount": "有効な金額を入力してください。"
+      "error_amount": "有効な金額を入力してください。",
+      "confirm_discard": "未保存のスナップショット編集を破棄しますか？",
+      "error_duplicate_model": "このモデルはすでに表にあります"
     }
   },
   "subscriptions": {

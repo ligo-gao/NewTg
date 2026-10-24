@@ -1599,7 +1599,9 @@
       "error_model": "Nhập tên mô hình cho mỗi dòng.",
       "error_negative": "Số token và số tiền không thể âm.",
       "error_integer": "Số token và số yêu cầu phải là số nguyên.",
-      "error_amount": "Nhập số tiền hợp lệ."
+      "error_amount": "Nhập số tiền hợp lệ.",
+      "confirm_discard": "Bỏ các thay đổi ảnh chụp chưa lưu?",
+      "error_duplicate_model": "Mô hình này đã có trong bảng"
     }
   },
   "subscriptions": {

@@ -1599,7 +1599,9 @@
       "error_model": "Enter a model name for every row.",
       "error_negative": "Token counts and amounts cannot be negative.",
       "error_integer": "Token counts and request counts must be whole numbers.",
-      "error_amount": "Enter a valid amount."
+      "error_amount": "Enter a valid amount.",
+      "confirm_discard": "Discard unsaved snapshot edits?",
+      "error_duplicate_model": "This model is already in the table"
     }
   },
   "subscriptions": {
