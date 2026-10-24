@@ -1,0 +1,182 @@
+import { fireEvent } from '@testing-library/react'
+import { useState } from 'react'
+import { describe, expect, it, vi } from 'vitest'
+
+import { renderWithProviders } from '@/test-support/providers'
+
+import { ModelFilters } from './filter-panel'
+import type { ModelsSearch } from './params'
+import type { ModelFacets } from './taxonomy'
+
+const BASE: ModelsSearch = {
+  q: '',
+  cap: '',
+  vendor: '',
+  context: '',
+  endpoint: '',
+  measured: false,
+  sort: 'measured',
+  range: '7d',
+  view: 'table',
+  compare: '',
+}
+
+const FACETS: ModelFacets = {
+  capabilities: [
+    { value: 'text', label: 'text', count: 5 },
+    { value: 'vision', label: 'vision', count: 3 },
+    { value: 'tool_use', label: 'tool_use', count: 2 },
+  ],
+  vendors: [
+    { value: 'openai', count: 3 },
+    { value: 'anthropic', count: 2 },
+  ],
+  contexts: [
+    { value: '8k', count: 1 },
+    { value: '128k', count: 4 },
+  ],
+  endpoints: [{ value: 'chat.completions', count: 5 }],
+}
+
+type ChangeHandler = (next: ModelsSearch, replace?: boolean) => void
+
+function Harness({
+  initial,
+  onChange,
+  onClose,
+}: {
+  initial: ModelsSearch
+  onChange: ChangeHandler
+  onClose?: () => void
+}) {
+  const [search, setSearch] = useState(initial)
+  return (
+    <ModelFilters
+      facets={FACETS}
+      search={search}
+      onChange={(next, replace) => {
+        onChange(next, replace)
+        setSearch(next)
+      }}
+      onClose={onClose}
+    />
+  )
+}
+
+async function renderFilters(
+  initial: ModelsSearch = BASE,
+  onClose?: () => void,
+) {
+  const onChange = vi.fn<ChangeHandler>()
+  const result = await renderWithProviders(
+    <Harness initial={initial} onChange={onChange} onClose={onClose} />,
+    ['public'],
+  )
+  const last = () => onChange.mock.lastCall?.[0] as ModelsSearch
+  return { ...result, onChange, last }
+}
+
+describe('ModelFilters', () => {
+  it('adds and removes one capability without clearing the rest', async () => {
+    const initial: ModelsSearch = {
+      ...BASE,
+      cap: 'text',
+      vendor: 'openai',
+      measured: true,
+      compare: 'a,b',
+    }
+    const { getByRole, last } = await renderFilters(initial)
+
+    fireEvent.click(getByRole('checkbox', { name: 'Vision' }))
+    expect(last().cap).toBe('text,vision')
+    expect(last().vendor).toBe('openai')
+    expect(last().measured).toBe(true)
+    expect(last().compare).toBe('a,b')
+
+    fireEvent.click(getByRole('checkbox', { name: 'Vision' }))
+    expect(last().cap).toBe('text')
+  })
+
+  it('keeps an unknown capability as a removable selection', async () => {
+    const { getByRole, last } = await renderFilters({
+      ...BASE,
+      cap: 'text,hologram',
+    })
+
+    const unknown = getByRole('checkbox', { name: 'hologram' }) as HTMLInputElement
+    expect(unknown.checked).toBe(true)
+
+    fireEvent.click(unknown)
+    expect(last().cap).toBe('text')
+  })
+
+  it('resets every group, the search and the measured switch', async () => {
+    const initial: ModelsSearch = {
+      q: 'gpt',
+      cap: 'text,vision',
+      vendor: 'openai',
+      context: '8k',
+      endpoint: 'chat.completions',
+      measured: true,
+      sort: 'tps',
+      range: '24h',
+      view: 'cards',
+      compare: 'a,b',
+    }
+    const { getByRole, last } = await renderFilters(initial)
+
+    expect(
+      (getByRole('switch', { name: 'Only models with measurements' }) as HTMLElement)
+        .getAttribute('aria-checked'),
+    ).toBe('true')
+
+    fireEvent.click(getByRole('button', { name: 'Reset all' }))
+
+    // Only filter state is cleared; sort/range/compare and the view preference
+    // are display state and survive a reset.
+    expect(last()).toEqual({
+      q: '',
+      cap: '',
+      vendor: '',
+      context: '',
+      endpoint: '',
+      measured: false,
+      sort: 'tps',
+      range: '24h',
+      view: 'cards',
+      compare: 'a,b',
+    })
+  })
+
+  it('groups every checkbox under a fieldset legend', async () => {
+    const { container } = await renderFilters()
+
+    const groups = [...container.querySelectorAll('fieldset')]
+    expect(groups.map((group) => group.querySelector('legend')?.textContent)).toEqual([
+      'Capabilities',
+      'Vendors',
+      'Context window',
+      'Call type',
+    ])
+
+    for (const group of groups) {
+      const checkboxes = [...group.querySelectorAll('input[type="checkbox"]')]
+      expect(checkboxes.length).toBeGreaterThan(0)
+      for (const checkbox of checkboxes) {
+        expect(checkbox.closest('fieldset')).toBe(group)
+      }
+    }
+  })
+
+  it('calls onClose from the close button when provided', async () => {
+    const withoutClose = await renderFilters()
+    expect(withoutClose.queryByRole('button', { name: 'Close filters' })).toBeNull()
+    withoutClose.unmount()
+
+    const onClose = vi.fn()
+    const { getByRole } = await renderFilters(BASE, onClose)
+    fireEvent.click(getByRole('button', { name: 'Close filters' }))
+
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+})
