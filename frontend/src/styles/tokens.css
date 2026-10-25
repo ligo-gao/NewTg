@@ -135,27 +135,31 @@
   /* Public homepage — "The Relay Board" (§F-09-01 visual direction).
      Scoped to `.public-shell`; the console keeps the product palette above.
      Copper is the only signal colour: it marks the path a request takes. */
-  --home-paper: #f3f4f1;
-  --home-paper-2: #e9ece6;
+  --home-paper: #f3f6f9;
+  --home-paper-2: #edf2f7;
   --home-card: #ffffff;
-  --home-ink: #101c23;
-  --home-muted: #5b666c;
-  --home-faint: #7c878c;
-  --home-rule: #d7dbd4;
-  --home-rule-strong: #c1c7bf;
-  --home-panel: #0d1a22;
-  --home-panel-2: #112530;
-  --home-panel-line: #28424f;
-  --home-panel-ink: #e9eff2;
-  --home-panel-muted: #9db4c0;
-  --home-signal: #b84d1f;
-  --home-signal-strong: #9c3f18;
-  --home-signal-bright: #e2773f;
-  --home-signal-soft: #f6e9e1;
-  --home-signal-line: #e7c5b5;
+  --home-ink: #0d1a24;
+  --home-muted: #33465a;
+  --home-faint: #5a6b7c;
+  --home-rule: #dbe4ec;
+  --home-rule-strong: #c2cedb;
+  --home-panel: #0d141f;
+  --home-panel-2: #101a27;
+  --home-panel-line: #263447;
+  --home-panel-ink: #e8eef5;
+  --home-panel-muted: #b6c2d1;
+  --home-signal: #077486;
+  --home-signal-strong: #055a68;
+  --home-signal-bright: #4a9fae;
+  --home-signal-soft: #e6f4f7;
+  --home-signal-line: #b7dde4;
   --home-on-signal: #ffffff;
-  --home-pulse-rgb: 226 119 63;
-  --home-shadow: 0 18px 48px rgb(13 26 34 / 0.12);
+  --home-pulse-rgb: 74 159 174;
+  --home-shadow: 0 20px 50px -24px rgb(22 50 70 / 0.25);
+  --home-action: #35c9dd;
+  --home-action-hover: #5bd8e8;
+  --home-on-action: #03121a;
+  --home-nav-bg: rgba(250, 252, 255, 0.78);
 }
 
 :root[data-theme='dark'] {
@@ -253,25 +257,29 @@
   /* Public homepage dark column. The public shell follows the same roles:
      paper becomes the night surface, the panel keeps its instrument colour,
      and copper brightens to stay legible on both. */
-  --home-paper: #0b1215;
-  --home-paper-2: #101a1e;
-  --home-card: #121e23;
-  --home-ink: #e9eff2;
-  --home-muted: #a3b0b6;
-  --home-faint: #7d8b91;
-  --home-rule: #22323a;
-  --home-rule-strong: #2e424c;
-  --home-panel: #0d1a22;
-  --home-panel-2: #112530;
-  --home-panel-line: #28424f;
-  --home-panel-ink: #e9eff2;
-  --home-panel-muted: #9db4c0;
-  --home-signal: #e2773f;
-  --home-signal-strong: #f2a077;
-  --home-signal-bright: #f08a52;
-  --home-signal-soft: #2a1a13;
-  --home-signal-line: #5a3324;
-  --home-on-signal: #0b1215;
-  --home-pulse-rgb: 240 138 82;
-  --home-shadow: 0 18px 48px rgb(0 0 0 / 0.45);
+  --home-paper: #070b12;
+  --home-paper-2: #0a1019;
+  --home-card: #0d141f;
+  --home-ink: #e8eef5;
+  --home-muted: #b6c2d1;
+  --home-faint: #8797aa;
+  --home-rule: #1a2534;
+  --home-rule-strong: #263447;
+  --home-panel: #0d141f;
+  --home-panel-2: #101a27;
+  --home-panel-line: #263447;
+  --home-panel-ink: #e8eef5;
+  --home-panel-muted: #b6c2d1;
+  --home-signal: #4cd7e8;
+  --home-signal-strong: #7fe7f2;
+  --home-signal-bright: #1d8fa0;
+  --home-signal-soft: #0b2630;
+  --home-signal-line: #17414b;
+  --home-on-signal: #070b12;
+  --home-pulse-rgb: 76 215 232;
+  --home-shadow: 0 20px 50px -20px rgb(0 0 0 / 0.9);
+  --home-action: #4cd7e8;
+  --home-action-hover: #7fe7f2;
+  --home-on-action: #03121a;
+  --home-nav-bg: rgba(7, 11, 18, 0.74);
 }
