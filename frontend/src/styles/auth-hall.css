@@ -312,6 +312,10 @@
   margin-inline: auto;
 }
 
+.auth-hall-pane-inner[data-variant='setup'] {
+  max-width: 560px;
+}
+
 .auth-hall-form {
   width: 100%;
   margin-block: auto;
@@ -325,6 +329,26 @@
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--home-ink);
+}
+
+.auth-hall-subtitle {
+  margin: -16px 0 26px;
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--home-muted);
+}
+
+/* Non-form panels (welcome, success, expired) keep the form column's rhythm. */
+.auth-hall-stack {
+  display: grid;
+  gap: 22px;
+}
+
+.auth-hall-pane-lead {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--home-muted);
 }
 
 /* ---------- Form ---------- */
@@ -469,6 +493,55 @@
   opacity: 1;
 }
 
+.auth-hall .auth-hall-secondary {
+  height: 46px;
+  border: 1px solid var(--home-rule-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--home-ink);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.auth-hall .auth-hall-secondary:hover:not(:disabled) {
+  border-color: var(--home-muted);
+  background: var(--home-paper-2);
+}
+
+.auth-hall .auth-hall-secondary:disabled {
+  border-color: var(--home-rule);
+  color: var(--home-faint);
+  opacity: 1;
+}
+
+/* Secondary navigation is a quiet line of text, not a second button. */
+.auth-hall .auth-hall-back {
+  height: auto;
+  padding: 6px 0;
+  background: transparent;
+  color: var(--home-faint);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.auth-hall .auth-hall-back:hover:not(:disabled) {
+  background: transparent;
+  color: var(--home-ink);
+}
+
+.auth-hall-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.auth-hall-actions > * {
+  flex: 1;
+}
+
+.auth-hall .auth-hall-actions .auth-hall-submit {
+  margin-top: 0;
+}
+
 .auth-hall-signup {
   margin: -4px 0 0;
   text-align: center;
@@ -568,6 +641,136 @@
   text-underline-offset: 3px;
 }
 
+/* ---------- Setup wizard: steps, review card ---------- */
+
+.auth-hall-steps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 26px;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.auth-hall-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.auth-hall-step-dot {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--home-paper-2);
+  color: var(--home-faint);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.auth-hall-step-label {
+  color: var(--home-faint);
+}
+
+.auth-hall-step[data-state='current'] .auth-hall-step-dot {
+  background: var(--home-signal);
+  color: var(--home-on-signal);
+}
+
+.auth-hall-step[data-state='current'] .auth-hall-step-label {
+  color: var(--home-ink);
+  font-weight: 500;
+}
+
+.auth-hall-step[data-state='done'] .auth-hall-step-dot {
+  background: var(--home-signal-soft);
+  color: var(--home-signal);
+}
+
+.auth-hall-step[data-state='done'] .auth-hall-step-label {
+  color: var(--home-muted);
+}
+
+.auth-hall-step-sep {
+  color: var(--home-rule-strong);
+}
+
+.auth-hall-review {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--home-rule);
+  border-radius: 6px;
+  background: var(--home-paper-2);
+  padding: 14px 16px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--home-muted);
+}
+
+.auth-hall-review p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Two-factor challenge: tabs and code boxes ---------- */
+
+.auth-hall [role='tablist'] {
+  display: flex;
+  gap: 24px;
+  border-bottom: 1px solid var(--home-rule);
+}
+
+.auth-hall [role='tablist'] button {
+  margin-bottom: -1px;
+  padding: 0 1px 10px;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--home-faint);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.auth-hall [role='tablist'] button:hover {
+  color: var(--home-ink);
+}
+
+.auth-hall [role='tablist'] button[aria-selected='true'] {
+  border-bottom-color: var(--home-signal);
+  color: var(--home-ink);
+}
+
+.auth-hall [role='tablist'] button:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid var(--home-signal);
+  outline-offset: 2px;
+}
+
+.auth-hall [data-otp-input] {
+  width: 44px;
+  height: 52px;
+  border: 1px solid var(--home-rule-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--home-ink);
+  font-family: inherit;
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.auth-hall [data-otp-input]:focus-visible {
+  border-color: var(--home-signal);
+  outline: 2px solid var(--home-signal);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
 /* ---------- Narrow screens: the seam turns horizontal ---------- */
 
 @media (max-width: 1023px) {
@@ -612,6 +815,10 @@
   .auth-hall-pane-inner {
     flex: 1;
     max-width: 420px;
+  }
+
+  .auth-hall-pane-inner[data-variant='setup'] {
+    max-width: 480px;
   }
 
   .auth-hall-form {

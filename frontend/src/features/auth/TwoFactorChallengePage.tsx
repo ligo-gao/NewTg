@@ -9,7 +9,7 @@ import { useCountdown } from '@/shared/lib/use-countdown'
 import { Button } from '@/shared/ui/button'
 import { FormAlert, TextField } from '@/shared/ui/form'
 
-import { AuthPageShell } from './AuthPageShell'
+import { AuthHallShell } from './AuthHallShell'
 import { OtpInput } from './OtpInput'
 
 type ChallengeMode = 'totp' | 'backup'
@@ -83,12 +83,17 @@ export function TwoFactorChallengePage({
 
   if (expired || ticket === undefined || ticket === '') {
     return (
-      <AuthPageShell title={t('auth.two_factor.expired_title')}>
-        <p className="text-body text-ink-2">{t('auth.two_factor.expired_body')}</p>
-        <Button className="mt-4 h-11 w-full" onClick={() => onNavigate('/sign-in')}>
-          {t('auth.two_factor.to_sign_in')}
-        </Button>
-      </AuthPageShell>
+      <AuthHallShell title={t('auth.two_factor.expired_title')}>
+        <div className="auth-hall-stack">
+          <p className="auth-hall-pane-lead">{t('auth.two_factor.expired_body')}</p>
+          <Button
+            className="auth-hall-submit w-full"
+            onClick={() => onNavigate('/sign-in')}
+          >
+            {t('auth.two_factor.to_sign_in')}
+          </Button>
+        </div>
+      </AuthHallShell>
     )
   }
 
@@ -140,18 +145,14 @@ export function TwoFactorChallengePage({
   }
 
   return (
-    <AuthPageShell
+    <AuthHallShell
       title={t('auth.two_factor.title')}
-      subtitle={<span>{t('auth.two_factor.description')}</span>}
+      subtitle={t('auth.two_factor.description')}
     >
-      <form
-        className="flex flex-col gap-4"
-        onSubmit={(event) => void handleSubmit(event)}
-        noValidate
-      >
+      <form onSubmit={(event) => void handleSubmit(event)} noValidate>
         {error !== undefined ? <FormAlert>{error}</FormAlert> : null}
 
-        <div role="tablist" aria-label={t('auth.two_factor.title')} className="flex gap-4 border-b border-border-hairline">
+        <div role="tablist" aria-label={t('auth.two_factor.title')}>
           {(['totp', 'backup'] as const).map((value) => (
             <button
               key={value}
@@ -164,12 +165,6 @@ export function TwoFactorChallengePage({
               aria-selected={mode === value}
               aria-controls="two-factor-panel"
               tabIndex={mode === value ? 0 : -1}
-              className={[
-                '-mb-px border-b-2 px-1 pb-2 text-meta font-medium focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
-                mode === value
-                  ? 'border-brand text-ink-1'
-                  : 'border-transparent text-ink-3 hover:text-ink-1',
-              ].join(' ')}
               onClick={() => {
                 selectMode(value)
               }}
@@ -194,6 +189,7 @@ export function TwoFactorChallengePage({
             />
           ) : (
             <TextField
+              variant="line"
               label={t('auth.two_factor.backup_label')}
               placeholder={t('auth.two_factor.backup_placeholder')}
               autoComplete="one-time-code"
@@ -206,7 +202,11 @@ export function TwoFactorChallengePage({
           )}
         </div>
 
-        <Button type="submit" className="h-11 w-full" disabled={submitDisabled}>
+        <Button
+          type="submit"
+          className="auth-hall-submit w-full"
+          disabled={submitDisabled}
+        >
           {submitting
             ? t('auth.two_factor.submitting')
             : countdown.running
@@ -214,6 +214,6 @@ export function TwoFactorChallengePage({
               : t('auth.two_factor.submit')}
         </Button>
       </form>
-    </AuthPageShell>
+    </AuthHallShell>
   )
 }

@@ -6,6 +6,9 @@ import { AuthFlowMap } from './AuthFlowMap'
 
 export interface AuthHallShellProps {
   title: string
+  subtitle?: ReactNode
+  /** The setup wizard needs a wider reading column than the entry forms. */
+  variant?: 'auth' | 'setup'
   children: ReactNode
 }
 
@@ -15,9 +18,8 @@ export interface AuthHallShellProps {
  * is decorative, so the statement stays a paragraph and the form title is the
  * page's only heading.
  *
- * Only the entry pages (sign-in, sign-up) use this shell; the recovery and
- * setup pages keep the shared card so a half-migrated auth flow never mixes
- * two visual languages.
+ * Every anonymous account page uses this shell so the whole entry flow speaks
+ * one visual language.
  */
 function BrandMark() {
   return (
@@ -37,7 +39,12 @@ function BrandMark() {
   )
 }
 
-export function AuthHallShell({ title, children }: AuthHallShellProps) {
+export function AuthHallShell({
+  title,
+  subtitle,
+  variant = 'auth',
+  children,
+}: AuthHallShellProps) {
   const { t } = useI18n()
 
   return (
@@ -62,11 +69,14 @@ export function AuthHallShell({ title, children }: AuthHallShellProps) {
       </section>
 
       <section className="auth-hall-pane" aria-labelledby="auth-hall-title">
-        <div className="auth-hall-pane-inner">
+        <div className="auth-hall-pane-inner" data-variant={variant}>
           <div className="auth-hall-form">
             <h1 id="auth-hall-title" className="auth-hall-title">
               {title}
             </h1>
+            {subtitle !== undefined ? (
+              <p className="auth-hall-subtitle">{subtitle}</p>
+            ) : null}
             {children}
           </div>
 

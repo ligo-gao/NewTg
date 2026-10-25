@@ -9,7 +9,7 @@ import { useCountdown } from '@/shared/lib/use-countdown'
 import { Button } from '@/shared/ui/button'
 import { FormAlert, TextField } from '@/shared/ui/form'
 
-import { AuthPageShell } from './AuthPageShell'
+import { AuthHallShell } from './AuthHallShell'
 import { TurnstileWidget } from './TurnstileWidget'
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -93,16 +93,18 @@ export function ForgotPasswordPage({
 
   if (statusQuery.isError) {
     return (
-      <AuthPageShell title={t('auth.forgot.title')}>
-        <FormAlert>{t('auth.forgot.status_error')}</FormAlert>
-        <Button
-          variant="secondary"
-          className="mt-4 h-10"
-          onClick={() => void statusQuery.refetch()}
-        >
-          {t('common.action.retry')}
-        </Button>
-      </AuthPageShell>
+      <AuthHallShell title={t('auth.forgot.title')}>
+        <div className="flex flex-col gap-3">
+          <FormAlert>{t('auth.forgot.status_error')}</FormAlert>
+          <Button
+            variant="secondary"
+            className="h-10"
+            onClick={() => void statusQuery.refetch()}
+          >
+            {t('common.action.retry')}
+          </Button>
+        </div>
+      </AuthHallShell>
     )
   }
 
@@ -110,19 +112,19 @@ export function ForgotPasswordPage({
     // The request path needs the Turnstile switch; rendering early would let
     // the visitor submit without the token the server now requires.
     return (
-      <AuthPageShell title={t('auth.forgot.title')}>
-        <div className="space-y-3" aria-busy="true">
-          <div className="h-10 rounded-lg bg-surface-subtle" />
-          <div className="h-11 rounded-lg bg-surface-subtle" />
+      <AuthHallShell title={t('auth.forgot.title')}>
+        <div className="flex flex-col gap-[22px]" aria-busy="true">
+          <div className="h-11 border-b border-border-default" />
+          <div className="h-11 border-b border-border-default" />
         </div>
-      </AuthPageShell>
+      </AuthHallShell>
     )
   }
 
   return (
-    <AuthPageShell title={t('auth.forgot.title')}>
+    <AuthHallShell title={t('auth.forgot.title')}>
       {sent ? (
-        <div className="flex flex-col gap-4" aria-live="polite">
+        <div className="auth-hall-stack" aria-live="polite">
           {formError !== undefined ? <FormAlert>{formError}</FormAlert> : null}
           <p className="text-body font-medium text-success">
             {t('auth.forgot.sent_title')}
@@ -140,7 +142,7 @@ export function ForgotPasswordPage({
           ) : null}
           <Button
             variant="secondary"
-            className="h-11 w-full"
+            className="auth-hall-secondary w-full"
             disabled={submitting || countdown.running}
             onClick={() => void send()}
           >
@@ -150,17 +152,18 @@ export function ForgotPasswordPage({
           </Button>
           <Button
             variant="ghost"
-            className="h-10 w-full"
+            className="auth-hall-back w-full"
             onClick={() => onNavigate('/sign-in')}
           >
             {t('auth.forgot.back')}
           </Button>
         </div>
       ) : (
-        <form className="flex flex-col gap-4" onSubmit={handleSubmit} noValidate>
-          <p className="text-meta text-ink-2">{t('auth.forgot.description')}</p>
+        <form onSubmit={handleSubmit} noValidate>
+          <p className="auth-hall-pane-lead">{t('auth.forgot.description')}</p>
           {formError !== undefined ? <FormAlert>{formError}</FormAlert> : null}
           <TextField
+            variant="line"
             label={t('auth.forgot.email')}
             type="email"
             autoComplete="email"
@@ -178,20 +181,24 @@ export function ForgotPasswordPage({
               resetSignal={turnstileReset}
             />
           ) : null}
-          <Button type="submit" className="h-11 w-full" disabled={submitting || countdown.running}>
+          <Button
+            type="submit"
+            className="auth-hall-submit w-full"
+            disabled={submitting || countdown.running}
+          >
             {submitting
               ? t('auth.forgot.submitting')
               : t('auth.forgot.submit')}
           </Button>
           <Button
             variant="ghost"
-            className="h-10 w-full"
+            className="auth-hall-back w-full"
             onClick={() => onNavigate('/sign-in')}
           >
             {t('auth.forgot.back')}
           </Button>
         </form>
       )}
-    </AuthPageShell>
+    </AuthHallShell>
   )
 }

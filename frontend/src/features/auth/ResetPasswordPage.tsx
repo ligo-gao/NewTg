@@ -7,7 +7,7 @@ import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
 import { FormAlert, PasswordField } from '@/shared/ui/form'
 
-import { AuthPageShell } from './AuthPageShell'
+import { AuthHallShell } from './AuthHallShell'
 
 const REDIRECT_DELAY_MS = 3000
 
@@ -115,65 +115,74 @@ export function ResetPasswordPage({
 
   if (phase === 'validating') {
     return (
-      <AuthPageShell title={t('auth.reset.title')}>
-        <div className="space-y-3" aria-busy="true">
-          <div className="h-10 rounded-lg bg-surface-subtle" />
-          <div className="h-10 rounded-lg bg-surface-subtle" />
-          <div className="h-11 rounded-lg bg-surface-subtle" />
+      <AuthHallShell title={t('auth.reset.title')}>
+        <div className="flex flex-col gap-[22px]" aria-busy="true">
+          <div className="h-11 border-b border-border-default" />
+          <div className="h-11 border-b border-border-default" />
+          <div className="h-11 border-b border-border-default" />
         </div>
-      </AuthPageShell>
+      </AuthHallShell>
     )
   }
 
   if (phase === 'invalid') {
     return (
-      <AuthPageShell title={t('auth.reset.invalid_title')}>
-        <p className="text-body text-ink-2">{t('auth.reset.invalid_body')}</p>
-        <Button className="mt-4 h-11 w-full" onClick={() => onNavigate('/sign-in')}>
-          {t('auth.reset.back')}
-        </Button>
-      </AuthPageShell>
+      <AuthHallShell title={t('auth.reset.invalid_title')}>
+        <div className="auth-hall-stack">
+          <p className="auth-hall-pane-lead">{t('auth.reset.invalid_body')}</p>
+          <Button
+            className="auth-hall-submit w-full"
+            onClick={() => onNavigate('/sign-in')}
+          >
+            {t('auth.reset.back')}
+          </Button>
+        </div>
+      </AuthHallShell>
     )
   }
 
   if (phase === 'unavailable') {
     return (
-      <AuthPageShell title={t('auth.reset.unavailable_title')}>
-        <p className="text-body text-ink-2">{t('auth.reset.unavailable_body')}</p>
-        <Button className="mt-4 h-11 w-full" onClick={retryValidation}>
-          {t('auth.reset.retry')}
-        </Button>
-        <Button
-          variant="ghost"
-          className="mt-2 h-10 w-full"
-          onClick={() => onNavigate('/sign-in')}
-        >
-          {t('auth.reset.back')}
-        </Button>
-      </AuthPageShell>
+      <AuthHallShell title={t('auth.reset.unavailable_title')}>
+        <div className="auth-hall-stack">
+          <p className="auth-hall-pane-lead">{t('auth.reset.unavailable_body')}</p>
+          <Button className="auth-hall-submit w-full" onClick={retryValidation}>
+            {t('auth.reset.retry')}
+          </Button>
+          <Button
+            variant="ghost"
+            className="auth-hall-back w-full"
+            onClick={() => onNavigate('/sign-in')}
+          >
+            {t('auth.reset.back')}
+          </Button>
+        </div>
+      </AuthHallShell>
     )
   }
 
   if (phase === 'success') {
     return (
-      <AuthPageShell title={t('auth.reset.success_title')}>
-        <p className="text-body text-ink-2">{t('auth.reset.success_body')}</p>
-        <Button className="mt-4 h-11 w-full" onClick={() => onNavigate('/sign-in')}>
-          {t('auth.reset.go_to_sign_in')}
-        </Button>
-      </AuthPageShell>
+      <AuthHallShell title={t('auth.reset.success_title')}>
+        <div className="auth-hall-stack">
+          <p className="auth-hall-pane-lead">{t('auth.reset.success_body')}</p>
+          <Button
+            className="auth-hall-submit w-full"
+            onClick={() => onNavigate('/sign-in')}
+          >
+            {t('auth.reset.go_to_sign_in')}
+          </Button>
+        </div>
+      </AuthHallShell>
     )
   }
 
   return (
-    <AuthPageShell title={t('auth.reset.title')}>
-      <form
-        className="flex flex-col gap-4"
-        onSubmit={(event) => void handleSubmit(event)}
-        noValidate
-      >
+    <AuthHallShell title={t('auth.reset.title')}>
+      <form onSubmit={(event) => void handleSubmit(event)} noValidate>
         {formError !== undefined ? <FormAlert>{formError}</FormAlert> : null}
         <PasswordField
+          variant="line"
           label={t('auth.reset.new_password')}
           showLabel={t('auth.sign_in.show_password')}
           hideLabel={t('auth.sign_in.hide_password')}
@@ -186,6 +195,7 @@ export function ResetPasswordPage({
           required
         />
         <PasswordField
+          variant="line"
           label={t('auth.reset.confirm_password')}
           showLabel={t('auth.sign_in.show_password')}
           hideLabel={t('auth.sign_in.hide_password')}
@@ -197,10 +207,14 @@ export function ResetPasswordPage({
           error={fieldErrors.confirmPassword}
           required
         />
-        <Button type="submit" className="h-11 w-full" disabled={submitting}>
+        <Button
+          type="submit"
+          className="auth-hall-submit w-full"
+          disabled={submitting}
+        >
           {submitting ? t('auth.reset.submitting') : t('auth.reset.submit')}
         </Button>
       </form>
-    </AuthPageShell>
+    </AuthHallShell>
   )
 }

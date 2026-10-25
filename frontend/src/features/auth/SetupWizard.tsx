@@ -8,7 +8,7 @@ import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
 import { FormAlert, PasswordField, TextField } from '@/shared/ui/form'
 
-import { AuthPageShell } from './AuthPageShell'
+import { AuthHallShell } from './AuthHallShell'
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -130,21 +130,23 @@ export function SetupWizard({ onNavigate = defaultNavigate }: SetupWizardProps) 
 
   if (alreadyInitialized) {
     return (
-      <AuthPageShell title={t('auth.setup.already_title')} variant="setup">
-        <p className="text-body text-ink-2">{t('auth.setup.already_body')}</p>
-        <Button className="mt-4 h-11 w-full" onClick={() => onNavigate('/sign-in')}>
-          {t('auth.setup.sign_in')}
-        </Button>
-      </AuthPageShell>
+      <AuthHallShell title={t('auth.setup.already_title')} variant="setup">
+        <div className="auth-hall-stack">
+          <p className="auth-hall-pane-lead">{t('auth.setup.already_body')}</p>
+          <Button
+            className="auth-hall-submit w-full"
+            onClick={() => onNavigate('/sign-in')}
+          >
+            {t('auth.setup.sign_in')}
+          </Button>
+        </div>
+      </AuthHallShell>
     )
   }
 
   return (
-    <AuthPageShell title={t('auth.setup.title')} variant="setup">
-      <ol
-        className="mb-6 flex items-center gap-2 text-meta"
-        aria-label={t('auth.setup.title')}
-      >
+    <AuthHallShell title={t('auth.setup.title')} variant="setup">
+      <ol className="auth-hall-steps" aria-label={t('auth.setup.title')}>
         {STEP_ORDER.map((value, index) => {
           const current = step === value
           const done = stepIndex(value) < stepIndex(step)
@@ -152,22 +154,13 @@ export function SetupWizard({ onNavigate = defaultNavigate }: SetupWizardProps) 
             <li
               key={value}
               aria-current={current ? 'step' : undefined}
-              className="flex items-center gap-2"
+              className="auth-hall-step"
+              data-state={current ? 'current' : done ? 'done' : 'todo'}
             >
-              <span
-                aria-hidden="true"
-                className={[
-                  'flex size-6 items-center justify-center rounded-full text-badge',
-                  current
-                    ? 'bg-brand text-on-brand'
-                    : done
-                      ? 'bg-success-bg text-success'
-                      : 'bg-surface-subtle text-ink-3',
-                ].join(' ')}
-              >
+              <span aria-hidden="true" className="auth-hall-step-dot">
                 {index + 1}
               </span>
-              <span className={current ? 'font-medium text-ink-1' : 'text-ink-3'}>
+              <span className="auth-hall-step-label">
                 {value === 'site'
                   ? t('auth.setup.step_site')
                   : value === 'admin'
@@ -175,7 +168,7 @@ export function SetupWizard({ onNavigate = defaultNavigate }: SetupWizardProps) 
                     : t('auth.setup.step_review')}
               </span>
               {index < STEP_ORDER.length - 1 ? (
-                <span aria-hidden="true" className="text-ink-4">
+                <span aria-hidden="true" className="auth-hall-step-sep">
                   /
                 </span>
               ) : null}
@@ -187,8 +180,9 @@ export function SetupWizard({ onNavigate = defaultNavigate }: SetupWizardProps) 
       {formError !== undefined ? <FormAlert>{formError}</FormAlert> : null}
 
       {step === 'site' ? (
-        <div className="flex flex-col gap-4">
+        <div className="auth-hall-stack">
           <TextField
+            variant="line"
             label={t('auth.setup.site_title')}
             maxLength={64}
             value={siteTitle}
@@ -199,6 +193,7 @@ export function SetupWizard({ onNavigate = defaultNavigate }: SetupWizardProps) 
             required
           />
           <TextField
+            variant="line"
             label={t('auth.setup.server_address')}
             type="url"
             placeholder="https://gateway.example.com"
@@ -210,13 +205,18 @@ export function SetupWizard({ onNavigate = defaultNavigate }: SetupWizardProps) 
             error={fieldErrors.serverAddress}
             required
           />
-          <Button className="h-11 w-full" disabled={!siteValid} onClick={next}>
+          <Button
+            className="auth-hall-submit w-full"
+            disabled={!siteValid}
+            onClick={next}
+          >
             {t('auth.setup.next')}
           </Button>
         </div>
       ) : step === 'admin' ? (
-        <div className="flex flex-col gap-4">
+        <div className="auth-hall-stack">
           <TextField
+            variant="line"
             label={t('auth.setup.username')}
             autoComplete="username"
             value={username}
@@ -227,6 +227,7 @@ export function SetupWizard({ onNavigate = defaultNavigate }: SetupWizardProps) 
             required
           />
           <TextField
+            variant="line"
             label={t('auth.setup.email')}
             type="email"
             autoComplete="email"
@@ -238,6 +239,7 @@ export function SetupWizard({ onNavigate = defaultNavigate }: SetupWizardProps) 
             required
           />
           <PasswordField
+            variant="line"
             label={t('auth.setup.password')}
             showLabel={t('auth.sign_in.show_password')}
             hideLabel={t('auth.sign_in.hide_password')}
@@ -250,6 +252,7 @@ export function SetupWizard({ onNavigate = defaultNavigate }: SetupWizardProps) 
             required
           />
           <PasswordField
+            variant="line"
             label={t('auth.setup.confirm_password')}
             showLabel={t('auth.sign_in.show_password')}
             hideLabel={t('auth.sign_in.hide_password')}
@@ -261,33 +264,49 @@ export function SetupWizard({ onNavigate = defaultNavigate }: SetupWizardProps) 
             error={fieldErrors.confirmPassword}
             required
           />
-          <div className="flex gap-2">
-            <Button variant="secondary" className="h-11 flex-1" onClick={() => setStep('site')}>
+          <div className="auth-hall-actions">
+            <Button
+              variant="secondary"
+              className="auth-hall-secondary"
+              onClick={() => setStep('site')}
+            >
               {t('auth.setup.back')}
             </Button>
-            <Button className="h-11 flex-1" disabled={!adminValid} onClick={next}>
+            <Button
+              className="auth-hall-submit"
+              disabled={!adminValid}
+              onClick={next}
+            >
               {t('auth.setup.next')}
             </Button>
           </div>
         </div>
       ) : (
-        <form className="flex flex-col gap-4" onSubmit={(event) => void finish(event)}>
-          <div className="flex flex-col gap-2 rounded-lg bg-surface-subtle p-4 text-meta text-ink-2">
+        <form onSubmit={(event) => void finish(event)}>
+          <div className="auth-hall-review">
             <p>{t('auth.setup.review_site', { value: siteTitle.trim() })}</p>
             <p>{t('auth.setup.review_server', { value: serverAddress.trim() })}</p>
             <p>{t('auth.setup.review_admin', { value: username.trim() })}</p>
             <p>{t('auth.setup.review_email', { value: maskEmail(email.trim()) })}</p>
           </div>
-          <div className="flex gap-2">
-            <Button variant="secondary" className="h-11 flex-1" onClick={() => setStep('admin')}>
+          <div className="auth-hall-actions">
+            <Button
+              variant="secondary"
+              className="auth-hall-secondary"
+              onClick={() => setStep('admin')}
+            >
               {t('auth.setup.back')}
             </Button>
-            <Button type="submit" className="h-11 flex-1" disabled={submitting}>
+            <Button
+              type="submit"
+              className="auth-hall-submit"
+              disabled={submitting}
+            >
               {submitting ? t('auth.setup.finishing') : t('auth.setup.finish')}
             </Button>
           </div>
         </form>
       )}
-    </AuthPageShell>
+    </AuthHallShell>
   )
 }
