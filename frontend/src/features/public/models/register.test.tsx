@@ -184,6 +184,17 @@ describe('Register: table view', () => {
     expect(within(table).getAllByRole('row')).toHaveLength(4)
   })
 
+  it('contains its visually hidden labels inside the scroll container', async () => {
+    await renderRegister()
+
+    // `sr-only` is absolutely positioned, so without a positioned ancestor the
+    // caption and header spans resolve against the initial containing block and
+    // escape the wrapper's overflow-x clip, adding phantom page-level scroll.
+    const wrapper = screen.getByRole('table').parentElement
+    expect(wrapper?.classList.contains('table-wrap')).toBe(true)
+    expect(wrapper?.classList.contains('relative')).toBe(true)
+  })
+
   it('fills the twelve capability slots in the shared order', async () => {
     await renderRegister()
 

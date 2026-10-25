@@ -401,7 +401,7 @@ function ModelTable({
 }) {
   const { t } = useI18n()
   return (
-    <div className="table-wrap w-full overflow-x-auto rounded-xl border border-border-default bg-surface-card">
+    <div className="table-wrap relative w-full overflow-x-auto rounded-xl border border-border-default bg-surface-card">
       <table className="register w-full min-w-[1440px] border-collapse text-meta [table-layout:fixed]">
         <caption className="sr-only">{t('public.models.title')}</caption>
         <colgroup>
