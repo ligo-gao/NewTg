@@ -21,6 +21,7 @@ export type RankingsPeriod = components['schemas']['RankingsPeriod']
 export type RankingsResponse = components['schemas']['RankingsResponse']
 export type RankingsModel = components['schemas']['RankingsModel']
 export type RankingsMover = components['schemas']['RankingsMover']
+export type RankingsMovers = components['schemas']['RankingsMovers']
 export type RankingsProvider = components['schemas']['RankingsProvider']
 export type RankingsTrend = components['schemas']['RankingsTrend']
 export type RankingsTrendSeries = components['schemas']['RankingsTrendSeries']
@@ -108,6 +109,19 @@ function requireArray(value: unknown, field: string): unknown[] {
 }
 
 /**
+ * 作者/厂商名允许为空：部署里渠道档案大量未填，服务端可能下发 `''`。
+ * 进入视图前统一折成 `Unknown`（与派生模块同一契约），既不渲染空串，
+ * 也不用模型名反推厂商。
+ */
+function requireAuthor(value: unknown, field: string): string {
+  if (typeof value !== 'string') {
+    throw new Error(`invalid rankings field: ${field}`)
+  }
+  const trimmed = value.trim()
+  return trimmed === '' ? 'Unknown' : trimmed
+}
+
+/**
  * 网络边界校验：生成类型只在编译期有效，部署漂移时一个缺失的数组会让
  * 图表在渲染中崩溃（整页白屏）。这里把不合约的响应折成查询错误，由页面
  * 渲染可重试的错误态。
@@ -138,7 +152,7 @@ export function normalizeRankings(body: unknown): RankingsResponse {
           entry.display_name,
           `models[${index}].display_name`,
         ),
-        author: requireString(entry.author, `models[${index}].author`),
+        author: requireAuthor(entry.author, `models[${index}].author`),
         total_tokens: requireNumber(
           entry.total_tokens,
           `models[${index}].total_tokens`,
@@ -161,7 +175,7 @@ export function normalizeRankings(body: unknown): RankingsResponse {
       if (!isRecord(entry)) throw new Error(`invalid ${field}[${index}]`)
       return {
         model: requireString(entry.model, `${field}[${index}].model`),
-        author: requireString(entry.author, `${field}[${index}].author`),
+        author: requireAuthor(entry.author, `${field}[${index}].author`),
         delta_pct: requireNumber(entry.delta_pct, `${field}[${index}].delta_pct`),
         cur_tokens: requireNumber(
           entry.cur_tokens,
@@ -181,7 +195,7 @@ export function normalizeRankings(body: unknown): RankingsResponse {
     if (!isRecord(entry)) throw new Error(`invalid providers[${index}]`)
     return {
       rank: requireNumber(entry.rank, `providers[${index}].rank`),
-      author: requireString(entry.author, `providers[${index}].author`),
+      author: requireAuthor(entry.author, `providers[${index}].author`),
       total_tokens: requireNumber(
         entry.total_tokens,
         `providers[${index}].total_tokens`,

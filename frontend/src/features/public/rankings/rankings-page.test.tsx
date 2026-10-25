@@ -7,7 +7,11 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 
 import { renderWithProviders } from '@/test-support/providers'
 
-import { clearRankingsEtagCache, type RankingsPeriod } from './api'
+import {
+  clearRankingsEtagCache,
+  type RankingsPeriod,
+  type RankingsResponse,
+} from './api'
 import { rankingsAccessRedirect } from './guard'
 import { RankingsPage } from './page'
 import { needsRankingsUrlRepair, validateRankingsSearch } from './params'
@@ -57,73 +61,58 @@ function statusFixture(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function rankingsFixture(period: RankingsPeriod) {
+/**
+ * The live week snapshot the demo was built from: two models, 191,412,351
+ * tokens / 2,928 requests, one provider (`Unknown` — the channel profile is
+ * empty), one real trend bucket. 176,585,172 / 191,412,351 = 92.3%, and
+ * 2,595 / 2,928 = 88.6%.
+ */
+function rankingsFixture(period: RankingsPeriod): RankingsResponse {
   return {
     period,
     timezone: 'Asia/Shanghai',
     window: {
-      start: '2026-10-13T00:00:00+08:00',
-      end: '2026-10-20T09:55:00+08:00',
+      start: '2026-10-19T00:00:00+08:00',
+      end: '2026-10-25T23:59:00+08:00',
     },
-    computed_at: '2026-10-20T09:55:00+08:00',
+    computed_at: '2026-10-25T10:55:00+08:00',
     freshness_seconds: 300,
     sample_threshold: 100,
     status: 'ok',
     models: [
       {
         rank: 1,
-        model: 'gpt-4o',
-        display_name: 'GPT-4o',
-        author: 'OpenAI',
-        total_tokens: 1_240_000,
-        requests: 4021,
-        delta_tokens: 50_000,
-        delta_pct: 4.2,
-        prev_rank: 1,
+        model: 'deepseek-flash',
+        display_name: 'deepseek-flash',
+        author: 'Unknown',
+        total_tokens: 176_585_172,
+        requests: 2_595,
+        delta_tokens: null,
+        delta_pct: null,
+        prev_rank: null,
       },
       {
         rank: 2,
-        model: 'claude-3-5-sonnet',
-        display_name: 'Claude 3.5 Sonnet',
-        author: 'Anthropic',
-        total_tokens: 986_000,
-        requests: 3118,
-        delta_tokens: -86_000,
-        delta_pct: -8.1,
-        prev_rank: 2,
-      },
-      {
-        rank: 2,
-        model: 'gemini-2.5-pro',
-        display_name: 'Gemini 2.5 Pro',
-        author: 'Google',
-        total_tokens: 986_000,
-        requests: 2400,
+        model: 'kimi-for-coding',
+        display_name: 'kimi-for-coding',
+        author: 'Unknown',
+        total_tokens: 14_827_179,
+        requests: 333,
         delta_tokens: null,
         delta_pct: null,
         prev_rank: null,
       },
     ],
-    movers: {
-      up: [
-        { model: 'claude-3-5-sonnet', author: 'Anthropic', delta_pct: 18.4, cur_tokens: 900_000, prev_tokens: 760_000 },
-      ],
-      down: [
-        { model: 'gemini-2.5-pro', author: 'Google', delta_pct: -9.7, cur_tokens: 512_000, prev_tokens: 567_000 },
-      ],
-    },
+    movers: { up: [], down: [] },
     providers: [
-      { rank: 1, author: 'OpenAI', total_tokens: 456_800_000, share_pct: 42.1, slot: 1 },
-      { rank: 2, author: 'Anthropic', total_tokens: 302_100_000, share_pct: 27.8, slot: 2 },
-      { rank: 3, author: 'Google', total_tokens: 189_400_000, share_pct: 17.4, slot: 3 },
+      { rank: 1, author: 'Unknown', total_tokens: 191_412_351, share_pct: 100, slot: 1 },
     ],
     trend: {
       granularity: 'day',
-      buckets: ['2026-10-18T00:00:00+08:00', '2026-10-19T00:00:00+08:00'],
+      buckets: ['2026-10-24T00:00:00+08:00'],
       series: [
-        { model: 'gpt-4o', slot: 1, tokens: [1000, 2000] },
-        { model: 'claude-3-5-sonnet', slot: 2, tokens: [800, 900] },
-        { model: 'Other', slot: null, tokens: [500, 600] },
+        { model: 'deepseek-flash', slot: 1, tokens: [176_585_172] },
+        { model: 'kimi-for-coding', slot: 2, tokens: [14_827_179] },
       ],
     },
   }
@@ -169,7 +158,141 @@ function Harness({ initial = 'week' as RankingsPeriod }) {
 }
 
 describe('rankings page (F-09-29 ~ F-09-33)', () => {
-  it('renders every section and caches each period after the first load', async () => {
+  it('renders the summary, one ladder row per model and the token share', async () => {
+    installBaseHandlers((request) => {
+      const url = new URL(request.url)
+      const period = (url.searchParams.get('period') ?? 'week') as RankingsPeriod
+      return HttpResponse.json(rankingsFixture(period), {
+        headers: { ETag: `"${period}-1"` },
+      })
+    })
+
+    const { findByText, getByTestId, getByText, getByRole, container } =
+      await renderWithProviders(<Harness />, ['public'])
+
+    await findByText('Total tokens')
+    expect(getByText('Listed models')).toBeTruthy()
+    expect(container.textContent).toContain('191,412,351')
+
+    const ladder = getByTestId('rank-ladder')
+    const rows = within(ladder).getAllByRole('listitem')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]?.textContent).toContain('deepseek-flash')
+    expect(rows[0]?.textContent).toContain('92.3%')
+    expect(rows[0]?.textContent).toContain('176,585,172 tokens · 2,595 requests')
+    expect(rows[1]?.textContent).toContain('7.7%')
+
+    // One provider, shown exactly as the API labels it.
+    const providers = getByTestId('rank-providers')
+    expect(within(providers).getAllByRole('listitem')).toHaveLength(1)
+    expect(providers.textContent).toContain('Unknown')
+    expect(providers.textContent).toContain('100.0%')
+
+    // Empty momentum is the real state of the first complete period.
+    expect(getByTestId('rank-movers').textContent).toContain(
+      'first complete period',
+    )
+
+    // The trend panel renders the single real bucket and never a sample tag.
+    expect(getByTestId('trend-chart')).toBeTruthy()
+    expect(
+      getByRole('img', { name: 'Token trend across 1 time buckets' }),
+    ).toBeTruthy()
+    expect(container.textContent).not.toMatch(/sample data/i)
+  })
+
+  it('switches the same rows to the request share and the per-request average', async () => {
+    installBaseHandlers(() =>
+      HttpResponse.json(rankingsFixture('week'), { headers: { ETag: '"week-1"' } }),
+    )
+
+    const { findByText, getByTestId, getByRole } = await renderWithProviders(
+      <Harness />,
+      ['public'],
+    )
+    await findByText('Total tokens')
+
+    const ladder = getByTestId('rank-ladder')
+    expect(ladder.textContent).toContain('92.3%')
+    expect(ladder.textContent).toContain('2,595 requests')
+
+    fireEvent.click(getByRole('button', { name: 'By requests' }))
+
+    const rows = within(ladder).getAllByRole('listitem')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]?.getAttribute('data-model')).toBe('deepseek-flash')
+    expect(rows[0]?.textContent).toContain('88.6%')
+    expect(rows[0]?.textContent).toContain(
+      '2,595 requests · 68,049 tokens per request',
+    )
+    expect(rows[1]?.textContent).toContain('11.4%')
+  })
+
+  it('folds blank model authors into exactly one Unknown provider row', async () => {
+    const fixture = rankingsFixture('week')
+    fixture.models = fixture.models.map((model) => ({ ...model, author: '' }))
+    fixture.providers = fixture.providers.map((provider) => ({
+      ...provider,
+      author: '',
+    }))
+    installBaseHandlers(() =>
+      HttpResponse.json(fixture, { headers: { ETag: '"week-blank"' } }),
+    )
+
+    const { findByText, getByTestId, queryByRole } = await renderWithProviders(
+      <Harness />,
+      ['public'],
+    )
+    // A blank author must not collapse the page into a validation error.
+    await findByText('Total tokens')
+    expect(queryByRole('alert')).toBeNull()
+
+    const providers = getByTestId('rank-providers')
+    expect(within(providers).getAllByRole('listitem')).toHaveLength(1)
+    expect(providers.textContent).toContain('Unknown')
+    expect(providers.textContent).not.toMatch(/^$/)
+  })
+
+  it('renders mover percentages only when the response carries them', async () => {
+    const fixture = rankingsFixture('week')
+    fixture.movers = {
+      up: [
+        {
+          model: 'deepseek-flash',
+          author: 'Unknown',
+          delta_pct: 18.4,
+          cur_tokens: 176_585_172,
+          prev_tokens: 149_000_000,
+        },
+      ],
+      down: [
+        {
+          model: 'kimi-for-coding',
+          author: 'Unknown',
+          delta_pct: -9.7,
+          cur_tokens: 14_827_179,
+          prev_tokens: 16_400_000,
+        },
+      ],
+    }
+    installBaseHandlers(() =>
+      HttpResponse.json(fixture, { headers: { ETag: '"week-movers"' } }),
+    )
+
+    const { findByText, getByTestId } = await renderWithProviders(
+      <Harness />,
+      ['public'],
+    )
+    await findByText('Total tokens')
+
+    const movers = getByTestId('rank-movers')
+    expect(movers.textContent).toContain('Rising')
+    expect(movers.textContent).toContain('18.4%')
+    expect(movers.textContent).toContain('Falling')
+    expect(movers.textContent).toContain('-9.7%')
+  })
+
+  it('caches each period after the first load', async () => {
     const requests: RequestRecord[] = []
     installBaseHandlers((request) => {
       const url = new URL(request.url)
@@ -182,23 +305,13 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
       return HttpResponse.json(rankingsFixture(period), { headers: { ETag: etag } })
     })
 
-    const { findByRole, getByRole, getAllByText } = await renderWithProviders(
+    const { findByText, getByRole } = await renderWithProviders(
       <Harness />,
       ['public'],
     )
-
-    // 区块一：模型榜（并列名次 2、2）。
-    await findByRole('heading', { name: 'Model Rankings' })
-    expect(getAllByText('GPT-4o').length).toBeGreaterThan(0)
-    expect(getAllByText('OpenAI').length).toBeGreaterThan(0)
-    // 区块二：升降榜。
-    expect(getByRole('heading', { name: 'Momentum' })).toBeTruthy()
-    expect(getByRole('heading', { name: 'Historical Trend' })).toBeTruthy()
-    expect(getByRole('heading', { name: 'Provider Share' })).toBeTruthy()
-    expect(getAllByText('OpenAI').length).toBeGreaterThan(0)
+    await findByText('Total tokens')
     expect(requests.filter((entry) => entry.period === 'week')).toHaveLength(1)
 
-    // 四周期切换：每个周期只请求一次；切回已加载周期不再请求。
     fireEvent.click(getByRole('tab', { name: 'Today' }))
     await waitFor(() =>
       expect(requests.some((entry) => entry.period === 'today')).toBe(true),
@@ -212,9 +325,9 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
       expect(requests.some((entry) => entry.period === 'year')).toBe(true),
     )
     fireEvent.click(getByRole('tab', { name: 'This Week' }))
-    await findByRole('heading', { name: 'Model Rankings' })
+    await findByText('Total tokens')
     fireEvent.click(getByRole('tab', { name: 'Today' }))
-    await findByRole('heading', { name: 'Model Rankings' })
+    await findByText('Total tokens')
 
     expect(requests.filter((entry) => entry.period === 'week')).toHaveLength(1)
     expect(requests.filter((entry) => entry.period === 'today')).toHaveLength(1)
@@ -240,13 +353,13 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
       <Harness />,
       ['public'],
     )
-    await findAllByText('GPT-4o')
+    await findAllByText('deepseek-flash')
     fireEvent.click(getByRole('button', { name: 'Refresh' }))
 
     await waitFor(() => expect(requests).toHaveLength(2))
     expect(requests[1]?.ifNoneMatch).toBe('"week-1"')
     // 304 无 body：沿用上一次的数据，不出现错误态。
-    expect((await findAllByText('GPT-4o')).length).toBeGreaterThan(0)
+    expect((await findAllByText('deepseek-flash')).length).toBeGreaterThan(0)
     expect(getByRole('button', { name: 'Refresh' })).toBeTruthy()
   })
 
@@ -263,53 +376,14 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
       return HttpResponse.json(rankingsFixture('week'), { headers: { ETag: '"week-1"' } })
     })
 
-    const { findAllByText, findByText, getByRole } = await renderWithProviders(
+    const { findAllByText, findByText } = await renderWithProviders(
       <Harness />,
       ['public'],
     )
     expect(await findByText(/Too many requests\. Please retry in 1s/)).toBeTruthy()
     await waitFor(() => expect(calls).toBe(2), { timeout: 4000 })
-    expect((await findAllByText('GPT-4o')).length).toBeGreaterThan(0)
-    expect(getByRole('heading', { name: 'Model Rankings' })).toBeTruthy()
-  })
-
-  it('renders movers, trend and share, and switches every chart to a table', async () => {
-    installBaseHandlers(() =>
-      HttpResponse.json(rankingsFixture('week'), { headers: { ETag: '"week-1"' } }),
-    )
-
-    const { findByRole, getByRole, container } = await renderWithProviders(
-      <Harness />,
-      ['public'],
-    )
-    await findByRole('heading', { name: 'Model Rankings' })
-
-    // 升降榜百分比、趋势图例、供应商份额读数。
-    expect(getByRole('heading', { name: /Rising/ })).toBeTruthy()
-    expect(getByRole('heading', { name: /Falling/ })).toBeTruthy()
-    expect(container.textContent).toContain('18.4%')
-    expect(container.textContent).toContain('9.7%')
-    expect(getByRole('heading', { name: 'Historical Trend' })).toBeTruthy()
-    expect(container.textContent).toContain('42.1%')
-
-    // 模型榜：精确值表格（含并列名次 2、2）。
-    const modelSection = document.getElementById('model-rankings') as HTMLElement
-    fireEvent.click(within(modelSection).getByRole('button', { name: 'Table' }))
-    expect(within(modelSection).getByTestId('model-table')).toBeTruthy()
-    expect(within(modelSection).getAllByText('1,240,000').length).toBeGreaterThan(0)
-    expect(within(modelSection).getByText('New')).toBeTruthy()
-    // 并列名次：两条模型共享服务端名次 2，必须原样展示而不是重排。
-    expect(within(modelSection).getAllByText('2').length).toBeGreaterThanOrEqual(2)
-
-    // 趋势：表格视图提供精确值。
-    const trendSection = document.getElementById('trend') as HTMLElement
-    fireEvent.click(within(trendSection).getByRole('button', { name: 'Table' }))
-    expect(within(trendSection).getByTestId('trend-table')).toBeTruthy()
-
-    // 份额：表格视图含合计行。
-    const shareSection = document.getElementById('market-share') as HTMLElement
-    fireEvent.click(within(shareSection).getByRole('button', { name: 'Table' }))
-    expect(within(shareSection).getByText('Total')).toBeTruthy()
+    expect((await findAllByText('deepseek-flash')).length).toBeGreaterThan(0)
+    expect(await findByText('Total tokens')).toBeTruthy()
   })
 
   it('renders the cold-start guide with threshold copy and configured CTAs', async () => {
@@ -317,10 +391,8 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
       HttpResponse.json(emptyFixture('week'), { headers: { ETag: '"week-empty"' } }),
     )
 
-    const { findByTestId, getByRole, getAllByText } = await renderWithProviders(
-      <Harness />,
-      ['public'],
-    )
+    const { findByTestId, getByRole, getAllByText, queryByTestId } =
+      await renderWithProviders(<Harness />, ['public'])
     const guide = await findByTestId('rankings-cold-start')
     expect(within(guide).getByText('The leaderboard is gathering data')).toBeTruthy()
     expect(guide.textContent).toContain('100')
@@ -331,8 +403,9 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
     expect(within(guide).getByRole('link', { name: 'Sign Up Free' }).getAttribute('href')).toBe(
       '/sign-up',
     )
-    // 四区块以「待累积」占位，不留空白。
+    // 四区块以「待累积」占位，不留空白；冷启动没有梯子。
     expect(getAllByText('Waiting for data')).toHaveLength(4)
+    expect(queryByTestId('rank-ladder')).toBeNull()
     expect(getByRole('tab', { name: 'This Week' })).toBeTruthy()
   })
 
@@ -418,7 +491,7 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
       <Harness />,
       ['public'],
     )
-    await findByText('Model Rankings')
+    await findByText('Total tokens')
     // 初始响应自报 0s（fresh），刷新命中 304 后按 computed_at 重算成 stale。
     expect(queryByText('Data may be delayed')).toBeNull()
     fireEvent.click(getByRole('button', { name: 'Refresh' }))
@@ -445,29 +518,6 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
     expect(requests[1]?.ifNoneMatch).toBeNull()
   })
 
-  it('uses the server rank for providers instead of the array position', async () => {
-    const fixture = rankingsFixture('week')
-    const first = fixture.providers[0]
-    fixture.providers =
-      first === undefined
-        ? []
-        : [{ ...first, rank: 7 }, ...fixture.providers.slice(1)]
-    installBaseHandlers(() =>
-      HttpResponse.json(fixture, { headers: { ETag: '"week-rank"' } }),
-    )
-    const { findByRole, getByTestId } = await renderWithProviders(
-      <Harness />,
-      ['public'],
-    )
-    await findByRole('heading', { name: 'Model Rankings' })
-    const shareSection = document.getElementById('market-share') as HTMLElement
-    fireEvent.click(within(shareSection).getByRole('button', { name: 'Table' }))
-    const rows = within(getByTestId('provider-table'))
-      .getAllByRole('row')
-      .filter((row) => row.querySelectorAll('td').length > 0)
-    expect(rows[0]?.querySelectorAll('td')[0]?.textContent).toBe('7')
-  })
-
   it('falls back to the local timezone when the response timezone is invalid', async () => {
     installBaseHandlers(() =>
       HttpResponse.json(
@@ -479,8 +529,11 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
       <Harness />,
       ['public'],
     )
-    expect(await findByRole('heading', { name: 'Model Rankings' })).toBeTruthy()
-    expect(container.textContent).toContain('Methodology')
+    expect(
+      await findByRole('heading', { name: 'Where these numbers come from' }),
+    ).toBeTruthy()
+    // 站点时区非法时回退浏览器时区，窗口日期仍可读且不崩页。
+    expect(container.textContent).toContain('2026')
   })
 
   it('normalizes an invalid period in the URL to the default week', () => {

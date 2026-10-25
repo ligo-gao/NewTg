@@ -1336,6 +1336,604 @@
   line-height: 18px;
 }
 
+/* ---------- Rankings ----------
+   Ported from demos/shell-unified/frame.html. Demo class names that could
+   later collide with other public-page primitives carry a `rank-` prefix
+   (`panel` → `rank-panel`, `seg` → `rank-seg`, `ladder` → `rank-ladder`,
+   `lane` → `rank-lane`, `rail-col` → `rank-rail`, `facts` → `rank-facts`,
+   `dist`/`eff`/`moments` → `rank-dist`/`rank-eff`/`rank-moments`).
+   Sizes follow the file's type scale; the demo's 12.5/15/19/20/23px map to
+   12/16/18/18/24px. */
+
+.public-shell .rank-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding-block: 0 18px;
+}
+
+.public-shell .rank-head h1 {
+  margin: 0;
+  color: var(--home-ink);
+  font-size: clamp(1.5rem, 2.4vw, 2rem);
+  line-height: 1.25;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.public-shell .rank-head p {
+  margin: 8px 0 0;
+  max-width: 44em;
+  color: var(--home-faint);
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.public-shell .rank-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Shared segmented control: period tabs and the ladder metric toggle. */
+.public-shell .rank-seg {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--home-rule-strong);
+  border-radius: 6px;
+}
+
+.public-shell .rank-seg button {
+  height: 36px;
+  padding-inline: 12px;
+  border: 0;
+  background: transparent;
+  color: var(--home-faint);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.public-shell .rank-seg button:hover { color: var(--home-ink); }
+
+.public-shell .rank-seg button[aria-pressed='true'],
+.public-shell .rank-seg button[aria-selected='true'] {
+  background: var(--home-paper-2);
+  color: var(--home-ink);
+  font-weight: 600;
+}
+
+.public-shell .rank-seg button:focus-visible {
+  outline: 2px solid var(--home-signal);
+  outline-offset: -2px;
+}
+
+.public-shell .rank-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding-inline: 12px;
+  border: 1px solid var(--home-rule-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--home-muted);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.public-shell .rank-refresh:hover {
+  border-color: var(--home-signal-bright);
+  color: var(--home-ink);
+}
+
+.public-shell .rank-refresh:disabled { cursor: not-allowed; opacity: 0.5; }
+
+.public-shell .rank-refresh:focus-visible {
+  outline: 2px solid var(--home-signal);
+  outline-offset: 2px;
+}
+
+/* Window / timezone / threshold / basis line. */
+.public-shell .rank-window {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  align-items: center;
+  padding-block: 12px;
+  border-block: 1px solid var(--home-rule);
+  color: var(--home-faint);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.public-shell .rank-window b {
+  color: var(--home-muted);
+  font-weight: 500;
+  font-family: var(--font-public-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Summary four-up. */
+.public-shell .rank-sum {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 20px;
+  overflow: hidden;
+  border: 1px solid var(--home-rule);
+  border-radius: 8px;
+  background: var(--home-card);
+}
+
+.public-shell .rank-sum > div {
+  padding: 14px 18px 16px;
+  border-top: 1px solid var(--home-rule);
+}
+
+.public-shell .rank-sum > div:nth-child(-n + 2) { border-top: 0; }
+.public-shell .rank-sum > div:nth-child(odd) { border-right: 1px solid var(--home-rule); }
+
+.public-shell .rank-sum .rank-k {
+  color: var(--home-faint);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.public-shell .rank-sum .rank-v {
+  margin-top: 3px;
+  color: var(--home-ink);
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.public-shell .rank-sum .rank-s {
+  margin-top: 3px;
+  color: var(--home-faint);
+  font-size: 12px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (min-width: 621px) {
+  .public-shell .rank-sum { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .public-shell .rank-sum > div { border-top: 0; border-right: 1px solid var(--home-rule); }
+  .public-shell .rank-sum > div:last-child { border-right: 0; }
+}
+
+/* Stacked trend panel. */
+.public-shell .rank-panel {
+  margin-top: 18px;
+  padding: 16px 18px 18px;
+  border: 1px solid var(--home-rule);
+  border-radius: 8px;
+  background: var(--home-card);
+}
+
+.public-shell .rank-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.public-shell .rank-panel h2 {
+  margin: 0;
+  color: var(--home-ink);
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 600;
+}
+
+.public-shell .rank-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--home-faint);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.public-shell .rank-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.public-shell .rank-legend i { width: 10px; height: 3px; border-radius: 1px; flex: none; }
+
+.public-shell .rank-chart { margin-top: 16px; }
+
+.public-shell .rank-trend-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The chart component hides itself below Tailwind's md (768); the public
+   pages only break at 621, so show the chart and drop the list there. */
+@media (min-width: 621px) {
+  .public-shell .rank-trend-list { display: none; }
+  .public-shell .rank-chart > div { display: block; }
+}
+
+.public-shell .rank-trend-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+  color: var(--home-faint);
+  font-size: 12px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.public-shell .rank-trend-track {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--home-paper-2);
+}
+
+.public-shell .rank-trend-track i { display: block; height: 100%; }
+
+/* Ladder + rail. The 1180px split is the demo's page-level layout break. */
+.public-shell .rank-body {
+  display: grid;
+  gap: 26px;
+  padding-block: 26px 0;
+}
+
+@media (min-width: 1180px) {
+  .public-shell .rank-body {
+    grid-template-columns: minmax(0, 1fr) 316px;
+    gap: 40px;
+    align-items: start;
+  }
+}
+
+.public-shell .rank-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.public-shell .rank-ladder-block { min-width: 0; }
+
+.public-shell .rank-ladder-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.public-shell .rank-ladder-head h2 {
+  margin: 0;
+  color: var(--home-ink);
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 600;
+}
+
+.public-shell .rank-ladder {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--home-rule);
+}
+
+.public-shell .rank-lane {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 84px;
+  gap: 0 14px;
+  align-items: start;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--home-rule);
+}
+
+.public-shell .rank-lane .rank {
+  color: var(--home-faint);
+  font-family: var(--font-public-mono);
+  font-size: 14px;
+  line-height: 22px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.public-shell .rank-lane-main { min-width: 0; }
+
+.public-shell .rank-name {
+  display: block;
+  overflow: hidden;
+  color: var(--home-ink);
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.public-shell .rank-bar {
+  height: 6px;
+  margin-top: 9px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--home-paper-2);
+  box-shadow: inset 0 0 0 1px var(--home-rule);
+}
+
+.public-shell .rank-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--home-signal-bright);
+  transition: width 300ms ease;
+}
+
+.public-shell .rank-sub {
+  display: block;
+  margin-top: 8px;
+  color: var(--home-faint);
+  font-size: 12px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.public-shell .rank-val {
+  color: var(--home-muted);
+  font-family: var(--font-public-mono);
+  font-size: 13px;
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.public-shell .rank-val small {
+  display: block;
+  color: var(--home-faint);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.public-shell .rank-lane--lead { padding-block: 20px; }
+.public-shell .rank-lane--lead .rank { color: var(--home-ink); font-size: 18px; line-height: 28px; }
+.public-shell .rank-lane--lead .rank-name { font-size: 18px; line-height: 28px; }
+.public-shell .rank-lane--lead .rank-val { color: var(--home-ink); font-size: 16px; line-height: 24px; }
+.public-shell .rank-lane--lead .rank-bar { height: 10px; }
+.public-shell .rank-lane--lead .rank-bar i { background: var(--home-signal); }
+
+/* Rail panels. */
+.public-shell .rank-dist h2,
+.public-shell .rank-eff h2,
+.public-shell .rank-moments h2 {
+  margin: 0 0 12px;
+  color: var(--home-ink);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 600;
+}
+
+.public-shell .rank-dist-rows {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.public-shell .rank-prov {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 8px;
+  align-items: baseline;
+  padding-block: 7px;
+  border-bottom: 1px solid var(--home-rule);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.public-shell .rank-prov:last-child { border-bottom: 0; }
+
+.public-shell .rank-prov .n {
+  overflow: hidden;
+  color: var(--home-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.public-shell .rank-prov .p {
+  color: var(--home-ink);
+  font-family: var(--font-public-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.public-shell .rank-prov .t {
+  grid-column: 1 / -1;
+  color: var(--home-faint);
+  font-family: var(--font-public-mono);
+}
+
+.public-shell .rank-note {
+  margin: 12px 0 0;
+  padding-top: 11px;
+  border-top: 1px solid var(--home-rule);
+  color: var(--home-faint);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.public-shell .rank-empty {
+  margin: 0;
+  padding: 12px;
+  border: 1px dashed var(--home-rule-strong);
+  border-radius: 6px;
+  color: var(--home-faint);
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.public-shell .rank-eff-rows {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.public-shell .rank-eff-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 62px;
+  gap: 6px 12px;
+  align-items: center;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.public-shell .rank-eff-row .n {
+  overflow: hidden;
+  color: var(--home-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.public-shell .rank-eff-row .p {
+  color: var(--home-muted);
+  font-family: var(--font-public-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.public-shell .rank-eff-track {
+  grid-column: 1 / -1;
+  display: block;
+  height: 5px;
+  margin-top: -4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--home-paper-2);
+  box-shadow: inset 0 0 0 1px var(--home-rule);
+}
+
+.public-shell .rank-eff-track i {
+  display: block;
+  height: 100%;
+  background: var(--home-signal-bright);
+  transition: width 300ms ease;
+}
+
+.public-shell .rank-moments-empty {
+  padding: 12px;
+  border: 1px dashed var(--home-rule-strong);
+  border-radius: 6px;
+  color: var(--home-faint);
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.public-shell .rank-mover-group { margin-top: 12px; }
+.public-shell .rank-mover-group:first-of-type { margin-top: 0; }
+
+.public-shell .rank-mover-group h3 {
+  margin: 0 0 6px;
+  color: var(--home-muted);
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 600;
+}
+
+.public-shell .rank-mover-group ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.public-shell .rank-mover-group li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.public-shell .rank-mover-group .n {
+  overflow: hidden;
+  color: var(--home-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.public-shell .rank-mover-group .p {
+  color: var(--home-ink);
+  font-family: var(--font-public-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Methodology facts. */
+.public-shell .rank-facts {
+  padding: 14px 16px;
+  border: 1px solid var(--home-rule);
+  border-radius: 8px;
+  background: var(--home-card);
+}
+
+.public-shell .rank-facts h2 {
+  margin: 0 0 10px;
+  color: var(--home-ink);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 600;
+}
+
+.public-shell .rank-facts dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px 12px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.public-shell .rank-facts dt { color: var(--home-faint); white-space: nowrap; }
+
+.public-shell .rank-facts dd {
+  margin: 0;
+  color: var(--home-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.public-shell .rank-facts dd.mono { font-family: var(--font-public-mono); }
+
+.public-shell .rank-panel-body {
+  display: flex;
+  flex-direction: column;
+}
+
 /* ---------- Footer ---------- */
 
 .public-shell .site-footer {

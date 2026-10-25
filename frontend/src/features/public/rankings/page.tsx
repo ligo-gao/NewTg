@@ -1,5 +1,6 @@
 /**
- * 排行榜页面框架（F-09-29）：Hero + 周期 Tabs + 四个数据区块。
+ * 排行榜页面（F-09-29）：Hero + 周期 Tabs + 刷新 → 口径条 → 概要四格 →
+ * token 走势 → 排名梯子 + 右栏 → 事实栏。
  *
  * 数据策略：
  * - 每个周期一条 query，`staleTime=Infinity` → 切回已加载周期不再请求；
@@ -7,6 +8,8 @@
  * - 429 使用服务端 `Retry-After` 倒计时，归零后自动重试一次；离线恢复
  *   监听 `online` 事件自动重发当前周期。
  *
+ * 所有读数都来自 `rankingsSummary` / `metricShare` / `tokensPerRequest`，
+ * 页面本身不做除法；接口没给的数字（例如趋势补点、目录总数）一律不补。
  * 冷启动（status=empty）不是「暂无数据」：保留 Hero 与 Tabs，主区渲染
  * 引导卡与四个「待累积」占位，并按配置显示定价/文档/注册入口。
  */
@@ -20,6 +23,7 @@ import { usePublicStatus } from '@/lib/public-status'
 import { ME_QUERY_KEY, meQueryOptions } from '@/lib/session'
 import { formatRelativeTime } from '@/shared/lib/datetime'
 import { useI18n } from '@/shared/lib/i18n-context'
+import type { TranslateFn } from '@/shared/lib/i18n-context'
 import { isSafePublicHref } from '@/features/public/nav-visibility'
 
 import {
@@ -28,15 +32,20 @@ import {
   rankingsQueryOptions,
   type RankingsPeriod,
   type RankingsResponse,
+  type RankingsTrend,
 } from './api'
-import { PERIOD_LABEL_KEYS } from './format'
+import { TrendStackedChart, seriesColor } from './charts'
 import {
-  ModelRankingsSection,
-  MomentumSection,
-  SectionPlaceholder,
-  ShareSection,
-  TrendSection,
-} from './sections'
+  PERIOD_LABEL_KEYS,
+  formatBucketFull,
+  formatBucketLabel,
+  formatCompact,
+  formatExact,
+} from './format'
+import { ModelLadder } from './ladder'
+import { RankingsRail } from './rail'
+import { SectionPlaceholder } from './sections'
+import { rankingsSummary } from './summary'
 
 export interface RankingsPageProps {
   period: RankingsPeriod
@@ -96,7 +105,7 @@ function PeriodTabs({
     <div
       role="tablist"
       aria-label={t('public.rankings.period.label')}
-      className="flex gap-1 overflow-x-auto rounded-lg bg-surface-subtle p-1"
+      className="rank-seg"
     >
       {RANKINGS_PERIODS.map((entry, index) => (
         <button
@@ -110,11 +119,6 @@ function PeriodTabs({
           tabIndex={period === entry ? 0 : -1}
           onClick={() => onChange(entry)}
           onKeyDown={(event) => onKeyDown(event, index)}
-          className={`h-9 shrink-0 rounded-md px-4 text-body font-medium focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none ${
-            period === entry
-              ? 'bg-surface-card text-brand shadow-sm'
-              : 'text-ink-2 hover:bg-surface-hover hover:text-ink-1'
-          }`}
         >
           {t(PERIOD_LABEL_KEYS[entry])}
         </button>
@@ -125,17 +129,14 @@ function PeriodTabs({
 
 function RankingsSkeleton() {
   return (
-    <div className="flex flex-col gap-10" data-testid="rankings-skeleton">
-      {[0, 1, 2, 3].map((section) => (
-        <div key={section}>
-          <div className="h-6 w-40 rounded bg-surface-subtle" />
-          <div className="mt-4 flex flex-col gap-3">
-            {[0, 1, 2].map((row) => (
-              <div key={row} className="h-10 rounded bg-surface-subtle/70" />
-            ))}
-          </div>
-        </div>
-      ))}
+    <div className="flex flex-col gap-6" data-testid="rankings-skeleton">
+      <div className="h-[76px] rounded-lg bg-surface-subtle" />
+      <div className="h-[172px] rounded-lg bg-surface-subtle/70" />
+      <div className="flex flex-col gap-3">
+        {[0, 1, 2].map((row) => (
+          <div key={row} className="h-16 rounded bg-surface-subtle/70" />
+        ))}
+      </div>
     </div>
   )
 }
@@ -145,17 +146,10 @@ function RankingsSkeleton() {
  * 非法 IANA 名不应让整页崩溃：`Intl.DateTimeFormat` 会抛 RangeError，
  * 此时回退浏览器本地时区，读数仍可读。
  */
-function absoluteTime(
-  value: string,
-  locale: string,
-  timeZone?: string,
-): string {
+function windowDate(value: string, locale: string, timeZone?: string): string {
   const ms = Date.parse(value)
   if (Number.isNaN(ms)) return value
-  const options: Intl.DateTimeFormatOptions = {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }
+  const options: Intl.DateTimeFormatOptions = { dateStyle: 'medium' }
   try {
     return new Intl.DateTimeFormat(
       locale,
@@ -262,6 +256,225 @@ function ColdStartGuide({
   )
 }
 
+function WindowBar({
+  data,
+  locale,
+  t,
+}: {
+  data: RankingsResponse
+  locale: string
+  t: TranslateFn
+}) {
+  return (
+    <div className="rank-window">
+      <span>
+        {t('public.rankings.window.label')}{' '}
+        <b>
+          {t('public.rankings.window.value', {
+            start: windowDate(data.window.start, locale, data.timezone),
+            end: windowDate(data.window.end, locale, data.timezone),
+          })}
+        </b>
+      </span>
+      <span>
+        {t('public.rankings.window.timezone')} <b>{data.timezone}</b>
+      </span>
+      <span>
+        {t('public.rankings.window.threshold')}{' '}
+        <b>
+          {t('public.rankings.window.threshold_value', {
+            count: data.sample_threshold,
+          })}
+        </b>
+      </span>
+      <span>
+        {t('public.rankings.window.basis')}{' '}
+        <b>{t('public.rankings.window.basis_value')}</b>
+      </span>
+    </div>
+  )
+}
+
+function SummaryFourUp({
+  data,
+  locale,
+  period,
+  t,
+}: {
+  data: RankingsResponse
+  locale: string
+  period: RankingsPeriod
+  t: TranslateFn
+}) {
+  const summary = rankingsSummary(data.models)
+  return (
+    <div className="rank-sum">
+      <div>
+        <div className="rank-k">{t('public.rankings.summary.tokens')}</div>
+        <div className="rank-v">
+          {formatCompact(summary.totalTokens, locale)}
+        </div>
+        <div className="rank-s">
+          {formatExact(summary.totalTokens, locale)}
+        </div>
+      </div>
+      <div>
+        <div className="rank-k">{t('public.rankings.summary.requests')}</div>
+        <div className="rank-v">
+          {formatExact(summary.totalRequests, locale)}
+        </div>
+        <div className="rank-s">{t(PERIOD_LABEL_KEYS[period])}</div>
+      </div>
+      <div>
+        <div className="rank-k">{t('public.rankings.summary.models')}</div>
+        <div className="rank-v">{summary.listedModels}</div>
+      </div>
+      <div>
+        <div className="rank-k">{t('public.rankings.summary.providers')}</div>
+        <div className="rank-v">{summary.providerCount}</div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * 趋势面板只画响应里的桶：接口返回 1 个桶就画 1 个，绝不补齐到 7 天，
+ * 因此也不需要「示意数据」标注。移动端图表隐藏时用每桶一根全宽堆叠条
+ * 承载同样的读数。
+ */
+function TrendPanel({
+  trend,
+  locale,
+  t,
+}: {
+  trend: RankingsTrend
+  locale: string
+  t: TranslateFn
+}) {
+  const hasTrend = trend.buckets.length > 0 && trend.series.length > 0
+  const totals = trend.buckets.map((_, bucketIndex) =>
+    trend.series.reduce(
+      (sum, item) => sum + (item.tokens[bucketIndex] ?? 0),
+      0,
+    ),
+  )
+  const seriesLabel = (model: string) =>
+    model === 'Other' ? t('public.rankings.trend.other') : model
+
+  return (
+    <section className="rank-panel rank-trend" aria-labelledby="rank-trend-title">
+      <div className="rank-panel-head">
+        <h2 id="rank-trend-title">{t('public.rankings.trend.title')}</h2>
+        {hasTrend ? (
+          <ul className="rank-legend">
+            {trend.series.map((item) => (
+              <li key={item.model}>
+                <i
+                  aria-hidden="true"
+                  style={{ backgroundColor: seriesColor(item.slot) }}
+                />
+                <span>{seriesLabel(item.model)}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+      {hasTrend ? (
+        <>
+          <div className="rank-chart">
+            <TrendStackedChart
+              series={trend.series}
+              buckets={trend.buckets}
+              granularity={trend.granularity}
+              locale={locale}
+              ariaLabel={t('public.rankings.trend.chart_aria', {
+                count: trend.buckets.length,
+              })}
+            />
+          </div>
+          <ul className="rank-trend-list">
+            {trend.buckets.map((bucket, bucketIndex) => {
+              const total = totals[bucketIndex] ?? 0
+              return (
+                <li key={bucket}>
+                  <div className="rank-trend-label">
+                    <span title={formatBucketFull(bucket)}>
+                      {formatBucketLabel(bucket, trend.granularity)}
+                    </span>
+                    <span>{formatCompact(total, locale)}</span>
+                  </div>
+                  <div className="rank-trend-track" aria-hidden="true">
+                    {trend.series.map((item) => {
+                      const value = item.tokens[bucketIndex] ?? 0
+                      if (value <= 0 || total <= 0) return null
+                      return (
+                        <i
+                          key={item.model}
+                          style={{
+                            width: `${(value / total) * 100}%`,
+                            backgroundColor: seriesColor(item.slot),
+                          }}
+                        />
+                      )
+                    })}
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        </>
+      ) : (
+        <p className="rank-empty">{t('public.rankings.trend.accumulating')}</p>
+      )}
+    </section>
+  )
+}
+
+/** 事实栏：窗口 / 样本 / 阈值 / 计算于 / 时区，全部来自响应。 */
+function FactsPanel({
+  data,
+  locale,
+  t,
+}: {
+  data: RankingsResponse
+  locale: string
+  t: TranslateFn
+}) {
+  return (
+    <div className="rank-facts">
+      <h2>{t('public.rankings.facts.title')}</h2>
+      <dl>
+        <dt>{t('public.rankings.window.label')}</dt>
+        <dd className="mono">
+          {t('public.rankings.window.value', {
+            start: windowDate(data.window.start, locale, data.timezone),
+            end: windowDate(data.window.end, locale, data.timezone),
+          })}
+        </dd>
+        <dt>{t('public.rankings.facts.samples')}</dt>
+        <dd className="mono">
+          {formatExact(rankingsSummary(data.models).totalRequests, locale)}{' '}
+          {t('public.rankings.ladder.requests')}
+        </dd>
+        <dt>{t('public.rankings.window.threshold')}</dt>
+        <dd className="mono">
+          {t('public.rankings.window.threshold_value', {
+            count: data.sample_threshold,
+          })}
+        </dd>
+        <dt>{t('public.rankings.facts.computed')}</dt>
+        <dd>
+          {data.computed_at === null
+            ? '—'
+            : formatRelativeTime(data.computed_at, locale)}
+        </dd>
+        <dt>{t('public.rankings.window.timezone')}</dt>
+        <dd className="mono">{data.timezone}</dd>
+      </dl>
+    </div>
+  )
+}
+
 export function RankingsPage({ period, onPeriodChange }: RankingsPageProps) {
   const { t, locale } = useI18n()
   const status = usePublicStatus()
@@ -349,54 +562,22 @@ export function RankingsPage({ period, onPeriodChange }: RankingsPageProps) {
 
   return (
     <div>
-      <header className="border-b border-border-hairline pb-6 pt-10">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h1 className="text-public-title font-semibold leading-8 text-ink-1">
-              {t('public.rankings.title')}
-            </h1>
-            <p className="mt-2 max-w-[640px] text-body leading-6 text-ink-2">
-              {t('public.rankings.subtitle')}
-            </p>
-          </div>
+      <header className="rank-head">
+        <div>
+          <h1>{t('public.rankings.title')}</h1>
+          <p>{t('public.rankings.subtitle')}</p>
+        </div>
+        <div className="rank-actions">
+          <PeriodTabs period={period} onChange={onPeriodChange} />
           <button
             type="button"
             onClick={() => void query.refetch()}
             disabled={query.isFetching}
-            className="inline-flex h-9 items-center gap-2 rounded-lg border border-border-default px-3 text-body font-medium text-ink-1 hover:border-brand disabled:cursor-not-allowed disabled:opacity-50 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="rank-refresh"
           >
             <RefreshIcon />
             {t('public.rankings.refresh')}
           </button>
-        </div>
-
-        <div className="mt-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <PeriodTabs period={period} onChange={onPeriodChange} />
-          {data !== null && data !== undefined && data.status !== 'empty' ? (
-            <p
-              className="text-meta leading-5 text-ink-3"
-              title={
-                data.computed_at !== null
-                  ? absoluteTime(data.computed_at, locale, data.timezone)
-                  : undefined
-              }
-            >
-              {t('public.rankings.methodology')} ·{' '}
-              {t('public.rankings.window', {
-                start: absoluteTime(data.window.start, locale, data.timezone),
-                end: absoluteTime(data.window.end, locale, data.timezone),
-              })}{' '}
-              · {t('public.rankings.min_samples', { count: data.sample_threshold })}{' '}
-              {data.computed_at !== null ? (
-                <>
-                  ·{' '}
-                  {t('public.rankings.updated', {
-                    relative: formatRelativeTime(data.computed_at, locale),
-                  })}
-                </>
-              ) : null}
-            </p>
-          ) : null}
         </div>
       </header>
 
@@ -414,7 +595,7 @@ export function RankingsPage({ period, onPeriodChange }: RankingsPageProps) {
         id="rankings-panel"
         role="tabpanel"
         aria-labelledby={`rankings-tab-${period}`}
-        className="mt-8 flex flex-col gap-10"
+        className="rank-panel-body"
       >
         {query.isPending && !rateLimited ? (
           <RankingsSkeleton />
@@ -428,23 +609,39 @@ export function RankingsPage({ period, onPeriodChange }: RankingsPageProps) {
               docsUrl={docsUrl}
               signupEnabled={signupEnabled}
             />
-            <SectionPlaceholder titleKey="public.rankings.model.title" />
-            <SectionPlaceholder titleKey="public.rankings.momentum.title" />
             <SectionPlaceholder titleKey="public.rankings.trend.title" />
-            <SectionPlaceholder titleKey="public.rankings.share.title" />
+            <SectionPlaceholder titleKey="public.rankings.ladder.title" />
+            <SectionPlaceholder titleKey="public.rankings.rail.providers" />
+            <SectionPlaceholder titleKey="public.rankings.rail.efficiency" />
           </>
         ) : (
           <>
-            <ModelRankingsSection
-              models={data.models}
-              period={period}
-              onSelectPeriod={onPeriodChange}
+            <WindowBar data={data} locale={locale} t={t} />
+            <SummaryFourUp
+              data={data}
               locale={locale}
+              period={period}
               t={t}
             />
-            <MomentumSection movers={data.movers} locale={locale} />
-            <TrendSection trend={data.trend} locale={locale} />
-            <ShareSection providers={data.providers} locale={locale} />
+            <TrendPanel trend={data.trend} locale={locale} t={t} />
+            <div className="rank-body">
+              <ModelLadder
+                models={data.models}
+                metric="tokens"
+                locale={locale}
+                t={t}
+              />
+              <aside className="rank-rail">
+                <RankingsRail
+                  providers={data.providers}
+                  models={data.models}
+                  movers={data.movers}
+                  locale={locale}
+                  t={t}
+                />
+                <FactsPanel data={data} locale={locale} t={t} />
+              </aside>
+            </div>
           </>
         )}
       </div>
