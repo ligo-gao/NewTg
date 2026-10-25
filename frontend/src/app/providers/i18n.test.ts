@@ -144,13 +144,13 @@ describe('locale resolution (web-00 §7.3)', () => {
     expect(resolveInitialLocale()).toBe('ja')
   })
 
-  it('falls back to navigator.language, then en', async () => {
+  it('falls back to zh-CN, not the browser language', async () => {
     setNavigatorLanguage('ru-RU')
     const { resolveInitialLocale } = await freshI18n()
-    expect(resolveInitialLocale()).toBe('ru')
+    expect(resolveInitialLocale()).toBe('zh-CN')
 
     setNavigatorLanguage('de-DE')
-    expect(resolveInitialLocale()).toBe('en')
+    expect(resolveInitialLocale()).toBe('zh-CN')
   })
 
   it('intersects status languages with bundled locales, preserving server order', async () => {
@@ -168,9 +168,9 @@ describe('locale resolution (web-00 §7.3)', () => {
 
   it('exposes the active locale for route loaders and persists switches', async () => {
     const { getActiveLocale, loadRouteDictionary } = await freshI18n()
-    expect(getActiveLocale()).toBe('en')
+    expect(getActiveLocale()).toBe('zh-CN')
 
     await loadRouteDictionary('public')
-    expect(getActiveLocale()).toBe('en')
+    expect(getActiveLocale()).toBe('zh-CN')
   })
 })

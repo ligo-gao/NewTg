@@ -142,9 +142,18 @@ const DICTIONARY_LOADERS: Record<
   },
 }
 
-/** 随包发布的 7 语（canonical，默认 `en`）。 */
+/** 随包发布的 7 语（canonical）。 */
 export const BUNDLED_LOCALES = Object.keys(DICTIONARY_LOADERS) as Locale[]
-export const DEFAULT_LOCALE: Locale = 'en'
+/**
+ * 产品默认语言：未登录访客的首屏语言，也是语言集合归一化时的首选。
+ * 它不是「词典回退语言」——缺键回退始终走 `FALLBACK_LOCALE`。
+ */
+export const DEFAULT_LOCALE: Locale = 'zh-CN'
+/**
+ * 词典回退链（§7.2）的兜底语言：当前语言 → en → 键名。它不随界面默认语言
+ * 变化，否则英文用户遇到一条漏译就会看到中文。
+ */
+const FALLBACK_LOCALE: Locale = 'en'
 /** 兼容旧引用：M0 的 SUPPORTED_LOCALES 语义即「随包语言」。 */
 export const SUPPORTED_LOCALES = BUNDLED_LOCALES
 
@@ -192,16 +201,15 @@ export function matchLocale(tag: string | null | undefined): Locale | null {
 }
 
 /**
- * 初始语言决定顺序的前半段（§7.3）：本地记忆 → `navigator.language` → `en`。
- * 服务端偏好优先级最高，但它必须异步读取，由 `LocalePreferenceSync` 在
- * 挂载后覆盖；先同步给出一个可渲染的语言，避免首屏闪烁成键名。
+ * 初始语言决定顺序的前半段（§7.3）：本地记忆 → `zh-CN`。
+ *
+ * 产品默认语言是简体中文：浏览器语言不再参与首屏决定，因此俄语/德语等
+ * 浏览器无法改变未登录访客看到的语言。服务端偏好优先级最高，但它必须
+ * 异步读取，由 `LocalePreferenceSync` 在挂载后覆盖；先同步给出一个可渲染
+ * 的语言，避免首屏闪烁成键名。
  */
 export function resolveInitialLocale(): Locale {
-  const stored = readStoredLocale()
-  if (stored !== null) return stored
-  const navigatorTag =
-    typeof navigator === 'undefined' ? undefined : navigator.language
-  return matchLocale(navigatorTag) ?? DEFAULT_LOCALE
+  return readStoredLocale() ?? DEFAULT_LOCALE
 }
 
 /** 当前激活语言。路由 loader 在 React 之外执行，需要这条模块级镜像。 */
@@ -299,7 +307,7 @@ async function loadOne(
 /**
  * 加载、展开并缓存一个域词典（§7.2）。
  *
- * 非默认语言会同时加载 `en` 同域词典：§7.2 的回退链是「当前语言 → en →
+ * 非 `en` 语言会同时加载 `en` 同域词典：§7.2 的回退链是「当前语言 → en →
  * 键名」，若 en 未加载，一次漏译就会直接渲染键名。两者都是异步 chunk，
  * 不进入首屏路径。
  */
@@ -308,9 +316,9 @@ export async function loadDictionary(
   module: DictionaryModule,
 ): Promise<FlatDictionary> {
   requestedModules.add(module)
-  if (locale === DEFAULT_LOCALE) return loadOne(locale, module)
+  if (locale === FALLBACK_LOCALE) return loadOne(locale, module)
   const [, dict] = await Promise.all([
-    loadOne(DEFAULT_LOCALE, module),
+    loadOne(FALLBACK_LOCALE, module),
     loadOne(locale, module),
   ])
   return dict
@@ -352,8 +360,8 @@ export function translate(
 
   // §7.2 回退链：当前语言 → en → 键名本身。
   let template = dictionary?.[key]
-  if (template === undefined && locale !== DEFAULT_LOCALE) {
-    template = dictionaries[DEFAULT_LOCALE]?.[module]?.[key]
+  if (template === undefined && locale !== FALLBACK_LOCALE) {
+    template = dictionaries[FALLBACK_LOCALE]?.[module]?.[key]
   }
 
   if (template === undefined) {
@@ -438,7 +446,8 @@ export function I18nProvider({
 
   /**
    * 状态归一化（F5）：激活语言必须落在 status 下发的集合内；不在集合内时
-   * 优先回退 en，其次集合首项。这不是用户手势，因此不动 gesture 标记。
+   * 优先回退产品默认语言，其次 en（跨语言通用文案），最后集合首项。这不是
+   * 用户手势，因此不动 gesture 标记。
    */
   const applyAvailableLocales = useCallback(
     (next: readonly Locale[]) => {
@@ -446,9 +455,12 @@ export function I18nProvider({
       setAvailableLocalesState(next)
       if (next.length === 0) return
       if (!next.includes(localeRef.current)) {
-        commitLocale(
-          next.includes(DEFAULT_LOCALE) ? DEFAULT_LOCALE : (next[0] ?? DEFAULT_LOCALE),
-        )
+        const fallback = next.includes(DEFAULT_LOCALE)
+          ? DEFAULT_LOCALE
+          : next.includes(FALLBACK_LOCALE)
+            ? FALLBACK_LOCALE
+            : (next[0] ?? DEFAULT_LOCALE)
+        commitLocale(fallback)
       }
     },
     [commitLocale],
@@ -547,8 +559,7 @@ interface LocalePreferenceSyncProps {
  * 语言偏好同步（web-00 §7.3 的硬顺序）：
  *   1. 已登录用户的服务端偏好（GET /api/self）；
  *   2. 本地 localStorage（初始已在 `resolveInitialLocale` 中生效）；
- *   3. navigator.language；
- *   4. en。
+ *   3. 产品默认语言 zh-CN。
  *
  * 服务端偏好只能异步读取，因此挂载后一旦拿到就覆盖当前语言；但用户已经
  * 主动切换过时不再覆盖（`onServerLocale` 内部判断手势）。

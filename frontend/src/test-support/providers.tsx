@@ -8,6 +8,10 @@ import { I18nProvider, loadDictionary, type DictionaryModule } from '@/app/provi
  * Renders a feature component with the same providers the app mounts, using a
  * fresh QueryClient per test (query caches are module state otherwise) and
  * pre-loading the dictionaries so assertions can use final copy immediately.
+ *
+ * The locale is pinned to `en`: the product default is `zh-CN`, but these
+ * suites assert English copy. Pin it explicitly instead of relying on stored
+ * state, because several suites clear localStorage in their own `beforeEach`.
  */
 export async function renderWithProviders(
   ui: ReactNode,
@@ -24,7 +28,9 @@ export async function renderWithProviders(
 
   return render(
     <QueryClientProvider client={client}>
-      <I18nProvider modules={modules}>{ui}</I18nProvider>
+      <I18nProvider locale="en" modules={modules}>
+        {ui}
+      </I18nProvider>
     </QueryClientProvider>,
   )
 }

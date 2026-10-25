@@ -184,7 +184,8 @@ function renderConsoleAt(path: string) {
   return {
     ...render(
       <QueryClientProvider client={queryClient}>
-        <I18nProvider modules={['common']}>
+        {/* 产品默认是 zh-CN；本套件断言 en 文案，显式固定语言。 */}
+        <I18nProvider locale="en" modules={['common']}>
           <RouterProvider router={router} />
         </I18nProvider>
       </QueryClientProvider>,
