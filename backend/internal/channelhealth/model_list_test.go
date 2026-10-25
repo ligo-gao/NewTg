@@ -5,10 +5,55 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"newtg/gateway/internal/contract"
 )
+
+// base_url 以 /v1 结尾时，relay（adapters.joinURL）会去掉重复的 /v1 前缀；
+// 模型目录必须同口径，否则填 `https://host/v1` 的渠道能转发但拉不到模型。
+func TestModelListerAcceptsBaseURLWithV1Suffix(t *testing.T) {
+	cases := []struct {
+		name string
+		typ  contract.ChannelType
+	}{
+		{"openai", contract.ChannelTypeOpenAI},
+		{"anthropic", contract.ChannelTypeAnthropic},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPaths []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPaths = append(gotPaths, r.URL.Path)
+				if r.URL.Path != "/v1/models" {
+					http.NotFound(w, r)
+					return
+				}
+				_, _ = w.Write([]byte(`{"data":[{"id":"m1"},{"id":"m2"}],"has_more":false}`))
+			}))
+			defer server.Close()
+
+			for _, suffix := range []string{"/v1", "/v1/"} {
+				gotPaths = nil
+				models, err := NewModelLister().List(context.Background(), ModelListRequest{
+					ChannelType: tc.typ,
+					BaseURL:     server.URL + suffix,
+					APIKey:      "sk-test",
+				})
+				if err != nil {
+					t.Fatalf("base %q: List: %v", suffix, err)
+				}
+				if len(models) != 2 {
+					t.Fatalf("base %q: models = %v", suffix, models)
+				}
+				if got := strings.Join(gotPaths, ","); got != "/v1/models" {
+					t.Fatalf("base %q: requested paths = %q", suffix, got)
+				}
+			}
+		})
+	}
+}
 
 func TestModelListerOpenAICompatible(t *testing.T) {
 	var gotAuth string

@@ -187,11 +187,35 @@ func (l *ModelLister) listOpenAICompatible(
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+key)
 	headers.Set("Accept", "application/json")
-	body, err := l.get(ctx, base+path, headers)
+	requestURL, err := joinModelPath(base, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	body, err := l.get(ctx, requestURL, headers)
 	if err != nil {
 		return nil, err
 	}
 	return parseOpenAIModels(body)
+}
+
+// joinModelPath 拼接 base_url 与模型目录路径，沿用 relay 适配器的尾部 /v1
+// 去重规则（adapters.joinURL / relay-02 §7.2）：base 以 /v1 结尾时不再重复
+// path 的 /v1。这样 `https://host` 与 `https://host/v1` 两种写法都能取到模型，
+// 与转发行为保持一致。
+func joinModelPath(base, path string, query url.Values) (string, error) {
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("%w: base_url must be a valid http/https URL", ErrModelListConfig)
+	}
+	basePath := strings.TrimRight(parsed.Path, "/")
+	if strings.HasSuffix(basePath, "/v1") && strings.HasPrefix(path, "/v1/") {
+		path = strings.TrimPrefix(path, "/v1")
+	}
+	parsed.Path = basePath + path
+	if query != nil {
+		parsed.RawQuery = query.Encode()
+	}
+	return parsed.String(), nil
 }
 
 func (l *ModelLister) listAnthropic(
@@ -212,11 +236,16 @@ func (l *ModelLister) listAnthropic(
 	models := make([]string, 0, 64)
 	afterID := ""
 	for page := 0; page < modelListMaxPages; page++ {
-		path := base + prefix + "/v1/models?limit=1000"
+		query := url.Values{}
+		query.Set("limit", "1000")
 		if afterID != "" {
-			path += "&after_id=" + url.QueryEscape(afterID)
+			query.Set("after_id", afterID)
 		}
-		body, err := l.get(ctx, path, headers)
+		requestURL, err := joinModelPath(base, prefix+"/v1/models", query)
+		if err != nil {
+			return nil, err
+		}
+		body, err := l.get(ctx, requestURL, headers)
 		if err != nil {
 			return nil, err
 		}
