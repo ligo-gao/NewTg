@@ -96,17 +96,21 @@
 
 .public-shell [hidden] { display: none !important; }
 
-/* The mobile drawer is portaled outside the layout root; this wrapper puts
-   its controls back inside the public token scope without painting a second
-   paper background over the sheet. */
-.public-shell.drawer-shell { background: transparent; }
-
 .public-shell .wrap {
   width: 100%;
   max-width: 1520px;
   margin-inline: auto;
-  padding-left: max(24px, env(safe-area-inset-left, 0px));
-  padding-right: max(24px, env(safe-area-inset-right, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+
+/* Content gutter ladder: 16px, 24px from 621, 40px from 1280. */
+@media (min-width: 621px) {
+  .public-shell .wrap { padding-inline: 24px; }
+}
+
+@media (min-width: 1280px) {
+  .public-shell .wrap { padding-inline: 40px; }
 }
 
 .public-shell .mono { font-family: var(--font-public-mono); }
@@ -114,30 +118,35 @@
 /* ---------- Header ---------- */
 
 .public-shell .site-header {
-  position: sticky;
+  position: fixed;
+  inset-inline: 0;
   top: 0;
-  z-index: 40;
-  background: var(--home-paper);
+  z-index: 50;
   border-bottom: 1px solid var(--home-rule);
+  background: var(--home-nav-bg);
+  backdrop-filter: blur(14px);
 }
+
+/* Fixed header: reserve its height so the first heading is never covered. */
+.public-shell main#main { padding-top: 64px; }
 
 .public-shell .header-row {
   display: flex;
   align-items: center;
-  gap: 28px;
-  min-height: 66px;
+  gap: 36px;
+  height: 64px;
 }
 
 .public-shell .brand {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
   flex: none;
   color: var(--home-ink);
   text-decoration: none;
 }
 
-.public-shell .brand-mark { width: 27px; height: 27px; flex: none; }
+.public-shell .brand-mark { width: 22px; height: 22px; flex: none; }
 .public-shell .brand-mark .mark-dot { fill: var(--home-signal); }
 .public-shell .site-footer .brand-mark .mark-dot { fill: var(--home-signal-bright); }
 
@@ -159,75 +168,114 @@
 }
 
 .public-shell .brand-name {
-  font-size: 18px;
-  line-height: 28px;
-  font-weight: 600;
-  letter-spacing: -0.025em;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
 }
 
 .public-shell .nav {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 28px;
 }
 
 .public-shell .nav-link {
-  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  height: 36px;
-  padding: 0 12px;
-  border-radius: 6px;
   color: var(--home-muted);
   text-decoration: none;
   font-size: 14px;
   line-height: 22px;
-  font-weight: 500;
+  font-weight: 400;
+  transition: color 150ms ease;
 }
 
-.public-shell .nav-link:hover {
-  color: var(--home-ink);
-  background: var(--home-paper-2);
-}
+.public-shell .nav-link:hover { color: var(--home-ink); }
 
 .public-shell .nav-link[aria-current='page'] { color: var(--home-ink); }
-
-.public-shell .nav-link[aria-current='page']::after {
-  content: '';
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: -13px;
-  height: 2px;
-  background: var(--home-signal);
-}
 
 .public-shell .header-tools {
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 14px;
 }
 
 .public-shell .home-lang select {
-  height: 34px;
+  height: 30px;
   max-width: 150px;
   padding: 0 8px;
-  border: 1px solid transparent;
+  border: 1px solid var(--home-rule-strong);
   border-radius: 6px;
   background: transparent;
   color: var(--home-muted);
   font-family: var(--font-public);
-  font-size: 13px;
+  font-size: 12.5px;
   line-height: 20px;
   cursor: pointer;
 }
 .public-shell .home-lang select:hover {
   color: var(--home-ink);
-  border-color: var(--home-rule);
+  border-color: var(--home-ink);
 }
 .public-shell .home-lang select:focus-visible {
+  outline: 2px solid var(--home-signal);
+  outline-offset: 2px;
+}
+
+/* Compact language pill for the collapsed row: the visible code is the
+   selected locale; the native select stays on top for keyboard and mobile. */
+.public-shell .home-lang-compact {
+  position: relative;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  min-width: 46px;
+  padding: 0 8px;
+  border: 1px solid var(--home-rule-strong);
+  border-radius: 6px;
+  color: var(--home-muted);
+  font-family: var(--font-public);
+  font-size: 12.5px;
+  line-height: 20px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.public-shell .home-lang-compact:hover {
+  color: var(--home-ink);
+  border-color: var(--home-ink);
+}
+.public-shell .home-lang-compact select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.public-shell .theme-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--home-rule-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--home-muted);
+  cursor: pointer;
+  transition: color 150ms ease, border-color 150ms ease;
+}
+.public-shell .theme-btn:hover {
+  color: var(--home-ink);
+  border-color: var(--home-ink);
+}
+.public-shell .theme-btn:focus-visible {
   outline: 2px solid var(--home-signal);
   outline-offset: 2px;
 }
@@ -260,6 +308,16 @@
   outline-offset: 2px;
 }
 
+/* Marketing-parity primary action (header CTA and mobile panel CTA). */
+.public-shell .btn-primary {
+  background: var(--home-action);
+  color: var(--home-on-action);
+}
+.public-shell .btn-primary:hover {
+  background: var(--home-action-hover);
+  color: var(--home-on-action);
+}
+
 .public-shell .btn-ghost {
   background: transparent;
   color: var(--home-ink);
@@ -286,20 +344,22 @@
   font-weight: 500;
   text-decoration: none;
 }
-.public-shell .sign-in:hover { color: var(--home-ink); background: var(--home-paper-2); }
+.public-shell .sign-in:hover { color: var(--home-ink); }
 
 .public-shell .menu-btn {
   display: none;
+  flex: none;
   width: 38px;
   height: 38px;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--home-rule);
+  border: 1px solid var(--home-rule-strong);
   border-radius: 6px;
   background: transparent;
   color: var(--home-ink);
   cursor: pointer;
 }
+.public-shell .menu-btn:hover { border-color: var(--home-ink); }
 
 .public-shell .avatar-btn {
   display: inline-flex;
@@ -347,6 +407,41 @@
 }
 .public-shell .avatar-menu a:hover,
 .public-shell .avatar-menu button:hover { background: var(--home-paper-2); }
+
+/* ---------- Mobile navigation panel ---------- */
+
+.public-shell .mobile-nav-panel {
+  border-top: 1px solid var(--home-rule);
+  background: var(--home-card);
+}
+
+.public-shell .mobile-nav-inner {
+  display: flex;
+  flex-direction: column;
+  padding-block: 8px 18px;
+}
+
+.public-shell .mobile-nav-link {
+  display: block;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--home-rule);
+  color: var(--home-muted);
+  font-size: 16px;
+  line-height: 24px;
+  text-decoration: none;
+}
+
+.public-shell .mobile-nav-link:hover { color: var(--home-ink); }
+.public-shell .mobile-nav-link[aria-current='page'] { color: var(--home-ink); }
+
+.public-shell .mobile-nav-cta {
+  width: 100%;
+  margin-top: 14px;
+}
+
+@media (min-width: 1024px) {
+  .public-shell .mobile-nav-panel { display: none; }
+}
 
 /* ---------- Hero ---------- */
 
@@ -1341,7 +1436,7 @@
 
 /* ---------- Responsive ---------- */
 
-@media (max-width: 1020px) {
+@media (max-width: 1023px) {
   .public-shell .home-hero-grid { grid-template-columns: minmax(0, 1fr); gap: 46px; }
   .public-shell .home-hero { padding-block: 56px 64px; }
   .public-shell .home-hero-title { max-width: 16ch; }
@@ -1352,13 +1447,15 @@
   .public-shell .footer-grid { grid-template-columns: minmax(0, 1fr) repeat(2, minmax(0, 0.6fr)); }
 }
 
-@media (max-width: 820px) {
+@media (max-width: 1023px) {
   .public-shell .nav,
   .public-shell .header-tools .home-lang,
-  .public-shell .header-tools .sign-in { display: none; }
+  .public-shell .header-tools .sign-in,
+  .public-shell .header-tools .btn { display: none; }
+  .public-shell .header-tools .home-lang-compact { display: inline-flex; }
   .public-shell .menu-btn { display: inline-flex; }
   .public-shell .header-row { gap: 14px; }
-  .public-shell .header-tools { gap: 6px; }
+  .public-shell .header-tools { gap: 8px; }
   .public-shell .caps-grid { grid-template-columns: minmax(0, 1fr); }
   .public-shell .caps-grid .cap:nth-child(even) { padding-left: 0; border-left: 0; }
   .public-shell .stats-link { margin-left: 0; }
@@ -1366,10 +1463,6 @@
 }
 
 @media (max-width: 560px) {
-  .public-shell .wrap {
-    padding-left: max(16px, env(safe-area-inset-left, 0px));
-    padding-right: max(16px, env(safe-area-inset-right, 0px));
-  }
   .public-shell .home-hero { padding-block: 40px 52px; }
   .public-shell .home-hero-title { letter-spacing: -0.03em; }
   .public-shell .home-hero-actions { flex-direction: column; }
