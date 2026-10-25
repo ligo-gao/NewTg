@@ -20,7 +20,11 @@ export interface ToolbarProps {
   resultCount: number
   activeFilterCount: number
   onChange: (next: ModelsSearch, replace?: boolean) => void
-  onOpenFilters: () => void
+  /**
+   * 只在筛选栏能打开时传入（窄屏抽屉）。宽屏筛选栏常驻，按钮会成为一个
+   * 点了没反应的死控件，因此没有这个回调就不渲染入口。
+   */
+  onOpenFilters?: () => void
 }
 
 const RANGES: readonly { value: ModelsRange; label: string }[] = [
@@ -207,25 +211,29 @@ export function Toolbar({
           })}
         </div>
 
-        <button
-          type="button"
-          onClick={onOpenFilters}
-          className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border-default bg-surface-card px-3 text-meta font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
-        >
-          <svg
-            aria-hidden="true"
-            viewBox="0 0 16 16"
-            className="size-4"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
+        {onOpenFilters === undefined ? null : (
+          <button
+            type="button"
+            onClick={onOpenFilters}
+            className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border-default bg-surface-card px-3 text-meta font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
-            <path d="M2 4h12M4 8h8M6 12h4" strokeLinecap="round" />
-          </svg>
-          {activeFilterCount > 0
-            ? t('public.models.filter_button_count', { count: activeFilterCount })
-            : t('public.models.filter_button')}
-        </button>
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 16 16"
+              className="size-4"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+            >
+              <path d="M2 4h12M4 8h8M6 12h4" strokeLinecap="round" />
+            </svg>
+            {activeFilterCount > 0
+              ? t('public.models.filter_button_count', {
+                  count: activeFilterCount,
+                })
+              : t('public.models.filter_button')}
+          </button>
+        )}
       </div>
     </div>
   )

@@ -68,7 +68,7 @@ interface CallTarget {
 
 function ModelSkeleton() {
   return (
-    <div className="flex flex-col gap-2" data-testid="models-skeleton">
+    <div className="flex flex-col gap-2" aria-hidden="true">
       {[0, 1, 2, 3, 4].map((index) => (
         <div
           key={index}
@@ -102,7 +102,18 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
   const facets = facetsOf(cards ?? [])
   const metricsIndex = indexMetrics(metrics.data?.items ?? [])
   const entries = entriesOf(cards ?? [], metricsIndex)
-  const visible = sortEntries(filterEntries(entries, search), search.sort, locale)
+  // 指标不可用时每条读数都是「无数据」，`measured` 筛选会把整张列表清空。
+  // 模型库的保底约定是「读数降级、列表完整」，所以此时绕过该筛选；如果
+  // 只是后台重取失败但仍有旧读数，则照常按读数筛选。
+  const metricsUnavailable = metrics.isError && metrics.data === undefined
+  const effectiveSearch = metricsUnavailable
+    ? { ...search, measured: false }
+    : search
+  const visible = sortEntries(
+    filterEntries(entries, effectiveSearch),
+    search.sort,
+    locale,
+  )
   const selectedCapabilities = normalizeCapabilities(search.cap)
   const activeCapability =
     selectedCapabilities.length === 1 ? (selectedCapabilities[0] ?? '') : ''
@@ -143,6 +154,17 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
     }
   }, [catalog.data, expandedId])
 
+  // 换时间范围就是换一个指标窗口：上一窗口被关掉的失败提示不能顺延，
+  // 否则新窗口同样失败时既看不到提示、也点不到重试。
+  useEffect(() => {
+    setMetricsDismissed(false)
+  }, [search.range])
+
+  // 视口变宽后筛选栏常驻，抽屉应关闭；否则缩回窄屏时它又会自己弹出来。
+  useEffect(() => {
+    if (wide) setFiltersOpen(false)
+  }, [wide])
+
   const entriesById = new Map(
     entries.map((entry) => [entry.card.model_id, entry]),
   )
@@ -180,7 +202,8 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
     })
   }
 
-  const clearCompare = () => onSearchChange({ ...search, compare: '' })
+  const clearCompare = () =>
+    onSearchChange({ ...search, compare: withCompareIds([]) })
 
   const pickCapability = (value: string) => {
     const next = selectedCapabilities.includes(value)
@@ -252,7 +275,7 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
             </button>
             <button
               type="button"
-              aria-label={t('public.models.glossary.close')}
+              aria-label={t('public.models.metrics_dismiss')}
               onClick={() => setMetricsDismissed(true)}
               className="rounded p-0.5 leading-none text-ink-2 hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             >
@@ -314,7 +337,11 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
         onPickCapability={pickCapability}
       />
 
-      <DistPanel entries={visible} range={search.range} />
+      <DistPanel
+        entries={visible}
+        range={search.range}
+        ready={catalog.data !== undefined}
+      />
 
       <div>
         <button
@@ -348,7 +375,7 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
             resultCount={visible.length}
             activeFilterCount={activeFilterCount(search)}
             onChange={onSearchChange}
-            onOpenFilters={() => setFiltersOpen(true)}
+            onOpenFilters={wide ? undefined : () => setFiltersOpen(true)}
           />
           {list}
         </div>

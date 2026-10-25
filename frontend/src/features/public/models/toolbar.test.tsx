@@ -98,4 +98,21 @@ describe('Toolbar', () => {
 
     expect(onOpenFilters).toHaveBeenCalledTimes(1)
   })
+
+  it('hides the filter button when no sheet can open', async () => {
+    const { queryByRole } = await renderWithProviders(
+      <Toolbar
+        search={BASE}
+        resultCount={12}
+        activeFilterCount={3}
+        onChange={vi.fn()}
+      />,
+      ['public'],
+    )
+
+    // The wide layout keeps the filter panel on screen, so a button that only
+    // opens a sheet would be a dead control.
+    expect(queryByRole('button', { name: 'Filters (3)' })).toBeNull()
+    expect(queryByRole('button', { name: 'Filters' })).toBeNull()
+  })
 })

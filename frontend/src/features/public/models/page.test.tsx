@@ -221,7 +221,11 @@ describe('ModelsPage', () => {
     await renderPage()
 
     expect(await screen.findByText('GPT-5')).toBeTruthy()
-    expect(screen.getByText('Embed')).toBeTruthy()
+    // The hero may repeat a model name (fastest reading), so scope the catalog
+    // assertions to the register itself.
+    const table = screen.getByRole('table')
+    expect(within(table).getByText('GPT-5')).toBeTruthy()
+    expect(within(table).getByText('Embed')).toBeTruthy()
     // The chat model takes the measured-test reading; the embedding falls back
     // to the real-call average, which proves the metrics join happened.
     expect(await screen.findByText('Measured test')).toBeTruthy()
@@ -232,7 +236,9 @@ describe('ModelsPage', () => {
 
   it('keeps the list when metrics fail and shows the unavailable banner', async () => {
     serveCatalog({ metricsStatus: 503 })
-    await renderPage()
+    // `measured: true` would normally require a reading; with metrics down the
+    // filter is bypassed instead of emptying the list.
+    await renderPage({ ...BASE, measured: true })
 
     expect(
       await screen.findByText(
@@ -242,6 +248,22 @@ describe('ModelsPage', () => {
     // The catalog list is still complete; only readings degrade to `—`.
     expect(screen.getByText('GPT-5')).toBeTruthy()
     expect(screen.getByText('Embed')).toBeTruthy()
+  })
+
+  it('brings the metrics banner back when the range changes', async () => {
+    serveCatalog({ metricsStatus: 503 })
+    await renderPage()
+
+    const banner =
+      'Live measurements are unavailable right now. Capabilities and limits are still shown.'
+    expect(await screen.findByText(banner)).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByText(banner)).toBeNull()
+
+    // A new measurement window must not inherit the dismissed banner.
+    fireEvent.click(screen.getByRole('button', { name: 'Last 24h' }))
+    expect(await screen.findByText(banner)).toBeTruthy()
   })
 
   it('shows a retry state when the catalog fails', async () => {
