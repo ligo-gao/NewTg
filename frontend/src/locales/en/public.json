@@ -517,6 +517,8 @@
   "models.detail.max_output": "Max output",
   "models.detail.description": "Description",
   "models.detail.call": "Call this model",
+  "models.detail.samples_test": "Benchmark runs",
+  "models.detail.samples_usage": "Calls",
   "models.compare.title": "Compare models",
   "models.compare.open": "Compare",
   "models.compare.empty": "Select up to four models to compare.",

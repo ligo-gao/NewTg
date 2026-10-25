@@ -517,6 +517,8 @@
   "models.detail.max_output": "最大輸出",
   "models.detail.description": "說明",
   "models.detail.call": "呼叫此模型",
+  "models.detail.samples_test": "測速樣本",
+  "models.detail.samples_usage": "呼叫樣本",
   "models.compare.title": "模型比較",
   "models.compare.open": "比較",
   "models.compare.empty": "最多選擇四個模型進行比較。",

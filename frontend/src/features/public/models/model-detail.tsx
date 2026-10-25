@@ -182,6 +182,13 @@ export function ModelDetail({ entry }: ModelDetailProps) {
             className="text-meta tabular-nums text-ink-2"
             title={t('public.models.glossary.sample')}
           >
+            <span className="mr-1 text-ink-3">
+              {t(
+                entry.perf.source === 'test'
+                  ? 'public.models.detail.samples_test'
+                  : 'public.models.detail.samples_usage',
+              )}
+            </span>
             {formatSamples(entry.perf.samples, locale)}
           </p>
         ) : null}

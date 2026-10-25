@@ -517,6 +517,8 @@
   "models.detail.max_output": "Макс. вывод",
   "models.detail.description": "Описание",
   "models.detail.call": "Вызвать эту модель",
+  "models.detail.samples_test": "Прогоны теста",
+  "models.detail.samples_usage": "Вызовы",
   "models.compare.title": "Сравнение моделей",
   "models.compare.open": "Сравнить",
   "models.compare.empty": "Выберите до четырёх моделей для сравнения.",

@@ -517,6 +517,8 @@
   "models.detail.max_output": "Đầu ra tối đa",
   "models.detail.description": "Mô tả",
   "models.detail.call": "Gọi mô hình này",
+  "models.detail.samples_test": "Lần chạy đo",
+  "models.detail.samples_usage": "Lượt gọi",
   "models.compare.title": "So sánh mô hình",
   "models.compare.open": "So sánh",
   "models.compare.empty": "Chọn tối đa bốn mô hình để so sánh.",

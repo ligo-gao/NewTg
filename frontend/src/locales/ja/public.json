@@ -517,6 +517,8 @@
   "models.detail.max_output": "最大出力",
   "models.detail.description": "説明",
   "models.detail.call": "このモデルを呼び出す",
+  "models.detail.samples_test": "ベンチマーク実行",
+  "models.detail.samples_usage": "呼び出し",
   "models.compare.title": "モデルを比較",
   "models.compare.open": "比較",
   "models.compare.empty": "比較するモデルを最大 4 件選択してください。",

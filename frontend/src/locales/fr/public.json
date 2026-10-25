@@ -517,6 +517,8 @@
   "models.detail.max_output": "Sortie max.",
   "models.detail.description": "Description",
   "models.detail.call": "Appeler ce modèle",
+  "models.detail.samples_test": "Exécutions de test",
+  "models.detail.samples_usage": "Appels",
   "models.compare.title": "Comparer les modèles",
   "models.compare.open": "Comparer",
   "models.compare.empty": "Sélectionnez jusqu'à quatre modèles à comparer.",
