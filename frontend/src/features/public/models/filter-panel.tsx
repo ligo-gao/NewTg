@@ -30,7 +30,7 @@ import {
 } from '@/features/public/pricing/params'
 import { useI18n } from '@/shared/lib/i18n-context'
 
-import type { ModelsSearch } from './params'
+import { validateModelsSearch, type ModelsSearch } from './params'
 import type { ModelFacets } from './taxonomy'
 
 export interface ModelFiltersProps {
@@ -57,14 +57,32 @@ interface VisibleOptions {
  * 折叠时保留前 8 项；已选但排在 8 项之后的值仍要显示，否则用户无法在不
  * 展开的情况下取消它。facet 中不存在的已选值追加在末尾（count 缺省）。
  */
+function extraOptions(
+  options: readonly FacetOption[],
+  selected: readonly string[],
+): FacetOption[] {
+  return selected
+    .filter((value) => !options.some((option) => option.value === value))
+    .map((value) => ({ value }))
+}
+
+/**
+ * facet 顺序不变，已选但不在 facet 里的值追加在末尾（无 count）。上下文与
+ * 端点组不折叠，用这个直接拼出完整选项，避免已选值无处可取消。
+ */
+function withSelectedExtras(
+  options: readonly FacetOption[],
+  selected: readonly string[],
+): FacetOption[] {
+  return [...options, ...extraOptions(options, selected)]
+}
+
 function visibleOptions(
   options: readonly FacetOption[],
   selected: readonly string[],
   expanded: boolean,
 ): VisibleOptions {
-  const extras: FacetOption[] = selected
-    .filter((value) => !options.some((option) => option.value === value))
-    .map((value) => ({ value }))
+  const extras = extraOptions(options, selected)
 
   if (expanded || options.length <= VISIBLE_LIMIT) {
     return { visible: [...options, ...extras], hidden: 0 }
@@ -166,6 +184,11 @@ export function ModelFilters({
     selectedVendors,
     expanded.vendors,
   )
+  const contextOptions = withSelectedExtras(facets.contexts, selectedContexts)
+  const endpointOptions = withSelectedExtras(
+    facets.endpoints,
+    selectedEndpointTypes,
+  )
 
   const toggle = (
     selected: readonly string[],
@@ -186,7 +209,6 @@ export function ModelFilters({
     hidden > 0 ? (
       <button
         type="button"
-        aria-expanded={false}
         onClick={() => expand(group)}
         className="px-1 text-meta text-brand hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
       >
@@ -203,21 +225,11 @@ export function ModelFilters({
           {t('public.models.filters.title')}
         </h2>
         <div className="flex items-center gap-2">
+          {/* 恢复 Task 4 的默认值（sort/range/compare 与各筛选组），只保留
+              用户当前选择的视图。 */}
           <button
             type="button"
-            onClick={() =>
-              onChange({
-                ...search,
-                // 只清筛选条件；sort/range/view/compare 是展示偏好，重置
-                // 筛选不应顺手清掉对比栏或用户选的视图。
-                q: '',
-                cap: '',
-                vendor: '',
-                context: '',
-                endpoint: '',
-                measured: false,
-              })
-            }
+            onClick={() => onChange(validateModelsSearch({ view: search.view }))}
             className="rounded px-1 text-meta text-brand hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
             {t('public.models.filters.reset')}
@@ -274,7 +286,7 @@ export function ModelFilters({
         </FacetFieldset>
 
         <FacetFieldset title={t('public.models.filters.context')}>
-          {facets.contexts.map((option) => (
+          {contextOptions.map((option) => (
             <CheckRow
               key={option.value}
               checked={selectedContexts.includes(option.value)}
@@ -294,7 +306,7 @@ export function ModelFilters({
         </FacetFieldset>
 
         <FacetFieldset title={t('public.models.filters.endpoint')}>
-          {facets.endpoints.map((option) => (
+          {endpointOptions.map((option) => (
             <CheckRow
               key={option.value}
               checked={selectedEndpointTypes.includes(option.value)}

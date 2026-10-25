@@ -132,8 +132,9 @@ describe('ModelFilters', () => {
 
     fireEvent.click(getByRole('button', { name: 'Reset all' }))
 
-    // Only filter state is cleared; sort/range/compare and the view preference
-    // are display state and survive a reset.
+    // Reset restores the defaults the route publishes on a bare `/models`
+    // (sort=measured, range=7d, no compare selection); only the view
+    // preference is display state and survives a reset.
     expect(last()).toEqual({
       q: '',
       cap: '',
@@ -141,10 +142,10 @@ describe('ModelFilters', () => {
       context: '',
       endpoint: '',
       measured: false,
-      sort: 'tps',
-      range: '24h',
+      sort: 'measured',
+      range: '7d',
       view: 'cards',
-      compare: 'a,b',
+      compare: '',
     })
   })
 

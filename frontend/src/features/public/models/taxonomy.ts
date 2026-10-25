@@ -76,6 +76,25 @@ export function kindOf(card: PublicModelCard): CallKind {
   return kindForEndpoints(card.endpoints)
 }
 
+/**
+ * 大小写变体与重复项只保留首次出现；未知能力原样保留。
+ * 条码、条码提示与详情能力列表共用，避免同一模型重复渲染或产生重复 key。
+ */
+export function uniqueCapabilityNames(capabilities: readonly string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const raw of capabilities) {
+    if (typeof raw !== 'string') continue
+    const label = raw.trim()
+    if (label === '') continue
+    const value = label.toLowerCase()
+    if (seen.has(value)) continue
+    seen.add(value)
+    out.push(label)
+  }
+  return out
+}
+
 interface CapabilityTally {
   label: string
   count: number

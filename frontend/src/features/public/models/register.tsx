@@ -24,7 +24,7 @@ import {
 import { ModelDetail } from './model-detail'
 import { MAX_COMPARE, type ModelsView } from './params'
 import type { ModelEntry, ModelPerformance, PerfSource } from './performance'
-import { monogram, type CapabilitySlot } from './taxonomy'
+import { monogram, uniqueCapabilityNames, type CapabilitySlot } from './taxonomy'
 
 export interface RegisterProps {
   entries: readonly ModelEntry[]
@@ -73,20 +73,15 @@ function measureLabel(measure: ModelPerformance['measure'], t: TranslateFn): str
     : t('public.models.source.measure.latency')
 }
 
-/** 大小写变体与重复项只保留首次出现；未知能力原样保留。 */
-function capabilityNames(capabilities: readonly string[]): string[] {
-  const seen = new Set<string>()
-  const out: string[] = []
-  for (const raw of capabilities) {
-    if (typeof raw !== 'string') continue
-    const label = raw.trim()
-    if (label === '') continue
-    const value = label.toLowerCase()
-    if (seen.has(value)) continue
-    seen.add(value)
-    out.push(label)
-  }
-  return out
+/**
+ * 读数的唯一措辞来源：只有管理员测速的 P50 才能叫 P50；真实调用的 p50
+ * 是均值，必须显式写成 average。缺读数时保留测量口径并渲染 `—`。
+ */
+function readingLabel(perf: ModelPerformance, t: TranslateFn): string {
+  const measure = measureLabel(perf.measure, t)
+  if (perf.p50 === null) return `${measure} —`
+  if (perf.source === 'test') return `${measure} P50 ${formatMs(perf.p50)}`
+  return `${measure} ${t('public.models.source.average')} ${formatMs(perf.p50)}`
 }
 
 function Monogram({ entry }: { entry: ModelEntry }) {
@@ -127,7 +122,7 @@ function CapabilityBarcode({
   slots: readonly CapabilitySlot[]
 }) {
   const { t } = useI18n()
-  const names = capabilityNames(entry.card.capabilities)
+  const names = uniqueCapabilityNames(entry.card.capabilities)
   const present = new Set(names.map((value) => value.toLowerCase()))
   const label = names.join(t('public.models.list_separator'))
 
@@ -152,8 +147,8 @@ function CapabilityBarcode({
 function LatencyCell({ perf }: { perf: ModelPerformance }) {
   const { t } = useI18n()
   const geometry = latencyStripGeom(perf.p50, perf.p95)
-  const measure = measureLabel(perf.measure, t)
-  const stripLabel = `${measure} P50 ${formatMs(perf.p50)} · P95 ${formatMs(perf.p95)}`
+  const reading = readingLabel(perf, t)
+  const rangeLabel = `${reading} · P95 ${formatMs(perf.p95)}`
   const markerLeft = geometry.markerOnly
     ? geometry.leftPct
     : geometry.leftPct + geometry.widthPct
@@ -169,7 +164,7 @@ function LatencyCell({ perf }: { perf: ModelPerformance }) {
             perf.p50 === null ? ' is-empty' : ''
           }`}
           role="img"
-          aria-label={stripLabel}
+          aria-label={rangeLabel}
         >
           {perf.p50 !== null ? (
             <span
@@ -193,7 +188,7 @@ function LatencyCell({ perf }: { perf: ModelPerformance }) {
         </span>
       </div>
       <span className="metric-sub block font-mono text-badge tabular-nums text-ink-3">
-        {measure} P50 {formatMs(perf.p50)} · P95 {formatMs(perf.p95)}
+        {readingLabel(perf, t)} · P95 {formatMs(perf.p95)}
       </span>
       <span className="metric-sub flex flex-wrap items-center gap-x-1 text-badge text-ink-3">
         <span>{sourceLabel(perf.source, t)}</span>
