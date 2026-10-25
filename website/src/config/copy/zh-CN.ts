@@ -22,7 +22,7 @@ export const zhCN: Copy = {
 
   nav: {
     links: [
-      { label: "模型库", href: "#models" },
+      { label: "模型库", href: "/models" },
       { label: "定价", href: "/pricing" },
       { label: "文档", href: "/docs" },
       { label: "控制台", href: "/dashboard" },
@@ -183,7 +183,7 @@ export const zhCN: Copy = {
       {
         title: "产品",
         links: [
-          { label: "模型库", href: "#models" },
+          { label: "模型库", href: "/models" },
           { label: "定价", href: "/pricing" },
           { label: "控制台", href: "/dashboard" },
         ],

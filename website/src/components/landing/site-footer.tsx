@@ -29,7 +29,6 @@ export function SiteFooter({ copy, locale }: { copy: Copy; locale: Locale }) {
   const homePath = locale === "zh-CN" ? "/" : localePath(locale);
   const pricingPath = homePath === "/" ? "/pricing/" : `${homePath}pricing/`;
   const hrefFor = (href: string): string => {
-    if (href === "#models") return `${homePath}#models`;
     if (href === "/pricing") return pricingPath;
     return href;
   };

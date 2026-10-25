@@ -42,7 +42,6 @@ export function SiteHeader({ copy, locale }: { copy: Copy; locale: Locale }) {
   const onPricing = normalized === pricingPath.replace(/\/$/, "");
 
   function hrefFor(href: string): string {
-    if (href === "#models") return onHome ? "#models" : `${homePath}#models`;
     if (href === "/pricing") return pricingPath;
     return href;
   }

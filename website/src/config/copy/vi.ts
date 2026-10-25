@@ -22,7 +22,7 @@ export const vi: Copy = {
 
   nav: {
     links: [
-      { label: "Mô hình", href: "#models" },
+      { label: "Mô hình", href: "/models" },
       { label: "Bảng giá", href: "/pricing" },
       { label: "Tài liệu", href: "/docs" },
       { label: "Bảng điều khiển", href: "/dashboard" },
@@ -186,7 +186,7 @@ export const vi: Copy = {
       {
         title: "Sản phẩm",
         links: [
-          { label: "Mô hình", href: "#models" },
+          { label: "Mô hình", href: "/models" },
           { label: "Bảng giá", href: "/pricing" },
           { label: "Bảng điều khiển", href: "/dashboard" },
         ],

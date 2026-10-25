@@ -22,7 +22,7 @@ export const ru: Copy = {
 
   nav: {
     links: [
-      { label: "Модели", href: "#models" },
+      { label: "Модели", href: "/models" },
       { label: "Тарифы", href: "/pricing" },
       { label: "Документация", href: "/docs" },
       { label: "Консоль", href: "/dashboard" },
@@ -186,7 +186,7 @@ export const ru: Copy = {
       {
         title: "Продукт",
         links: [
-          { label: "Модели", href: "#models" },
+          { label: "Модели", href: "/models" },
           { label: "Тарифы", href: "/pricing" },
           { label: "Консоль", href: "/dashboard" },
         ],

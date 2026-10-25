@@ -54,6 +54,22 @@ describe("SiteHeader", () => {
     expect(document.getElementById("mobile-menu")).toBeNull();
   });
 
+  it("points the model library link at the console /models page", async () => {
+    const user = userEvent.setup();
+    render(<SiteHeader copy={copy} locale="zh-CN" />);
+
+    expect(screen.getByRole("link", { name: "模型库" })).toHaveAttribute("href", "/models");
+
+    await user.click(screen.getByRole("button", { name: "打开导航菜单" }));
+    const menu = document.getElementById("mobile-menu");
+    expect(menu).not.toBeNull();
+    if (!menu) throw new Error("the mobile menu did not render");
+    expect(within(menu).getByRole("link", { name: "模型库" })).toHaveAttribute(
+      "href",
+      "/models",
+    );
+  });
+
   it("shows the docs link when the status reports docs configured", () => {
     mockStatus({ docsEnabled: true });
     render(<SiteHeader copy={copy} locale="zh-CN" />);

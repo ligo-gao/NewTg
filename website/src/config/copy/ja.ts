@@ -22,7 +22,7 @@ export const ja: Copy = {
 
   nav: {
     links: [
-      { label: "モデル", href: "#models" },
+      { label: "モデル", href: "/models" },
       { label: "料金", href: "/pricing" },
       { label: "ドキュメント", href: "/docs" },
       { label: "コンソール", href: "/dashboard" },
@@ -186,7 +186,7 @@ export const ja: Copy = {
       {
         title: "製品",
         links: [
-          { label: "モデル", href: "#models" },
+          { label: "モデル", href: "/models" },
           { label: "料金", href: "/pricing" },
           { label: "コンソール", href: "/dashboard" },
         ],
