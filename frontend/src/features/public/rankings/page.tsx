@@ -429,9 +429,7 @@ function TrendPanel({
               buckets={trend.buckets}
               granularity={trend.granularity}
               locale={locale}
-              ariaLabel={t('public.rankings.trend.chart_aria', {
-                count: trend.buckets.length,
-              })}
+              ariaLabel={t('public.rankings.trend.chart_aria')}
             />
           </div>
           <ul className="rank-trend-list">

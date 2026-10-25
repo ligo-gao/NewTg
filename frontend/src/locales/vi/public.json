@@ -332,7 +332,7 @@
   "rankings.summary.models": "Mô hình trong bảng",
   "rankings.summary.providers": "Nhà cung cấp thượng nguồn",
   "rankings.trend.title": "Xu hướng token",
-  "rankings.trend.chart_aria": "Xu hướng token qua {count} khoảng thời gian",
+  "rankings.trend.chart_aria": "Xu hướng token, xếp chồng theo khoảng thời gian",
   "rankings.trend.other": "Khác",
   "rankings.trend.accumulating": "Xu hướng đang tích lũy",
   "rankings.ladder.title": "Xếp hạng",

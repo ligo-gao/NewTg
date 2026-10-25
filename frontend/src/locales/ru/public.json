@@ -332,7 +332,7 @@
   "rankings.summary.models": "Моделей в рейтинге",
   "rankings.summary.providers": "Провайдеры",
   "rankings.trend.title": "Динамика токенов",
-  "rankings.trend.chart_aria": "Динамика токенов по {count} интервалам",
+  "rankings.trend.chart_aria": "Динамика токенов, сгруппированная по интервалам",
   "rankings.trend.other": "Другое",
   "rankings.trend.accumulating": "Тренд накапливается",
   "rankings.ladder.title": "Рейтинг",

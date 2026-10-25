@@ -332,7 +332,7 @@
   "rankings.summary.models": "Modèles classés",
   "rankings.summary.providers": "Fournisseurs en amont",
   "rankings.trend.title": "Évolution des tokens",
-  "rankings.trend.chart_aria": "Évolution des tokens sur {count} périodes",
+  "rankings.trend.chart_aria": "Évolution des tokens, empilée par période",
   "rankings.trend.other": "Autre",
   "rankings.trend.accumulating": "Tendance en cours d’accumulation",
   "rankings.ladder.title": "Classement",

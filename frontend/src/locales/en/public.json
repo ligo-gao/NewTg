@@ -332,7 +332,7 @@
   "rankings.summary.models": "Listed models",
   "rankings.summary.providers": "Upstream providers",
   "rankings.trend.title": "Token trend",
-  "rankings.trend.chart_aria": "Token trend across {count} time buckets",
+  "rankings.trend.chart_aria": "Token trend, stacked by time bucket",
   "rankings.trend.other": "Other",
   "rankings.trend.accumulating": "Trend data is accumulating",
   "rankings.ladder.title": "Ranking",

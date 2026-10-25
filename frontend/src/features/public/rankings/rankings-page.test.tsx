@@ -196,7 +196,7 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
     // The trend panel renders the single real bucket and never a sample tag.
     expect(getByTestId('trend-chart')).toBeTruthy()
     expect(
-      getByRole('img', { name: 'Token trend across 1 time buckets' }),
+      getByRole('img', { name: 'Token trend, stacked by time bucket' }),
     ).toBeTruthy()
     expect(container.textContent).not.toMatch(/sample data/i)
   })

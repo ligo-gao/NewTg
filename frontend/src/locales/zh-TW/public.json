@@ -332,7 +332,7 @@
   "rankings.summary.models": "上榜模型",
   "rankings.summary.providers": "上游廠商",
   "rankings.trend.title": "token 走勢",
-  "rankings.trend.chart_aria": "{count} 個時間桶的 token 走勢",
+  "rankings.trend.chart_aria": "依時間桶堆疊的 token 走勢",
   "rankings.trend.other": "其他",
   "rankings.trend.accumulating": "走勢資料待累積",
   "rankings.ladder.title": "排名",

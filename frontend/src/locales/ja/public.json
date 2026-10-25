@@ -332,7 +332,7 @@
   "rankings.summary.models": "ランクインしたモデル",
   "rankings.summary.providers": "上流プロバイダー",
   "rankings.trend.title": "token の推移",
-  "rankings.trend.chart_aria": "{count} 個の時間帯における token の推移",
+  "rankings.trend.chart_aria": "時間帯ごとに積み上げた token の推移",
   "rankings.trend.other": "その他",
   "rankings.trend.accumulating": "トレンドは集計中です",
   "rankings.ladder.title": "順位",
