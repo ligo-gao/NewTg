@@ -1,26 +1,390 @@
 /**
- * `/models` 模型库页面（Task 12 替换实现）。本任务只需要一个可编译的占位，
- * 路由壳已经按最终的 `search` / `onSearchChange` 契约挂载它。
+ * `/models` 模型库页面编排。
+ *
+ * URL 是唯一状态源：筛选、排序、视图、时间范围与对比集合全部来自路由，
+ * 页面只把用户操作转换成一个新的 `ModelsSearch` 写回。派生数据全部由纯
+ * 函数计算（`filterEntries` / `sortEntries` / `entriesOf` / `facetsOf`），
+ * 组件本身不发额外请求：
+ *
+ * - 目录（`GET /api/pricing`，逐页拉全）决定有哪些模型；
+ * - 指标（`GET /api/pricing/metrics?range=`）只影响读数，失败时降级成
+ *   「全部 `—`」，列表照常完整渲染——这是模型库最重要的可用性约定。
  */
 
-import type { ModelsSearch } from './params'
+import { useQuery } from '@tanstack/react-query'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+
+import { usePublicStatus } from '@/lib/public-status'
+import { ME_QUERY_KEY, meQueryOptions } from '@/lib/session'
+import { useI18n } from '@/shared/lib/i18n-context'
+import { useMediaQuery } from '@/shared/lib/use-media-query'
+import { MobileSheet } from '@/features/public/mobile-sheet'
+import type { PublicModelCard } from '@/features/public/pricing/api'
+import {
+  normalizeCapabilities,
+  withCapabilities,
+} from '@/features/public/pricing/params'
+
+import {
+  indexMetrics,
+  libraryMetricsQueryOptions,
+  modelCatalogQueryOptions,
+} from './api'
+import { CallDialog } from './call-dialog'
+import { CompareDialog } from './compare-dialog'
+import { DistPanel } from './dist-panel'
+import { ModelFilters } from './filter-panel'
+import { activeFilterCount, filterEntries, sortEntries } from './filters'
+import { GlossaryDialog } from './glossary-dialog'
+import { ModelHero } from './hero'
+import {
+  compareIds,
+  MAX_COMPARE,
+  validateModelsSearch,
+  withCompareIds,
+  type ModelsSearch,
+} from './params'
+import {
+  entriesOf,
+  type CallKind,
+  type ModelEntry,
+} from './performance'
+import { Register } from './register'
+import { capabilitySlots, facetsOf } from './taxonomy'
+import { Toolbar } from './toolbar'
 
 export interface ModelsPageProps {
   search: ModelsSearch
   onSearchChange: (next: ModelsSearch, replace?: boolean) => void
 }
 
-export function ModelsPage({ search }: ModelsPageProps) {
+/** 与演示稿 workbench 同宽：低于 1200px 时筛选栏收进抽屉。 */
+const WIDE_QUERY = '(min-width: 1200px)'
+
+interface CallTarget {
+  card: PublicModelCard
+  kind: CallKind
+}
+
+function ModelSkeleton() {
   return (
-    <section className="flex flex-col gap-3">
-      <h1 className="text-page-title font-semibold text-ink-1">Model Library</h1>
-      <p className="text-body text-ink-2">
-        Browse every model this gateway exposes, compare measured performance,
-        and copy integration snippets.
-      </p>
-      {search.q !== '' ? (
-        <p className="text-body text-ink-2">Searching for “{search.q}”.</p>
-      ) : null}
-    </section>
+    <div className="flex flex-col gap-2" data-testid="models-skeleton">
+      {[0, 1, 2, 3, 4].map((index) => (
+        <div
+          key={index}
+          className="h-11 rounded border border-border-hairline bg-surface-subtle"
+        />
+      ))}
+    </div>
+  )
+}
+
+export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
+  const { t, locale } = useI18n()
+  const status = usePublicStatus()
+  const me = useQuery({ ...meQueryOptions(), queryKey: ME_QUERY_KEY })
+  const catalog = useQuery(modelCatalogQueryOptions())
+  const metrics = useQuery({
+    ...libraryMetricsQueryOptions(search.range),
+    enabled: catalog.isSuccess,
+  })
+  const wide = useMediaQuery(WIDE_QUERY)
+
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [compareOpen, setCompareOpen] = useState(false)
+  const [glossaryOpen, setGlossaryOpen] = useState(false)
+  const [call, setCall] = useState<CallTarget | null>(null)
+  const [metricsDismissed, setMetricsDismissed] = useState(false)
+
+  const cards = catalog.data?.items
+  const slots = capabilitySlots(cards ?? [], 12)
+  const facets = facetsOf(cards ?? [])
+  const metricsIndex = indexMetrics(metrics.data?.items ?? [])
+  const entries = entriesOf(cards ?? [], metricsIndex)
+  const visible = sortEntries(filterEntries(entries, search), search.sort, locale)
+  const selectedCapabilities = normalizeCapabilities(search.cap)
+  const activeCapability =
+    selectedCapabilities.length === 1 ? (selectedCapabilities[0] ?? '') : ''
+  const numberFormat = new Intl.NumberFormat(locale)
+
+  /**
+   * 对比集合与目录求交：目录里已经消失的 id 会让对比栏显示一个永远打不开
+   * 的模型。只在目录响应变化时修正（目录被截断时不动，否则会误删尚未拉取
+   * 到的合法 id），并用 `replace` 写回，避免污染历史。
+   */
+  const searchRef = useRef(search)
+  searchRef.current = search
+  const changeRef = useRef(onSearchChange)
+  changeRef.current = onSearchChange
+  useEffect(() => {
+    const data = catalog.data
+    if (data === undefined || data.truncated) return
+    const known = new Set(data.items.map((item) => item.model_id))
+    const current = compareIds(searchRef.current)
+    const kept = current.filter((id) => known.has(id))
+    if (kept.length === current.length) return
+    changeRef.current(
+      { ...searchRef.current, compare: withCompareIds(kept) },
+      true,
+    )
+  }, [catalog.data])
+
+  /**
+   * 筛选变化不重置展开状态（展开按 model_id 保留）；只有模型真的从目录里
+   * 消失时才清空，避免下一轮 `aria-controls` 指向不存在的详情区。
+   */
+  useEffect(() => {
+    if (expandedId === null) return
+    const items = catalog.data?.items
+    if (items === undefined) return
+    if (!items.some((item) => item.model_id === expandedId)) {
+      setExpandedId(null)
+    }
+  }, [catalog.data, expandedId])
+
+  const entriesById = new Map(
+    entries.map((entry) => [entry.card.model_id, entry]),
+  )
+  const compared: ModelEntry[] = []
+  for (const id of compareIds(search)) {
+    const entry = entriesById.get(id)
+    if (entry !== undefined) compared.push(entry)
+  }
+
+  const toggleExpand = (modelId: string) =>
+    setExpandedId((current) => (current === modelId ? null : modelId))
+
+  const toggleCompare = (modelId: string) => {
+    const current = compareIds(search)
+    if (current.includes(modelId)) {
+      onSearchChange({
+        ...search,
+        compare: withCompareIds(current.filter((id) => id !== modelId)),
+      })
+      return
+    }
+    if (current.length >= MAX_COMPARE) return
+    onSearchChange({
+      ...search,
+      compare: withCompareIds([...current, modelId]),
+    })
+  }
+
+  const removeFromCompare = (modelId: string) => {
+    onSearchChange({
+      ...search,
+      compare: withCompareIds(
+        compareIds(search).filter((id) => id !== modelId),
+      ),
+    })
+  }
+
+  const clearCompare = () => onSearchChange({ ...search, compare: '' })
+
+  const pickCapability = (value: string) => {
+    const next = selectedCapabilities.includes(value)
+      ? selectedCapabilities.filter((item) => item !== value)
+      : [...selectedCapabilities, value]
+    onSearchChange({ ...search, cap: withCapabilities(next) })
+  }
+
+  const clearFilters = () =>
+    onSearchChange(validateModelsSearch({ view: search.view }))
+
+  let list: ReactNode
+  if (catalog.isError) {
+    list = (
+      <div
+        role="alert"
+        className="rounded-xl border border-border-hairline bg-surface-card px-4 py-8 text-center"
+      >
+        <p className="text-body text-ink-1">{t('public.models.load_failed')}</p>
+        <button
+          type="button"
+          onClick={() => void catalog.refetch()}
+          className="mt-4 rounded-lg border border-border-default px-4 py-2 text-body font-medium text-ink-1 hover:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+        >
+          {t('public.models.retry')}
+        </button>
+      </div>
+    )
+  } else if (catalog.isPending) {
+    list = (
+      <div role="status" className="flex flex-col gap-3">
+        <p className="text-meta text-ink-3">{t('public.models.loading')}</p>
+        <ModelSkeleton />
+      </div>
+    )
+  } else if (catalog.data !== undefined) {
+    const catalogData = catalog.data
+    list = (
+      <>
+        {catalogData.truncated ? (
+          <p
+            role="status"
+            className="rounded-lg border border-warning-line bg-warning-bg px-3 py-2 text-meta text-ink-1"
+          >
+            {t('public.models.truncated', {
+              count: numberFormat.format(catalogData.items.length),
+              total: numberFormat.format(catalogData.total),
+            })}
+          </p>
+        ) : null}
+
+        {metrics.isError && !metricsDismissed ? (
+          <div
+            role="alert"
+            className="flex flex-wrap items-center gap-3 rounded-lg border border-warning-line bg-warning-bg px-3 py-2 text-meta text-ink-1"
+          >
+            <span className="min-w-0 flex-1">
+              {t('public.models.metrics_unavailable')}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setMetricsDismissed(false)
+                void metrics.refetch()
+              }}
+              className="rounded-md border border-border-default px-2 py-0.5 text-badge font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            >
+              {t('public.models.retry')}
+            </button>
+            <button
+              type="button"
+              aria-label={t('public.models.glossary.close')}
+              onClick={() => setMetricsDismissed(true)}
+              className="rounded p-0.5 leading-none text-ink-2 hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            >
+              <span aria-hidden="true">×</span>
+            </button>
+          </div>
+        ) : null}
+
+        {visible.length === 0 ? (
+          <div className="rounded-xl border border-border-hairline bg-surface-card px-4 py-10 text-center">
+            <h2 className="text-card-title text-ink-1">
+              {t('public.models.register.empty')}
+            </h2>
+            <p className="mt-1 text-body text-ink-2">
+              {t('public.models.register.empty_hint')}
+            </p>
+            <button
+              type="button"
+              onClick={clearFilters}
+              className="mt-4 rounded-lg border border-border-default px-4 py-2 text-body font-medium text-ink-1 hover:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            >
+              {t('public.models.register.clear')}
+            </button>
+          </div>
+        ) : (
+          <Register
+            entries={visible}
+            view={search.view}
+            compareIds={compareIds(search)}
+            slots={slots}
+            expandedId={expandedId}
+            onToggleExpand={toggleExpand}
+            onToggleCompare={toggleCompare}
+            onOpenCompare={() => setCompareOpen(true)}
+            onCall={(entry) => setCall({ card: entry.card, kind: entry.kind })}
+          />
+        )}
+      </>
+    )
+  } else {
+    list = null
+  }
+
+  const filterPanel = (
+    <ModelFilters
+      facets={facets}
+      search={search}
+      onChange={onSearchChange}
+      onClose={wide ? undefined : () => setFiltersOpen(false)}
+    />
+  )
+
+  return (
+    <div className="flex flex-col gap-6">
+      <ModelHero
+        entries={entries}
+        slots={slots}
+        activeCapability={activeCapability}
+        onPickCapability={pickCapability}
+      />
+
+      <DistPanel entries={visible} range={search.range} />
+
+      <div>
+        <button
+          type="button"
+          onClick={() => setGlossaryOpen(true)}
+          className="rounded text-meta text-brand hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+        >
+          {t('public.models.glossary.title')}
+        </button>
+      </div>
+
+      <div
+        className={
+          wide
+            ? 'grid grid-cols-[220px_minmax(0,1fr)] items-start gap-10'
+            : 'flex min-w-0 flex-col gap-3'
+        }
+      >
+        {wide ? (
+          <aside
+            aria-label={t('public.models.filters.title')}
+            className="sticky top-8 min-w-0"
+          >
+            {filterPanel}
+          </aside>
+        ) : null}
+
+        <div className="flex min-w-0 flex-col gap-3">
+          <Toolbar
+            search={search}
+            resultCount={visible.length}
+            activeFilterCount={activeFilterCount(search)}
+            onChange={onSearchChange}
+            onOpenFilters={() => setFiltersOpen(true)}
+          />
+          {list}
+        </div>
+      </div>
+
+      <MobileSheet
+        open={filtersOpen && !wide}
+        onOpenChange={setFiltersOpen}
+        title={t('public.models.filters.title')}
+        closeLabel={t('public.models.filters.close')}
+      >
+        <div className="max-h-[65vh] overflow-y-auto">{filterPanel}</div>
+      </MobileSheet>
+
+      <CompareDialog
+        open={compareOpen}
+        onOpenChange={setCompareOpen}
+        entries={compared}
+        onRemove={removeFromCompare}
+        onClear={clearCompare}
+      />
+
+      <GlossaryDialog open={glossaryOpen} onOpenChange={setGlossaryOpen} />
+
+      {call === null ? null : (
+        <CallDialog
+          open
+          onOpenChange={(next) => {
+            if (!next) setCall(null)
+          }}
+          model={call.card}
+          kind={call.kind}
+          serverAddress={status.data?.site?.server_address}
+          isLoggedIn={me.isSuccess}
+        />
+      )}
+    </div>
   )
 }
