@@ -1,164 +1,111 @@
-import type { ReactNode } from 'react'
-
 import { usePublicStatus } from '@/lib/public-status'
 import { useI18n } from '@/shared/lib/i18n-context'
 
-const TECH_STACK = [
-  { key: 'backend', items: 'Go · Gin · GORM' },
-  { key: 'frontend', items: 'React 19 · TypeScript · Tailwind CSS' },
-  { key: 'data', items: 'PostgreSQL · Redis' },
-  { key: 'observability', items: 'Prometheus' },
+/** Capability cells reuse the homepage copy; this page only re-lays them out. */
+const CAPABILITIES = [
+  'multi_upstream',
+  'streaming',
+  'ratelimit',
+  'stateless',
+  'credentials',
+  'billing',
 ] as const
 
-const CAPABILITIES = ['gateway', 'protocols', 'billing', 'security'] as const
+/** Same six stages as the homepage instrument, in request order. */
+const TRACE_STAGES = ['auth', 'quota', 'route', 'translate', 'stream', 'settle'] as const
 
-export interface AboutPageProps {
-  /** `site.docs_url`; when absent the whole docs block stays hidden. */
-  docsUrl?: string
-}
-
-function trimTrailingSlash(url: string): string {
-  return url.endsWith('/') ? url.slice(0, -1) : url
-}
-
-function ExternalLink({
-  href,
-  label,
-  children,
-}: {
-  href: string
-  label: string
-  children: ReactNode
-}) {
-  const { t } = useI18n()
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      aria-label={`${label} — ${t('public.about.external')}`}
-      className="inline-flex items-center gap-1 text-brand hover:underline"
-    >
-      {children}
-      <svg
-        aria-hidden="true"
-        viewBox="0 0 16 16"
-        className="size-3.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-      >
-        <path d="M6 3h7v7M13 3 5 11" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    </a>
-  )
-}
+const ENDPOINTS = ['v1', 'v1beta', 'pg'] as const
 
 /**
  * F-09-07 about page.
  *
- * Data policy per modules-09 §3.7: only real values render. The current public
- * status endpoint does not provide `site.about_html` or `site.docs_url`, so the
- * rich-text block is omitted (there is no raw-HTML path) and the docs block
- * appears only when a URL is supplied. Stats come from `GET /api/status` and
- * disappear when the probe fails — the page never shows a cached or invented
- * count.
+ * The page is intentionally static: hero, facts, capabilities, request trace
+ * and endpoints. The only live value is the advertised interface-language
+ * count from `GET /api/status`; when that probe fails the cell is omitted
+ * rather than placeholdered, and the rest of the page still renders.
  */
-export function AboutPage({ docsUrl }: AboutPageProps) {
+export function AboutPage() {
   const { t } = useI18n()
   const status = usePublicStatus()
   const languageCount = status.data?.languages.length
 
   return (
-    <article className="flex w-full flex-col gap-12">
-      <header className="flex flex-col gap-2">
-        <h1 className="text-public-title font-semibold leading-7 text-ink-1">
-          {t('public.about.title', { site: t('public.about.site_name') })}
+    <article className="about-wrap">
+      <section className="about-hero">
+        <h1>
+          <span>{t('public.home.hero.line1')}</span>
+          <span>{t('public.home.hero.line2')}</span>
+          <span>{t('public.home.hero.line3')}</span>
         </h1>
-        <p className="text-body text-ink-2">{t('public.about.tagline')}</p>
-      </header>
-
-      {/* 六态表的加载态：统计条先占位，技术栈等静态正文随首屏直出。 */}
-      {status.isPending ? (
-        <div
-          aria-busy="true"
-          data-testid="about-stats-skeleton"
-          className="h-[76px] rounded-xl border border-border-hairline bg-surface-card"
-        />
-      ) : languageCount !== undefined ? (
-        <dl className="flex flex-wrap gap-10 rounded-xl border border-border-hairline bg-surface-card px-5 py-4">
-          <div className="flex flex-col gap-1">
-            <dt className="text-meta leading-[18px] text-ink-2">
-              {t('public.about.stats.languages')}
-            </dt>
-            <dd className="text-stat font-semibold leading-8 tabular-nums text-ink-1">
-              {languageCount}
-            </dd>
-          </div>
-        </dl>
-      ) : null}
-
-      <section aria-labelledby="about-capabilities" className="flex flex-col gap-4">
-        <h2 id="about-capabilities" className="text-section font-semibold text-ink-1">
-          {t('public.about.capabilities')}
-        </h2>
-        <ul className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {CAPABILITIES.map((key) => (
-            <li
-              key={key}
-              className="rounded-xl border border-border-hairline bg-surface-card p-4"
-            >
-              <h3 className="text-body font-semibold text-ink-1">
-                {t(`public.about.feature.${key}.title`)}
-              </h3>
-              <p className="mt-1 text-body text-ink-2">
-                {t(`public.about.feature.${key}.body`)}
-              </p>
-            </li>
-          ))}
-        </ul>
+        <p className="lede">{t('public.about.hero.lede')}</p>
+        <div className="about-specs">
+          <span>{t('public.home.hero.spec_protocol')}</span>
+          <span>{t('public.home.hero.spec_stream')}</span>
+          <span>{t('public.home.hero.spec_translate')}</span>
+        </div>
       </section>
 
-      <section aria-labelledby="about-techstack" className="flex flex-col gap-4">
-        <h2 id="about-techstack" className="text-section font-semibold text-ink-1">
-          {t('public.about.techstack')}
-        </h2>
-        <dl className="flex flex-col gap-2">
-          {TECH_STACK.map((group) => (
-            <div key={group.key} className="flex flex-col gap-1 sm:flex-row sm:gap-4">
-              <dt className="w-24 shrink-0 text-meta leading-5 text-ink-2">
-                {t(`public.about.tech.${group.key}`)}
-              </dt>
-              <dd className="text-body leading-[22px] text-ink-1">{group.items}</dd>
+      <div className="about-facts">
+        {languageCount !== undefined ? (
+          <span>
+            <b>{languageCount}</b>
+            {t('public.about.stats.languages')}
+          </span>
+        ) : null}
+        <span>
+          <b>3</b>
+          {t('public.about.fact.endpoints')}
+        </span>
+        <span>
+          <b>6</b>
+          {t('public.about.fact.stages')}
+        </span>
+      </div>
+
+      <section className="about-sec" aria-labelledby="about-capabilities">
+        <h2 id="about-capabilities">{t('public.about.section.capabilities')}</h2>
+        <p className="hint">{t('public.about.section.capabilities_hint')}</p>
+        <div className="about-caps">
+          {CAPABILITIES.map((key) => (
+            <div key={key}>
+              <h3>{t(`public.home.features.${key}.title`)}</h3>
+              <p>{t(`public.home.features.${key}.body`)}</p>
             </div>
           ))}
-        </dl>
+        </div>
       </section>
 
-      {docsUrl !== undefined && docsUrl !== '' ? (
-        <section aria-labelledby="about-docs" className="flex flex-col gap-4">
-          <h2 id="about-docs" className="text-section font-semibold text-ink-1">
-            {t('public.about.docs')}
-          </h2>
-          <div className="flex flex-wrap gap-6 text-body">
-            <ExternalLink href={docsUrl} label={t('public.about.docs_home')}>
-              {t('public.about.docs_home')}
-            </ExternalLink>
-            <ExternalLink
-              href={`${trimTrailingSlash(docsUrl)}/guide`}
-              label={t('public.about.integration_guide')}
-            >
-              {t('public.about.integration_guide')}
-            </ExternalLink>
-            <ExternalLink
-              href={`${trimTrailingSlash(docsUrl)}/api`}
-              label={t('public.about.api_reference')}
-            >
-              {t('public.about.api_reference')}
-            </ExternalLink>
+      <section className="about-sec" aria-labelledby="about-trace">
+        <h2 id="about-trace">{t('public.about.section.trace')}</h2>
+        <p className="hint">{t('public.about.section.trace_hint')}</p>
+        <div className="about-trace">
+          <div className="about-trace-rail">
+            {TRACE_STAGES.map((stage) => (
+              <div key={stage} className="about-trace-step">
+                <h4>{t(`public.home.trace.stage_${stage}`)}</h4>
+                <p>{t(`public.home.trace.body_${stage}`)}</p>
+              </div>
+            ))}
           </div>
-        </section>
-      ) : null}
+          <div className="about-trace-notes">
+            <span>{t('public.home.trace.failover')}</span>
+            <span>{t('public.home.trace.ledger')}</span>
+          </div>
+        </div>
+      </section>
+
+      <section className="about-sec" aria-labelledby="about-endpoints">
+        <h2 id="about-endpoints">{t('public.about.section.endpoints')}</h2>
+        <p className="hint">{t('public.about.section.endpoints_hint')}</p>
+        <div className="about-endpoints">
+          {ENDPOINTS.map((endpoint) => (
+            <div key={endpoint}>
+              <code>{`/${endpoint}`}</code>
+              <span>{t(`public.about.endpoint.${endpoint}`)}</span>
+            </div>
+          ))}
+        </div>
+      </section>
     </article>
   )
 }

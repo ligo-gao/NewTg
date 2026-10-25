@@ -1944,6 +1944,328 @@
   gap: 40px;
 }
 
+/* ---------- About ----------
+   Ported from demos/shell-unified/frame.html (`data-page="about"`). Every
+   class carries an `about-` prefix because the demo's `caps`, `trace`,
+   `facts` and `endpoints` already name homepage or rankings primitives.
+   Demo sizes map onto the file's type scale (12.5→12, 13.5→14, 15→16,
+   20→18); nothing drops below 12px. */
+
+.public-shell .about-wrap { max-width: 1200px; }
+
+.public-shell .about-hero {
+  padding-block: 56px 36px;
+  border-bottom: 1px solid var(--home-rule);
+}
+
+.public-shell .about-hero h1 {
+  margin: 0;
+  max-width: 21em;
+  color: var(--home-ink);
+  font-size: clamp(1.9rem, 3.6vw, 2.9rem);
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: -0.032em;
+}
+
+.public-shell .about-hero h1 span { display: block; }
+
+.public-shell .about-hero .lede {
+  margin: 18px 0 0;
+  max-width: 46em;
+  color: var(--home-muted);
+  font-size: 16px;
+  line-height: 1.7;
+}
+
+.public-shell .about-specs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 24px;
+}
+
+.public-shell .about-specs span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding-inline: 12px;
+  border: 1px solid var(--home-rule-strong);
+  border-radius: 999px;
+  color: var(--home-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.public-shell .about-specs span::before {
+  content: '';
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--home-signal);
+}
+
+.public-shell .about-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 40px;
+  padding-block: 18px;
+  border-bottom: 1px solid var(--home-rule);
+  color: var(--home-faint);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.public-shell .about-facts b {
+  margin-right: 8px;
+  color: var(--home-ink);
+  font-family: var(--font-public-mono);
+  font-size: 18px;
+  line-height: 28px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.public-shell .about-sec {
+  padding-block: 40px;
+  border-bottom: 1px solid var(--home-rule);
+}
+
+.public-shell .about-sec:last-of-type { border-bottom: 0; }
+
+.public-shell .about-sec > h2 {
+  margin: 0;
+  color: var(--home-ink);
+  font-size: 18px;
+  line-height: 28px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.public-shell .about-sec > .hint {
+  margin: 8px 0 0;
+  max-width: 52em;
+  color: var(--home-faint);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+/* Capability grid: hairlines instead of cards. */
+.public-shell .about-caps {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  margin-top: 24px;
+  border-top: 1px solid var(--home-rule);
+}
+
+.public-shell .about-caps > div {
+  padding: 20px 22px 22px 0;
+  border-bottom: 1px solid var(--home-rule);
+}
+
+.public-shell .about-caps h3 {
+  margin: 0;
+  color: var(--home-ink);
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.public-shell .about-caps p {
+  margin: 7px 0 0;
+  color: var(--home-muted);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+@media (min-width: 700px) {
+  .public-shell .about-caps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .public-shell .about-caps > div { padding: 20px 24px 22px; }
+  .public-shell .about-caps > div:nth-child(odd) {
+    padding-left: 0;
+    border-right: 1px solid var(--home-rule);
+  }
+  .public-shell .about-caps > div:nth-child(even) { padding-right: 0; }
+}
+
+@media (min-width: 1100px) {
+  .public-shell .about-caps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .public-shell .about-caps > div:nth-child(odd),
+  .public-shell .about-caps > div:nth-child(even) {
+    padding-left: 24px;
+    padding-right: 24px;
+    border-right: 1px solid var(--home-rule);
+  }
+  .public-shell .about-caps > div:nth-child(3n) {
+    padding-right: 0;
+    border-right: 0;
+  }
+  .public-shell .about-caps > div:nth-child(3n + 1) { padding-left: 0; }
+}
+
+/* Request trace: numbered rail, horizontal at ≥1180, vertical below 760. */
+.public-shell .about-trace {
+  margin-top: 26px;
+  padding: 24px 22px 20px;
+  border: 1px solid var(--home-rule);
+  border-radius: 10px;
+  background: var(--home-card);
+}
+
+.public-shell .about-trace-rail {
+  position: relative;
+  display: grid;
+  gap: 26px 0;
+  grid-template-columns: minmax(0, 1fr);
+  counter-reset: step;
+}
+
+.public-shell .about-trace-step {
+  position: relative;
+  min-width: 0;
+  padding: 32px 20px 0 0;
+}
+
+.public-shell .about-trace-step::before {
+  counter-increment: step;
+  content: counter(step, decimal-leading-zero);
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--home-rule-strong);
+  border-radius: 50%;
+  background: var(--home-card);
+  color: var(--home-signal);
+  font-family: var(--font-public-mono);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.public-shell .about-trace-step h4 {
+  margin: 0;
+  color: var(--home-ink);
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 600;
+}
+
+.public-shell .about-trace-step p {
+  margin: 5px 0 0;
+  max-width: 26ch;
+  color: var(--home-faint);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+@media (min-width: 760px) {
+  .public-shell .about-trace-rail { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .public-shell .about-trace-notes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 759px) {
+  .public-shell .about-trace-step {
+    min-height: 24px;
+    padding: 0 0 0 40px;
+  }
+  .public-shell .about-trace-step::before { top: 1px; }
+  .public-shell .about-trace-rail::after {
+    content: '';
+    position: absolute;
+    left: 11px;
+    top: 12px;
+    bottom: 6px;
+    width: 1px;
+    background: var(--home-rule-strong);
+  }
+}
+
+@media (min-width: 1180px) {
+  .public-shell .about-trace-rail {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 0;
+  }
+  /* One hairline through every numbered dot reads as a chain of stages. */
+  .public-shell .about-trace-rail::before {
+    content: '';
+    position: absolute;
+    left: 11px;
+    right: 11px;
+    top: 12px;
+    height: 1px;
+    background: var(--home-rule-strong);
+  }
+}
+
+.public-shell .about-trace-notes {
+  display: grid;
+  gap: 8px 24px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--home-rule);
+  color: var(--home-faint);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.public-shell .about-trace-notes span {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.public-shell .about-trace-notes span::before {
+  content: '';
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--home-signal-bright);
+  transform: translateY(-2px);
+}
+
+/* Endpoint strip: three cells divided by the grid gap. */
+.public-shell .about-endpoints {
+  display: grid;
+  gap: 1px;
+  margin-top: 24px;
+  overflow: hidden;
+  border: 1px solid var(--home-rule);
+  border-radius: 8px;
+  background: var(--home-rule);
+}
+
+.public-shell .about-endpoints > div {
+  padding: 16px 18px;
+  background: var(--home-card);
+}
+
+.public-shell .about-endpoints code {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--home-signal);
+  font-family: var(--font-public-mono);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.public-shell .about-endpoints span {
+  display: block;
+  color: var(--home-faint);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+@media (min-width: 900px) {
+  .public-shell .about-endpoints { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
 /* ---------- Footer ---------- */
 
 .public-shell .site-footer {

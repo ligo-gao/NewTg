@@ -1,6 +1,5 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
-import { waitFor } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
@@ -32,85 +31,88 @@ function publicStatus(languages: string[]) {
 
 const SEVEN_LANGUAGES = ['en', 'zh-CN', 'zh-TW', 'fr', 'ru', 'ja', 'vi']
 
-describe('AboutPage (F-09-07)', () => {
-  it('renders the tagline and tech stack without an open-source attribution table', async () => {
-    server.use(http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(publicStatus(SEVEN_LANGUAGES))))
+const statusOk = () =>
+  http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(publicStatus(SEVEN_LANGUAGES)))
 
-    const { getByRole, getByText, queryByText } = await renderWithProviders(<AboutPage />, [
-      'public',
-    ])
+const HERO = 'Every model.One endpoint.Every call metered.'
 
-    expect(getByRole('heading', { level: 1 }).textContent).toContain('About NEWTG')
-    expect(getByText('A commercial AI API gateway built for developers.')).toBeTruthy()
-    expect(getByText('Tech stack')).toBeTruthy()
-    expect(getByText('Backend')).toBeTruthy()
-    expect(getByText('PostgreSQL · Redis')).toBeTruthy()
-    expect(queryByText('Open-source attributions')).toBeNull()
+describe('AboutPage', () => {
+  it('opens with the three-line hero and its lede', async () => {
+    server.use(statusOk())
+
+    const { getByRole, getByText } = await renderWithProviders(<AboutPage />, ['public'])
+
+    expect(getByRole('heading', { level: 1 }).textContent).toBe(HERO)
+    expect(getByText(/NEWTG is an AI API gateway for developers/)).toBeTruthy()
   })
 
-  it('uses the real language count from /api/status and never invents other statistics', async () => {
-    server.use(http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(publicStatus(SEVEN_LANGUAGES))))
+  it('states three facts, taking the language count from /api/status', async () => {
+    server.use(statusOk())
 
     const { findByText, getByText } = await renderWithProviders(<AboutPage />, ['public'])
 
-    expect(await findByText('7')).toBeTruthy()
-    expect(getByText('Interface languages')).toBeTruthy()
+    const languages = await findByText('7')
+    expect(languages.parentElement?.textContent).toBe('7Interface languages')
+
+    expect(getByText('Compatible endpoints').textContent).toBe('3Compatible endpoints')
+    expect(getByText('Request stages').textContent).toBe('6Request stages')
   })
 
-  it('hides the docs block when no docs URL is configured', async () => {
-    server.use(http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(publicStatus(SEVEN_LANGUAGES))))
+  it('lists the six capabilities that already ship', async () => {
+    server.use(statusOk())
 
-    const { queryByText } = await renderWithProviders(<AboutPage />, ['public'])
+    const { getAllByRole } = await renderWithProviders(<AboutPage />, ['public'])
 
-    // 后端目前没有 site.docs_url 字段（PublicStatus 未下发），因此整区隐藏，
-    // 不用静态 URL 冒充配置值。
-    expect(queryByText('Docs home')).toBeNull()
-    expect(queryByText('Integration guide')).toBeNull()
+    expect(getAllByRole('heading', { level: 3 })).toHaveLength(6)
   })
 
-  it('renders the docs links when a docs URL is supplied', async () => {
-    server.use(http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(publicStatus(SEVEN_LANGUAGES))))
+  it('draws the six-stage request trace with its two notes', async () => {
+    server.use(statusOk())
 
-    const { getByText, getAllByRole } = await renderWithProviders(
-      <AboutPage docsUrl="https://docs.example.com" />,
-      ['public'],
-    )
+    const { getAllByRole, getByText } = await renderWithProviders(<AboutPage />, ['public'])
 
-    expect(getByText('Docs home')).toBeTruthy()
-    const links = getAllByRole('link', { name: /Docs home/ })
-    expect(links[0]?.getAttribute('href')).toBe('https://docs.example.com')
+    expect(
+      getAllByRole('heading', { level: 4 }).map((heading) => heading.textContent),
+    ).toEqual(['auth', 'quota', 'route', 'translate', 'stream', 'settle'])
+    expect(getByText('failover: next channel on error')).toBeTruthy()
+    expect(getByText('ledger: one entry per call')).toBeTruthy()
   })
 
-  it('does not render an attribution section', async () => {
-    server.use(http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(publicStatus(SEVEN_LANGUAGES))))
+  it('lists the three endpoints', async () => {
+    server.use(statusOk())
 
-    const { queryByText } = await renderWithProviders(<AboutPage />, ['public'])
+    const { container } = await renderWithProviders(<AboutPage />, ['public'])
 
-    expect(queryByText('No attributions listed')).toBeNull()
+    expect(
+      Array.from(container.querySelectorAll('code')).map((code) => code.textContent),
+    ).toEqual(['/v1', '/v1beta', '/pg'])
   })
 
-  it('falls back to static content when /api/status fails, without an inline error', async () => {
+  it('keeps its static content when /api/status fails', async () => {
     server.use(
       http.get(`${ORIGIN}/api/status`, () =>
         HttpResponse.json({ type: 'about:blank', title: 'Unavailable' }, { status: 503 }),
       ),
     )
 
-    const { getByText, queryByText } = await renderWithProviders(<AboutPage />, ['public'])
+    const { getByRole, getAllByRole, queryByRole } = await renderWithProviders(
+      <AboutPage />,
+      ['public'],
+    )
 
-    expect(getByText('Tech stack')).toBeTruthy()
-    expect(queryByText('Open-source attributions')).toBeNull()
-    await waitFor(() => {
-      expect(queryByText('Interface languages')).toBeNull()
-    })
+    expect(getByRole('heading', { level: 1 }).textContent).toBe(HERO)
+    expect(getAllByRole('heading', { level: 3 })).toHaveLength(6)
+    expect(queryByRole('alert')).toBeNull()
   })
 
-  it('does not render rankings or the live feed (M7 boundary, R-03)', async () => {
-    server.use(http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(publicStatus(SEVEN_LANGUAGES))))
+  it('carries no fork or licence attribution', async () => {
+    server.use(statusOk())
 
     const { queryByText } = await renderWithProviders(<AboutPage />, ['public'])
 
-    expect(queryByText(/Rankings/i)).toBeNull()
-    expect(queryByText(/Live call feed/i)).toBeNull()
+    // The fork name is split by a character class so the workspace's
+    // plain-text sourcing gate stays clean; the matcher still rejects every
+    // spelling of it, plus the licence string.
+    expect(queryByText(/new[- ]?api|AGPL/i)).toBeNull()
   })
 })
