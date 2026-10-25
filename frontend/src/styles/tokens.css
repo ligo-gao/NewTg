@@ -134,7 +134,7 @@
 
   /* Public homepage — "The Relay Board" (§F-09-01 visual direction).
      Scoped to `.public-shell`; the console keeps the product palette above.
-     Copper is the only signal colour: it marks the path a request takes. */
+     The signal colour is teal: it marks the path a request takes. */
   --home-paper: #f3f6f9;
   --home-paper-2: #edf2f7;
   --home-card: #ffffff;
@@ -256,7 +256,7 @@
 
   /* Public homepage dark column. The public shell follows the same roles:
      paper becomes the night surface, the panel keeps its instrument colour,
-     and copper brightens to stay legible on both. */
+     and the signal teal brightens to stay legible on both. */
   --home-paper: #070b12;
   --home-paper-2: #0a1019;
   --home-card: #0d141f;

@@ -146,10 +146,12 @@ function RankingsSkeleton() {
  * 非法 IANA 名不应让整页崩溃：`Intl.DateTimeFormat` 会抛 RangeError，
  * 此时回退浏览器本地时区，读数仍可读。
  */
-function windowDate(value: string, locale: string, timeZone?: string): string {
-  const ms = Date.parse(value)
-  if (Number.isNaN(ms)) return value
-  const options: Intl.DateTimeFormatOptions = { dateStyle: 'medium' }
+function formatWindowDate(
+  ms: number,
+  locale: string,
+  timeZone: string | undefined,
+  options: Intl.DateTimeFormatOptions,
+): string {
   try {
     return new Intl.DateTimeFormat(
       locale,
@@ -157,6 +159,40 @@ function windowDate(value: string, locale: string, timeZone?: string): string {
     ).format(new Date(ms))
   } catch {
     return new Intl.DateTimeFormat(locale, options).format(new Date(ms))
+  }
+}
+
+/** 窗口端点的日期；无法解析的值原样返回，不让整页失败。 */
+function windowDate(value: string, locale: string, timeZone?: string): string {
+  const ms = Date.parse(value)
+  if (Number.isNaN(ms)) return value
+  return formatWindowDate(ms, locale, timeZone, { dateStyle: 'medium' })
+}
+
+/**
+ * 两端日历日期相同时（`period=today`）纯日期会打印成同一个日子，看起来像
+ * 空窗口；此时补上时间以露出真实跨度。跨天窗口保持原来的日期输出。
+ */
+function windowRange(
+  start: string,
+  end: string,
+  locale: string,
+  timeZone?: string,
+): { start: string; end: string } {
+  const startDate = windowDate(start, locale, timeZone)
+  const endDate = windowDate(end, locale, timeZone)
+  const startMs = Date.parse(start)
+  const endMs = Date.parse(end)
+  if (startDate !== endDate || Number.isNaN(startMs) || Number.isNaN(endMs)) {
+    return { start: startDate, end: endDate }
+  }
+  const options: Intl.DateTimeFormatOptions = {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }
+  return {
+    start: formatWindowDate(startMs, locale, timeZone, options),
+    end: formatWindowDate(endMs, locale, timeZone, options),
   }
 }
 
@@ -265,14 +301,20 @@ function WindowBar({
   locale: string
   t: TranslateFn
 }) {
+  const range = windowRange(
+    data.window.start,
+    data.window.end,
+    locale,
+    data.timezone,
+  )
   return (
     <div className="rank-window">
       <span>
         {t('public.rankings.window.label')}{' '}
         <b>
           {t('public.rankings.window.value', {
-            start: windowDate(data.window.start, locale, data.timezone),
-            end: windowDate(data.window.end, locale, data.timezone),
+            start: range.start,
+            end: range.end,
           })}
         </b>
       </span>
@@ -440,6 +482,12 @@ function FactsPanel({
   locale: string
   t: TranslateFn
 }) {
+  const range = windowRange(
+    data.window.start,
+    data.window.end,
+    locale,
+    data.timezone,
+  )
   return (
     <div className="rank-facts">
       <h2>{t('public.rankings.facts.title')}</h2>
@@ -447,8 +495,8 @@ function FactsPanel({
         <dt>{t('public.rankings.window.label')}</dt>
         <dd className="mono">
           {t('public.rankings.window.value', {
-            start: windowDate(data.window.start, locale, data.timezone),
-            end: windowDate(data.window.end, locale, data.timezone),
+            start: range.start,
+            end: range.end,
           })}
         </dd>
         <dt>{t('public.rankings.facts.samples')}</dt>

@@ -53,11 +53,11 @@ export function AboutPage() {
           </span>
         ) : null}
         <span>
-          <b>3</b>
+          <b>{ENDPOINTS.length}</b>
           {t('public.about.fact.endpoints')}
         </span>
         <span>
-          <b>6</b>
+          <b>{TRACE_STAGES.length}</b>
           {t('public.about.fact.stages')}
         </span>
       </div>

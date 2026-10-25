@@ -592,6 +592,74 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
     expect(requests[1]?.ifNoneMatch).toBeNull()
   })
 
+  it('keeps the per-bucket trend values in the DOM for assistive tech', async () => {
+    // ≥621 时 CSS 把列表视觉隐藏（sr-only）而不是 display:none，桌面端每个桶
+    // 的读数仍在无障碍树里；jsdom 没有层叠布局，只能断言节点及其文本存在。
+    const fixture = rankingsFixture('week')
+    fixture.trend = {
+      granularity: 'day',
+      buckets: ['2026-10-23T00:00:00+08:00', '2026-10-24T00:00:00+08:00'],
+      series: [
+        { model: 'deepseek-flash', slot: 1, tokens: [100_000, 150_000] },
+        { model: 'kimi-for-coding', slot: 2, tokens: [50_000, 20_000] },
+      ],
+    }
+    installBaseHandlers(() =>
+      HttpResponse.json(fixture, { headers: { ETag: '"week-two-buckets"' } }),
+    )
+
+    const { findByText, container } = await renderWithProviders(<Harness />, [
+      'public',
+    ])
+    await findByText('Total tokens')
+
+    const list = container.querySelector('.rank-trend-list')
+    expect(list).not.toBeNull()
+    const items = within(list as HTMLElement).getAllByRole('listitem')
+    expect(items).toHaveLength(2)
+    expect(items[0]?.textContent).toContain('10-23')
+    expect(items[0]?.textContent).toContain('150K')
+    expect(items[1]?.textContent).toContain('10-24')
+    expect(items[1]?.textContent).toContain('170K')
+  })
+
+  it('adds times to a same-day window and keeps weekly endpoints date-only', async () => {
+    const today = rankingsFixture('today')
+    today.window = {
+      start: '2026-10-25T00:00:00+08:00',
+      end: '2026-10-25T09:24:59+08:00',
+    }
+    installBaseHandlers((request) => {
+      const period = new URL(request.url).searchParams.get('period') ?? 'week'
+      const fixture = period === 'today' ? today : rankingsFixture('week')
+      return HttpResponse.json(fixture, {
+        headers: { ETag: `"${period}-range"` },
+      })
+    })
+
+    const { findByText, getByRole, container } = await renderWithProviders(
+      <Harness initial="today" />,
+      ['public'],
+    )
+    await findByText('Total tokens')
+
+    const windowValue = () =>
+      container.querySelector('.rank-window b')?.textContent ?? ''
+    // 两端同一天时必须带时间，且是两个不同的字符串（否则打印两次同一天）。
+    expect(windowValue()).toMatch(
+      /Oct 25, 2026, \d{1,2}:\d{2}\s?[AP]M – Oct 25, 2026, \d{1,2}:\d{2}\s?[AP]M/,
+    )
+    // 事实栏用同一个 helper，打印同一段窗口。
+    expect(container.querySelector('.rank-facts dd')?.textContent).toBe(
+      windowValue(),
+    )
+
+    fireEvent.click(getByRole('tab', { name: 'This Week' }))
+    await waitFor(() =>
+      expect(windowValue()).toBe('Oct 19, 2026 – Oct 25, 2026'),
+    )
+  })
+
   it('falls back to the local timezone when the response timezone is invalid', async () => {
     installBaseHandlers(() =>
       HttpResponse.json(

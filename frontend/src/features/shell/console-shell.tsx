@@ -77,7 +77,7 @@ export function ConsoleShell() {
   const restricted = isForcedPasswordChangePath(pathname, searchStr)
 
   return (
-    <div className="flex min-h-screen flex-col bg-surface-page text-ink-1">
+    <div className="flex h-screen flex-col bg-surface-page text-ink-1">
       <AppTopbar
         title={title}
         me={meQuery.data}

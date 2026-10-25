@@ -119,24 +119,7 @@ describe('missing keys (web-00 §7.2)', () => {
 })
 
 describe('locale resolution (web-00 §7.3)', () => {
-  it('normalizes BCP-47 tags to the canonical set', async () => {
-    const { matchLocale } = await freshI18n()
-
-    expect(matchLocale('en-US')).toBe('en')
-    expect(matchLocale('zh-CN')).toBe('zh-CN')
-    expect(matchLocale('zh-Hans')).toBe('zh-CN')
-    expect(matchLocale('zh-Hant')).toBe('zh-TW')
-    expect(matchLocale('zh-TW')).toBe('zh-TW')
-    expect(matchLocale('zh-HK')).toBe('zh-TW')
-    expect(matchLocale('fr-FR')).toBe('fr')
-    expect(matchLocale('ru-RU')).toBe('ru')
-    expect(matchLocale('ja-JP')).toBe('ja')
-    expect(matchLocale('vi-VN')).toBe('vi')
-    expect(matchLocale('de-DE')).toBeNull()
-    expect(matchLocale(undefined)).toBeNull()
-  })
-
-  it('prefers localStorage over navigator.language', async () => {
+  it('prefers the stored locale over any browser default', async () => {
     setNavigatorLanguage('fr-FR')
     globalThis.localStorage.setItem('newtg.language', 'ja')
     const { resolveInitialLocale } = await freshI18n()

@@ -183,24 +183,6 @@ function writeStoredLocale(locale: Locale): void {
 }
 
 /**
- * 把浏览器标签（`navigator.language`）归一为 canonical 7 语（§7.3）。
- *
- * `zh-Hant`/`zh-TW`/`zh-HK`/`zh-MO` → `zh-TW`；其余 `zh-*`（含裸 `zh`）
- * → `zh-CN`。裸 `zh` 无脚本/地区信息，按使用面最广的简体处理；这是归一
- * 规则而非新契约（契约仍是 canonical 标签）。不在集合内返回 null。
- */
-export function matchLocale(tag: string | null | undefined): Locale | null {
-  if (tag === null || tag === undefined) return null
-  const lower = tag.toLowerCase()
-  if (lower === 'zh' || lower.startsWith('zh-')) {
-    if (/(hant|tw|hk|mo)/.test(lower)) return 'zh-TW'
-    return 'zh-CN'
-  }
-  const base = lower.split('-')[0] ?? ''
-  return isLocale(base) ? (base as Locale) : null
-}
-
-/**
  * 初始语言决定顺序的前半段（§7.3）：本地记忆 → `zh-CN`。
  *
  * 产品默认语言是简体中文：浏览器语言不再参与首屏决定，因此俄语/德语等

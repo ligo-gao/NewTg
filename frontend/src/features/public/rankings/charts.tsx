@@ -9,9 +9,9 @@
  * props 兼容），成本高于收益；因此这里独立实现，但复用同一套
  * `--chart-cat-*` 槽位与 `--ink-*` 文本色，视觉体系保持一致。
  *
- * 可访问性：每个图表 `role="img"` + 概述标签；精确值由同区块的「表格
- * 视图」提供（relief 规则），移动端另以卡片列表承载读数。所有动画均为
- * CSS 过渡，`prefers-reduced-motion` 由 tokens.css 的全局媒体查询归零。
+ * 可访问性：每个图表 `role="img"` + 概述标签；精确值由同一面板里视觉隐藏
+ * 的 `.rank-trend-list` 提供（移动端直接显示，≥621 保留在无障碍树中）。所有
+ * 动画均为 CSS 过渡，`prefers-reduced-motion` 由 tokens.css 的全局媒体查询归零。
  */
 
 import type { RankingsModel, RankingsProvider, RankingsTrendSeries } from './api'

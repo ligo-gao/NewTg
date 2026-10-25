@@ -273,9 +273,29 @@ describe('ConsoleShell layout', () => {
     expect(within(topbar).getByLabelText('Theme')).toBeTruthy()
   })
 
+  it('scrolls its own main column instead of the document', async () => {
+    installSession()
+    installMatchMedia((query) => query === '(min-width: 1024px)')
+
+    const { container } = renderConsoleAt('/dashboard')
+
+    await waitFor(() => {
+      expect(container.querySelector('aside')).not.toBeNull()
+    })
+
+    // jsdom 没有布局，只能锁定类契约：根元素固定视口高度，滚动交给 <main>，
+    // 否则文档自己滚动会把 topbar 和侧栏底部的折叠控件带出视口。
+    const main = container.querySelector('#main')
+    expect(main).not.toBeNull()
+    const root = main?.closest('.bg-surface-page')
+    expect(root).not.toBeNull()
+    expect(root?.classList.contains('h-screen')).toBe(true)
+    expect(root?.classList.contains('min-h-screen')).toBe(false)
+    expect(main?.classList.contains('overflow-y-auto')).toBe(true)
+  })
+
   it('does not mount blocked widgets on the forced password-change route', async () => {
     // A restricted (temporary-password) session may only use /api/me and
-    // /api/password. Notifications and announcements answer 403, and the auth
     // failure handler would hard-navigate back to this same route — the reload
     // loop this test guards against. Leaving their handlers out makes any
     // request a hard msw error.
