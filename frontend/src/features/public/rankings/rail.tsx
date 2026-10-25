@@ -17,6 +17,7 @@ import type {
 } from './api'
 import { ShareBar } from './charts'
 import { formatExact, formatPercent } from './format'
+import { foldTopProviders } from './share'
 import { tokensPerRequest } from './summary'
 
 export interface RankingsRailProps {
@@ -25,46 +26,6 @@ export interface RankingsRailProps {
   movers: RankingsMovers
   locale: string
   t: TranslateFn
-}
-
-interface ProviderRow {
-  key: string
-  label: string
-  share: number
-  tokens: number
-}
-
-/**
- * 与 `ShareBar` 同一套聚合：前 5 名逐行列出，其余合成 `Other`。份额与
- * token 都是上游读数之和，不重新分配。
- */
-function providerRows(
-  providers: readonly RankingsProvider[],
-  otherLabel: string,
-): ProviderRow[] {
-  const top = providers.slice(0, 5)
-  const rest = providers.slice(5)
-  return [
-    ...top.map((provider) => ({
-      key: `${provider.rank}-${provider.author}`,
-      label: provider.author,
-      share: provider.share_pct,
-      tokens: provider.total_tokens,
-    })),
-    ...(rest.length > 0
-      ? [
-          {
-            key: 'other',
-            label: otherLabel,
-            share: rest.reduce((sum, provider) => sum + provider.share_pct, 0),
-            tokens: rest.reduce(
-              (sum, provider) => sum + provider.total_tokens,
-              0,
-            ),
-          },
-        ]
-      : []),
-  ]
 }
 
 function MoverGroup({
@@ -106,7 +67,7 @@ export function RankingsRail({
   locale,
   t,
 }: RankingsRailProps) {
-  const rows = providerRows(providers, t('public.rankings.trend.other'))
+  const rows = foldTopProviders(providers, t('public.rankings.trend.other'))
   const averages = models.map((model) =>
     tokensPerRequest(model.total_tokens, model.requests),
   )

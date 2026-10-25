@@ -14,152 +14,15 @@
  * 动画均为 CSS 过渡，`prefers-reduced-motion` 由 tokens.css 的全局媒体查询归零。
  */
 
-import type { RankingsModel, RankingsProvider, RankingsTrendSeries } from './api'
+import type { RankingsProvider, RankingsTrendSeries } from './api'
 import { formatBucketFull, formatBucketLabel, formatCompact, formatPercent } from './format'
+import { foldTopProviders } from './share'
 
 /** 实体稳定槽位是 1–8（1-based）；Other/未知用中性灰，绝不生成第 9 色。 */
 export function seriesColor(slot: number | null): string {
   if (slot === null || !Number.isFinite(slot)) return 'var(--ink-3)'
   const clamped = Math.min(Math.max(Math.trunc(slot), 1), 8)
   return `var(--chart-cat-${clamped})`
-}
-
-interface ModelMagnitudeChartProps {
-  models: readonly RankingsModel[]
-  locale: string
-  ariaLabel: string
-  /** tooltip 的字段名走 i18n，不在 SVG 里硬编码英文。 */
-  tokensLabel: string
-  requestsLabel: string
-}
-
-const MODEL_ROW_HEIGHT = 56
-const MODEL_VIEW_WIDTH = 640
-const MODEL_LEFT = 176
-const MODEL_RIGHT_READOUT = 64
-const MODEL_PLOT_WIDTH = MODEL_VIEW_WIDTH - MODEL_LEFT - MODEL_RIGHT_READOUT
-const MODEL_TOP = 26
-
-/**
- * 模型榜量级脊线：对数刻度（十进），条从共同左基线出发，数据端 4px 圆角。
- * 单色第 1 槽——Top10 模型数量超过 8 个分类槽，分类色会迫使循环，而
- * 「排名」本身就是顺序信息，颜色不承担身份。
- */
-export function ModelMagnitudeChart({
-  models,
-  locale,
-  ariaLabel,
-  tokensLabel,
-  requestsLabel,
-}: ModelMagnitudeChartProps) {
-  const top = models.slice(0, 10)
-  const maxTokens = Math.max(1, ...top.map((model) => model.total_tokens))
-  const maxExponent = Math.max(1, Math.ceil(Math.log10(maxTokens)))
-  const height = MODEL_TOP + top.length * MODEL_ROW_HEIGHT + 8
-
-  /**
-   * L4：刻度按 `exponent / maxExponent` 归一，而不是除以 `log10(maxTokens)`。
-   * 后者在 maxTokens 不是 10 的整数幂时会让最大十进制刻度（10^maxExponent）
-   * 落到绘图区之外，轴线与标签越界；按整数指数归一后 0..maxExponent 恰好
-   * 铺满 0..PLOT_WIDTH。
-   */
-  const xForTokens = (tokens: number): number => {
-    if (tokens <= 0) return 0
-    return (Math.log10(tokens) / maxExponent) * MODEL_PLOT_WIDTH
-  }
-
-  return (
-    <div data-testid="model-magnitude-chart" className="hidden w-full md:block">
-      <svg
-        role="img"
-        aria-label={ariaLabel}
-        viewBox={`0 0 ${MODEL_VIEW_WIDTH} ${height}`}
-        className="h-auto w-full"
-      >
-        {/* 十进刻度脊线（发丝线，仅装饰，数值由读数/表格承载）。 */}
-        {Array.from({ length: maxExponent + 1 }, (_, exponent) => exponent).map(
-          (exponent) => {
-            const x = MODEL_LEFT + xForTokens(10 ** exponent)
-            return (
-              <g key={exponent}>
-                <line
-                  x1={x}
-                  y1={MODEL_TOP - 8}
-                  x2={x}
-                  y2={height - 8}
-                  stroke="var(--border-hairline)"
-                />
-                <text
-                  x={x}
-                  y={12}
-                  textAnchor={exponent === maxExponent ? 'end' : 'middle'}
-                  className="fill-ink-3 text-badge tabular-nums"
-                >
-                  {formatCompact(10 ** exponent, locale)}
-                </text>
-              </g>
-            )
-          },
-        )}
-
-        {top.map((model, index) => {
-          const top_y = MODEL_TOP + index * MODEL_ROW_HEIGHT
-          const barWidth = xForTokens(model.total_tokens)
-          return (
-            <g
-              key={`${model.rank}-${model.model}`}
-              data-model={model.model}
-              className="text-ink-1"
-            >
-              <title>
-                {`${model.display_name} · ${formatCompact(
-                  model.total_tokens,
-                  locale,
-                )} ${tokensLabel} · ${formatCompact(
-                  model.requests,
-                  locale,
-                )} ${requestsLabel}`}
-              </title>
-              <text
-                x={4}
-                y={top_y + 22}
-                className="fill-ink-3 text-badge tabular-nums"
-              >
-                {model.rank}
-              </text>
-              <text
-                x={26}
-                y={top_y + 22}
-                className="fill-ink-1 text-badge font-semibold"
-              >
-                {model.display_name}
-              </text>
-              <text x={26} y={top_y + 38} className="fill-ink-2 text-badge">
-                {model.author}
-              </text>
-              <rect
-                data-magnitude-bar="true"
-                x={MODEL_LEFT}
-                y={top_y + 12}
-                width={Math.max(barWidth, model.total_tokens > 0 ? 2 : 0)}
-                height={20}
-                rx={4}
-                fill="var(--chart-cat-1)"
-              />
-              <text
-                x={MODEL_VIEW_WIDTH - 4}
-                y={top_y + 27}
-                textAnchor="end"
-                className="fill-ink-1 text-badge font-semibold tabular-nums"
-              >
-                {formatCompact(model.total_tokens, locale)}
-              </text>
-            </g>
-          )
-        })}
-      </svg>
-    </div>
-  )
 }
 
 interface TrendChartProps {
@@ -305,21 +168,7 @@ export function ShareBar({
   ariaLabel,
   otherLabel,
 }: ShareBarProps) {
-  const top = providers.slice(0, 5)
-  const rest = providers.slice(5)
-  const otherTokens = rest.reduce((sum, item) => sum + item.total_tokens, 0)
-  const otherShare = rest.reduce((sum, item) => sum + item.share_pct, 0)
-  const entries = [
-    ...top.map((item) => ({
-      label: item.author,
-      tokens: item.total_tokens,
-      share: item.share_pct,
-      slot: item.slot,
-    })),
-    ...(rest.length > 0
-      ? [{ label: otherLabel, tokens: otherTokens, share: otherShare, slot: null }]
-      : []),
-  ]
+  const entries = foldTopProviders(providers, otherLabel)
 
   return (
     <div
@@ -330,7 +179,7 @@ export function ShareBar({
     >
       {entries.map((entry) => (
         <div
-          key={entry.label}
+          key={entry.key}
           data-series={entry.label}
           title={`${entry.label} · ${formatPercent(entry.share, locale)} · ${formatCompact(
             entry.tokens,

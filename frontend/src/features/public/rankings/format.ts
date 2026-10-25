@@ -63,17 +63,3 @@ export const PERIOD_LABEL_KEYS: Record<RankingsPeriod, string> = {
   month: 'public.rankings.period.month',
   year: 'public.rankings.period.year',
 }
-
-/** 空态里的「切换到更宽周期」：year 已是最宽，返回 null。 */
-export function widerPeriod(period: RankingsPeriod): RankingsPeriod | null {
-  switch (period) {
-    case 'today':
-      return 'week'
-    case 'week':
-      return 'month'
-    case 'month':
-      return 'year'
-    case 'year':
-      return null
-  }
-}
