@@ -59,6 +59,22 @@ describe('nav visibility matrix (TC-F-09-34-01)', () => {
     expect(visibleNavItems(FULL_NAV, true, 'javascript:alert(1)').some((i) => i.key === 'docs')).toBe(false)
   })
 
+  it('pins the documented nav order and drops a disabled entry in place', () => {
+    expect(
+      visibleNavItems(FULL_NAV, true, 'https://docs.example.com').map((item) => item.key),
+    ).toEqual(['models', 'pricing', 'rankings', 'about', 'docs', 'console'])
+
+    const withoutPricing = {
+      ...FULL_NAV,
+      pricing: { enabled: false, require_auth: false },
+    }
+    expect(
+      visibleNavItems(withoutPricing, true, 'https://docs.example.com').map(
+        (item) => item.key,
+      ),
+    ).toEqual(['models', 'rankings', 'about', 'docs', 'console'])
+  })
+
   it('keeps render order and marks absolute docs targets external', () => {
     const items = visibleNavItems(
       { ...FULL_NAV, rankings: { enabled: false, require_auth: false } },

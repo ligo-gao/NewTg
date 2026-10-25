@@ -2,6 +2,7 @@ import type { PublicNav, PublicSite } from '@/lib/public-status'
 import { useI18n } from '@/shared/lib/i18n-context'
 
 import { isSafePublicHref, navEntryOf } from '../nav-visibility'
+import { TRACE_STAGES } from '../content'
 
 export interface HeroSectionProps {
   site?: PublicSite
@@ -13,8 +14,6 @@ export interface HeroSectionProps {
   failed?: boolean
   onRetry?: () => void
 }
-
-const TRACE_STAGES = ['auth', 'quota', 'route', 'translate', 'stream', 'settle'] as const
 
 /**
  * F-09-01 hero. Left aligned; the right-hand instrument is the page's single

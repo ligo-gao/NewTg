@@ -1,12 +1,24 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
+import { waitFor } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
+import { usePublicStatus } from '@/lib/public-status'
 import { renderWithProviders } from '@/test-support/providers'
 
 import { AboutPage } from './about-page'
 
 const ORIGIN = 'http://localhost:3000'
+
+/** 观测 `/api/status` 的最终状态，供 503 用例等待 error 落地。 */
+function StatusProbe() {
+  const status = usePublicStatus()
+  return (
+    <span data-testid="status-phase">
+      {status.isError ? 'error' : status.isSuccess ? 'success' : 'pending'}
+    </span>
+  )
+}
 
 const server = setupServer()
 
@@ -89,20 +101,50 @@ describe('AboutPage', () => {
   })
 
   it('keeps its static content when /api/status fails', async () => {
+    // 用 promise 把「503 已经作答」变成可等待的事实：否则「没有 alert」只
+    // 证明响应还没落地，测试会因为时序而通过（或者因为时序而偶发失败）。
+    let answer: () => void = () => {}
+    const answered = new Promise<void>((resolve) => {
+      answer = resolve
+    })
     server.use(
-      http.get(`${ORIGIN}/api/status`, () =>
-        HttpResponse.json({ type: 'about:blank', title: 'Unavailable' }, { status: 503 }),
-      ),
+      http.get(`${ORIGIN}/api/status`, () => {
+        answer()
+        return HttpResponse.json({ type: 'about:blank', title: 'Unavailable' }, { status: 503 })
+      }),
     )
 
-    const { getByRole, getAllByRole, queryByRole } = await renderWithProviders(
-      <AboutPage />,
-      ['public'],
-    )
+    const { container, getByRole, getAllByRole, getByTestId, queryByRole } =
+      await renderWithProviders(
+        <>
+          <AboutPage />
+          <StatusProbe />
+        </>,
+        ['public'],
+      )
+
+    await answered
+    // 查询落到 error 态之后才断言；pending 态下这些断言同样成立，正是旧测试
+    // 会「对错原因都通过」的地方。
+    await waitFor(() => {
+      expect(getByTestId('status-phase').textContent).toBe('error')
+    })
 
     expect(getByRole('heading', { level: 1 }).textContent).toBe(HERO)
     expect(getAllByRole('heading', { level: 3 })).toHaveLength(6)
+
+    // 事实行只剩 endpoints + stages 两格：语言数那一格必须随探测失败消失。
+    const facts = container.querySelector('.about-facts')
+    expect(facts?.querySelectorAll(':scope > span')).toHaveLength(2)
+    expect(container.textContent).not.toContain('Interface languages')
+
     expect(queryByRole('alert')).toBeNull()
+    expect(queryByRole('status')).toBeNull()
+
+    // 其余静态内容不受影响：三段式 trace 的入口仍在。
+    expect(
+      Array.from(container.querySelectorAll('code')).map((code) => code.textContent),
+    ).toEqual(['/v1', '/v1beta', '/pg'])
   })
 
   it('carries no fork or licence attribution', async () => {

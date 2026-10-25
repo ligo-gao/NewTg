@@ -1,18 +1,17 @@
 import { usePublicStatus } from '@/lib/public-status'
 import { useI18n } from '@/shared/lib/i18n-context'
 
+import { TRACE_STAGES, type CapabilityId } from './content'
+
 /** Capability cells reuse the homepage copy; this page only re-lays them out. */
-const CAPABILITIES = [
+const CAPABILITIES: readonly CapabilityId[] = [
   'multi_upstream',
   'streaming',
   'ratelimit',
   'stateless',
   'credentials',
   'billing',
-] as const
-
-/** Same six stages as the homepage instrument, in request order. */
-const TRACE_STAGES = ['auth', 'quota', 'route', 'translate', 'stream', 'settle'] as const
+]
 
 const ENDPOINTS = ['v1', 'v1beta', 'pg'] as const
 

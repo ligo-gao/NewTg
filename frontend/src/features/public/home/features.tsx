@@ -10,9 +10,10 @@ import {
   RadioIcon,
   ShieldKeyIcon,
 } from '../public-icons'
+import type { CapabilityId } from '../content'
 
 interface FeatureCard {
-  id: string
+  id: CapabilityId
   Icon: ComponentType<{ size?: number; strokeWidth?: number }>
 }
 
