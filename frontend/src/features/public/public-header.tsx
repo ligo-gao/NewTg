@@ -37,8 +37,8 @@ export interface SiteBrandProps {
 
 /**
  * F-09-34 brand mark. Three upstream lanes converge on one output node; the
- * copper node is the gateway's only piece of ornament, and it is also the
- * mark used in the footer. Operator logos still win when configured.
+ * signal-coloured node is the gateway's only piece of ornament, and it is also
+ * the mark used in the footer. Operator logos still win when configured.
  */
 function RelayMark() {
   return (

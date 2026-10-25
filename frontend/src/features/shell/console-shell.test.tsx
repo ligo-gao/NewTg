@@ -296,6 +296,7 @@ describe('ConsoleShell layout', () => {
 
   it('does not mount blocked widgets on the forced password-change route', async () => {
     // A restricted (temporary-password) session may only use /api/me and
+    // /api/password. Notifications and announcements answer 403, and the auth
     // failure handler would hard-navigate back to this same route — the reload
     // loop this test guards against. Leaving their handlers out makes any
     // request a hard msw error.
