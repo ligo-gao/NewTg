@@ -84,6 +84,7 @@ function navLabels(t: (key: string) => string): Record<PublicNavKey, string> {
   return {
     home: t('public.nav.home'),
     console: t('public.nav.console'),
+    models: t('public.nav.models'),
     pricing: t('public.nav.pricing'),
     rankings: t('public.nav.rankings'),
     docs: t('public.nav.docs'),

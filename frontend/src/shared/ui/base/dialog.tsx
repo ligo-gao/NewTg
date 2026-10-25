@@ -35,6 +35,13 @@ export interface DialogProps {
    * footer) instead of the confirming one.
    */
   initialFocus?: 'panel' | 'first' | 'last'
+  /**
+   * Opt-in labelled close button in the title row (it calls `onOpenChange(false)`
+   * and becomes the first focusable element, before `children`). Omitting it
+   * leaves the DOM and focus order exactly as before; a non-dismissible dialog
+   * never renders it.
+   */
+  closeLabel?: string
 }
 
 /** Keyboard-focusable descendants, in document order (WAI-ARIA dialog pattern). */
@@ -97,6 +104,7 @@ export function Dialog({
   panelClassName,
   role = 'dialog',
   initialFocus = 'panel',
+  closeLabel,
 }: DialogProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const titleId = useId()
@@ -269,14 +277,28 @@ export function Dialog({
           .filter(Boolean)
           .join(' ')}
       >
-        <h2 id={titleId} className="text-card-title">
-          {title}
-        </h2>
-        {description ? (
-          <p id={descriptionId} className="mt-1 text-body text-ink-2">
-            {description}
-          </p>
-        ) : null}
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 id={titleId} className="text-card-title">
+              {title}
+            </h2>
+            {description ? (
+              <p id={descriptionId} className="mt-1 text-body text-ink-2">
+                {description}
+              </p>
+            ) : null}
+          </div>
+          {dismissible && closeLabel ? (
+            <button
+              type="button"
+              aria-label={closeLabel}
+              onClick={() => onOpenChange(false)}
+              className="shrink-0 rounded-md p-1 leading-none text-ink-2 transition-colors hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            >
+              <span aria-hidden="true">×</span>
+            </button>
+          ) : null}
+        </div>
         {children ? <div className="mt-4 text-body text-ink-2">{children}</div> : null}
         {footer ? <div className="mt-5 flex justify-end gap-2">{footer}</div> : null}
       </div>

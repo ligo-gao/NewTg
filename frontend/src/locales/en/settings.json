@@ -168,6 +168,10 @@
         "enabled": "Console",
         "require_auth": "Console requires sign-in"
       },
+      "models": {
+        "enabled": "Models",
+        "require_auth": "Models requires sign-in"
+      },
       "pricing": {
         "enabled": "Pricing",
         "require_auth": "Pricing requires sign-in"

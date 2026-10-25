@@ -1851,6 +1851,24 @@ func (e PublicModelMetricsRange) Valid() bool {
 	}
 }
 
+// Defines values for PublicModelMetricsListRange.
+const (
+	PublicModelMetricsListRangeN24h PublicModelMetricsListRange = "24h"
+	PublicModelMetricsListRangeN7d  PublicModelMetricsListRange = "7d"
+)
+
+// Valid indicates whether the value is a known member of the PublicModelMetricsListRange enum.
+func (e PublicModelMetricsListRange) Valid() bool {
+	switch e {
+	case PublicModelMetricsListRangeN24h:
+		return true
+	case PublicModelMetricsListRangeN7d:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PublicPricingScheduleHolidayPolicy.
 const (
 	PublicPricingScheduleHolidayPolicyCnOffpeak PublicPricingScheduleHolidayPolicy = "cn_offpeak"
@@ -4254,6 +4272,24 @@ func (e GetPublicPricingParamsIncludeGroupPrice) Valid() bool {
 	case GetPublicPricingParamsIncludeGroupPriceN0:
 		return true
 	case GetPublicPricingParamsIncludeGroupPriceN1:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetPublicMetricsListParamsRange.
+const (
+	GetPublicMetricsListParamsRangeN24h GetPublicMetricsListParamsRange = "24h"
+	GetPublicMetricsListParamsRangeN7d  GetPublicMetricsListParamsRange = "7d"
+)
+
+// Valid indicates whether the value is a known member of the GetPublicMetricsListParamsRange enum.
+func (e GetPublicMetricsListParamsRange) Valid() bool {
+	switch e {
+	case GetPublicMetricsListParamsRangeN24h:
+		return true
+	case GetPublicMetricsListParamsRangeN7d:
 		return true
 	default:
 		return false
@@ -8755,7 +8791,10 @@ type PublicModelDetail_ReleasedAt struct {
 	union json.RawMessage
 }
 
-// PublicModelLatestTest defines model for PublicModelLatestTest.
+// PublicModelLatestTest 最近一次管理员主动测速的汇总。前端**优先**把它作为延迟/速度的展示来源
+// （P50/P95）；只有在没有任何主动测试记录时，才回退到真实调用均值并标注
+// 「Average」（此时 p95 为 null）。可空统计列在样本不足时为 null——0 会
+// 被读成「极快」，不能用 0 冒充缺失。
 type PublicModelLatestTest struct {
 	// LatencyMsP50 端到端延迟 P50（毫秒）；无有效样本时为 null。
 	LatencyMsP50 int `json:"latency_ms_p50"`
@@ -8781,39 +8820,79 @@ type PublicModelLatestTest struct {
 // PublicModelMetrics defines model for PublicModelMetrics.
 type PublicModelMetrics struct {
 	// LatestTest 最近一次管理员主动测速（`model_performance_tests` 汇总行）的公开
-	// 投影。没有主动测试记录、测速库未装配或读取失败时为 null；这是一条
-	// 独立于 `usage_logs` 的兜底来源，前端在真实调用样本缺失/不足时回退
-	// 到它，并用「主动测试」标注来源。
+	// 投影。没有主动测试记录、测速库未装配或读取失败时为 null（fail-open）。
+	// 前端**优先**使用这里的 P50/P95 作为延迟展示来源；仅当没有主动测试
+	// 记录时才回退到 `summary` 的真实调用均值（标注「Average」，且此时
+	// p95 为 null）。
 	LatestTest *PublicModelMetrics_LatestTest `json:"latest_test,omitempty"`
 	PerGroup   []PublicGroupMetric            `json:"per_group"`
 	Range      PublicModelMetricsRange        `json:"range"`
-	Summary    struct {
-		AvgLatencyMs *float32 `json:"avg_latency_ms,omitempty"`
-		AvgTtftMs    *float32 `json:"avg_ttft_ms,omitempty"`
-		Failed24h    *int     `json:"failed_24h,omitempty"`
-		SampleSize   int      `json:"sample_size"`
-		SuccessRate  *float32 `json:"success_rate,omitempty"`
-		Tps          *float32 `json:"tps,omitempty"`
-	} `json:"summary"`
-	Window struct {
-		End   time.Time `json:"end"`
-		Start time.Time `json:"start"`
-	} `json:"window"`
+	Summary    PublicModelMetricsSummary      `json:"summary"`
+	Window     PublicModelMetricsWindow       `json:"window"`
 }
 
 // PublicModelMetricsLatestTest1 defines model for PublicModelMetrics.LatestTest.1.
 type PublicModelMetricsLatestTest1 = interface{}
 
 // PublicModelMetrics_LatestTest 最近一次管理员主动测速（`model_performance_tests` 汇总行）的公开
-// 投影。没有主动测试记录、测速库未装配或读取失败时为 null；这是一条
-// 独立于 `usage_logs` 的兜底来源，前端在真实调用样本缺失/不足时回退
-// 到它，并用「主动测试」标注来源。
+// 投影。没有主动测试记录、测速库未装配或读取失败时为 null（fail-open）。
+// 前端**优先**使用这里的 P50/P95 作为延迟展示来源；仅当没有主动测试
+// 记录时才回退到 `summary` 的真实调用均值（标注「Average」，且此时
+// p95 为 null）。
 type PublicModelMetrics_LatestTest struct {
 	union json.RawMessage
 }
 
 // PublicModelMetricsRange defines model for PublicModelMetrics.Range.
 type PublicModelMetricsRange string
+
+// PublicModelMetricsItem defines model for PublicModelMetricsItem.
+type PublicModelMetricsItem struct {
+	// LatestTest 最近一次主动测速。前端**优先**使用这里的 P50/P95/TPS 作为延迟与
+	// 速度的展示来源；仅当该模型没有任何主动测试记录时，才回退到
+	// `summary` 的真实调用均值（标注「Average」，且此时 p95 为 null）。
+	// 读取失败/测速库未装配时为 null（fail-open，端点仍为 200）。
+	LatestTest PublicModelMetricsItem_LatestTest `json:"latest_test"`
+	ModelId    string                            `json:"model_id"`
+	Summary    PublicModelMetricsSummary         `json:"summary"`
+}
+
+// PublicModelMetricsItemLatestTest1 defines model for PublicModelMetricsItem.LatestTest.1.
+type PublicModelMetricsItemLatestTest1 = interface{}
+
+// PublicModelMetricsItem_LatestTest 最近一次主动测速。前端**优先**使用这里的 P50/P95/TPS 作为延迟与
+// 速度的展示来源；仅当该模型没有任何主动测试记录时，才回退到
+// `summary` 的真实调用均值（标注「Average」，且此时 p95 为 null）。
+// 读取失败/测速库未装配时为 null（fail-open，端点仍为 200）。
+type PublicModelMetricsItem_LatestTest struct {
+	union json.RawMessage
+}
+
+// PublicModelMetricsList defines model for PublicModelMetricsList.
+type PublicModelMetricsList struct {
+	Items  []PublicModelMetricsItem    `json:"items"`
+	Range  PublicModelMetricsListRange `json:"range"`
+	Window PublicModelMetricsWindow    `json:"window"`
+}
+
+// PublicModelMetricsListRange defines model for PublicModelMetricsList.Range.
+type PublicModelMetricsListRange string
+
+// PublicModelMetricsSummary defines model for PublicModelMetricsSummary.
+type PublicModelMetricsSummary struct {
+	AvgLatencyMs *float32 `json:"avg_latency_ms,omitempty"`
+	AvgTtftMs    *float32 `json:"avg_ttft_ms,omitempty"`
+	Failed24h    *int     `json:"failed_24h,omitempty"`
+	SampleSize   int      `json:"sample_size"`
+	SuccessRate  *float32 `json:"success_rate,omitempty"`
+	Tps          *float32 `json:"tps,omitempty"`
+}
+
+// PublicModelMetricsWindow defines model for PublicModelMetricsWindow.
+type PublicModelMetricsWindow struct {
+	End   time.Time `json:"end"`
+	Start time.Time `json:"start"`
+}
 
 // PublicModelParameter defines model for PublicModelParameter.
 type PublicModelParameter struct {
@@ -8824,7 +8903,7 @@ type PublicModelParameter struct {
 	Type        string      `json:"type"`
 }
 
-// PublicNav 六个导航项（home/console/pricing/rankings/docs/about）的 enabled 与
+// PublicNav 七个导航项（home/console/models/pricing/rankings/docs/about）的 enabled 与
 // require_auth，以及控制台模块显隐。`docs.require_auth` 与
 // `about.require_auth` 默认 false（R-PUB-09）。
 type PublicNav struct {
@@ -8832,6 +8911,7 @@ type PublicNav struct {
 	Console *PublicNavItem `json:"console,omitempty"`
 	Docs    *PublicNavItem `json:"docs,omitempty"`
 	Home    *PublicNavItem `json:"home,omitempty"`
+	Models  *PublicNavItem `json:"models,omitempty"`
 	Modules *struct {
 		Chat *struct {
 			Playground *bool `json:"playground,omitempty"`
@@ -9026,7 +9106,7 @@ type PublicStatus struct {
 	// Languages canonical 7 语（modules-01 F-01-19）；顺序即下拉框顺序。
 	Languages []Language `json:"languages"`
 
-	// Nav 六个导航项（home/console/pricing/rankings/docs/about）的 enabled 与
+	// Nav 七个导航项（home/console/models/pricing/rankings/docs/about）的 enabled 与
 	// require_auth，以及控制台模块显隐。`docs.require_auth` 与
 	// `about.require_auth` 默认 false（R-PUB-09）。
 	Nav PublicNav `json:"nav"`
@@ -12601,6 +12681,15 @@ type GetPublicPricingParamsQuotaType string
 
 // GetPublicPricingParamsIncludeGroupPrice defines parameters for GetPublicPricing.
 type GetPublicPricingParamsIncludeGroupPrice string
+
+// GetPublicMetricsListParams defines parameters for GetPublicMetricsList.
+type GetPublicMetricsListParams struct {
+	// Range 统计窗口；缺省 24h。
+	Range *GetPublicMetricsListParamsRange `form:"range,omitempty" json:"range,omitempty"`
+}
+
+// GetPublicMetricsListParamsRange defines parameters for GetPublicMetricsList.
+type GetPublicMetricsListParamsRange string
 
 // GetPublicPricingMetricsParams defines parameters for GetPublicPricingMetrics.
 type GetPublicPricingMetricsParams struct {
@@ -17464,6 +17553,68 @@ func (t PublicModelMetrics_LatestTest) MarshalJSON() ([]byte, error) {
 }
 
 func (t *PublicModelMetrics_LatestTest) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublicModelLatestTest returns the union data inside the PublicModelMetricsItem_LatestTest as a PublicModelLatestTest
+func (t PublicModelMetricsItem_LatestTest) AsPublicModelLatestTest() (PublicModelLatestTest, error) {
+	var body PublicModelLatestTest
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelLatestTest overwrites any union data inside the PublicModelMetricsItem_LatestTest as the provided PublicModelLatestTest
+func (t *PublicModelMetricsItem_LatestTest) FromPublicModelLatestTest(v PublicModelLatestTest) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelLatestTest performs a merge with any union data inside the PublicModelMetricsItem_LatestTest, using the provided PublicModelLatestTest
+func (t *PublicModelMetricsItem_LatestTest) MergePublicModelLatestTest(v PublicModelLatestTest) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublicModelMetricsItemLatestTest1 returns the union data inside the PublicModelMetricsItem_LatestTest as a PublicModelMetricsItemLatestTest1
+func (t PublicModelMetricsItem_LatestTest) AsPublicModelMetricsItemLatestTest1() (PublicModelMetricsItemLatestTest1, error) {
+	var body PublicModelMetricsItemLatestTest1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublicModelMetricsItemLatestTest1 overwrites any union data inside the PublicModelMetricsItem_LatestTest as the provided PublicModelMetricsItemLatestTest1
+func (t *PublicModelMetricsItem_LatestTest) FromPublicModelMetricsItemLatestTest1(v PublicModelMetricsItemLatestTest1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublicModelMetricsItemLatestTest1 performs a merge with any union data inside the PublicModelMetricsItem_LatestTest, using the provided PublicModelMetricsItemLatestTest1
+func (t *PublicModelMetricsItem_LatestTest) MergePublicModelMetricsItemLatestTest1(v PublicModelMetricsItemLatestTest1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicModelMetricsItem_LatestTest) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicModelMetricsItem_LatestTest) UnmarshalJSON(b []byte) error {
 	err := t.union.UnmarshalJSON(b)
 	return err
 }

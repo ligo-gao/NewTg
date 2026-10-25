@@ -71,6 +71,8 @@ const NAV_STATE: SectionState = {
   items: [
     item('nav.home.enabled', true),
     item('nav.console.enabled', true),
+    item('nav.models.enabled', true),
+    item('nav.models.require_auth', false),
     item('nav.modules.console', {
       dashboard: true,
       tokens: true,
@@ -293,6 +295,16 @@ describe('SettingsShell contract', () => {
     expect(
       within(nav).getByRole('button', { name: 'Site' }).getAttribute('aria-current'),
     ).toBe('page')
+  })
+
+  it('renders the models navigation switches', async () => {
+    await renderShell('site')
+
+    const nav = await screen.findByTestId('settings-section-nav')
+    expect(within(nav).getByText('Navigation & modules')).toBeTruthy()
+    // The card renders its skeleton first; wait for the section read to land.
+    expect(await screen.findByLabelText('Models')).toBeTruthy()
+    expect(screen.getByLabelText('Models requires sign-in')).toBeTruthy()
   })
 
   it('marks the section dirty and saves only that section with the optimistic token', async () => {

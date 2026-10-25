@@ -38,6 +38,10 @@ type PublicGroupMetrics struct {
 // 绑在真实 PostgreSQL 上。窗口为左闭右开 [start, end)。
 type PublicModelMetricsSource interface {
 	LoadPublicModelMetrics(ctx context.Context, model string, start, end time.Time) (PublicModelMetrics, error)
+	// LoadPublicModelMetricsBatch 一次读取多个模型的汇总指标（模型库列表页）。
+	// 返回行不带 per-group 拆分（Groups == nil）；没有任何样本的模型不出现在
+	// map 中；models 为空时直接返回空 map，不查库。
+	LoadPublicModelMetricsBatch(ctx context.Context, models []string, start, end time.Time) (map[string]PublicModelMetrics, error)
 }
 
 // SQLPublicModelMetricsRepo 从日志库的 usage_logs 聚合公开性能指标。
@@ -60,6 +64,19 @@ SELECT
     avg(first_token_ms) FILTER (WHERE first_token_ms IS NOT NULL)::double precision AS avg_ttft_ms
 FROM usage_logs
 WHERE model = $1 AND created_at >= $2 AND created_at < $3`
+
+const publicModelMetricsBatchQuery = `
+SELECT model,
+    count(*) AS sample_size,
+    count(*) FILTER (WHERE status = 1) AS success_count,
+    count(*) FILTER (WHERE status = 2 AND created_at >= now() - interval '24 hours') AS failed_24h,
+    COALESCE(sum(latency_ms), 0)::bigint AS latency_sum_ms,
+    COALESCE(sum(completion_tokens), 0)::bigint AS completion_tokens,
+    avg(latency_ms) FILTER (WHERE latency_ms IS NOT NULL)::double precision AS avg_latency_ms,
+    avg(first_token_ms) FILTER (WHERE first_token_ms IS NOT NULL)::double precision AS avg_ttft_ms
+FROM usage_logs
+WHERE model = ANY($1::text[]) AND created_at >= $2 AND created_at < $3
+GROUP BY model`
 
 const publicModelMetricsGroupsQuery = `
 SELECT
@@ -137,5 +154,60 @@ func (r *SQLPublicModelMetricsRepo) LoadPublicModelMetrics(
 		return PublicModelMetrics{}, err
 	}
 
+	return out, nil
+}
+
+// LoadPublicModelMetricsBatch 是 LoadPublicModelMetrics 的批量版本，供模型库
+// 列表页一次取多个模型的汇总。口径与单模型完全一致（窗口左闭右开、平均列
+// 无样本时为 nil），但不读取 per-group 拆分，返回行的 Groups 恒为 nil。
+//
+// 没有任何样本的模型不会出现在返回 map 中——调用方据此渲染空状态，而不是
+// 把「零样本」误当成「均值 0」。空入参直接返回空 map，不查库。
+func (r *SQLPublicModelMetricsRepo) LoadPublicModelMetricsBatch(
+	ctx context.Context,
+	models []string,
+	start, end time.Time,
+) (map[string]PublicModelMetrics, error) {
+	out := make(map[string]PublicModelMetrics, len(models))
+	if len(models) == 0 {
+		return out, nil
+	}
+
+	rows, err := r.db.QueryContext(ctx, publicModelMetricsBatchQuery, models, start, end)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var (
+			model      string
+			row        PublicModelMetrics
+			avgLatency sql.NullFloat64
+			avgTTFT    sql.NullFloat64
+		)
+		if err = rows.Scan(
+			&model,
+			&row.SampleSize,
+			&row.SuccessCount,
+			&row.Failed24h,
+			&row.LatencySumMs,
+			&row.CompletionTokens,
+			&avgLatency,
+			&avgTTFT,
+		); err != nil {
+			return nil, err
+		}
+		if avgLatency.Valid {
+			row.AvgLatencyMs = &avgLatency.Float64
+		}
+		if avgTTFT.Valid {
+			row.AvgTTFTMs = &avgTTFT.Float64
+		}
+		out[model] = row
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
 	return out, nil
 }

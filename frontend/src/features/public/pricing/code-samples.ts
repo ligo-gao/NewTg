@@ -20,7 +20,7 @@ export function sampleTarget(serverAddress: string | undefined): SampleTarget {
   return { baseUrl: value, configured: value !== '' }
 }
 
-function openaiBase(baseUrl: string): string {
+export function openaiBase(baseUrl: string): string {
   if (baseUrl === '') return '/v1'
   return `${baseUrl.replace(/\/+$/, '')}/v1`
 }

@@ -19,6 +19,13 @@ type fakePublicModelMetrics struct {
 	gotModel string
 	gotStart time.Time
 	gotEnd   time.Time
+
+	batchModels []string
+	batchData   map[string]store.PublicModelMetrics
+	batchErr    error
+	batchCalled bool
+	batchStart  time.Time
+	batchEnd    time.Time
 }
 
 func (f *fakePublicModelMetrics) LoadPublicModelMetrics(
@@ -33,6 +40,21 @@ func (f *fakePublicModelMetrics) LoadPublicModelMetrics(
 	return f.data, f.err
 }
 
+func (f *fakePublicModelMetrics) LoadPublicModelMetricsBatch(
+	_ context.Context,
+	models []string,
+	start, end time.Time,
+) (map[string]store.PublicModelMetrics, error) {
+	f.batchCalled = true
+	f.batchModels = append([]string(nil), models...)
+	f.batchStart = start
+	f.batchEnd = end
+	if f.batchErr != nil {
+		return nil, f.batchErr
+	}
+	return f.batchData, nil
+}
+
 // fakePublicPerfStore 是公开性能接口的测速事实接缝（最新一次主动测试）。
 type fakePublicPerfStore struct {
 	test    store.ModelPerformanceTest
@@ -40,6 +62,10 @@ type fakePublicPerfStore struct {
 	err     error
 	called  bool
 	modelID string
+
+	batchModels []string
+	batchTests  map[string]store.ModelPerformanceTest
+	batchErr    error
 }
 
 func (f *fakePublicPerfStore) Create(
@@ -63,6 +89,17 @@ func (f *fakePublicPerfStore) LatestByModel(
 		return store.ModelPerformanceTest{}, false, f.err
 	}
 	return f.test, f.ok, nil
+}
+
+func (f *fakePublicPerfStore) LatestByModels(
+	_ context.Context,
+	models []string,
+) (map[string]store.ModelPerformanceTest, error) {
+	f.batchModels = append([]string(nil), models...)
+	if f.batchErr != nil {
+		return nil, f.batchErr
+	}
+	return f.batchTests, nil
 }
 
 func newMetricsTestHandler(t *testing.T, metrics store.PublicModelMetricsSource) *PublicPricingHandlers {

@@ -775,6 +775,64 @@ paths:
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
 
+  /api/pricing/metrics:
+    get:
+      tags: [public]
+      operationId: getPublicMetricsList
+      summary: 公开模型批量性能指标（模型库列表页）
+      description: |
+        一次返回目录内多个模型在窗口内的真实调用汇总（`usage_logs`）。可见
+        集合与 `/api/pricing` 相同（含 `model_meta.status=2` 档案剔除）。
+        只返回窗口内有真实调用样本（`sample_size > 0`）或存在主动测速记录的
+        可见模型：无数据的模型不出现在 `items` 中，空集是 200 + `items:[]`。
+        `summary` 恒填；只有测速、没有调用样本的模型 `sample_size: 0`，其余
+        统计列为 null（前端显示「—」，不得回退成 0）。
+        `latest_test` 是最近一次管理员主动测速（主库 `model_performance_tests`）
+        的 P50/P95、TPS 与成功率；没有记录、测速库未装配或读取失败时为 null
+        （fail-open，端点仍为 200，usage 汇总照常返回）。前端**优先**使用
+        `latest_test` 的 P50/P95 作为延迟展示来源；仅当没有主动测试记录时
+        才回退到真实调用均值（标注「Average」，此时 p95 为 null）。
+        响应带 ETag（模型集合 + 窗口 + 分钟桶 + 每条测速身份派生）与
+        `Cache-Control: public, max-age=60`；命中 `If-None-Match` 返回 304。
+      security: []
+      parameters:
+        - name: range
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [24h, 7d]
+            default: 24h
+          description: 统计窗口；缺省 24h。
+      responses:
+        '200':
+          description: OK（空集也是 200 + items:[]）
+          headers:
+            ETag:
+              description: 模型集合 + 窗口 + 分钟桶 + 测速身份派生；60 秒陈旧容忍。
+              schema: {type: string}
+            Cache-Control:
+              description: public, max-age=60
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/public.yaml#/schemas/PublicModelMetricsList'
+        '304':
+          description: If-None-Match 命中（无 body）
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+        '503':
+          description: 性能数据源未装配（type=metrics-unavailable）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+
   /api/pricing/{model_id}:
     get:
       tags: [public]
@@ -831,10 +889,11 @@ paths:
         SUM(completion_tokens) / (SUM(latency_ms)/1000)`（近似值）。
         无样本时对应字段为 null，前端显示「—」，不得回退成 0。
         样本少于 20 次由前端标注「样本不足」。
-        `latest_test` 是独立的兜底来源：最近一次管理员主动测速（主库
-        `model_performance_tests`）的 P50/P95、TPS 与成功率；没有记录、
-        测速库未装配或读取失败时为 null（fail-open，端点仍为 200）。前端
-        优先展示真实调用汇总，样本缺失时回退到 `latest_test` 并标注来源。
+        `latest_test` 是最近一次管理员主动测速（主库 `model_performance_tests`）
+        的 P50/P95、TPS 与成功率；没有记录、测速库未装配或读取失败时为 null
+        （fail-open，端点仍为 200）。前端**优先**使用 `latest_test` 的
+        P50/P95 作为延迟展示来源；仅当没有主动测试记录时才回退到真实调用
+        均值（标注「Average」，此时 p95 为 null）。
       security: []
       parameters:
         - name: model_id

@@ -241,6 +241,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/pricing/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 公开模型批量性能指标（模型库列表页）
+         * @description 一次返回目录内多个模型在窗口内的真实调用汇总（`usage_logs`）。可见
+         *     集合与 `/api/pricing` 相同（含 `model_meta.status=2` 档案剔除）。
+         *     只返回窗口内有真实调用样本（`sample_size > 0`）或存在主动测速记录的
+         *     可见模型：无数据的模型不出现在 `items` 中，空集是 200 + `items:[]`。
+         *     `summary` 恒填；只有测速、没有调用样本的模型 `sample_size: 0`，其余
+         *     统计列为 null（前端显示「—」，不得回退成 0）。
+         *     `latest_test` 是最近一次管理员主动测速（主库 `model_performance_tests`）
+         *     的 P50/P95、TPS 与成功率；没有记录、测速库未装配或读取失败时为 null
+         *     （fail-open，端点仍为 200，usage 汇总照常返回）。前端**优先**使用
+         *     `latest_test` 的 P50/P95 作为延迟展示来源；仅当没有主动测试记录时
+         *     才回退到真实调用均值（标注「Average」，此时 p95 为 null）。
+         *     响应带 ETag（模型集合 + 窗口 + 分钟桶 + 每条测速身份派生）与
+         *     `Cache-Control: public, max-age=60`；命中 `If-None-Match` 返回 304。
+         */
+        get: operations["getPublicMetricsList"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/pricing/{model_id}": {
         parameters: {
             query?: never;
@@ -280,10 +312,11 @@ export interface paths {
          *     SUM(completion_tokens) / (SUM(latency_ms)/1000)`（近似值）。
          *     无样本时对应字段为 null，前端显示「—」，不得回退成 0。
          *     样本少于 20 次由前端标注「样本不足」。
-         *     `latest_test` 是独立的兜底来源：最近一次管理员主动测速（主库
-         *     `model_performance_tests`）的 P50/P95、TPS 与成功率；没有记录、
-         *     测速库未装配或读取失败时为 null（fail-open，端点仍为 200）。前端
-         *     优先展示真实调用汇总，样本缺失时回退到 `latest_test` 并标注来源。
+         *     `latest_test` 是最近一次管理员主动测速（主库 `model_performance_tests`）
+         *     的 P50/P95、TPS 与成功率；没有记录、测速库未装配或读取失败时为 null
+         *     （fail-open，端点仍为 200）。前端**优先**使用 `latest_test` 的
+         *     P50/P95 作为延迟展示来源；仅当没有主动测试记录时才回退到真实调用
+         *     均值（标注「Average」，此时 p95 为 null）。
          */
         get: operations["getPublicPricingMetrics"];
         put?: never;
@@ -6648,7 +6681,7 @@ export interface components {
             require_auth: boolean;
         };
         /**
-         * @description 六个导航项（home/console/pricing/rankings/docs/about）的 enabled 与
+         * @description 七个导航项（home/console/models/pricing/rankings/docs/about）的 enabled 与
          *     require_auth，以及控制台模块显隐。`docs.require_auth` 与
          *     `about.require_auth` 默认 false（R-PUB-09）。
          */
@@ -6656,6 +6689,7 @@ export interface components {
             home?: components["schemas"]["PublicNavItem"];
             console?: components["schemas"]["PublicNavItem"];
             pricing?: components["schemas"]["PublicNavItem"];
+            models?: components["schemas"]["PublicNavItem"];
             rankings?: components["schemas"]["PublicNavItem"];
             docs?: components["schemas"]["PublicNavItem"];
             about?: components["schemas"]["PublicNavItem"];
@@ -7070,6 +7104,62 @@ export interface components {
             facets: components["schemas"]["PublicFacets"];
             meta: components["schemas"]["PublicPricingMeta"];
         };
+        PublicModelMetricsWindow: {
+            /** Format: date-time */
+            start: string;
+            /** Format: date-time */
+            end: string;
+        };
+        PublicModelMetricsSummary: {
+            avg_latency_ms?: number | null;
+            avg_ttft_ms?: number | null;
+            success_rate?: number | null;
+            tps?: number | null;
+            failed_24h?: number | null;
+            sample_size: number;
+        };
+        /**
+         * @description 最近一次管理员主动测速的汇总。前端**优先**把它作为延迟/速度的展示来源
+         *     （P50/P95）；只有在没有任何主动测试记录时，才回退到真实调用均值并标注
+         *     「Average」（此时 p95 为 null）。可空统计列在样本不足时为 null——0 会
+         *     被读成「极快」，不能用 0 冒充缺失。
+         */
+        PublicModelLatestTest: {
+            /** @description 首字延迟 P50（毫秒）；无有效样本时为 null。 */
+            ttft_ms_p50: number | null;
+            ttft_ms_p95: number | null;
+            /** @description 端到端延迟 P50（毫秒）；无有效样本时为 null。 */
+            latency_ms_p50: number | null;
+            latency_ms_p95: number | null;
+            /** @description 主动测试的平均输出速度（tokens/s）；无有效样本时为 null。 */
+            tps: number | null;
+            /** @description 成功次数 / 总运行次数。 */
+            success_rate: number;
+            /** @description 本次测试的运行次数（runs）。 */
+            sample_size: number;
+            /**
+             * Format: date-time
+             * @description 测试完成时刻（RFC3339，UTC）。
+             */
+            tested_at: string;
+        };
+        PublicModelMetricsItem: {
+            model_id: string;
+            summary: components["schemas"]["PublicModelMetricsSummary"];
+            /**
+             * @description 最近一次主动测速。前端**优先**使用这里的 P50/P95/TPS 作为延迟与
+             *     速度的展示来源；仅当该模型没有任何主动测试记录时，才回退到
+             *     `summary` 的真实调用均值（标注「Average」，且此时 p95 为 null）。
+             *     读取失败/测速库未装配时为 null（fail-open，端点仍为 200）。
+             */
+            latest_test: components["schemas"]["PublicModelLatestTest"] | null;
+        };
+        PublicModelMetricsList: {
+            /** @enum {string} */
+            range: "24h" | "7d";
+            window: components["schemas"]["PublicModelMetricsWindow"];
+            items: components["schemas"]["PublicModelMetricsItem"][];
+        };
         PublicModelParameter: {
             name: string;
             required: boolean;
@@ -7105,48 +7195,18 @@ export interface components {
             avg_latency_ms?: number | null;
             success_rate?: number | null;
         };
-        PublicModelLatestTest: {
-            /** @description 首字延迟 P50（毫秒）；无有效样本时为 null。 */
-            ttft_ms_p50: number | null;
-            ttft_ms_p95: number | null;
-            /** @description 端到端延迟 P50（毫秒）；无有效样本时为 null。 */
-            latency_ms_p50: number | null;
-            latency_ms_p95: number | null;
-            /** @description 主动测试的平均输出速度（tokens/s）；无有效样本时为 null。 */
-            tps: number | null;
-            /** @description 成功次数 / 总运行次数。 */
-            success_rate: number;
-            /** @description 本次测试的运行次数（runs）。 */
-            sample_size: number;
-            /**
-             * Format: date-time
-             * @description 测试完成时刻（RFC3339，UTC）。
-             */
-            tested_at: string;
-        };
         PublicModelMetrics: {
             /** @enum {string} */
             range: "24h" | "7d";
-            window: {
-                /** Format: date-time */
-                start: string;
-                /** Format: date-time */
-                end: string;
-            };
-            summary: {
-                avg_latency_ms?: number | null;
-                avg_ttft_ms?: number | null;
-                success_rate?: number | null;
-                tps?: number | null;
-                failed_24h?: number | null;
-                sample_size: number;
-            };
+            window: components["schemas"]["PublicModelMetricsWindow"];
+            summary: components["schemas"]["PublicModelMetricsSummary"];
             per_group: components["schemas"]["PublicGroupMetric"][];
             /**
              * @description 最近一次管理员主动测速（`model_performance_tests` 汇总行）的公开
-             *     投影。没有主动测试记录、测速库未装配或读取失败时为 null；这是一条
-             *     独立于 `usage_logs` 的兜底来源，前端在真实调用样本缺失/不足时回退
-             *     到它，并用「主动测试」标注来源。
+             *     投影。没有主动测试记录、测速库未装配或读取失败时为 null（fail-open）。
+             *     前端**优先**使用这里的 P50/P95 作为延迟展示来源；仅当没有主动测试
+             *     记录时才回退到 `summary` 的真实调用均值（标注「Average」，且此时
+             *     p95 为 null）。
              */
             latest_test?: components["schemas"]["PublicModelLatestTest"] | null;
         };
@@ -12192,6 +12252,52 @@ export interface operations {
             };
             429: components["responses"]["Error429"];
             500: components["responses"]["Error500"];
+        };
+    };
+    getPublicMetricsList: {
+        parameters: {
+            query?: {
+                /** @description 统计窗口；缺省 24h。 */
+                range?: "24h" | "7d";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK（空集也是 200 + items:[]） */
+            200: {
+                headers: {
+                    /** @description 模型集合 + 窗口 + 分钟桶 + 测速身份派生；60 秒陈旧容忍。 */
+                    ETag?: string;
+                    /** @description public, max-age=60 */
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicModelMetricsList"];
+                };
+            };
+            /** @description If-None-Match 命中（无 body） */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            429: components["responses"]["Error429"];
+            500: components["responses"]["Error500"];
+            /** @description 性能数据源未装配（type=metrics-unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
         };
     };
     getPublicPricingDetail: {
