@@ -66,12 +66,11 @@ describe('nav visibility matrix (TC-F-09-34-01)', () => {
       'https://docs.example.com',
     )
     expect(items.map((item) => item.key)).toEqual([
-      'home',
-      'console',
       'models',
       'pricing',
-      'docs',
       'about',
+      'docs',
+      'console',
     ])
     expect(items.find((item) => item.key === 'docs')?.external).toBe(true)
 

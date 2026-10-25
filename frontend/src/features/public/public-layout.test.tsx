@@ -66,9 +66,11 @@ describe('PublicLayout shell (F-09-34/37)', () => {
     )
 
     const nav = await findByRole('navigation', { name: 'Public pages' })
-    expect(nav.textContent).toContain('About')
-    expect(nav.textContent).toContain('Home')
+    expect(nav.textContent).toContain('Models')
     expect(nav.textContent).toContain('Pricing')
+    expect(nav.textContent).toContain('About')
+    // The brand mark is the home link; the header no longer lists Home.
+    expect(nav.textContent).not.toContain('Home')
     // rankings.enabled=false — hidden without leaving an empty slot.
     expect(nav.textContent).not.toContain('Rankings')
     // console.require_auth is locked true and this visitor is a guest.

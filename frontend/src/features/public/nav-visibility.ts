@@ -30,14 +30,14 @@ export interface PublicNavItem {
   external: boolean
 }
 
+// 品牌标就是首页入口；头部不再单列 home。
 export const PUBLIC_NAV_ORDER: readonly PublicNavKey[] = [
-  'home',
-  'console',
   'models',
   'pricing',
   'rankings',
-  'docs',
   'about',
+  'docs',
+  'console',
 ]
 
 export const PUBLIC_NAV_HREFS: Record<PublicNavKey, string> = {
