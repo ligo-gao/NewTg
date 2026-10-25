@@ -99,10 +99,31 @@ describe('AppSidebar', () => {
       true,
     )
 
-    expect(container.querySelector('a[href="/tokens"]')).toBeTruthy()
-    expect(container.textContent).not.toContain('API')
+    const tokensLink = container.querySelector('a[href="/tokens"]')
+    expect(tokensLink).toBeTruthy()
+    // Collapsing only trims the desktop rail. The label stays in the DOM so the
+    // narrow strip (which hides the icons) can still show it, and is hidden
+    // from 1024px up by a desktop-only display rule.
+    const tokensLabel = Array.from(tokensLink?.querySelectorAll('span') ?? [])
+      .find((node) => node.textContent === 'API Tokens')
+    expect(tokensLabel?.classList.contains('min-[1024px]:hidden')).toBe(true)
     getByTestId('sidebar-collapse').click()
     expect(onToggleCollapsed).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps one navigation list at narrow widths and hides the collapse control', async () => {
+    const { container, getByTestId } = await renderSidebar(FULL_ADMIN)
+
+    // < 1024px the rail becomes a full-width horizontal strip.
+    const aside = container.querySelector('aside')
+    expect(aside?.className).toContain('w-full')
+    expect(aside?.className).toContain('flex-row')
+    expect(container.querySelectorAll('nav')).toHaveLength(1)
+
+    // The footer only exists on the desktop rail; the strip has no room for it.
+    const collapseFooter = getByTestId('sidebar-collapse').parentElement
+    expect(collapseFooter?.classList.contains('hidden')).toBe(true)
+    expect(collapseFooter?.classList.contains('min-[1024px]:flex')).toBe(true)
   })
 
   it('drills into the settings sections instead of the root nav', async () => {

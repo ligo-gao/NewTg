@@ -46,8 +46,13 @@ export function AppSidebar({
   return (
     <aside
       className={cn(
-        'flex h-full shrink-0 flex-col border-r border-border-hairline bg-surface-card transition-[width] duration-150',
-        collapsed ? 'w-16 px-2' : 'w-60 px-2.5',
+        'flex shrink-0 border-border-hairline bg-surface-card transition-[width]',
+        // < 1024px: a horizontal, always-visible strip
+        'w-full flex-row items-center gap-1 overflow-x-auto border-b px-2 py-1.5',
+        // ≥ 1024px: the existing rail
+        'min-[1024px]:h-full min-[1024px]:flex-col min-[1024px]:items-stretch min-[1024px]:overflow-visible',
+        'min-[1024px]:border-b-0 min-[1024px]:border-r min-[1024px]:px-2.5 min-[1024px]:py-0',
+        collapsed ? 'min-[1024px]:w-16 min-[1024px]:px-2' : 'min-[1024px]:w-60',
       )}
       aria-label={t('common.app.title')}
     >
@@ -79,17 +84,20 @@ export function AppSidebar({
         </div>
       ) : (
         <nav
-          className="mt-1 flex-1 overflow-y-auto pb-2 pt-1"
+          className="flex flex-1 flex-row items-center gap-1 overflow-x-auto overflow-y-hidden min-[1024px]:mt-1 min-[1024px]:flex-col min-[1024px]:items-stretch min-[1024px]:gap-0 min-[1024px]:overflow-y-auto min-[1024px]:pb-2 min-[1024px]:pt-1"
           aria-label={t('common.app.title')}
         >
           {groups.map((group) => (
-            <div key={group.id} className="mt-3 first:mt-0">
+            <div
+              key={group.id}
+              className="min-[1024px]:mt-3 min-[1024px]:first:mt-0"
+            >
               {collapsed ? null : (
-                <div className="px-2 pb-1 text-badge font-semibold uppercase leading-[18px] tracking-[0.02em] text-ink-2">
+                <div className="hidden px-2 pb-1 text-badge font-semibold uppercase leading-[18px] tracking-[0.02em] text-ink-2 min-[1024px]:block">
                   {t(group.labelKey)}
                 </div>
               )}
-              <div className="flex flex-col gap-0.5">
+              <div className="flex flex-row gap-0.5 min-[1024px]:flex-col">
                 {group.items.map((item) => {
                   const current = active?.id === item.id
                   return (
@@ -99,22 +107,28 @@ export function AppSidebar({
                       title={t(item.labelKey)}
                       aria-current={current ? 'page' : undefined}
                       className={cn(
-                        'flex min-h-[34px] items-center gap-2 rounded-lg px-2 text-meta leading-5 transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                        'flex min-h-[34px] items-center gap-2 whitespace-nowrap rounded-lg px-2 text-meta leading-5 transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
                         current
                           ? 'bg-brand-subtle font-semibold text-brand'
                           : 'text-ink-2 hover:bg-surface-hover hover:text-ink-1',
-                        collapsed && 'justify-center px-0',
+                        collapsed &&
+                          'min-[1024px]:justify-center min-[1024px]:px-0',
                       )}
                     >
-                      <NavIcon
-                        name={item.icon}
-                        className="size-[17px] shrink-0"
-                      />
-                      {collapsed ? null : (
-                        <span className="min-w-0 flex-1 truncate">
-                          {t(item.labelKey)}
-                        </span>
-                      )}
+                      <span className="hidden shrink-0 min-[1024px]:inline-flex">
+                        <NavIcon
+                          name={item.icon}
+                          className="size-[17px] shrink-0"
+                        />
+                      </span>
+                      <span
+                        className={cn(
+                          'whitespace-nowrap min-[1024px]:min-w-0 min-[1024px]:flex-1 min-[1024px]:truncate',
+                          collapsed && 'min-[1024px]:hidden',
+                        )}
+                      >
+                        {t(item.labelKey)}
+                      </span>
                       {collapsed || item.badge === undefined ? null : (
                         <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-surface-subtle px-1 text-badge text-ink-3">
                           {item.badge}
@@ -131,7 +145,7 @@ export function AppSidebar({
 
       <div
         className={cn(
-          'mt-2 flex items-center gap-2 border-t border-border-hairline pt-3',
+          'mt-2 hidden items-center gap-2 border-t border-border-hairline pt-3 min-[1024px]:flex',
           collapsed ? 'justify-center' : 'px-1.5',
         )}
       >

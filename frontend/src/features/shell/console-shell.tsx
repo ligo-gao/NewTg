@@ -10,7 +10,6 @@ import { isForcedPasswordChangePath } from '@/app/providers/auth-failures'
 import { AnnouncementPopup } from '@/features/shell/announcement-popup'
 import { meQueryOptions } from '@/lib/session'
 import { useI18n } from '@/shared/lib/i18n-context'
-import { useMediaQuery } from '@/shared/lib/use-media-query'
 
 import { AppSidebar } from './app-sidebar'
 import { AppTopbar } from './app-topbar'
@@ -18,7 +17,6 @@ import {
   CommandPalette,
   useCommandPaletteShortcut,
 } from './command-palette'
-import { NavIcon } from './nav-icon'
 import { activeNavItem } from './nav-config'
 
 export const SIDEBAR_STORAGE_KEY = 'newtg.console.sidebar'
@@ -50,29 +48,10 @@ export function writeCollapsed(collapsed: boolean): void {
   }
 }
 
-export function ConsoleWideScreenGate() {
-  const { t } = useI18n()
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-surface-page p-6">
-      <div className="w-full max-w-md rounded-xl border border-border-hairline bg-surface-card p-7 text-center">
-        <div className="mx-auto mb-4 grid size-11 place-items-center rounded-xl bg-brand-subtle text-brand">
-          <NavIcon name="panel" className="size-5" />
-        </div>
-        <h1 className="text-card-title text-ink-1">
-          {t('common.console.gate.title')}
-        </h1>
-        <p className="mt-2 text-body leading-6 text-ink-2">
-          {t('common.console.gate.body')}
-        </p>
-      </div>
-    </div>
-  )
-}
-
 /**
- * Console shell: a persistent left navigation, a slim global top bar, and the
- * routed page. The console is wide-screen only; below 1024px it renders the
- * gate instead of a degraded mobile layout.
+ * Console shell: a slim global top bar, a navigation rail that folds into a
+ * horizontal strip below 1024px, and the routed page capped at the same grid
+ * as the public pages.
  */
 export function ConsoleShell() {
   const { t } = useI18n()
@@ -83,14 +62,11 @@ export function ConsoleShell() {
     select: (state) => state.location.searchStr,
   })
   const meQuery = useQuery(meQueryOptions())
-  const wide = useMediaQuery('(min-width: 1024px)')
   const [collapsed, setCollapsed] = useState(readCollapsed)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const navigate = useNavigate()
 
   useCommandPaletteShortcut(() => setCommandPaletteOpen(true))
-
-  if (!wide) return <ConsoleWideScreenGate />
 
   const active = activeNavItem(pathname)
   const title = active ? t(active.labelKey) : t('common.nav.dashboard')
@@ -101,28 +77,33 @@ export function ConsoleShell() {
   const restricted = isForcedPasswordChangePath(pathname, searchStr)
 
   return (
-    <div className="flex h-screen bg-surface-page text-ink-1">
-      <AppSidebar
+    <div className="flex min-h-screen flex-col bg-surface-page text-ink-1">
+      <AppTopbar
+        title={title}
         me={meQuery.data}
-        pathname={pathname}
-        collapsed={collapsed}
-        onToggleCollapsed={() => {
-          setCollapsed((current) => {
-            const next = !current
-            writeCollapsed(next)
-            return next
-          })
-        }}
+        showNotifications={!restricted}
+        onOpenCommandPalette={() => setCommandPaletteOpen(true)}
       />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <AppTopbar
-          title={title}
+      <div className="flex min-h-0 flex-1 flex-col min-[1024px]:flex-row">
+        <AppSidebar
           me={meQuery.data}
-          showNotifications={!restricted}
-          onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+          pathname={pathname}
+          collapsed={collapsed}
+          onToggleCollapsed={() => {
+            setCollapsed((current) => {
+              const next = !current
+              writeCollapsed(next)
+              return next
+            })
+          }}
         />
-        <main id="main" className="min-h-0 flex-1 overflow-y-auto p-6">
-          <Outlet />
+        <main
+          id="main"
+          className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4 min-[1024px]:p-6 min-[1280px]:px-10 min-[1280px]:py-7"
+        >
+          <div className="mx-auto w-full max-w-[1520px]">
+            <Outlet />
+          </div>
         </main>
       </div>
 

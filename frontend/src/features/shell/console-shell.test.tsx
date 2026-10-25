@@ -20,13 +20,8 @@ import {
 import { I18nProvider } from '@/app/providers/i18n'
 import { createQueryClient } from '@/app/providers/query'
 import { routeTree } from '@/routeTree.gen'
-import { renderWithProviders } from '@/test-support/providers'
 
-import {
-  ConsoleWideScreenGate,
-  readCollapsed,
-  SIDEBAR_STORAGE_KEY,
-} from './console-shell'
+import { readCollapsed, SIDEBAR_STORAGE_KEY } from './console-shell'
 
 const ORIGIN = 'http://localhost:3000'
 
@@ -194,22 +189,6 @@ function renderConsoleAt(path: string) {
   }
 }
 
-describe('ConsoleWideScreenGate', () => {
-  it('explains the wide-screen requirement', async () => {
-    const { getByRole, getByText } = await renderWithProviders(
-      <ConsoleWideScreenGate />,
-      ['common'],
-    )
-
-    expect(getByRole('heading', { level: 1 }).textContent).toBe(
-      'Use a wide screen',
-    )
-    expect(
-      getByText(/designed for wide screens/i),
-    ).toBeTruthy()
-  })
-})
-
 describe('readCollapsed', () => {
   it('returns a stored collapsed preference regardless of the viewport', () => {
     window.localStorage.setItem(SIDEBAR_STORAGE_KEY, 'collapsed')
@@ -234,19 +213,20 @@ describe('readCollapsed', () => {
   })
 })
 
-describe('ConsoleShell wide-screen gate', () => {
-  it('renders the gate, not the shell, below 1024px', async () => {
+describe('ConsoleShell layout', () => {
+  it('renders the shell at narrow widths instead of a gate', async () => {
     installSession()
-    installMatchMedia((query) => query === '(max-width: 1279px)')
+    installMatchMedia(() => false) // nothing matches: a 390px phone
 
     const { container } = renderConsoleAt('/dashboard')
 
+    await waitFor(() => {
+      expect(container.querySelector('aside')).not.toBeNull()
+    })
+    expect(container.querySelector('#main')).not.toBeNull()
     expect(
-      await screen.findByRole('heading', { name: 'Use a wide screen' }),
-    ).toBeTruthy()
-    expect(container.querySelector('aside')).toBeNull()
-    expect(container.querySelector('nav')).toBeNull()
-    expect(container.querySelector('#main')).toBeNull()
+      screen.queryByRole('heading', { name: 'Use a wide screen' }),
+    ).toBeNull()
   })
 
   it('renders the sidebar and the page content at 1024px and wider', async () => {
