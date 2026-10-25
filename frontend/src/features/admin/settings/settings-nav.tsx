@@ -111,15 +111,20 @@ export function SettingsNav({
   return (
     <nav
       aria-label={t('settings.shell.tabs_label')}
-      className="flex flex-col gap-0.5 pb-2"
+      // < 1024px: a single horizontally scrolling row inside the sidebar strip.
+      // ≥ 1024px: the original vertical list.
+      className="flex flex-row items-center gap-1 overflow-x-auto overflow-y-hidden min-[1024px]:flex-col min-[1024px]:items-stretch min-[1024px]:gap-0.5 min-[1024px]:overflow-visible min-[1024px]:pb-2"
       onKeyDown={handleKeyDown}
     >
       {SETTINGS_NAV_GROUPS.map((group, groupIndex) => (
-        <div key={group.id} className={groupIndex === 0 ? undefined : 'mt-3'}>
-          <div className="px-2 pb-1 text-badge font-semibold uppercase leading-4 tracking-[0.04em] text-ink-3 group-data-[collapsed=true]:hidden">
+        <div
+          key={group.id}
+          className={groupIndex === 0 ? undefined : 'min-[1024px]:mt-3'}
+        >
+          <div className="hidden px-2 pb-1 text-badge font-semibold uppercase leading-4 tracking-[0.04em] text-ink-3 group-data-[collapsed=true]:hidden min-[1024px]:block">
             {t(group.labelKey)}
           </div>
-          <div className="flex flex-col gap-0.5">
+          <div className="flex flex-row gap-0.5 min-[1024px]:flex-col">
             {group.items.map((item) => {
               const config = tabConfig(item.tab)
               const current = item.tab === tab
@@ -139,7 +144,8 @@ export function SettingsNav({
                   tabIndex={current ? 0 : -1}
                   onClick={() => onTabChange(item.tab)}
                   className={cn(
-                    'flex min-h-[34px] w-full items-center gap-2 rounded-lg px-2 text-meta leading-5 transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                    'flex min-h-[34px] shrink-0 items-center gap-2 whitespace-nowrap rounded-lg px-2 text-meta leading-5 transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                    'min-[1024px]:w-full',
                     'group-data-[collapsed=true]:justify-center group-data-[collapsed=true]:px-0',
                     current
                       ? 'bg-brand-subtle font-semibold text-brand'
@@ -149,7 +155,7 @@ export function SettingsNav({
                   <NavIcon name={item.icon} className="size-[17px] shrink-0" />
                   <span
                     data-testid="settings-nav-label"
-                    className="min-w-0 flex-1 truncate text-left group-data-[collapsed=true]:hidden"
+                    className="whitespace-nowrap text-left group-data-[collapsed=true]:hidden min-[1024px]:min-w-0 min-[1024px]:flex-1 min-[1024px]:truncate"
                   >
                     {t(config.labelKey)}
                   </span>

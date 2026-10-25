@@ -149,6 +149,25 @@ describe('AppSidebar', () => {
     expect(getByTestId('sidebar-collapse')).toBeTruthy()
   })
 
+  it('keeps the settings drill-in on one horizontal row below 1024px', async () => {
+    const { container } = await renderSidebar(
+      FULL_ADMIN,
+      '/admin/settings',
+      false,
+      ['common', 'settings'],
+    )
+
+    const slot = container.querySelector('[data-testid="settings-nav-slot"]')
+    const drillIn = slot?.parentElement
+    expect(drillIn).not.toBeNull()
+    // < 1024px the drill-in is a single scrolling row: the back link first,
+    // then the settings nav. `flex-col` must only survive behind a desktop
+    // breakpoint variant, hence the exact-token assertions.
+    expect(drillIn?.classList.contains('flex-row')).toBe(true)
+    expect(drillIn?.classList.contains('flex-col')).toBe(false)
+    expect(drillIn?.classList.contains('overflow-x-auto')).toBe(true)
+  })
+
   it('marks the settings slot collapsed so the drill-in can hide its text', async () => {
     const { container } = await renderSidebar(
       FULL_ADMIN,

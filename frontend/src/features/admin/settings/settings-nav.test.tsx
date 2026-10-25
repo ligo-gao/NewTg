@@ -133,6 +133,20 @@ describe('SettingsNav', () => {
     )
   })
 
+  it('lays the section tabs out as a horizontal row below 1024px', async () => {
+    const { nav } = await renderNav()
+
+    // Below 1024px the drill-in nav joins the sidebar's one-line strip, so the
+    // horizontal layout is the default and the vertical one is desktop-only.
+    expect(nav.classList.contains('flex-row')).toBe(true)
+    expect(nav.classList.contains('flex-col')).toBe(false)
+    expect(nav.className).toContain('overflow-x-auto')
+
+    const billing = within(nav).getByRole('button', { name: 'Billing' })
+    expect(billing.className).toContain('whitespace-nowrap')
+    expect(billing.classList.contains('w-full')).toBe(false)
+  })
+
   it('moves focus and selection vertically with the arrow, Home and End keys', async () => {
     const { nav } = await renderNav()
 

@@ -57,29 +57,41 @@ export function AppSidebar({
       aria-label={t('common.app.title')}
     >
       {settingsMode ? (
-        <div className="mt-1 flex min-h-0 flex-1 flex-col gap-1 pb-2">
+        <div
+          className={cn(
+            // < 1024px: one row inside the strip — back link, then the nav.
+            'flex min-h-0 flex-1 flex-row items-center gap-1 overflow-x-auto overflow-y-hidden',
+            // ≥ 1024px: the original vertical drill-in column.
+            'min-[1024px]:mt-1 min-[1024px]:flex-col min-[1024px]:items-stretch',
+            'min-[1024px]:overflow-visible min-[1024px]:pb-2',
+          )}
+        >
           <a
             href="/dashboard"
             title={t('settings.shell.back')}
             className={cn(
-              'flex min-h-[34px] items-center gap-2 rounded-lg px-2 text-meta leading-5 text-ink-2 transition-colors hover:bg-surface-hover hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
-              collapsed && 'justify-center px-0',
+              'flex min-h-[34px] shrink-0 items-center gap-2 rounded-lg px-2 text-meta leading-5 text-ink-2 transition-colors hover:bg-surface-hover hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+              collapsed &&
+                'min-[1024px]:justify-center min-[1024px]:px-0',
             )}
           >
             <span aria-hidden="true" className="shrink-0 text-body leading-none">
               ←
             </span>
-            {collapsed ? null : (
-              <span className="min-w-0 flex-1 truncate">
-                {t('settings.shell.back')}
-              </span>
-            )}
+            <span
+              className={cn(
+                'whitespace-nowrap min-[1024px]:min-w-0 min-[1024px]:flex-1 min-[1024px]:truncate',
+                collapsed && 'min-[1024px]:hidden',
+              )}
+            >
+              {t('settings.shell.back')}
+            </span>
           </a>
           <div
             id="console-settings-nav-slot"
             data-testid="settings-nav-slot"
             data-collapsed={collapsed ? 'true' : 'false'}
-            className="group flex-1 min-h-0 overflow-y-auto overflow-x-hidden"
+            className="group min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-hidden min-[1024px]:overflow-x-hidden min-[1024px]:overflow-y-auto"
           />
         </div>
       ) : (
