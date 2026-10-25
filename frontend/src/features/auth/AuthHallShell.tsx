@@ -10,13 +10,14 @@ export interface AuthHallShellProps {
 }
 
 /**
- * The sign-in "hall" (see demos/sign-in-redesign): the left pane is the brand
+ * The auth "hall" (see demos/sign-in-redesign): the left pane is the brand
  * statement plus the routing map, the right pane is the form column. The map
  * is decorative, so the statement stays a paragraph and the form title is the
  * page's only heading.
  *
- * Only sign-in uses this shell; the other anonymous pages keep the shared
- * card so a half-migrated auth flow never mixes two visual languages.
+ * Only the entry pages (sign-in, sign-up) use this shell; the recovery and
+ * setup pages keep the shared card so a half-migrated auth flow never mixes
+ * two visual languages.
  */
 function BrandMark() {
   return (

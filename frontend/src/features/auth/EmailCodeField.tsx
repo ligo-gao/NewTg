@@ -36,6 +36,8 @@ export interface EmailCodeFieldProps {
   disabled?: boolean
   /** Overrides the purpose default when the server sends no Retry-After. */
   cooldownSeconds?: number
+  /** `line` puts the resend control in the label row, like the hall's links. */
+  variant?: 'default' | 'line'
 }
 
 /**
@@ -50,6 +52,7 @@ export function EmailCodeField({
   onChange,
   disabled = false,
   cooldownSeconds,
+  variant = 'default',
 }: EmailCodeFieldProps) {
   const { t } = useI18n()
   const countdown = useCountdown()
@@ -98,10 +101,30 @@ export function EmailCodeField({
 
   return (
     <div className="flex flex-col gap-1.5">
-      <div className="flex items-end gap-2">
-        <div className="flex-1">
+      <div className={variant === 'line' ? '' : 'flex items-end gap-2'}>
+        <div className={variant === 'line' ? '' : 'flex-1'}>
           <TextField
+            variant={variant}
             label={t('auth.email_code.label')}
+            labelAction={
+              variant === 'line' ? (
+                <button
+                  type="button"
+                  className="auth-hall-code-action"
+                  disabled={buttonDisabled}
+                  aria-live="polite"
+                  onClick={() => {
+                    void requestCode()
+                  }}
+                >
+                  {sending
+                    ? t('auth.email_code.sending')
+                    : countdown.running
+                      ? t('auth.email_code.resend', { seconds: countdown.seconds })
+                      : t('auth.email_code.send')}
+                </button>
+              ) : undefined
+            }
             value={value}
             onChange={(event) => {
               onChange(event.target.value.replace(/\D/g, '').slice(0, 6))
@@ -112,21 +135,23 @@ export function EmailCodeField({
             disabled={disabled}
           />
         </div>
-        <Button
-          variant="secondary"
-          className="h-10 w-28 shrink-0 px-2 text-meta"
-          disabled={buttonDisabled}
-          aria-live="polite"
-          onClick={() => {
-            void requestCode()
-          }}
-        >
-          {sending
-            ? t('auth.email_code.sending')
-            : countdown.running
-              ? t('auth.email_code.resend', { seconds: countdown.seconds })
-              : t('auth.email_code.send')}
-        </Button>
+        {variant === 'line' ? null : (
+          <Button
+            variant="secondary"
+            className="h-10 w-28 shrink-0 px-2 text-meta"
+            disabled={buttonDisabled}
+            aria-live="polite"
+            onClick={() => {
+              void requestCode()
+            }}
+          >
+            {sending
+              ? t('auth.email_code.sending')
+              : countdown.running
+                ? t('auth.email_code.resend', { seconds: countdown.seconds })
+                : t('auth.email_code.send')}
+          </Button>
+        )}
       </div>
       {turnstileEnabled ? (
         <TurnstileWidget

@@ -28,6 +28,39 @@ function statusBody(signupEnabled: boolean) {
   }
 }
 
+describe('SignUpPage hall', () => {
+  it('renders the brand statement and line fields, with the switch under the form', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(statusBody(true))),
+    )
+
+    const result = await renderWithProviders(
+      <SignUpPage onNavigate={() => {}} />,
+      ['common', 'auth'],
+    )
+
+    const username = await result.findByLabelText('Username')
+    expect(result.container.querySelector('.auth-hall')).not.toBeNull()
+    expect(username.closest('[data-variant="line"]')).not.toBeNull()
+    expect(result.getByText('Every model,')).toBeTruthy()
+
+    const stage = result.container.querySelector('.auth-hall-stage')
+    expect(stage?.getAttribute('aria-hidden')).toBe('true')
+    expect(stage?.querySelectorAll('.auth-hall-clients li')).toHaveLength(6)
+    expect(stage?.textContent).toBe('')
+
+    // The resend control joins the code field's label row instead of sitting
+    // beside the input, so the column keeps one rhythm.
+    const code = result.getByLabelText('Verification code')
+    expect(code.closest('[data-variant="line"]')?.contains(
+      result.getByRole('button', { name: 'Send code' }),
+    )).toBe(true)
+
+    const signIn = result.getByRole('link', { name: 'Sign in' })
+    expect(signIn.getAttribute('href')).toBe('/sign-in')
+  })
+})
+
 describe('SignUpPage status gate', () => {
   it('does not render the form before /api/status resolves', async () => {
     let release: (() => void) | undefined

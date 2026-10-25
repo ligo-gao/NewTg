@@ -477,6 +477,74 @@
   color: var(--home-faint);
 }
 
+/* Registration extras: the resend control shares the reset link's voice, and
+   the consent row keeps body text quiet so the two policy links stay legible. */
+
+.auth-hall-code-action {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  margin: -4px 0;
+  padding: 4px 0;
+  border: 0;
+  border-radius: 2px;
+  background: none;
+  color: var(--home-signal);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.auth-hall-code-action:hover:not(:disabled) {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.auth-hall-code-action:disabled {
+  color: var(--home-faint);
+  cursor: default;
+}
+
+.auth-hall-code-action:focus-visible {
+  outline: 2px solid var(--home-signal);
+  outline-offset: 2px;
+}
+
+.auth-hall-terms {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--home-muted);
+}
+
+.auth-hall-terms input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: var(--home-signal);
+}
+
+.auth-hall-terms a {
+  color: var(--home-signal);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.auth-hall-terms a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.auth-hall-terms a:focus-visible {
+  outline: 2px solid var(--home-signal);
+  outline-offset: 2px;
+}
+
 .auth-hall-legal {
   display: flex;
   align-items: center;

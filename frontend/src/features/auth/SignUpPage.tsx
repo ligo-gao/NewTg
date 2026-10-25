@@ -11,7 +11,7 @@ import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
 import { FormAlert, PasswordField, TextField } from '@/shared/ui/form'
 
-import { AuthPageShell } from './AuthPageShell'
+import { AuthHallShell } from './AuthHallShell'
 import { EmailCodeField } from './EmailCodeField'
 import { TurnstileWidget } from './TurnstileWidget'
 
@@ -62,16 +62,18 @@ export function SignUpPage({
 
   if (status.isError) {
     return (
-      <AuthPageShell title={t('auth.sign_up.title')}>
-        <FormAlert>{t('auth.sign_up.status_error')}</FormAlert>
-        <Button
-          variant="secondary"
-          className="mt-4 h-10"
-          onClick={() => void status.refetch()}
-        >
-          {t('common.action.retry')}
-        </Button>
-      </AuthPageShell>
+      <AuthHallShell title={t('auth.sign_up.title')}>
+        <div className="flex flex-col gap-3">
+          <FormAlert>{t('auth.sign_up.status_error')}</FormAlert>
+          <Button
+            variant="secondary"
+            className="h-10"
+            onClick={() => void status.refetch()}
+          >
+            {t('common.action.retry')}
+          </Button>
+        </div>
+      </AuthHallShell>
     )
   }
 
@@ -79,14 +81,15 @@ export function SignUpPage({
     // Do not render the form before `email_verification_required` is known: a
     // fast submit would omit `email_code` and get a guaranteed 400.
     return (
-      <AuthPageShell title={t('auth.sign_up.title')}>
-        <div className="space-y-3" aria-busy="true">
-          <div className="h-10 rounded-lg bg-surface-subtle" />
-          <div className="h-10 rounded-lg bg-surface-subtle" />
-          <div className="h-10 rounded-lg bg-surface-subtle" />
-          <div className="h-11 rounded-lg bg-surface-subtle" />
+      <AuthHallShell title={t('auth.sign_up.title')}>
+        <div className="flex flex-col gap-[22px]" aria-busy="true">
+          <div className="h-11 border-b border-border-default" />
+          <div className="h-11 border-b border-border-default" />
+          <div className="h-11 border-b border-border-default" />
+          <div className="h-11 border-b border-border-default" />
+          <div className="h-11 border-b border-border-default" />
         </div>
-      </AuthPageShell>
+      </AuthHallShell>
     )
   }
 
@@ -94,15 +97,14 @@ export function SignUpPage({
 
   if (!status.data.auth.signup_enabled) {
     return (
-      <AuthPageShell title={t('auth.sign_up.title')}>
+      <AuthHallShell title={t('auth.sign_up.title')}>
         <FormAlert tone="warning">{t('auth.sign_up.disabled')}</FormAlert>
-        <a
-          href="/sign-in"
-          className="mt-4 inline-block text-meta font-medium text-brand hover:underline"
-        >
-          {t('auth.sign_in.title', { site: t('auth.shell.brand') })}
-        </a>
-      </AuthPageShell>
+        <p className="auth-hall-signup">
+          <a className="auth-hall-link" href="/sign-in">
+            {t('auth.sign_in.title', { site: t('auth.shell.brand') })}
+          </a>
+        </p>
+      </AuthHallShell>
     )
   }
 
@@ -176,25 +178,12 @@ export function SignUpPage({
   }
 
   return (
-    <AuthPageShell
-      title={t('auth.sign_up.title')}
-      subtitle={
-        <span>
-          {t('auth.sign_up.have_account')}{' '}
-          <a className="font-medium text-brand hover:underline" href="/sign-in">
-            {t('auth.sign_up.sign_in')}
-          </a>
-        </span>
-      }
-    >
-      <form
-        className="flex flex-col gap-4"
-        onSubmit={(event) => void handleSubmit(event)}
-        noValidate
-      >
+    <AuthHallShell title={t('auth.sign_up.title')}>
+      <form onSubmit={(event) => void handleSubmit(event)} noValidate>
         {formError !== undefined ? <FormAlert>{formError}</FormAlert> : null}
 
         <TextField
+          variant="line"
           label={t('auth.sign_up.username')}
           autoComplete="username"
           value={username}
@@ -206,6 +195,7 @@ export function SignUpPage({
         />
 
         <TextField
+          variant="line"
           label={t('auth.sign_up.email')}
           type="email"
           autoComplete="email"
@@ -220,6 +210,7 @@ export function SignUpPage({
         {verificationRequired ? (
           <>
             <EmailCodeField
+              variant="line"
               purpose="register"
               email={email}
               value={emailCode}
@@ -235,6 +226,7 @@ export function SignUpPage({
         ) : null}
 
         <PasswordField
+          variant="line"
           label={t('auth.sign_up.password')}
           showLabel={t('auth.sign_in.show_password')}
           hideLabel={t('auth.sign_in.hide_password')}
@@ -248,6 +240,7 @@ export function SignUpPage({
         />
 
         <PasswordField
+          variant="line"
           label={t('auth.sign_up.confirm_password')}
           showLabel={t('auth.sign_in.show_password')}
           hideLabel={t('auth.sign_in.hide_password')}
@@ -260,10 +253,10 @@ export function SignUpPage({
           required
         />
 
-        <label className="flex items-start gap-2 text-meta text-ink-2">
+        <label className="auth-hall-terms">
           <input
             type="checkbox"
-            className="mt-0.5 size-4 accent-brand"
+            className="accent-brand"
             checked={agree}
             onChange={(event) => {
               setAgree(event.target.checked)
@@ -271,21 +264,11 @@ export function SignUpPage({
           />
           <span>
             {t('auth.sign_up.agree_prefix')}{' '}
-            <a
-              className="font-medium text-brand hover:underline"
-              href="/legal/terms"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
+            <a href="/legal/terms" target="_blank" rel="noopener noreferrer">
               {t('auth.sign_up.terms')}
             </a>{' '}
             {t('auth.sign_up.and')}{' '}
-            <a
-              className="font-medium text-brand hover:underline"
-              href="/legal/privacy"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
+            <a href="/legal/privacy" target="_blank" rel="noopener noreferrer">
               {t('auth.sign_up.privacy')}
             </a>
           </span>
@@ -302,12 +285,23 @@ export function SignUpPage({
           />
         ) : null}
 
-        <Button type="submit" className="h-11 w-full" disabled={submitting}>
+        <Button
+          type="submit"
+          className="auth-hall-submit w-full"
+          disabled={submitting}
+        >
           {submitting
             ? t('auth.sign_up.submitting')
             : t('auth.sign_up.submit')}
         </Button>
+
+        <p className="auth-hall-signup">
+          {t('auth.sign_up.have_account')}{' '}
+          <a className="auth-hall-link" href="/sign-in">
+            {t('auth.sign_up.sign_in')}
+          </a>
+        </p>
       </form>
-    </AuthPageShell>
+    </AuthHallShell>
   )
 }
