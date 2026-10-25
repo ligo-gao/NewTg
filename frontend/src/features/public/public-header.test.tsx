@@ -11,6 +11,30 @@ import { PublicLayout } from './public-layout'
 
 const ORIGIN = 'http://localhost:3000'
 
+const nativeMatchMedia = window.matchMedia
+
+/**
+ * jsdom has no `matchMedia`; the header test needs the narrow-panel fixture,
+ * and the theme provider reads the colour-scheme query. Restored after each
+ * case so neither test inherits the other's viewport.
+ */
+function installMatchMedia(matches: (query: string) => boolean): void {
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    writable: true,
+    value: (query: string) => ({
+      matches: matches(query),
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }),
+  })
+}
+
 const PUBLIC_STATUS = {
   system_initialized: true,
   auth: {
@@ -59,6 +83,11 @@ describe('PublicHeader (F-09-34)', () => {
   afterEach(() => {
     globalThis.localStorage?.removeItem(THEME_STORAGE_KEY)
     delete document.documentElement.dataset.theme
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      writable: true,
+      value: nativeMatchMedia,
+    })
   })
 
   function guest(): void {
@@ -92,7 +121,7 @@ describe('PublicHeader (F-09-34)', () => {
       http.get(`${ORIGIN}/api/me`, () => HttpResponse.json({ id: 1, username: 'ada' })),
     )
 
-    const { findByRole } = await renderWithProviders(
+    const { findByRole, queryByRole } = await renderWithProviders(
       <PublicHeader activePath="/dashboard" />,
       ['public'],
     )
@@ -108,6 +137,8 @@ describe('PublicHeader (F-09-34)', () => {
       'Console',
     ])
     expect(links.at(-1)?.getAttribute('href')).toBe('/dashboard')
+    // Signed-in visitors keep the avatar menu instead of a sign-up CTA.
+    expect(queryByRole('link', { name: 'Get started free' })).toBeNull()
   })
 
   it('omits a disabled nav entry without leaving a gap', async () => {
@@ -164,5 +195,74 @@ describe('PublicHeader (F-09-34)', () => {
 
     const cta = await findByRole('link', { name: 'Get started free' })
     expect(cta.getAttribute('href')).toBe('/sign-up')
+  })
+
+  it('opens the mobile panel and closes it on Escape or a link click', async () => {
+    guest()
+    installMatchMedia((query) => query === '(max-width: 1023px)')
+
+    const { findByRole } = await renderWithProviders(
+      <PublicHeader activePath="/about" />,
+      ['public'],
+    )
+
+    const trigger = await findByRole('button', { name: 'Open navigation' })
+    expect(trigger.getAttribute('aria-controls')).toBe('mobile-menu')
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+
+    fireEvent.click(trigger)
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+
+    let panel = document.getElementById('mobile-menu')
+    expect(panel).not.toBeNull()
+    // Narrow guests reach the same sign-in hand-off as desktop visitors.
+    expect(
+      within(panel as HTMLElement)
+        .getByRole('link', { name: 'Sign in' })
+        .getAttribute('href'),
+    ).toBe('/sign-in?redirect=%2Fabout')
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(document.getElementById('mobile-menu')).toBeNull())
+    expect(document.activeElement).toBe(trigger)
+
+    fireEvent.click(trigger)
+    panel = document.getElementById('mobile-menu')
+    expect(panel).not.toBeNull()
+    // jsdom cannot navigate; cancelling the default keeps the suite quiet while
+    // the panel's own click handler still runs and closes the panel.
+    document.addEventListener('click', (event) => event.preventDefault(), {
+      capture: true,
+      once: true,
+    })
+    fireEvent.click(within(panel as HTMLElement).getByRole('link', { name: 'Pricing' }))
+    await waitFor(() => expect(document.getElementById('mobile-menu')).toBeNull())
+    expect(document.activeElement).toBe(trigger)
+  })
+
+  it('keeps the panel sign-in entry when signup is disabled', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () =>
+        HttpResponse.json({
+          ...PUBLIC_STATUS,
+          auth: { ...PUBLIC_STATUS.auth, signup_enabled: false },
+        }),
+      ),
+      http.get(`${ORIGIN}/api/me`, () => HttpResponse.json({}, { status: 401 })),
+    )
+    installMatchMedia((query) => query === '(max-width: 1023px)')
+
+    const { findByRole } = await renderWithProviders(
+      <PublicHeader activePath="/about" />,
+      ['public'],
+    )
+
+    fireEvent.click(await findByRole('button', { name: 'Open navigation' }))
+    const panel = document.getElementById('mobile-menu')
+    expect(panel).not.toBeNull()
+    expect(within(panel as HTMLElement).getByRole('link', { name: 'Sign in' })).toBeTruthy()
+    expect(
+      within(panel as HTMLElement).queryByRole('link', { name: 'Get started free' }),
+    ).toBeNull()
   })
 })

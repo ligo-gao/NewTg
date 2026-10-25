@@ -10,6 +10,10 @@ export interface MobileNavPanelProps {
   items: readonly PublicNavItem[]
   activePath?: string
   labels: Record<PublicNavItem['key'], string>
+  /** Guests need a sign-in hand-off here: the header's is hidden below 1024. */
+  isLoggedIn: boolean
+  /** `/sign-in?redirect=…` computed by the header for the current path. */
+  signInTarget: string
   /** The primary call to action is part of the panel on narrow screens. */
   signupEnabled: boolean
 }
@@ -37,6 +41,8 @@ export function MobileNavPanel({
   items,
   activePath,
   labels,
+  isLoggedIn,
+  signInTarget,
   signupEnabled,
 }: MobileNavPanelProps) {
   const { t } = useI18n()
@@ -87,7 +93,12 @@ export function MobileNavPanel({
             </a>
           )
         })}
-        {signupEnabled ? (
+        {!isLoggedIn ? (
+          <a href={signInTarget} onClick={close} className="mobile-nav-link">
+            {t('public.nav.sign_in')}
+          </a>
+        ) : null}
+        {signupEnabled && !isLoggedIn ? (
           <a href="/sign-up" onClick={close} className="btn btn-primary mobile-nav-cta">
             {t('public.nav.cta')}
           </a>

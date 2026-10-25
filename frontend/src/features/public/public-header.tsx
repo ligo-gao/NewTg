@@ -379,8 +379,8 @@ export function PublicHeader({ activePath }: PublicHeaderProps) {
             signInTarget={signInTarget}
             activePath={path}
           />
-          {signupEnabled ? (
-            <a href="/sign-up" className="btn btn-primary btn-sm">
+          {signupEnabled && !isLoggedIn ? (
+            <a href="/sign-up" className="btn btn-primary header-cta">
               {t('public.nav.cta')}
             </a>
           ) : null}
@@ -404,6 +404,8 @@ export function PublicHeader({ activePath }: PublicHeaderProps) {
         items={items}
         activePath={activePath}
         labels={labels}
+        isLoggedIn={isLoggedIn}
+        signInTarget={signInTarget}
         signupEnabled={signupEnabled}
       />
     </header>

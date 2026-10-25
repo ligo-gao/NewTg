@@ -161,8 +161,8 @@
 }
 
 .public-shell .brand-logo {
-  width: 30px;
-  height: 30px;
+  width: 22px;
+  height: 22px;
   border-radius: 6px;
   object-fit: cover;
 }
@@ -204,7 +204,7 @@
 }
 
 .public-shell .home-lang select {
-  height: 30px;
+  height: 36px;
   max-width: 150px;
   padding: 0 8px;
   border: 1px solid var(--home-rule-strong);
@@ -232,7 +232,7 @@
   display: none;
   align-items: center;
   justify-content: center;
-  height: 30px;
+  height: 36px;
   min-width: 46px;
   padding: 0 8px;
   border: 1px solid var(--home-rule-strong);
@@ -262,8 +262,8 @@
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 30px;
-  height: 30px;
+  width: 36px;
+  height: 36px;
   border: 1px solid var(--home-rule-strong);
   border-radius: 6px;
   background: transparent;
@@ -331,6 +331,16 @@
 }
 
 .public-shell .btn-sm { height: 34px; padding: 0 13px; font-size: 13px; line-height: 20px; }
+
+/* Header CTA matches the demo's 36px compact button. `.btn-sm` is shared with
+   the home onboarding step, so the size is scoped here instead of resizing
+   every compact button on the public pages. */
+.public-shell .header-cta {
+  height: 36px;
+  padding-inline: 15px;
+  font-size: 13px;
+  line-height: 20px;
+}
 
 .public-shell .sign-in {
   display: inline-flex;
