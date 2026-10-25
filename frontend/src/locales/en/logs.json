@@ -195,8 +195,17 @@
         "average_hour": "Avg {value} credits / hour",
         "average_day": "Avg {value} credits / day",
         "zero_note": "{count} buckets are zero; positions kept",
+        "zero_note_day": "{count} days are zero; positions kept",
         "unit_hour": "hours",
-        "unit_day": "days"
+        "unit_day": "days",
+        "requests_unit": "requests",
+        "readout_idle": "Hover or use ← → to inspect a bucket",
+        "readout": "{time} · {value} {unit} · {percent}% of window",
+        "chart_aria": "{name} bar chart; use the left and right arrow keys to step through buckets. Every value is in the data table below.",
+        "peak_requests": "Peak {time} · {count} requests ({percent}%)",
+        "average_requests_hour": "Avg {value} requests / hour",
+        "average_requests_day": "Avg {value} requests / day",
+        "rpm_peak": "Peak {value} RPM"
       },
       "kpi": {
         "success": "Success rate",
@@ -236,7 +245,8 @@
         "sub": "Input and output total {total}",
         "cache": "Cache read",
         "note": "{avg} tokens per request; input is {ratio}× output",
-        "note_no_ratio": "{avg} tokens per request"
+        "note_no_ratio": "{avg} tokens per request",
+        "tpm": "Peak {value} TPM"
       },
       "source_note": "Credits = pre-deducted − refunded; success rate = successful requests / total requests; latency percentiles count successful requests with latency > 0. The window matches the filters above.",
       "granularity_hour": "Hourly",
@@ -269,6 +279,15 @@
       "user": {
         "title": "User ranking",
         "sub": "{count} active users · by spend"
+      },
+      "active": {
+        "title_hour": "Busiest hours",
+        "title_day": "Busiest days",
+        "sub_hour": "{count} hours with traffic · by spend",
+        "sub_day": "{count} days with traffic · by spend",
+        "note_hour": "The other {count} hours hold {percent}%",
+        "note_day": "The other {count} days hold {percent}%",
+        "note_all": "Every bucket with traffic is listed"
       },
       "token_key": {
         "title": "Token usage",

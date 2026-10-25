@@ -29,7 +29,7 @@ import {
 } from './insights'
 import { fillTimeseries } from './series'
 import styles from './stats-tab.module.css'
-import { TrendChart } from './trend-chart'
+import { TrendCard } from './trend-chart'
 
 type UsageStatsByTokenItem = components['schemas']['UsageStatsByTokenItem']
 type UsageStatsByUserItem = components['schemas']['UsageStatsByUserItem']
@@ -278,18 +278,7 @@ export function UsageStatsTab({
     granularity,
   )
   const insights = trendInsights(trendRows)
-  const peak = insights.peak
-  // A refused/refunded-only window has traffic but no spend. `trendInsights`
-  // still names a peak bucket in that case (every bucket ties at 0), which
-  // would print "Peak 01:00 · 0 credits (0.0%)". The peak line is meaningful
-  // only when something was actually spent; peakShare keeps its own 0.
-  const hasSpend = insights.totalCost > 0
   const activeBuckets = topActiveBuckets(trendRows, 5)
-
-  const emptyHint =
-    canFilterByUsername && search.username !== undefined
-      ? t('logs.usage.stats.no_user_data')
-      : t('logs.usage.stats.empty_hint')
 
   const count = (value: number): string =>
     new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(value)
@@ -309,6 +298,33 @@ export function UsageStatsTab({
       maximumFractionDigits: 1,
     }).format(value)
 
+  const isHour = granularity === 'hour'
+  // The activity card ranks the busiest buckets by the spend they produced;
+  // whatever the top five leave out is summarised in the card's note.
+  const activeItems: DistributionItem[] = activeBuckets.map((row) => ({
+    key: row.bucket,
+    label: formatBucketTick(row.bucket, granularity, locale),
+    cost: row.cost,
+    requests: row.requests,
+    tokens: 0,
+    percent: insights.totalCost > 0 ? (row.cost / insights.totalCost) * 100 : 0,
+  }))
+  const restActiveBuckets = insights.activeBuckets - activeBuckets.length
+  const activeNote =
+    restActiveBuckets > 0
+      ? t(
+          isHour
+            ? 'logs.usage.stats.active.note_hour'
+            : 'logs.usage.stats.active.note_day',
+          {
+            count: count(restActiveBuckets),
+            percent: oneDecimal(
+              100 - activeItems.reduce((sum, item) => sum + item.percent, 0),
+            ),
+          },
+        )
+      : t('logs.usage.stats.active.note_all')
+
   const spendTooltip =
     summary === undefined
       ? undefined
@@ -322,10 +338,6 @@ export function UsageStatsTab({
   // status counts above and in the token card's quota note.
   const failureCount = summary === undefined ? 0 : summary.error_count ?? 0
   const retryLabel = t('logs.usage.error.retry')
-  const granularityKey =
-    granularity === 'hour'
-      ? 'logs.usage.stats.granularity_hour'
-      : 'logs.usage.stats.granularity_day'
 
   const split =
     summary === undefined
@@ -574,330 +586,131 @@ export function UsageStatsTab({
         </section>
       )}
 
-      {/* Trend + rail. */}
-      <div className="grid items-start gap-3.5 xl:grid-cols-[minmax(0,2.1fr)_minmax(0,1fr)]">
+      {/* Two independent trend cards: one measure per card, each with its own
+          scale. RPM rides with requests and TPM with the token mix, so neither
+          unit has to share a card with a measure it does not belong to. */}
+      {timeseriesQuery.isError ? (
+        <InlineError
+          message={statsErrorText(timeseriesQuery.error, t)}
+          onRetry={() => void timeseriesQuery.refetch()}
+          retryLabel={retryLabel}
+        />
+      ) : (
+        <div className="grid gap-3.5 xl:grid-cols-2">
+          <TrendCard
+            metric="cost"
+            rows={trendRows}
+            granularity={granularity}
+            loading={timeseriesQuery.isPending}
+            emptyLabel={t('logs.usage.stats.empty')}
+          />
+          <TrendCard
+            metric="requests"
+            rows={trendRows}
+            granularity={granularity}
+            loading={timeseriesQuery.isPending}
+            emptyLabel={t('logs.usage.stats.empty')}
+            rpmPeak={ratesQuery.data?.rpm_peak}
+          />
+        </div>
+      )}
+
+      {ratesQuery.isError ? (
+        <div data-testid="stats-rates">
+          <InlineError
+            message={statsErrorText(ratesQuery.error, t)}
+            onRetry={() => void ratesQuery.refetch()}
+            retryLabel={retryLabel}
+          />
+        </div>
+      ) : null}
+
+      {/* Where the spend went: token mix beside the model mix. */}
+      <div className="grid gap-3.5 xl:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
         <section className="flex min-w-0 flex-col rounded-xl border border-border-hairline bg-surface-card">
           <CardHeader
-            title={t('logs.usage.stats.trend')}
-            subtitle={t('logs.usage.stats.chart.sub')}
-            aside={
-              <div className="flex flex-wrap items-center justify-end gap-3">
-                <span className="inline-flex items-center gap-1.5 text-badge text-ink-2">
-                  <i
-                    aria-hidden="true"
-                    className="size-2 rounded-sm bg-chart-cat-1"
-                  />
-                  {t('logs.usage.stats.chart.cost_series')}
-                </span>
-                <span className="inline-flex items-center gap-1.5 text-badge text-ink-2">
-                  <i
-                    aria-hidden="true"
-                    className="size-2 rounded-sm bg-chart-cat-2"
-                  />
-                  {t('logs.usage.stats.chart.request_series')}
-                </span>
-                <span className="rounded-md border border-border-hairline bg-surface-subtle px-2 py-0.5 text-badge text-ink-2">
-                  {t(granularityKey)}
-                </span>
-              </div>
-            }
+            title={t('logs.usage.stats.token.title')}
+            subtitle={t('logs.usage.stats.token.sub', {
+              total: formatTokenAmount(inputOutputTotal, locale),
+            })}
           />
-          <div className="px-4 pb-4">
-            {timeseriesQuery.isPending ? (
+          {split === null || split.total === 0 ? (
+            <EmptyState title={t('logs.usage.stats.empty')} />
+          ) : (
+            <div className="flex flex-1 flex-col gap-3 px-4 pb-3">
               <div
-                data-testid="stats-trend-loading"
-                aria-busy="true"
-                className="h-60 animate-pulse rounded-lg bg-surface-hover motion-reduce:animate-none"
-              />
-            ) : timeseriesQuery.isError ? (
-              <InlineError
-                message={statsErrorText(timeseriesQuery.error, t)}
-                onRetry={() => void timeseriesQuery.refetch()}
-                retryLabel={retryLabel}
-              />
-            ) : trendRows.length === 0 ? (
-              <EmptyState
-                title={t('logs.usage.stats.empty')}
-                hint={emptyHint}
-              />
-            ) : (
-              <>
-                <TrendChart rows={trendRows} granularity={granularity} />
-                <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-border-hairline pt-2.5 text-badge text-ink-2">
-                  {hasSpend && peak !== null ? (
-                    <span>
-                      {t('logs.usage.stats.chart.peak', {
-                        time: formatBucketTick(peak.bucket, granularity, locale),
-                        cost: formatCredits(peak.cost, locale),
-                        percent: oneDecimal(insights.peakShare),
-                      })}
-                    </span>
-                  ) : null}
-                  <span>
-                    {t('logs.usage.stats.chart.active', {
-                      active: count(insights.activeBuckets),
-                      total: count(insights.bucketCount),
-                      unit: t(
-                        granularity === 'hour'
-                          ? 'logs.usage.stats.chart.unit_hour'
-                          : 'logs.usage.stats.chart.unit_day',
-                      ),
-                    })}
-                  </span>
-                  <span>
-                    {t(
-                      granularity === 'hour'
-                        ? 'logs.usage.stats.chart.average_hour'
-                        : 'logs.usage.stats.chart.average_day',
-                      {
-                        value: decimal(insights.averageCost),
-                      },
+                aria-hidden="true"
+                className="flex h-2 overflow-hidden rounded-full bg-surface-subtle"
+              >
+                <span
+                  className="bg-chart-cat-1"
+                  style={{ width: `${String(split.promptPct)}%` }}
+                />
+                <span
+                  className="bg-chart-cat-2"
+                  style={{ width: `${String(split.completionPct)}%` }}
+                />
+                {split.cachePct > 0 ? (
+                  <span
+                    className="bg-chart-cat-3"
+                    style={{ width: `${String(split.cachePct)}%` }}
+                  />
+                ) : null}
+              </div>
+              <div className="flex flex-col">
+                <TokenLegendRow
+                  name={t('logs.usage.stats.input_tokens')}
+                  swatch="bg-chart-cat-1"
+                  value={formatTokenAmount(
+                    summary?.prompt_tokens_total ?? 0,
+                    locale,
+                  )}
+                  percent={split.promptPct}
+                />
+                <TokenLegendRow
+                  name={t('logs.usage.stats.output_tokens')}
+                  swatch="bg-chart-cat-2"
+                  value={formatTokenAmount(
+                    summary?.completion_tokens_total ?? 0,
+                    locale,
+                  )}
+                  percent={split.completionPct}
+                />
+                {split.cachePct > 0 ? (
+                  <TokenLegendRow
+                    name={t('logs.usage.stats.token.cache')}
+                    swatch="bg-chart-cat-3"
+                    value={formatTokenAmount(
+                      summary?.cache_read_tokens_total ?? 0,
+                      locale,
                     )}
-                  </span>
-                  <span className="text-ink-3">
-                    {t('logs.usage.stats.chart.zero_note', {
-                      count: count(insights.zeroBuckets),
+                    percent={split.cachePct}
+                  />
+                ) : null}
+              </div>
+              <p className="mt-auto border-t border-border-hairline pt-2.5 text-badge text-ink-3">
+                {split.inputToOutput === null
+                  ? t('logs.usage.stats.token.note_no_ratio', {
+                      avg: formatTokenAmount(split.avgPerRequest, locale),
+                    })
+                  : t('logs.usage.stats.token.note', {
+                      avg: formatTokenAmount(split.avgPerRequest, locale),
+                      ratio: split.inputToOutput,
                     })}
-                  </span>
-                </div>
-                {/* Relief rule: every chart carries a table equivalent. The
-                    component's own sr-only table is the screen-reader path;
-                    this visible disclosure is the sighted-reader path (UI §3.8). */}
-                <details className="mt-3">
-                  <summary className="cursor-pointer text-meta font-medium text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none">
-                    {t('logs.usage.stats.view_table')}
-                  </summary>
-                  <div className="overflow-x-auto">
-                    <table
-                      data-testid="stats-trend-table"
-                      className="mt-2 w-full text-body"
-                    >
-                      <caption className="sr-only">
-                        {t('logs.usage.stats.trend_table_caption')}
-                      </caption>
-                      <thead>
-                        <tr className="border-b border-border-hairline text-left text-meta font-medium text-ink-2">
-                          <th scope="col" className="px-2 py-2">
-                            {t('logs.usage.stats.columns.time')}
-                          </th>
-                          <th scope="col" className="px-2 py-2 text-right">
-                            {t('logs.usage.stats.columns.cost')}
-                          </th>
-                          <th scope="col" className="px-2 py-2 text-right">
-                            {t('logs.usage.stats.columns.requests')}
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {trendRows.map((row) => (
-                          <tr
-                            key={row.bucket}
-                            className="border-b border-border-hairline last:border-0"
-                          >
-                            <td className="px-2 py-1.5 font-mono text-meta">
-                              {formatBucketTick(row.bucket, granularity, locale)}
-                            </td>
-                            <td className="px-2 py-1.5 text-right font-mono text-meta tabular-nums">
-                              {formatCredits(row.cost, locale)}
-                            </td>
-                            <td className="px-2 py-1.5 text-right tabular-nums">
-                              {count(row.requests)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </details>
-              </>
-            )}
-          </div>
+                {ratesQuery.data === undefined ? null : (
+                  <>
+                    {' · '}
+                    {t('logs.usage.stats.token.tpm', {
+                      value: compact(ratesQuery.data.tpm_avg),
+                    })}
+                  </>
+                )}
+              </p>
+            </div>
+          )}
         </section>
 
-        <div className="grid min-w-0 gap-3.5 lg:grid-cols-2 xl:grid-cols-1">
-          <section className="flex min-w-0 flex-col rounded-xl border border-border-hairline bg-surface-card">
-            <CardHeader
-              title={t('logs.usage.stats.rail.title')}
-              subtitle={t('logs.usage.stats.rail.sub')}
-            />
-            <div className="flex flex-col px-4 text-meta">
-              <RailRow
-                label={t('logs.usage.stats.rail.peak')}
-                value={
-                  !hasSpend || peak === null
-                    ? '—'
-                    : `${formatBucketTick(peak.bucket, granularity, locale)} · ${formatCredits(peak.cost, locale)}`
-                }
-              />
-              <RailRow
-                label={t('logs.usage.stats.rail.peak_share')}
-                value={`${oneDecimal(insights.peakShare)}%`}
-              />
-              <RailRow
-                label={t('logs.usage.stats.rail.active')}
-                value={t('logs.usage.stats.rail.hours_value', {
-                  active: count(insights.activeBuckets),
-                  total: count(insights.bucketCount),
-                  unit: t(
-                    granularity === 'hour'
-                      ? 'logs.usage.stats.chart.unit_hour'
-                      : 'logs.usage.stats.chart.unit_day',
-                  ),
-                })}
-              />
-              <RailRow
-                label={t(
-                  granularity === 'hour'
-                    ? 'logs.usage.stats.rail.avg_hour'
-                    : 'logs.usage.stats.rail.avg_day',
-                )}
-                value={decimal(insights.averageCost)}
-              />
-              <RailRow
-                label={t('logs.usage.stats.rail.avg_request')}
-                value={`${formatTokenAmount(split?.avgPerRequest ?? 0, locale)} ${t('logs.usage.stats.columns.tokens')}`}
-              />
-              {summary !== undefined &&
-              summary.request_count > 0 &&
-              (ratesQuery.data !== undefined || ratesQuery.isError) ? (
-                <div
-                  data-testid="stats-rates"
-                  role="group"
-                  aria-label={t('logs.usage.stats.rates.title')}
-                  className="flex flex-col"
-                >
-                  {ratesQuery.isError ? (
-                    <InlineError
-                      message={statsErrorText(ratesQuery.error, t)}
-                      onRetry={() => void ratesQuery.refetch()}
-                      retryLabel={retryLabel}
-                    />
-                  ) : ratesQuery.data !== undefined ? (
-                    <>
-                      <RailRow
-                        label={t('logs.usage.stats.rail.rpm')}
-                        value={t('logs.usage.stats.rail.rpm_value', {
-                          avg: oneDecimal(ratesQuery.data.rpm_avg),
-                          peak: oneDecimal(ratesQuery.data.rpm_peak),
-                        })}
-                      />
-                      <RailRow
-                        label={t('logs.usage.stats.rail.tpm')}
-                        value={t('logs.usage.stats.rail.tpm_value', {
-                          avg: compact(ratesQuery.data.tpm_avg),
-                        })}
-                      />
-                    </>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-            <div className="border-t border-border-hairline px-4 py-2.5">
-              <div className="flex items-center justify-between gap-3 text-badge text-ink-3">
-                <span>{t('logs.usage.stats.rail.active_list')}</span>
-                <span>{t('logs.usage.stats.rail.active_columns')}</span>
-              </div>
-              <div className="mt-1 flex flex-col">
-                {activeBuckets.map((row) => (
-                  <div
-                    key={row.bucket}
-                    className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 border-b border-border-hairline py-1.5 text-badge last:border-0"
-                  >
-                    <span className="font-mono text-ink-2">
-                      {formatBucketTick(row.bucket, granularity, locale)}
-                    </span>
-                    <span className="font-mono tabular-nums text-ink-1">
-                      {formatCredits(row.cost, locale)}
-                    </span>
-                    <span className="min-w-8 text-right tabular-nums text-ink-3">
-                      {count(row.requests)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </section>
-
-          <section className="flex min-w-0 flex-col rounded-xl border border-border-hairline bg-surface-card">
-            <CardHeader
-              title={t('logs.usage.stats.token.title')}
-              subtitle={t('logs.usage.stats.token.sub', {
-                total: formatTokenAmount(inputOutputTotal, locale),
-              })}
-            />
-            {split === null || split.total === 0 ? (
-              <EmptyState title={t('logs.usage.stats.empty')} />
-            ) : (
-              <div className="flex flex-col gap-3 px-4 pb-4">
-                <div
-                  aria-hidden="true"
-                  className="flex h-2 overflow-hidden rounded-full bg-surface-subtle"
-                >
-                  <span
-                    className="bg-chart-cat-1"
-                    style={{ width: `${String(split.promptPct)}%` }}
-                  />
-                  <span
-                    className="bg-chart-cat-2"
-                    style={{ width: `${String(split.completionPct)}%` }}
-                  />
-                  {split.cachePct > 0 ? (
-                    <span
-                      className="bg-chart-cat-3"
-                      style={{ width: `${String(split.cachePct)}%` }}
-                    />
-                  ) : null}
-                </div>
-                <div className="flex flex-col">
-                  <TokenLegendRow
-                    name={t('logs.usage.stats.input_tokens')}
-                    swatch="bg-chart-cat-1"
-                    value={formatTokenAmount(
-                      summary?.prompt_tokens_total ?? 0,
-                      locale,
-                    )}
-                    percent={split.promptPct}
-                  />
-                  <TokenLegendRow
-                    name={t('logs.usage.stats.output_tokens')}
-                    swatch="bg-chart-cat-2"
-                    value={formatTokenAmount(
-                      summary?.completion_tokens_total ?? 0,
-                      locale,
-                    )}
-                    percent={split.completionPct}
-                  />
-                  {split.cachePct > 0 ? (
-                    <TokenLegendRow
-                      name={t('logs.usage.stats.token.cache')}
-                      swatch="bg-chart-cat-3"
-                      value={formatTokenAmount(
-                        summary?.cache_read_tokens_total ?? 0,
-                        locale,
-                      )}
-                      percent={split.cachePct}
-                    />
-                  ) : null}
-                </div>
-                <p className="text-badge text-ink-3">
-                  {split.inputToOutput === null
-                    ? t('logs.usage.stats.token.note_no_ratio', {
-                        avg: formatTokenAmount(split.avgPerRequest, locale),
-                      })
-                    : t('logs.usage.stats.token.note', {
-                        avg: formatTokenAmount(split.avgPerRequest, locale),
-                        ratio: split.inputToOutput,
-                      })}
-                </p>
-              </div>
-            )}
-          </section>
-        </div>
-      </div>
-
-      {/* Role-aware distribution grid. */}
-      <div className="grid gap-3.5 lg:grid-cols-2 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)_minmax(0,1fr)]">
-        <div className="min-w-0 lg:col-span-2 xl:col-span-1">
+        <div className="min-w-0">
           <DistributionPanel
             title={t('logs.usage.stats.by_model')}
             subtitle={t('logs.usage.stats.model.sub', { n: 8 })}
@@ -915,7 +728,11 @@ export function UsageStatsTab({
             onRetry={() => void byModelQuery.refetch()}
           />
         </div>
+      </div>
 
+      {/* Ranked row: role-aware, one shared height. A long ranking scrolls
+          inside its own card; the others keep the same height. */}
+      <div className="grid gap-3.5 lg:grid-cols-2 xl:grid-cols-3">
         {isAdmin ? (
           <>
             <DistributionPanel
@@ -925,6 +742,7 @@ export function UsageStatsTab({
               })}
               items={groupItems}
               mode="compact"
+              fixed
               emptyLabel={t('logs.usage.stats.empty')}
               pending={byGroupQuery.isPending}
               error={
@@ -942,6 +760,7 @@ export function UsageStatsTab({
               })}
               items={userItems}
               mode="compact"
+              fixed
               emptyLabel={t('logs.usage.stats.empty')}
               pending={byUserQuery.isPending}
               error={
@@ -954,44 +773,73 @@ export function UsageStatsTab({
             />
           </>
         ) : (
-          <>
-            <DistributionPanel
-              title={t('logs.usage.stats.token_key.title')}
-              subtitle={t('logs.usage.stats.token_key.sub')}
-              tag={t('logs.usage.stats.token_key.tag', {
-                count: tokenItems.length,
-              })}
-              note={t('logs.usage.stats.token_key.note')}
-              items={tokenItems}
-              mode="compact"
-              emptyLabel={t('logs.usage.stats.empty')}
-              pending={byTokenQuery.isPending}
-              error={
-                byTokenQuery.isError
-                  ? statsErrorText(byTokenQuery.error, t)
-                  : null
-              }
-              retryLabel={retryLabel}
-              onRetry={() => void byTokenQuery.refetch()}
-            />
-            <FailurePanel
-              pending={
-                summaryQuery.isPending ||
-                (failuresEnabled && failuresQuery.isPending)
-              }
-              error={
-                failuresEnabled && failuresQuery.isError
-                  ? statsErrorText(failuresQuery.error, t)
-                  : null
-              }
-              items={failuresQuery.data?.items ?? []}
-              total={failuresQuery.data?.total ?? 0}
-              onOpen={onOpenLog}
-              onViewAll={onViewAllFailures}
-              retryLabel={retryLabel}
-              onRetry={() => void failuresQuery.refetch()}
-            />
-          </>
+          <DistributionPanel
+            title={t('logs.usage.stats.token_key.title')}
+            subtitle={t('logs.usage.stats.token_key.sub')}
+            tag={t('logs.usage.stats.token_key.tag', {
+              count: tokenItems.length,
+            })}
+            note={t('logs.usage.stats.token_key.note')}
+            items={tokenItems}
+            mode="compact"
+            fixed
+            emptyLabel={t('logs.usage.stats.empty')}
+            pending={byTokenQuery.isPending}
+            error={
+              byTokenQuery.isError
+                ? statsErrorText(byTokenQuery.error, t)
+                : null
+            }
+            retryLabel={retryLabel}
+            onRetry={() => void byTokenQuery.refetch()}
+          />
+        )}
+
+        <DistributionPanel
+          title={t(
+            isHour
+              ? 'logs.usage.stats.active.title_hour'
+              : 'logs.usage.stats.active.title_day',
+          )}
+          subtitle={t(
+            isHour
+              ? 'logs.usage.stats.active.sub_hour'
+              : 'logs.usage.stats.active.sub_day',
+            { count: count(insights.activeBuckets) },
+          )}
+          items={activeItems}
+          mode="compact"
+          note={activeNote}
+          fixed
+          emptyLabel={t('logs.usage.stats.empty')}
+          pending={timeseriesQuery.isPending}
+          error={
+            timeseriesQuery.isError
+              ? statsErrorText(timeseriesQuery.error, t)
+              : null
+          }
+          retryLabel={retryLabel}
+          onRetry={() => void timeseriesQuery.refetch()}
+        />
+
+        {isAdmin ? null : (
+          <FailurePanel
+            pending={
+              summaryQuery.isPending ||
+              (failuresEnabled && failuresQuery.isPending)
+            }
+            error={
+              failuresEnabled && failuresQuery.isError
+                ? statsErrorText(failuresQuery.error, t)
+                : null
+            }
+            items={failuresQuery.data?.items ?? []}
+            total={failuresQuery.data?.total ?? 0}
+            onOpen={onOpenLog}
+            onViewAll={onViewAllFailures}
+            retryLabel={retryLabel}
+            onRetry={() => void failuresQuery.refetch()}
+          />
         )}
       </div>
 
@@ -1054,15 +902,6 @@ function CardHeader({
   )
 }
 
-function RailRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-3 border-b border-border-hairline py-1.5 last:border-0">
-      <span className="text-ink-3">{label}</span>
-      <span className="font-mono tabular-nums text-ink-1">{value}</span>
-    </div>
-  )
-}
-
 function TokenLegendRow({
   name,
   swatch,
@@ -1109,6 +948,7 @@ function DistributionPanel({
   error,
   retryLabel,
   onRetry,
+  fixed = false,
 }: {
   title: string
   subtitle: string
@@ -1121,10 +961,16 @@ function DistributionPanel({
   error: string | null
   retryLabel: string
   onRetry: () => void
+  /** Ranked-row card: one shared height, the ranking scrolls inside. */
+  fixed?: boolean
 }): ReactNode {
   if (pending) {
     return (
-      <section className="flex min-w-0 flex-col rounded-xl border border-border-hairline bg-surface-card">
+      <section
+        className={`flex min-w-0 flex-col overflow-hidden rounded-xl border border-border-hairline bg-surface-card ${
+          fixed ? 'h-80' : ''
+        }`}
+      >
         <CardHeader
           title={title}
           subtitle={subtitle}
@@ -1140,7 +986,11 @@ function DistributionPanel({
   }
   if (error !== null) {
     return (
-      <section className="flex min-w-0 flex-col rounded-xl border border-border-hairline bg-surface-card">
+      <section
+        className={`flex min-w-0 flex-col overflow-hidden rounded-xl border border-border-hairline bg-surface-card ${
+          fixed ? 'h-80' : ''
+        }`}
+      >
         <CardHeader
           title={title}
           subtitle={subtitle}
@@ -1159,6 +1009,7 @@ function DistributionPanel({
       items={items}
       mode={mode}
       emptyLabel={emptyLabel}
+      fixed={fixed}
     />
   )
 }
@@ -1187,7 +1038,7 @@ function FailurePanel({
   const { t } = useI18n()
   if (pending) {
     return (
-      <section className="flex min-w-0 flex-col rounded-xl border border-border-hairline bg-surface-card">
+      <section className="flex h-80 min-w-0 flex-col rounded-xl border border-border-hairline bg-surface-card">
         <CardHeader
           title={t('logs.usage.stats.fail.title')}
           subtitle={t('logs.usage.stats.fail.sub')}
@@ -1202,7 +1053,7 @@ function FailurePanel({
   }
   if (error !== null) {
     return (
-      <section className="flex min-w-0 flex-col rounded-xl border border-border-hairline bg-surface-card">
+      <section className="flex h-80 min-w-0 flex-col rounded-xl border border-border-hairline bg-surface-card">
         <CardHeader
           title={t('logs.usage.stats.fail.title')}
           subtitle={t('logs.usage.stats.fail.sub')}

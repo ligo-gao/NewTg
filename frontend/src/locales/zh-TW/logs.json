@@ -195,8 +195,17 @@
         "average_hour": "平均 {value} 積分 / 小時",
         "average_day": "平均 {value} 積分 / 天",
         "zero_note": "{count} 個時段為 0，位置保留",
+        "zero_note_day": "{count} 天為 0，位置保留",
         "unit_hour": "小時",
-        "unit_day": "天"
+        "unit_day": "天",
+        "requests_unit": "次",
+        "readout_idle": "懸停或用 ← → 檢視時段",
+        "readout": "{time} · {value} {unit} · 佔 {percent}%",
+        "chart_aria": "{name}長條圖，用左右方向鍵逐一檢視時段，完整數值見下方資料表",
+        "peak_requests": "峰值 {time} · {count} 次（{percent}%）",
+        "average_requests_hour": "平均 {value} 次 / 小時",
+        "average_requests_day": "平均 {value} 次 / 天",
+        "rpm_peak": "峰值 {value} RPM"
       },
       "kpi": {
         "success": "成功率",
@@ -236,7 +245,8 @@
         "sub": "輸入與輸出合計 {total}",
         "cache": "快取讀取",
         "note": "平均每次請求 {avg} tokens；輸入是輸出的 {ratio} 倍",
-        "note_no_ratio": "平均每次請求 {avg} tokens"
+        "note_no_ratio": "平均每次請求 {avg} tokens",
+        "tpm": "峰值 {value} TPM"
       },
       "source_note": "資料口徑：積分 = 預扣 − 退款；成功率 = 成功請求 / 總請求；延遲分位僅統計成功且耗時大於 0 的請求。聚合視窗與上方篩選一致。",
       "granularity_hour": "按小時彙總",
@@ -269,6 +279,15 @@
       "user": {
         "title": "使用者排行",
         "sub": "{count} 位活躍使用者 · 按消費"
+      },
+      "active": {
+        "title_hour": "活躍時段",
+        "title_day": "活躍日期",
+        "sub_hour": "{count} 個時段有流量 · 依消費",
+        "sub_day": "{count} 天有流量 · 依消費",
+        "note_hour": "其餘 {count} 個時段合計 {percent}%",
+        "note_day": "其餘 {count} 天合計 {percent}%",
+        "note_all": "視窗內所有有流量的時段都列於上方"
       },
       "token_key": {
         "title": "權杖用量",

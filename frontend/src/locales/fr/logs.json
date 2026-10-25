@@ -195,8 +195,17 @@
         "average_hour": "Moy. {value} crédits / heure",
         "average_day": "Moy. {value} crédits / jour",
         "zero_note": "{count} intervalles à zéro ; positions conservées",
+        "zero_note_day": "{count} jours à zéro ; positions conservées",
         "unit_hour": "heures",
-        "unit_day": "jours"
+        "unit_day": "jours",
+        "requests_unit": "requêtes",
+        "readout_idle": "Survolez ou utilisez ← → pour inspecter un intervalle",
+        "readout": "{time} · {value} {unit} · {percent} % de la fenêtre",
+        "chart_aria": "Histogramme de {name} ; les flèches gauche et droite parcourent les intervalles. Toutes les valeurs figurent dans le tableau ci-dessous.",
+        "peak_requests": "Pic {time} · {count} requêtes ({percent} %)",
+        "average_requests_hour": "Moy. {value} requêtes / heure",
+        "average_requests_day": "Moy. {value} requêtes / jour",
+        "rpm_peak": "Pic {value} RPM"
       },
       "kpi": {
         "success": "Taux de réussite",
@@ -236,7 +245,8 @@
         "sub": "Entrée et sortie, total {total}",
         "cache": "Lecture du cache",
         "note": "{avg} tokens par requête ; l'entrée est {ratio}× la sortie",
-        "note_no_ratio": "{avg} tokens par requête"
+        "note_no_ratio": "{avg} tokens par requête",
+        "tpm": "Pic {value} TPM"
       },
       "source_note": "Crédits = pré-débité − remboursé ; taux de réussite = requêtes réussies / requêtes totales ; les percentiles de latence ne comptent que les requêtes réussies dont la latence > 0. La fenêtre correspond aux filtres ci-dessus.",
       "granularity_hour": "Par heure",
@@ -269,6 +279,15 @@
       "user": {
         "title": "Classement des utilisateurs",
         "sub": "{count} utilisateurs actifs · par dépenses"
+      },
+      "active": {
+        "title_hour": "Heures les plus actives",
+        "title_day": "Jours les plus actifs",
+        "sub_hour": "{count} heures avec du trafic · par dépenses",
+        "sub_day": "{count} jours avec du trafic · par dépenses",
+        "note_hour": "Les {count} autres heures représentent {percent} %",
+        "note_day": "Les {count} autres jours représentent {percent} %",
+        "note_all": "Tous les intervalles avec du trafic sont listés"
       },
       "token_key": {
         "title": "Utilisation des jetons",

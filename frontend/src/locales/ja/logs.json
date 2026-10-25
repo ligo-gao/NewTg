@@ -195,8 +195,17 @@
         "average_hour": "平均 {value} クレジット / 時間",
         "average_day": "平均 {value} クレジット / 日",
         "zero_note": "{count} 件のバケットがゼロ（位置は保持）",
+        "zero_note_day": "{count} 日がゼロ（位置は保持）",
         "unit_hour": "時間",
-        "unit_day": "日"
+        "unit_day": "日",
+        "requests_unit": "件",
+        "readout_idle": "カーソルを合わせるか ← → キーでバケットを確認",
+        "readout": "{time} · {value} {unit} · 全体の {percent}%",
+        "chart_aria": "{name}の棒グラフ。左右の矢印キーでバケットを移動できます。すべての数値は下のデータ表にあります",
+        "peak_requests": "ピーク {time} · {count} 件（{percent}%）",
+        "average_requests_hour": "平均 {value} 件 / 時間",
+        "average_requests_day": "平均 {value} 件 / 日",
+        "rpm_peak": "ピーク {value} RPM"
       },
       "kpi": {
         "success": "成功率",
@@ -236,7 +245,8 @@
         "sub": "入力と出力の合計 {total}",
         "cache": "キャッシュ読み取り",
         "note": "1リクエストあたり平均 {avg} トークン；入力は出力の {ratio} 倍",
-        "note_no_ratio": "1リクエストあたり平均 {avg} トークン"
+        "note_no_ratio": "1リクエストあたり平均 {avg} トークン",
+        "tpm": "ピーク {value} TPM"
       },
       "source_note": "クレジット = 事前引き落とし − 返金；成功率 = 成功リクエスト / 全リクエスト；レイテンシのパーセンタイルは、レイテンシが 0 より大きい成功リクエストのみを対象とします。集計期間は上記のフィルターに一致します。",
       "granularity_hour": "1時間ごと",
@@ -269,6 +279,15 @@
       "user": {
         "title": "ユーザーランキング",
         "sub": "アクティブユーザー {count} 人 · 消費順"
+      },
+      "active": {
+        "title_hour": "アクティブな時間帯",
+        "title_day": "アクティブな日",
+        "sub_hour": "{count} 時間帯にトラフィック · 消費順",
+        "sub_day": "{count} 日にトラフィック · 消費順",
+        "note_hour": "残り {count} 時間帯で {percent}%",
+        "note_day": "残り {count} 日で {percent}%",
+        "note_all": "トラフィックのあるバケットをすべて表示しています"
       },
       "token_key": {
         "title": "トークン利用",

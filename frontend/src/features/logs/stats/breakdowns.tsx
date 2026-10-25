@@ -37,6 +37,15 @@ function formatCount(value: number, locale: string): string {
   return new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(value)
 }
 
+/**
+ * The list/table area of a ranked card. These cards share one height, so a
+ * long ranking scrolls inside its own card with the platform scrollbar; the
+ * stable gutter keeps the value column on the same edge whether or not this
+ * card happens to overflow.
+ */
+const SCROLL_AREA =
+  'min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-color:var(--border-default)_transparent] [scrollbar-gutter:stable] [scrollbar-width:thin]'
+
 /** Decorative in-row magnitude bar; the numeric share is always printed too. */
 function ShareBar({ percent }: { percent: number }) {
   const width = Number.isFinite(percent)
@@ -93,6 +102,7 @@ export function DistributionCard({
   items,
   mode,
   emptyLabel,
+  fixed = false,
 }: {
   title: string
   subtitle: string
@@ -102,6 +112,8 @@ export function DistributionCard({
   items: DistributionItem[]
   mode: 'full' | 'compact'
   emptyLabel: string
+  /** Ranked-row card: one shared height, the ranking scrolls inside. */
+  fixed?: boolean
 }): ReactNode {
   const { t, locale } = useI18n()
   const titleId = useId()
@@ -109,13 +121,15 @@ export function DistributionCard({
   return (
     <section
       aria-labelledby={titleId}
-      className="flex min-w-0 flex-col rounded-xl border border-border-hairline bg-surface-card"
+      className={`flex min-w-0 flex-col overflow-hidden rounded-xl border border-border-hairline bg-surface-card ${
+        fixed ? 'h-80' : ''
+      }`}
     >
       <CardHeader title={title} subtitle={subtitle} tag={tag} titleId={titleId} />
       {items.length === 0 ? (
         <EmptyState title={emptyLabel} />
       ) : mode === 'full' ? (
-        <div className="overflow-x-auto">
+        <div className={`overflow-x-auto ${fixed ? SCROLL_AREA : ''}`}>
           <table className="w-full border-collapse text-meta">
             <caption className="sr-only">{title}</caption>
             <thead>
@@ -167,28 +181,32 @@ export function DistributionCard({
           </table>
         </div>
       ) : (
-        <ul className="flex flex-col">
-          {items.map((item) => (
-            <li
-              key={item.key}
-              className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border-hairline px-4 py-2 last:border-0"
-            >
-              <div className="flex min-w-0 flex-col gap-1">
-                <span className="truncate text-meta text-ink-1">{item.label}</span>
-                <ShareBar percent={item.percent} />
-              </div>
-              <div className="flex flex-col items-end gap-0.5">
-                <b className="font-mono text-meta font-medium tabular-nums text-ink-1">
-                  {formatCredits(item.cost, locale)}
-                </b>
-                <small className="text-badge tabular-nums text-ink-3">
-                  {formatCount(item.requests, locale)} ·{' '}
-                  {formatShare(item.percent, locale)}
-                </small>
-              </div>
-            </li>
-          ))}
-        </ul>
+        <div className={fixed ? SCROLL_AREA : ''}>
+          <ul className="flex flex-col">
+            {items.map((item) => (
+              <li
+                key={item.key}
+                className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border-hairline px-4 py-2 last:border-0"
+              >
+                <div className="flex min-w-0 flex-col gap-1">
+                  <span className="truncate text-meta text-ink-1">
+                    {item.label}
+                  </span>
+                  <ShareBar percent={item.percent} />
+                </div>
+                <div className="flex flex-col items-end gap-0.5">
+                  <b className="font-mono text-meta font-medium tabular-nums text-ink-1">
+                    {formatCredits(item.cost, locale)}
+                  </b>
+                  <small className="text-badge tabular-nums text-ink-3">
+                    {formatCount(item.requests, locale)} ·{' '}
+                    {formatShare(item.percent, locale)}
+                  </small>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       {note !== undefined ? (
         <p className="border-t border-border-hairline px-4 py-2 text-badge text-ink-3">
@@ -243,7 +261,7 @@ export function RecentFailures({
   return (
     <section
       aria-labelledby={titleId}
-      className="flex min-w-0 flex-col rounded-xl border border-border-hairline bg-surface-card"
+      className="flex h-80 min-w-0 flex-col overflow-hidden rounded-xl border border-border-hairline bg-surface-card"
     >
       <CardHeader
         title={t('logs.usage.stats.fail.title')}
@@ -254,7 +272,7 @@ export function RecentFailures({
       {items.length === 0 ? (
         <EmptyState title={t('logs.usage.stats.fail.empty')} />
       ) : (
-        <div className="flex flex-col px-2">
+        <div className={`flex flex-col px-2 ${SCROLL_AREA}`}>
           {items.map((item) => (
             <button
               key={item.id}
@@ -283,7 +301,7 @@ export function RecentFailures({
         </div>
       )}
       {items.length > 0 ? (
-        <p className="border-t border-border-hairline px-4 py-2">
+        <p className="mt-auto border-t border-border-hairline px-4 py-2">
           <button
             type="button"
             onClick={onViewAll}

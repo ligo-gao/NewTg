@@ -195,8 +195,17 @@
         "average_hour": "Trung bình {value} điểm / giờ",
         "average_day": "Trung bình {value} điểm / ngày",
         "zero_note": "{count} khoảng bằng 0; vẫn giữ vị trí",
+        "zero_note_day": "{count} ngày bằng 0; vẫn giữ vị trí",
         "unit_hour": "giờ",
-        "unit_day": "ngày"
+        "unit_day": "ngày",
+        "requests_unit": "yêu cầu",
+        "readout_idle": "Di chuột hoặc dùng ← → để xem từng khoảng",
+        "readout": "{time} · {value} {unit} · {percent}% tổng",
+        "chart_aria": "Biểu đồ cột {name}; dùng phím mũi tên trái/phải để xem từng khoảng. Toàn bộ số liệu có trong bảng bên dưới.",
+        "peak_requests": "Cao nhất {time} · {count} yêu cầu ({percent}%)",
+        "average_requests_hour": "Trung bình {value} yêu cầu / giờ",
+        "average_requests_day": "Trung bình {value} yêu cầu / ngày",
+        "rpm_peak": "Cao nhất {value} RPM"
       },
       "kpi": {
         "success": "Tỷ lệ thành công",
@@ -236,7 +245,8 @@
         "sub": "Tổng đầu vào và đầu ra {total}",
         "cache": "Đọc bộ nhớ đệm",
         "note": "Trung bình {avg} token mỗi yêu cầu; đầu vào gấp {ratio}× đầu ra",
-        "note_no_ratio": "Trung bình {avg} token mỗi yêu cầu"
+        "note_no_ratio": "Trung bình {avg} token mỗi yêu cầu",
+        "tpm": "Cao nhất {value} TPM"
       },
       "source_note": "Điểm = tạm trừ − hoàn trả; tỷ lệ thành công = yêu cầu thành công / tổng yêu cầu; phân vị độ trễ chỉ tính các yêu cầu thành công có độ trễ > 0. Khoảng thời gian khớp với bộ lọc phía trên.",
       "granularity_hour": "Theo giờ",
@@ -269,6 +279,15 @@
       "user": {
         "title": "Xếp hạng người dùng",
         "sub": "{count} người dùng hoạt động · theo chi tiêu"
+      },
+      "active": {
+        "title_hour": "Giờ cao điểm",
+        "title_day": "Ngày cao điểm",
+        "sub_hour": "{count} giờ có lưu lượng · theo chi tiêu",
+        "sub_day": "{count} ngày có lưu lượng · theo chi tiêu",
+        "note_hour": "{count} giờ còn lại chiếm {percent}%",
+        "note_day": "{count} ngày còn lại chiếm {percent}%",
+        "note_all": "Đã liệt kê mọi khoảng có lưu lượng"
       },
       "token_key": {
         "title": "Sử dụng token",

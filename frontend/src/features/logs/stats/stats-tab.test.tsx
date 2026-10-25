@@ -420,8 +420,8 @@ describe('usage stats tab (F-05-03)', () => {
     installStats()
     renderTab()
 
-    await user.click(await screen.findByText('View data table'))
-    const table = await screen.findByTestId('stats-trend-table')
+    await user.click((await screen.findAllByText('View data table'))[0]!)
+    const table = await screen.findByTestId('trend-table-cost')
     const expected = fillTimeseries(
       TIMESERIES,
       { ...DEFAULT_USAGE_LOG_SEARCH },
@@ -435,14 +435,14 @@ describe('usage stats tab (F-05-03)', () => {
     const first = renderTab({ range: '7d' })
 
     await screen.findByText('Total spent')
-    expect(screen.getByText('Avg per day')).toBeTruthy()
     expect(screen.getByText(/credits \/ day$/)).toBeTruthy()
+    expect(screen.getByText(/requests \/ day$/)).toBeTruthy()
     first.unmount()
 
     renderTab({ range: '24h' })
     await screen.findByText('Total spent')
-    expect(screen.getByText('Avg per hour')).toBeTruthy()
     expect(screen.getByText(/credits \/ hour$/)).toBeTruthy()
+    expect(screen.getByText(/requests \/ hour$/)).toBeTruthy()
   })
 
   it('renders the quota note inside the token card only', async () => {
@@ -542,7 +542,8 @@ describe('usage stats tab (F-05-03)', () => {
       0,
     )
     expect(screen.queryByTestId('stats-rates')).toBeNull()
-    expect(screen.queryByTestId('trend-avg')).toBeNull()
+    expect(screen.queryByTestId('trend-avg-cost')).toBeNull()
+    expect(screen.queryByTestId('trend-avg-requests')).toBeNull()
     expect(requestsFor(requests, '/api/usage-stats/rates')).toHaveLength(0)
   })
 
@@ -576,7 +577,7 @@ describe('usage stats tab (F-05-03)', () => {
     ).toBe('1')
   })
 
-  it('omits the peak line and rail value in a zero-spend window', async () => {
+  it('omits the spend peak line in a zero-spend window', async () => {
     installStats({
       summary: () =>
         jsonResponse({
@@ -595,13 +596,46 @@ describe('usage stats tab (F-05-03)', () => {
     renderTab()
 
     await screen.findByText('Total spent')
-    await screen.findByTestId('trend-chart')
+    const costCard = await screen.findByTestId('trend-card-cost')
+    const requestCard = screen.getByTestId('trend-card-requests')
     // Requests but no spend: a peak would print "… · 0 credits (0.0%)".
-    expect(screen.queryByText(/credits \(/)).toBeNull()
-    const peakRow = screen.getByText('Peak bucket').parentElement
-    expect(peakRow).not.toBeNull()
-    expect(within(peakRow as HTMLElement).getByText('—')).toBeTruthy()
+    expect(within(costCard).queryByText(/credits \(/)).toBeNull()
+    expect(within(costCard).queryByText(/Peak/)).toBeNull()
+    // The requests card keeps its own peak, in its own unit.
+    expect(within(requestCard).getByText(/requests \(/)).toBeTruthy()
     expect(screen.queryByText(/NaN/)).toBeNull()
+  })
+
+  it('gives the ranked row one shared card height', async () => {
+    installStats()
+    const admin = renderTab({}, { isAdmin: true })
+
+    const group = await screen.findByRole('region', { name: 'Group usage' })
+    const users = await screen.findByRole('region', { name: 'User ranking' })
+    const busiest = await screen.findByRole('region', { name: 'Busiest hours' })
+    for (const section of [group, users, busiest]) {
+      expect(section.className.split(/\s+/)).toContain('h-80')
+    }
+    admin.unmount()
+
+    renderTab()
+    const tokens = await screen.findByRole('region', { name: 'Token usage' })
+    const failures = await screen.findByRole('region', {
+      name: 'Recent failures',
+    })
+    for (const section of [tokens, failures]) {
+      expect(section.className.split(/\s+/)).toContain('h-80')
+    }
+  })
+
+  it('ranks the busiest buckets by spend', async () => {
+    installStats()
+    renderTab()
+
+    const card = await screen.findByRole('region', { name: 'Busiest hours' })
+    expect(within(card).getByText('2 hours with traffic · by spend')).toBeTruthy()
+    // 100 of 400 credits in the quieter hour, 300 in the busiest.
+    expect(within(card).getAllByText(/^(100|300)$/)).toHaveLength(2)
   })
 
   it('distinguishes a missing token name from no token at all', async () => {
