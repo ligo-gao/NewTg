@@ -223,7 +223,7 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
     expect(rows[0]?.getAttribute('data-model')).toBe('deepseek-flash')
     expect(rows[0]?.textContent).toContain('88.6%')
     expect(rows[0]?.textContent).toContain(
-      '2,595 requests · 68,049 tokens per request',
+      '2,595 requests · 68,048 tokens per request',
     )
     expect(rows[1]?.textContent).toContain('11.4%')
   })
@@ -250,7 +250,6 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
     const providers = getByTestId('rank-providers')
     expect(within(providers).getAllByRole('listitem')).toHaveLength(1)
     expect(providers.textContent).toContain('Unknown')
-    expect(providers.textContent).not.toMatch(/^$/)
   })
 
   it('renders mover percentages only when the response carries them', async () => {
@@ -290,6 +289,77 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
     expect(movers.textContent).toContain('18.4%')
     expect(movers.textContent).toContain('Falling')
     expect(movers.textContent).toContain('-9.7%')
+  })
+
+  it('omits the heading for a direction with no movers', async () => {
+    const fixture = rankingsFixture('week')
+    fixture.movers.up = [
+      {
+        model: 'deepseek-flash',
+        author: 'Unknown',
+        delta_pct: 18.4,
+        cur_tokens: 176_585_172,
+        prev_tokens: 149_000_000,
+      },
+    ]
+    installBaseHandlers(() =>
+      HttpResponse.json(fixture, { headers: { ETag: '"week-up"' } }),
+    )
+
+    const { findByText, getByTestId, queryByText } = await renderWithProviders(
+      <Harness />,
+      ['public'],
+    )
+    await findByText('Total tokens')
+
+    const movers = getByTestId('rank-movers')
+    expect(movers.textContent).toContain('Rising')
+    expect(queryByText('Falling')).toBeNull()
+    // 只有一侧有数据时不该留下一个空的 <ul>。
+    expect(movers.querySelectorAll('ul')).toHaveLength(1)
+  })
+
+  it('renders 100% for a lone model and no average when it has no requests', async () => {
+    const fixture = rankingsFixture('week')
+    fixture.models = [
+      {
+        rank: 1,
+        model: 'deepseek-flash',
+        display_name: 'deepseek-flash',
+        author: 'Unknown',
+        total_tokens: 176_585_172,
+        requests: 0,
+        delta_tokens: null,
+        delta_pct: null,
+        prev_rank: null,
+      },
+    ]
+    fixture.providers = [
+      {
+        rank: 1,
+        author: 'Unknown',
+        total_tokens: 176_585_172,
+        share_pct: 100,
+        slot: 1,
+      },
+    ]
+    fixture.trend = { granularity: 'day', buckets: [], series: [] }
+    installBaseHandlers(() =>
+      HttpResponse.json(fixture, { headers: { ETag: '"week-zero"' } }),
+    )
+
+    const { findByText, getByTestId, container } = await renderWithProviders(
+      <Harness />,
+      ['public'],
+    )
+    await findByText('Total tokens')
+
+    const rows = within(getByTestId('rank-ladder')).getAllByRole('listitem')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.textContent).toContain('100.0%')
+    // 0 requests → 0 / 0 must never leak a NaN into any readout.
+    expect(container.textContent).not.toContain('NaN')
+    expect(within(getByTestId('rank-efficiency')).getByText('—')).toBeTruthy()
   })
 
   it('caches each period after the first load', async () => {
@@ -405,6 +475,10 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
     )
     // 四区块以「待累积」占位，不留空白；冷启动没有梯子。
     expect(getAllByText('Waiting for data')).toHaveLength(4)
+    // 引导卡与四个占位在同一个 .rank-cold 容器里（40px 节奏由 CSS 提供）。
+    const cold = guide.parentElement
+    expect(cold?.className).toContain('rank-cold')
+    expect(cold?.querySelectorAll('section')).toHaveLength(4)
     expect(queryByTestId('rank-ladder')).toBeNull()
     expect(getByRole('tab', { name: 'This Week' })).toBeTruthy()
   })

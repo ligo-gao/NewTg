@@ -53,7 +53,7 @@ export function tokensPerRequest(
   tokens: number,
   requests: number,
 ): number | null {
-  // 176,585,172 / 2,595 = 68,048.24，但验收用例与演示读数都是 68,049，
-  // 因此这里向上取整；零请求没有平均值，返回 null 让调用方渲染空态。
-  return requests <= 0 ? null : Math.ceil(tokens / requests)
+  // 零请求没有平均值，返回 null 让调用方渲染空态；其余按四舍五入取整，
+  // 与「每次请求平均 token」的展示口径一致。
+  return requests <= 0 ? null : Math.round(tokens / requests)
 }

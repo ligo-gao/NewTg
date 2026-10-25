@@ -1932,6 +1932,16 @@
 .public-shell .rank-panel-body {
   display: flex;
   flex-direction: column;
+  margin-top: 32px;
+}
+
+/* Cold start: the guide card and the four "accumulating" sections keep the
+   old 40px rhythm. Only this branch gets a gap — the populated children carry
+   their own margins, so a blanket gap would double-space them. */
+.public-shell .rank-cold {
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
 }
 
 /* ---------- Footer ---------- */

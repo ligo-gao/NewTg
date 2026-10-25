@@ -602,7 +602,7 @@ export function RankingsPage({ period, onPeriodChange }: RankingsPageProps) {
         ) : showError ? (
           <RankingsError error={error} onRetry={retryRankings} />
         ) : data === undefined ? null : data.status === 'empty' ? (
-          <>
+          <div className="rank-cold">
             <ColdStartGuide
               data={data}
               isLoggedIn={isLoggedIn}
@@ -613,7 +613,7 @@ export function RankingsPage({ period, onPeriodChange }: RankingsPageProps) {
             <SectionPlaceholder titleKey="public.rankings.ladder.title" />
             <SectionPlaceholder titleKey="public.rankings.rail.providers" />
             <SectionPlaceholder titleKey="public.rankings.rail.efficiency" />
-          </>
+          </div>
         ) : (
           <>
             <WindowBar data={data} locale={locale} t={t} />

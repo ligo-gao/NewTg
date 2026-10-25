@@ -18,6 +18,6 @@ describe('rankings summary derivation', () => {
     expect(metricShare(0, 0)).toBe(0)
     expect(metricShare(5, 0)).toBe(0)
     expect(tokensPerRequest(10, 0)).toBeNull()
-    expect(tokensPerRequest(176_585_172, 2_595)).toBe(68_049)
+    expect(tokensPerRequest(176_585_172, 2_595)).toBe(68_048)
   })
 })

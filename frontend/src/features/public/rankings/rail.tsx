@@ -192,18 +192,22 @@ export function RankingsRail({
           <h2>{t('public.rankings.rail.movers')}</h2>
           {hasMovers ? (
             <>
-              <MoverGroup
-                direction="up"
-                items={movers.up}
-                locale={locale}
-                t={t}
-              />
-              <MoverGroup
-                direction="down"
-                items={movers.down}
-                locale={locale}
-                t={t}
-              />
+              {movers.up.length > 0 ? (
+                <MoverGroup
+                  direction="up"
+                  items={movers.up}
+                  locale={locale}
+                  t={t}
+                />
+              ) : null}
+              {movers.down.length > 0 ? (
+                <MoverGroup
+                  direction="down"
+                  items={movers.down}
+                  locale={locale}
+                  t={t}
+                />
+              ) : null}
             </>
           ) : (
             <div className="rank-moments-empty">
