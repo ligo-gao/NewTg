@@ -16,7 +16,7 @@ import { useCountdown } from '@/shared/lib/use-countdown'
 import { Button } from '@/shared/ui/button'
 import { FormAlert, PasswordField, TextField } from '@/shared/ui/form'
 
-import { AuthPageShell } from './AuthPageShell'
+import { AuthHallShell } from './AuthHallShell'
 import { TurnstileWidget } from './TurnstileWidget'
 
 export interface SignInPageProps {
@@ -149,7 +149,7 @@ export function SignInPage({
     statusQuery.data?.auth.password_login_enabled ?? true
 
   return (
-    <AuthPageShell title={t('auth.sign_in.title', { site })}>
+    <AuthHallShell title={t('auth.sign_in.title', { site })}>
       {statusQuery.isError ? (
         // Without status we cannot know whether Turnstile is required; the
         // form would submit a guaranteed-403 request in the enabled case, so
@@ -165,22 +165,22 @@ export function SignInPage({
           </Button>
         </div>
       ) : statusQuery.isPending ? (
-        <div className="space-y-3" aria-busy="true">
-          <div className="h-10 rounded-lg bg-surface-subtle" />
-          <div className="h-10 rounded-lg bg-surface-subtle" />
-          <div className="h-11 rounded-lg bg-surface-subtle" />
+        <div className="flex flex-col gap-[22px]" aria-busy="true">
+          <div className="h-11 border-b border-border-default" />
+          <div className="h-11 border-b border-border-default" />
+          <div className="h-11 border-b border-border-default" />
         </div>
       ) : !passwordLoginEnabled ? (
         <FormAlert tone="warning">{t('auth.sign_in.password_disabled')}</FormAlert>
       ) : (
         <form
-          className="flex flex-col gap-4"
           onSubmit={(event) => void handleSubmit(event)}
           noValidate
         >
           {error !== undefined ? <FormAlert>{error}</FormAlert> : null}
 
           <TextField
+            variant="line"
             label={t('auth.sign_in.identifier')}
             autoComplete="username"
             autoFocus
@@ -192,7 +192,13 @@ export function SignInPage({
           />
 
           <PasswordField
+            variant="line"
             label={t('auth.sign_in.password')}
+            labelAction={
+              <a className="auth-hall-forgot" href="/forgot-password">
+                {t('auth.sign_in.forgot')}
+              </a>
+            }
             showLabel={t('auth.sign_in.show_password')}
             hideLabel={t('auth.sign_in.hide_password')}
             autoComplete="current-password"
@@ -202,15 +208,6 @@ export function SignInPage({
             }}
             required
           />
-
-          <div className="-mt-2 flex justify-end">
-            <a
-              href="/forgot-password"
-              className="text-meta font-medium text-brand hover:underline"
-            >
-              {t('auth.sign_in.forgot')}
-            </a>
-          </div>
 
           {turnstileEnabled ? (
             <TurnstileWidget
@@ -222,7 +219,7 @@ export function SignInPage({
 
           <Button
             type="submit"
-            className="h-11 w-full"
+            className="auth-hall-submit w-full"
             disabled={
               submitting ||
               countdown.running ||
@@ -237,14 +234,14 @@ export function SignInPage({
                 : t('auth.sign_in.submit')}
           </Button>
 
-          <p className="text-center text-meta text-ink-2">
+          <p className="auth-hall-signup">
             {t('auth.sign_in.no_account')}{' '}
-            <a className="font-medium text-brand hover:underline" href="/sign-up">
+            <a className="auth-hall-link" href="/sign-up">
               {t('auth.sign_in.sign_up')}
             </a>
           </p>
         </form>
       )}
-    </AuthPageShell>
+    </AuthHallShell>
   )
 }

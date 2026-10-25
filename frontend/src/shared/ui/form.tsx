@@ -18,6 +18,13 @@ export interface TextFieldProps
   error?: string
   hint?: string
   id?: string
+  /** Inline control rendered opposite the label, e.g. a recovery link. */
+  labelAction?: ReactNode
+  /**
+   * `line` is the auth hall's underline field. It only changes the skin; the
+   * label/error wiring below is identical for both variants.
+   */
+  variant?: 'default' | 'line'
 }
 
 const INPUT_CLASSES =
@@ -28,6 +35,8 @@ export function TextField({
   error,
   hint,
   id,
+  labelAction,
+  variant = 'default',
   className,
   ...props
 }: TextFieldProps) {
@@ -41,10 +50,13 @@ export function TextField({
     error !== undefined ? errorId : hint !== undefined ? hintId : undefined
 
   return (
-    <div className="flex flex-col gap-1.5">
-      <label htmlFor={fieldId} className="text-body font-medium text-ink-1">
-        {label}
-      </label>
+    <div className="flex flex-col gap-1.5" data-variant={variant}>
+      <div className="flex items-baseline justify-between gap-3">
+        <label htmlFor={fieldId} className="text-body font-medium text-ink-1">
+          {label}
+        </label>
+        {labelAction}
+      </div>
       <input
         id={fieldId}
         aria-invalid={error !== undefined ? true : undefined}
@@ -84,6 +96,8 @@ export function PasswordField({
   error,
   hint,
   id,
+  labelAction,
+  variant = 'default',
   showLabel,
   hideLabel,
   ...props
@@ -97,10 +111,13 @@ export function PasswordField({
     error !== undefined ? errorId : hint !== undefined ? hintId : undefined
 
   return (
-    <div className="flex flex-col gap-1.5">
-      <label htmlFor={fieldId} className="text-body font-medium text-ink-1">
-        {label}
-      </label>
+    <div className="flex flex-col gap-1.5" data-variant={variant}>
+      <div className="flex items-baseline justify-between gap-3">
+        <label htmlFor={fieldId} className="text-body font-medium text-ink-1">
+          {label}
+        </label>
+        {labelAction}
+      </div>
       <div className="relative">
         <input
           id={fieldId}
@@ -118,6 +135,7 @@ export function PasswordField({
           type="button"
           aria-label={visible ? hideLabel : showLabel}
           aria-pressed={visible}
+          data-password-toggle=""
           className="absolute inset-y-0 right-0 flex w-10 items-center justify-center rounded-r-lg text-ink-3 hover:text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           onClick={() => {
             setVisible((current) => !current)

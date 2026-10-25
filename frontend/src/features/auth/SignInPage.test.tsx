@@ -65,6 +65,48 @@ async function submitSignIn(redirect: string, onNavigate: (to: string) => void) 
   return { ...result, user }
 }
 
+describe('SignInPage hall', () => {
+  it('renders the statement and a decorative, text-free routing map', async () => {
+    const result = await renderWithProviders(<SignInPage onNavigate={() => {}} />, [
+      'common',
+      'auth',
+    ])
+
+    expect(await result.findByText('Every model,')).toBeTruthy()
+    expect(result.getByText('one gateway.')).toBeTruthy()
+    expect(
+      result.getByText(/One key for models from many providers/),
+    ).toBeTruthy()
+
+    const stage = result.container.querySelector('.auth-hall-stage')
+    expect(stage).not.toBeNull()
+    // The map is ornament: it must stay out of the accessibility tree and
+    // never spell out a protocol or model name.
+    expect(stage?.getAttribute('aria-hidden')).toBe('true')
+    expect(stage?.querySelectorAll('.auth-hall-clients li')).toHaveLength(6)
+    expect(stage?.querySelectorAll('.auth-hall-providers li')).toHaveLength(6)
+    expect(stage?.textContent).toBe('')
+  })
+
+  it('keeps the recovery link in the password label row and uses line fields', async () => {
+    const result = await renderWithProviders(<SignInPage onNavigate={() => {}} />, [
+      'common',
+      'auth',
+    ])
+
+    const identifier = await result.findByLabelText('Username or email')
+    const password = result.getByLabelText('Password')
+    const identifierField = identifier.closest('[data-variant="line"]')
+    const passwordField = password.closest('[data-variant="line"]')
+
+    expect(identifierField).not.toBeNull()
+    expect(passwordField).not.toBeNull()
+
+    const forgot = result.getByRole('link', { name: 'Forgot password?' })
+    expect(passwordField?.contains(forgot)).toBe(true)
+  })
+})
+
 describe('SignInPage submit path', () => {
   it('encrypts the password with the v2 envelope and applies sanitizeAuthRedirect', async () => {
     const key = await generateLoginKey('kid-signin')
