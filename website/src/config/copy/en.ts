@@ -24,6 +24,8 @@ export const en: Copy = {
     links: [
       { label: "Models", href: "/models" },
       { label: "Pricing", href: "/pricing" },
+      { label: "Rankings", href: "/rankings" },
+      { label: "About", href: "/about" },
       { label: "Docs", href: "/docs" },
       { label: "Console", href: "/dashboard" },
     ],

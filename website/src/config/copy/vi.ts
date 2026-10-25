@@ -24,6 +24,8 @@ export const vi: Copy = {
     links: [
       { label: "Mô hình", href: "/models" },
       { label: "Bảng giá", href: "/pricing" },
+      { label: "Xếp hạng", href: "/rankings" },
+      { label: "Giới thiệu", href: "/about" },
       { label: "Tài liệu", href: "/docs" },
       { label: "Bảng điều khiển", href: "/dashboard" },
     ],

@@ -24,6 +24,8 @@ export const ja: Copy = {
     links: [
       { label: "モデル", href: "/models" },
       { label: "料金", href: "/pricing" },
+      { label: "ランキング", href: "/rankings" },
+      { label: "概要", href: "/about" },
       { label: "ドキュメント", href: "/docs" },
       { label: "コンソール", href: "/dashboard" },
     ],

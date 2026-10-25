@@ -24,6 +24,8 @@ export const zhTW: Copy = {
     links: [
       { label: "模型庫", href: "/models" },
       { label: "定價", href: "/pricing" },
+      { label: "排行", href: "/rankings" },
+      { label: "關於", href: "/about" },
       { label: "文件", href: "/docs" },
       { label: "控制台", href: "/dashboard" },
     ],

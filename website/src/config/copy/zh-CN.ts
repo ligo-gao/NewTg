@@ -24,6 +24,8 @@ export const zhCN: Copy = {
     links: [
       { label: "模型库", href: "/models" },
       { label: "定价", href: "/pricing" },
+      { label: "排行", href: "/rankings" },
+      { label: "关于", href: "/about" },
       { label: "文档", href: "/docs" },
       { label: "控制台", href: "/dashboard" },
     ],

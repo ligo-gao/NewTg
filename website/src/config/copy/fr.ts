@@ -24,6 +24,8 @@ export const fr: Copy = {
     links: [
       { label: "Modèles", href: "/models" },
       { label: "Tarification", href: "/pricing" },
+      { label: "Classements", href: "/rankings" },
+      { label: "À propos", href: "/about" },
       { label: "Documentation", href: "/docs" },
       { label: "Console", href: "/dashboard" },
     ],
