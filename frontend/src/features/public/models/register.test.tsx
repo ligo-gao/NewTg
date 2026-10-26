@@ -1,4 +1,4 @@
-import { fireEvent, screen, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -15,7 +15,10 @@ const ORIGIN = 'http://localhost:3000'
 const server = setupServer()
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
-afterEach(() => server.resetHandlers())
+afterEach(() => {
+  server.resetHandlers()
+  Reflect.deleteProperty(navigator, 'clipboard')
+})
 afterAll(() => server.close())
 
 function card(
@@ -83,15 +86,16 @@ const TESTED: ModelEntry = {
     endpoints: ['chat.completions'],
   }),
   kind: 'chat',
-  price: { input: null, output: null, cacheRead: null },
+  price: { input: 0.06, output: 4, cacheRead: null },
   perf: perf({
     source: 'test',
     measure: 'ttft',
     p50: 350,
     p95: 700,
     tps: 42.5,
-    successRate: 0.998,
-    samples: 120,
+    successRate: 0.992,
+    samples: 3,
+    lowSample: true,
     testedAt: '2026-10-24T00:00:00Z',
     hasData: true,
   }),
@@ -113,7 +117,7 @@ const AVERAGED: ModelEntry = {
     p50: 240,
     tps: 30,
     successRate: 0.98,
-    samples: 40,
+    samples: 1_204,
     hasData: true,
   }),
 }
@@ -178,6 +182,17 @@ async function renderRegister(overrides: Partial<RegisterProps> = {}) {
   return renderWithProviders(<Register {...props(overrides)} />, ['public'])
 }
 
+/** Content rows in DOM order (the header row excluded). */
+function bodyRows(): HTMLElement[] {
+  return within(screen.getByRole('table')).getAllByRole('row').slice(1)
+}
+
+function textOf(row: HTMLElement, selector: string): string {
+  const cell = row.querySelector(selector)
+  expect(cell).toBeTruthy()
+  return cell?.textContent ?? ''
+}
+
 describe('Register: table view', () => {
   it('renders one table row per entry', async () => {
     await renderRegister()
@@ -198,72 +213,163 @@ describe('Register: table view', () => {
     expect(wrapper?.classList.contains('relative')).toBe(true)
   })
 
-  it('fills the twelve capability slots in the shared order', async () => {
+  it('renders the price column with input and output per million', async () => {
     await renderRegister()
 
-    const rows = within(screen.getByRole('table')).getAllByRole('row')
-    const barcode = rows[1]?.querySelector('.barcode')
-    expect(barcode).toBeTruthy()
+    expect(
+      screen.getByRole('columnheader', { name: /Price ¥\/million tokens/ }),
+    ).toBeTruthy()
+    expect(screen.getByText('Input · output')).toBeTruthy()
 
-    const ticks = Array.from(barcode?.querySelectorAll('i') ?? [])
-    expect(ticks).toHaveLength(12)
-    // 'text' is first and 'Vision' matches the lowercase 'vision' slot; every
-    // other slot stays empty, so a reordered set of slots breaks this.
-    expect(ticks.map((tick) => tick.className)).toEqual([
-      'on',
-      'on',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-    ])
+    expect(screen.getByText('¥0.06')).toBeTruthy()
+    expect(screen.getByText('¥4.00')).toBeTruthy()
+
+    // A row without prices keeps its two positions separate, not a fake zero.
+    const priceCell = bodyRows()[2]?.querySelector('.price-cell')
+    expect(priceCell).toBeTruthy()
+    expect(
+      within(priceCell as HTMLElement).getAllByText('—'),
+    ).toHaveLength(2)
   })
 
-  it('keeps an unknown capability visible in the row title', async () => {
+  it('hides the context column when no row has context or output', async () => {
+    serveDetails()
+    await renderRegister({
+      entries: [AVERAGED, EMPTY],
+      expandedId: AVERAGED.card.model_id,
+    })
+
+    expect(screen.getAllByRole('columnheader')).toHaveLength(7)
+    expect(
+      screen.queryByRole('columnheader', { name: 'Context / output' }),
+    ).toBeNull()
+
+    const detail = document.getElementById('model-detail-acme/embed')
+    expect(detail?.querySelector('td')?.getAttribute('colspan')).toBe('7')
+  })
+
+  it('shows the context column when at least one row has values', async () => {
+    serveDetails()
+    await renderRegister({ expandedId: TESTED.card.model_id })
+
+    expect(screen.getAllByRole('columnheader')).toHaveLength(8)
+    expect(
+      screen.getByRole('columnheader', { name: 'Context / output' }),
+    ).toBeTruthy()
+
+    const detail = document.getElementById('model-detail-openai/gpt-5')
+    expect(detail?.querySelector('td')?.getAttribute('colspan')).toBe('8')
+  })
+
+  it('summarises the evidence source in the evidence column', async () => {
     await renderRegister()
 
-    const barcode = screen
-      .getByRole('table')
-      .querySelector('.barcode')
-    expect(barcode?.getAttribute('aria-label')).toBe(
-      'text, Vision, hologram',
+    const rows = bodyRows()
+    const tested = rows[0] as HTMLElement
+    const averaged = rows[1] as HTMLElement
+    const none = rows[2] as HTMLElement
+
+    // Test source reports probe runs and a two-decimal success rate.
+    expect(textOf(tested, '.evidence-cell')).toContain('3 probe runs')
+    expect(textOf(tested, '.evidence-cell')).toContain('Success 99.20%')
+    // Low sample survives the column rewrite.
+    expect(textOf(tested, '.evidence-cell')).toContain('Low sample')
+
+    // Usage source reports grouped call counts, never percentile language.
+    expect(textOf(averaged, '.evidence-cell')).toContain('1,204 calls')
+    expect(textOf(averaged, '.evidence-cell')).toContain('Success 98.00%')
+
+    expect(textOf(none, '.evidence-cell')).toContain('Not measured')
+    expect(textOf(none, '.evidence-cell')).toContain('No success rate yet')
+  })
+
+  it('labels end-to-end readings so they are never mistaken for TTFT', async () => {
+    await renderRegister()
+
+    const rows = bodyRows()
+    expect(textOf(rows[0] as HTMLElement, '.lat-cell')).toContain('350 ms')
+    expect(textOf(rows[0] as HTMLElement, '.lat-cell')).toContain('P95 700 ms')
+    expect(textOf(rows[0] as HTMLElement, '.lat-cell')).not.toContain(
+      'Total latency',
     )
-    expect(barcode?.getAttribute('title')).toBe('text, Vision, hologram')
+
+    // An average has no P95, and a non-chat measurement must say so.
+    expect(textOf(rows[1] as HTMLElement, '.lat-cell')).toContain('240 ms')
+    expect(textOf(rows[1] as HTMLElement, '.lat-cell')).not.toContain('P95')
+    expect(textOf(rows[1] as HTMLElement, '.lat-cell')).toContain(
+      'Total latency',
+    )
+  })
+
+  it('shows capability chips and the vendor under the model name', async () => {
+    await renderRegister()
+
+    const tested = bodyRows()[0] as HTMLElement
+    expect(within(tested).getByText('GPT-5')).toBeTruthy()
+    expect(within(tested).getByText('openai/gpt-5')).toBeTruthy()
+    for (const chip of ['text', 'Vision', 'hologram', 'openai']) {
+      expect(within(tested).getByText(chip)).toBeTruthy()
+    }
+
+    // No profile at all: one explicit placeholder instead of empty chips.
+    const bare: ModelEntry = {
+      ...EMPTY,
+      card: card({ model_id: 'acme/bare' }),
+    }
+    await renderRegister({ entries: [bare] })
+    expect(screen.getByText('Profile not filled in')).toBeTruthy()
+    // display_name falls back to model_id, so the id is printed once, not twice.
+    expect(screen.getAllByText('acme/bare')).toHaveLength(1)
+  })
+
+  it('copies the model id, not the display name', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    })
+
+    await renderRegister()
+
+    const buttons = screen.getAllByRole('button', { name: 'Copy model ID' })
+    expect(buttons.length).toBeGreaterThanOrEqual(3)
+
+    fireEvent.click(buttons[0] as HTMLElement)
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith('openai/gpt-5')
+    })
+  })
+
+  it('never renders a capability barcode column or a call button', async () => {
+    await renderRegister()
+
+    expect(
+      screen.queryByRole('columnheader', { name: 'Capabilities' }),
+    ).toBeNull()
+    expect(screen.getByRole('table').querySelector('.barcode')).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Call / })).toBeNull()
+    // The onCall prop stays on Register for the expanded detail (Task 5).
+    expect(screen.getAllByRole('button', { name: 'Copy model ID' })).toHaveLength(
+      3,
+    )
   })
 
   it('renders an em dash, never 0, when a measurement is missing', async () => {
     await renderRegister()
 
-    const rows = within(screen.getByRole('table')).getAllByRole('row')
-    const emptyRow = rows[3]
+    const rows = bodyRows()
+    const emptyRow = rows[2] as HTMLElement
     expect(emptyRow).toBeTruthy()
 
-    expect(within(emptyRow as HTMLElement).queryByText('0 ms')).toBeNull()
-    expect(within(emptyRow as HTMLElement).queryByText('0.0%')).toBeNull()
+    expect(within(emptyRow).queryByText('0 ms')).toBeNull()
+    expect(within(emptyRow).queryByText('0.0%')).toBeNull()
+    expect(textOf(emptyRow, '.lat-cell')).toBe('—')
+    expect(textOf(emptyRow, '.tps-cell')).toBe('—')
     expect(
-      within(emptyRow as HTMLElement).getAllByText('—').length,
-    ).toBeGreaterThanOrEqual(3)
-  })
-
-  it('labels measured test, live average and no-data sources', async () => {
-    await renderRegister()
-
-    expect(screen.getByText('Measured test')).toBeTruthy()
-    expect(screen.getByText('Live traffic average')).toBeTruthy()
-    expect(screen.getByText('No data')).toBeTruthy()
-    // A usage-sourced average must say so; it is not a percentile.
-    expect(screen.getByText('average')).toBeTruthy()
-    // The usage strip must not borrow a P95 from the average.
-    const usageRow = within(screen.getByRole('table')).getAllByRole('row')[2]
-    expect(
-      usageRow?.querySelector('.range-strip')?.getAttribute('aria-label'),
-    ).toContain('P95 —')
+      within(emptyRow.querySelector('.price-cell') as HTMLElement).getAllByText(
+        '—',
+      ),
+    ).toHaveLength(2)
   })
 
   it('disables an unselected compare box once four are chosen', async () => {
@@ -289,18 +395,6 @@ describe('Register: table view', () => {
     expect(
       screen.getByLabelText('Compare Model 5').getAttribute('title'),
     ).toBe('Compare is full (max 4)')
-  })
-
-  it('calls onCall without expanding the row', async () => {
-    const onCall = vi.fn()
-    const onToggleExpand = vi.fn()
-    await renderRegister({ onCall, onToggleExpand })
-
-    fireEvent.click(screen.getByRole('button', { name: 'Call GPT-5' }))
-
-    expect(onCall).toHaveBeenCalledTimes(1)
-    expect(onCall).toHaveBeenCalledWith(TESTED)
-    expect(onToggleExpand).not.toHaveBeenCalled()
   })
 
   it('mounts the detail only for the expanded row', async () => {
