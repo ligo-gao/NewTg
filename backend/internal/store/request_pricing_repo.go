@@ -20,6 +20,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"strings"
 	"time"
@@ -34,11 +35,19 @@ const RequestPricingRetention = 7 * 24 * time.Hour
 var ErrInvalidRequestPricingID = errors.New("store: request_pricing.request_id 不是合法 UUID")
 
 // RequestPricing 是一条冻结的请求计价事实。
+//
+// DiscountRate / DiscountTarget 是预扣阶段解析一次并冻结的客户折扣
+// （spec §5.2 / §5.4）：任务轮询、崩溃恢复、handoff 结算只拿得到
+// requestID，读不回折扣就会按原价结算，把预扣时已让利的部分再追回来。
+// 未命中规则的会话 Target 为空串（Rate 不参与生效判定）；全免由
+// Rate=0 + 非空 Target 表达，与未命中可区分。
 type RequestPricing struct {
 	RequestID      string
 	RequestTime    time.Time
 	TimeMultiplier float64
 	TimeWindow     string
+	DiscountRate   float64
+	DiscountTarget string
 }
 
 // RequestPricingRepo 是 request_pricing 的 PostgreSQL 实现。
@@ -92,14 +101,26 @@ func (r *RequestPricingRepo) Upsert(ctx context.Context, rec RequestPricing) err
 	if math.IsNaN(rec.TimeMultiplier) || math.IsInf(rec.TimeMultiplier, 0) || rec.TimeMultiplier <= 0 {
 		return fmt.Errorf("store: request_pricing.time_multiplier 非法: %v", rec.TimeMultiplier)
 	}
+	// 折扣率是防脏数据落库的护栏（结算侧 ApplyDiscount / discountFacts 已有
+	// 两层 fail-closed）：NaN/Inf 与 [0,1] 之外一律按 1（原价）写入并告警，
+	// 不返回错误——让预扣失败等于拒绝服务，代价远大于一条被归一的行。
+	discountRate := rec.DiscountRate
+	if math.IsNaN(discountRate) || math.IsInf(discountRate, 0) || discountRate < 0 || discountRate > 1 {
+		slog.Warn("store: request_pricing.discount_rate 非法；按原价 1 写入",
+			"request_id", id, "discount_rate", discountRate)
+		discountRate = 1
+	}
+	// DiscountTarget 空串合法（未命中），形态校验属于 API 层。
 	_, err = r.db.ExecContext(ctx,
-		`INSERT INTO request_pricing (request_id, request_time, time_multiplier, time_window)
-		 VALUES ($1::uuid, $2, $3, $4)
+		`INSERT INTO request_pricing (request_id, request_time, time_multiplier, time_window, discount_rate, discount_target)
+		 VALUES ($1::uuid, $2, $3, $4, $5, $6)
 		 ON CONFLICT (request_id) DO UPDATE
 		 SET request_time = EXCLUDED.request_time,
 		     time_multiplier = EXCLUDED.time_multiplier,
-		     time_window = EXCLUDED.time_window`,
-		id, rec.RequestTime, rec.TimeMultiplier, rec.TimeWindow)
+		     time_window = EXCLUDED.time_window,
+		     discount_rate = EXCLUDED.discount_rate,
+		     discount_target = EXCLUDED.discount_target`,
+		id, rec.RequestTime, rec.TimeMultiplier, rec.TimeWindow, discountRate, rec.DiscountTarget)
 	if err != nil {
 		return fmt.Errorf("store: 写入 request_pricing(%s): %w", id, err)
 	}
@@ -118,9 +139,10 @@ func (r *RequestPricingRepo) Get(ctx context.Context, requestID string) (Request
 	}
 	var rec RequestPricing
 	err = r.db.QueryRowContext(ctx,
-		`SELECT request_id::text, request_time, time_multiplier, time_window
+		`SELECT request_id::text, request_time, time_multiplier, time_window, discount_rate, discount_target
 		 FROM request_pricing WHERE request_id = $1::uuid`, id).
-		Scan(&rec.RequestID, &rec.RequestTime, &rec.TimeMultiplier, &rec.TimeWindow)
+		Scan(&rec.RequestID, &rec.RequestTime, &rec.TimeMultiplier, &rec.TimeWindow,
+			&rec.DiscountRate, &rec.DiscountTarget)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RequestPricing{}, false, nil
 	}

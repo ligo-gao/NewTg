@@ -1654,6 +1654,9 @@ func (s *Session) resolveAt(ctx context.Context, model, group string) (contract.
 
 // persistRequestPricing 写入本请求的冻结计价事实（spec §5.2）。
 //
+// 【折扣同锁】同一行同时冻结预扣阶段解析的客户折扣：异步结算（worker /
+// handoff 重建的会话）读回这份事实，才能与预扣按同一折后价收敛（Task 6）。
+//
 // 【失败方向】写失败只 WARN 不阻断请求：预扣的资金已经提交，回滚预扣
 // 换不来正确性；同步结算仍用内存快照。代价是异步 handoff 结算读不到记录，
 // 会退回既有行为并再次 WARN（见 Engine.loadFrozenPricing）。
@@ -1685,6 +1688,10 @@ func (s *Session) persistRequestPricing(ctx context.Context) {
 		RequestTime:    requestTime,
 		TimeMultiplier: multiplier,
 		TimeWindow:     window,
+		// 折扣必须与时间/倍率同一行冻结：任务轮询与 handoff 重建只看得到
+		// requestID，读不回折扣就会按原价结算，把预扣时已让利的部分追回。
+		DiscountRate:   s.discount.Rate,
+		DiscountTarget: s.discount.Target,
 	}
 	if err := s.engine.requestPricing.Upsert(ctx, rec); err != nil {
 		slog.Warn("billing: persist frozen request pricing failed; async settlement will fall back",

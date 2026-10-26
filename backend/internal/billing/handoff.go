@@ -147,6 +147,12 @@ func (e *Engine) terminateByRequestID(requestID string, tokenID int64, cost *int
 					return err
 				}
 			}
+			// 冻结折扣独立于定价加载：冻结成本（cost != nil）路径不读时间/
+			// 倍率，但折扣仍必须复用预扣时的值，否则按原价追回差额。
+			if err := e.loadFrozenDiscount(ctx, requestID, s); err != nil {
+				slog.Warn("billing: load frozen discount failed; settling without discount",
+					"request_id", requestID, "error", err)
+			}
 			return s.Terminate(fact)
 		case errors.Is(recErr, store.ErrPreConsumeNotFound):
 			// 不是订阅来源：继续钱包路径。
@@ -189,6 +195,12 @@ func (e *Engine) terminateByRequestID(requestID string, tokenID int64, cost *int
 		if _, err := e.loadFrozenPricing(ctx, requestID, s); err != nil {
 			return err
 		}
+	}
+	// 冻结折扣独立于定价加载：冻结成本与非空 fact 两条路径都必须复用预扣
+	// 时冻结的折扣，否则预扣已折、结算按原价，差额会被追回。
+	if err := e.loadFrozenDiscount(ctx, requestID, s); err != nil {
+		slog.Warn("billing: load frozen discount failed; settling without discount",
+			"request_id", requestID, "error", err)
 	}
 	return s.Terminate(fact)
 }
@@ -234,7 +246,72 @@ func (e *Engine) loadFrozenPricing(ctx context.Context, requestID string, s *Ses
 	s.requestTime = rec.RequestTime
 	multiplier := rec.TimeMultiplier
 	s.frozenMultiplier = &multiplier
+	// 同一行顺带恢复冻结折扣，不重复查询：预扣与结算必须命中同一折扣。
+	s.applyFrozenDiscount(rec.DiscountRate, rec.DiscountTarget)
 	return true, nil
+}
+
+// loadFrozenDiscount 把 request_pricing 里冻结的客户折扣写入重建的会话。
+//
+// 与 loadFrozenPricing 分开：定价只影响「按 fact 重算」的路径，折扣则
+// 影响**所有**按成本收敛的路径（含 forcedCost）。两者共用一个 requestID
+// 锚点，但加载条件不同。
+//
+// 【失败方向】best-effort：读表错误只由调用方 WARN，不阻塞结算——折扣是
+// 让利，不是资金收尾的前置条件；缺行（本功能上线前的在飞请求）按
+// 「已解析、无折扣」继续，避免后续路径再查一次。非 UUID 的 requestID
+// 不可能有行（persistRequestPricing 同样跳过），按缺行处理。
+//
+// 【不变量】重建会话只结算、不产生增量：handoff 只调用 Terminate /
+// terminateAtHeld，从不调用 Reserve / ChargeIncrement，所以累计口径不会
+// 从零重算。若将来有路径在重建会话上恢复增量，必须同时恢复 rawConsumed
+// 与冻结折扣，否则累计折扣会从 0 重算并多收。rawConsumed 不落
+// request_pricing（没有这一列，也不该加）。
+func (e *Engine) loadFrozenDiscount(ctx context.Context, requestID string, s *Session) error {
+	if e.requestPricing == nil || s == nil || s.discountResolved {
+		return nil
+	}
+	if !store.ValidRequestPricingID(requestID) {
+		slog.Warn("billing: request_id is not a UUID; no frozen discount available",
+			"request_id", requestID)
+		s.applyFrozenDiscount(1, "")
+		return nil
+	}
+	rec, ok, err := e.requestPricing.Get(ctx, requestID)
+	if err != nil {
+		return fmt.Errorf("billing: read frozen discount for %s: %w", requestID, err)
+	}
+	if !ok {
+		slog.Warn("billing: request_pricing row missing; settling without discount",
+			"request_id", requestID)
+		// Rate=1 + 空 Target 是「已解析、无折扣」的确定态：阻止后续路径再查，
+		// 也与零值 {0,""}（未解析）区分。
+		s.applyFrozenDiscount(1, "")
+		return nil
+	}
+	s.applyFrozenDiscount(rec.DiscountRate, rec.DiscountTarget)
+	return nil
+}
+
+// frozenDiscount 读取冻结折扣的纯查询版本（供不建会话的 settle-at-held 使用）。
+//
+// 与 loadFrozenDiscount 同一口径，但返回零值而不是写入会话：terminateAtHeld
+// 直接以 hold 为成本，只需要折扣事实来补日志。任何读失败/缺行都返回零值
+// （不写折扣键），绝不阻塞资金收尾。
+func (e *Engine) frozenDiscount(ctx context.Context, requestID string) contract.Discount {
+	if e.requestPricing == nil || !store.ValidRequestPricingID(requestID) {
+		return contract.Discount{}
+	}
+	rec, ok, err := e.requestPricing.Get(ctx, requestID)
+	if err != nil {
+		slog.Warn("billing: load frozen discount failed; settling without discount",
+			"request_id", requestID, "error", err)
+		return contract.Discount{}
+	}
+	if !ok {
+		return contract.Discount{}
+	}
+	return contract.Discount{Rate: rec.DiscountRate, Target: rec.DiscountTarget}
 }
 
 // RefreshInflightLeases 续租一批订阅请求的 in-flight 租约（R-W9B-02）。
@@ -279,6 +356,10 @@ func (e *Engine) terminateAtHeld(requestID string, tokenID int64, fact contract.
 	ctx, cancel := opCtx()
 	defer cancel()
 
+	// hold 已经是预扣时的折后金额；冻结折扣用于在日志里补出原价事实
+	// （rawKnown=false → 按 net/rate 反推）。读不到折扣就不写折扣键。
+	d := e.frozenDiscount(ctx, requestID)
+
 	st, err := e.ledger.openHoldState(ctx, requestID)
 	if err != nil {
 		return fmt.Errorf("billing: read task holds for %s: %w", requestID, err)
@@ -308,11 +389,17 @@ func (e *Engine) terminateAtHeld(requestID string, tokenID int64, fact contract.
 		return nil
 	}
 	cost := st.Held
+	// 按预扣额结清：cost 是折后金额，原价未知（rawKnown=false）时由
+	// discountFacts 用 cost/rate 反推；全免（rate=0）只写 Target 不写原价。
+	originalCost, discountRate, discountTarget := discountFacts(d, cost, cost, false)
 	outcome := SettlementOutcome{
-		Cost:        cost,
-		PreDeducted: cost,
-		Refunded:    0,
-		Status:      UsageLogStatusSuccess,
+		Cost:           cost,
+		PreDeducted:    cost,
+		Refunded:       0,
+		Status:         UsageLogStatusSuccess,
+		OriginalCost:   originalCost,
+		DiscountRate:   discountRate,
+		DiscountTarget: discountTarget,
 	}
 	rc := &contract.RelayContext{
 		RequestID: requestID,

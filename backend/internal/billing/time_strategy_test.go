@@ -48,10 +48,14 @@ type fakeRequestPricingStore struct {
 	ok     bool
 	getErr error
 	upsert int
+	// upserted 记录最后一次写入的整条事实：折扣冻结断言需要看到 Upsert
+	// 实际收到的值，而不仅是调用次数。
+	upserted store.RequestPricing
 }
 
-func (f *fakeRequestPricingStore) Upsert(context.Context, store.RequestPricing) error {
+func (f *fakeRequestPricingStore) Upsert(_ context.Context, rec store.RequestPricing) error {
 	f.upsert++
+	f.upserted = rec
 	return nil
 }
 
@@ -187,5 +191,74 @@ func TestNeedsFrozenPricing(t *testing.T) {
 	cost := int64(10)
 	if needsFrozenPricing(&cost, contract.UsageFact{Model: "m"}) {
 		t.Fatal("冻结成本不需要解析定价")
+	}
+}
+
+// TestPersistRequestPricingFreezesDiscount 验证预扣持久化把会话里已冻结的
+// 客户折扣一并写进 request_pricing：异步结算只拿得到 requestID，折扣若不
+// 落库，重建会话就会按原价结算并追回预扣时已让利的部分。
+func TestPersistRequestPricingFreezesDiscount(t *testing.T) {
+	repo := &fakeRequestPricingStore{}
+	e := &Engine{requestPricing: repo}
+	s := &Session{
+		engine:    e,
+		requestID: "0123456789abcdef0123456789abcdef",
+		discount:  contract.Discount{Rate: 0.9, Target: "user:7"},
+	}
+
+	s.persistRequestPricing(context.Background())
+
+	if repo.upsert != 1 {
+		t.Fatalf("Upsert calls = %d, want 1", repo.upsert)
+	}
+	if repo.upserted.DiscountRate != 0.9 || repo.upserted.DiscountTarget != "user:7" {
+		t.Fatalf("Upsert 折扣 = (%v, %q), want (0.9, \"user:7\")",
+			repo.upserted.DiscountRate, repo.upserted.DiscountTarget)
+	}
+}
+
+// TestLoadFrozenPricingRestoresDiscount 验证 loadFrozenPricing 在同一次 Get
+// 里顺带恢复冻结折扣，不重复查询。
+func TestLoadFrozenPricingRestoresDiscount(t *testing.T) {
+	repo := &fakeRequestPricingStore{
+		rec: store.RequestPricing{
+			RequestID:      "0123456789abcdef0123456789abcdef",
+			RequestTime:    time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC),
+			TimeMultiplier: 1.0,
+			DiscountRate:   0.8,
+			DiscountTarget: "group:acme",
+		},
+		ok: true,
+	}
+	e := &Engine{source: &fakeTimeSource{}, requestPricing: repo}
+	s := &Session{engine: e, requestID: repo.rec.RequestID}
+
+	ok, err := e.loadFrozenPricing(context.Background(), s.requestID, s)
+	if err != nil || !ok {
+		t.Fatalf("loadFrozenPricing = %v,%v, want true,nil", ok, err)
+	}
+	if !s.discountResolved {
+		t.Fatal("loadFrozenPricing 必须把折扣标记为已解析")
+	}
+	if s.discount.Rate != 0.8 || s.discount.Target != "group:acme" {
+		t.Fatalf("discount = %+v, want 0.8/group:acme", s.discount)
+	}
+}
+
+// TestLoadFrozenDiscountWarnsOnMissingRow 验证缺行（上线前在飞请求）时按
+// 「已解析、无折扣」继续：不返回错误，也不留下需要再查一次的未解析态。
+func TestLoadFrozenDiscountWarnsOnMissingRow(t *testing.T) {
+	repo := &fakeRequestPricingStore{ok: false}
+	e := &Engine{requestPricing: repo}
+	s := &Session{engine: e, requestID: "0123456789abcdef0123456789abcdef"}
+
+	if err := e.loadFrozenDiscount(context.Background(), s.requestID, s); err != nil {
+		t.Fatalf("loadFrozenDiscount(缺行) = %v, want nil", err)
+	}
+	if !s.discountResolved {
+		t.Fatal("缺行也必须标记 discountResolved（确定态：原价）")
+	}
+	if s.discount.Rate != 1 || s.discount.Target != "" {
+		t.Fatalf("discount = %+v, want 1/空（原价）", s.discount)
 	}
 }

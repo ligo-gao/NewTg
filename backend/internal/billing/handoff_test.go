@@ -528,3 +528,163 @@ func TestTerminateByRequestIDForTokenNonEmptyFactAdjustsToken(t *testing.T) {
 		t.Fatalf("token after reprice = %d, want 450 (MEDIUM-A: token must follow the delta)", got)
 	}
 }
+
+// TestTaskForcedCostStillReadsFrozenDiscount 是 needsFrozenPricing 的回归：
+// 冻结成本（cost != nil）路径不读 request_pricing 的时间/倍率，但冻结折扣
+// 必须照读——否则重建会话按原价结算，把预扣时已让利的部分再追回来。
+func TestTaskForcedCostStillReadsFrozenDiscount(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	sat := &recordingSaturator{db: db}
+	engine := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, sat)
+	engine.SetRequestPricingStore(store.NewRequestPricingRepo(db))
+
+	req := newTask5UUID(t)
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM request_pricing WHERE request_id = $1::uuid`, req) })
+
+	session := newBillingTestSession(engine, userID, req, perCallSnapshot(100))
+	session.applyFrozenDiscount(0.9, "user:7")
+	if err := session.PreConsume(contract.QuotaEstimate{Model: "test-model"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 410 {
+		t.Fatalf("预扣后 balance = %d, want 410（hold 90）", got)
+	}
+	if err := session.Detach(req); err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+
+	// cost 是提交期冻结的任务表达式原价；结算必须按冻结折扣收敛到 81。
+	if err := engine.TerminateByRequestIDForTokenCost(req, 0, 90, contract.UsageFact{}); err != nil {
+		t.Fatalf("TerminateByRequestIDForTokenCost: %v", err)
+	}
+	out := sat.outcome
+	if out.Cost != 81 {
+		t.Fatalf("outcome.Cost = %d, want 81（90 × 0.9）", out.Cost)
+	}
+	if out.OriginalCost != 90 || out.DiscountRate != 0.9 || out.DiscountTarget != "user:7" {
+		t.Fatalf("outcome = %+v, want original 90 / rate 0.9 / target user:7", out)
+	}
+}
+
+// TestTerminateAtHeldReconstructsOriginalCost 验证按预扣额结清时，hold 已是
+// 折后金额；结算日志的原价必须由冻结折扣反推（90 / 0.9 = 100），而不是
+// 让 original_cost 与 cost 相等。
+func TestTerminateAtHeldReconstructsOriginalCost(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	sat := &recordingSaturator{db: db}
+	engine := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, sat)
+	engine.SetRequestPricingStore(store.NewRequestPricingRepo(db))
+
+	req := newTask5UUID(t)
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM request_pricing WHERE request_id = $1::uuid`, req) })
+
+	session := newBillingTestSession(engine, userID, req, perCallSnapshot(100))
+	session.applyFrozenDiscount(0.9, "user:7")
+	if err := session.PreConsume(contract.QuotaEstimate{Model: "test-model"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if err := session.Detach(req); err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+
+	if err := engine.TerminateByRequestID(req, contract.UsageFact{}); err != nil {
+		t.Fatalf("TerminateByRequestID(empty): %v", err)
+	}
+	out := sat.outcome
+	if out.Cost != 90 || out.OriginalCost != 100 {
+		t.Fatalf("outcome = %+v, want cost 90 / original 100", out)
+	}
+	if out.DiscountRate != 0.9 || out.DiscountTarget != "user:7" {
+		t.Fatalf("outcome = %+v, want rate 0.9 / target user:7", out)
+	}
+	if got := userBalance(t, db, userID); got != 410 {
+		t.Fatalf("balance = %d, want 410（at-held 差额 0）", got)
+	}
+}
+
+// TestTerminateAtHeldZeroRateOmitsOriginalCost 验证全免（rate=0）不反推原价：
+// OriginalCost 保持 0，但 Target 非空，与「未命中」可区分。
+func TestTerminateAtHeldZeroRateOmitsOriginalCost(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	sat := &recordingSaturator{db: db}
+	repo := store.NewRequestPricingRepo(db)
+	engine := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, sat)
+	engine.SetRequestPricingStore(repo)
+
+	req := newTask5UUID(t)
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM request_pricing WHERE request_id = $1::uuid`, req) })
+
+	// 先在无折扣下预扣，得到非零 hold；随后覆盖冻结事实为全免规则。
+	session := newBillingTestSession(engine, userID, req, perCallSnapshot(100))
+	if err := session.PreConsume(contract.QuotaEstimate{Model: "test-model"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if err := repo.Upsert(context.Background(), store.RequestPricing{
+		RequestID:      req,
+		RequestTime:    time.Now().UTC(),
+		TimeMultiplier: 1,
+		DiscountRate:   0,
+		DiscountTarget: "user:7",
+	}); err != nil {
+		t.Fatalf("Upsert(frozen discount): %v", err)
+	}
+	if err := session.Detach(req); err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+
+	if err := engine.TerminateByRequestID(req, contract.UsageFact{}); err != nil {
+		t.Fatalf("TerminateByRequestID(empty): %v", err)
+	}
+	out := sat.outcome
+	if out.Cost != 100 {
+		t.Fatalf("outcome.Cost = %d, want 100（at-held 以 hold 为准）", out.Cost)
+	}
+	if out.OriginalCost != 0 || out.DiscountRate != 0 {
+		t.Fatalf("outcome = %+v, want original 0 / rate 0（全免不反推原价）", out)
+	}
+	if out.DiscountTarget != "user:7" {
+		t.Fatalf("outcome.DiscountTarget = %q, want user:7（全免必须与未命中可区分）", out.DiscountTarget)
+	}
+}
+
+// TestTerminateByRequestIDMissingFrozenRowBillsListPrice 验证上线前在飞请求
+// （没有 request_pricing 行）按原价结算：不报错，也不写折扣键。
+func TestTerminateByRequestIDMissingFrozenRowBillsListPrice(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 500)
+	sat := &recordingSaturator{db: db}
+	engine := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, sat)
+	engine.SetRequestPricingStore(store.NewRequestPricingRepo(db))
+
+	req := newTask5UUID(t)
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM request_pricing WHERE request_id = $1::uuid`, req) })
+
+	session := newBillingTestSession(engine, userID, req, perCallSnapshot(100))
+	if err := session.PreConsume(contract.QuotaEstimate{Model: "test-model"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	// 模拟功能上线前的在飞请求：没有冻结行。
+	if _, err := db.Exec(`DELETE FROM request_pricing WHERE request_id = $1::uuid`, req); err != nil {
+		t.Fatalf("delete frozen row: %v", err)
+	}
+	if err := session.Detach(req); err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+
+	if err := engine.TerminateByRequestIDForTokenCost(req, 0, 100, contract.UsageFact{}); err != nil {
+		t.Fatalf("缺行不得阻塞结算: %v", err)
+	}
+	out := sat.outcome
+	if out.Cost != 100 {
+		t.Fatalf("outcome.Cost = %d, want 100（原价）", out.Cost)
+	}
+	if out.OriginalCost != 0 || out.DiscountRate != 0 || out.DiscountTarget != "" {
+		t.Fatalf("outcome = %+v, want 无折扣字段", out)
+	}
+	if got := userBalance(t, db, userID); got != 400 {
+		t.Fatalf("balance = %d, want 400（原价结清 hold）", got)
+	}
+}
