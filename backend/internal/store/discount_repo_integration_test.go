@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -215,32 +216,69 @@ func TestDiscountRepoResolveIgnoresDisabledAndExpired(t *testing.T) {
 	}
 }
 
-// TestDiscountRepoResolveIgnoresDanglingTarget：指向不存在用户 id 的规则（手工
-// 绕过应用层级的级联路径）不会命中真实用户，按原价结算。
+// TestDiscountRepoResolveIgnoresDanglingTarget：仓储的 Create 不校验目标是否
+// 存在（只写 discounts 表），因此库里可能出现指向已删除用户 / 从未存在的分组
+// 的规则（应用层级联漏掉、或运维手工 SQL）。本用例固定两条不变式：
+//
+//   - 目标分组不存在的分组规则不命中任何用户（按原价）；
+//   - 目标用户被直接删除、个人规则因无外键而残留时，Resolve 对该用户 id
+//     返回 (零值, false, nil)——既不命中，也不把悬挂引用变成错误。
 func TestDiscountRepoResolveIgnoresDanglingTarget(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 	suffix := discountTestSuffix()
 	group := "dng" + suffix
-	model := "dsc" + suffix + "-dangling"
+	ghostGroup := "gho" + suffix
+	liveModel := "dsc" + suffix + "-live"
+	ghostModel := "dsc" + suffix + "-ghost"
 
 	insertDiscountTestGroup(t, db, group)
 	userID := insertDiscountTestUser(t, db, "dsc"+suffix, group)
 	cleanupDiscountTestData(t, db, "dsc"+suffix, userID, group)
 
 	repo := NewCustomerDiscountRepo(db)
+	// Create 不做引用校验：target_id 只是文本，这里两条规则都会写入成功。
 	if _, err := repo.Create(ctx, CustomerDiscountInput{
-		ModelName: model, TargetType: "user", TargetID: "999999999999",
+		ModelName: liveModel, TargetType: "user", TargetID: strconv.FormatInt(userID, 10),
+		RatePercent: 70, Enabled: true,
+	}); err != nil {
+		t.Fatalf("create user rule: %v", err)
+	}
+	if _, err := repo.Create(ctx, CustomerDiscountInput{
+		ModelName: ghostModel, TargetType: "group", TargetID: ghostGroup,
 		RatePercent: 1, Enabled: true,
 	}); err != nil {
-		t.Fatalf("create dangling rule: %v", err)
+		t.Fatalf("create ghost-group rule: %v", err)
 	}
-	got, ok, err := repo.Resolve(ctx, userID, []string{model}, time.Now().UTC())
+
+	// 用户仍存在时：个人规则正常生效，悬挂分组规则不生效。
+	got, ok, err := repo.Resolve(ctx, userID, []string{liveModel}, time.Now().UTC())
+	if err != nil || !ok {
+		t.Fatalf("Resolve live user = (%+v, %v, %v)，期望命中个人规则", got, ok, err)
+	}
+	if got.Target() != "user:"+strconv.FormatInt(userID, 10) || got.RatePercent != 70 {
+		t.Fatalf("Resolve live user = %s rate %d，期望 user:%d rate 70",
+			got.Target(), got.RatePercent, userID)
+	}
+	if got, ok, err := repo.Resolve(ctx, userID, []string{ghostModel}, time.Now().UTC()); err != nil {
+		t.Fatalf("Resolve ghost group: %v", err)
+	} else if ok {
+		t.Fatalf("Resolve 命中悬挂分组规则 %s，期望不命中（原价）", got.Target())
+	}
+
+	// 直接删用户，绕过 DeleteDiscountsForTarget：discounts 没有外键，规则残留。
+	if _, err := db.Exec(`DELETE FROM users WHERE id = $1`, userID); err != nil {
+		t.Fatalf("delete user %d: %v", userID, err)
+	}
+	got, ok, err = repo.Resolve(ctx, userID, []string{liveModel}, time.Now().UTC())
 	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+		t.Fatalf("Resolve deleted user: %v（悬挂规则不得变成错误）", err)
 	}
 	if ok {
-		t.Fatalf("Resolve 命中悬挂规则 %s，期望不命中（原价）", got.Target())
+		t.Fatalf("Resolve deleted user 命中 %s，期望不命中（原价）", got.Target())
+	}
+	if got != (CustomerDiscount{}) {
+		t.Fatalf("Resolve deleted user = %+v，期望零值", got)
 	}
 }
 
@@ -369,8 +407,12 @@ func TestDiscountRepoCascadeRenameAndDelete(t *testing.T) {
 	}
 }
 
-// TestDiscountRepoListEnabledModels：只列 model_pricing.status=1 的模型，q 做
-// 大小写不敏感的包含匹配，结果按模型名排序。
+// TestDiscountRepoListEnabledModels：只列 model_pricing.status=1 的模型，q 先
+// TrimSpace、再做大小写不敏感的包含匹配，结果按模型名排序。
+//
+// 关键字按字面匹配（escapeLike + ESCAPE '!'）：`_`/`%` 是模型名的合法字符，
+// 不能当通配符——搜 `a_b` 不能带出 `axb`，裸 `%` 只能命中名字里真有 `%` 的
+// 模型（不能返回全表）。
 func TestDiscountRepoListEnabledModels(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
@@ -379,11 +421,22 @@ func TestDiscountRepoListEnabledModels(t *testing.T) {
 	alpha := prefix + "-alpha"
 	beta := prefix + "-beta"
 	disabled := prefix + "-gamma-disabled"
+	underscore := prefix + "_a_b"
+	nearMiss := prefix + "_axb"
+	literalPercent := prefix + "-pct%-literal"
+	plain := prefix + "-pct-plain"
+	orderedA := prefix + "-order-a"
+	orderedB := prefix + "-order-b"
 
 	t.Cleanup(func() {
 		_, _ = db.Exec(`DELETE FROM model_pricing WHERE model LIKE $1`, prefix+"%")
 	})
-	for model, status := range map[string]int{alpha: 1, beta: 1, disabled: 2} {
+	for model, status := range map[string]int{
+		alpha: 1, beta: 1, disabled: 2,
+		underscore: 1, nearMiss: 1,
+		literalPercent: 1, plain: 1,
+		orderedA: 1, orderedB: 1,
+	} {
 		if _, err := db.Exec(
 			`INSERT INTO model_pricing (model, status) VALUES ($1, $2)`, model, status); err != nil {
 			t.Fatalf("insert model_pricing %s: %v", model, err)
@@ -395,17 +448,71 @@ func TestDiscountRepoListEnabledModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListEnabledModels: %v", err)
 	}
-	want := []string{alpha, beta}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("ListEnabledModels = %v，期望 %v（仅 status=1 且按名称排序）", got, want)
+	// 全部已启用模型都在（集合相等，不含 status=2 的 disabled；顺序另测）。
+	wantSet := map[string]bool{
+		alpha: true, beta: true, underscore: true, nearMiss: true,
+		literalPercent: true, plain: true, orderedA: true, orderedB: true,
+	}
+	if len(got) != len(wantSet) {
+		t.Fatalf("ListEnabledModels = %v，期望 %d 条（仅 status=1）", got, len(wantSet))
+	}
+	for _, model := range got {
+		if !wantSet[model] {
+			t.Fatalf("ListEnabledModels 返回了不该有的模型 %q（停用或其它用例的数据）", model)
+		}
 	}
 
-	got, err = repo.ListEnabledModels(ctx, suffix, 1)
+	// 排序与 limit：两个只差字母的模型，按名称升序且 limit 截断在最小者。
+	got, err = repo.ListEnabledModels(ctx, prefix+"-order-", 100)
+	if err != nil {
+		t.Fatalf("ListEnabledModels ordered q: %v", err)
+	}
+	if len(got) != 2 || got[0] != orderedA || got[1] != orderedB {
+		t.Fatalf("ListEnabledModels(ordered) = %v，期望 [%s %s]", got, orderedA, orderedB)
+	}
+	got, err = repo.ListEnabledModels(ctx, prefix+"-order-", 1)
 	if err != nil {
 		t.Fatalf("ListEnabledModels limit=1: %v", err)
 	}
-	if len(got) != 1 || got[0] != alpha {
-		t.Fatalf("ListEnabledModels limit=1 = %v，期望 [%s]", got, alpha)
+	if len(got) != 1 || got[0] != orderedA {
+		t.Fatalf("ListEnabledModels limit=1 = %v，期望 [%s]", got, orderedA)
+	}
+
+	// q 两侧空白被 TrimSpace 后仍能命中。
+	got, err = repo.ListEnabledModels(ctx, "  "+prefix+"-order-  ", 100)
+	if err != nil {
+		t.Fatalf("ListEnabledModels trimmed q: %v", err)
+	}
+	if len(got) != 2 || got[0] != orderedA || got[1] != orderedB {
+		t.Fatalf("ListEnabledModels trimmed q = %v，期望与未加空白时一致", got)
+	}
+
+	// 字面 `_`：只命中 underscore，不能带出 nearMiss。
+	got, err = repo.ListEnabledModels(ctx, prefix+"_a_b", 100)
+	if err != nil {
+		t.Fatalf("ListEnabledModels underscore q: %v", err)
+	}
+	if len(got) != 1 || got[0] != underscore {
+		t.Fatalf("ListEnabledModels(%q) = %v，期望 [%s]（`_` 必须按字面匹配）",
+			prefix+"_a_b", got, underscore)
+	}
+
+	// 裸 `%`：只能命中名字里真含 `%` 的模型，不能变成全表通配。
+	got, err = repo.ListEnabledModels(ctx, "%", 1000)
+	if err != nil {
+		t.Fatalf("ListEnabledModels bare %%: %v", err)
+	}
+	found := false
+	for _, model := range got {
+		if !strings.Contains(model, "%") {
+			t.Fatalf("ListEnabledModels(%q) 返回 %q，不含字面 `%%`（通配符未转义）", "%", model)
+		}
+		if model == literalPercent {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("ListEnabledModels(%q) = %v，期望包含 %s", "%", got, literalPercent)
 	}
 }
 

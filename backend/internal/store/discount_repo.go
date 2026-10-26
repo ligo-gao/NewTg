@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -158,6 +159,11 @@ func scanCustomerDiscount(scan func(...any) error) (CustomerDiscount, error) {
 //
 // 第二个返回值为 false 表示没有命中规则（原价），不是错误。命中时按
 // (rate_percent asc, user before group, 候选名靠前) 取唯一一条。
+//
+// 读取侧对坏数据 fail-closed：rate_percent 越界、target_id 为空或
+// target_type 不是 user/group 的行都被跳过（WARN 后按原价）；
+// 个人规则还要求目标用户仍然存在——用户被删除而规则因绕过级联残留时，
+// 该规则不能给任何请求打折。
 func (r *CustomerDiscountRepo) Resolve(ctx context.Context, userID int64, models []string, at time.Time) (CustomerDiscount, bool, error) {
 	if r == nil || r.db == nil {
 		return CustomerDiscount{}, false, errors.New("store: discounts 仓储未绑定数据库")
@@ -172,6 +178,7 @@ func (r *CustomerDiscountRepo) Resolve(ctx context.Context, userID int64, models
 	}
 	defer func() { _ = rows.Close() }()
 
+	hasUserRule := false
 	valid := make([]CustomerDiscount, 0, 2)
 	for rows.Next() {
 		d, err := scanCustomerDiscount(rows.Scan)
@@ -183,15 +190,39 @@ func (r *CustomerDiscountRepo) Resolve(ctx context.Context, userID int64, models
 				"discount_id", d.ID, "rate_percent", d.RatePercent)
 			continue
 		}
+		if d.TargetType != discountTargetUser && d.TargetType != discountTargetGroup {
+			slog.Warn("discount rule skipped: unknown target_type",
+				"discount_id", d.ID, "target_type", d.TargetType)
+			continue
+		}
 		if d.TargetID == "" {
 			slog.Warn("discount rule skipped: empty target_id",
 				"discount_id", d.ID, "target_type", d.TargetType)
 			continue
 		}
+		if d.TargetType == discountTargetUser {
+			hasUserRule = true
+		}
 		valid = append(valid, d)
 	}
 	if err := rows.Err(); err != nil {
 		return CustomerDiscount{}, false, fmt.Errorf("store: resolve discounts iterate: %w", err)
+	}
+	// 个人规则按 target_id 文本直接匹配，不经过 users 联结：用户被删除而规则
+	// 残留（绕过应用层级联）时必须显式确认用户仍存在，否则会给一个已不存在的
+	// 用户 id 返回折扣。分组规则的分支用子查询读 users."group"，用户不存在时
+	// 天然为 NULL，不需要这一步。
+	//
+	// 只有实际取回个人规则时才多查一次；普通（无个人规则）请求不多一次往返。
+	if hasUserRule {
+		var exists bool
+		if err := r.db.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM users WHERE id = $1::bigint)`, userID).Scan(&exists); err != nil {
+			return CustomerDiscount{}, false, fmt.Errorf("store: resolve discount target user(%d): %w", userID, err)
+		}
+		if !exists {
+			return CustomerDiscount{}, false, nil
+		}
 	}
 	picked, ok := PickCustomerDiscount(valid, models)
 	return picked, ok, nil
@@ -352,8 +383,11 @@ func (r *CustomerDiscountRepo) Delete(ctx context.Context, id int64) error {
 }
 
 // ListEnabledModels 返回已启用（model_pricing.status = 1）的模型名，供管理面
-// 折扣规则编辑器的模型选择器使用（spec Task 7）。q 非空时做大小写不敏感的
-// 子串过滤；limit <= 0 取默认 200。
+// 折扣规则编辑器的模型选择器使用（spec Task 7）。q 先 TrimSpace，非空时做
+// 大小写不敏感的子串过滤；limit <= 0 取默认 200。
+//
+// 关键字经 escapeLike 转义并配 ESCAPE '!'（与渠道/供应商搜索同一口径）：
+// 模型名允许 `%`/`_`，不转义时 `a_b` 会连 `axb` 一起命中、裸 `%` 会返回全表。
 func (r *CustomerDiscountRepo) ListEnabledModels(ctx context.Context, q string, limit int) ([]string, error) {
 	if r == nil || r.db == nil {
 		return nil, errors.New("store: discounts 仓储未绑定数据库")
@@ -361,10 +395,15 @@ func (r *CustomerDiscountRepo) ListEnabledModels(ctx context.Context, q string, 
 	if limit <= 0 {
 		limit = discountDefaultListLimit
 	}
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT model FROM model_pricing
-		 WHERE status = 1 AND ($1 = '' OR model ILIKE '%' || $1 || '%')
-		 ORDER BY model LIMIT $2`, q, limit)
+	query := `SELECT model FROM model_pricing WHERE status = 1`
+	args := make([]any, 0, 2)
+	if keyword := strings.TrimSpace(q); keyword != "" {
+		args = append(args, "%"+escapeLike(keyword)+"%")
+		query += ` AND model ILIKE $1 ESCAPE '!'`
+	}
+	args = append(args, limit)
+	query += fmt.Sprintf(` ORDER BY model LIMIT $%d`, len(args))
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list enabled models: %w", err)
 	}

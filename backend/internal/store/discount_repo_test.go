@@ -75,6 +75,41 @@ func TestPickCustomerDiscountNoRows(t *testing.T) {
 	}
 }
 
+// TestPickCustomerDiscountUnknownCandidateLosesTie：model_name 不在 candidates
+// 里的候选（candidateIndex 返回 len(candidates)）在同一 target 优先级内排在
+// 所有在场候选之后，同 rate 时永远赢不了在场候选，且与行在切片里的先后无关。
+//
+// 注意 rank（user before group）按 spec 先于候选序号比较，所以本用例让两侧
+// target_type 相同，只考察「未知模型排在后面」这一条。生产路径上
+// Resolve 的 SQL 已经用 model_name = ANY(candidates) 过滤，未知模型不会被
+// 取回；这里钉死的是纯函数在越界输入下的确定行为。
+func TestPickCustomerDiscountUnknownCandidateLosesTie(t *testing.T) {
+	cases := []struct {
+		name       string
+		targetType string
+	}{
+		{"user 规则", "user"},
+		{"group 规则", "group"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rows := []CustomerDiscount{
+				// 未知模型先出现，且 rate 与在场候选相同。
+				{ID: 1, ModelName: "claude-sonnet-5-5-2025", TargetType: tc.targetType, TargetID: "7", RatePercent: 80},
+				{ID: 2, ModelName: "claude-sonnet-5-5", TargetType: tc.targetType, TargetID: "7", RatePercent: 80},
+			}
+			got, ok := PickCustomerDiscount(rows, []string{"claude-sonnet-5-5"})
+			if !ok {
+				t.Fatal("PickCustomerDiscount ok=false，期望命中")
+			}
+			if got.ID != 2 {
+				t.Fatalf("PickCustomerDiscount 选中 ID=%d（model %q），期望 2（在场候选优先）",
+					got.ID, got.ModelName)
+			}
+		})
+	}
+}
+
 // TestCustomerDiscountRateAndTarget：rate_percent → 实收倍率，以及目标字符串
 // 的两种编码（user:<id> / group:<name>）。
 func TestCustomerDiscountRateAndTarget(t *testing.T) {
