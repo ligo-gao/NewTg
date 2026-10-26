@@ -3353,6 +3353,165 @@ paths:
           $ref: '#/components/responses/Error404'
         '500':
           $ref: '#/components/responses/Error500'
+  /api/users/bulk/template:
+    get:
+      tags:
+        - admin
+      operationId: downloadBulkUserTemplate
+      x-required-permission: users:create
+      summary: 下载批量建用户 CSV 模板
+      description: |
+        返回仅含表头 `username,password,customer_type,group` 的 CSV 模板。
+        响应禁止缓存。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: CSV 模板（仅表头）
+          headers:
+            Content-Disposition:
+              description: attachment; filename="newtg-users-template.csv"
+              schema:
+                type: string
+            Cache-Control:
+              description: no-store
+              schema:
+                type: string
+            X-Content-Type-Options:
+              description: nosniff
+              schema:
+                type: string
+          content:
+            text/csv:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/users/bulk/import:
+    post:
+      tags:
+        - admin
+      operationId: importBulkUsers
+      x-required-permission: users:create
+      summary: 从 CSV 批量导入用户
+      description: |
+        multipart/form-data：`file` 为 CSV（≤1 MiB），`must_change_password`
+        为 "true"/"1" 时写入无 TTL 的临时口令标记。表头必须是
+        username,password,customer_type,group 四列（顺序任意）；缺失/未知/
+        重复列 400 header_invalid。逐行校验后全有或全无：任一行不合法返回
+        422 + errors 列表，一行都不插入。行数上限 500。用户名冲突 409。
+        响应体只有 {created}，不回显任何凭据。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              additionalProperties: false
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: CSV 文件（≤1 MiB）
+                must_change_password:
+                  type: boolean
+                  description: 写入临时口令标记，强制首次登录改密
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkImportResult'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '413':
+          description: CSV 文件超过 1 MiB
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: 行级校验错误（全有或全无）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/BulkRowErrorList'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+  /api/users/bulk/generate:
+    post:
+      tags:
+        - admin
+      operationId: generateBulkUsers
+      x-required-permission: users:create
+      summary: 系统生成用户名与一次性口令
+      description: |
+        分配 `NewTG_user%04d` 连续用户名并生成 16 位 CSPRNG 口令，响应为
+        text/csv（含一次性明文口令），禁止缓存。count 1–500；customer_type
+        必填且为 general/enterprise；group 必填且必须存在。序号耗尽 409。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkGenerateRequest'
+      responses:
+        '200':
+          description: 生成的账号与一次性口令 CSV
+          headers:
+            Content-Disposition:
+              description: attachment; filename="newtg-users-<timestamp>.csv"
+              schema:
+                type: string
+            Cache-Control:
+              description: no-store
+              schema:
+                type: string
+            X-Content-Type-Options:
+              description: nosniff
+              schema:
+                type: string
+          content:
+            text/csv:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
   /api/users/discount-models:
     get:
       tags:
@@ -17636,6 +17795,79 @@ components:
       description: |
         PATCH /api/users/{id}/permissions 只对 admin 目标有效；不能修改自己
         （400）。成功 200 返回更新后的 AdminUser。
+    BulkImportResult:
+      type: object
+      additionalProperties: false
+      required:
+        - created
+      properties:
+        created:
+          type: integer
+          minimum: 0
+    BulkRowError:
+      type: object
+      additionalProperties: false
+      required:
+        - line
+        - field
+        - message
+        - code
+      properties:
+        line:
+          type: integer
+          minimum: 1
+        field:
+          type: string
+        message:
+          type: string
+        username:
+          type: string
+        code:
+          type: string
+          description: |
+            机器可读错误码：header_invalid / row_limit / file_too_large /
+            username_invalid / username_duplicate / password_invalid /
+            customer_type_invalid / group_not_found / insert_failed。
+    BulkRowErrorList:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - title
+        - status
+        - errors
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/BulkRowError'
+    BulkGenerateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - count
+        - customer_type
+        - group
+      properties:
+        count:
+          type: integer
+          minimum: 1
+          maximum: 500
+        customer_type:
+          type: string
+          enum:
+            - general
+            - enterprise
+        group:
+          type: string
+          minLength: 1
+          maxLength: 32
     DiscountModelOption:
       type: object
       additionalProperties: false

@@ -106,6 +106,10 @@ type GatewayDeps struct {
 	TwoFARepo      TwoFARepo
 	AdminUserRepo  AdminUserRepo
 	AdminGroupRepo AdminGroupRepo
+	// BulkUserRepo 是批量建用户端点（Task 9）的可选测试接缝；nil 且 DB 非 nil
+	// 时由 store.NewBulkUserRepo 构造。两者都为空时不挂载批量端点（M1 的纯
+	// Repo 单测装配没有批量用户所需的事务/序列语义）。
+	BulkUserRepo BulkUserRepo
 	// DiscountRepo 是用户/分组折扣管理端点的可选测试接缝；nil 且 DB 非 nil
 	// 时由 store.NewCustomerDiscountRepo 构造。两者都为空时不挂载折扣端点
 	// （M1 的纯 Repo 单测装配没有 discounts 表）。
@@ -919,6 +923,25 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			return nil, err
 		}
 		discounts.RegisterDiscountRoutes(rt.protected, nil)
+	}
+
+	// 批量建用户（plan 2026-10-26 Task 9）：模板/CSV 导入/系统生成。DB 与
+	// Repo 都为空时不挂载——纯 Repo 单测装配没有批量用户所需的事务语义。
+	// checker 带站点标题上下文词，与单条创建同口径。
+	if deps.DB != nil || deps.BulkUserRepo != nil {
+		bulk, err := NewBulkUserHandlers(BulkUserHandlerConfig{
+			DB:      deps.DB,
+			Repo:    deps.BulkUserRepo,
+			Redis:   deps.Redis,
+			Authz:   deps.Authz,
+			Checker: checker,
+			Audit:   deps.Audit,
+			Logger:  deps.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		bulk.RegisterBulkUserRoutes(rt.protected, nil)
 	}
 
 	// 上游用量对账（Task 8）：账号管理 + 快照台账。两者共用同一条受保护链，

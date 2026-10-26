@@ -255,6 +255,24 @@ func (e BillingPreferencePreference) Valid() bool {
 	}
 }
 
+// Defines values for BulkGenerateRequestCustomerType.
+const (
+	BulkGenerateRequestCustomerTypeEnterprise BulkGenerateRequestCustomerType = "enterprise"
+	BulkGenerateRequestCustomerTypeGeneral    BulkGenerateRequestCustomerType = "general"
+)
+
+// Valid indicates whether the value is a known member of the BulkGenerateRequestCustomerType enum.
+func (e BulkGenerateRequestCustomerType) Valid() bool {
+	switch e {
+	case BulkGenerateRequestCustomerTypeEnterprise:
+		return true
+	case BulkGenerateRequestCustomerTypeGeneral:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ChangeEmailResponseEmailVerified.
 const (
 	ChangeEmailResponseEmailVerifiedTrue ChangeEmailResponseEmailVerified = true
@@ -5879,6 +5897,41 @@ type BillingPreferencePreference string
 type BillingPreferenceUpdateRequest struct {
 	// Preference 未知/空值归一为 subscription_first（不返回 422）
 	Preference string `json:"preference"`
+}
+
+// BulkGenerateRequest defines model for BulkGenerateRequest.
+type BulkGenerateRequest struct {
+	Count        int                             `json:"count"`
+	CustomerType BulkGenerateRequestCustomerType `json:"customer_type"`
+	Group        string                          `json:"group"`
+}
+
+// BulkGenerateRequestCustomerType defines model for BulkGenerateRequest.CustomerType.
+type BulkGenerateRequestCustomerType string
+
+// BulkImportResult defines model for BulkImportResult.
+type BulkImportResult struct {
+	Created int `json:"created"`
+}
+
+// BulkRowError defines model for BulkRowError.
+type BulkRowError struct {
+	// Code 机器可读错误码：header_invalid / row_limit / file_too_large /
+	// username_invalid / username_duplicate / password_invalid /
+	// customer_type_invalid / group_not_found / insert_failed。
+	Code     string  `json:"code"`
+	Field    string  `json:"field"`
+	Line     int     `json:"line"`
+	Message  string  `json:"message"`
+	Username *string `json:"username,omitempty"`
+}
+
+// BulkRowErrorList defines model for BulkRowErrorList.
+type BulkRowErrorList struct {
+	Errors []BulkRowError `json:"errors"`
+	Status int            `json:"status"`
+	Title  string         `json:"title"`
+	Type   string         `json:"type"`
 }
 
 // ChangeEmailRequest 全量再认证门：未过再认证返回 403 reauth_required，且不消费验证码、
@@ -13795,6 +13848,29 @@ type CreateUserParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// GenerateBulkUsersParams defines parameters for GenerateBulkUsers.
+type GenerateBulkUsersParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ImportBulkUsersMultipartBody defines parameters for ImportBulkUsers.
+type ImportBulkUsersMultipartBody struct {
+	// File CSV 文件（≤1 MiB）
+	File openapi_types.File `json:"file"`
+
+	// MustChangePassword 写入临时口令标记，强制首次登录改密
+	MustChangePassword *bool `json:"must_change_password,omitempty"`
+}
+
+// ImportBulkUsersParams defines parameters for ImportBulkUsers.
+type ImportBulkUsersParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
 // ListUserDiscountModelsParams defines parameters for ListUserDiscountModels.
 type ListUserDiscountModelsParams struct {
 	Q     *string `form:"q,omitempty" json:"q,omitempty"`
@@ -14374,6 +14450,12 @@ type UpsertUpstreamSnapshotsJSONRequestBody = UpstreamSnapshotUpsert
 
 // CreateUserJSONRequestBody defines body for CreateUser for application/json ContentType.
 type CreateUserJSONRequestBody = AdminCreateUserRequest
+
+// GenerateBulkUsersJSONRequestBody defines body for GenerateBulkUsers for application/json ContentType.
+type GenerateBulkUsersJSONRequestBody = BulkGenerateRequest
+
+// ImportBulkUsersMultipartRequestBody defines body for ImportBulkUsers for multipart/form-data ContentType.
+type ImportBulkUsersMultipartRequestBody ImportBulkUsersMultipartBody
 
 // UpdateUserJSONRequestBody defines body for UpdateUser for application/json ContentType.
 type UpdateUserJSONRequestBody = AdminUpdateUserRequest

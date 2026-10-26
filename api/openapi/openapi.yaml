@@ -171,6 +171,13 @@ paths:
     $ref: './paths/admin.yaml#/paths/~1api~1users~1{id}~1reset-password'
   /api/users/{id}/permissions:
     $ref: './paths/admin.yaml#/paths/~1api~1users~1{id}~1permissions'
+  # 批量建用户（plan 2026-10-26 Task 9）。
+  /api/users/bulk/template:
+    $ref: './paths/admin.yaml#/paths/~1api~1users~1bulk~1template'
+  /api/users/bulk/import:
+    $ref: './paths/admin.yaml#/paths/~1api~1users~1bulk~1import'
+  /api/users/bulk/generate:
+    $ref: './paths/admin.yaml#/paths/~1api~1users~1bulk~1generate'
   # 客户专属折扣（plan 2026-10-26 Task 7）。
   /api/users/discount-models:
     $ref: './paths/admin.yaml#/paths/~1api~1users~1discount-models'

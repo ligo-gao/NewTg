@@ -65,6 +65,10 @@ const (
 	ActionUserQuotaAdjust   = "user.quota_adjust"
 	ActionUserReset2FA      = "user.reset_2fa"
 	ActionUserResetPassword = "user.reset_password"
+	// ActionUserBulkCreate 是批量建用户（CSV 导入 / 系统生成）的写事件
+	// （plan 2026-10-26 Task 9）。detail 只允许 {count, source, filename?,
+	// customer_type?, group?}，任何情况下不含口令或用户名列表。
+	ActionUserBulkCreate = "user.bulk_create"
 	// ActionUserDiscountSet / Delete 是客户专属折扣（plan 2026-10-26 Task 7）
 	// 的个人规则写事件：POST 与 PATCH 都记 set，DELETE 记 delete。
 	ActionUserDiscountSet    = "user.discount_set"
@@ -309,6 +313,7 @@ var actionCategories = map[string]string{
 	ActionUserQuotaAdjust:    categoryOperation,
 	ActionUserReset2FA:       categoryOperation,
 	ActionUserResetPassword:  categoryOperation,
+	ActionUserBulkCreate:     categoryOperation,
 	ActionUserDiscountSet:    categoryOperation,
 	ActionUserDiscountDelete: categoryOperation,
 

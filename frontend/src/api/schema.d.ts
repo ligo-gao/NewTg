@@ -1663,6 +1663,74 @@ export interface paths {
         patch: operations["setUserPermissions"];
         trace?: never;
     };
+    "/api/users/bulk/template": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 下载批量建用户 CSV 模板
+         * @description 返回仅含表头 `username,password,customer_type,group` 的 CSV 模板。
+         *     响应禁止缓存。
+         */
+        get: operations["downloadBulkUserTemplate"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/users/bulk/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 从 CSV 批量导入用户
+         * @description multipart/form-data：`file` 为 CSV（≤1 MiB），`must_change_password`
+         *     为 "true"/"1" 时写入无 TTL 的临时口令标记。表头必须是
+         *     username,password,customer_type,group 四列（顺序任意）；缺失/未知/
+         *     重复列 400 header_invalid。逐行校验后全有或全无：任一行不合法返回
+         *     422 + errors 列表，一行都不插入。行数上限 500。用户名冲突 409。
+         *     响应体只有 {created}，不回显任何凭据。
+         */
+        post: operations["importBulkUsers"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/users/bulk/generate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 系统生成用户名与一次性口令
+         * @description 分配 `NewTG_user%04d` 连续用户名并生成 16 位 CSPRNG 口令，响应为
+         *     text/csv（含一次性明文口令），禁止缓存。count 1–500；customer_type
+         *     必填且为 general/enterprise；group 必填且必须存在。序号耗尽 409。
+         */
+        post: operations["generateBulkUsers"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/users/discount-models": {
         parameters: {
             query?: never;
@@ -8372,6 +8440,33 @@ export interface components {
              */
             admin_permissions: components["schemas"]["PermissionGrant"][];
         };
+        BulkImportResult: {
+            created: number;
+        };
+        BulkRowError: {
+            line: number;
+            field: string;
+            message: string;
+            username?: string;
+            /**
+             * @description 机器可读错误码：header_invalid / row_limit / file_too_large /
+             *     username_invalid / username_duplicate / password_invalid /
+             *     customer_type_invalid / group_not_found / insert_failed。
+             */
+            code: string;
+        };
+        BulkRowErrorList: {
+            type: string;
+            title: string;
+            status: number;
+            errors: components["schemas"]["BulkRowError"][];
+        };
+        BulkGenerateRequest: {
+            count: number;
+            /** @enum {string} */
+            customer_type: "general" | "enterprise";
+            group: string;
+        };
         DiscountModelOption: {
             model_name: string;
         };
@@ -14978,6 +15073,140 @@ export interface operations {
             403: components["responses"]["Error403"];
             404: components["responses"]["Error404"];
             500: components["responses"]["Error500"];
+        };
+    };
+    downloadBulkUserTemplate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description CSV 模板（仅表头） */
+            200: {
+                headers: {
+                    /** @description attachment; filename="newtg-users-template.csv" */
+                    "Content-Disposition"?: string;
+                    /** @description no-store */
+                    "Cache-Control"?: string;
+                    /** @description nosniff */
+                    "X-Content-Type-Options"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    importBulkUsers: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /**
+                     * Format: binary
+                     * @description CSV 文件（≤1 MiB）
+                     */
+                    file: string;
+                    /** @description 写入临时口令标记，强制首次登录改密 */
+                    must_change_password?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkImportResult"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            /** @description CSV 文件超过 1 MiB */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description 行级校验错误（全有或全无） */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["BulkRowErrorList"];
+                };
+            };
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    generateBulkUsers: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkGenerateRequest"];
+            };
+        };
+        responses: {
+            /** @description 生成的账号与一次性口令 CSV */
+            200: {
+                headers: {
+                    /** @description attachment; filename="newtg-users-<timestamp>.csv" */
+                    "Content-Disposition"?: string;
+                    /** @description no-store */
+                    "Cache-Control"?: string;
+                    /** @description nosniff */
+                    "X-Content-Type-Options"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+            503: components["responses"]["Error503"];
         };
     };
     listUserDiscountModels: {

@@ -377,7 +377,7 @@ func (m *AuthzMiddleware) AuthorizeGrant(p auth.Principal, requested []string) A
 // 配置了 PermissionLoader 时，Handler 会先按 UserID 解析权威权限（失败即 403），
 // 再执行三层判定，避免把会话路径未加载的 nil 误当 FULL。
 func (m *AuthzMiddleware) Handler(required string, action AuthzAction) func(http.Handler) http.Handler {
-	return m.handler(required, func(*http.Request) AuthzAction { return action })
+	return m.handler(required, func(*http.Request) AuthzAction { return action }, false)
 }
 
 // HandlerWithTarget 是 Handler 的动态归属版本，用于 /api/{resource}/{id} 形态：
@@ -397,10 +397,21 @@ func (m *AuthzMiddleware) HandlerWithTarget(required string, action AuthzAction,
 			a.TargetOwnerUserID = target(r)
 		}
 		return a
-	})
+	}, false)
 }
 
-func (m *AuthzMiddleware) handler(required string, actionFor func(*http.Request) AuthzAction) func(http.Handler) http.Handler {
+// HandlerPermissionOnly 是 multipart 端点的授权变体：只做功能级 + 数据级
+// 判定，**不读取请求体**。readJSONObject 无法解析 multipart，字段层在这类
+// 端点上无法成立（C17）；请求体校验由 handler 自己严格完成。
+//
+// 该变体不是「放宽授权」：功能级 key 仍必须持有，数据级照常判定；只是把
+// 字段白名单从中间件移交给了端点的显式解析逻辑。调用方必须确保请求体只
+// 承载该动作允许写入的数据（例如批量导入不提供 role 列）。
+func (m *AuthzMiddleware) HandlerPermissionOnly(required string, action AuthzAction) func(http.Handler) http.Handler {
+	return m.handler(required, func(*http.Request) AuthzAction { return action }, true)
+}
+
+func (m *AuthzMiddleware) handler(required string, actionFor func(*http.Request) AuthzAction, skipFields bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// 归属按请求解析；ResourceKind/ActionName 保持不变，因此字段策略
@@ -460,7 +471,7 @@ func (m *AuthzMiddleware) handler(required string, actionFor func(*http.Request)
 				return
 			}
 
-			if isWriteMethod(r.Method) {
+			if !skipFields && isWriteMethod(r.Method) {
 				body, present, err := readJSONObject(r)
 				if err != nil {
 					// 无法检查字段就无法证明请求体合法 → 失败关闭。

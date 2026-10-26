@@ -4605,3 +4605,48 @@ schemas:
           机器可读错误码：header_invalid / row_limit / file_too_large /
           username_invalid / username_duplicate / password_invalid /
           customer_type_invalid / group_not_found / insert_failed。
+
+  # 批量导入的 400/422 响应：RFC 7807 信封 + errors 列表（Task 9）。
+  BulkRowErrorList:
+    type: object
+    additionalProperties: false
+    required: [type, title, status, errors]
+    properties:
+      type:
+        type: string
+      title:
+        type: string
+      status:
+        type: integer
+      errors:
+        type: array
+        items:
+          $ref: '#/schemas/BulkRowError'
+
+  # 系统生成端点请求体（Task 9）。count 1–500；customer_type 与 group 必填。
+  BulkGenerateRequest:
+    type: object
+    additionalProperties: false
+    required: [count, customer_type, group]
+    properties:
+      count:
+        type: integer
+        minimum: 1
+        maximum: 500
+      customer_type:
+        type: string
+        enum: [general, enterprise]
+      group:
+        type: string
+        minLength: 1
+        maxLength: 32
+
+  # 批量导入成功响应：只回计数，不回显任何凭据。
+  BulkImportResult:
+    type: object
+    additionalProperties: false
+    required: [created]
+    properties:
+      created:
+        type: integer
+        minimum: 0
