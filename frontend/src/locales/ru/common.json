@@ -817,6 +817,11 @@
       "descriptionTooLong": "Описание — не более {count} символов.",
       "nonNegativeInteger": "Введите неотрицательное целое число.",
       "knowledgeCutoffInvalid": "Используйте формат ГГГГ-ММ.",
+      "description": "Описание",
+      "resultList": "Результаты по строкам",
+      "vendorSuggestionUnresolved": "Предлагаемый поставщик «{name}» отсутствует в библиотеке поставщиков, поэтому указан не будет.",
+      "vendorWillCreate": "Поставщик «{name}» будет создан при отправке.",
+      "vendorExists": "Поставщик «{name}» уже существует; список обновляется.",
       "action": {
         "create": "Создать",
         "update": "Обновить",

@@ -8,6 +8,7 @@ import type { components } from '@/api/schema'
 
 import { fetchChannelModels } from './api'
 import { ModelProfileWizard } from './model-profile-wizard'
+import { CREATE_VENDOR } from './model-profile-wizard-step-defaults'
 import { renderWithProviders } from './test-utils'
 import type { FetchChannelModelEntry } from './types'
 
@@ -468,14 +469,11 @@ describe('ModelProfileWizard row confirmation and write-back', () => {
     expect(mockPut).toHaveBeenCalledTimes(1)
   })
 
-  it('creates a vendor at most once for the same name', async () => {
+  it('creates the explicitly named vendor at most once', async () => {
     const user = userEvent.setup()
     mockFetch.mockResolvedValue({
       models: ['alpha-model', 'beta-model'],
-      entries: [
-        entry({ id: 'alpha-model', vendor_suggestion: 'OpenAI ' }),
-        entry({ id: 'beta-model', vendor_suggestion: 'openai' }),
-      ],
+      entries: [entry({ id: 'alpha-model' }), entry({ id: 'beta-model' })],
     })
     mockCatalog([])
     mockPost.mockImplementation(((path: string) => {
@@ -488,7 +486,14 @@ describe('ModelProfileWizard row confirmation and write-back', () => {
     renderWizard()
 
     await screen.findByText('alpha-model')
-    await goToConfirmAndSubmit(user)
+    await goToStep(user, 2)
+    await user.selectOptions(screen.getByLabelText('Vendor'), CREATE_VENDOR)
+    await user.type(screen.getByLabelText('New vendor name'), ' OpenAI ')
+    await user.click(
+      screen.getByRole('button', { name: 'Apply to all selected models' }),
+    )
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await submitWizard(user)
 
     expect(await screen.findByText('Created 2')).toBeTruthy()
     const calls = mockPost.mock.calls as unknown as Array<
@@ -501,6 +506,245 @@ describe('ModelProfileWizard row confirmation and write-back', () => {
     const modelCalls = calls.filter(([path]) => path === '/api/models')
     expect(modelCalls).toHaveLength(2)
     expect(modelCalls.map(([, init]) => init.body?.vendor_id)).toEqual([7, 7])
+  })
+
+  it('never creates a vendor from an upstream suggestion', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['alpha-model', 'beta-model'],
+      entries: [
+        entry({ id: 'alpha-model', vendor_suggestion: 'Gemini' }),
+        entry({ id: 'beta-model', vendor_suggestion: 'Gemini' }),
+      ],
+    })
+    mockCatalog([])
+
+    renderWizard()
+
+    await screen.findByText('alpha-model')
+    await goToStep(user, 3)
+
+    expect(
+      screen.getAllByText(
+        'Suggested vendor "Gemini" is not in the vendor library, so it will not be set.',
+      ).length,
+    ).toBeGreaterThan(0)
+
+    await submitWizard(user)
+
+    expect(await screen.findByText('Created 2')).toBeTruthy()
+    const calls = mockPost.mock.calls as unknown as Array<
+      [string, { body?: { vendor_id?: number | null } }]
+    >
+    expect(calls.filter(([path]) => path === '/api/vendors')).toHaveLength(0)
+    const modelCalls = calls.filter(([path]) => path === '/api/models')
+    expect(modelCalls).toHaveLength(2)
+    expect(modelCalls.map(([, init]) => init.body?.vendor_id)).toEqual([
+      null,
+      null,
+    ])
+  })
+
+  it('adds a capability to an existing profile instead of replacing it', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['gemini-2.5-pro'],
+      entries: [entry({ id: 'gemini-2.5-pro' })],
+    })
+    mockCatalog([
+      modelMeta({
+        id: 9,
+        model_name: 'gemini-2.5-pro',
+        capabilities: ['text', 'vision'],
+      }),
+    ])
+
+    renderWizard()
+
+    await user.click(
+      await screen.findByRole('checkbox', { name: 'gemini-2.5-pro' }),
+    )
+    await goToStep(user, 3)
+    await user.click(screen.getByRole('checkbox', { name: 'Overwrite' }))
+    await user.click(screen.getByRole('button', { name: 'gemini-2.5-pro' }))
+
+    expect(
+      (
+        screen.getByRole('checkbox', {
+          name: 'admin.models.capability_text',
+        }) as HTMLInputElement
+      ).checked,
+    ).toBe(true)
+    await user.click(
+      screen.getByRole('checkbox', {
+        name: 'admin.models.capability_reasoning',
+      }),
+    )
+    await submitWizard(user)
+
+    expect(await screen.findByText('Updated 1')).toBeTruthy()
+    const [, init] = mockPut.mock.calls[0] as unknown as [
+      string,
+      { body: { capabilities?: string[] } },
+    ]
+    // 既有值是叠加的起点：勾一个只新增，不把 text / vision 丢掉。
+    expect(init.body.capabilities).toEqual(['text', 'vision', 'reasoning'])
+  })
+
+  it('retries only the failed rows and updates the counts', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['gpt-4o', 'gemini-2.5-pro'],
+      entries: [entry({ id: 'gpt-4o' }), entry({ id: 'gemini-2.5-pro' })],
+    })
+    mockCatalog([modelMeta({ id: 9, model_name: 'gemini-2.5-pro' })])
+    mockPut.mockRejectedValueOnce(
+      new ApiError({
+        status: 409,
+        type: 'https://newtg.dev/problems/conflict',
+        title: 'Conflict',
+        kind: 'conflict',
+      }),
+    )
+
+    renderWizard()
+
+    await screen.findByText('gpt-4o')
+    await user.click(screen.getByRole('checkbox', { name: 'gemini-2.5-pro' }))
+    await goToStep(user, 3)
+    await user.click(screen.getByRole('checkbox', { name: 'Overwrite' }))
+    await submitWizard(user)
+
+    expect(await screen.findByText('Created 1')).toBeTruthy()
+    expect(screen.getByText('Failed 1')).toBeTruthy()
+
+    await user.click(
+      screen.getByRole('button', { name: 'Retry failed rows only' }),
+    )
+
+    await waitFor(() => {
+      expect(mockPut).toHaveBeenCalledTimes(2)
+    })
+    // 成功行不重发。
+    expect(mockPost).toHaveBeenCalledTimes(1)
+    expect(await screen.findByText('Updated 1')).toBeTruthy()
+    expect(screen.queryByText('Failed 1')).toBeNull()
+    expect(screen.getByText('Created 1')).toBeTruthy()
+  })
+
+  it('reports an existing vendor instead of a profile conflict', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['alpha-model'],
+      entries: [entry({ id: 'alpha-model', vendor_suggestion: 'Acme' })],
+    })
+    mockCatalog([])
+    mockPost.mockImplementation(((path: string) => {
+      if (path === '/api/vendors') {
+        return Promise.reject(
+          new ApiError({
+            status: 409,
+            type: 'https://newtg.dev/problems/conflict',
+            title: 'Conflict',
+            kind: 'conflict',
+          }),
+        )
+      }
+      return Promise.resolve({ data: {} })
+    }) as never)
+
+    renderWizard()
+
+    await screen.findByText('alpha-model')
+    await goToStep(user, 2)
+    await user.selectOptions(screen.getByLabelText('Vendor'), CREATE_VENDOR)
+    await user.type(screen.getByLabelText('New vendor name'), 'Acme')
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await submitWizard(user)
+
+    expect(await screen.findByText('Failed 1')).toBeTruthy()
+    expect(
+      screen.getByText('Vendor "Acme" already exists; refreshing the list.'),
+    ).toBeTruthy()
+    const calls = mockPost.mock.calls as unknown as Array<[string]>
+    expect(calls.filter(([path]) => path === '/api/models')).toHaveLength(0)
+  })
+
+  it('fails only the rows that use a vendor that could not be created', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['alpha-model', 'beta-model'],
+      entries: [
+        entry({ id: 'alpha-model', vendor_suggestion: 'Acme' }),
+        entry({ id: 'beta-model' }),
+      ],
+    })
+    mockCatalog([])
+    mockPost.mockImplementation(((path: string) => {
+      if (path === '/api/vendors') {
+        return Promise.reject(
+          new ApiError({
+            status: 500,
+            type: 'https://newtg.dev/problems/server_error',
+            title: 'Vendor error',
+            kind: 'server',
+          }),
+        )
+      }
+      return Promise.resolve({ data: {} })
+    }) as never)
+
+    renderWizard()
+
+    await screen.findByText('alpha-model')
+    await goToStep(user, 2)
+    // 显式新建名与 alpha 的建议值相同：只有这一行依赖建商。
+    await user.selectOptions(screen.getByLabelText('Vendor'), CREATE_VENDOR)
+    await user.type(screen.getByLabelText('New vendor name'), 'Acme')
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await submitWizard(user)
+
+    expect(await screen.findByText('Created 1')).toBeTruthy()
+    expect(screen.getByText('Failed 1')).toBeTruthy()
+    expect(
+      screen.getByText('Could not create vendor "Acme": Vendor error'),
+    ).toBeTruthy()
+
+    const calls = mockPost.mock.calls as unknown as Array<
+      [string, { body?: { model_name?: string } }]
+    >
+    expect(calls.filter(([path]) => path === '/api/vendors')).toHaveLength(1)
+    const modelCalls = calls.filter(([path]) => path === '/api/models')
+    expect(modelCalls).toHaveLength(1)
+    expect(modelCalls[0]?.[1].body?.model_name).toBe('beta-model')
+  })
+
+  it('allows exactly MAX_WIZARD_ROWS rows but blocks one more', async () => {
+    const user = userEvent.setup()
+    const entries = Array.from({ length: 200 }, (_, index) =>
+      entry({ id: `model-${index}` }),
+    )
+    mockFetch.mockResolvedValue({
+      models: entries.map((item) => item.id),
+      entries,
+    })
+    mockCatalog([])
+
+    renderWizard()
+
+    await screen.findByText('model-0')
+    await goToStep(user, 3)
+
+    expect(
+      screen.queryByText(
+        'Confirm at most 200 models at once. Narrow the selection first.',
+      ),
+    ).toBeNull()
+    const submitButton = screen.getByRole('button', {
+      name: /^Write \d+ profiles$/,
+    }) as HTMLButtonElement
+    expect(submitButton.disabled).toBe(false)
+    expect(mockPost).not.toHaveBeenCalled()
   })
 
   it('flags an invalid inline value and skips only that row', async () => {

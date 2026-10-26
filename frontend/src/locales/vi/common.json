@@ -817,6 +817,11 @@
       "descriptionTooLong": "Mô tả tối đa {count} ký tự.",
       "nonNegativeInteger": "Nhập số nguyên không âm.",
       "knowledgeCutoffInvalid": "Dùng định dạng YYYY-MM.",
+      "description": "Mô tả",
+      "resultList": "Kết quả từng dòng",
+      "vendorSuggestionUnresolved": "Nhà cung cấp gợi ý \"{name}\" không có trong thư viện nhà cung cấp nên sẽ không được đặt.",
+      "vendorWillCreate": "Nhà cung cấp \"{name}\" sẽ được tạo khi gửi.",
+      "vendorExists": "Nhà cung cấp \"{name}\" đã tồn tại; đang làm mới danh sách.",
       "action": {
         "create": "Tạo mới",
         "update": "Cập nhật",

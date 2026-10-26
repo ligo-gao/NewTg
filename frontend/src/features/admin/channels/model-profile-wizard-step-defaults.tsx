@@ -20,6 +20,7 @@ import {
 } from './model-profile-wizard-logic'
 import type { VendorDirectory } from './model-profile-wizard-queries'
 import { ChipToggle } from './ui/chip-toggle'
+import { toggled } from './ui/toggled'
 
 /** 「本地没有，提交时新建」在下拉里的哨兵值（不会与真实供应商 id 冲突）。 */
 export const CREATE_VENDOR = '__create__'
@@ -62,12 +63,6 @@ export interface StepDefaultsProps {
   selectedCount: number
   appliedCount: number | null
   onApply: () => void
-}
-
-function toggled<T>(list: T[], value: T): T[] {
-  return list.includes(value)
-    ? list.filter((item) => item !== value)
-    : [...list, value]
 }
 
 export function StepDefaults({

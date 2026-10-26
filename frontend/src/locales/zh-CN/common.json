@@ -817,6 +817,11 @@
       "descriptionTooLong": "描述最多 {count} 个字符。",
       "nonNegativeInteger": "请输入非负整数。",
       "knowledgeCutoffInvalid": "请使用 YYYY-MM 格式。",
+      "description": "描述",
+      "resultList": "逐行结果",
+      "vendorSuggestionUnresolved": "建议供应商「{name}」不在供应商库中，本次不设置。",
+      "vendorWillCreate": "提交时会创建供应商「{name}」。",
+      "vendorExists": "供应商「{name}」已存在，正在刷新列表。",
       "action": {
         "create": "新建",
         "update": "更新",

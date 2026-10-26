@@ -168,6 +168,24 @@ function writeFailureMessage(error: unknown, t: TranslateFn): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/**
+ * 建商失败原因。409 是「同名供应商已经存在」——不是乐观锁冲突，并且刷新
+ * 目录后重试就能命中，所以单独给一句文案。
+ */
+function vendorFailureMessage(
+  error: unknown,
+  name: string,
+  t: TranslateFn,
+): string {
+  if (error instanceof ApiError && error.status === 409) {
+    return t('common.channels.profileWizard.vendorExists', { name })
+  }
+  return t('common.channels.profileWizard.vendorCreateFailed', {
+    name,
+    message: writeFailureMessage(error, t),
+  })
+}
+
 function WizardLoading({ label }: { label: string }) {
   return (
     <div
@@ -224,6 +242,9 @@ export function ModelProfileWizard({
   // 新的建行时机（恢复后只重建一次）；进入过成功之后再失败**不重建**。
   const builtKeyRef = useRef<string | null>(null)
   const catalogReadyOnceRef = useRef(false)
+  // 本轮已建成的供应商 id（归一化名 → id）。结果页的「只重试失败行」可能
+  // 发生在目录刷新完成之前，重试必须复用它们，否则会再建一次撞唯一索引。
+  const createdVendorIdsRef = useRef<Map<string, number>>(new Map())
 
   const catalogQuery = useQuery({
     queryKey: MODEL_CATALOG_QUERY_KEY,
@@ -303,6 +324,10 @@ export function ModelProfileWizard({
 
   const catalog = catalogQuery.data ?? EMPTY_CATALOG
   const vendorDirectory = vendorsQuery.data ?? EMPTY_VENDOR_DIRECTORY
+  // 唯一允许创建的供应商：第 2 步显式选择「新建供应商」后填的名字。
+  // 探测建议值（vendor_suggestion）不在这条路径上，绝不隐式建商。
+  const explicitVendorName =
+    form.vendorChoice === CREATE_VENDOR ? form.newVendorName.trim() : ''
 
   const selectedCount = rows.filter((row) => row.selected).length
   const selectedRows = rows.filter((row) => row.selected)
@@ -387,13 +412,20 @@ export function ModelProfileWizard({
   }
 
   /**
-   * 串行写库。供应商先解析（按 `trim()` + 小写去重，本地没有才创建，每个
-   * 名字最多试一次），再逐行写档案；单行失败只记该行，不中断其它行。
+   * 串行写库。供应商先解析：
+   *
+   * - 本地目录命中（或本轮刚建成的缓存）→ 直接用 id；
+   * - 归一化后等于第 2 步显式填写的新建名 → 创建（同名只试一次）；
+   * - 其余不在目录里的名字（典型是探测建议值）→ **不创建**，该行
+   *   `vendor_id` 传 null（更新时沿用既有值）。
+   *
+   * 再逐行写档案；单行失败只记该行，不中断其它行。
    */
   async function writeRows(targets: WizardRow[]): Promise<Map<string, RowResult>> {
     const output = new Map<string, RowResult>()
-    const vendorIds = new Map<string, number | null>()
+    const vendorIds = new Map<string, number>()
     const vendorErrors = new Map<string, string>()
+    const explicitKey = explicitVendorName.toLowerCase()
 
     // 只给「真的会写库且通过校验」的行解析供应商：跳过 / 非法行不应产生
     // 供应商这类副作用。
@@ -406,11 +438,14 @@ export function ModelProfileWizard({
       if (name === '') continue
       const key = name.toLowerCase()
       if (vendorIds.has(key) || vendorErrors.has(key)) continue
-      const known = vendorDirectory.ids.get(key)
+      const known =
+        vendorDirectory.ids.get(key) ?? createdVendorIdsRef.current.get(key)
       if (known !== undefined) {
         vendorIds.set(key, known)
         continue
       }
+      // 只有第 2 步显式新建的那个名字才允许创建。
+      if (explicitKey === '' || key !== explicitKey) continue
       try {
         const created = requireData(
           await apiClient.POST('/api/vendors', {
@@ -419,14 +454,19 @@ export function ModelProfileWizard({
           }),
         )
         vendorIds.set(key, created.id)
+        createdVendorIdsRef.current.set(key, created.id)
       } catch (error) {
         // 记录失败原因并让同名的后续行复用，避免对同一个名字反复创建。
-        vendorErrors.set(key, writeFailureMessage(error, t))
+        vendorErrors.set(key, vendorFailureMessage(error, name, t))
+        if (error instanceof ApiError && error.status === 409) {
+          // 别人刚建好同名供应商：刷新目录，重试时就能按名字命中。
+          void vendorsQuery.refetch()
+        }
       }
     }
 
     for (const [index, row] of targets.entries()) {
-      setProgress({ done: index, total: targets.length })
+      setProgress({ done: index + 1, total: targets.length })
       const profile = catalog.get(row.id)
       const action = rowActionOf(row, profile)
       if (action === 'skip') {
@@ -454,10 +494,7 @@ export function ModelProfileWizard({
         output.set(row.id, {
           id: row.id,
           action: 'failed',
-          message: t('common.channels.profileWizard.vendorCreateFailed', {
-            name,
-            message: vendorError,
-          }),
+          message: vendorError,
           retryable: true,
         })
         continue
@@ -517,11 +554,14 @@ export function ModelProfileWizard({
     const targets = selectedRows
     setResults(null)
     setProgress({ done: 0, total: targets.length })
-    const written = await writeRows(targets)
-    setProgress(null)
-    setResults(mergeResults(targets, written))
-    setStep(4)
-    invalidateCatalog()
+    try {
+      const written = await writeRows(targets)
+      setResults(mergeResults(targets, written))
+      setStep(4)
+      invalidateCatalog()
+    } finally {
+      setProgress(null)
+    }
   }
 
   async function retryFailed(): Promise<void> {
@@ -534,14 +574,17 @@ export function ModelProfileWizard({
     const targets = selectedRows.filter((row) => retryable.has(row.id))
     if (targets.length === 0) return
     setProgress({ done: 0, total: targets.length })
-    const written = await writeRows(targets)
-    setProgress(null)
-    setResults((current) =>
-      current === null
-        ? null
-        : current.map((result) => written.get(result.id) ?? result),
-    )
-    invalidateCatalog()
+    try {
+      const written = await writeRows(targets)
+      setResults((current) =>
+        current === null
+          ? null
+          : current.map((result) => written.get(result.id) ?? result),
+      )
+      invalidateCatalog()
+    } finally {
+      setProgress(null)
+    }
   }
 
   const backButton = (
@@ -668,6 +711,7 @@ export function ModelProfileWizard({
           rows={selectedRows}
           catalog={catalog}
           vendorDirectory={vendorDirectory}
+          newVendorName={explicitVendorName}
           tooMany={tooMany}
           onUpdateRow={updateRow}
         />

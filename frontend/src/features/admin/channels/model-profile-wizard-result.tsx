@@ -72,7 +72,7 @@ export function ModelProfileWizardResult({
       </div>
 
       <ul
-        aria-label={t('common.channels.profileWizard.stepResult')}
+        aria-label={t('common.channels.profileWizard.resultList')}
         className="divide-y divide-border-hairline rounded-lg border border-border-hairline"
       >
         {results.map((result) => (

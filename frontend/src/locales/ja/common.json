@@ -817,6 +817,11 @@
       "descriptionTooLong": "説明は {count} 文字以内にしてください。",
       "nonNegativeInteger": "0 以上の整数を入力してください。",
       "knowledgeCutoffInvalid": "YYYY-MM 形式で入力してください。",
+      "description": "説明",
+      "resultList": "行ごとの結果",
+      "vendorSuggestionUnresolved": "提案されたベンダー「{name}」はベンダーライブラリにないため、今回は設定されません。",
+      "vendorWillCreate": "送信時にベンダー「{name}」を作成します。",
+      "vendorExists": "ベンダー「{name}」は既に存在します。一覧を更新しています。",
       "action": {
         "create": "新規作成",
         "update": "更新",

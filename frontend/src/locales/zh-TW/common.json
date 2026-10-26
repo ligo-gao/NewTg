@@ -817,6 +817,11 @@
       "descriptionTooLong": "描述最多 {count} 個字元。",
       "nonNegativeInteger": "請輸入非負整數。",
       "knowledgeCutoffInvalid": "請使用 YYYY-MM 格式。",
+      "description": "描述",
+      "resultList": "逐行結果",
+      "vendorSuggestionUnresolved": "建議供應商「{name}」不在供應商庫中，本次不設定。",
+      "vendorWillCreate": "提交時會建立供應商「{name}」。",
+      "vendorExists": "供應商「{name}」已存在，正在重新整理清單。",
       "action": {
         "create": "新建",
         "update": "更新",

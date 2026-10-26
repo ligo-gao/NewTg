@@ -817,6 +817,11 @@
       "descriptionTooLong": "Description must be at most {count} characters.",
       "nonNegativeInteger": "Enter a non-negative integer.",
       "knowledgeCutoffInvalid": "Use the YYYY-MM format.",
+      "description": "Description",
+      "resultList": "Per-row results",
+      "vendorSuggestionUnresolved": "Suggested vendor \"{name}\" is not in the vendor library, so it will not be set.",
+      "vendorWillCreate": "Vendor \"{name}\" will be created when you submit.",
+      "vendorExists": "Vendor \"{name}\" already exists; refreshing the list.",
       "action": {
         "create": "Create",
         "update": "Update",

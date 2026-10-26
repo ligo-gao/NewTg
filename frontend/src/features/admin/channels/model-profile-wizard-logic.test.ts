@@ -10,8 +10,14 @@ import {
   buildUpdateBody,
   endpointsObject,
   formatParameterLines,
+  knowledgeCutoffIsValid,
+  parametersAreValid,
   parseParameterLines,
+  rowActionOf,
+  rowIssues,
+  vendorStateOf,
   type ParameterRow,
+  type RowIssue,
   type WizardDefaults,
   type WizardRow,
 } from './model-profile-wizard-logic'
@@ -164,6 +170,50 @@ describe('buildRows', () => {
       tags: [],
     })
   })
+
+  it('seeds the editable collections from the existing profile (deep copies)', () => {
+    const profile = modelMeta({
+      capabilities: ['text', 'vision'],
+      modalities: ['image'],
+      parameters: [
+        { name: 'stream', type: 'boolean', required: true, description: 'toggle' },
+      ],
+      knowledge_cutoff: '2025-05',
+      tags: ['legacy'],
+    })
+    const row = firstRow(
+      buildRows(
+        [entry({ id: 'gpt-4o' })],
+        new Map([['gpt-4o', profile]]),
+        ['gpt-4o'],
+      ),
+    )
+
+    expect(row).toMatchObject({
+      capabilities: ['text', 'vision'],
+      modalities: ['image'],
+      knowledgeCutoff: '2025-05',
+      tags: ['legacy'],
+    })
+    expect(row.parameters).toEqual([
+      {
+        name: 'stream',
+        type: 'boolean',
+        description: 'toggle',
+        defaultValue: '',
+        required: true,
+      },
+    ])
+
+    // 行编辑不能反向改到查询缓存里的档案。
+    row.capabilities.push('reasoning')
+    row.tags.push('added')
+    const parameter = row.parameters[0]
+    if (parameter !== undefined) parameter.name = 'changed'
+    expect(profile.capabilities).toEqual(['text', 'vision'])
+    expect(profile.tags).toEqual(['legacy'])
+    expect(profile.parameters[0]?.name).toBe('stream')
+  })
 })
 
 describe('applyDefaults', () => {
@@ -314,6 +364,36 @@ describe('buildUpdateBody', () => {
     expect(body.context_length).toBe(128000)
     expect(body.max_output).toBe(8192)
   })
+
+  it('trims the description before writing it', () => {
+    const created = buildCreateBody(wizardRow({ description: '  padded  ' }), null)
+    const updated = buildUpdateBody(wizardRow({ description: '  padded  ' }), modelMeta(), null)
+
+    expect(created.description).toBe('padded')
+    expect(updated.description).toBe('padded')
+  })
+
+  it('preserves the required flag carried by an existing parameter', () => {
+    const body = buildUpdateBody(
+      wizardRow({
+        parameters: [
+          {
+            name: 'stream',
+            type: 'boolean',
+            description: '',
+            defaultValue: '',
+            required: true,
+          },
+        ],
+      }),
+      modelMeta(),
+      null,
+    )
+
+    expect(body.parameters).toEqual([
+      { name: 'stream', type: 'boolean', required: true },
+    ])
+  })
 })
 
 describe('parseParameterLines', () => {
@@ -340,5 +420,209 @@ describe('formatParameterLines', () => {
 
     expect(formatParameterLines(rows)).toBe('temperature:number\ntop_p:string:distribution')
     expect(parseParameterLines(formatParameterLines(rows))).toEqual(rows)
+  })
+})
+
+describe('rowIssues', () => {
+  const blankParameter: ParameterRow = {
+    name: '',
+    type: '',
+    description: '',
+    defaultValue: '',
+  }
+
+  const cases: Array<{ name: string; row?: WizardRow; expected: RowIssue[] }> = [
+    { name: 'accepts a blank row', expected: [] },
+    {
+      name: 'allows exactly 64 runes in the display name',
+      // U+540D 是双字节 CJK 字符；用码点构造避免源码里出现中文字面量。
+      row: wizardRow({ displayName: String.fromCodePoint(0x540d).repeat(64) }),
+      expected: [],
+    },
+    {
+      name: 'rejects 65 runes in the display name',
+      row: wizardRow({ displayName: String.fromCodePoint(0x540d).repeat(65) }),
+      expected: ['displayName'],
+    },
+    {
+      name: 'allows exactly 512 runes in the description',
+      row: wizardRow({ description: 'x'.repeat(512) }),
+      expected: [],
+    },
+    {
+      name: 'rejects 513 runes in the description',
+      row: wizardRow({ description: 'x'.repeat(513) }),
+      expected: ['description'],
+    },
+    {
+      name: 'accepts blank numbers and zero',
+      row: wizardRow({ contextLength: '', maxOutput: '0' }),
+      expected: [],
+    },
+    {
+      name: 'rejects non-numeric and negative numbers',
+      row: wizardRow({ contextLength: 'abc', maxOutput: '-1' }),
+      expected: ['contextLength', 'maxOutput'],
+    },
+    {
+      name: 'rejects fractional numbers',
+      row: wizardRow({ contextLength: '1.5' }),
+      expected: ['contextLength'],
+    },
+    {
+      name: 'accepts a YYYY-MM knowledge cutoff',
+      row: wizardRow({ knowledgeCutoff: '2025-06' }),
+      expected: [],
+    },
+    {
+      name: 'rejects other knowledge cutoff shapes',
+      row: wizardRow({ knowledgeCutoff: '2025-13' }),
+      expected: ['knowledgeCutoff'],
+    },
+    {
+      name: 'accepts untouched parameter rows',
+      row: wizardRow({ parameters: [blankParameter] }),
+      expected: [],
+    },
+    {
+      name: 'rejects parameter types outside the contract enum',
+      row: wizardRow({
+        parameters: [
+          { name: 'temperature', type: 'decimal', description: '', defaultValue: '' },
+        ],
+      }),
+      expected: ['parameters'],
+    },
+    {
+      name: 'rejects a parameter without a type',
+      row: wizardRow({
+        parameters: [{ name: 'temperature', type: '', description: '', defaultValue: '' }],
+      }),
+      expected: ['parameters'],
+    },
+    {
+      name: 'rejects a parameter without a name',
+      row: wizardRow({
+        parameters: [{ name: '', type: 'number', description: '', defaultValue: '' }],
+      }),
+      expected: ['parameters'],
+    },
+  ]
+
+  for (const testCase of cases) {
+    it(testCase.name, () => {
+      expect(rowIssues(testCase.row ?? wizardRow())).toEqual(testCase.expected)
+    })
+  }
+})
+
+describe('knowledgeCutoffIsValid', () => {
+  const cases: Array<[string, boolean]> = [
+    ['', true],
+    ['2025-06', true],
+    ['1999-12', true],
+    [' 2025-06 ', true],
+    ['2025-6', false],
+    ['2025-13', false],
+    ['2025-00', false],
+    ['2025-06-01', false],
+  ]
+
+  for (const [value, expected] of cases) {
+    it(`${JSON.stringify(value)} → ${String(expected)}`, () => {
+      expect(knowledgeCutoffIsValid(value)).toBe(expected)
+    })
+  }
+})
+
+describe('parametersAreValid', () => {
+  const cases: Array<{ name: string; rows: ParameterRow[]; expected: boolean }> = [
+    { name: 'accepts an empty list', rows: [], expected: true },
+    {
+      name: 'accepts fully blank rows',
+      rows: [{ name: ' ', type: ' ', description: '', defaultValue: '' }],
+      expected: true,
+    },
+    {
+      name: 'accepts a complete supported row',
+      rows: [{ name: 'stream', type: 'boolean', description: '', defaultValue: '' }],
+      expected: true,
+    },
+    {
+      name: 'rejects an unsupported type',
+      rows: [{ name: 'stream', type: 'decimal', description: '', defaultValue: '' }],
+      expected: false,
+    },
+    {
+      name: 'rejects a name without a type',
+      rows: [{ name: 'stream', type: '', description: '', defaultValue: '' }],
+      expected: false,
+    },
+    {
+      name: 'rejects a type without a name',
+      rows: [{ name: '', type: 'boolean', description: '', defaultValue: '' }],
+      expected: false,
+    },
+  ]
+
+  for (const testCase of cases) {
+    it(testCase.name, () => {
+      expect(parametersAreValid(testCase.rows)).toBe(testCase.expected)
+    })
+  }
+})
+
+describe('rowActionOf', () => {
+  it('creates when there is no profile', () => {
+    expect(rowActionOf(wizardRow(), undefined)).toBe('create')
+  })
+
+  it('skips an unlocked profile unless the row opts in', () => {
+    expect(rowActionOf(wizardRow(), modelMeta())).toBe('skip')
+    expect(rowActionOf(wizardRow({ overwrite: true }), modelMeta())).toBe('update')
+  })
+
+  it('always skips a locally locked profile, even with overwrite checked', () => {
+    const locked = modelMeta({ sync_official: false })
+    expect(rowActionOf(wizardRow(), locked)).toBe('skip')
+    expect(rowActionOf(wizardRow({ overwrite: true }), locked)).toBe('skip')
+  })
+})
+
+describe('vendorStateOf', () => {
+  const directory = {
+    ids: new Map([['openai', 3]]),
+    nameById: new Map([[3, 'OpenAI']]),
+  }
+
+  it('treats a blank name as unset', () => {
+    expect(vendorStateOf('', directory, '')).toEqual({ kind: 'unset' })
+    expect(vendorStateOf('   ', directory, '')).toEqual({ kind: 'unset' })
+  })
+
+  it('resolves a directory hit case-insensitively to the canonical name', () => {
+    expect(vendorStateOf(' OPENAI ', directory, '')).toEqual({
+      kind: 'listed',
+      name: 'OpenAI',
+      id: 3,
+    })
+  })
+
+  it('marks the explicit step-2 new vendor name as to-be-created', () => {
+    expect(vendorStateOf('Acme', directory, ' acme ')).toEqual({
+      kind: 'new',
+      name: 'Acme',
+    })
+  })
+
+  it('leaves other suggestions unresolved instead of creating them', () => {
+    expect(vendorStateOf('Gemini', directory, 'Acme')).toEqual({
+      kind: 'unresolved',
+      name: 'Gemini',
+    })
+    expect(vendorStateOf('Gemini', directory, '')).toEqual({
+      kind: 'unresolved',
+      name: 'Gemini',
+    })
   })
 })

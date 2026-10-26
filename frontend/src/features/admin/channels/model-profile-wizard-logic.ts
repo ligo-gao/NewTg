@@ -127,6 +127,12 @@ export interface ParameterRow {
   type: string
   description: string
   defaultValue: string
+  /**
+   * 既有档案的参数可能带 `required`；编辑时保留它，避免「只改一个字段却把
+   * 必填标记悄悄改成 false」。`parseParameterLines` 不产出这个字段（文本
+   * 格式没有必填标记），写入时回落 false。
+   */
+  required?: boolean
 }
 
 export interface WizardDefaults {
@@ -180,12 +186,31 @@ export function endpointsObject(keys: EndpointKey[]): Record<string, string[]> {
 }
 
 /**
+ * 既有档案 → 行内参数表。`description` / `default` / `required` 在契约里是
+ * 附加键（`unknown`），逐项做类型守卫；对象全部新建，行编辑不会反向改到
+ * 查询缓存里的档案。
+ */
+function profileParameters(profile: ModelMeta | undefined): ParameterRow[] {
+  if (profile === undefined) return []
+  return profile.parameters.map((parameter) => ({
+    name: parameter.name,
+    type: parameter.type,
+    description:
+      typeof parameter.description === 'string' ? parameter.description : '',
+    defaultValue: typeof parameter.default === 'string' ? parameter.default : '',
+    ...(parameter.required === true ? { required: true } : {}),
+  }))
+}
+
+/**
  * 把探针条目投影成向导行。
  *
  * - `selected`：创建态全选（没有既有档案）；编辑态只预选 `preselected`
  *   里的模型，避免向导默认改写既有档案。
  * - `overwrite` 恒为 false：覆盖必须由操作者逐行勾选。
- * - 能力 / 模态 / 参数 / 知识截止 / 标签留空，绝不从模型名推断。
+ * - 能力 / 模态 / 参数 / 知识截止 / 标签：既有档案取本地值（深拷贝），
+ *   没有档案的行留空。**绝不从模型名推断**；既有值只是让第 3 步的勾选
+ *   变成叠加/取消，而不是拿空集合盲替换。
  */
 export function buildRows(
   entries: FetchChannelModelEntry[],
@@ -204,11 +229,11 @@ export function buildRows(
       releasedAt: entry.released_at,
       endpoints: entry.endpoints.filter(isEndpointKey),
       vendorName: profile?.vendor_name ?? entry.vendor_suggestion,
-      capabilities: [],
-      modalities: [],
-      parameters: [],
-      knowledgeCutoff: '',
-      tags: [],
+      capabilities: profile === undefined ? [] : [...profile.capabilities],
+      modalities: profile === undefined ? [] : [...profile.modalities],
+      parameters: profileParameters(profile),
+      knowledgeCutoff: profile?.knowledge_cutoff ?? '',
+      tags: profile === undefined ? [] : [...profile.tags],
       factsSource: entry.facts_source,
       selected: preselectedIds.has(entry.id) || profile === undefined,
       overwrite: false,
@@ -393,6 +418,48 @@ export function rowActionOf(
   return row.overwrite ? 'update' : 'skip'
 }
 
+/**
+ * 行内供应商的四种状态。第 3 步与写库循环共用，避免「下拉显示未选中、
+ * 提交却用了某个名字」这类不一致。
+ *
+ * - `unset`：没有供应商（或管理员清空）。
+ * - `listed`：本地目录命中（`name` 用目录里的原始大小写）。
+ * - `new`：归一化后等于第 2 步显式填写的新建名——提交时会创建。
+ * - `unresolved`：探测建议值不在目录里，且不是第 2 步显式新建的那个——
+ *   **不创建**，本次不设置。
+ *
+ * 供应商创建的唯一入口是第 2 步的「新建供应商」，本函数只判断归属。
+ */
+export type VendorState =
+  | { kind: 'unset' }
+  | { kind: 'listed'; name: string; id: number }
+  | { kind: 'new'; name: string }
+  | { kind: 'unresolved'; name: string }
+
+export interface VendorLookup {
+  ids: ReadonlyMap<string, number>
+  nameById: ReadonlyMap<number, string>
+}
+
+export function vendorStateOf(
+  vendorName: string,
+  directory: VendorLookup,
+  newVendorName: string,
+): VendorState {
+  const name = vendorName.trim()
+  if (name === '') return { kind: 'unset' }
+  const key = name.toLowerCase()
+  const id = directory.ids.get(key)
+  if (id !== undefined) {
+    return { kind: 'listed', name: directory.nameById.get(id) ?? name, id }
+  }
+  const pending = newVendorName.trim()
+  if (pending !== '' && pending.toLowerCase() === key) {
+    return { kind: 'new', name }
+  }
+  return { kind: 'unresolved', name }
+}
+
 export type RowResultAction = 'created' | 'updated' | 'skipped' | 'failed'
 
 export interface RowResult {
@@ -429,7 +496,8 @@ function parameterPayload(
     const entry: { name: string; type: ParameterType } & Record<string, unknown> = {
       name,
       type,
-      required: false,
+      // 既有档案的必填标记原样保留；文本格式解析出来的行没有该字段。
+      required: row.required ?? false,
     }
     const defaultValue = row.defaultValue.trim()
     if (defaultValue !== '') entry.default = defaultValue
@@ -456,7 +524,8 @@ export function buildCreateBody(
   const displayName = row.displayName.trim()
   if (displayName !== '') body.display_name = displayName
 
-  if (row.description.trim() !== '') body.description = row.description
+  const description = row.description.trim()
+  if (description !== '') body.description = description
 
   const tags = normalizeTags(row.tags)
   if (tags.length > 0) body.tags = tags
@@ -523,7 +592,7 @@ export function buildUpdateBody(
   return {
     updated_at: existing.updated_at,
     display_name: displayName === '' ? (existing.display_name ?? null) : displayName,
-    description: description === '' ? (existing.description ?? null) : row.description,
+    description: description === '' ? (existing.description ?? null) : description,
     icon: existing.icon ?? null,
     vendor_id: vendorId ?? existing.vendor_id ?? null,
     tags: tags.length > 0 ? tags : [...existing.tags],

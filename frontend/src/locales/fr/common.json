@@ -817,6 +817,11 @@
       "descriptionTooLong": "La description doit contenir au plus {count} caractères.",
       "nonNegativeInteger": "Saisissez un entier positif ou nul.",
       "knowledgeCutoffInvalid": "Utilisez le format AAAA-MM.",
+      "description": "Description",
+      "resultList": "Résultats par ligne",
+      "vendorSuggestionUnresolved": "Le fournisseur suggéré « {name} » n'existe pas dans la bibliothèque de fournisseurs ; il ne sera pas défini.",
+      "vendorWillCreate": "Le fournisseur « {name} » sera créé lors de l'envoi.",
+      "vendorExists": "Le fournisseur « {name} » existe déjà ; actualisation de la liste.",
       "action": {
         "create": "Créer",
         "update": "Mettre à jour",
