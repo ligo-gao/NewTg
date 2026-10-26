@@ -38,21 +38,31 @@ const FACETS: ModelFacets = {
   endpoints: [{ value: 'chat.completions', count: 5 }],
 }
 
+/** The catalog's model_meta is empty: every facet comes back with no options. */
+const EMPTY_FACETS: ModelFacets = {
+  capabilities: [],
+  vendors: [],
+  contexts: [],
+  endpoints: [],
+}
+
 type ChangeHandler = (next: ModelsSearch, replace?: boolean) => void
 
 function Harness({
   initial,
   onChange,
   onClose,
+  facets = FACETS,
 }: {
   initial: ModelsSearch
   onChange: ChangeHandler
   onClose?: () => void
+  facets?: ModelFacets
 }) {
   const [search, setSearch] = useState(initial)
   return (
     <ModelFilters
-      facets={FACETS}
+      facets={facets}
       search={search}
       onChange={(next, replace) => {
         onChange(next, replace)
@@ -66,10 +76,16 @@ function Harness({
 async function renderFilters(
   initial: ModelsSearch = BASE,
   onClose?: () => void,
+  facets: ModelFacets = FACETS,
 ) {
   const onChange = vi.fn<ChangeHandler>()
   const result = await renderWithProviders(
-    <Harness initial={initial} onChange={onChange} onClose={onClose} />,
+    <Harness
+      initial={initial}
+      onChange={onChange}
+      onClose={onClose}
+      facets={facets}
+    />,
     ['public'],
   )
   const last = () => onChange.mock.lastCall?.[0] as ModelsSearch
@@ -167,6 +183,76 @@ describe('ModelFilters', () => {
         expect(checkbox.closest('fieldset')).toBe(group)
       }
     }
+  })
+
+  it('does not render a group with no options', async () => {
+    const onlyVendors: ModelFacets = {
+      ...EMPTY_FACETS,
+      vendors: FACETS.vendors,
+    }
+    const { container, getByRole, queryByText } = await renderFilters(
+      BASE,
+      undefined,
+      onlyVendors,
+    )
+
+    const groups = [...container.querySelectorAll('fieldset')]
+    expect(groups).toHaveLength(1)
+    expect(groups[0]?.querySelector('legend')?.textContent).toBe('Vendors')
+    expect(getByRole('checkbox', { name: 'openai' })).toBeTruthy()
+    expect(queryByText('Capabilities')).toBeNull()
+  })
+
+  it('renders one note instead of four empty groups when no profile exists', async () => {
+    const { container, getByText, queryByText } = await renderFilters(
+      BASE,
+      undefined,
+      EMPTY_FACETS,
+    )
+
+    expect(
+      getByText('The operator has not filled in model profiles yet.'),
+    ).toBeTruthy()
+    expect(
+      getByText(/No vendor, capability or context options are available/),
+    ).toBeTruthy()
+    expect(container.querySelectorAll('fieldset')).toHaveLength(0)
+    for (const heading of [
+      'Capabilities',
+      'Vendors',
+      'Context window',
+      'Call type',
+    ]) {
+      expect(queryByText(heading)).toBeNull()
+    }
+  })
+
+  it('always renders the data group', async () => {
+    const { getByText, getByRole } = await renderFilters(
+      BASE,
+      undefined,
+      EMPTY_FACETS,
+    )
+
+    expect(getByText('Data')).toBeTruthy()
+    expect(
+      getByRole('switch', { name: 'Only models with measurements' }),
+    ).toBeTruthy()
+  })
+
+  it('disables reset when nothing is filtered', async () => {
+    const idle = await renderFilters()
+    expect(
+      (idle.getByRole('button', { name: 'Reset all' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true)
+    idle.unmount()
+
+    const filtered = await renderFilters({ ...BASE, cap: 'text' })
+    expect(
+      (filtered.getByRole('button', { name: 'Reset all' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false)
   })
 
   it('calls onClose from the close button when provided', async () => {

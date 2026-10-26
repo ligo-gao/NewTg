@@ -30,6 +30,7 @@ import {
 } from '@/features/public/pricing/params'
 import { useI18n } from '@/shared/lib/i18n-context'
 
+import { activeFilterCount } from './filters'
 import { validateModelsSearch, type ModelsSearch } from './params'
 import type { ModelFacets } from './taxonomy'
 
@@ -190,6 +191,18 @@ export function ModelFilters({
     selectedEndpointTypes,
   )
 
+  // 没有选项的组整组不渲染；已选但 facet 里不存在的值由 withSelectedExtras /
+  // visibleOptions 追加成条目，因此「只有额外选中项」的组仍有内容。
+  const hasCapabilityOptions = capabilityOptions.visible.length > 0
+  const hasVendorOptions = vendorOptions.visible.length > 0
+  const hasContextOptions = contextOptions.length > 0
+  const hasEndpointOptions = endpointOptions.length > 0
+  // 能力 / 厂商 / 上下文三组全空 = 运营方还没填 model_meta，用一条提示代替
+  // 三组空标题（协议端点组仍按自己的选项单独判断）。
+  const hasProfileFacets =
+    hasCapabilityOptions || hasVendorOptions || hasContextOptions
+  const hasFilters = activeFilterCount(search) > 0
+
   const toggle = (
     selected: readonly string[],
     value: string,
@@ -230,7 +243,8 @@ export function ModelFilters({
           <button
             type="button"
             onClick={() => onChange(validateModelsSearch({ view: search.view }))}
-            className="rounded px-1 text-meta text-brand hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            disabled={!hasFilters}
+            className="rounded px-1 text-meta text-brand hover:underline disabled:cursor-not-allowed disabled:text-ink-3 disabled:no-underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
             {t('public.models.filters.reset')}
           </button>
@@ -247,86 +261,113 @@ export function ModelFilters({
       </div>
 
       <div>
-        <FacetFieldset title={t('public.models.filters.capabilities')}>
-          {capabilityOptions.visible.map((option) => (
-            <CheckRow
-              key={option.value}
-              checked={selectedCapabilities.includes(option.value)}
-              count={option.count}
-              onToggle={() =>
-                toggle(
-                  selectedCapabilities,
-                  option.value,
-                  withCapabilities,
-                  'cap',
-                )
-              }
-            >
-              {capabilityLabel(option.value, t)}
-            </CheckRow>
-          ))}
-          {showMore('capabilities', capabilityOptions.hidden)}
-        </FacetFieldset>
+        {hasProfileFacets ? (
+          <>
+            {hasCapabilityOptions ? (
+              <FacetFieldset title={t('public.models.filters.capabilities')}>
+                {capabilityOptions.visible.map((option) => (
+                  <CheckRow
+                    key={option.value}
+                    checked={selectedCapabilities.includes(option.value)}
+                    count={option.count}
+                    onToggle={() =>
+                      toggle(
+                        selectedCapabilities,
+                        option.value,
+                        withCapabilities,
+                        'cap',
+                      )
+                    }
+                  >
+                    {capabilityLabel(option.value, t)}
+                  </CheckRow>
+                ))}
+                {showMore('capabilities', capabilityOptions.hidden)}
+              </FacetFieldset>
+            ) : null}
 
-        <FacetFieldset title={t('public.models.filters.vendors')}>
-          {vendorOptions.visible.map((option) => (
-            <CheckRow
-              key={option.value}
-              checked={selectedVendors.includes(option.value)}
-              count={option.count}
-              onToggle={() =>
-                toggle(selectedVendors, option.value, withVendors, 'vendor')
-              }
-            >
-              {/* Facet 只有小写 value，没有展示名；按原值渲染。 */}
-              {option.value}
-            </CheckRow>
-          ))}
-          {showMore('vendors', vendorOptions.hidden)}
-        </FacetFieldset>
+            {hasVendorOptions ? (
+              <FacetFieldset title={t('public.models.filters.vendors')}>
+                {vendorOptions.visible.map((option) => (
+                  <CheckRow
+                    key={option.value}
+                    checked={selectedVendors.includes(option.value)}
+                    count={option.count}
+                    onToggle={() =>
+                      toggle(
+                        selectedVendors,
+                        option.value,
+                        withVendors,
+                        'vendor',
+                      )
+                    }
+                  >
+                    {/* Facet 只有小写 value，没有展示名；按原值渲染。 */}
+                    {option.value}
+                  </CheckRow>
+                ))}
+                {showMore('vendors', vendorOptions.hidden)}
+              </FacetFieldset>
+            ) : null}
 
-        <FacetFieldset title={t('public.models.filters.context')}>
-          {contextOptions.map((option) => (
-            <CheckRow
-              key={option.value}
-              checked={selectedContexts.includes(option.value)}
-              count={option.count}
-              onToggle={() =>
-                toggle(
-                  selectedContexts,
-                  option.value,
-                  withContexts,
-                  'context',
-                )
-              }
-            >
-              {contextBucketLabel(option.value, t)}
-            </CheckRow>
-          ))}
-        </FacetFieldset>
+            {hasContextOptions ? (
+              <FacetFieldset title={t('public.models.filters.context')}>
+                {contextOptions.map((option) => (
+                  <CheckRow
+                    key={option.value}
+                    checked={selectedContexts.includes(option.value)}
+                    count={option.count}
+                    onToggle={() =>
+                      toggle(
+                        selectedContexts,
+                        option.value,
+                        withContexts,
+                        'context',
+                      )
+                    }
+                  >
+                    {contextBucketLabel(option.value, t)}
+                  </CheckRow>
+                ))}
+              </FacetFieldset>
+            ) : null}
+          </>
+        ) : (
+          <p className="rounded-lg border border-border-hairline bg-surface-subtle px-3 py-2.5 text-badge text-ink-3">
+            <strong className="font-medium text-ink-2">
+              {t('public.models.filters.profile_missing')}
+            </strong>{' '}
+            {t('public.models.filters.profile_missing_hint')}
+          </p>
+        )}
 
-        <FacetFieldset title={t('public.models.filters.endpoint')}>
-          {endpointOptions.map((option) => (
-            <CheckRow
-              key={option.value}
-              checked={selectedEndpointTypes.includes(option.value)}
-              count={option.count}
-              onToggle={() =>
-                toggle(
-                  selectedEndpointTypes,
-                  option.value,
-                  withEndpointTypes,
-                  'endpoint',
-                )
-              }
-            >
-              {endpointLabel(option.value, t)}
-            </CheckRow>
-          ))}
-        </FacetFieldset>
+        {hasEndpointOptions ? (
+          <FacetFieldset title={t('public.models.filters.endpoint')}>
+            {endpointOptions.map((option) => (
+              <CheckRow
+                key={option.value}
+                checked={selectedEndpointTypes.includes(option.value)}
+                count={option.count}
+                onToggle={() =>
+                  toggle(
+                    selectedEndpointTypes,
+                    option.value,
+                    withEndpointTypes,
+                    'endpoint',
+                  )
+                }
+              >
+                {endpointLabel(option.value, t)}
+              </CheckRow>
+            ))}
+          </FacetFieldset>
+        ) : null}
       </div>
 
       <div className="border-t border-border-hairline py-3">
+        <h3 className="mb-1 text-meta font-semibold leading-5 text-ink-1">
+          {t('public.models.filters.data')}
+        </h3>
         <SwitchControl
           label={t('public.models.filters.measured')}
           checked={search.measured}
