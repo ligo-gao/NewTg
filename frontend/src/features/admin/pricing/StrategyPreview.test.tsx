@@ -96,4 +96,49 @@ describe('StrategyPreview', () => {
     expect(getByText('Time pricing off')).toBeTruthy()
     expect(getByTestId('strategy-preview-total-credits').textContent).toContain('29.056')
   })
+
+  it('shows peak and off-peak columns and highlights the active tier', async () => {
+    const { getByTestId } = await renderWithProviders(
+      <PeakHarness />,
+      ['common', 'admin'],
+    )
+    const table = getByTestId('strategy-preview-compare')
+    expect(table.textContent).toContain('Peak')
+    expect(table.textContent).toContain('Off-peak')
+    expect(table.querySelector('[data-active="true"]')?.textContent).toContain('Peak')
+  })
+
+  it('charges unset cache reads at the miss price', async () => {
+    const { getByTestId } = await renderWithProviders(
+      <StrategyPreview
+        mode="per_token"
+        prices={{ prompt: 200, completion: 800, cacheRead: null, cacheWrite: null }}
+        config={CONFIG}
+        at="2026-10-26T10:00"
+        onAtChange={() => undefined}
+        quotaPerUnit={100}
+      />,
+      ['common', 'admin'],
+    )
+    // 128K×200 + 64K×200 + 4K×800 = 41.6 credits
+    expect(getByTestId('strategy-preview-total-credits').textContent).toContain('41.6')
+    expect(getByTestId('strategy-preview-compare').textContent).toContain('Cache hit')
+  })
+
+  it('collapses to a single flat column when time pricing is off', async () => {
+    const { getByTestId } = await renderWithProviders(
+      <StrategyPreview
+        mode="per_token"
+        prices={PRICES}
+        config={{ ...CONFIG, enabled: false }}
+        at="2026-10-26T10:00"
+        onAtChange={() => undefined}
+        quotaPerUnit={100}
+      />,
+      ['common', 'admin'],
+    )
+    const table = getByTestId('strategy-preview-compare')
+    expect(table.textContent).toContain('Flat')
+    expect(table.textContent).not.toContain('Peak')
+  })
 })

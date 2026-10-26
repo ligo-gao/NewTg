@@ -5,6 +5,7 @@ import { formatCredits } from '@/shared/lib/format'
 import { Tag } from '@/shared/ui/tag'
 
 import {
+  effectiveCacheReadPrice,
   formatMultiplierPercent,
   matchLocalTimeRule,
   parseMultiplierPercent,
@@ -34,6 +35,12 @@ interface TokenInput {
   input: string
   output: string
   cacheRead: string
+}
+
+interface Tier {
+  id: 'peak' | 'off' | 'flat'
+  label: string
+  multiplier: number
 }
 
 const DEFAULT_TOKENS: TokenInput = {
@@ -91,7 +98,47 @@ export function StrategyPreview({
 
   const prompt = prices.prompt ?? 0
   const completion = prices.completion ?? 0
-  const cacheRead = prices.cacheRead ?? 0
+  // 命中价留空 = 按未命中价计；这里必须和后端结算口径一致，否则试算会
+  // 把「未设置」显示成免费。
+  const cacheRead = effectiveCacheReadPrice(prices.prompt, prices.cacheRead) ?? 0
+
+  // 档位：默认倍率与所有窗口里的最高值 = 高峰，最低值 = 空闲；
+  // 关闭时段或全时段同价时只有一档「统一价」，不制造假的峰谷列。
+  const tierMultipliers = [
+    defaultMultiplier,
+    ...config.windows.map((window) => {
+      const parsed = parseMultiplierPercent(window.multiplier)
+      return parsed.invalid ? 1 : (parsed.value ?? 1)
+    }),
+  ]
+  const peakMultiplier = Math.max(...tierMultipliers)
+  const idleMultiplier = Math.min(...tierMultipliers)
+  const flat =
+    !config.enabled ||
+    config.windows.length === 0 ||
+    Math.abs(peakMultiplier - idleMultiplier) < 1e-9
+  const tiers: Tier[] = flat
+    ? [
+        {
+          id: 'flat',
+          label: t('admin.pricing.preview_flat'),
+          multiplier: config.enabled ? defaultMultiplier : 1,
+        },
+      ]
+    : [
+        {
+          id: 'peak',
+          label: t('admin.pricing.preview_peak'),
+          multiplier: peakMultiplier,
+        },
+        {
+          id: 'off',
+          label: t('admin.pricing.preview_off'),
+          multiplier: idleMultiplier,
+        },
+      ]
+  const activeTier =
+    tiers.find((tier) => Math.abs(tier.multiplier - match.multiplier) < 1e-9)?.id ?? null
 
   let total = 0
   let inputCost = 0
@@ -157,6 +204,54 @@ export function StrategyPreview({
           </span>
         </div>
       </div>
+
+      {mode !== 'per_request' ? (
+        <div className="flex flex-col gap-1">
+          <h4 className="text-meta font-medium text-ink-1">
+            {t('admin.pricing.preview_compare_title')}
+          </h4>
+          <table
+            data-testid="strategy-preview-compare"
+            className="w-full border-collapse text-meta"
+          >
+            <thead>
+              <tr>
+                <th aria-hidden="true" />
+                {tiers.map((tier) => (
+                  <th
+                    key={tier.id}
+                    scope="col"
+                    data-active={activeTier === tier.id ? 'true' : undefined}
+                    className="border-b border-border-hairline px-1 pb-1 text-right font-medium text-ink-2"
+                  >
+                    {tier.label}
+                    {activeTier === tier.id
+                      ? ` · ${t('admin.pricing.preview_current')}`
+                      : ''}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              <RateRow
+                label={t('admin.pricing.preview_row_miss')}
+                price={prompt}
+                tiers={tiers}
+              />
+              <RateRow
+                label={t('admin.pricing.preview_row_hit')}
+                price={cacheRead}
+                tiers={tiers}
+              />
+              <RateRow
+                label={t('admin.pricing.preview_row_output')}
+                price={completion}
+                tiers={tiers}
+              />
+            </tbody>
+          </table>
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
         <TokenField
@@ -302,5 +397,31 @@ function BreakdownRow({ label, amount }: { label: string; amount: string }) {
       <span>{label}</span>
       <span className="font-mono tabular-nums text-ink-1">{amount}</span>
     </div>
+  )
+}
+
+function RateRow({
+  label,
+  price,
+  tiers,
+}: {
+  label: string
+  price: number
+  tiers: Tier[]
+}) {
+  return (
+    <tr>
+      <th scope="row" className="py-1 pr-2 text-left font-normal text-ink-2">
+        {label}
+      </th>
+      {tiers.map((tier) => (
+        <td
+          key={tier.id}
+          className="py-1 pl-2 text-right font-mono tabular-nums text-ink-1"
+        >
+          {credits4(price * tier.multiplier)}
+        </td>
+      ))}
+    </tr>
   )
 }
