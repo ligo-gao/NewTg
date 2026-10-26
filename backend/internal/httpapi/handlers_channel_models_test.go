@@ -157,8 +157,10 @@ func TestFetchChannelModelsUpstreamFailureIs502(t *testing.T) {
 }
 
 // 新响应在保留 models 的同时附加 entries；旧客户端只读 models，形状不变。
+// entries 必须与 models 严格 1:1 同序（前端按下标/按 id 对齐两处），且
+// facts_source 原样回显探针给出来源。
 func TestFetchChannelModelsReturnsEntries(t *testing.T) {
-	lister := &fakeChannelModelLister{models: []string{"gemini-2.5-pro"}}
+	lister := &fakeChannelModelLister{models: []string{"gemini-2.5-pro", "gemini-2.5-flash"}}
 	env := newChannelTestEnv(t, ChannelHandlerOptions{ModelLister: lister})
 	rr := serveWithPrincipal(t, env.mux,
 		jsonReq(t, http.MethodPost, "/api/channels/fetch-models", map[string]any{
@@ -177,12 +179,23 @@ func TestFetchChannelModelsReturnsEntries(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(body.Models) != 1 || body.Models[0] != "gemini-2.5-pro" {
+	if len(body.Models) != 2 || body.Models[0] != "gemini-2.5-pro" ||
+		body.Models[1] != "gemini-2.5-flash" {
 		t.Fatalf("models = %v", body.Models)
 	}
-	if len(body.Entries) != 1 || body.Entries[0].ID != "gemini-2.5-pro" ||
-		body.Entries[0].VendorSuggestion != "Gemini" {
-		t.Fatalf("entries = %+v", body.Entries)
+	if len(body.Entries) != len(body.Models) {
+		t.Fatalf("entries/models 不是 1:1：entries=%d models=%d", len(body.Entries), len(body.Models))
+	}
+	for i, entry := range body.Entries {
+		if entry.ID != body.Models[i] {
+			t.Fatalf("entries[%d].id = %q，models[%d] = %q", i, entry.ID, i, body.Models[i])
+		}
+		if entry.FactsSource != "openai_models" {
+			t.Fatalf("entries[%d].facts_source = %q, want openai_models", i, entry.FactsSource)
+		}
+		if entry.VendorSuggestion != "Gemini" {
+			t.Fatalf("entries[%d].vendor_suggestion = %q, want Gemini", i, entry.VendorSuggestion)
+		}
 	}
 }
 

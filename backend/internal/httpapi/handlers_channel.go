@@ -2037,8 +2037,11 @@ func buildChannelModelEntries(infos []channelhealth.ModelInfo, t contract.Channe
 	return entries
 }
 
-// 与 model_meta 的列宽上限保持一致（迁移里的 varchar 长度），避免前端拿到
-// 上游的长描述写进档案时被数据库拒绝。
+// 与 model_meta 的应用层长度上限保持一致，避免前端拿到上游的长文本写进
+// 档案时被 store 校验拒绝。description 的口径来源是
+// store.maxModelMetaDescriptionRunes（backend/internal/store/model_meta_validate.go
+// 的 512 字符；该常量未导出，跨包只能在此保留字面量并靠测试对齐）；
+// display_name 另与 model_meta 的 varchar(64) 列宽一致。
 const (
 	channelModelDisplayNameMaxRunes = 64
 	channelModelDescriptionMaxRunes = 512
