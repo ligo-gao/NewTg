@@ -434,7 +434,7 @@
     "tiers_title": "長上下文件（第二階段）",
     "tiers_phase2": "第一階段暫未開放：後端會拒絕 tiers 欄位，需等依用量結算實作後再啟用。",
     "summary_title": "規則預覽（示意）",
-    "summary_note": "第一階段由後端依結構化策略計算，不產生可執行表達式。",
+    "summary_note": "後端依結構化策略計算；快取價留空時按兜底價顯示。",
     "summary_base_label": "基礎費率",
     "summary_time_label": "時段規則",
     "summary_time_value": "{rule} ×{multiplier}%",

@@ -434,7 +434,7 @@
     "tiers_title": "長コンテキスト段階（第2フェーズ）",
     "tiers_phase2": "第1フェーズでは利用できません。使用量に応じた精算ができるまで、サーバーは tiers を拒否します。",
     "summary_title": "ルールプレビュー（概略）",
-    "summary_note": "第1フェーズではサーバーが構造化戦略で計算し、実行可能な式は生成しません。",
+    "summary_note": "サーバーが構造化戦略で計算します。キャッシュ価格が空欄の場合はフォールバック料金で表示されます。",
     "summary_base_label": "基本料金",
     "summary_time_label": "時間帯ルール",
     "summary_time_value": "{rule} ×{multiplier}%",

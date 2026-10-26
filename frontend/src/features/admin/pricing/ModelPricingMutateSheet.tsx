@@ -22,6 +22,8 @@ import {
   createDefaultTimeConfig,
   DEFAULT_QUOTA_PER_UNIT,
   DEFAULT_STRATEGY_TIMEZONE,
+  effectiveCacheReadPrice,
+  effectiveCacheWritePrice,
   formatMultiplierPercent,
   isValidModelName,
   matchLocalTimeRule,
@@ -771,14 +773,18 @@ function StrategySummary({
   effectiveCompletion: number
 }) {
   const { t } = useI18n()
+  // 汇总必须显示兜底后的实际扣费价：命中价/写入价留空时后端会按
+  // 未命中价（或 ×1.25）结算，显示 0 会让操作者以为缓存免费。
+  const effectiveCacheRead = effectiveCacheReadPrice(prompt, cacheRead)
+  const effectiveCacheWrite = effectiveCacheWritePrice(prompt, cacheWrite)
   const base =
     mode === 'per_request'
       ? t('admin.pricing.summary_per_request', { prompt: prompt ?? 0 })
       : t('admin.pricing.summary_base', {
           prompt: prompt ?? 0,
           completion: completion ?? 0,
-          cacheRead: cacheRead ?? 0,
-          cacheWrite: cacheWrite ?? 0,
+          cacheRead: effectiveCacheRead ?? 0,
+          cacheWrite: effectiveCacheWrite ?? 0,
         })
 
   return (

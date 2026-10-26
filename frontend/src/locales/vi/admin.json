@@ -434,7 +434,7 @@
     "tiers_title": "Bậc ngữ cảnh dài (giai đoạn 2)",
     "tiers_phase2": "Chưa khả dụng ở giai đoạn 1. Máy chủ từ chối tiers cho đến khi có quyết toán theo mức sử dụng.",
     "summary_title": "Xem trước quy tắc (minh họa)",
-    "summary_note": "Máy chủ tính theo chiến lược có cấu trúc; giai đoạn 1 không tạo biểu thức thực thi.",
+    "summary_note": "Máy chủ tính theo chiến lược có cấu trúc; giá bộ nhớ đệm để trống được hiển thị theo giá dự phòng.",
     "summary_base_label": "Giá cơ bản",
     "summary_time_label": "Quy tắc khung giờ",
     "summary_time_value": "{rule} ×{multiplier}%",

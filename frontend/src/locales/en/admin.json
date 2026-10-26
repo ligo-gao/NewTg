@@ -434,7 +434,7 @@
     "tiers_title": "Long-context tiers (phase 2)",
     "tiers_phase2": "Not available in phase 1. The backend rejects tier settings until usage-aware settlement exists.",
     "summary_title": "Rule preview (illustrative)",
-    "summary_note": "The backend computes the structured strategy; no executable expression is generated in phase 1.",
+    "summary_note": "The backend computes the structured strategy; empty cache prices are shown at their fallback rate.",
     "summary_base_label": "Base rates",
     "summary_time_label": "Time rule",
     "summary_time_value": "{rule} ×{multiplier}%",

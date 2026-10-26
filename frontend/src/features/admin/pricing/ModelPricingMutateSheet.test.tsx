@@ -489,4 +489,25 @@ describe('PricingMutateSheet server field mapping', () => {
     expect(await findByText('Estimated cost')).toBeTruthy()
     expect(previewCalls).toBe(0)
   })
+
+  it('shows the time pricing switch for any model', async () => {
+    const { getByLabelText, getByRole } = await renderCreate()
+    const user = userEvent.setup()
+
+    await user.type(getByLabelText('Model'), 'claude-sonnet-5')
+    expect(getByLabelText('Enable time pricing')).toBeTruthy()
+    expect(getByRole('button', { name: 'Weekday peak/off-peak' })).toBeTruthy()
+  })
+
+  it('shows the effective cache prices in the summary', async () => {
+    const { getByLabelText, getByText } = await renderCreate()
+    const user = userEvent.setup()
+
+    await user.type(getByLabelText('Model'), 'gpt-5')
+    await user.type(getByLabelText('Input price (cache miss)'), '200')
+    // 写入兜底 = 未命中价 × 1.25 = 250。
+    expect(getByText(/cache write 250/)).toBeTruthy()
+    // 命中兜底 = 未命中价，不能显示成 0（免费）。
+    expect(getByText(/cache read 200/)).toBeTruthy()
+  })
 })

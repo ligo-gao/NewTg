@@ -434,7 +434,7 @@
     "tiers_title": "Paliers de contexte long (phase 2)",
     "tiers_phase2": "Indisponible en phase 1. Le serveur refuse les paliers jusqu'au règlement selon l'usage.",
     "summary_title": "Aperçu des règles (indicatif)",
-    "summary_note": "Le serveur calcule la stratégie structurée ; aucune expression exécutable n'est générée en phase 1.",
+    "summary_note": "Le serveur calcule la stratégie structurée ; les prix de cache vides sont affichés au tarif de repli.",
     "summary_base_label": "Tarifs de base",
     "summary_time_label": "Règle horaire",
     "summary_time_value": "{rule} ×{multiplier}%",

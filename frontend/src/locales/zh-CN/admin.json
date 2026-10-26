@@ -434,7 +434,7 @@
     "tiers_title": "长上下文档（第二阶段）",
     "tiers_phase2": "第一阶段暂未开放：后端会拒绝 tiers 字段，需等按用量结算实现后再启用。",
     "summary_title": "规则预览（示意）",
-    "summary_note": "第一阶段由后端按结构化策略计算，不生成可执行表达式。",
+    "summary_note": "后端按结构化策略计算；缓存价留空时按兜底价显示。",
     "summary_base_label": "基础费率",
     "summary_time_label": "时段规则",
     "summary_time_value": "{rule} ×{multiplier}%",
