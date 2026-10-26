@@ -36,6 +36,7 @@ import (
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/rbac"
+	"newtg/gateway/internal/store"
 )
 
 const (
@@ -54,6 +55,11 @@ var (
 	ErrGroupConflict   = errors.New("httpapi: group name already exists")
 	ErrGroupSystem     = errors.New("httpapi: system groups cannot be renamed or deleted")
 	ErrGroupReferenced = errors.New("httpapi: group is still referenced")
+
+	// errGroupDiscountConflict：改名级联把规则搬到新名字时撞上
+	// discounts_rule_uq（新名字下已有同模型规则）。未导出——只在本包的
+	// writeGroupRepoError 里映射 409，不进入公开错误面。
+	errGroupDiscountConflict = errors.New("httpapi: target group already has a discount rule for a moving model")
 )
 
 // GroupReferencedError 在 ErrGroupReferenced 之外携带引用计数，供 409 的
@@ -441,6 +447,9 @@ func (h *GroupHandlers) writeGroupRepoError(w http.ResponseWriter, op string, er
 			detail = fmt.Sprintf("the group is still referenced by %d users/tokens/pricing entries/channels", referenced.Count)
 		}
 		writeAdminProblem(w, http.StatusConflict, authProblemConflict, "Conflict", detail)
+	case errors.Is(err, errGroupDiscountConflict):
+		writeAdminProblem(w, http.StatusConflict, authProblemConflict, "Conflict",
+			"the target group already has a discount rule for one of the moving models")
 	default:
 		h.log.Error(op+" failed", "error", err)
 		writeAdminProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error", "")
@@ -558,7 +567,8 @@ func (r *SQLAdminGroupRepo) UpdateGroup(ctx context.Context, currentName string,
 	if err != nil {
 		return AdminGroupRecord{}, fmt.Errorf("httpapi: lock group: %w", err)
 	}
-	if newName != nil && *newName != name {
+	renaming := newName != nil && *newName != name
+	if renaming {
 		if isSystem || name == groupNameDefault || name == groupNameAuto {
 			return AdminGroupRecord{}, ErrGroupSystem
 		}
@@ -597,6 +607,16 @@ func (r *SQLAdminGroupRepo) UpdateGroup(ctx context.Context, currentName string,
 	if err != nil {
 		return AdminGroupRecord{}, fmt.Errorf("httpapi: update group: %w", err)
 	}
+	// 折扣规则以分组名为目标（无 FK），改名必须在同一事务内跟随；新名字下
+	// 已有同模型的规则时级联撞 discounts_rule_uq，映射成 409 而非 500。
+	if renaming {
+		if _, err := store.RenameGroupDiscountTargets(ctx, tx, name, *newName); err != nil {
+			if isUniqueViolation(err) {
+				return AdminGroupRecord{}, fmt.Errorf("%w: %w", errGroupDiscountConflict, err)
+			}
+			return AdminGroupRecord{}, fmt.Errorf("httpapi: rename group discounts: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return AdminGroupRecord{}, fmt.Errorf("httpapi: commit group update: %w", err)
 	}
@@ -632,6 +652,10 @@ func (r *SQLAdminGroupRepo) DeleteGroup(ctx context.Context, name string) error 
 	}
 	if referenced > 0 {
 		return &GroupReferencedError{Count: referenced}
+	}
+	// 分组折扣规则以分组名为目标且没有 FK，删除分组时在同事务内清掉。
+	if _, err := store.DeleteDiscountsForTarget(ctx, tx, discountTargetGroup, name); err != nil {
+		return fmt.Errorf("httpapi: delete group discounts: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM user_groups WHERE id = $1`, groupID); err != nil {
 		return fmt.Errorf("httpapi: delete group: %w", err)

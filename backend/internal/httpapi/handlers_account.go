@@ -55,6 +55,7 @@ import (
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/rbac"
+	"newtg/gateway/internal/store"
 )
 
 // 通知测试消息的限流（modules-01 F-01-22：3 次/分钟）。
@@ -223,6 +224,12 @@ func (r *SQLAccountRepo) DeleteAccount(ctx context.Context, userID int64) ([]int
 		if _, err := tx.ExecContext(ctx, stmt, userID); err != nil {
 			return nil, fmt.Errorf("httpapi: delete account dependents: %w", err)
 		}
+	}
+
+	// 与管理员删除同一口径：个人折扣规则的目标是 users.id 的十进制文本
+	// （无 FK），在同事务内清理，避免删号后留下悬挂规则。
+	if _, err := store.DeleteDiscountsForTarget(ctx, tx, discountTargetUser, strconv.FormatInt(userID, 10)); err != nil {
+		return nil, fmt.Errorf("httpapi: delete account discounts: %w", err)
 	}
 
 	var username string

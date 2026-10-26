@@ -59,6 +59,7 @@ import (
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/rbac"
+	"newtg/gateway/internal/store"
 )
 
 const (
@@ -1988,6 +1989,11 @@ func (r *SQLAdminUserRepo) DeleteUser(ctx context.Context, id int64) (DeletedUse
 		if _, err := tx.ExecContext(ctx, statement, id); err != nil {
 			return DeletedUser{}, fmt.Errorf("httpapi: delete user dependents: %w", err)
 		}
+	}
+	// discounts 的目标是 users.id 的十进制文本（没有 FK，见迁移头注释），
+	// 必须在同一事务内清掉，否则规则会悬挂在已经不存在的用户上。
+	if _, err := store.DeleteDiscountsForTarget(ctx, tx, discountTargetUser, strconv.FormatInt(id, 10)); err != nil {
+		return DeletedUser{}, fmt.Errorf("httpapi: delete user discounts: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = $1`, id); err != nil {
 		return DeletedUser{}, fmt.Errorf("httpapi: delete user row: %w", err)

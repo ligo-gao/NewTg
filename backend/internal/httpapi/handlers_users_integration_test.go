@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -788,5 +789,186 @@ func TestAdminUserCustomerTypeRoundTrip(t *testing.T) {
 	}
 	if stored != customerTypeEnterprise {
 		t.Fatalf("stored customer_type = %q, want %q", stored, customerTypeEnterprise)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 折扣规则的生命周期级联（Task 8）
+//
+// 这些用例直接查 discounts 表而不是经过仓储：用被测代码验证被测代码会掩盖
+// 「级联只跑了查询没落库」这一类缺陷。分组用例必须使用**零引用**分组，否则
+// 引用守卫会在级联之前返回 409，测不到级联本身。
+// ---------------------------------------------------------------------------
+
+// insertIntegrationDiscount 直插一条规则；targetID 用字符串（user 是十进制
+// 用户 id，group 是分组名），与 discounts.target_id 的形态约束一致。
+func insertIntegrationDiscount(t *testing.T, db *sql.DB, model, targetType, targetID string, rate int) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO discounts (model_name, target_type, target_id, rate_percent)
+		VALUES ($1, $2, $3, $4)`, model, targetType, targetID, rate); err != nil {
+		t.Fatalf("insert discount %s for %s:%s: %v", model, targetType, targetID, err)
+	}
+}
+
+func integrationDiscountCount(t *testing.T, db *sql.DB, targetType, targetID string) int64 {
+	t.Helper()
+	var count int64
+	if err := db.QueryRow(`SELECT count(*) FROM discounts
+		WHERE target_type = $1 AND target_id = $2`, targetType, targetID).Scan(&count); err != nil {
+		t.Fatalf("count discounts for %s:%s: %v", targetType, targetID, err)
+	}
+	return count
+}
+
+// TestDeleteUserRemovesPersonalDiscounts：管理员硬删用户必须同事务清掉该用户
+// 的全部个人规则（无 FK 兜底），且不误删其它目标的规则。
+func TestDeleteUserRemovesPersonalDiscounts(t *testing.T) {
+	env := newAdminIntegrationEnv(t)
+	user := createIntegrationUser(t, env.repo, "default")
+
+	suffix := uniqueAuthSuffix()
+	modelA := "itdsc" + suffix + "-a"
+	modelB := "itdsc" + suffix + "-b"
+	t.Cleanup(func() {
+		_, _ = env.db.Exec(`DELETE FROM discounts WHERE model_name LIKE $1`, "itdsc"+suffix+"%")
+	})
+
+	userID := strconv.FormatInt(user.ID, 10)
+	insertIntegrationDiscount(t, env.db, modelA, "user", userID, 90)
+	insertIntegrationDiscount(t, env.db, modelB, "user", userID, 85)
+	// 判别行：另一个 user 目标（形态合法但不存在对应 users 行）的规则必须留下。
+	const otherUserID = "999999999"
+	insertIntegrationDiscount(t, env.db, modelA, "user", otherUserID, 50)
+
+	if _, _, err := env.repo.SetStatus(context.Background(), user.ID, "disabled", nil); err != nil {
+		t.Fatalf("disable user: %v", err)
+	}
+	if _, err := env.repo.DeleteUser(context.Background(), user.ID); err != nil {
+		t.Fatalf("delete user: %v", err)
+	}
+
+	if got := integrationDiscountCount(t, env.db, "user", userID); got != 0 {
+		t.Fatalf("删除用户后 personal discounts = %d，期望 0", got)
+	}
+	if got := integrationDiscountCount(t, env.db, "user", otherUserID); got != 1 {
+		t.Fatalf("其它用户规则 = %d，期望 1（级联越界删除）", got)
+	}
+}
+
+// TestDeleteAccountRemovesPersonalDiscounts：自助删号与管理员删除同一口径，
+// 规则随 users 行在同一事务内消失。
+func TestDeleteAccountRemovesPersonalDiscounts(t *testing.T) {
+	env := newAdminIntegrationEnv(t)
+	user := createIntegrationUser(t, env.repo, "default")
+
+	suffix := uniqueAuthSuffix()
+	model := "itdsc" + suffix + "-self"
+	t.Cleanup(func() {
+		_, _ = env.db.Exec(`DELETE FROM discounts WHERE model_name LIKE $1`, "itdsc"+suffix+"%")
+	})
+
+	userID := strconv.FormatInt(user.ID, 10)
+	insertIntegrationDiscount(t, env.db, model, "user", userID, 70)
+
+	if _, err := NewSQLAccountRepo(env.db).DeleteAccount(context.Background(), user.ID); err != nil {
+		t.Fatalf("delete account: %v", err)
+	}
+
+	if got := integrationDiscountCount(t, env.db, "user", userID); got != 0 {
+		t.Fatalf("自助删号后 personal discounts = %d，期望 0", got)
+	}
+	if _, err := env.repo.GetUser(context.Background(), user.ID); !errors.Is(err, ErrAdminUserNotFound) {
+		t.Fatalf("delete account 后用户仍存在: %v", err)
+	}
+}
+
+// TestRenameGroupMovesDiscounts：分组改名后规则 target_id 跟随新名字；若新名字
+// 下已存在同模型规则，撞唯一索引必须整体回滚并映射 409。
+func TestRenameGroupMovesDiscounts(t *testing.T) {
+	env := newAdminIntegrationEnv(t)
+	suffix := uniqueAuthSuffix()
+	oldName := "itdsc" + suffix
+	newName := oldName + "x"
+	rival := newName + "y"
+	modelA := "itdsc" + suffix + "-a"
+	modelB := "itdsc" + suffix + "-b"
+	t.Cleanup(func() {
+		_, _ = env.db.Exec(`DELETE FROM discounts WHERE model_name LIKE $1`, "itdsc"+suffix+"%")
+		for _, name := range []string{oldName, newName, rival} {
+			_, _ = env.db.Exec(`DELETE FROM user_groups WHERE name = $1`, name)
+		}
+	})
+
+	// 零引用分组：引用守卫会先于级联拒绝被引用的分组（见 TestIntegrationAdminGroupReferences）。
+	if _, err := env.groups.CreateGroup(context.Background(), oldName, nil); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	insertIntegrationDiscount(t, env.db, modelA, "group", oldName, 80)
+	insertIntegrationDiscount(t, env.db, modelB, "group", oldName, 75)
+
+	rec, err := env.groups.UpdateGroup(context.Background(), oldName, &newName, nil, false)
+	if err != nil {
+		t.Fatalf("rename group: %v", err)
+	}
+	if rec.Name != newName {
+		t.Fatalf("renamed group name = %q，期望 %q", rec.Name, newName)
+	}
+	if got := integrationDiscountCount(t, env.db, "group", oldName); got != 0 {
+		t.Fatalf("改名后旧分组规则 = %d，期望 0", got)
+	}
+	if got := integrationDiscountCount(t, env.db, "group", newName); got != 2 {
+		t.Fatalf("改名后新分组规则 = %d，期望 2", got)
+	}
+
+	// 目标名字下已有同一模型的悬挂规则（无 user_groups 行——这正是历史删除
+	// 分组时未级联留下的形态）：级联 UPDATE 撞 discounts_rule_uq → 409，
+	// 且分组名与既有规则都不变（同一事务回滚）。
+	insertIntegrationDiscount(t, env.db, modelA, "group", rival, 60)
+
+	rr := env.request(t, http.MethodPatch, "/api/groups/"+newName, map[string]any{"name": rival}, "")
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("改名撞折扣唯一索引 status = %d，期望 409（body=%q）", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "discount rule") {
+		t.Fatalf("409 detail 未指出折扣冲突：%q", rr.Body.String())
+	}
+	if _, err := env.groups.GetGroup(context.Background(), newName); err != nil {
+		t.Fatalf("冲突回滚后分组 %q 应仍存在: %v", newName, err)
+	}
+	if got := integrationDiscountCount(t, env.db, "group", newName); got != 2 {
+		t.Fatalf("冲突回滚后 %q 规则 = %d，期望 2", newName, got)
+	}
+	if got := integrationDiscountCount(t, env.db, "group", rival); got != 1 {
+		t.Fatalf("冲突回滚后 %q 规则 = %d，期望 1（未被覆盖）", rival, got)
+	}
+}
+
+// TestDeleteGroupRemovesDiscounts：删除零引用分组时清掉该分组的全部规则。
+func TestDeleteGroupRemovesDiscounts(t *testing.T) {
+	env := newAdminIntegrationEnv(t)
+	suffix := uniqueAuthSuffix()
+	name := "itdsc" + suffix
+	modelA := "itdsc" + suffix + "-a"
+	modelB := "itdsc" + suffix + "-b"
+	t.Cleanup(func() {
+		_, _ = env.db.Exec(`DELETE FROM discounts WHERE model_name LIKE $1`, "itdsc"+suffix+"%")
+		_, _ = env.db.Exec(`DELETE FROM user_groups WHERE name = $1`, name)
+	})
+
+	if _, err := env.groups.CreateGroup(context.Background(), name, nil); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	insertIntegrationDiscount(t, env.db, modelA, "group", name, 65)
+	insertIntegrationDiscount(t, env.db, modelB, "group", name, 55)
+
+	if err := env.groups.DeleteGroup(context.Background(), name); err != nil {
+		t.Fatalf("delete group: %v", err)
+	}
+
+	if got := integrationDiscountCount(t, env.db, "group", name); got != 0 {
+		t.Fatalf("删除分组后 group discounts = %d，期望 0", got)
+	}
+	if _, err := env.groups.GetGroup(context.Background(), name); !errors.Is(err, ErrGroupNotFound) {
+		t.Fatalf("删除后分组仍存在: %v", err)
 	}
 }
