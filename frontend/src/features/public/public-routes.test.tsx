@@ -225,8 +225,8 @@ describe('public route integration (anonymous reachability)', () => {
     // 重复展示名，因此断言只针对登记册本身。
     const table = await findByRole('table')
     expect(within(table).getByText('GPT-4o')).toBeTruthy()
-    // 指标确实并进了读数：管理员测速的 TTFT P50 而不是空读数。
-    expect(within(table).getByText(/TTFT P50 300 ms/)).toBeTruthy()
+    // 指标确实并进了读数：证据列报告管理员测速的 120 次实测。
+    expect(within(table).getByText('120 probe runs')).toBeTruthy()
 
     await waitFor(() => {
       expect(router.state.location.pathname).toBe('/models')

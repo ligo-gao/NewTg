@@ -15,13 +15,10 @@ import { formatContextTokens } from '@/features/public/pricing/format'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Dialog } from '@/shared/ui/base/dialog'
 
-import {
-  formatMs,
-  formatPercent,
-  formatSamples,
-  formatTPS,
-} from './format'
+import { formatMs, formatSamples } from './format'
 import type { ModelEntry, PerfSource } from './performance'
+import { formatRmb } from './price'
+import { successLabel, tpsText } from './register'
 import { uniqueCapabilityNames } from './taxonomy'
 
 export interface CompareDialogProps {
@@ -188,6 +185,26 @@ export function CompareDialog({
                   })}
                 </tr>
                 <tr>
+                  <RowLabel>{t('public.models.compare.price_input')}</RowLabel>
+                  {entries.map((entry) => (
+                    <Cell key={entry.card.model_id}>
+                      <span className="font-mono">
+                        {formatRmb(entry.price.input, locale) ?? '—'}
+                      </span>
+                    </Cell>
+                  ))}
+                </tr>
+                <tr>
+                  <RowLabel>{t('public.models.compare.price_output')}</RowLabel>
+                  {entries.map((entry) => (
+                    <Cell key={entry.card.model_id}>
+                      <span className="font-mono">
+                        {formatRmb(entry.price.output, locale) ?? '—'}
+                      </span>
+                    </Cell>
+                  ))}
+                </tr>
+                <tr>
                   <RowLabel>{t('public.models.table.latency')}</RowLabel>
                   {entries.map((entry) => (
                     <Cell key={entry.card.model_id}>
@@ -204,15 +221,15 @@ export function CompareDialog({
                   <RowLabel>{t('public.models.table.speed')}</RowLabel>
                   {entries.map((entry) => (
                     <Cell key={entry.card.model_id}>
-                      {formatTPS(entry.perf.tps)}
+                      {tpsText(entry.perf.tps)}
                     </Cell>
                   ))}
                 </tr>
                 <tr>
-                  <RowLabel>{t('public.models.table.success')}</RowLabel>
+                  <RowLabel>{t('public.models.detail.success')}</RowLabel>
                   {entries.map((entry) => (
                     <Cell key={entry.card.model_id}>
-                      {formatPercent(entry.perf.successRate)}
+                      {successLabel(entry.perf, t)}
                     </Cell>
                   ))}
                 </tr>

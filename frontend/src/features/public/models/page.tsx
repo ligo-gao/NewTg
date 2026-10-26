@@ -28,7 +28,6 @@ import {
 } from './api'
 import { CallDialog } from './call-dialog'
 import { CompareDialog } from './compare-dialog'
-import { DistPanel } from './dist-panel'
 import { ModelFilters } from './filter-panel'
 import { activeFilterCount, filterEntries, sortEntries } from './filters'
 import { GlossaryDialog } from './glossary-dialog'
@@ -47,7 +46,7 @@ import {
   type ModelEntry,
 } from './performance'
 import { Register } from './register'
-import { capabilitySlots, facetsOf } from './taxonomy'
+import { facetsOf } from './taxonomy'
 import { Toolbar } from './toolbar'
 
 export interface ModelsPageProps {
@@ -105,7 +104,6 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
   const [metricsDismissed, setMetricsDismissed] = useState(false)
 
   const cards = catalog.data?.items
-  const slots = capabilitySlots(cards ?? [], 12)
   const facets = facetsOf(cards ?? [])
   const metricsIndex = indexMetrics(metrics.data?.items ?? [])
   /**
@@ -342,7 +340,6 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
             narrow={narrow}
             range={search.range}
             compareIds={compareIds(search)}
-            slots={slots}
             expandedId={expandedId}
             onToggleExpand={toggleExpand}
             onToggleCompare={toggleCompare}
@@ -368,12 +365,6 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
   return (
     <div className="flex flex-col gap-6">
       <ModelHero entries={entries} />
-
-      <DistPanel
-        entries={visible}
-        range={search.range}
-        ready={catalog.data !== undefined}
-      />
 
       <div>
         <button
@@ -410,12 +401,23 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
             }
             resultCount={visible.length}
             activeFilterCount={activeFilterCount(search)}
+            narrow={narrow}
             onChange={handleToolbarChange}
             onOpenFilters={wide ? undefined : () => setFiltersOpen(true)}
           />
           {list}
         </div>
       </div>
+
+      <p className="border-t border-border-hairline pt-3 text-badge text-ink-3">
+        {t('public.models.footer.window', {
+          window: t(
+            search.range === '24h'
+              ? 'public.models.detail.window_24h'
+              : 'public.models.detail.window_7d',
+          ),
+        })}
+      </p>
 
       <MobileSheet
         open={filtersOpen && !wide}

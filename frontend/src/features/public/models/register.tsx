@@ -9,6 +9,7 @@
 
 import { Fragment } from 'react'
 
+import type { PublicModelCard } from '@/features/public/pricing/api'
 import { copyText } from '@/features/public/pricing/copy'
 import { formatContextTokens } from '@/features/public/pricing/format'
 import { useI18n } from '@/shared/lib/i18n-context'
@@ -21,7 +22,6 @@ import { ModelDetail } from './model-detail'
 import { MAX_COMPARE, type ModelsRange, type ModelsView } from './params'
 import type { ModelEntry, ModelPerformance } from './performance'
 import { formatRmb } from './price'
-import type { CapabilitySlot } from './taxonomy'
 
 export interface RegisterProps {
   entries: readonly ModelEntry[]
@@ -34,7 +34,6 @@ export interface RegisterProps {
   /** 指标窗口；展开行把它带进读数块标题。 */
   range: ModelsRange
   compareIds: readonly string[]
-  slots: readonly CapabilitySlot[]
   expandedId: string | null
   onToggleExpand: (modelId: string) => void
   onToggleCompare: (modelId: string) => void
@@ -52,10 +51,23 @@ interface RowActions {
   expandedId: string | null
   range: ModelsRange
   compareIds: readonly string[]
-  slots: readonly CapabilitySlot[]
   onToggleExpand: (modelId: string) => void
   onToggleCompare: (modelId: string) => void
   onCall: (entry: ModelEntry) => void
+}
+
+/**
+ * 「档案在场」的唯一判定：能力、厂商、上下文或最大输出任一存在即算在场，
+ * 与详情「说明」块的拼装口径一致。表格的占位提示与卡片的副行共用这一条，
+ * 任一视图都不会对同一条目给出相反判词，也别在两处各写一遍德摩根式。
+ */
+function profilePresent(card: PublicModelCard): boolean {
+  return (
+    card.capabilities.length > 0 ||
+    card.vendor !== '' ||
+    card.context_length !== null ||
+    card.max_output !== null
+  )
 }
 
 function detailIdOf(modelId: string): string {
@@ -70,7 +82,7 @@ function displayNameOf(entry: ModelEntry): string {
  * 成功率的唯一措辞来源：键本身带 `{rate}` 占位符，必须传值；没有读数时
  * 用专门的 `success_none`，不能把字面 `{rate}` 或 `0%` 渲染出去。
  */
-function successLabel(perf: ModelPerformance, t: TranslateFn): string {
+export function successLabel(perf: ModelPerformance, t: TranslateFn): string {
   if (perf.successRate === null) return t('public.models.table.success_none')
   return t('public.models.table.success', {
     rate: `${(perf.successRate * 100).toFixed(2)}%`,
@@ -88,8 +100,7 @@ function ModelIdentity({ entry }: { entry: ModelEntry }) {
   // Compare the resolved name: an empty display_name already falls back to the
   // model_id, and printing the id twice is exactly what v3 removes.
   const showId = name !== entry.card.model_id
-  const profileMissing =
-    entry.card.capabilities.length === 0 && entry.card.vendor === ''
+  const profileMissing = !profilePresent(entry.card)
   const copyLabel = `${t('public.models.table.copy_id')} ${name}`
 
   const copy = async () => {
@@ -203,7 +214,7 @@ function PriceCell({ entry }: { entry: ModelEntry }) {
 }
 
 /** 吞吐的唯一口径：固定一位小数；缺失或非法值 `—`（表格与卡片共用）。 */
-function tpsText(tps: number | null): string {
+export function tpsText(tps: number | null): string {
   return tps === null || !Number.isFinite(tps) || tps < 0
     ? '—'
     : `${tps.toFixed(1)} t/s`
@@ -517,13 +528,12 @@ function ModelCard({ entry, actions }: { entry: ModelEntry; actions: RowActions 
       ? null
       : formatContextTokens(card.context_length, locale)
   /**
-   * 与表格 `ModelIdentity` 同一判定：能力或厂商任一存在即算有档案。副行按
-   * 「有哪段写哪段」拼装；只有能力、没有厂商/上下文的「部分档案」不再打印
-   * 档案缺失提示（副行留空，chips 自己说明），避免和表格视图对同一条目
-   * 给出互相矛盾的说法。
+   * 与表格 `ModelIdentity` 共用 `profilePresent`：能力、厂商、上下文或最大
+   * 输出任一存在即算有档案。副行按「有哪段写哪段」拼装；只有能力或只有
+   * 上下文/最大输出的「部分档案」不再打印档案缺失提示（副行留空，chips
+   * 自己说明），避免和表格视图对同一条目给出互相矛盾的说法。
    */
-  const hasProfile =
-    card.capabilities.length > 0 || card.vendor !== ''
+  const hasProfile = profilePresent(card)
   const profileParts: string[] = []
   if (card.vendor !== '') profileParts.push(card.vendor)
   if (context !== null) {
@@ -693,7 +703,6 @@ export function Register({
   narrow,
   range,
   compareIds,
-  slots,
   expandedId,
   onToggleExpand,
   onToggleCompare,
@@ -710,7 +719,6 @@ export function Register({
     onToggleExpand,
     onToggleCompare,
     onCall,
-    slots,
   }
 
   if (entries.length === 0) return null

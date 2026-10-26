@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest'
 import type { PublicModelCard } from '@/features/public/pricing/api'
 
 import {
-  capabilitySlots,
   contextBucketOf,
   facetsOf,
   kindForEndpoints,
@@ -35,57 +34,6 @@ function card(
   }
 }
 
-describe('capabilitySlots', () => {
-  it('counts mixed-case capabilities once per model and keeps the first spelling', () => {
-    const slots = capabilitySlots([
-      card({ model_id: 'a', capabilities: ['Vision', 'vision', 'TEXT'] }),
-      card({ model_id: 'b', capabilities: ['vision', 'text', 'Unknown_Cap'] }),
-    ])
-
-    expect(slots).toEqual([
-      { value: 'text', label: 'TEXT', count: 2 },
-      { value: 'vision', label: 'Vision', count: 2 },
-      { value: 'unknown_cap', label: 'Unknown_Cap', count: 1 },
-    ])
-  })
-
-  it('sorts by count descending and breaks ties by value ascending', () => {
-    const slots = capabilitySlots([
-      card({ model_id: 'a', capabilities: ['b', 'a'] }),
-      card({ model_id: 'b', capabilities: ['b', 'c'] }),
-      card({ model_id: 'c', capabilities: ['c'] }),
-    ])
-
-    expect(slots.map((slot) => [slot.value, slot.count])).toEqual([
-      ['b', 2],
-      ['c', 2],
-      ['a', 1],
-    ])
-  })
-
-  it('keeps unknown capabilities and trims their display label', () => {
-    const slots = capabilitySlots([
-      card({ model_id: 'a', capabilities: ['  Vision  ', '', 'brand_new'] }),
-    ])
-
-    expect(slots).toEqual([
-      { value: 'brand_new', label: 'brand_new', count: 1 },
-      { value: 'vision', label: 'Vision', count: 1 },
-    ])
-  })
-
-  it('truncates to 12 by default while preserving the shared order', () => {
-    const capabilities = Array.from({ length: 15 }, (_, i) =>
-      `cap_${String(i).padStart(2, '0')}`,
-    )
-    const slots = capabilitySlots([card({ model_id: 'a', capabilities })])
-
-    expect(slots).toHaveLength(12)
-    expect(slots.map((slot) => slot.value)).toEqual(capabilities.slice(0, 12))
-    expect(capabilitySlots([card({ model_id: 'a', capabilities })], 2)).toHaveLength(2)
-  })
-})
-
 describe('facetsOf', () => {
   it('keeps every capability value and counts only valid vendor/context/endpoint enums', () => {
     const capabilities = Array.from({ length: 15 }, (_, i) => `cap_${i}`)
@@ -111,7 +59,7 @@ describe('facetsOf', () => {
       }),
     ])
 
-    // The facet list is not truncated: the top-12 bar uses capabilitySlots.
+    // The facet list is not truncated: the filter rail shows every value.
     expect(facets.capabilities).toHaveLength(15)
     expect(facets.vendors).toEqual([{ value: 'openai', count: 2 }])
     expect(facets.contexts).toEqual([

@@ -125,21 +125,6 @@ function tallyCapabilities(cards: readonly PublicModelCard[]): CapabilitySlot[] 
     .sort((a, b) => b.count - a.count || compareValues(a.value, b.value))
 }
 
-/**
- * 能力条码的前 `limit` 个槽位。`capabilitySlots(cards, 12)` 是条码；
- * facet 面板需要全集时用 `facetsOf(cards).capabilities`。
- */
-export function capabilitySlots(
-  cards: readonly PublicModelCard[],
-  limit = 12,
-): CapabilitySlot[] {
-  const slots = tallyCapabilities(cards)
-  if (!Number.isFinite(limit) || limit <= 0) {
-    return Number.isFinite(limit) ? [] : slots
-  }
-  return slots.slice(0, Math.floor(limit))
-}
-
 function tallyValues(
   cards: readonly PublicModelCard[],
   collect: (card: PublicModelCard) => readonly string[],

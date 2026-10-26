@@ -6,6 +6,7 @@ import { renderWithProviders } from '@/test-support/providers'
 
 import { CompareDialog } from './compare-dialog'
 import type { ModelEntry, ModelPerformance } from './performance'
+import type { ModelPrice } from './price'
 
 function card(
   modelId: string,
@@ -52,11 +53,12 @@ function performance(overrides: Partial<ModelPerformance>): ModelPerformance {
 function entry(
   modelId: string,
   overrides: Partial<ModelPerformance> = {},
+  price: Partial<ModelPrice> = {},
 ): ModelEntry {
   return {
     card: card(modelId),
     kind: 'chat',
-    price: { input: null, output: null, cacheRead: null },
+    price: { input: null, output: null, cacheRead: null, ...price },
     perf: performance(overrides),
   }
 }
@@ -95,6 +97,54 @@ describe('CompareDialog', () => {
     expect(screen.getByText('Measured test')).toBeTruthy()
     expect(screen.getByText('Live traffic average')).toBeTruthy()
     expect(screen.getByText('No data')).toBeTruthy()
+  })
+
+  it('adds input and output price rows per million tokens', async () => {
+    await renderDialog([
+      entry('vendor/cheap', {}, { input: 0.06, output: 4 }),
+      entry('vendor/unknown'),
+    ])
+
+    const dialog = screen.getByRole('dialog')
+    const inputRow = within(dialog)
+      .getByText('Input price / M')
+      .closest('tr') as HTMLElement
+    // Column order follows the entries: the priced model first, then the
+    // honest em dash for the one without a usable price.
+    expect(within(inputRow).getByText('¥0.06')).toBeTruthy()
+    expect(within(inputRow).getAllByText('—')).toHaveLength(1)
+
+    const outputRow = within(dialog)
+      .getByText('Output price / M')
+      .closest('tr') as HTMLElement
+    expect(within(outputRow).getByText('¥4.00')).toBeTruthy()
+    expect(within(outputRow).getAllByText('—')).toHaveLength(1)
+  })
+
+  it('uses the table wording for success rate and throughput', async () => {
+    await renderDialog([
+      entry('vendor/tested', {
+        source: 'test',
+        p50: 300,
+        tps: 42.5,
+        successRate: 0.992,
+        samples: 3,
+      }),
+    ])
+
+    const dialog = screen.getByRole('dialog')
+    // `successLabel()` folds the rate into the sentence (two decimals); the
+    // bare `{rate}` placeholder must never leak into the dialog.
+    expect(within(dialog).getByText('Success 99.20%')).toBeTruthy()
+    expect(screen.queryByText(/\{rate\}/)).toBeNull()
+    // `tpsText()`: one decimal, exactly like the table and the card.
+    expect(within(dialog).getByText('42.5 t/s')).toBeTruthy()
+  })
+
+  it('never invents a success rate for a model without one', async () => {
+    await renderDialog([entry('vendor/silent')])
+
+    expect(screen.getByText('No success rate yet')).toBeTruthy()
   })
 
   it('hides remove controls when no handler is passed', async () => {

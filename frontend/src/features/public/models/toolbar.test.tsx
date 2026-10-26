@@ -25,6 +25,7 @@ async function renderToolbar(
   activeFilterCount = 0,
   onChange = vi.fn(),
   onOpenFilters = vi.fn(),
+  narrow = false,
 ) {
   const result = await renderWithProviders(
     <Toolbar
@@ -33,6 +34,7 @@ async function renderToolbar(
       activeFilterCount={activeFilterCount}
       onChange={onChange}
       onOpenFilters={onOpenFilters}
+      narrow={narrow}
     />,
     ['public'],
   )
@@ -112,6 +114,31 @@ describe('Toolbar', () => {
     expect(onOpenFilters).toHaveBeenCalledTimes(1)
   })
 
+  it('disables the table side on narrow screens instead of ignoring the click', async () => {
+    const onChange = vi.fn()
+    const { getByRole } = await renderToolbar(
+      { ...BASE, view: 'cards' },
+      12,
+      0,
+      onChange,
+      vi.fn(),
+      true,
+    )
+
+    const table = getByRole('button', { name: 'Table' }) as HTMLButtonElement
+    expect(table.disabled).toBe(true)
+    expect(table.getAttribute('aria-disabled')).toBe('true')
+    // `aria-pressed` keeps reporting the view that is actually in effect.
+    expect(table.getAttribute('aria-pressed')).toBe('false')
+
+    const cards = getByRole('button', { name: 'Cards' }) as HTMLButtonElement
+    expect(cards.disabled).toBe(false)
+    expect(cards.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.click(table)
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it('hides the filter button when no sheet can open', async () => {
     const { queryByRole } = await renderWithProviders(
       <Toolbar
@@ -119,6 +146,7 @@ describe('Toolbar', () => {
         resultCount={12}
         activeFilterCount={3}
         onChange={vi.fn()}
+        narrow={false}
       />,
       ['public'],
     )

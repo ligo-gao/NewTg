@@ -317,20 +317,23 @@ describe('ModelsPage', () => {
     expect(screen.queryByRole('table')).toBeNull()
     expect(document.querySelectorAll('.cards > li')).toHaveLength(2)
 
-    // The toggle still renders, but reports the view that is actually shown.
+    // The toggle still renders, but reports the view that is actually shown,
+    // and the unreachable table side is explicitly disabled rather than a
+    // button that silently ignores clicks.
     expect(
       screen
         .getByRole('button', { name: 'Cards' })
         .getAttribute('aria-pressed'),
     ).toBe('true')
-    expect(
-      screen
-        .getByRole('button', { name: 'Table' })
-        .getAttribute('aria-pressed'),
-    ).toBe('false')
+    const tableToggle = screen.getByRole('button', {
+      name: 'Table',
+    }) as HTMLButtonElement
+    expect(tableToggle.getAttribute('aria-pressed')).toBe('false')
+    expect(tableToggle.getAttribute('aria-disabled')).toBe('true')
+    expect(tableToggle.disabled).toBe(true)
 
     // A view-only click cannot persist the forced view.
-    fireEvent.click(screen.getByRole('button', { name: 'Table' }))
+    fireEvent.click(tableToggle)
     expect(onChange).not.toHaveBeenCalled()
     expect(
       screen
@@ -359,6 +362,46 @@ describe('ModelsPage', () => {
     // The catalog list is still complete; only readings degrade to `—`.
     expect(screen.getByText('GPT-5')).toBeTruthy()
     expect(screen.getByText('Embed')).toBeTruthy()
+  })
+
+  it('no longer renders the distribution panel', async () => {
+    serveCatalog()
+    await renderPage()
+
+    await screen.findByText('GPT-5')
+    // The `models.dist.*` copy keys stay in the locales, but the v3 page has
+    // no distribution block: neither its median nor its title may appear.
+    expect(screen.queryByText('Median first-token latency')).toBeNull()
+    expect(screen.queryByText(/Current filter ·/)).toBeNull()
+  })
+
+  it('keeps the glossary and the metrics-unavailable banner', async () => {
+    serveCatalog({ metricsStatus: 503 })
+    await renderPage()
+
+    expect(
+      await screen.findByText(
+        'Live measurements are unavailable right now. Capabilities and limits are still shown.',
+      ),
+    ).toBeTruthy()
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'How these numbers are measured' }),
+    )
+    const dialog = await screen.findByRole('dialog')
+    expect(
+      within(dialog).getByText('How these numbers are measured'),
+    ).toBeTruthy()
+  })
+
+  it('states the data window in the page footer', async () => {
+    serveCatalog()
+    await renderPage()
+
+    expect(await screen.findByText('Data window: Last 7 days')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Last 24h' }))
+    expect(await screen.findByText('Data window: Last 24 hours')).toBeTruthy()
   })
 
   it('brings the metrics banner back when the range changes', async () => {

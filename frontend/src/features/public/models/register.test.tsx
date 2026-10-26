@@ -8,7 +8,6 @@ import { renderWithProviders } from '@/test-support/providers'
 
 import type { ModelEntry, ModelPerformance } from './performance'
 import { Register, type RegisterProps } from './register'
-import type { CapabilitySlot } from './taxonomy'
 
 const ORIGIN = 'http://localhost:3000'
 
@@ -133,21 +132,6 @@ const EMPTY: ModelEntry = {
   perf: perf({}),
 }
 
-const SLOTS: CapabilitySlot[] = [
-  'text',
-  'vision',
-  'audio',
-  'video',
-  'function_calling',
-  'tool_use',
-  'reasoning',
-  'embedding',
-  'rerank',
-  'image_generation',
-  'speech',
-  'transcription',
-].map((value) => ({ value, label: value, count: 1 }))
-
 function props(overrides: Partial<RegisterProps> = {}): RegisterProps {
   return {
     entries: [TESTED, AVERAGED, EMPTY],
@@ -155,7 +139,6 @@ function props(overrides: Partial<RegisterProps> = {}): RegisterProps {
     narrow: false,
     range: '7d',
     compareIds: [],
-    slots: SLOTS,
     expandedId: null,
     onToggleExpand: vi.fn(),
     onToggleCompare: vi.fn(),
@@ -347,6 +330,30 @@ describe('Register: table view', () => {
     expect(screen.getByText('Profile not filled in')).toBeTruthy()
     // display_name falls back to model_id, so the id is printed once, not twice.
     expect(screen.getAllByText('acme/bare')).toHaveLength(1)
+  })
+
+  it('treats a context-only or max-output-only row as a filled profile', async () => {
+    // Same rule as the card view: capabilities, vendor, context or max output —
+    // any one present means the profile exists, so no missing-profile note.
+    const contextOnly: ModelEntry = {
+      ...EMPTY,
+      card: card({
+        model_id: 'acme/ctx',
+        display_name: 'Ctx',
+        context_length: 128_000,
+      }),
+    }
+    const outputOnly: ModelEntry = {
+      ...EMPTY,
+      card: card({
+        model_id: 'acme/out',
+        display_name: 'Out',
+        max_output: 32_000,
+      }),
+    }
+    await renderRegister({ entries: [contextOnly, outputOnly] })
+
+    expect(screen.queryByText('Profile not filled in')).toBeNull()
   })
 
   it('prints the model id once when display_name is empty', async () => {

@@ -19,6 +19,12 @@ export interface ToolbarProps {
   search: ModelsSearch
   resultCount: number
   activeFilterCount: number
+  /**
+   * 窄屏（≤760px）下表格无法阅读，卡片是布局强制的生效视图。此时「表格」
+   * 一侧禁用并保持 `aria-pressed` 反映生效视图，而不是留一个点了没反应的
+   * 按钮。
+   */
+  narrow: boolean
   onChange: (next: ModelsSearch, replace?: boolean) => void
   /**
    * 只在筛选栏能打开时传入（窄屏抽屉）。宽屏筛选栏常驻，按钮会成为一个
@@ -48,6 +54,7 @@ export function Toolbar({
   search,
   resultCount,
   activeFilterCount,
+  narrow,
   onChange,
   onOpenFilters,
 }: ToolbarProps) {
@@ -192,17 +199,24 @@ export function Toolbar({
         >
           {VIEWS.map((view) => {
             const selected = search.view === view
+            // 窄屏只有卡片可用；表格侧的 aria-pressed 仍如实反映生效视图。
+            const disabled = narrow && view === 'table'
             return (
               <button
                 key={view}
                 type="button"
                 aria-pressed={selected}
+                disabled={disabled}
+                aria-disabled={disabled ? 'true' : undefined}
                 onClick={() => onChange({ ...search, view })}
                 className={[
                   'rounded-md px-2.5 py-0.5 text-meta font-medium leading-5 transition-colors duration-150 motion-reduce:transition-none',
                   selected
                     ? 'bg-surface-card text-ink-1 shadow-sm'
                     : 'text-ink-2 hover:text-ink-1',
+                  disabled
+                    ? 'cursor-not-allowed opacity-50'
+                    : '',
                   'focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
                 ].join(' ')}
               >
