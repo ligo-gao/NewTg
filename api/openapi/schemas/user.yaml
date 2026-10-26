@@ -1545,6 +1545,26 @@ schemas:
       pre_deducted: { type: integer, format: int64, nullable: true }
       cost: { type: integer, format: int64 }
       refunded: { type: integer, format: int64 }
+      original_cost:
+        type: integer
+        format: int64
+        nullable: true
+        description: |
+          折前原始成本（来自 usage_logs.other.original_cost）。未打折或全免
+          无法反推时为 null，不是 0。实收见既有的 cost（已是折后金额）。
+      applied_discount:
+        type: number
+        format: double
+        nullable: true
+        description: |
+          实际命中的实收比例 0–1（来自 usage_logs.other.applied_discount）：
+          null = 未打折，0 = 全免。注意不是百分比、不是减免额。
+      discount_target:
+        type: string
+        nullable: true
+        description: |
+          命中的折扣规则标识（来自 usage_logs.other.discount_target），
+          形如 user:<id> 或 group:<name>；未打折时为 null。
       latency_ms: { type: integer, nullable: true }
       ttft:
         type: integer
@@ -1626,6 +1646,20 @@ schemas:
       pre_deducted: { type: integer, format: int64, nullable: true }
       cost: { type: integer, format: int64 }
       refunded: { type: integer, format: int64 }
+      original_cost:
+        type: integer
+        format: int64
+        nullable: true
+        description: 折前原始成本；未打折或全免无法反推时为 null，不是 0。实收见 cost。
+      applied_discount:
+        type: number
+        format: double
+        nullable: true
+        description: 实际命中的实收比例 0–1；null = 未打折，0 = 全免。
+      discount_target:
+        type: string
+        nullable: true
+        description: 命中的折扣规则标识 user:<id> / group:<name>；未打折时为 null。
       latency_ms: { type: integer, nullable: true }
       ttft:
         type: integer

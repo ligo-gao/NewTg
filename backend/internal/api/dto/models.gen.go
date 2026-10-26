@@ -7035,18 +7035,26 @@ type LoginResponse struct {
 // 存在 key/key_masked/明文令牌字段。error_message 恒为 ••••••，retry_chain
 // 恒为 user 视图。
 type LogsByKeyItem struct {
+	// AppliedDiscount 实际命中的实收比例 0–1；null = 未打折，0 = 全免。
+	AppliedDiscount  *float64  `json:"applied_discount,omitempty"`
 	CacheReadTokens  int       `json:"cache_read_tokens"`
 	CacheWriteTokens int       `json:"cache_write_tokens"`
 	ChannelId        *int64    `json:"channel_id,omitempty"`
 	CompletionTokens int       `json:"completion_tokens"`
 	Cost             int64     `json:"cost"`
 	CreatedAt        time.Time `json:"created_at"`
-	ErrorClass       *string   `json:"error_class,omitempty"`
-	ErrorMessage     *string   `json:"error_message,omitempty"`
-	Group            *string   `json:"group,omitempty"`
-	Id               int64     `json:"id"`
-	LatencyMs        *int      `json:"latency_ms,omitempty"`
-	Model            string    `json:"model"`
+
+	// DiscountTarget 命中的折扣规则标识 user:<id> / group:<name>；未打折时为 null。
+	DiscountTarget *string `json:"discount_target,omitempty"`
+	ErrorClass     *string `json:"error_class,omitempty"`
+	ErrorMessage   *string `json:"error_message,omitempty"`
+	Group          *string `json:"group,omitempty"`
+	Id             int64   `json:"id"`
+	LatencyMs      *int    `json:"latency_ms,omitempty"`
+	Model          string  `json:"model"`
+
+	// OriginalCost 折前原始成本；未打折或全免无法反推时为 null，不是 0。实收见 cost。
+	OriginalCost *int64 `json:"original_cost,omitempty"`
 
 	// Other 按 user 视图投影后的 other（admin_info/root_info/audit_info 与渠道/
 	// 拒绝原因键一律剥离；error_message 打码为 ••••••）。
@@ -11455,18 +11463,29 @@ type UsableGroup struct {
 
 // UsageLogDetail defines model for UsageLogDetail.
 type UsageLogDetail struct {
+	// AppliedDiscount 实际命中的实收比例 0–1（来自 usage_logs.other.applied_discount）：
+	// null = 未打折，0 = 全免。注意不是百分比、不是减免额。
+	AppliedDiscount  *float64  `json:"applied_discount,omitempty"`
 	CacheReadTokens  int       `json:"cache_read_tokens"`
 	CacheWriteTokens int       `json:"cache_write_tokens"`
 	ChannelId        *int64    `json:"channel_id,omitempty"`
 	CompletionTokens int       `json:"completion_tokens"`
 	Cost             int64     `json:"cost"`
 	CreatedAt        time.Time `json:"created_at"`
-	ErrorClass       *string   `json:"error_class,omitempty"`
-	ErrorMessage     *string   `json:"error_message,omitempty"`
-	Group            *string   `json:"group,omitempty"`
-	Id               int64     `json:"id"`
-	LatencyMs        *int      `json:"latency_ms,omitempty"`
-	Model            string    `json:"model"`
+
+	// DiscountTarget 命中的折扣规则标识（来自 usage_logs.other.discount_target），
+	// 形如 user:<id> 或 group:<name>；未打折时为 null。
+	DiscountTarget *string `json:"discount_target,omitempty"`
+	ErrorClass     *string `json:"error_class,omitempty"`
+	ErrorMessage   *string `json:"error_message,omitempty"`
+	Group          *string `json:"group,omitempty"`
+	Id             int64   `json:"id"`
+	LatencyMs      *int    `json:"latency_ms,omitempty"`
+	Model          string  `json:"model"`
+
+	// OriginalCost 折前原始成本（来自 usage_logs.other.original_cost）。未打折或全免
+	// 无法反推时为 null，不是 0。实收见既有的 cost（已是折后金额）。
+	OriginalCost *int64 `json:"original_cost,omitempty"`
 
 	// Other 按角色投影后的 other（user 仅 public 键；admin 含 admin_info/root_info）
 	Other        map[string]interface{} `json:"other"`
@@ -11495,22 +11514,33 @@ type UsageLogDetailStatus string
 
 // UsageLogItem 用量日志列表项（user 视图不含 username）。
 type UsageLogItem struct {
-	CacheReadTokens  int                `json:"cache_read_tokens"`
-	CacheWriteTokens int                `json:"cache_write_tokens"`
-	ChannelId        *int64             `json:"channel_id,omitempty"`
-	CompletionTokens int                `json:"completion_tokens"`
-	Cost             int64              `json:"cost"`
-	CreatedAt        time.Time          `json:"created_at"`
-	ErrorClass       *string            `json:"error_class,omitempty"`
-	ErrorMessage     *string            `json:"error_message,omitempty"`
-	Group            *string            `json:"group,omitempty"`
-	Id               int64              `json:"id"`
-	LatencyMs        *int               `json:"latency_ms,omitempty"`
-	Model            string             `json:"model"`
-	PreDeducted      *int64             `json:"pre_deducted,omitempty"`
-	PromptTokens     int                `json:"prompt_tokens"`
-	Refunded         int64              `json:"refunded"`
-	RequestId        openapi_types.UUID `json:"request_id"`
+	// AppliedDiscount 实际命中的实收比例 0–1（来自 usage_logs.other.applied_discount）：
+	// null = 未打折，0 = 全免。注意不是百分比、不是减免额。
+	AppliedDiscount  *float64  `json:"applied_discount,omitempty"`
+	CacheReadTokens  int       `json:"cache_read_tokens"`
+	CacheWriteTokens int       `json:"cache_write_tokens"`
+	ChannelId        *int64    `json:"channel_id,omitempty"`
+	CompletionTokens int       `json:"completion_tokens"`
+	Cost             int64     `json:"cost"`
+	CreatedAt        time.Time `json:"created_at"`
+
+	// DiscountTarget 命中的折扣规则标识（来自 usage_logs.other.discount_target），
+	// 形如 user:<id> 或 group:<name>；未打折时为 null。
+	DiscountTarget *string `json:"discount_target,omitempty"`
+	ErrorClass     *string `json:"error_class,omitempty"`
+	ErrorMessage   *string `json:"error_message,omitempty"`
+	Group          *string `json:"group,omitempty"`
+	Id             int64   `json:"id"`
+	LatencyMs      *int    `json:"latency_ms,omitempty"`
+	Model          string  `json:"model"`
+
+	// OriginalCost 折前原始成本（来自 usage_logs.other.original_cost）。未打折或全免
+	// 无法反推时为 null，不是 0。实收见既有的 cost（已是折后金额）。
+	OriginalCost *int64             `json:"original_cost,omitempty"`
+	PreDeducted  *int64             `json:"pre_deducted,omitempty"`
+	PromptTokens int                `json:"prompt_tokens"`
+	Refunded     int64              `json:"refunded"`
+	RequestId    openapi_types.UUID `json:"request_id"`
 
 	// RetryChain user 视图仅 8 个可见键；admin 视图保留完整选路细节
 	RetryChain *[]map[string]interface{} `json:"retry_chain,omitempty"`

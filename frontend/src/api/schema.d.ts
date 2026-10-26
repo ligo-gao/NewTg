@@ -11318,6 +11318,18 @@ export interface components {
             cost: number;
             /** Format: int64 */
             refunded: number;
+            /**
+             * Format: int64
+             * @description 折前原始成本；未打折或全免无法反推时为 null，不是 0。实收见 cost。
+             */
+            original_cost?: number | null;
+            /**
+             * Format: double
+             * @description 实际命中的实收比例 0–1；null = 未打折，0 = 全免。
+             */
+            applied_discount?: number | null;
+            /** @description 命中的折扣规则标识 user:<id> / group:<name>；未打折时为 null。 */
+            discount_target?: string | null;
             latency_ms?: number | null;
             /** @description 首 token 耗时（TTFT）；非流式为 null。内部列名 first_token_ms，对外字段名冻结为 ttft（G7-R51）。 */
             ttft?: number | null;
@@ -11368,6 +11380,23 @@ export interface components {
             cost: number;
             /** Format: int64 */
             refunded: number;
+            /**
+             * Format: int64
+             * @description 折前原始成本（来自 usage_logs.other.original_cost）。未打折或全免
+             *     无法反推时为 null，不是 0。实收见既有的 cost（已是折后金额）。
+             */
+            original_cost?: number | null;
+            /**
+             * Format: double
+             * @description 实际命中的实收比例 0–1（来自 usage_logs.other.applied_discount）：
+             *     null = 未打折，0 = 全免。注意不是百分比、不是减免额。
+             */
+            applied_discount?: number | null;
+            /**
+             * @description 命中的折扣规则标识（来自 usage_logs.other.discount_target），
+             *     形如 user:<id> 或 group:<name>；未打折时为 null。
+             */
+            discount_target?: string | null;
             latency_ms?: number | null;
             /** @description 首 token 耗时（TTFT）；非流式为 null。内部列名 first_token_ms，对外字段名冻结为 ttft（G7-R51）。 */
             ttft?: number | null;

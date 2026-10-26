@@ -1797,6 +1797,126 @@ func TestIntegrationRecentFailuresDuplicateRows(t *testing.T) {
 	}
 }
 
+// --- 折扣账单字段（Task 10） ----------------------------------------------
+
+// discountFieldsItem 只解出本任务新增的三个顶层字段；其余契约由既有用例覆盖。
+type discountFieldsItem struct {
+	ID              int64    `json:"id"`
+	OriginalCost    *int64   `json:"original_cost"`
+	AppliedDiscount *float64 `json:"applied_discount"`
+	DiscountTarget  *string  `json:"discount_target"`
+}
+
+// TestUsageLogDiscountFieldsEndToEnd 覆盖 list / detail / export 三处投影
+// 一致，并验证两条易错分支：applied_discount=0 是「全免」而非缺键；
+// JSON 数字 100.0 必须经 ::numeric 中转才能落成 bigint（修正 3/4）。
+func TestUsageLogDiscountFieldsEndToEnd(t *testing.T) {
+	env := newUsageTestEnv(t)
+	userID, _ := ensureUsageTestUser(t, env, "dsc")
+	p := userPrincipal(userID)
+
+	const other = `{"original_cost":100,"applied_discount":0.9,"discount_target":"user:7"}`
+	id := env.seed(t, usageSeed{
+		UserID: userID, Model: "gpt-discount", Status: usageStatusSuccess,
+		Cost: 90, Other: other,
+	})
+
+	assertDiscount := func(t *testing.T, label string, item discountFieldsItem) {
+		t.Helper()
+		if item.OriginalCost == nil || *item.OriginalCost != 100 {
+			t.Fatalf("%s original_cost = %v, want 100", label, item.OriginalCost)
+		}
+		if item.AppliedDiscount == nil || *item.AppliedDiscount != 0.9 {
+			t.Fatalf("%s applied_discount = %v, want 0.9", label, item.AppliedDiscount)
+		}
+		if item.DiscountTarget == nil || *item.DiscountTarget != "user:7" {
+			t.Fatalf("%s discount_target = %v, want user:7", label, item.DiscountTarget)
+		}
+	}
+
+	// 列表：三字段在顶层；列表响应仍不携带 other。
+	rec := env.do(t, http.MethodGet, "/api/usage-logs", p)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	listRaw := decodeUsageJSON[struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}](t, rec)
+	if len(listRaw.Items) != 1 {
+		t.Fatalf("list items = %d, want 1 body=%s", len(listRaw.Items), rec.Body.String())
+	}
+	if _, ok := listRaw.Items[0]["other"]; ok {
+		t.Fatalf("list must not expose other: %v", listRaw.Items[0])
+	}
+	var listItem discountFieldsItem
+	raw, err := json.Marshal(listRaw.Items[0])
+	if err != nil {
+		t.Fatalf("re-encode list item: %v", err)
+	}
+	if err := json.Unmarshal(raw, &listItem); err != nil {
+		t.Fatalf("decode list item: %v", err)
+	}
+	assertDiscount(t, "list", listItem)
+
+	// 详情：与列表一致。
+	rec = env.do(t, http.MethodGet, fmt.Sprintf("/api/usage-logs/%d", id), p)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertDiscount(t, "detail", decodeUsageJSON[discountFieldsItem](t, rec))
+
+	// 导出：三列追加在末尾，数值原样、文本列照常转义。
+	rec = env.do(t, http.MethodGet, "/api/usage-logs/export?scope=filtered&format=txt&range=24h", p)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "\terror_message\toriginal_cost\tapplied_discount\tdiscount_target\n") {
+		t.Fatalf("export header missing trailing discount columns: %s", body)
+	}
+	lines := strings.Split(strings.TrimSpace(body), "\n")
+	dataLine := lines[len(lines)-1]
+	if !strings.HasSuffix(dataLine, "\t100\t0.9\tuser:7") {
+		t.Fatalf("export row discount cells = %q, want suffix 100/0.9/user:7", dataLine)
+	}
+
+	// 全免行：只有 applied_discount=0 与 target，没有 original_cost。
+	waivedID := env.seed(t, usageSeed{
+		UserID: userID, Model: "gpt-waived", Status: usageStatusSuccess,
+		Other: `{"applied_discount":0,"discount_target":"group:vip"}`,
+	})
+	// 小数形式：jsonb ->> 返回 "100.0"，直接 ::bigint 会 500。
+	decimalID := env.seed(t, usageSeed{
+		UserID: userID, Model: "gpt-decimal", Status: usageStatusSuccess,
+		Other: `{"original_cost":100.0,"applied_discount":0.75,"discount_target":"user:7"}`,
+	})
+	rec = env.do(t, http.MethodGet, "/api/usage-logs", p)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	list := decodeUsageJSON[struct {
+		Items []discountFieldsItem `json:"items"`
+	}](t, rec)
+	byID := make(map[int64]discountFieldsItem, len(list.Items))
+	for _, item := range list.Items {
+		byID[item.ID] = item
+	}
+	waived := byID[waivedID]
+	if waived.OriginalCost != nil {
+		t.Fatalf("waived original_cost = %v, want null", waived.OriginalCost)
+	}
+	if waived.AppliedDiscount == nil || *waived.AppliedDiscount != 0 {
+		t.Fatalf("waived applied_discount = %v, want non-nil 0", waived.AppliedDiscount)
+	}
+	if waived.DiscountTarget == nil || *waived.DiscountTarget != "group:vip" {
+		t.Fatalf("waived discount_target = %v, want group:vip", waived.DiscountTarget)
+	}
+	decimal := byID[decimalID]
+	if decimal.OriginalCost == nil || *decimal.OriginalCost != 100 {
+		t.Fatalf("decimal original_cost = %v, want 100", decimal.OriginalCost)
+	}
+}
+
 // 日志库句柄缺失必须是 503（可重试），绝不能塌缩成 500。
 func TestIntegrationRequestTriageLogDBUnavailable(t *testing.T) {
 	h := &UsageLogHandlers{log: slog.New(slog.NewTextHandler(io.Discard, nil)), now: time.Now}

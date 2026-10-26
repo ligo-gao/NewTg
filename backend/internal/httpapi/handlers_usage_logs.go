@@ -508,21 +508,33 @@ type usageLogRow struct {
 	PreDeducted  sql.NullInt64
 	Cost         sql.NullInt64
 	Refunded     sql.NullInt64
-	LatencyMS    sql.NullInt64
-	FirstTokenMS sql.NullInt64
-	Stream       bool
-	Status       int16
-	ErrorClass   sql.NullString
-	ErrorMessage sql.NullString
-	RetryChain   []byte
-	Other        []byte
-	CreatedAt    time.Time
+	// 折扣三事实来自 usage_logs.other（Task 5 写入）。缺键为 NULL，
+	// applied_discount=0 表示全免，二者不可合并（见 toItem）。
+	OriginalCost    sql.NullInt64
+	AppliedDiscount sql.NullFloat64
+	DiscountTarget  sql.NullString
+	LatencyMS       sql.NullInt64
+	FirstTokenMS    sql.NullInt64
+	Stream          bool
+	Status          int16
+	ErrorClass      sql.NullString
+	ErrorMessage    sql.NullString
+	RetryChain      []byte
+	Other           []byte
+	CreatedAt       time.Time
 }
 
+// 末尾三列是账单折扣事实（写入见 billing/saturate.go 的 usage_logs.other）。
+// 必须经 ::numeric 中转：->> 对 JSON 数字 100.0 返回 '100.0'，直接 ::bigint
+// 会在运行时报 invalid input syntax；nullif 挡掉空串，缺键/JSON null 由 ->>
+// 返回 SQL NULL（扫描为 sql.Null*，绝不能回填成 0）。
 const usageListColumns = `id, request_id, user_id, token_id, token_name, channel_id,
 	upstream, model, "group", prompt_tokens, completion_tokens, cache_read_tokens,
 	cache_write_tokens, pre_deducted, cost, refunded, latency_ms, first_token_ms,
-	stream, status, error_class, error_message, retry_chain, created_at`
+	stream, status, error_class, error_message, retry_chain, created_at,
+	nullif(other->>'original_cost','')::numeric::bigint,
+	nullif(other->>'applied_discount','')::numeric::double precision,
+	nullif(other->>'discount_target','')`
 
 type usageRowScanner interface {
 	Scan(dest ...any) error
@@ -537,7 +549,7 @@ func (row *usageLogRow) scan(scanner usageRowScanner) error {
 		&upstream, &row.Model, &group, &promptTokens, &completion, &cacheRead,
 		&cacheWrite, &preDeducted, &cost, &refunded, &latency, &firstToken,
 		&row.Stream, &row.Status, &errorClass, &errorMessage, &row.RetryChain,
-		&row.CreatedAt,
+		&row.CreatedAt, &row.OriginalCost, &row.AppliedDiscount, &row.DiscountTarget,
 	); err != nil {
 		return err
 	}
@@ -560,7 +572,8 @@ func (row *usageLogRow) scanDetail(scanner usageRowScanner) error {
 		&upstream, &row.Model, &group, &promptTokens, &completion, &cacheRead,
 		&cacheWrite, &preDeducted, &cost, &refunded, &latency, &firstToken,
 		&row.Stream, &row.Status, &errorClass, &errorMessage, &row.RetryChain,
-		&row.CreatedAt, &row.Other,
+		&row.CreatedAt, &row.OriginalCost, &row.AppliedDiscount, &row.DiscountTarget,
+		&row.Other,
 	); err != nil {
 		return err
 	}
@@ -592,7 +605,12 @@ type usageLogItem struct {
 	PreDeducted      *int64  `json:"pre_deducted"`
 	Cost             int64   `json:"cost"`
 	Refunded         int64   `json:"refunded"`
-	LatencyMS        *int64  `json:"latency_ms"`
+	// 折扣三事实：cost 已是折后实收，这里只补原价与折扣本身；缺键一律
+	// null（nil），applied_discount=0 是「全免」而不是「没打过折」。
+	OriginalCost    *int64   `json:"original_cost"`
+	AppliedDiscount *float64 `json:"applied_discount"`
+	DiscountTarget  *string  `json:"discount_target"`
+	LatencyMS       *int64   `json:"latency_ms"`
 	// 对外字段名冻结为 `ttft`（G7-R51 / platform-01 §12）：内部列名
 	// first_token_ms 只是数据库事实，不得作为 API 字段泄露第二个名字。
 	FirstTokenMS *int64          `json:"ttft"`
@@ -627,6 +645,9 @@ func (row *usageLogRow) toItem(admin, revealSensitive bool) usageLogItem {
 		PreDeducted:      nullableInt(row.PreDeducted),
 		Cost:             nullIntValue(row.Cost),
 		Refunded:         nullIntValue(row.Refunded),
+		OriginalCost:     nullableInt(row.OriginalCost),
+		AppliedDiscount:  nullableFloat(row.AppliedDiscount),
+		DiscountTarget:   nullableString(row.DiscountTarget),
 		LatencyMS:        nullableInt(row.LatencyMS),
 		FirstTokenMS:     nullableInt(row.FirstTokenMS),
 		Stream:           row.Stream,
@@ -653,6 +674,14 @@ func nullableString(value sql.NullString) *string {
 		return nil
 	}
 	out := value.String
+	return &out
+}
+
+func nullableFloat(value sql.NullFloat64) *float64 {
+	if !value.Valid {
+		return nil
+	}
+	out := value.Float64
 	return &out
 }
 
@@ -1661,6 +1690,13 @@ func exportOptionalInt(value sql.NullInt64) string {
 	return strconv.FormatInt(value.Int64, 10)
 }
 
+func exportOptionalFloat(value sql.NullFloat64) string {
+	if !value.Valid {
+		return ""
+	}
+	return strconv.FormatFloat(value.Float64, 'f', -1, 64)
+}
+
 // exportUsername 按需解析用户快照。导出最多 1 万行，但不同用户通常很少；
 // 用惰性缓存避免 N+1，同时绝不做跨库 join（R-M6-5）。
 func (h *UsageLogHandlers) exportUsername(r *http.Request, cache map[int64]string, userID int64) string {
@@ -1810,6 +1846,9 @@ func (h *UsageLogHandlers) handleUsageLogExport(w http.ResponseWriter, r *http.R
 	flusher, _ := w.(http.Flusher)
 	writeErr := writeExportHeader(w, format, scope, exportFilterSummary(q, scope, format), rowCount, viewer.admin, h.now().UTC())
 	usernameCache := make(map[int64]string)
+	// 列集合与写出行必须同源：exportRowValues 只产出值，列名决定哪些值
+	// 需要转义（数值列原样）。
+	exportCols := exportColumns(viewer.admin)
 	written := int64(0)
 	for writeErr == nil && rows.Next() {
 		var row usageLogRow
@@ -1822,7 +1861,7 @@ func (h *UsageLogHandlers) handleUsageLogExport(w http.ResponseWriter, r *http.R
 		if viewer.admin {
 			username = h.exportUsername(r, usernameCache, row.UserID)
 		}
-		writeErr = writeExportRow(w, format, &row, username, viewer.admin, revealSensitive)
+		writeErr = writeExportRow(w, format, exportCols, &row, username, viewer.admin, revealSensitive)
 		written++
 		if flusher != nil && written%200 == 0 {
 			flusher.Flush()
@@ -1968,7 +2007,8 @@ func exportColumns(admin bool) []string {
 	if admin {
 		cols = append(cols, "username")
 	}
-	return append(cols, "stream", "request_id", "error_class", "error_message")
+	return append(cols, "stream", "request_id", "error_class", "error_message",
+		"original_cost", "applied_discount", "discount_target")
 }
 
 func exportRowValues(row *usageLogRow, username string, admin, revealSensitive bool) []string {
@@ -2007,6 +2047,12 @@ func exportRowValues(row *usageLogRow, username string, admin, revealSensitive b
 	} else {
 		values = append(values, "")
 	}
+	// 三列追加在末尾（R6）；数值列不经过 exportCell，discount_target 是文本列。
+	values = append(values,
+		exportOptionalInt(row.OriginalCost),
+		exportOptionalFloat(row.AppliedDiscount),
+		nullStringValue(row.DiscountTarget),
+	)
 	return values
 }
 
@@ -2048,16 +2094,21 @@ func writeExportHeader(w io.Writer, format, scope, filterSummary string, rowCoun
 	return err
 }
 
-func writeExportRow(w io.Writer, format string, row *usageLogRow, username string, admin, revealSensitive bool) error {
+func writeExportRow(w io.Writer, format string, cols []string, row *usageLogRow, username string, admin, revealSensitive bool) error {
 	values := exportRowValues(row, username, admin, revealSensitive)
-	// 仅文本列经过注入中和；数值列（token/cost/latency/ttft）保持原样。
-	numeric := map[int]bool{4: true, 5: true, 6: true, 7: true, 8: true, 9: true, 10: true}
+	// 仅文本列经过注入中和；数值列保持原样。按列名判定而不是硬编码下标，
+	// 列集合调整后无需同步第二处魔术数字。
+	numeric := map[string]bool{
+		"prompt_tokens": true, "completion_tokens": true, "cache_read_tokens": true,
+		"cache_write_tokens": true, "cost_credits": true, "latency_ms": true,
+		"ttft_ms": true, "original_cost": true, "applied_discount": true,
+	}
 	var line strings.Builder
 	if format == "markdown" {
 		line.WriteString("| ")
 	}
 	for i, value := range values {
-		if !numeric[i] {
+		if !numeric[cols[i]] {
 			value = exportCell(value, format)
 		}
 		if i > 0 {
