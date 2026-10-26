@@ -45,7 +45,7 @@ export interface ModelEntry {
   card: PublicModelCard
   kind: CallKind
   perf: ModelPerformance
-  /** 每百万 token 的元价格；缺价字段为 `null`（渲染 `—`）。 */
+  /** 价格：按 token 计费的模型是每百万 token 的元价；按次计费的模型是每次调用的元价（见 `ModelPrice.perCall`）。缺价字段为 `null`（渲染 `—`）。 */
   price: ModelPrice
 }
 
