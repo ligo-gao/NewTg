@@ -106,6 +106,10 @@ type GatewayDeps struct {
 	TwoFARepo      TwoFARepo
 	AdminUserRepo  AdminUserRepo
 	AdminGroupRepo AdminGroupRepo
+	// DiscountRepo 是用户/分组折扣管理端点的可选测试接缝；nil 且 DB 非 nil
+	// 时由 store.NewCustomerDiscountRepo 构造。两者都为空时不挂载折扣端点
+	// （M1 的纯 Repo 单测装配没有 discounts 表）。
+	DiscountRepo DiscountRepo
 	// UpstreamAccountRepo / UpstreamSnapshotRepo 是上游用量对账端点的可选
 	// 测试接缝（Task 8）。nil 且 DB 非 nil 时由 store 构造；两者都为空且无
 	// DB 时不挂载端点（M1 纯 Repo 单测装配没有上游台账表）。
@@ -900,6 +904,22 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		return nil, err
 	}
 	groups.RegisterGroupRoutes(rt.protected, nil)
+
+	// 客户专属折扣（plan 2026-10-26 Task 7）：用户/分组折扣规则与两个模型
+	// 选择器。DB 与 Repo 都为空时不挂载——纯 Repo 单测装配没有 discounts 表。
+	if deps.DB != nil || deps.DiscountRepo != nil {
+		discounts, err := NewDiscountHandlers(DiscountHandlerConfig{
+			DB:     deps.DB,
+			Repo:   deps.DiscountRepo,
+			Authz:  deps.Authz,
+			Audit:  deps.Audit,
+			Logger: deps.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		discounts.RegisterDiscountRoutes(rt.protected, nil)
+	}
 
 	// 上游用量对账（Task 8）：账号管理 + 快照台账。两者共用同一条受保护链，
 	// handler 内部再按 settings:manage 做功能级 RBAC（权限门不在路由层兜底）。

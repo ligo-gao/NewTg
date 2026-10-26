@@ -65,11 +65,18 @@ const (
 	ActionUserQuotaAdjust   = "user.quota_adjust"
 	ActionUserReset2FA      = "user.reset_2fa"
 	ActionUserResetPassword = "user.reset_password"
+	// ActionUserDiscountSet / Delete 是客户专属折扣（plan 2026-10-26 Task 7）
+	// 的个人规则写事件：POST 与 PATCH 都记 set，DELETE 记 delete。
+	ActionUserDiscountSet    = "user.discount_set"
+	ActionUserDiscountDelete = "user.discount_delete"
 
 	// ActionGroup* 是 modules-07 F-07-10 的用户分组管理事件（operation 类）。
 	ActionGroupCreate = "group.create"
 	ActionGroupUpdate = "group.update"
 	ActionGroupDelete = "group.delete"
+	// ActionGroupDiscountSet / Delete 是分组折扣规则的写事件。
+	ActionGroupDiscountSet    = "group.discount_set"
+	ActionGroupDiscountDelete = "group.discount_delete"
 
 	// ActionSystemInitialized 是 modules-01 F-01-20 冻结的首次初始化事件。
 	// 它不属于某个用户的日常操作，但在审计面上必须可查（验收：初始化动作
@@ -294,18 +301,22 @@ var actionCategories = map[string]string{
 	ActionTokenBatchDisable: categoryOperation,
 	ActionTokenBatchDelete:  categoryOperation,
 
-	ActionUserCreate:        categoryOperation,
-	ActionUserUpdate:        categoryOperation,
-	ActionUserDisable:       categoryOperation,
-	ActionUserEnable:        categoryOperation,
-	ActionUserDelete:        categoryOperation,
-	ActionUserQuotaAdjust:   categoryOperation,
-	ActionUserReset2FA:      categoryOperation,
-	ActionUserResetPassword: categoryOperation,
+	ActionUserCreate:         categoryOperation,
+	ActionUserUpdate:         categoryOperation,
+	ActionUserDisable:        categoryOperation,
+	ActionUserEnable:         categoryOperation,
+	ActionUserDelete:         categoryOperation,
+	ActionUserQuotaAdjust:    categoryOperation,
+	ActionUserReset2FA:       categoryOperation,
+	ActionUserResetPassword:  categoryOperation,
+	ActionUserDiscountSet:    categoryOperation,
+	ActionUserDiscountDelete: categoryOperation,
 
-	ActionGroupCreate: categoryOperation,
-	ActionGroupUpdate: categoryOperation,
-	ActionGroupDelete: categoryOperation,
+	ActionGroupCreate:         categoryOperation,
+	ActionGroupUpdate:         categoryOperation,
+	ActionGroupDelete:         categoryOperation,
+	ActionGroupDiscountSet:    categoryOperation,
+	ActionGroupDiscountDelete: categoryOperation,
 
 	ActionSystemInitialized: categoryOperation,
 

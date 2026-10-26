@@ -1663,6 +1663,79 @@ export interface paths {
         patch: operations["setUserPermissions"];
         trace?: never;
     };
+    "/api/users/discount-models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 用户折扣模型选择器
+         * @description 返回已启用（model_pricing.status = 1）的模型名，按名称排序；q 为
+         *     大小写不敏感子串，limit 缺省 50、越界钳到 [1,100]。
+         */
+        get: operations["listUserDiscountModels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/users/{id}/discounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 用户的折扣规则列表
+         * @description 返回该用户的全部规则（含停用与过期行），按 model_name 排序。
+         *     路径 id 不是正整数时 404。
+         */
+        get: operations["listUserDiscounts"];
+        put?: never;
+        /**
+         * 新建用户折扣规则
+         * @description (model_name, user) 唯一；重复 409。目标用户不存在 404。rate_percent
+         *     0–100；valid_from 必须早于 valid_until（左闭右开）。成功 201。
+         */
+        post: operations["createUserDiscount"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/users/{id}/discounts/{discount_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 删除用户折扣规则
+         * @description discount_id 不属于该用户时 404。成功 204。
+         */
+        delete: operations["deleteUserDiscount"];
+        options?: never;
+        head?: never;
+        /**
+         * 更新用户折扣规则
+         * @description 部分更新：缺省字段保留原值；valid_from/valid_until 显式 null 清空。
+         *     model_name 不可修改——请求体出现该字段返回 422，code=model_immutable。
+         *     discount_id 不属于该用户时 404。
+         */
+        patch: operations["updateUserDiscount"];
+        trace?: never;
+    };
     "/api/subscription-plans": {
         parameters: {
             query?: never;
@@ -1882,6 +1955,79 @@ export interface paths {
          *     新名称冲突 409；目标不存在 404。成功 200。
          */
         patch: operations["updateGroup"];
+        trace?: never;
+    };
+    "/api/groups/discount-models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 分组折扣模型选择器
+         * @description 返回已启用（model_pricing.status = 1）的模型名，按名称排序；q 为
+         *     大小写不敏感子串，limit 缺省 50、越界钳到 [1,100]。
+         */
+        get: operations["listGroupDiscountModels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/groups/{name}/discounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 分组的折扣规则列表
+         * @description 返回该分组的全部规则（含停用与过期行），按 model_name 排序。
+         *     路径 name 为空时 404。
+         */
+        get: operations["listGroupDiscounts"];
+        put?: never;
+        /**
+         * 新建分组折扣规则
+         * @description (model_name, group) 唯一；重复 409。目标分组不存在 404。rate_percent
+         *     0–100；valid_from 必须早于 valid_until（左闭右开）。成功 201。
+         */
+        post: operations["createGroupDiscount"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/groups/{name}/discounts/{discount_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 删除分组折扣规则
+         * @description discount_id 不属于该分组时 404。成功 204。
+         */
+        delete: operations["deleteGroupDiscount"];
+        options?: never;
+        head?: never;
+        /**
+         * 更新分组折扣规则
+         * @description 部分更新：缺省字段保留原值；valid_from/valid_until 显式 null 清空。
+         *     model_name 不可修改——请求体出现该字段返回 422，code=model_immutable。
+         *     discount_id 不属于该分组时 404。
+         */
+        patch: operations["updateGroupDiscount"];
         trace?: never;
     };
     "/api/model-pricing": {
@@ -8225,6 +8371,66 @@ export interface components {
              *     会绕过超集校验；授予全权必须显式提交 ["*"]。
              */
             admin_permissions: components["schemas"]["PermissionGrant"][];
+        };
+        DiscountModelOption: {
+            model_name: string;
+        };
+        DiscountModelList: {
+            items: components["schemas"]["DiscountModelOption"][];
+        };
+        DiscountRule: {
+            /** Format: int64 */
+            id: number;
+            model_name: string;
+            /** @description 实收百分比（90 = 9 折、0 = 全免、100 = 原价）。 */
+            rate_percent: number;
+            /**
+             * Format: date-time
+             * @description 生效起点（含）；null 表示不限制。
+             */
+            valid_from: string | null;
+            /**
+             * Format: date-time
+             * @description 生效终点（不含）；null 表示不限制。
+             */
+            valid_until: string | null;
+            enabled: boolean;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        DiscountRuleList: {
+            items: components["schemas"]["DiscountRule"][];
+        };
+        DiscountRuleInput: {
+            model_name: string;
+            /** @description 实收百分比（90 = 9 折、0 = 全免、100 = 原价）。 */
+            rate_percent: number;
+            /** Format: date-time */
+            valid_from?: string | null;
+            /**
+             * Format: date-time
+             * @description 必须晚于 valid_from（左闭右开）。
+             */
+            valid_until?: string | null;
+            /**
+             * @description 缺省 true。
+             * @default true
+             */
+            enabled: boolean;
+        };
+        /**
+         * @description 部分更新：缺省字段保留原值，显式 null 的 valid_from/valid_until 清空。
+         *     model_name 不可修改；提交该字段返回 422，code=model_immutable。
+         */
+        DiscountRulePatch: {
+            rate_percent?: number;
+            /** Format: date-time */
+            valid_from?: string | null;
+            /** Format: date-time */
+            valid_until?: string | null;
+            enabled?: boolean;
         };
         SubscriptionPlan: {
             /** Format: int64 */
@@ -14774,6 +14980,176 @@ export interface operations {
             500: components["responses"]["Error500"];
         };
     };
+    listUserDiscountModels: {
+        parameters: {
+            query?: {
+                q?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 模型名列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiscountModelList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listUserDiscounts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 用户 ID（正整数）；解析失败与不存在统一 404。 */
+                id: components["parameters"]["PathUserID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 折扣规则列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiscountRuleList"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    createUserDiscount: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 用户 ID（正整数）；解析失败与不存在统一 404。 */
+                id: components["parameters"]["PathUserID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DiscountRuleInput"];
+            };
+        };
+        responses: {
+            /** @description 已创建的折扣规则 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiscountRule"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    deleteUserDiscount: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 用户 ID（正整数）；解析失败与不存在统一 404。 */
+                id: components["parameters"]["PathUserID"];
+                discount_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    updateUserDiscount: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 用户 ID（正整数）；解析失败与不存在统一 404。 */
+                id: components["parameters"]["PathUserID"];
+                discount_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DiscountRulePatch"];
+            };
+        };
+        responses: {
+            /** @description 更新后的折扣规则 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiscountRule"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
     listSubscriptionPlans: {
         parameters: {
             query?: {
@@ -15244,6 +15620,176 @@ export interface operations {
             403: components["responses"]["Error403"];
             404: components["responses"]["Error404"];
             409: components["responses"]["Error409"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listGroupDiscountModels: {
+        parameters: {
+            query?: {
+                q?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 模型名列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiscountModelList"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    listGroupDiscounts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 分组名（^[a-z0-9_-]{2,32}$）。 */
+                name: components["parameters"]["PathGroupName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 折扣规则列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiscountRuleList"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    createGroupDiscount: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 分组名（^[a-z0-9_-]{2,32}$）。 */
+                name: components["parameters"]["PathGroupName"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DiscountRuleInput"];
+            };
+        };
+        responses: {
+            /** @description 已创建的折扣规则 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiscountRule"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    deleteGroupDiscount: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 分组名（^[a-z0-9_-]{2,32}$）。 */
+                name: components["parameters"]["PathGroupName"];
+                discount_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    updateGroupDiscount: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 分组名（^[a-z0-9_-]{2,32}$）。 */
+                name: components["parameters"]["PathGroupName"];
+                discount_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DiscountRulePatch"];
+            };
+        };
+        responses: {
+            /** @description 更新后的折扣规则 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiscountRule"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            404: components["responses"]["Error404"];
+            409: components["responses"]["Error409"];
+            422: components["responses"]["Error422"];
             500: components["responses"]["Error500"];
         };
     };

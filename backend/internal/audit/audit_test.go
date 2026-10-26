@@ -165,6 +165,8 @@ func TestAuditActionCategories(t *testing.T) {
 		ActionTokenBatchDelete:             "operation",
 		ActionUserCreate:                   "operation",
 		ActionUserQuotaAdjust:              "operation",
+		ActionUserDiscountSet:              "operation",
+		ActionUserDiscountDelete:           "operation",
 		ActionSystemInitialized:            "operation",
 		// RBAC 拒绝并入既有 security 类（security-09 §2.7 设计 B），不新增类别。
 		ActionAuthzDenied: "security",
@@ -173,6 +175,12 @@ func TestAuditActionCategories(t *testing.T) {
 		ActionChannelUpdate:            "operation",
 		ActionChannelDelete:            "operation",
 		ActionChannelCredentialsReveal: "operation",
+		// 分组折扣与既有分组管理动作同类。
+		ActionGroupCreate:         "operation",
+		ActionGroupUpdate:         "operation",
+		ActionGroupDelete:         "operation",
+		ActionGroupDiscountSet:    "operation",
+		ActionGroupDiscountDelete: "operation",
 	}
 	for action, want := range cases {
 		got, ok := Category(action)

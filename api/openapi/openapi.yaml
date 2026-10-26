@@ -171,6 +171,13 @@ paths:
     $ref: './paths/admin.yaml#/paths/~1api~1users~1{id}~1reset-password'
   /api/users/{id}/permissions:
     $ref: './paths/admin.yaml#/paths/~1api~1users~1{id}~1permissions'
+  # 客户专属折扣（plan 2026-10-26 Task 7）。
+  /api/users/discount-models:
+    $ref: './paths/admin.yaml#/paths/~1api~1users~1discount-models'
+  /api/users/{id}/discounts:
+    $ref: './paths/admin.yaml#/paths/~1api~1users~1{id}~1discounts'
+  /api/users/{id}/discounts/{discount_id}:
+    $ref: './paths/admin.yaml#/paths/~1api~1users~1{id}~1discounts~1{discount_id}'
   # 订阅套餐（D5b；billing-08 §15.1）。
   /api/subscription-plans:
     $ref: './paths/admin.yaml#/paths/~1api~1subscription-plans'
@@ -190,6 +197,13 @@ paths:
     $ref: './paths/admin.yaml#/paths/~1api~1groups'
   /api/groups/{name}:
     $ref: './paths/admin.yaml#/paths/~1api~1groups~1{name}'
+  # 分组折扣（plan 2026-10-26 Task 7）。
+  /api/groups/discount-models:
+    $ref: './paths/admin.yaml#/paths/~1api~1groups~1discount-models'
+  /api/groups/{name}/discounts:
+    $ref: './paths/admin.yaml#/paths/~1api~1groups~1{name}~1discounts'
+  /api/groups/{name}/discounts/{discount_id}:
+    $ref: './paths/admin.yaml#/paths/~1api~1groups~1{name}~1discounts~1{discount_id}'
 
   # 定价管理（M3 Task 7；管理面族与公开 /api/pricing 分离）。
   /api/model-pricing:

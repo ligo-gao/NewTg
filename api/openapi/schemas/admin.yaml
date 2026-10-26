@@ -4464,3 +4464,144 @@ schemas:
         $ref: '#/schemas/RecentFailureCounts'
       window:
         $ref: '#/schemas/RecentFailureWindow'
+
+  # 客户专属折扣（plan 2026-10-26 Task 7 / spec §7.3）。rate_percent 是
+  # **实收百分比**：90 = 9 折、0 = 全免、100 = 原价；同一 (model, target)
+  # 只有一条规则，重复创建 409。valid_from/valid_until 左闭右开，均空表示
+  # 永久有效，只给一侧表示单侧无限制。
+  DiscountRule:
+    type: object
+    additionalProperties: false
+    required: [id, model_name, rate_percent, valid_from, valid_until, enabled, created_at, updated_at]
+    properties:
+      id:
+        type: integer
+        format: int64
+        minimum: 1
+      model_name:
+        type: string
+        maxLength: 200
+      rate_percent:
+        type: integer
+        minimum: 0
+        maximum: 100
+        description: 实收百分比（90 = 9 折、0 = 全免、100 = 原价）。
+      valid_from:
+        type: string
+        format: date-time
+        nullable: true
+        description: 生效起点（含）；null 表示不限制。
+      valid_until:
+        type: string
+        format: date-time
+        nullable: true
+        description: 生效终点（不含）；null 表示不限制。
+      enabled:
+        type: boolean
+      created_at:
+        type: string
+        format: date-time
+      updated_at:
+        type: string
+        format: date-time
+
+  DiscountRuleInput:
+    type: object
+    additionalProperties: false
+    required: [model_name, rate_percent]
+    properties:
+      model_name:
+        type: string
+        minLength: 1
+        maxLength: 200
+      rate_percent:
+        type: integer
+        minimum: 0
+        maximum: 100
+        description: 实收百分比（90 = 9 折、0 = 全免、100 = 原价）。
+      valid_from:
+        type: string
+        format: date-time
+        nullable: true
+      valid_until:
+        type: string
+        format: date-time
+        nullable: true
+        description: 必须晚于 valid_from（左闭右开）。
+      enabled:
+        type: boolean
+        default: true
+        description: 缺省 true。
+
+  DiscountRulePatch:
+    type: object
+    additionalProperties: false
+    description: |
+      部分更新：缺省字段保留原值，显式 null 的 valid_from/valid_until 清空。
+      model_name 不可修改；提交该字段返回 422，code=model_immutable。
+    properties:
+      rate_percent:
+        type: integer
+        minimum: 0
+        maximum: 100
+      valid_from:
+        type: string
+        format: date-time
+        nullable: true
+      valid_until:
+        type: string
+        format: date-time
+        nullable: true
+      enabled:
+        type: boolean
+
+  DiscountRuleList:
+    type: object
+    additionalProperties: false
+    required: [items]
+    properties:
+      items:
+        type: array
+        items:
+          $ref: '#/schemas/DiscountRule'
+
+  DiscountModelOption:
+    type: object
+    additionalProperties: false
+    required: [model_name]
+    properties:
+      model_name:
+        type: string
+
+  DiscountModelList:
+    type: object
+    additionalProperties: false
+    required: [items]
+    properties:
+      items:
+        type: array
+        items:
+          $ref: '#/schemas/DiscountModelOption'
+
+  # 批量建用户（plan 2026-10-26 Task 9）的行级错误；Task 7 先冻结形状，
+  # code 是机器可读标识，message 为英文兜底，前端按 code 本地化。
+  BulkRowError:
+    type: object
+    additionalProperties: false
+    required: [line, field, message, code]
+    properties:
+      line:
+        type: integer
+        minimum: 1
+      field:
+        type: string
+      message:
+        type: string
+      username:
+        type: string
+      code:
+        type: string
+        description: |
+          机器可读错误码：header_invalid / row_limit / file_too_large /
+          username_invalid / username_duplicate / password_invalid /
+          customer_type_invalid / group_not_found / insert_failed。

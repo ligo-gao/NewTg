@@ -3353,6 +3353,203 @@ paths:
           $ref: '#/components/responses/Error404'
         '500':
           $ref: '#/components/responses/Error500'
+  /api/users/discount-models:
+    get:
+      tags:
+        - admin
+      operationId: listUserDiscountModels
+      x-required-permission: users:update
+      summary: 用户折扣模型选择器
+      description: |
+        返回已启用（model_pricing.status = 1）的模型名，按名称排序；q 为
+        大小写不敏感子串，limit 缺省 50、越界钳到 [1,100]。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: 模型名列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscountModelList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/users/{id}/discounts:
+    get:
+      tags:
+        - admin
+      operationId: listUserDiscounts
+      x-required-permission: users:update
+      summary: 用户的折扣规则列表
+      description: |
+        返回该用户的全部规则（含停用与过期行），按 model_name 排序。
+        路径 id 不是正整数时 404。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathUserID'
+      responses:
+        '200':
+          description: 折扣规则列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscountRuleList'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+    post:
+      tags:
+        - admin
+      operationId: createUserDiscount
+      x-required-permission: users:update
+      summary: 新建用户折扣规则
+      description: |
+        (model_name, user) 唯一；重复 409。目标用户不存在 404。rate_percent
+        0–100；valid_from 必须早于 valid_until（左闭右开）。成功 201。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathUserID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiscountRuleInput'
+      responses:
+        '201':
+          description: 已创建的折扣规则
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscountRule'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/users/{id}/discounts/{discount_id}:
+    patch:
+      tags:
+        - admin
+      operationId: updateUserDiscount
+      x-required-permission: users:update
+      summary: 更新用户折扣规则
+      description: |
+        部分更新：缺省字段保留原值；valid_from/valid_until 显式 null 清空。
+        model_name 不可修改——请求体出现该字段返回 422，code=model_immutable。
+        discount_id 不属于该用户时 404。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathUserID'
+        - name: discount_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiscountRulePatch'
+      responses:
+        '200':
+          description: 更新后的折扣规则
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscountRule'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+    delete:
+      tags:
+        - admin
+      operationId: deleteUserDiscount
+      x-required-permission: users:update
+      summary: 删除用户折扣规则
+      description: discount_id 不属于该用户时 404。成功 204。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathUserID'
+        - name: discount_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已删除
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
   /api/subscription-plans:
     get:
       tags:
@@ -3888,6 +4085,203 @@ paths:
           $ref: '#/components/responses/Error404'
         '409':
           $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/groups/discount-models:
+    get:
+      tags:
+        - admin
+      operationId: listGroupDiscountModels
+      x-required-permission: groups:manage
+      summary: 分组折扣模型选择器
+      description: |
+        返回已启用（model_pricing.status = 1）的模型名，按名称排序；q 为
+        大小写不敏感子串，limit 缺省 50、越界钳到 [1,100]。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: 模型名列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscountModelList'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/groups/{name}/discounts:
+    get:
+      tags:
+        - admin
+      operationId: listGroupDiscounts
+      x-required-permission: groups:manage
+      summary: 分组的折扣规则列表
+      description: |
+        返回该分组的全部规则（含停用与过期行），按 model_name 排序。
+        路径 name 为空时 404。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathGroupName'
+      responses:
+        '200':
+          description: 折扣规则列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscountRuleList'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+    post:
+      tags:
+        - admin
+      operationId: createGroupDiscount
+      x-required-permission: groups:manage
+      summary: 新建分组折扣规则
+      description: |
+        (model_name, group) 唯一；重复 409。目标分组不存在 404。rate_percent
+        0–100；valid_from 必须早于 valid_until（左闭右开）。成功 201。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathGroupName'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiscountRuleInput'
+      responses:
+        '201':
+          description: 已创建的折扣规则
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscountRule'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+  /api/groups/{name}/discounts/{discount_id}:
+    patch:
+      tags:
+        - admin
+      operationId: updateGroupDiscount
+      x-required-permission: groups:manage
+      summary: 更新分组折扣规则
+      description: |
+        部分更新：缺省字段保留原值；valid_from/valid_until 显式 null 清空。
+        model_name 不可修改——请求体出现该字段返回 422，code=model_immutable。
+        discount_id 不属于该分组时 404。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathGroupName'
+        - name: discount_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiscountRulePatch'
+      responses:
+        '200':
+          description: 更新后的折扣规则
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscountRule'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
+        '500':
+          $ref: '#/components/responses/Error500'
+    delete:
+      tags:
+        - admin
+      operationId: deleteGroupDiscount
+      x-required-permission: groups:manage
+      summary: 删除分组折扣规则
+      description: discount_id 不属于该分组时 404。成功 204。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/PathGroupName'
+        - name: discount_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: 已删除
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '422':
+          $ref: '#/components/responses/Error422'
         '500':
           $ref: '#/components/responses/Error500'
   /api/model-pricing:
@@ -17242,6 +17636,127 @@ components:
       description: |
         PATCH /api/users/{id}/permissions 只对 admin 目标有效；不能修改自己
         （400）。成功 200 返回更新后的 AdminUser。
+    DiscountModelOption:
+      type: object
+      additionalProperties: false
+      required:
+        - model_name
+      properties:
+        model_name:
+          type: string
+    DiscountModelList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiscountModelOption'
+    DiscountRule:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - model_name
+        - rate_percent
+        - valid_from
+        - valid_until
+        - enabled
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        model_name:
+          type: string
+          maxLength: 200
+        rate_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: 实收百分比（90 = 9 折、0 = 全免、100 = 原价）。
+        valid_from:
+          type: string
+          format: date-time
+          nullable: true
+          description: 生效起点（含）；null 表示不限制。
+        valid_until:
+          type: string
+          format: date-time
+          nullable: true
+          description: 生效终点（不含）；null 表示不限制。
+        enabled:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    DiscountRuleList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiscountRule'
+    DiscountRuleInput:
+      type: object
+      additionalProperties: false
+      required:
+        - model_name
+        - rate_percent
+      properties:
+        model_name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        rate_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: 实收百分比（90 = 9 折、0 = 全免、100 = 原价）。
+        valid_from:
+          type: string
+          format: date-time
+          nullable: true
+        valid_until:
+          type: string
+          format: date-time
+          nullable: true
+          description: 必须晚于 valid_from（左闭右开）。
+        enabled:
+          type: boolean
+          default: true
+          description: 缺省 true。
+    DiscountRulePatch:
+      type: object
+      additionalProperties: false
+      description: |
+        部分更新：缺省字段保留原值，显式 null 的 valid_from/valid_until 清空。
+        model_name 不可修改；提交该字段返回 422，code=model_immutable。
+      properties:
+        rate_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        valid_from:
+          type: string
+          format: date-time
+          nullable: true
+        valid_until:
+          type: string
+          format: date-time
+          nullable: true
+        enabled:
+          type: boolean
     SubscriptionPlan:
       type: object
       additionalProperties: false

@@ -6627,6 +6627,62 @@ type DeploySettings struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
+// DiscountModelList defines model for DiscountModelList.
+type DiscountModelList struct {
+	Items []DiscountModelOption `json:"items"`
+}
+
+// DiscountModelOption defines model for DiscountModelOption.
+type DiscountModelOption struct {
+	ModelName string `json:"model_name"`
+}
+
+// DiscountRule defines model for DiscountRule.
+type DiscountRule struct {
+	CreatedAt time.Time `json:"created_at"`
+	Enabled   bool      `json:"enabled"`
+	Id        int64     `json:"id"`
+	ModelName string    `json:"model_name"`
+
+	// RatePercent 实收百分比（90 = 9 折、0 = 全免、100 = 原价）。
+	RatePercent int       `json:"rate_percent"`
+	UpdatedAt   time.Time `json:"updated_at"`
+
+	// ValidFrom 生效起点（含）；null 表示不限制。
+	ValidFrom time.Time `json:"valid_from"`
+
+	// ValidUntil 生效终点（不含）；null 表示不限制。
+	ValidUntil time.Time `json:"valid_until"`
+}
+
+// DiscountRuleInput defines model for DiscountRuleInput.
+type DiscountRuleInput struct {
+	// Enabled 缺省 true。
+	Enabled   *bool  `json:"enabled,omitempty"`
+	ModelName string `json:"model_name"`
+
+	// RatePercent 实收百分比（90 = 9 折、0 = 全免、100 = 原价）。
+	RatePercent int        `json:"rate_percent"`
+	ValidFrom   *time.Time `json:"valid_from,omitempty"`
+
+	// ValidUntil 必须晚于 valid_from（左闭右开）。
+	ValidUntil *time.Time `json:"valid_until,omitempty"`
+}
+
+// DiscountRuleList defines model for DiscountRuleList.
+type DiscountRuleList struct {
+	Items []DiscountRule `json:"items"`
+}
+
+// DiscountRulePatch 部分更新：缺省字段保留原值，显式 null 的 valid_from/valid_until 清空。
+// model_name 不可修改；提交该字段返回 422，code=model_immutable。
+type DiscountRulePatch struct {
+	Enabled     *bool      `json:"enabled,omitempty"`
+	RatePercent *int       `json:"rate_percent,omitempty"`
+	ValidFrom   *time.Time `json:"valid_from,omitempty"`
+	ValidUntil  *time.Time `json:"valid_until,omitempty"`
+}
+
 // EmailCodeRequest 发送 6 位一次性邮箱验证码（TTL 10 分钟）。同邮箱 60 秒冷却、同 IP 每小时
 // 10 次；超限返回 429 + Retry-After。成功恒 204 且不回显验证码。
 type EmailCodeRequest struct {
@@ -12501,6 +12557,12 @@ type CreateGroupParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// ListGroupDiscountModelsParams defines parameters for ListGroupDiscountModels.
+type ListGroupDiscountModelsParams struct {
+	Q     *string `form:"q,omitempty" json:"q,omitempty"`
+	Limit *int    `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // DeleteGroupParams defines parameters for DeleteGroup.
 type DeleteGroupParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
@@ -12510,6 +12572,27 @@ type DeleteGroupParams struct {
 
 // UpdateGroupParams defines parameters for UpdateGroup.
 type UpdateGroupParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// CreateGroupDiscountParams defines parameters for CreateGroupDiscount.
+type CreateGroupDiscountParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// DeleteGroupDiscountParams defines parameters for DeleteGroupDiscount.
+type DeleteGroupDiscountParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// UpdateGroupDiscountParams defines parameters for UpdateGroupDiscount.
+type UpdateGroupDiscountParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
 	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
@@ -13712,6 +13795,12 @@ type CreateUserParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// ListUserDiscountModelsParams defines parameters for ListUserDiscountModels.
+type ListUserDiscountModelsParams struct {
+	Q     *string `form:"q,omitempty" json:"q,omitempty"`
+	Limit *int    `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // DeleteUserParams defines parameters for DeleteUser.
 type DeleteUserParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
@@ -13721,6 +13810,27 @@ type DeleteUserParams struct {
 
 // UpdateUserParams defines parameters for UpdateUser.
 type UpdateUserParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// CreateUserDiscountParams defines parameters for CreateUserDiscount.
+type CreateUserDiscountParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// DeleteUserDiscountParams defines parameters for DeleteUserDiscount.
+type DeleteUserDiscountParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// UpdateUserDiscountParams defines parameters for UpdateUserDiscount.
+type UpdateUserDiscountParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
 	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
@@ -14094,6 +14204,12 @@ type CreateGroupJSONRequestBody = AdminCreateGroupRequest
 // UpdateGroupJSONRequestBody defines body for UpdateGroup for application/json ContentType.
 type UpdateGroupJSONRequestBody = AdminUpdateGroupRequest
 
+// CreateGroupDiscountJSONRequestBody defines body for CreateGroupDiscount for application/json ContentType.
+type CreateGroupDiscountJSONRequestBody = DiscountRuleInput
+
+// UpdateGroupDiscountJSONRequestBody defines body for UpdateGroupDiscount for application/json ContentType.
+type UpdateGroupDiscountJSONRequestBody = DiscountRulePatch
+
 // PatchMeJSONRequestBody defines body for PatchMe for application/json ContentType.
 type PatchMeJSONRequestBody = PatchMeRequest
 
@@ -14261,6 +14377,12 @@ type CreateUserJSONRequestBody = AdminCreateUserRequest
 
 // UpdateUserJSONRequestBody defines body for UpdateUser for application/json ContentType.
 type UpdateUserJSONRequestBody = AdminUpdateUserRequest
+
+// CreateUserDiscountJSONRequestBody defines body for CreateUserDiscount for application/json ContentType.
+type CreateUserDiscountJSONRequestBody = DiscountRuleInput
+
+// UpdateUserDiscountJSONRequestBody defines body for UpdateUserDiscount for application/json ContentType.
+type UpdateUserDiscountJSONRequestBody = DiscountRulePatch
 
 // SetUserPermissionsJSONRequestBody defines body for SetUserPermissions for application/json ContentType.
 type SetUserPermissionsJSONRequestBody = SetPermissionsRequest
