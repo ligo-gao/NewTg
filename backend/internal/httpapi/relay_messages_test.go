@@ -565,6 +565,120 @@ data: {"candidates":[{"content":{"role":"model","parts":[{"text":" there"}]},"fi
 	}
 }
 
+// TestMessagesCrossProtocolStreamMessageStartUsage：异构上游（OpenAI）的精确
+// 用量只在流末尾出现，但 message_start 不能写 0 —— 否则客户端在整段生成期间
+// 都以为上下文是空的。message_start 用本地估算的展示值，message_delta 仍以
+// 上游精确用量覆盖（计费只读后者）。
+func TestMessagesCrossProtocolStreamMessageStartUsage(t *testing.T) {
+	env, _ := messagesTestEnv(t, contract.ChannelTypeOpenAI, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"id":"chatcmpl-u","model":"gpt-upstream","choices":[{"index":0,"delta":{"content":"Hi"}}]}
+
+data: {"id":"chatcmpl-u","model":"gpt-upstream","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-u","model":"gpt-upstream","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}
+
+data: [DONE]
+
+`)
+	})
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"stream":true}`,
+		messagesHeaders())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	events, datas := parseSSEEvents(t, w.Body.String())
+	var startUsage, finalUsage map[string]any
+	for i, name := range events {
+		switch name {
+		case "message_start":
+			message, _ := datas[i]["message"].(map[string]any)
+			startUsage, _ = message["usage"].(map[string]any)
+		case "message_delta":
+			finalUsage, _ = datas[i]["usage"].(map[string]any)
+		}
+	}
+	if startUsage == nil {
+		t.Fatalf("no message_start in %s", w.Body.String())
+	}
+	inputAtStart, _ := startUsage["input_tokens"].(float64)
+	if inputAtStart <= 0 {
+		t.Fatalf("message_start usage.input_tokens = %v, want the local display estimate > 0", startUsage["input_tokens"])
+	}
+	if startUsage["output_tokens"] != float64(0) {
+		t.Fatalf("message_start usage.output_tokens = %v, want 0", startUsage["output_tokens"])
+	}
+	// 精确用量仍以 message_delta 为准，估算值绝不回流到结算。
+	if finalUsage["input_tokens"] != float64(10) || finalUsage["output_tokens"] != float64(5) {
+		t.Fatalf("message_delta usage = %v, want exact 10/5", finalUsage)
+	}
+	if fact := env.billing.lastFact(); fact.Usage.Prompt != 10 || fact.Usage.Completion != 5 {
+		t.Fatalf("usage fact = %+v, want prompt 10 / completion 5", fact.Usage)
+	}
+}
+
+// TestMessagesGeminiStreamSignatureDelta：Gemini 把思考块的可回放签名挂在
+// thought part 上，网关必须转成 Anthropic 的 signature_delta 并落在 thinking
+// 块内（块关闭之前），否则客户端回放历史思考块时会判定为被篡改。
+func TestMessagesGeminiStreamSignatureDelta(t *testing.T) {
+	env, _ := messagesTestEnv(t, contract.ChannelTypeGemini, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"ponder","thought":true,"thoughtSignature":"sig-think"}]}}]}
+
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":"Answer"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":2,"totalTokenCount":6}}
+
+`)
+	})
+	w := env.do(t, http.MethodPost, "/v1/messages",
+		`{"model":"claude-test","max_tokens":8,"messages":[{"role":"user","content":"hi"}],"stream":true}`,
+		messagesHeaders())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	events, datas := parseSSEEvents(t, w.Body.String())
+	sigPos, sigIdx := -1, float64(-1)
+	for i, name := range events {
+		if name != "content_block_delta" {
+			continue
+		}
+		delta, _ := datas[i]["delta"].(map[string]any)
+		if delta["type"] != "signature_delta" {
+			continue
+		}
+		sigPos = i
+		sigIdx, _ = datas[i]["index"].(float64)
+		if delta["signature"] != "sig-think" {
+			t.Fatalf("signature_delta.signature = %v, want sig-think", delta["signature"])
+		}
+	}
+	if sigPos < 0 {
+		t.Fatalf("没有 signature_delta 事件；body=%s", w.Body.String())
+	}
+	startPos, stopPos := -1, -1
+	for i, name := range events {
+		idx, _ := datas[i]["index"].(float64)
+		if idx != sigIdx {
+			continue
+		}
+		switch name {
+		case "content_block_start":
+			if block, ok := datas[i]["content_block"].(map[string]any); ok && block["type"] == "thinking" {
+				startPos = i
+			}
+		case "content_block_stop":
+			stopPos = i
+		}
+	}
+	if startPos < 0 || stopPos < 0 {
+		t.Fatalf("signature_delta(index=%v) 不在 thinking 块内；body=%s", sigIdx, w.Body.String())
+	}
+	if !(startPos < sigPos && sigPos < stopPos) {
+		t.Fatalf("顺序 = start #%d, signature #%d, stop #%d；签名必须在 thinking 块内、关闭前",
+			startPos, sigPos, stopPos)
+	}
+}
+
 // ---------- 方向矩阵补齐：Moonshot 可用 / 任务平台不可用 ----------
 
 // TestMessagesMoonshotUpstreamRoundTrip：type 25 是 Anthropic 兼容协议，

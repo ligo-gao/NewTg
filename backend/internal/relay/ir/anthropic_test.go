@@ -1012,3 +1012,119 @@ func TestAnthropicMixedContentKeepsToolMessageAdjacent(t *testing.T) {
 		t.Fatalf("tool_result 未保留 tool_call_id：%+v", req.Messages[2].Content[0])
 	}
 }
+
+// TestAnthropicStreamRendererInputTokens：跨协议流的 message_start 必须带上
+// 输入 token 的近似值。异构上游（OpenAI/Gemini）的精确用量要到流末尾才知道，
+// 归零会让客户端的上下文统计在整段生成期间显示为 0。
+//
+// 精确用量仍以 message_delta 为准：Start 里的数字只是先给客户端一个量级，
+// 不得影响计费（计费读的是 accumulator）。
+func TestAnthropicStreamRendererInputTokens(t *testing.T) {
+	r := NewAnthropicStreamRenderer("msg_in", "m").WithInputTokens(1234)
+	var frames []AnthropicSSEFrame
+	frames = append(frames, r.Start()...)
+	frames = append(frames, r.Push(contract.StreamEvent{Kind: contract.EventDelta, Delta: "ok"})...)
+	frames = append(frames, r.Close(contract.Usage{Prompt: 1200, Completion: 7})...)
+
+	start := decodeAnthropicJSON(t, frames[0].Data)
+	if start["type"] != "message_start" {
+		t.Fatalf("first frame = %v, want message_start", start)
+	}
+	startUsage := start["message"].(map[string]any)["usage"].(map[string]any)
+	if startUsage["input_tokens"] != float64(1234) {
+		t.Fatalf("message_start.input_tokens = %v, want 1234（渲染器声明的输入估算）", startUsage["input_tokens"])
+	}
+	if startUsage["output_tokens"] != float64(0) {
+		t.Fatalf("message_start.output_tokens = %v, want 0", startUsage["output_tokens"])
+	}
+
+	var final map[string]any
+	for _, frame := range frames {
+		if frame.Event == "message_delta" {
+			final = decodeAnthropicJSON(t, frame.Data)["usage"].(map[string]any)
+		}
+	}
+	if final == nil {
+		t.Fatal("缺少 message_delta")
+	}
+	if final["input_tokens"] != float64(1200) {
+		t.Fatalf("message_delta.input_tokens = %v, want 1200（精确用量必须覆盖估算）", final["input_tokens"])
+	}
+}
+
+// TestAnthropicStreamRendererSignatureDelta：思考块的签名必须以
+// signature_delta 下发，且落在同一个 thinking 块内（同一个 index、在
+// content_block_stop 之前）。丢了它客户端无法回放思考块。
+func TestAnthropicStreamRendererSignatureDelta(t *testing.T) {
+	r := NewAnthropicStreamRenderer("msg_sig", "m")
+	var frames []AnthropicSSEFrame
+	frames = append(frames, r.Start()...)
+	frames = append(frames, r.Push(contract.StreamEvent{
+		Kind:      contract.EventDelta,
+		Reasoning: "ponder",
+		Signature: "sig-think",
+	})...)
+	frames = append(frames, r.Push(contract.StreamEvent{Kind: contract.EventDelta, Delta: "answer"})...)
+	frames = append(frames, r.Close(contract.Usage{})...)
+
+	thinkingIndex := -1
+	signatureIndex := -1
+	signatureAt := -1
+	stopAt := -1
+	for i, frame := range frames {
+		obj := decodeAnthropicJSON(t, frame.Data)
+		switch frame.Event {
+		case "content_block_start":
+			block := obj["content_block"].(map[string]any)
+			if block["type"] == "thinking" {
+				thinkingIndex = int(obj["index"].(float64))
+			}
+		case "content_block_delta":
+			delta := obj["delta"].(map[string]any)
+			if delta["type"] == "signature_delta" {
+				signatureAt = i
+				if delta["signature"] != "sig-think" {
+					t.Fatalf("signature_delta.signature = %v, want sig-think", delta["signature"])
+				}
+				signatureIndex = int(obj["index"].(float64))
+			}
+		case "content_block_stop":
+			if thinkingIndex >= 0 && stopAt < 0 && int(obj["index"].(float64)) == thinkingIndex {
+				stopAt = i
+			}
+		}
+	}
+	if thinkingIndex < 0 {
+		t.Fatal("缺少 thinking 块")
+	}
+	if signatureAt < 0 {
+		t.Fatal("缺少 signature_delta：思考块的签名被丢弃")
+	}
+	if signatureIndex != thinkingIndex {
+		t.Fatalf("signature_delta index = %d, want %d（必须属于同一个 thinking 块）", signatureIndex, thinkingIndex)
+	}
+	if stopAt < 0 || signatureAt > stopAt {
+		t.Fatalf("signature_delta 位置 = %d, thinking 块结束 = %d（签名必须在块结束之前）", signatureAt, stopAt)
+	}
+}
+
+// TestAnthropicStreamRendererSignatureAloneStaysInBlock：签名单独到达
+// （不带正文增量）时，仍必须挂在已打开的 thinking 块上，不得新开一个空块。
+func TestAnthropicStreamRendererSignatureAloneStaysInBlock(t *testing.T) {
+	r := NewAnthropicStreamRenderer("msg_sig2", "m")
+	_ = r.Start()
+	_ = r.Push(contract.StreamEvent{Kind: contract.EventDelta, Reasoning: "ponder"})
+	frames := r.Push(contract.StreamEvent{Kind: contract.EventDelta, Signature: "sig-only"})
+
+	if len(frames) != 1 || frames[0].Event != "content_block_delta" {
+		t.Fatalf("frames = %+v, want 单个 content_block_delta", frames)
+	}
+	obj := decodeAnthropicJSON(t, frames[0].Data)
+	delta := obj["delta"].(map[string]any)
+	if delta["type"] != "signature_delta" || delta["signature"] != "sig-only" {
+		t.Fatalf("delta = %v, want signature_delta/sig-only", delta)
+	}
+	if obj["index"] != float64(0) {
+		t.Fatalf("index = %v, want 0（沿用已打开的 thinking 块）", obj["index"])
+	}
+}

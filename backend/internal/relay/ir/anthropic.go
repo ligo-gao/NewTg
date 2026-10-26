@@ -1346,12 +1346,16 @@ type anthropicStreamTool struct {
 //	content_block_start → content_block_delta* → content_block_stop   （按块重复）
 //	message_delta(stop_reason/usage) → message_stop
 //
-// usage 只可能在流末尾拿到（OpenAI 需 include_usage、Gemini usageMetadata
-// 也常在后段），所以 message_start 的 usage 为 0，最终用量放进 message_delta。
-// 这是异构上游的固有信息时序差异，登记为已知限制。
+// usage 的精确值只可能在流末尾拿到（OpenAI 需 include_usage、Gemini
+// usageMetadata 也常在后段），所以 message_start 用调用方给的本地估算填充
+// （见 WithInputTokens），最终精确用量放进 message_delta 覆盖。
 type AnthropicStreamRenderer struct {
 	id    string
 	model string
+	// inputTokens 是 message_start 里回写的输入 token。异构上游的精确用量
+	// 只在流末尾出现（include_usage/usageMetadata），此时先用调用方给的
+	// 近似值填上，精确值随后由 message_delta 覆盖。
+	inputTokens int
 
 	nextIndex  int
 	openBlock  bool
@@ -1376,6 +1380,19 @@ func NewAnthropicStreamRenderer(id, model string) *AnthropicStreamRenderer {
 	}
 }
 
+// WithInputTokens 声明 message_start 里回写的输入 token 数。
+//
+// 异构上游（OpenAI 的 include_usage、Gemini 的 usageMetadata）只在流末尾给出
+// 精确用量，message_start 必须先生成一个数字，否则客户端整段生成期间都以为
+// 上下文是空的。调用方传本地估算；精确值随后由 message_delta 覆盖，计费不
+// 读本字段。
+func (r *AnthropicStreamRenderer) WithInputTokens(tokens int) *AnthropicStreamRenderer {
+	if tokens > 0 {
+		r.inputTokens = tokens
+	}
+	return r
+}
+
 // Start 返回 message_start 帧。
 func (r *AnthropicStreamRenderer) Start() []AnthropicSSEFrame {
 	if r.started {
@@ -1392,7 +1409,7 @@ func (r *AnthropicStreamRenderer) Start() []AnthropicSSEFrame {
 			"content":       []any{},
 			"stop_reason":   nil,
 			"stop_sequence": nil,
-			"usage":         map[string]any{"input_tokens": 0, "output_tokens": 0},
+			"usage":         map[string]any{"input_tokens": r.inputTokens, "output_tokens": 0},
 		},
 	})
 	return []AnthropicSSEFrame{{Event: "message_start", Data: data}}
@@ -1408,6 +1425,13 @@ func (r *AnthropicStreamRenderer) Push(ev contract.StreamEvent) []AnthropicSSEFr
 		if ev.Reasoning != "" {
 			frames = append(frames, r.ensureBlock("thinking")...)
 			frames = append(frames, r.delta("thinking_delta", "thinking", ev.Reasoning))
+		}
+		// 签名必须在 thinking 块内、块关闭前下发，否则客户端回放思考块时
+		// 会被判定为被篡改。signature 与 reasoning 常在同一帧到达，此时
+		// ensureBlock 不产生新块；单独到达时也挂在 thinking 块上，绝不丢弃。
+		if ev.Signature != "" {
+			frames = append(frames, r.ensureBlock("thinking")...)
+			frames = append(frames, r.delta("signature_delta", "signature", ev.Signature))
 		}
 		if ev.Delta != "" {
 			frames = append(frames, r.ensureBlock("text")...)
@@ -1450,7 +1474,8 @@ func (r *AnthropicStreamRenderer) Close(usage contract.Usage) []AnthropicSSEFram
 		}
 	}
 	// message_delta 同时带上 input/cache：异构上游的 usage 只在末尾出现，
-	// message_start 已经写成 0；不带的话客户端永远看不到输入 token。
+	// message_start 里的输入 token 是本地估算；精确值在这里覆盖，客户端
+	// 的上下文统计与计费都以这一份为准。
 	delta, _ := json.Marshal(map[string]any{
 		"type":  "message_delta",
 		"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil},

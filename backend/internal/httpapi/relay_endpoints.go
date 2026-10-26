@@ -36,6 +36,7 @@ import (
 	"newtg/gateway/internal/relay/usage"
 	"newtg/gateway/internal/sensitive"
 	"newtg/gateway/internal/store"
+	"newtg/gateway/internal/tokenestimate"
 	"newtg/gateway/internal/tokenstore"
 )
 
@@ -2132,7 +2133,10 @@ func (h *RelayHandler) bridgeAnthropicCrossProtocolStream(
 	}()
 
 	// message_start 必须最先写出：Claude 客户端在没有它之前不认任何事件。
-	renderer := ir.NewAnthropicStreamRenderer(anthropicMessageID(rc), rc.OriginModel)
+	// 异构上游的精确用量只在流末尾出现，这里先填本地估算的展示值，避免
+	// 整个生成过程里客户端都以为上下文是空的；精确值由 message_delta 覆盖。
+	renderer := ir.NewAnthropicStreamRenderer(anthropicMessageID(rc), rc.OriginModel).
+		WithInputTokens(int(tokenestimate.DisplayPromptTokens(rc.Request)))
 	for _, frame := range renderer.Start() {
 		if !sse.anthropicEvent(frame.Event, frame.Data) {
 			clientGone = true

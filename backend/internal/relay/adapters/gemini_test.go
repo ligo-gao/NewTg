@@ -323,3 +323,25 @@ func TestGeminiRegistryDispatch(t *testing.T) {
 		t.Fatalf("DefaultBaseURL = %q", caps.DefaultBaseURL)
 	}
 }
+
+// TestGeminiStreamThoughtSignatureOnThoughtPart：思考 part 的
+// thoughtSignature 必须进入 StreamEvent.Signature，否则 Anthropic 客户端
+// 收到的 thinking 块没有签名，无法回放。
+func TestGeminiStreamThoughtSignatureOnThoughtPart(t *testing.T) {
+	adapter := NewGeminiAdapter(contract.ChannelTypeGemini)
+	sse := `data: {"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"ponder","thought":true,"thoughtSignature":"sig-think"}]}}]}` + "\n\n"
+	events := collectStreamEvents(adapter.(contract.StreamAdapter).StreamEvents(geminiContext("k"), bytes.NewBufferString(sse)))
+
+	found := false
+	for _, event := range events {
+		if event.Kind != contract.EventDelta {
+			continue
+		}
+		if event.Reasoning == "ponder" && event.Signature == "sig-think" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("思考 part 的 thoughtSignature 必须进入事件签名位：%+v", events)
+	}
+}

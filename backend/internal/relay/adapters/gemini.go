@@ -283,6 +283,12 @@ func geminiStreamEvents(rw io.ReadWriter, maxEventBytes int) iter.Seq[contract.S
 							if thought, _ := part["thought"].(bool); thought {
 								processed.Kind = contract.EventDelta
 								processed.Reasoning = text
+								// Gemini 把思考块的可回放签名挂在 thought part 上。
+								// 丢掉它，Anthropic 客户端回传历史思考块时会被判定
+								// 为被篡改；不伪造，上游没给就保持空串。
+								if sig, ok := part["thoughtSignature"].(string); ok {
+									processed.Signature = sig
+								}
 							} else {
 								processed.Kind = contract.EventDelta
 								processed.Delta = text

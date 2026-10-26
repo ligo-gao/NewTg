@@ -169,6 +169,10 @@ type StreamEvent struct {
 	Delta     string    // 文本增量
 	ToolDelta *ToolCallDelta
 	Reasoning string // 思考增量（独立通道）
+	// Signature 是思考块的可回放签名（Gemini thoughtSignature 等）。
+	// Anthropic 客户端用 signature_delta 下发；OpenAI 协议没有对应字段，
+	// 适配器忽略即可。空串表示上游没有提供，绝不伪造。
+	Signature string
 	Usage     *Usage // 出现时机由适配器决定（见契约 §9）
 	Model     string // 上游声明模型
 	Raw       []byte // 原始 SSE 事件体（转码时保留）
