@@ -24,10 +24,12 @@ const ALL_HOURS = Array.from({ length: 24 }, (_, index) => index)
 
 type BandKind = 'peak' | 'off' | 'base'
 
-function kindFor(multiplier: number, defaultValue: number): BandKind {
-  // 用极小容差比较浮点倍数，避免 0.5*100 之类的噪声把「标准价」显示成峰谷。
-  if (Math.abs(multiplier - defaultValue) < 1e-9) return 'base'
-  return multiplier > defaultValue ? 'peak' : 'off'
+function kindFor(multiplier: number, peak: number, flat: boolean): BandKind {
+  // 全部时段同价：没有峰谷可谈，整条带都是「统一价」。
+  if (flat) return 'base'
+  // 用极小容差比较浮点倍数，避免 0.5*100 之类的噪声把最高档显示成低谷。
+  if (Math.abs(multiplier - peak) < 1e-9) return 'peak'
+  return 'off'
 }
 
 /**
@@ -48,6 +50,19 @@ export function PricingBand({ config, selected, onSelect }: PricingBandProps) {
 
   const fallback = parseMultiplierPercent(config.defaultMultiplier)
   const defaultMultiplier = fallback.invalid ? 1 : (fallback.value ?? 1)
+  // 峰 = 整个策略里的最高倍率；其余（含默认倍率时段）都按低谷着色，
+  // 否则「工作日白天 100%、高峰 150%」里的 12 小时会看起来没有价格。
+  const multipliers = [
+    defaultMultiplier,
+    ...config.windows.map((window) => {
+      const parsed = parseMultiplierPercent(window.multiplier)
+      return parsed.invalid ? 1 : (parsed.value ?? 1)
+    }),
+  ]
+  const peakMultiplier = Math.max(...multipliers)
+  const flat =
+    config.windows.length === 0 ||
+    multipliers.every((multiplier) => Math.abs(multiplier - peakMultiplier) < 1e-9)
   const selection = wallClockParts(selected)
 
   return (
@@ -73,7 +88,8 @@ export function PricingBand({ config, selected, onSelect }: PricingBandProps) {
               key={day}
               config={config}
               day={day}
-              defaultMultiplier={defaultMultiplier}
+              peakMultiplier={peakMultiplier}
+              flat={flat}
               selectedDay={selection?.day ?? null}
               selectedHour={
                 selection === null ? null : Math.floor(selection.minutes / 60)
@@ -111,7 +127,8 @@ export function PricingBand({ config, selected, onSelect }: PricingBandProps) {
 interface BandRowProps {
   config: TimeConfigDraft
   day: number
-  defaultMultiplier: number
+  peakMultiplier: number
+  flat: boolean
   selectedDay: number | null
   selectedHour: number | null
   selected: string
@@ -125,7 +142,8 @@ interface BandRowProps {
 function BandRow({
   config,
   day,
-  defaultMultiplier,
+  peakMultiplier,
+  flat,
   selectedDay,
   selectedHour,
   selected,
@@ -140,7 +158,7 @@ function BandRow({
       <div className="flex items-center text-badge font-medium text-ink-2">{dayLabel}</div>
       {ALL_HOURS.map((hour) => {
         const match = matchLocalTimeRule(config, day, hour * 60)
-        const kind = kindFor(match.multiplier, defaultMultiplier)
+        const kind = kindFor(match.multiplier, peakMultiplier, flat)
         const isSelected = selectedDay === day && selectedHour === hour
         const rule = match.window === '' ? defaultRule : match.window
         const label = cellLabel

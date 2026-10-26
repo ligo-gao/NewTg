@@ -52,7 +52,24 @@ describe('PricingBand', () => {
     })
     expect(peak.getAttribute('data-kind')).toBe('peak')
     expect(off.getAttribute('data-kind')).toBe('off')
-    expect(base.getAttribute('data-kind')).toBe('base')
+    // 100% 低于 150% 高峰，按低谷着色——默认倍率时段不能被留白。
+    expect(base.getAttribute('data-kind')).toBe('off')
+  })
+
+  it('marks the whole band as flat when every hour costs the same', async () => {
+    const { getByRole } = await renderWithProviders(
+      <PricingBand
+        config={{ ...CONFIG, windows: [], defaultMultiplier: '100' }}
+        selected="2026-10-26T10:00"
+        onSelect={() => undefined}
+      />,
+      ['common', 'admin'],
+    )
+
+    const monday = getByRole('button', { name: 'Monday 10:00 · Default · 100%' })
+    const sunday = getByRole('button', { name: 'Sunday 03:00 · Default · 100%' })
+    expect(monday.getAttribute('data-kind')).toBe('base')
+    expect(sunday.getAttribute('data-kind')).toBe('base')
   })
 
   it('marks the selected hour and reports the clicked time', async () => {
