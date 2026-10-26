@@ -190,6 +190,111 @@ func TestListDetailedOpenAICompatibleMetadata(t *testing.T) {
 	}
 }
 
+// created 在不同上游可能是字符串、小数或毫秒时间戳。解析必须宽容：非数值
+// 或区间外的值落空串，绝不让整份目录解析失败。
+func TestParseOpenAIModelsToleratesCreatedShapes(t *testing.T) {
+	body := `{"data":[
+		{"id":"zero","created":0},
+		{"id":"negative","created":-1},
+		{"id":"millis","created":1715644800000},
+		{"id":"below-range","created":946684799},
+		{"id":"lower-bound","created":946684800},
+		{"id":"upper-bound","created":4102444800},
+		{"id":"string-seconds","created":"1715644800"},
+		{"id":"string-garbage","created":"recent"},
+		{"id":"float-seconds","created":1715644800.5},
+		{"id":"object","created":{"unix":1715644800}}
+	],"models":[
+		{"name":"manifest-only","created":1715644800},
+		{"id":"preferred-id","name":"ignored-name","created":"1715644800"}
+	]}`
+	infos, err := parseOpenAIModels([]byte(body))
+	if err != nil {
+		t.Fatalf("parse must tolerate odd created values: %v", err)
+	}
+	want := map[string]string{
+		"zero":           "",
+		"negative":       "",
+		"millis":         "",
+		"below-range":    "",
+		"lower-bound":    "2000-01-01",
+		"upper-bound":    "",
+		"string-seconds": "2024-05-14",
+		"string-garbage": "",
+		"float-seconds":  "2024-05-14",
+		"object":         "",
+		"manifest-only":  "2024-05-14",
+		"preferred-id":   "2024-05-14",
+	}
+	if len(infos) != len(want) {
+		t.Fatalf("len = %d, want %d (%+v)", len(infos), len(want), infos)
+	}
+	for _, info := range infos {
+		expected, ok := want[info.ID]
+		if !ok {
+			t.Fatalf("unexpected model %q", info.ID)
+		}
+		if info.ReleasedAt != expected {
+			t.Fatalf("%s: released_at = %q, want %q", info.ID, info.ReleasedAt, expected)
+		}
+	}
+}
+
+func TestParseAnthropicModelMetadata(t *testing.T) {
+	body := `{"data":[
+		{"id":"claude-sonnet-4-5","display_name":"Claude Sonnet 4.5","created_at":"2025-09-29T00:00:00Z"},
+		{"id":"claude-3-haiku-20240307"}
+	],"has_more":false}`
+	page, err := parseAnthropicModels([]byte(body))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if page.Data[0].DisplayName != "Claude Sonnet 4.5" {
+		t.Fatalf("display_name = %q", page.Data[0].DisplayName)
+	}
+	infos := anthropicModelInfos(page)
+	if infos[0].ReleasedAt != "2025-09-29" || infos[0].Source != "anthropic_models" {
+		t.Fatalf("info = %+v", infos[0])
+	}
+	if infos[1].ReleasedAt != "" || infos[1].DisplayName != "" {
+		t.Fatalf("missing fields must stay empty: %+v", infos[1])
+	}
+	if len(infos[0].Endpoints) != 1 || infos[0].Endpoints[0] != "messages" {
+		t.Fatalf("endpoints = %v", infos[0].Endpoints)
+	}
+}
+
+func TestParseGeminiModelMetadata(t *testing.T) {
+	body := `{"models":[
+		{"name":"models/gemini-2.5-pro","displayName":"Gemini 2.5 Pro","description":"Think deeply",
+		 "inputTokenLimit":1048576,"outputTokenLimit":65536,
+		 "supportedGenerationMethods":["generateContent","countTokens"]},
+		{"name":"models/text-embedding-004","inputTokenLimit":2048,
+		 "supportedGenerationMethods":["embedContent"]}
+	]}`
+	infos, err := parseGeminiModels([]byte(body))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if infos[0].ID != "gemini-2.5-pro" || infos[0].DisplayName != "Gemini 2.5 Pro" {
+		t.Fatalf("info = %+v", infos[0])
+	}
+	if infos[0].ContextLength == nil || *infos[0].ContextLength != 1048576 ||
+		infos[0].MaxOutput == nil || *infos[0].MaxOutput != 65536 {
+		t.Fatalf("limits = %+v", infos[0])
+	}
+	if len(infos[0].Endpoints) != 1 || infos[0].Endpoints[0] != "generateContent" {
+		t.Fatalf("endpoints = %v", infos[0].Endpoints)
+	}
+	// 只支持 embedContent 的模型拿不到公开端点枚举，留空由管理员填。
+	if len(infos[1].Endpoints) != 0 {
+		t.Fatalf("endpoints = %v", infos[1].Endpoints)
+	}
+	if infos[1].ContextLength == nil || *infos[1].ContextLength != 2048 {
+		t.Fatalf("context = %+v", infos[1])
+	}
+}
+
 func TestModelListerRejectsUnsupportedTypes(t *testing.T) {
 	lister := NewModelLister()
 	_, err := lister.List(context.Background(), ModelListRequest{

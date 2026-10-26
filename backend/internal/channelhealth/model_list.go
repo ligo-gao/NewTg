@@ -11,8 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -62,6 +64,10 @@ const (
 	endpointMessages        = "messages"
 	endpointGenerateContent = "generateContent"
 )
+
+// Gemini 的流式生成方法。公开端点枚举里只有 generateContent，流式由同一
+// 端点的 SSE 承载，因此映射到 generateContent。
+const geminiStreamMethod = "streamGenerateContent"
 
 // ModelLister 调用上游的模型目录接口。HTTPS 与 HTTP 都允许（渠道 base_url
 // 本身支持自建网关），但沿用测试探针的“不跟随重定向”策略，避免凭据被
@@ -292,29 +298,52 @@ func (l *ModelLister) listAnthropic(
 		if err != nil {
 			return nil, err
 		}
-		var payload struct {
-			Data []struct {
-				ID string `json:"id"`
-			} `json:"data"`
-			HasMore bool   `json:"has_more"`
-			LastID  string `json:"last_id"`
+		payload, err := parseAnthropicModels(body)
+		if err != nil {
+			return nil, err
 		}
-		if err := json.Unmarshal(body, &payload); err != nil {
-			return nil, fmt.Errorf("channel models: invalid anthropic response: %w", err)
-		}
-		for _, item := range payload.Data {
-			infos = append(infos, ModelInfo{
-				ID:        item.ID,
-				Endpoints: []string{endpointMessages},
-				Source:    modelSourceAnthropic,
-			})
-		}
+		infos = append(infos, anthropicModelInfos(payload)...)
 		if !payload.HasMore || payload.LastID == "" {
 			break
 		}
 		afterID = payload.LastID
 	}
 	return normalizeModelInfos(infos), nil
+}
+
+// anthropicModelsPage 是 Anthropic /v1/models 的一页响应。
+type anthropicModelsPage struct {
+	Data []struct {
+		ID          string `json:"id"`
+		DisplayName string `json:"display_name"`
+		CreatedAt   string `json:"created_at"`
+	} `json:"data"`
+	HasMore bool   `json:"has_more"`
+	LastID  string `json:"last_id"`
+}
+
+func parseAnthropicModels(body []byte) (anthropicModelsPage, error) {
+	var page anthropicModelsPage
+	if err := json.Unmarshal(body, &page); err != nil {
+		return anthropicModelsPage{}, fmt.Errorf("channel models: invalid anthropic response: %w", err)
+	}
+	return page, nil
+}
+
+// anthropicModelInfos 把一页 Anthropic 目录映射成 ModelInfo。Anthropic 原生
+// 模型只走 messages 端点；上游没给的字段保持零值。
+func anthropicModelInfos(page anthropicModelsPage) []ModelInfo {
+	infos := make([]ModelInfo, 0, len(page.Data))
+	for _, item := range page.Data {
+		infos = append(infos, ModelInfo{
+			ID:          item.ID,
+			DisplayName: item.DisplayName,
+			ReleasedAt:  dateFromRFC3339(item.CreatedAt),
+			Endpoints:   []string{endpointMessages},
+			Source:      modelSourceAnthropic,
+		})
+	}
+	return infos
 }
 
 func (l *ModelLister) listGemini(
@@ -339,28 +368,80 @@ func (l *ModelLister) listGemini(
 		if err != nil {
 			return nil, err
 		}
-		var payload struct {
-			Models []struct {
-				Name string `json:"name"`
-			} `json:"models"`
-			NextPageToken string `json:"nextPageToken"`
+		page, err := parseGeminiModelsPage(body)
+		if err != nil {
+			return nil, err
 		}
-		if err := json.Unmarshal(body, &payload); err != nil {
-			return nil, fmt.Errorf("channel models: invalid gemini response: %w", err)
-		}
-		for _, item := range payload.Models {
-			infos = append(infos, ModelInfo{
-				ID:        strings.TrimPrefix(item.Name, "models/"),
-				Endpoints: []string{endpointGenerateContent},
-				Source:    modelSourceGemini,
-			})
-		}
-		if payload.NextPageToken == "" {
+		infos = append(infos, geminiModelInfos(page.Models)...)
+		if page.NextPageToken == "" {
 			break
 		}
-		pageToken = payload.NextPageToken
+		pageToken = page.NextPageToken
 	}
 	return normalizeModelInfos(infos), nil
+}
+
+// geminiModelsPage 是 Gemini /v1beta/models 的一页响应。nextPageToken 只用于
+// 分页，不进 ModelInfo。
+type geminiModelsPage struct {
+	Models        []geminiModel `json:"models"`
+	NextPageToken string        `json:"nextPageToken"`
+}
+
+type geminiModel struct {
+	Name                       string   `json:"name"`
+	DisplayName                string   `json:"displayName"`
+	Description                string   `json:"description"`
+	InputTokenLimit            *int64   `json:"inputTokenLimit"`
+	OutputTokenLimit           *int64   `json:"outputTokenLimit"`
+	SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
+}
+
+func parseGeminiModelsPage(body []byte) (geminiModelsPage, error) {
+	var page geminiModelsPage
+	if err := json.Unmarshal(body, &page); err != nil {
+		return geminiModelsPage{}, fmt.Errorf("channel models: invalid gemini response: %w", err)
+	}
+	return page, nil
+}
+
+// parseGeminiModels 返回该页的模型事实（ID 去掉 models/ 前缀）。
+func parseGeminiModels(body []byte) ([]ModelInfo, error) {
+	page, err := parseGeminiModelsPage(body)
+	if err != nil {
+		return nil, err
+	}
+	return geminiModelInfos(page.Models), nil
+}
+
+// geminiModelInfos 只映射上游声明过的字段：token 上限缺省时保持 nil，
+// 端点由 supportedGenerationMethods 决定。
+func geminiModelInfos(models []geminiModel) []ModelInfo {
+	infos := make([]ModelInfo, 0, len(models))
+	for _, item := range models {
+		infos = append(infos, ModelInfo{
+			ID:            strings.TrimPrefix(item.Name, "models/"),
+			DisplayName:   item.DisplayName,
+			Description:   item.Description,
+			ContextLength: item.InputTokenLimit,
+			MaxOutput:     item.OutputTokenLimit,
+			Endpoints:     geminiEndpoints(item.SupportedGenerationMethods),
+			Source:        modelSourceGemini,
+		})
+	}
+	return infos
+}
+
+// geminiEndpoints 把 Gemini 的生成方法映射到公开端点枚举。公开枚举里的
+// /v1/embeddings 是 OpenAI 形状，Gemini 原生没有该端点，因此 embedContent
+// 刻意不映射——只支持 embedContent 的模型端点留空，由管理员填。
+func geminiEndpoints(methods []string) []string {
+	for _, method := range methods {
+		if method == endpointGenerateContent || method == geminiStreamMethod {
+			return []string{endpointGenerateContent}
+		}
+	}
+	return []string{}
 }
 
 func (l *ModelLister) get(ctx context.Context, requestURL string, headers http.Header) ([]byte, error) {
@@ -392,12 +473,12 @@ func parseOpenAIModels(body []byte) ([]ModelInfo, error) {
 	var payload struct {
 		Data []struct {
 			ID      string `json:"id"`
-			Created int64  `json:"created"`
+			Created any    `json:"created"`
 		} `json:"data"`
 		Models []struct {
 			ID      string `json:"id"`
 			Name    string `json:"name"`
-			Created int64  `json:"created"`
+			Created any    `json:"created"`
 		} `json:"models"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -423,22 +504,87 @@ func parseOpenAIModels(body []byte) ([]ModelInfo, error) {
 
 // newOpenAIModelInfo 把一条 OpenAI 兼容目录条目转成 ModelInfo。该协议只
 // 提供 id 与 created，其余字段留零值。
-func newOpenAIModelInfo(id string, created int64) ModelInfo {
+func newOpenAIModelInfo(id string, created any) ModelInfo {
 	return ModelInfo{
 		ID:         id,
-		ReleasedAt: dateFromUnixSeconds(created),
+		ReleasedAt: createdDate(created),
 		Endpoints:  []string{endpointChatCompletions},
 		Source:     modelSourceOpenAI,
 	}
 }
 
-// dateFromUnixSeconds 把上游的 Unix 秒转成 "YYYY-MM-DD"；0 与负数视为
-// 「上游没给」，返回空串。
+// 可信的发布日期区间：2000-01-01T00:00:00Z（含）到 2100-01-01T00:00:00Z
+// （不含）。区间外的值多半是毫秒时间戳或垃圾数据，宁可留空也不显示 5 位年份。
+var (
+	modelDateMin = time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
+	modelDateMax = time.Date(2100, time.January, 1, 0, 0, 0, 0, time.UTC)
+)
+
 func dateFromUnixSeconds(sec int64) string {
 	if sec <= 0 {
 		return ""
 	}
-	return time.Unix(sec, 0).UTC().Format("2006-01-02")
+	moment := time.Unix(sec, 0).UTC()
+	if moment.Before(modelDateMin) || !moment.Before(modelDateMax) {
+		return ""
+	}
+	return moment.Format("2006-01-02")
+}
+
+// createdDate 宽容读取上游的 created：接受 JSON 数字（含小数）、数值字符串
+// 以及解码后的整数，其余形态（null、布尔、对象、非数值字符串）一律当作
+// 「上游没给」返回空串，不让整份目录解析失败。
+func createdDate(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		number, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		if err != nil {
+			return ""
+		}
+		return dateFromUnixFloat(number)
+	case json.Number:
+		number, err := typed.Float64()
+		if err != nil {
+			return ""
+		}
+		return dateFromUnixFloat(number)
+	case float64:
+		return dateFromUnixFloat(typed)
+	case float32:
+		return dateFromUnixFloat(float64(typed))
+	case int:
+		return dateFromUnixSeconds(int64(typed))
+	case int32:
+		return dateFromUnixSeconds(int64(typed))
+	case int64:
+		return dateFromUnixSeconds(typed)
+	default:
+		return ""
+	}
+}
+
+// dateFromUnixFloat 先把小数截断到秒；先按区间过滤再转 int64，避免超大浮点
+// 的整数转换溢出。毫秒时间戳落在区间外，返回空串。
+func dateFromUnixFloat(sec float64) string {
+	if math.IsNaN(sec) || math.IsInf(sec, 0) {
+		return ""
+	}
+	if sec < float64(modelDateMin.Unix()) || sec >= float64(modelDateMax.Unix()) {
+		return ""
+	}
+	return dateFromUnixSeconds(int64(sec))
+}
+
+// dateFromRFC3339 把上游的 RFC3339 时间戳（如 Anthropic 的 created_at）转成
+// "YYYY-MM-DD"；解析失败返回空串。
+func dateFromRFC3339(value string) string {
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
+	if err != nil {
+		return ""
+	}
+	return parsed.UTC().Format("2006-01-02")
 }
 
 func normalizeModelInfos(infos []ModelInfo) []ModelInfo {
