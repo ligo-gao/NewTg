@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest'
 
 import {
   createDefaultTimeConfig,
+  effectiveCacheReadPrice,
+  effectiveCacheWritePrice,
   formatMultiplierPercent,
   matchLocalTimeRule,
   parseMultiplierPercent,
   strategyFromTimeConfig,
   timeConfigFromStrategy,
   wallClockParts,
+  weekdayPeakPreset,
   type TimeConfigDraft,
 } from './pricing-utils'
 
@@ -110,5 +113,54 @@ describe('pricing-utils time matching', () => {
     })
     expect(wallClockParts('2026-11-01T00:00')?.day).toBe(7)
     expect(wallClockParts('not-a-time')).toBeNull()
+  })
+})
+
+describe('cache tier fallbacks', () => {
+  it('falls back to the miss price when the hit price is unset', () => {
+    expect(effectiveCacheReadPrice(200, null)).toBe(200)
+    expect(effectiveCacheReadPrice(200, 0)).toBe(0)
+    expect(effectiveCacheReadPrice(null, null)).toBeNull()
+  })
+
+  it('falls back to miss × 1.25 for cache writes', () => {
+    expect(effectiveCacheWritePrice(200, null)).toBe(250)
+    expect(effectiveCacheWritePrice(200, 0)).toBe(0)
+    expect(effectiveCacheWritePrice(null, null)).toBeNull()
+  })
+})
+
+describe('weekdayPeakPreset', () => {
+  it('fills two weekday peak windows with a 50% default, for any model', () => {
+    const t = (key: string) => key
+    expect(weekdayPeakPreset(t)).toEqual({
+      enabled: true,
+      timezone: 'Asia/Shanghai',
+      holidayPolicy: 'cn_offpeak',
+      defaultMultiplier: '50',
+      windows: [
+        {
+          name: 'admin.pricing.time_preset_window_morning',
+          days: [1, 2, 3, 4, 5],
+          start: '09:00',
+          end: '12:00',
+          multiplier: '100',
+        },
+        {
+          name: 'admin.pricing.time_preset_window_afternoon',
+          days: [1, 2, 3, 4, 5],
+          start: '14:00',
+          end: '18:00',
+          multiplier: '100',
+        },
+      ],
+    })
+  })
+
+  it('produces a schedule that evaluates to peak inside and idle outside', () => {
+    const config = weekdayPeakPreset((key) => key)
+    expect(matchLocalTimeRule(config, 1, 10 * 60).multiplier).toBe(1)
+    expect(matchLocalTimeRule(config, 1, 13 * 60).multiplier).toBe(0.5)
+    expect(matchLocalTimeRule(config, 6, 10 * 60).multiplier).toBe(0.5)
   })
 })

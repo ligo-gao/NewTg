@@ -639,3 +639,54 @@ export function parsePriceFields(
   }
   return result
 }
+
+/**
+ * 模型抽屉的缓存读兜底：留空 = 未命中价（后端 DefaultCacheRatio = 1.0）。
+ * 显式 0 仍是 0，不能被当成「未设置」。
+ */
+export function effectiveCacheReadPrice(
+  prompt: number | null,
+  cacheRead: number | null,
+): number | null {
+  if (cacheRead !== null) return cacheRead
+  return prompt
+}
+
+/** 模型抽屉的缓存写兜底：留空 = 未命中价 × 1.25（后端 DefaultCacheCreationRatio）。 */
+export function effectiveCacheWritePrice(
+  prompt: number | null,
+  cacheWrite: number | null,
+): number | null {
+  if (cacheWrite !== null) return cacheWrite
+  return prompt === null ? null : prompt * 1.25
+}
+
+/**
+ * 通用峰谷预设：工作日 09:00–12:00、14:00–18:00 为高峰（100%），
+ * 其余时段（含周末与中国法定节假日）按 50%。不绑定任何厂商或模型——
+ * 任何模型都能用这个时段表，也都能改窗口与倍率。
+ */
+export function weekdayPeakPreset(t: (key: string) => string): TimeConfigDraft {
+  return {
+    enabled: true,
+    timezone: DEFAULT_STRATEGY_TIMEZONE,
+    holidayPolicy: 'cn_offpeak',
+    defaultMultiplier: '50',
+    windows: [
+      {
+        name: t('admin.pricing.time_preset_window_morning'),
+        days: [1, 2, 3, 4, 5],
+        start: '09:00',
+        end: '12:00',
+        multiplier: '100',
+      },
+      {
+        name: t('admin.pricing.time_preset_window_afternoon'),
+        days: [1, 2, 3, 4, 5],
+        start: '14:00',
+        end: '18:00',
+        multiplier: '100',
+      },
+    ],
+  }
+}
