@@ -197,7 +197,14 @@ function profileParameters(profile: ModelMeta | undefined): ParameterRow[] {
     type: parameter.type,
     description:
       typeof parameter.description === 'string' ? parameter.description : '',
-    defaultValue: typeof parameter.default === 'string' ? parameter.default : '',
+    // 非字符串默认值（0 / false / 数字）用 JSON.stringify 保留，与
+    // ModelMutateSheet 的预填口径一致；直接丢成 '' 会让覆盖时静默清掉它。
+    defaultValue:
+      typeof parameter.default === 'string'
+        ? parameter.default
+        : parameter.default === undefined || parameter.default === null
+          ? ''
+          : JSON.stringify(parameter.default),
     ...(parameter.required === true ? { required: true } : {}),
   }))
 }
@@ -479,8 +486,9 @@ function normalizeTags(tags: string[]): string[] {
 }
 
 /**
- * 参数行的写入体：形状与 ModelMutateSheet 一致，`required` 恒 false（向导
- * 的文本格式不支持必填标记），`default` / `description` 只在非空时携带。
+ * 参数行的写入体：形状与 ModelMutateSheet 一致，`required` 取行里的值
+ * （编辑既有档案时保留原标记；文本格式解析出来的行没有该字段，回落 false），
+ * `default` / `description` 只在非空时携带。
  *
  * 类型必须落在契约枚举内，否则整行丢弃——与 `parseParameterLines` /
  * `filter(isEndpointKey)` 同策略：不替操作者改写他没选的类型。

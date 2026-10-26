@@ -365,6 +365,41 @@ describe('buildUpdateBody', () => {
     expect(body.max_output).toBe(8192)
   })
 
+  it('writes a valid row number over the existing one', () => {
+    const existing = modelMeta({ context_length: 128000 })
+    const body = buildUpdateBody(
+      wizardRow({ contextLength: '200000' }),
+      existing,
+      null,
+    )
+
+    expect(body.context_length).toBe(200000)
+  })
+
+  it('keeps a numeric parameter default when overwriting', () => {
+    const existing = modelMeta({
+      parameters: [{ name: 'temperature', type: 'number', default: 0 }],
+    })
+    const rows = buildRows(
+      [entry({ id: 'gpt-4o' })],
+      new Map([['gpt-4o', existing]]),
+      ['gpt-4o'],
+    )
+
+    expect(firstRow(rows).parameters).toEqual([
+      {
+        name: 'temperature',
+        type: 'number',
+        description: '',
+        defaultValue: '0',
+      },
+    ])
+    // 覆盖后写入体仍带 "0"，不会被静默丢成空串。
+    expect(buildUpdateBody(firstRow(rows), existing, null).parameters).toEqual([
+      { name: 'temperature', type: 'number', required: false, default: '0' },
+    ])
+  })
+
   it('trims the description before writing it', () => {
     const created = buildCreateBody(wizardRow({ description: '  padded  ' }), null)
     const updated = buildUpdateBody(wizardRow({ description: '  padded  ' }), modelMeta(), null)

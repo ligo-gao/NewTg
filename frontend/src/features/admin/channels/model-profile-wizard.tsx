@@ -376,10 +376,16 @@ export function ModelProfileWizard({
         .map((tag) => tag.trim())
         .filter((tag) => tag !== ''),
     }
+    // 第 2 步显式选择的供应商不受「只填空白字段」限制：供应商是操作者的
+    // 明确选择，而不是可被探测建议值顶掉的默认值。否则带 vendor_suggestion
+    // 的行会保留建议值，显式填写的新建名永远不会被使用（供应商也就不会创建）。
+    // 名字为空时不写入，避免把建议值无意义地清空。
+    const forceVendor = form.vendorChoice !== '' && batch.vendorName !== ''
     let written = 0
     const nextRows = rows.map((row) => {
       if (!selected.has(row.id)) return row
-      const next = applyDefaults([row], batch, form.emptyOnly)[0] ?? row
+      const applied = applyDefaults([row], batch, form.emptyOnly)[0] ?? row
+      const next = forceVendor ? { ...applied, vendorName: batch.vendorName } : applied
       if (rowWasWritten(row, next)) written += 1
       return next
     })

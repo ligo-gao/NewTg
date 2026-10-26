@@ -508,6 +508,52 @@ describe('ModelProfileWizard row confirmation and write-back', () => {
     expect(modelCalls.map(([, init]) => init.body?.vendor_id)).toEqual([7, 7])
   })
 
+  it('applies an explicitly chosen vendor even when only blank fields are filled', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['alpha-model'],
+      entries: [entry({ id: 'alpha-model', vendor_suggestion: 'Gemini' })],
+    })
+    mockCatalog([])
+    mockPost.mockImplementation(((path: string) => {
+      if (path === '/api/vendors') {
+        return Promise.resolve({ data: { id: 7, name: 'MyProxy', status: 1 } })
+      }
+      return Promise.resolve({ data: {} })
+    }) as never)
+
+    renderWizard()
+
+    await screen.findByText('alpha-model')
+    await goToStep(user, 2)
+    await user.selectOptions(screen.getByLabelText('Vendor'), CREATE_VENDOR)
+    await user.type(screen.getByLabelText('New vendor name'), 'MyProxy')
+    // 默认勾着「只填空白字段」——正是它会让探测建议值挡住显式选择。
+    expect(
+      (
+        screen.getByRole('checkbox', {
+          name: 'Only fill blank fields',
+        }) as HTMLInputElement
+      ).checked,
+    ).toBe(true)
+    await user.click(
+      screen.getByRole('button', { name: 'Apply to all selected models' }),
+    )
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await submitWizard(user)
+
+    expect(await screen.findByText('Created 1')).toBeTruthy()
+    const calls = mockPost.mock.calls as unknown as Array<
+      [string, { body?: { name?: string; vendor_id?: number } }]
+    >
+    const vendorCalls = calls.filter(([path]) => path === '/api/vendors')
+    expect(vendorCalls).toHaveLength(1)
+    expect(vendorCalls[0]?.[1].body?.name).toBe('MyProxy')
+    const modelCalls = calls.filter(([path]) => path === '/api/models')
+    expect(modelCalls).toHaveLength(1)
+    expect(modelCalls[0]?.[1].body?.vendor_id).toBe(7)
+  })
+
   it('never creates a vendor from an upstream suggestion', async () => {
     const user = userEvent.setup()
     mockFetch.mockResolvedValue({
@@ -630,6 +676,62 @@ describe('ModelProfileWizard row confirmation and write-back', () => {
     expect(await screen.findByText('Updated 1')).toBeTruthy()
     expect(screen.queryByText('Failed 1')).toBeNull()
     expect(screen.getByText('Created 1')).toBeTruthy()
+  })
+
+  it('does not recreate the vendor when retrying after a failed write', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['alpha-model'],
+      entries: [entry({ id: 'alpha-model' })],
+    })
+    mockCatalog([])
+    let modelPosts = 0
+    mockPost.mockImplementation(((path: string) => {
+      if (path === '/api/vendors') {
+        return Promise.resolve({ data: { id: 7, name: 'MyProxy', status: 1 } })
+      }
+      modelPosts += 1
+      if (modelPosts === 1) {
+        return Promise.reject(
+          new ApiError({
+            status: 500,
+            type: 'https://newtg.dev/problems/server_error',
+            title: 'Server error',
+            kind: 'server',
+          }),
+        )
+      }
+      return Promise.resolve({ data: {} })
+    }) as never)
+
+    renderWizard()
+
+    await screen.findByText('alpha-model')
+    await goToStep(user, 2)
+    await user.selectOptions(screen.getByLabelText('Vendor'), CREATE_VENDOR)
+    await user.type(screen.getByLabelText('New vendor name'), 'MyProxy')
+    await user.click(
+      screen.getByRole('button', { name: 'Apply to all selected models' }),
+    )
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await submitWizard(user)
+
+    expect(await screen.findByText('Failed 1')).toBeTruthy()
+    const vendorCalls = (): Array<[string]> =>
+      (mockPost.mock.calls as unknown as Array<[string]>).filter(
+        ([path]) => path === '/api/vendors',
+      )
+    // 首轮建商一次。
+    expect(vendorCalls()).toHaveLength(1)
+
+    await user.click(
+      screen.getByRole('button', { name: 'Retry failed rows only' }),
+    )
+
+    expect(await screen.findByText('Created 1')).toBeTruthy()
+    // 目录刷新后仍可能没有这家新供应商；重试必须复用 createdVendorIdsRef，
+    // 不再撞唯一索引。
+    expect(vendorCalls()).toHaveLength(1)
   })
 
   it('reports an existing vendor instead of a profile conflict', async () => {

@@ -119,7 +119,9 @@ export function StepConfirm({
         const state = profileStateOf(profile)
         const locked = state === 'locked'
         const action = rowActionOf(row, profile)
-        const issues = rowIssues(row)
+        // 锁定行不可展开、永不写库，行内校验错误对操作者没有可执行的出路，
+        // 渲染标记只会造成「有错却改不了」的困惑。
+        const issues = locked ? [] : rowIssues(row)
         const open = expanded.has(row.id) && !locked
         const vendorState = vendorStateOf(
           row.vendorName,
