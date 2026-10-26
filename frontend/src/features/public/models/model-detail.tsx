@@ -143,6 +143,49 @@ export function ModelDetail({
   const maxOutput = detail.data?.max_output ?? card.max_output
   const output =
     maxOutput === null ? '—' : formatContextTokens(maxOutput, locale)
+
+  /**
+   * 档案行按「有哪段写哪段」拼装：厂商为空时上下文与最大输出不能跟着消失。
+   * 三段齐全时仍用完整句子，保持既有措辞。
+   */
+  const profileParts: string[] = []
+  if (card.vendor !== '') profileParts.push(card.vendor)
+  if (card.context_length !== null) {
+    profileParts.push(t('public.pricing.context', { value: context }))
+  }
+  if (maxOutput !== null) {
+    profileParts.push(`${t('public.models.detail.max_output')} ${output}`)
+  }
+  const profileLine =
+    card.vendor !== '' && card.context_length !== null && maxOutput !== null
+      ? t('public.models.detail.profile', {
+          vendor: card.vendor,
+          context,
+          output,
+        })
+      : profileParts.join(' · ')
+
+  // `p95` 缺失（均值来源）时标签必须点名这是 P50 单值，读者才知道那个数是
+  // 什么；有 P95 才用组合标签。
+  const hasP95 =
+    perf.p95 !== null && Number.isFinite(perf.p95) && perf.p95 >= 0
+  const latencyLabel = t(
+    perf.measure === 'ttft'
+      ? hasP95
+        ? 'public.models.detail.ttft_p'
+        : 'public.models.detail.ttft_p50'
+      : hasP95
+        ? 'public.models.detail.latency_p'
+        : 'public.models.detail.latency_p50',
+  )
+  // 计数口径随来源：测速样本是探针次数，真实调用样本才是窗口内调用次数。
+  const countsValue =
+    perf.source === 'test'
+      ? t('public.models.table.probe_runs', { count })
+      : perf.source === 'usage'
+        ? t('public.models.table.calls', { count })
+        : t('public.models.table.evidence_none')
+
   const modalities =
     detail.data === undefined || detail.data.modalities.length === 0
       ? '—'
@@ -190,11 +233,7 @@ export function ModelDetail({
           <>
             <dl className="grid gap-1">
               <Kv
-                label={t(
-                  perf.measure === 'ttft'
-                    ? 'public.models.detail.ttft_p'
-                    : 'public.models.detail.latency_p',
-                )}
+                label={latencyLabel}
                 value={formatPair(perf.p50, perf.p95, locale)}
               />
               <Kv
@@ -206,11 +245,11 @@ export function ModelDetail({
                 value={percentValue(perf.successRate)}
               />
               <Kv
-                label={t('public.models.detail.calls')}
-                value={t('public.models.detail.calls_value', { count })}
+                label={t('public.models.table.evidence')}
+                value={countsValue}
               />
             </dl>
-            {perf.samples > 0 ? (
+            {perf.source === 'test' && perf.samples > 0 ? (
               <p className="text-badge leading-4 text-ink-3">
                 {t('public.models.detail.probe_note', { count })}
               </p>
@@ -305,20 +344,11 @@ export function ModelDetail({
         <p className="text-meta leading-5 text-ink-2">
           {t('public.models.detail.notes_window', { window: windowLabel })}
         </p>
-        {card.vendor === '' ? null : (
-          <p className="text-meta leading-5 text-ink-2">
-            {t('public.models.detail.profile', {
-              vendor: card.vendor,
-              context,
-              output,
-            })}
-          </p>
+        {profileLine === '' ? null : (
+          <p className="text-meta leading-5 text-ink-2">{profileLine}</p>
         )}
 
-        <h5 className="mt-1 text-badge font-medium text-ink-3">
-          {t('public.models.detail.description')}
-        </h5>
-        <p className="text-meta leading-5 text-ink-2">
+        <p className="mt-1 text-meta leading-5 text-ink-2">
           {card.description === '' ? '—' : card.description}
         </p>
 

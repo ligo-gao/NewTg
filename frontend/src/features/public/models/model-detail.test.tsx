@@ -138,6 +138,10 @@ describe('ModelDetail', () => {
       'Access',
       'Notes',
     ])
+    // The demo gives the description prose no sub-label, and the block title
+    // already means "Notes"; no duplicate heading may sit above the prose.
+    expect(screen.queryAllByRole('heading', { level: 5 })).toHaveLength(0)
+    expect(screen.getByText('Flagship reasoning model')).toBeTruthy()
   })
 
   it('renders the window named by the selected range', async () => {
@@ -153,13 +157,48 @@ describe('ModelDetail', () => {
     serveDetail()
     await renderDetail()
 
+    expect(screen.getByText('First token P50 / P95')).toBeTruthy()
     expect(screen.getByText('350 / 700 ms')).toBeTruthy()
     expect(screen.getByText('42.5 t/s')).toBeTruthy()
     expect(screen.getByText('99.80%')).toBeTruthy()
-    expect(screen.getByText('120 calls')).toBeTruthy()
+    // Probe runs are not calls: the count row must name the probe source.
+    expect(screen.getByText('Measured')).toBeTruthy()
+    expect(screen.getByText('120 probe runs')).toBeTruthy()
+    expect(screen.queryByText('120 calls')).toBeNull()
     expect(
       screen.getByText('120 probe runs; the rest are real call samples.'),
     ).toBeTruthy()
+  })
+
+  it('labels the end-to-end reading with its own percentile names', async () => {
+    const latency: ModelEntry = {
+      ...ENTRY,
+      perf: { ...ENTRY.perf, measure: 'latency', p50: 500, p95: 900 },
+    }
+    serveDetail()
+    await renderDetail(latency)
+
+    expect(screen.getByText('End-to-end P50 / P95')).toBeTruthy()
+    expect(screen.getByText('500 / 900 ms')).toBeTruthy()
+  })
+
+  it('names the P50 alone when an end-to-end average has no percentile', async () => {
+    const averaged: ModelEntry = {
+      ...ENTRY,
+      perf: {
+        ...ENTRY.perf,
+        source: 'usage',
+        measure: 'latency',
+        p50: 240,
+        p95: null,
+        samples: 1_204,
+      },
+    }
+    serveDetail()
+    await renderDetail(averaged)
+
+    expect(screen.getByText('End-to-end P50')).toBeTruthy()
+    expect(screen.queryByText('End-to-end P50 / P95')).toBeNull()
   })
 
   it('shows one number when only an average is available', async () => {
@@ -176,12 +215,17 @@ describe('ModelDetail', () => {
     serveDetail()
     await renderDetail(averaged)
 
-    // An average has no percentile, so only the P50 value may be printed — the
-    // page must never invent a P95 or leak `null`.
-    expect(screen.getByText('First token P50 / P95')).toBeTruthy()
+    // An average has no percentile: the label names P50 alone and only one
+    // number may be printed — the page must never invent a P95 or leak `null`.
+    expect(screen.getByText('First token P50')).toBeTruthy()
+    expect(screen.queryByText('First token P50 / P95')).toBeNull()
     expect(screen.getByText('240 ms')).toBeTruthy()
     expect(screen.queryByText(/\d+ \/ \d+ ms/)).toBeNull()
     expect(screen.queryByText(/null/)).toBeNull()
+    // Usage samples are real calls, so the count row says calls and the probe
+    // note (probe runs) must not appear at all.
+    expect(screen.getByText('1,204 calls')).toBeTruthy()
+    expect(screen.queryByText(/probe runs/)).toBeNull()
   })
 
   it('renders an em dash for a missing cache read price', async () => {
@@ -311,7 +355,22 @@ describe('ModelDetail', () => {
       screen.getByText('No measurements in this window yet.'),
     ).toBeTruthy()
     expect(screen.queryByText('Calls in window')).toBeNull()
+    expect(screen.queryByText('Measured')).toBeNull()
     expect(screen.queryByText('First token P50 / P95')).toBeNull()
+    expect(screen.queryByText('First token P50')).toBeNull()
+  })
+
+  it('keeps context and max output when the vendor is empty', async () => {
+    const bare: ModelEntry = { ...ENTRY, card: { ...CARD, vendor: '' } }
+    serveDetail()
+    await renderDetail(bare)
+
+    // The profile sentence is not used when a part is missing; the present
+    // parts are still shown instead of being dropped with the empty vendor.
+    expect(
+      screen.getByText('Context 128K · Max output 32K'),
+    ).toBeTruthy()
+    expect(screen.queryByText(/^Profile:/)).toBeNull()
   })
 
   it('renders the card fields before detail arrives', async () => {

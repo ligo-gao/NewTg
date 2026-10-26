@@ -270,11 +270,13 @@ describe('ModelsPage', () => {
     // falls back to real-call counts.
     const tested = within(table).getByText('GPT-5').closest('tr')
     expect(tested).toBeTruthy()
-    expect(within(tested as HTMLElement).getByText('3 probe runs')).toBeTruthy()
+    expect(
+      await within(tested as HTMLElement).findByText('3 probe runs'),
+    ).toBeTruthy()
     const averaged = within(table).getByText('Embed').closest('tr')
     expect(averaged).toBeTruthy()
     expect(
-      within(averaged as HTMLElement).getByText('1,204 calls'),
+      await within(averaged as HTMLElement).findByText('1,204 calls'),
     ).toBeTruthy()
   })
 
