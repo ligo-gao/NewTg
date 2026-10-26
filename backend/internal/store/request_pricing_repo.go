@@ -39,8 +39,8 @@ var ErrInvalidRequestPricingID = errors.New("store: request_pricing.request_id �
 // DiscountRate / DiscountTarget 是预扣阶段解析一次并冻结的客户折扣
 // （spec §5.2 / §5.4）：任务轮询、崩溃恢复、handoff 结算只拿得到
 // requestID，读不回折扣就会按原价结算，把预扣时已让利的部分再追回来。
-// 未命中规则的会话 Target 为空串（Rate 不参与生效判定）；全免由
-// Rate=0 + 非空 Target 表达，与未命中可区分。
+// 未命中规则的会话由 Upsert 归一为 Rate=1 + 空 Target，与迁移默认值及
+// 存量行同一拼写；全免由 Rate=0 + 非空 Target 表达，与未命中可区分。
 type RequestPricing struct {
 	RequestID      string
 	RequestTime    time.Time
@@ -110,7 +110,13 @@ func (r *RequestPricingRepo) Upsert(ctx context.Context, rec RequestPricing) err
 			"request_id", id, "discount_rate", discountRate)
 		discountRate = 1
 	}
-	// DiscountTarget 空串合法（未命中），形态校验属于 API 层。
+	// DiscountTarget 空串合法（未命中），形态校验属于 API 层。空 Target 时
+	// 强制 Rate=1：空串是「无折扣」的唯一判别字段，若保留会话零值 Rate=0，
+	// 同一状态在库里会有 0/"" 与 1/"" 两种拼写（迁移默认值与存量行都是 1）。
+	// 归一放在仓储写入侧这一条路径上，未来任何调用方都自动获得同一口径。
+	if rec.DiscountTarget == "" {
+		discountRate = 1
+	}
 	_, err = r.db.ExecContext(ctx,
 		`INSERT INTO request_pricing (request_id, request_time, time_multiplier, time_window, discount_rate, discount_target)
 		 VALUES ($1::uuid, $2, $3, $4, $5, $6)

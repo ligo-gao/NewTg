@@ -567,6 +567,70 @@ func TestTaskForcedCostStillReadsFrozenDiscount(t *testing.T) {
 	}
 }
 
+// TestSubscriptionTaskForcedCostReadsFrozenDiscount 是订阅方向的同类回归：
+// terminateByRequestID 的订阅分支同样必须读回冻结折扣。删掉该分支的
+// loadFrozenDiscount 调用时本用例会红——订阅任务被异步结算成原价，
+// 预扣时已让利的部分会被追回。
+//
+// 账本口径（硬编码，不调用 ApplyDiscount/discountFacts 反算）：
+// 提交期冻结表达式原价 90、折扣 0.9 → 实收 81；已预扣 50 → delta 31；
+// amount_used 50 → 81；令牌 450 → 419。
+func TestSubscriptionTaskForcedCostReadsFrozenDiscount(t *testing.T) {
+	funding := newFakeSubscriptionFunding(contract.PrefSubscriptionFirst,
+		subscriptionAccount(7, 1000, nil))
+	gormDB, db := openBillingTestDB(t)
+	sat := &recordingSaturator{db: db}
+	repo := store.NewRequestPricingRepo(db)
+	engine := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, nil, sat)
+	engine.SetSubscriptionFunding(funding)
+	engine.SetRequestPricingStore(repo)
+
+	userID := createBillingTestUser(t, db, 500)
+	tokenID := createBillingTestToken(t, db, userID, int64(500))
+	req := testUUID(t)
+	// 模拟 Detach 后的任务：只有订阅预扣记录与 tokenID。
+	seedSubscriptionPreConsume(funding, req, 7, userID, 50)
+	if _, err := db.Exec(
+		`UPDATE api_tokens SET remain_quota = remain_quota - 50 WHERE id = $1`, tokenID); err != nil {
+		t.Fatalf("simulate token debit: %v", err)
+	}
+	// 预扣阶段冻结的折扣事实（与时间/倍率同一行）。
+	if err := repo.Upsert(context.Background(), store.RequestPricing{
+		RequestID:      req,
+		RequestTime:    time.Now().UTC(),
+		TimeMultiplier: 1,
+		DiscountRate:   0.9,
+		DiscountTarget: "user:7",
+	}); err != nil {
+		t.Fatalf("Upsert(frozen discount): %v", err)
+	}
+
+	if err := engine.TerminateByRequestIDForTokenCost(req, tokenID, 90, contract.UsageFact{}); err != nil {
+		t.Fatalf("TerminateByRequestIDForTokenCost: %v", err)
+	}
+
+	if got := funding.usedOf(7); got != 81 {
+		t.Fatalf("amount_used = %d, want 81（50 + 31，按折后 81 收敛）", got)
+	}
+	if state := funding.registry[req]; state != "settled" {
+		t.Fatalf("registry = %q, want settled", state)
+	}
+	if got := tokenRemain(t, db, tokenID).Int64; got != 419 {
+		t.Fatalf("令牌剩余 = %d, want 419（500 − 50 − 31）", got)
+	}
+	if sat.called != 1 {
+		t.Fatalf("Saturate 调用 = %d, want 1", sat.called)
+	}
+	out := sat.outcome
+	if out.Cost != 81 || out.SubscriptionPostDelta != 31 || out.SubscriptionPreConsumed != 50 {
+		t.Fatalf("结算 outcome = %+v, want cost 81 / delta 31 / pre 50", out)
+	}
+	if out.OriginalCost != 90 || out.DiscountRate != 0.9 || out.DiscountTarget != "user:7" {
+		t.Fatalf("折扣三字段 = (%d, %v, %q), want (90, 0.9, user:7)",
+			out.OriginalCost, out.DiscountRate, out.DiscountTarget)
+	}
+}
+
 // TestTerminateAtHeldReconstructsOriginalCost 验证按预扣额结清时，hold 已是
 // 折后金额；结算日志的原价必须由冻结折扣反推（90 / 0.9 = 100），而不是
 // 让 original_cost 与 cost 相等。

@@ -70,3 +70,35 @@ func TestRequestPricingRepoDiscountRoundTrip(t *testing.T) {
 		t.Fatalf("legacy 折扣 = (%v, %q), want (1, \"\")", legacy.DiscountRate, legacy.DiscountTarget)
 	}
 }
+
+// TestRequestPricingRepoNormalizesEmptyTargetToFullRate 验证写入侧把
+// 「空 Target（未命中）」统一归一为 Rate=1：会话未命中规则时折扣是零值，
+// 若原样落库会得到 0/""，与迁移默认值和存量行的 1/"" 形成同一状态的
+// 两种拼写。空 Target 是唯一判别字段，Rate 必须收敛到 1。
+func TestRequestPricingRepoNormalizesEmptyTargetToFullRate(t *testing.T) {
+	db := openPublicPricingTestDB(t)
+	repo := NewRequestPricingRepo(db)
+	ctx := context.Background()
+
+	requestID := uuid.NewString()
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM request_pricing WHERE request_id = $1::uuid`, requestID)
+	})
+
+	if err := repo.Upsert(ctx, RequestPricing{
+		RequestID:      requestID,
+		RequestTime:    time.Now().UTC().Truncate(time.Microsecond),
+		TimeMultiplier: 1,
+		DiscountRate:   0,
+		DiscountTarget: "",
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	got, ok, err := repo.Get(ctx, requestID)
+	if err != nil || !ok {
+		t.Fatalf("Get = ok=%v err=%v, want true,nil", ok, err)
+	}
+	if got.DiscountRate != 1 || got.DiscountTarget != "" {
+		t.Fatalf("空 Target 的折扣 = (%v, %q), want (1, \"\")", got.DiscountRate, got.DiscountTarget)
+	}
+}
