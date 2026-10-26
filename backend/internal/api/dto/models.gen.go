@@ -1251,6 +1251,87 @@ func (e ModelPricingStrategyPreviewRequestMode) Valid() bool {
 	}
 }
 
+// Defines values for ModelSyncManifestModelEndpoints.
+const (
+	ModelSyncManifestModelEndpointsDELETE ModelSyncManifestModelEndpoints = "DELETE"
+	ModelSyncManifestModelEndpointsGET    ModelSyncManifestModelEndpoints = "GET"
+	ModelSyncManifestModelEndpointsPATCH  ModelSyncManifestModelEndpoints = "PATCH"
+	ModelSyncManifestModelEndpointsPOST   ModelSyncManifestModelEndpoints = "POST"
+	ModelSyncManifestModelEndpointsPUT    ModelSyncManifestModelEndpoints = "PUT"
+)
+
+// Valid indicates whether the value is a known member of the ModelSyncManifestModelEndpoints enum.
+func (e ModelSyncManifestModelEndpoints) Valid() bool {
+	switch e {
+	case ModelSyncManifestModelEndpointsDELETE:
+		return true
+	case ModelSyncManifestModelEndpointsGET:
+		return true
+	case ModelSyncManifestModelEndpointsPATCH:
+		return true
+	case ModelSyncManifestModelEndpointsPOST:
+		return true
+	case ModelSyncManifestModelEndpointsPUT:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelSyncManifestModelModalities.
+const (
+	ModelSyncManifestModelModalitiesAudio ModelSyncManifestModelModalities = "audio"
+	ModelSyncManifestModelModalitiesImage ModelSyncManifestModelModalities = "image"
+	ModelSyncManifestModelModalitiesText  ModelSyncManifestModelModalities = "text"
+	ModelSyncManifestModelModalitiesVideo ModelSyncManifestModelModalities = "video"
+)
+
+// Valid indicates whether the value is a known member of the ModelSyncManifestModelModalities enum.
+func (e ModelSyncManifestModelModalities) Valid() bool {
+	switch e {
+	case ModelSyncManifestModelModalitiesAudio:
+		return true
+	case ModelSyncManifestModelModalitiesImage:
+		return true
+	case ModelSyncManifestModelModalitiesText:
+		return true
+	case ModelSyncManifestModelModalitiesVideo:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ModelSyncManifestModelParametersType.
+const (
+	ModelSyncManifestModelParametersTypeArray   ModelSyncManifestModelParametersType = "array"
+	ModelSyncManifestModelParametersTypeBoolean ModelSyncManifestModelParametersType = "boolean"
+	ModelSyncManifestModelParametersTypeInteger ModelSyncManifestModelParametersType = "integer"
+	ModelSyncManifestModelParametersTypeNumber  ModelSyncManifestModelParametersType = "number"
+	ModelSyncManifestModelParametersTypeObject  ModelSyncManifestModelParametersType = "object"
+	ModelSyncManifestModelParametersTypeString  ModelSyncManifestModelParametersType = "string"
+)
+
+// Valid indicates whether the value is a known member of the ModelSyncManifestModelParametersType enum.
+func (e ModelSyncManifestModelParametersType) Valid() bool {
+	switch e {
+	case ModelSyncManifestModelParametersTypeArray:
+		return true
+	case ModelSyncManifestModelParametersTypeBoolean:
+		return true
+	case ModelSyncManifestModelParametersTypeInteger:
+		return true
+	case ModelSyncManifestModelParametersTypeNumber:
+		return true
+	case ModelSyncManifestModelParametersTypeObject:
+		return true
+	case ModelSyncManifestModelParametersTypeString:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for NotificationChannel.
 const (
 	Bark    NotificationChannel = "bark"
@@ -7532,10 +7613,40 @@ type ModelSyncManifestModel struct {
 	ContextLength *int64    `json:"context_length,omitempty"`
 	Description   *string   `json:"description,omitempty"`
 	DisplayName   *string   `json:"display_name,omitempty"`
-	Icon          *string   `json:"icon,omitempty"`
-	MaxOutput     *int64    `json:"max_output,omitempty"`
-	ModelName     string    `json:"model_name"`
-	Tags          *[]string `json:"tags,omitempty"`
+
+	// Endpoints 键必须以 / 开头；与 PUT /api/models/{id} 同形状。
+	Endpoints *map[string][]ModelSyncManifestModelEndpoints `json:"endpoints,omitempty"`
+	Icon      *string                                       `json:"icon,omitempty"`
+
+	// KnowledgeCutoff YYYY-MM。
+	KnowledgeCutoff *string                                   `json:"knowledge_cutoff,omitempty"`
+	MaxOutput       *int64                                    `json:"max_output,omitempty"`
+	Modalities      *[]ModelSyncManifestModelModalities       `json:"modalities,omitempty"`
+	ModelName       string                                    `json:"model_name"`
+	Parameters      *[]ModelSyncManifestModel_Parameters_Item `json:"parameters,omitempty"`
+
+	// ReleasedAt YYYY-MM-DD；也接受 RFC3339，统一归一化为日期。
+	ReleasedAt *openapi_types.Date `json:"released_at,omitempty"`
+	Tags       *[]string           `json:"tags,omitempty"`
+
+	// Vendor 供应商名，大小写不敏感匹配本地 vendors.name；本地无此名称时该模型进 missing_vendor，apply 拒绝写入。
+	Vendor *string `json:"vendor,omitempty"`
+}
+
+// ModelSyncManifestModelEndpoints defines model for ModelSyncManifestModel.Endpoints.
+type ModelSyncManifestModelEndpoints string
+
+// ModelSyncManifestModelModalities defines model for ModelSyncManifestModel.Modalities.
+type ModelSyncManifestModelModalities string
+
+// ModelSyncManifestModelParametersType defines model for ModelSyncManifestModel.Parameters.Type.
+type ModelSyncManifestModelParametersType string
+
+// ModelSyncManifestModel_Parameters_Item defines model for ModelSyncManifestModel.parameters.Item.
+type ModelSyncManifestModel_Parameters_Item struct {
+	Name                 string                               `json:"name"`
+	Type                 ModelSyncManifestModelParametersType `json:"type"`
+	AdditionalProperties map[string]interface{}               `json:"-"`
 }
 
 // ModelSyncManifestVendor defines model for ModelSyncManifestVendor.
@@ -7562,7 +7673,7 @@ type ModelSyncPreview struct {
 		// MissingUpstream 本地有、上游清单无。
 		MissingUpstream []string `json:"missing_upstream"`
 
-		// MissingVendor 本地 vendor_id 指向不存在的供应商（逻辑引用无 FK）。
+		// MissingVendor 供应商无法解析的模型名。两种来源：本地 vendor_id 指向已删除的供应商（逻辑引用无 FK），或上游清单给该模型指定的 vendor 本地尚未建档；后者同时从 create/update 中移除，apply 拒绝写入，需先在「供应商」中建档。
 		MissingVendor []string                  `json:"missing_vendor"`
 		Unchanged     []string                  `json:"unchanged"`
 		Update        []ModelSyncModelCandidate `json:"update"`
@@ -14486,6 +14597,85 @@ func (a *ModelMetaUpdateRequest_Parameters_Item) UnmarshalJSON(b []byte) error {
 
 // Override default JSON handling for ModelMetaUpdateRequest_Parameters_Item to handle AdditionalProperties
 func (a ModelMetaUpdateRequest_Parameters_Item) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	object["name"], err = json.Marshal(a.Name)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'name': %w", err)
+	}
+
+	object["type"], err = json.Marshal(a.Type)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'type': %w", err)
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for ModelSyncManifestModel_Parameters_Item. Returns the specified
+// element and whether it was found
+func (a ModelSyncManifestModel_Parameters_Item) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for ModelSyncManifestModel_Parameters_Item
+func (a *ModelSyncManifestModel_Parameters_Item) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for ModelSyncManifestModel_Parameters_Item to handle AdditionalProperties
+func (a *ModelSyncManifestModel_Parameters_Item) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["name"]; found {
+		err = json.Unmarshal(raw, &a.Name)
+		if err != nil {
+			return fmt.Errorf("error reading 'name': %w", err)
+		}
+		delete(object, "name")
+	}
+
+	if raw, found := object["type"]; found {
+		err = json.Unmarshal(raw, &a.Type)
+		if err != nil {
+			return fmt.Errorf("error reading 'type': %w", err)
+		}
+		delete(object, "type")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for ModelSyncManifestModel_Parameters_Item to handle AdditionalProperties
+func (a ModelSyncManifestModel_Parameters_Item) MarshalJSON() ([]byte, error) {
 	var err error
 	object := make(map[string]json.RawMessage)
 

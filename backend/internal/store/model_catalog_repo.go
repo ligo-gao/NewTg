@@ -403,6 +403,16 @@ type ModelSyncModelEntry struct {
 	Capabilities  []byte
 	ContextLength *int64
 	MaxOutput     *int64
+
+	// VendorName 是供应商名（不是 id）：apply 在事务内按 lower(name) 解析成
+	// vendors.id，解析不到就整条失败（ErrSyncVendorMissing）。名字 → id 的
+	// 解析放在 store 内，是因为「本次同步刚建的供应商」只有事务里才看得到。
+	VendorName      *string
+	Endpoints       []byte
+	Modalities      []byte
+	Parameters      []byte
+	KnowledgeCutoff *string
+	ReleasedAt      *time.Time
 }
 
 // ModelSyncResult 是同步 apply 的逐类计数/名称，供响应与审计使用。
@@ -426,6 +436,23 @@ func (e ErrSyncBlocked) Error() string {
 // Is 让 errors.Is(err, ErrSyncBlocked{}) 可用于类型判断。
 func (e ErrSyncBlocked) Is(target error) bool {
 	_, ok := target.(ErrSyncBlocked)
+	return ok
+}
+
+// ErrSyncVendorMissing 表示清单条目写的 vendor 名既不在本地 vendors、也没在
+// 本次勾选的供应商里出现。handler 映射 422：管理员重跑 preview、把该供应商
+// 一起勾上即可修复；store 不替上游「顺手建一行」。
+type ErrSyncVendorMissing struct {
+	VendorName string
+}
+
+func (e ErrSyncVendorMissing) Error() string {
+	return "store: sync model references unknown vendor " + e.VendorName
+}
+
+// Is 让 errors.Is(err, ErrSyncVendorMissing{}) 可用于类型判断。
+func (e ErrSyncVendorMissing) Is(target error) bool {
+	_, ok := target.(ErrSyncVendorMissing)
 	return ok
 }
 
@@ -1595,10 +1622,20 @@ func (r *SQLModelCatalogRepo) ApplyModelSync(ctx context.Context, vendors []Mode
 	}
 
 	// 2) 模型：按 model_name 精确匹配。先供应商后模型，保持原有写入顺序。
+	//    供应商名 → id 的解析放在这里（第 1 步之后），因为本次刚建的供应商只在
+	//    事务内可见；解析不到的条目不猜、不顺手建行，整批失败。
+	vendorIDsByName, err := loadVendorIDsByNameTx(ctx, tx)
+	if err != nil {
+		return result, err
+	}
 	for _, entry := range models {
 		name := strings.TrimSpace(entry.ModelName)
 		if name == "" {
 			return result, ErrModelMetaInvalid{Field: "model_name", Reason: "must not be blank"}
+		}
+		vendorID, vendorErr := resolveSyncVendorID(vendorIDsByName, entry.VendorName)
+		if vendorErr != nil {
+			return result, vendorErr
 		}
 		current, scanErr := scanModelMeta(tx.QueryRowContext(ctx, `
 			SELECT `+modelMetaColumns+` FROM model_meta
@@ -1608,6 +1645,9 @@ func (r *SQLModelCatalogRepo) ApplyModelSync(ctx context.Context, vendors []Mode
 				ModelName: name, DisplayName: entry.DisplayName, Description: entry.Description,
 				Icon: entry.Icon, Tags: entry.Tags, Capabilities: entry.Capabilities,
 				ContextLength: entry.ContextLength, MaxOutput: entry.MaxOutput,
+				VendorID: vendorID, Endpoints: entry.Endpoints, Modalities: entry.Modalities,
+				Parameters: entry.Parameters, KnowledgeCutoff: entry.KnowledgeCutoff,
+				ReleasedAt: entry.ReleasedAt,
 			})
 			if createErr != nil {
 				return result, createErr
@@ -1622,7 +1662,7 @@ func (r *SQLModelCatalogRepo) ApplyModelSync(ctx context.Context, vendors []Mode
 			// 本地锁定：即使客户端绕过 preview 勾选也不覆盖。
 			return result, ErrSyncBlocked{ModelName: current.ModelName}
 		}
-		patch := syncModelPatchFromEntry(current, entry)
+		patch := syncModelPatchFromEntry(current, vendorID, entry)
 		if modelMetaPatchEmpty(patch) {
 			continue
 		}
@@ -1639,9 +1679,78 @@ func (r *SQLModelCatalogRepo) ApplyModelSync(ctx context.Context, vendors []Mode
 	return result, nil
 }
 
+// loadVendorIDsByNameTx 读事务内的 vendors（含本次刚建/改过的行），按
+// lower(name) 建索引——与 vendors 的唯一索引同口径，大小写差异不构成两个供应商。
+func loadVendorIDsByNameTx(ctx context.Context, tx *sql.Tx) (map[string]int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id, name FROM vendors`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list vendors for sync: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	ids := make(map[string]int64)
+	for rows.Next() {
+		var id int64
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, fmt.Errorf("store: scan vendor for sync: %w", err)
+		}
+		ids[strings.ToLower(strings.TrimSpace(name))] = id
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate vendors for sync: %w", err)
+	}
+	return ids, nil
+}
+
+// resolveSyncVendorID 把清单条目的供应商名解析成 vendors.id。
+// 未提供（nil）返回 nil；提供了却查不到 ⇒ ErrSyncVendorMissing——同步不替上游
+// 顺手建供应商行，否则拼错的单个名字会静默生成一条空供应商。
+func resolveSyncVendorID(ids map[string]int64, name *string) (*int64, error) {
+	if name == nil {
+		return nil, nil
+	}
+	key := strings.ToLower(strings.TrimSpace(*name))
+	if key == "" {
+		return nil, ErrSyncVendorMissing{VendorName: *name}
+	}
+	id, ok := ids[key]
+	if !ok {
+		return nil, ErrSyncVendorMissing{VendorName: *name}
+	}
+	return &id, nil
+}
+
 // syncModelPatchFromEntry 只更新上游提供且确有差异的字段（缺失 ≠ 清空）。
-func syncModelPatchFromEntry(local ModelMeta, entry ModelSyncModelEntry) ModelMetaPatch {
+// vendorID 由 apply 在事务内解析；entry.VendorName 为 nil（上游没写 vendor）
+// 时忽略 vendorID。
+func syncModelPatchFromEntry(local ModelMeta, vendorID *int64, entry ModelSyncModelEntry) ModelMetaPatch {
 	var patch ModelMetaPatch
+	if entry.VendorName != nil {
+		if vendorID != nil && (local.VendorID == nil || *local.VendorID != *vendorID) {
+			patch.VendorID = vendorID
+			patch.VendorIDSet = true
+		}
+	}
+	if entry.Endpoints != nil && !jsonBytesEqual(local.Endpoints, entry.Endpoints) {
+		patch.Endpoints = entry.Endpoints
+		patch.EndpointsSet = true
+	}
+	if entry.Modalities != nil && !jsonBytesEqual(local.Modalities, entry.Modalities) {
+		patch.Modalities = entry.Modalities
+		patch.ModalitiesSet = true
+	}
+	if entry.Parameters != nil && !jsonBytesEqual(local.Parameters, entry.Parameters) {
+		patch.Parameters = entry.Parameters
+		patch.ParametersSet = true
+	}
+	if entry.KnowledgeCutoff != nil && !sameOptionalString(local.KnowledgeCutoff, entry.KnowledgeCutoff) {
+		patch.KnowledgeCutoff = entry.KnowledgeCutoff
+		patch.KnowledgeCutoffSet = true
+	}
+	if entry.ReleasedAt != nil && (local.ReleasedAt == nil || !local.ReleasedAt.Equal(*entry.ReleasedAt)) {
+		patch.ReleasedAt = entry.ReleasedAt
+		patch.ReleasedAtSet = true
+	}
 	if entry.DisplayName != nil && !sameOptionalString(local.DisplayName, entry.DisplayName) {
 		patch.DisplayName = entry.DisplayName
 		patch.DisplayNameSet = true

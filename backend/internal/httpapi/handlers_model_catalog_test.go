@@ -665,13 +665,21 @@ func (r *fakeCatalogRepo) ApplyModelSync(_ context.Context, vendors []store.Mode
 				break
 			}
 		}
+		vendorID, vendorErr := fakeResolveVendor(vendorsCopy, entry.VendorName)
+		if vendorErr != nil {
+			return store.ModelSyncResult{}, vendorErr
+		}
 		if current == nil {
 			candidate := store.ModelMeta{
 				ModelName: name, DisplayName: entry.DisplayName, Description: entry.Description,
 				Icon: entry.Icon, Tags: normalizeJSON(entry.Tags, "[]"),
-				Endpoints: []byte("{}"), Capabilities: normalizeJSON(entry.Capabilities, "[]"),
-				Modalities: []byte("[]"), Parameters: []byte("[]"),
+				VendorID:      vendorID,
+				Endpoints:     normalizeJSON(entry.Endpoints, "{}"),
+				Capabilities:  normalizeJSON(entry.Capabilities, "[]"),
+				Modalities:    normalizeJSON(entry.Modalities, "[]"),
+				Parameters:    normalizeJSON(entry.Parameters, "[]"),
 				ContextLength: entry.ContextLength, MaxOutput: entry.MaxOutput,
+				KnowledgeCutoff: entry.KnowledgeCutoff, ReleasedAt: entry.ReleasedAt,
 			}
 			if err := store.ValidateModelMetaInput(&candidate); err != nil {
 				return store.ModelSyncResult{}, err
@@ -711,6 +719,24 @@ func (r *fakeCatalogRepo) ApplyModelSync(_ context.Context, vendors []store.Mode
 		if entry.MaxOutput != nil {
 			updated.MaxOutput = entry.MaxOutput
 		}
+		if entry.VendorName != nil && vendorID != nil {
+			updated.VendorID = vendorID
+		}
+		if entry.Endpoints != nil {
+			updated.Endpoints = normalizeJSON(entry.Endpoints, "{}")
+		}
+		if entry.Modalities != nil {
+			updated.Modalities = normalizeJSON(entry.Modalities, "[]")
+		}
+		if entry.Parameters != nil {
+			updated.Parameters = normalizeJSON(entry.Parameters, "[]")
+		}
+		if entry.KnowledgeCutoff != nil {
+			updated.KnowledgeCutoff = entry.KnowledgeCutoff
+		}
+		if entry.ReleasedAt != nil {
+			updated.ReleasedAt = entry.ReleasedAt
+		}
 		if err := store.ValidateModelMetaInput(&updated); err != nil {
 			return store.ModelSyncResult{}, err
 		}
@@ -722,6 +748,25 @@ func (r *fakeCatalogRepo) ApplyModelSync(_ context.Context, vendors []store.Mode
 	r.models, r.vendors = modelsCopy, vendorsCopy
 	r.nextModelID, r.nextVendor, r.clock = nextModelID, nextVendor, clock
 	return result, nil
+}
+
+// fakeResolveVendor 复刻 store.resolveSyncVendorID：名字大小写不敏感，查不到
+// 就返回 ErrSyncVendorMissing。假实现必须与真实现同口径，测试才有意义。
+func fakeResolveVendor(vendors map[int64]*store.Vendor, name *string) (*int64, error) {
+	if name == nil {
+		return nil, nil
+	}
+	key := strings.ToLower(strings.TrimSpace(*name))
+	if key == "" {
+		return nil, store.ErrSyncVendorMissing{VendorName: *name}
+	}
+	for _, vendor := range vendors {
+		if strings.ToLower(strings.TrimSpace(vendor.Name)) == key {
+			id := vendor.ID
+			return &id, nil
+		}
+	}
+	return nil, store.ErrSyncVendorMissing{VendorName: *name}
 }
 
 func (r *fakeCatalogRepo) MissingModels(_ context.Context) (store.MissingResult, error) {
@@ -1840,6 +1885,191 @@ func TestModelCatalogSyncMissingOrNullDoesNotDiff(t *testing.T) {
 				t.Fatalf("缺失清空了本地值：%+v", model.Description)
 			}
 		}
+	}
+}
+
+func TestModelCatalogSyncWritesProfileFields(t *testing.T) {
+	env := newCatalogTestEnv(t)
+	createTestModel(t, env, "profile-model")
+	env.syncRaw = syncManifestFor(t, []map[string]any{{
+		"model_name":       "profile-model",
+		"vendor":           "Acme",
+		"endpoints":        map[string]any{"/v1/chat/completions": []string{"POST"}},
+		"modalities":       []string{"text", "image"},
+		"parameters":       []map[string]any{{"name": "temperature", "type": "number"}},
+		"knowledge_cutoff": "2025-03",
+		"released_at":      "2025-03-14",
+	}}, []map[string]any{{"name": "Acme"}})
+
+	rr := env.request(catalogFullAdmin(), http.MethodGet, "/api/models/sync/preview", nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("preview = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	var preview syncPreviewResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &preview); err != nil {
+		t.Fatalf("preview JSON: %v", err)
+	}
+	if len(preview.Groups.Update) != 1 {
+		t.Fatalf("update = %+v", preview.Groups.Update)
+	}
+	for _, field := range []string{
+		"vendor", "endpoints", "modalities", "parameters", "knowledge_cutoff", "released_at",
+	} {
+		if _, ok := preview.Groups.Update[0].Changes[field]; !ok {
+			t.Fatalf("preview 未报告 %s 差异：%+v", field, preview.Groups.Update[0].Changes)
+		}
+	}
+
+	// 只勾模型、不勾供应商：名字解析不到，整批 422（store 不替上游建行）。
+	rr = env.request(catalogFullAdmin(), http.MethodPost, "/api/models/sync", map[string]any{
+		"source_version": preview.SourceVersion,
+		"models":         []any{map[string]any{"model_name": "profile-model"}},
+	}, nil)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("缺供应商 = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	}
+	if byName := modelBy(t, env, "profile-model"); byName.VendorID != nil {
+		t.Fatalf("失败的 apply 不应写入：%+v", byName.VendorID)
+	}
+
+	// 一起勾上供应商：模型与供应商同事务写入。
+	rr = env.request(catalogFullAdmin(), http.MethodPost, "/api/models/sync", map[string]any{
+		"source_version": preview.SourceVersion,
+		"models":         []any{map[string]any{"model_name": "profile-model"}},
+		"vendors":        []any{map[string]any{"name": "Acme"}},
+	}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("apply = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	model := modelBy(t, env, "profile-model")
+	if model.VendorID == nil {
+		t.Fatalf("vendor_id 未写入")
+	}
+	var vendorName string
+	for _, vendor := range env.repo.vendors {
+		if vendor.ID == *model.VendorID {
+			vendorName = vendor.Name
+		}
+	}
+	if vendorName != "Acme" {
+		t.Fatalf("vendor_id 指向 %q，期望 Acme", vendorName)
+	}
+	var endpoints map[string][]string
+	if err := json.Unmarshal(model.Endpoints, &endpoints); err != nil {
+		t.Fatalf("endpoints 不是对象：%v（%q）", err, model.Endpoints)
+	}
+	if len(endpoints["/v1/chat/completions"]) != 1 || endpoints["/v1/chat/completions"][0] != "POST" {
+		t.Fatalf("endpoints = %+v", endpoints)
+	}
+	var modalities []string
+	if err := json.Unmarshal(model.Modalities, &modalities); err != nil || len(modalities) != 2 {
+		t.Fatalf("modalities = %q（%v）", model.Modalities, err)
+	}
+	var params []map[string]any
+	if err := json.Unmarshal(model.Parameters, &params); err != nil || len(params) != 1 {
+		t.Fatalf("parameters = %q（%v）", model.Parameters, err)
+	}
+	if model.KnowledgeCutoff == nil || *model.KnowledgeCutoff != "2025-03" {
+		t.Fatalf("knowledge_cutoff = %+v", model.KnowledgeCutoff)
+	}
+	if model.ReleasedAt == nil || model.ReleasedAt.Format("2006-01-02") != "2025-03-14" {
+		t.Fatalf("released_at = %+v", model.ReleasedAt)
+	}
+
+	// 再跑一次 preview：档案已与清单一致 ⇒ unchanged（大小写不敏感比较）。
+	rr = env.request(catalogFullAdmin(), http.MethodGet, "/api/models/sync/preview", nil, nil)
+	var after syncPreviewResponse
+	_ = json.Unmarshal(rr.Body.Bytes(), &after)
+	if len(after.Groups.Update) != 0 {
+		t.Fatalf("同步后仍报 update：%+v", after.Groups.Update)
+	}
+}
+
+// modelBy 取假仓储里的档案（测试断言用）。
+func modelBy(t *testing.T, env *catalogTestEnv, name string) store.ModelMeta {
+	t.Helper()
+	for _, model := range env.repo.models {
+		if model.ModelName == name {
+			return *model
+		}
+	}
+	t.Fatalf("模型 %s 不存在", name)
+	return store.ModelMeta{}
+}
+
+func TestModelCatalogSyncPreviewUnknownVendor(t *testing.T) {
+	env := newCatalogTestEnv(t)
+	// 上游写了 vendor，但既不在本地、也没在清单 vendors 里声明 ⇒ 解析不了，
+	// preview 必须提前暴露（否则勾选后才 422）。
+	env.syncRaw = syncManifestFor(t, []map[string]any{
+		{"model_name": "ghost-vendor-model", "vendor": "Nowhere"},
+	}, nil)
+	rr := env.request(catalogFullAdmin(), http.MethodGet, "/api/models/sync/preview", nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("preview = %d（body=%q）", rr.Code, rr.Body.String())
+	}
+	var preview syncPreviewResponse
+	_ = json.Unmarshal(rr.Body.Bytes(), &preview)
+	if len(preview.Groups.MissingVendor) != 1 || preview.Groups.MissingVendor[0] != "ghost-vendor-model" {
+		t.Fatalf("missing_vendor = %+v", preview.Groups.MissingVendor)
+	}
+	if len(preview.Groups.Create) != 0 {
+		t.Fatalf("解析不了供应商的条目不应进 create：%+v", preview.Groups.Create)
+	}
+}
+
+func TestModelCatalogSyncProfileFieldValidation(t *testing.T) {
+	cases := []struct {
+		name  string
+		model map[string]any
+	}{
+		{"endpoints not object", map[string]any{"model_name": "m", "endpoints": []string{"/v1/chat/completions"}}},
+		{"endpoints string", map[string]any{"model_name": "m", "endpoints": "/v1/chat/completions"}},
+		{"modalities not array", map[string]any{"model_name": "m", "modalities": "text"}},
+		{"parameters not array", map[string]any{"model_name": "m", "parameters": map[string]any{"name": "x"}}},
+		{"knowledge_cutoff bad month", map[string]any{"model_name": "m", "knowledge_cutoff": "2025-13"}},
+		{"knowledge_cutoff bad shape", map[string]any{"model_name": "m", "knowledge_cutoff": "2025/03"}},
+		{"released_at not a date", map[string]any{"model_name": "m", "released_at": "yesterday"}},
+		{"released_at blank", map[string]any{"model_name": "m", "released_at": ""}},
+		{"vendor blank", map[string]any{"model_name": "m", "vendor": "   "}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseSyncManifest(syncManifestFor(t, []map[string]any{tc.model}, nil)); err == nil {
+				t.Fatalf("非法档案字段未被拒绝")
+			}
+		})
+	}
+
+	// 合法形状：date-time 也可，输出统一成 YYYY-MM-DD。
+	manifest, err := parseSyncManifest(syncManifestFor(t, []map[string]any{{
+		"model_name": "m", "released_at": "2025-03-14T08:30:00Z", "vendor": "  Acme  ",
+	}}, nil))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if manifest.Models[0].ReleasedAt == nil || *manifest.Models[0].ReleasedAt != "2025-03-14" {
+		t.Fatalf("released_at 未规范成日期：%+v", manifest.Models[0].ReleasedAt)
+	}
+	if manifest.Models[0].Vendor == nil || *manifest.Models[0].Vendor != "Acme" {
+		t.Fatalf("vendor 未裁剪：%+v", manifest.Models[0].Vendor)
+	}
+}
+
+func TestDiffSyncModelVendorCaseInsensitive(t *testing.T) {
+	upstreamVendor := "acme"
+	upstream := syncManifestModel{
+		Vendor:  &upstreamVendor,
+		Present: map[string]bool{"vendor": true},
+	}
+	if changes := diffSyncModel(store.ModelMeta{}, "Acme", upstream); len(changes) != 0 {
+		t.Fatalf("只差大小写不应产生差异：%+v", changes)
+	}
+	other := "Other"
+	upstream.Vendor = &other
+	changes := diffSyncModel(store.ModelMeta{}, "Acme", upstream)
+	if _, ok := changes["vendor"]; !ok {
+		t.Fatalf("供应商变更未报告：%+v", changes)
 	}
 }
 

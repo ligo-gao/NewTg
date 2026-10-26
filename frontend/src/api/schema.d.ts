@@ -8985,7 +8985,7 @@ export interface components {
                 blocked: string[];
                 /** @description 本地有、上游清单无。 */
                 missing_upstream: string[];
-                /** @description 本地 vendor_id 指向不存在的供应商（逻辑引用无 FK）。 */
+                /** @description 供应商无法解析的模型名。两种来源：本地 vendor_id 指向已删除的供应商（逻辑引用无 FK），或上游清单给该模型指定的 vendor 本地尚未建档；后者同时从 create/update 中移除，apply 拒绝写入，需先在「供应商」中建档。 */
                 missing_vendor: string[];
                 vendors: components["schemas"]["ModelSyncVendorGroups"];
             };
@@ -8996,11 +8996,32 @@ export interface components {
             description?: string | null;
             icon?: string | null;
             tags?: string[];
+            /** @description 供应商名，大小写不敏感匹配本地 vendors.name；本地无此名称时该模型进 missing_vendor，apply 拒绝写入。 */
+            vendor?: string | null;
+            /** @description 键必须以 / 开头；与 PUT /api/models/{id} 同形状。 */
+            endpoints?: {
+                [key: string]: ("GET" | "POST" | "PUT" | "PATCH" | "DELETE")[];
+            };
             capabilities?: string[];
+            modalities?: ("text" | "image" | "audio" | "video")[];
+            parameters?: ({
+                name: string;
+                /** @enum {string} */
+                type: "string" | "number" | "integer" | "boolean" | "array" | "object";
+            } & {
+                [key: string]: unknown;
+            })[];
             /** Format: int64 */
             context_length?: number | null;
             /** Format: int64 */
             max_output?: number | null;
+            /** @description YYYY-MM。 */
+            knowledge_cutoff?: string | null;
+            /**
+             * Format: date
+             * @description YYYY-MM-DD；也接受 RFC3339，统一归一化为日期。
+             */
+            released_at?: string | null;
         };
         ModelSyncManifestVendor: {
             name: string;

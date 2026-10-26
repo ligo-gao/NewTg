@@ -1204,3 +1204,111 @@ func TestModelCatalogCreateModelMetaValidatesEndpoints(t *testing.T) {
 		t.Fatalf("校验失败仍写入了 %d 行", count)
 	}
 }
+
+// TestModelCatalogSyncProfileFields 覆盖上游同步写入公开模型库要用到的档案字段：
+// 供应商名解析、endpoints / modalities / parameters、knowledge_cutoff、released_at，
+// 以及「供应商解析不到就整批失败」的语义。
+func TestModelCatalogSyncProfileFields(t *testing.T) {
+	db := openTestDB(t)
+	repo := NewModelCatalogRepo(db)
+	ctx := catalogCtx()
+
+	vendorName := catalogUnique("vnd-sync")
+	modelName := catalogUnique("model-sync")
+	released := time.Date(2025, 3, 14, 0, 0, 0, 0, time.UTC)
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM model_meta WHERE model_name = $1`, modelName)
+		_, _ = db.Exec(`DELETE FROM vendors WHERE name = $1`, vendorName)
+	})
+
+	// 供应商既不在本地、也没被勾选 ⇒ 整条失败，且不落库。
+	if _, err := repo.ApplyModelSync(ctx, nil, []ModelSyncModelEntry{{
+		ModelName: modelName, VendorName: &vendorName,
+	}}); err == nil {
+		t.Fatalf("未知供应商未被拒绝")
+	} else {
+		var missing ErrSyncVendorMissing
+		if !errors.As(err, &missing) || missing.VendorName != vendorName {
+			t.Fatalf("err = %v，want ErrSyncVendorMissing{%s}", err, vendorName)
+		}
+	}
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM model_meta WHERE model_name = $1`, modelName).Scan(&count); err != nil {
+		t.Fatalf("count model_meta: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("失败的同步仍写入了 %d 行", count)
+	}
+
+	// 供应商与模型同事务：先建供应商，再按名字解析成 vendor_id。
+	result, err := repo.ApplyModelSync(ctx,
+		[]ModelSyncVendorEntry{{Name: vendorName}},
+		[]ModelSyncModelEntry{{
+			ModelName:       modelName,
+			VendorName:      &vendorName,
+			Endpoints:       []byte(`{"/v1/chat/completions":["POST"]}`),
+			Modalities:      []byte(`["text","image"]`),
+			Parameters:      []byte(`[{"name":"temperature","type":"number"}]`),
+			KnowledgeCutoff: strPtr("2025-03"),
+			ReleasedAt:      &released,
+		}})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if len(result.CreatedVendors) != 1 || len(result.CreatedModels) != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+
+	var vendorID int64
+	if err := db.QueryRow(`SELECT id FROM vendors WHERE name = $1`, vendorName).Scan(&vendorID); err != nil {
+		t.Fatalf("select vendor: %v", err)
+	}
+	model, err := scanModelMeta(db.QueryRowContext(ctx, `
+		SELECT `+modelMetaColumns+` FROM model_meta WHERE model_name = $1`, modelName))
+	if err != nil {
+		t.Fatalf("select model: %v", err)
+	}
+	if model.VendorID == nil || *model.VendorID != vendorID {
+		t.Fatalf("vendor_id = %v，want %d", model.VendorID, vendorID)
+	}
+	if !jsonBytesEqual(model.Endpoints, []byte(`{"/v1/chat/completions":["POST"]}`)) {
+		t.Fatalf("endpoints = %s", model.Endpoints)
+	}
+	if !jsonBytesEqual(model.Modalities, []byte(`["text","image"]`)) {
+		t.Fatalf("modalities = %s", model.Modalities)
+	}
+	if !jsonBytesEqual(model.Parameters, []byte(`[{"name":"temperature","type":"number"}]`)) {
+		t.Fatalf("parameters = %s", model.Parameters)
+	}
+	if model.KnowledgeCutoff == nil || *model.KnowledgeCutoff != "2025-03" {
+		t.Fatalf("knowledge_cutoff = %v", model.KnowledgeCutoff)
+	}
+	if model.ReleasedAt == nil || model.ReleasedAt.Format("2006-01-02") != "2025-03-14" {
+		t.Fatalf("released_at = %v", model.ReleasedAt)
+	}
+
+	// 二次同步只改有差异的字段：endpoints 变化 ⇒ update，其余保持。
+	updated, err := repo.ApplyModelSync(ctx, nil, []ModelSyncModelEntry{{
+		ModelName:  modelName,
+		VendorName: &vendorName,
+		Endpoints:  []byte(`{"/v1/chat/completions":["POST"],"/v1/embeddings":["POST"]}`),
+	}})
+	if err != nil {
+		t.Fatalf("apply update: %v", err)
+	}
+	if len(updated.UpdatedModels) != 1 || updated.UpdatedModels[0] != modelName {
+		t.Fatalf("updated = %+v", updated)
+	}
+	model, err = scanModelMeta(db.QueryRowContext(ctx, `
+		SELECT `+modelMetaColumns+` FROM model_meta WHERE model_name = $1`, modelName))
+	if err != nil {
+		t.Fatalf("select model after update: %v", err)
+	}
+	if !jsonBytesEqual(model.Endpoints, []byte(`{"/v1/chat/completions":["POST"],"/v1/embeddings":["POST"]}`)) {
+		t.Fatalf("endpoints after update = %s", model.Endpoints)
+	}
+	// 缺失字段（modalities 等）不被清空。
+	if !jsonBytesEqual(model.Modalities, []byte(`["text","image"]`)) {
+		t.Fatalf("未被清单提及的 modalities 被清空：%s", model.Modalities)
+	}
+}

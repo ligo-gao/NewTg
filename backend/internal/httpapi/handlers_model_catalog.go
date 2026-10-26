@@ -1970,12 +1970,18 @@ func (h *ModelCatalogHandlers) handleApplyVendorOperations(w http.ResponseWriter
 // 上游元数据同步（preview → apply）
 // ---------------------------------------------------------------------------
 
-// syncManifestModel 是上游清单的模型条目（任务书 §2 冻结格式）。
+// syncManifestModel 是上游清单的模型条目（成文于 api/openapi/schemas/admin.yaml
+// 的 ModelSyncManifestModel）。
 //
 // Present 记录「字段存在且非 null」。缺失与显式 null 同义（都不参与
 // diff/patch，缺失 ≠ 清空），但仍显式区分「有值」：只看指针会把
 // `"display_name": null` 与 `"display_name": "x"` 之外的形态混在一起，
 // preview 与 apply 的口径就难以自证一致。
+//
+// vendor / endpoints / modalities / parameters / knowledge_cutoff / released_at
+// 是公开模型库（/models）用到的档案字段：没有它们，同步只能填一半，厂商与
+// 端点两列永远空着。vendor 是**供应商名**，apply 时解析成 vendors.id；名字
+// 既不在本地 vendors、也没在本次勾选里建档 ⇒ 该条目失败（不猜、不自动建行）。
 type syncManifestModel struct {
 	ModelName     string          `json:"model_name"`
 	DisplayName   *string         `json:"display_name"`
@@ -1985,6 +1991,13 @@ type syncManifestModel struct {
 	Capabilities  json.RawMessage `json:"capabilities"`
 	ContextLength *int64          `json:"context_length"`
 	MaxOutput     *int64          `json:"max_output"`
+
+	Vendor          *string         `json:"vendor"`
+	Endpoints       json.RawMessage `json:"endpoints"`
+	Modalities      json.RawMessage `json:"modalities"`
+	Parameters      json.RawMessage `json:"parameters"`
+	KnowledgeCutoff *string         `json:"knowledge_cutoff"`
+	ReleasedAt      *string         `json:"released_at"`
 
 	Present map[string]bool `json:"-"`
 }
@@ -2001,13 +2014,23 @@ func (m *syncManifestModel) UnmarshalJSON(data []byte) error {
 	}
 	*m = syncManifestModel(decoded)
 	m.Present = presentNonNilFields(raw, "display_name", "description", "icon", "tags", "capabilities",
-		"context_length", "max_output")
+		"context_length", "max_output", "vendor", "endpoints", "modalities", "parameters",
+		"knowledge_cutoff", "released_at")
 	// 显式 null 与缺失同义：归一化为「未提供」，避免把 "null" 当数组/对象写库。
 	if !m.Present["tags"] {
 		m.Tags = nil
 	}
 	if !m.Present["capabilities"] {
 		m.Capabilities = nil
+	}
+	if !m.Present["endpoints"] {
+		m.Endpoints = nil
+	}
+	if !m.Present["modalities"] {
+		m.Modalities = nil
+	}
+	if !m.Present["parameters"] {
+		m.Parameters = nil
 	}
 	return nil
 }
@@ -2196,6 +2219,11 @@ func parseSyncManifest(raw []byte) (syncManifest, error) {
 		}
 		seen[name] = struct{}{}
 		manifest.Models[i].ModelName = name
+		// 档案字段的形态校验也在入口完成：清单是上游数据，形状不对按 502
+		// 拒绝，不要拖到 apply 才变成 422（那会让客户端以为自己提交错了）。
+		if err := normalizeSyncModelProfile(&manifest.Models[i]); err != nil {
+			return manifest, fmt.Errorf("models[%d].%w", i, err)
+		}
 	}
 	vendorSeen := make(map[string]struct{}, len(manifest.Vendors))
 	for i, vendor := range manifest.Vendors {
@@ -2224,11 +2252,131 @@ func parseSyncManifest(raw []byte) (syncManifest, error) {
 	return manifest, nil
 }
 
+// normalizeSyncModelProfile 校验并规范化清单条目的档案字段。
+//
+// 只做「形态」层面的判断（是不是对象/数组、日期是不是合法日期、供应商名是否
+// 为空），枚举取值（capabilities / modalities / parameters 的合法值）留给
+// store.ValidateModelMetaInput——与手工建档共用同一份校验，避免两套规则漂移。
+// 返回的 error 会被包成 `models[i].<原因>`，所以这里不再重复字段索引。
+func normalizeSyncModelProfile(model *syncManifestModel) error {
+	if model.Present["vendor"] {
+		name := ""
+		if model.Vendor != nil {
+			name = strings.TrimSpace(*model.Vendor)
+		}
+		if name == "" {
+			return errors.New("vendor must not be blank")
+		}
+		model.Vendor = &name
+	}
+	if model.Present["endpoints"] {
+		if _, err := decodeRawJSONObject("endpoints", model.Endpoints); err != nil {
+			return err
+		}
+	}
+	if model.Present["modalities"] {
+		if _, err := decodeRawJSONArray("modalities", model.Modalities); err != nil {
+			return err
+		}
+	}
+	if model.Present["parameters"] {
+		if _, err := decodeRawJSONArray("parameters", model.Parameters); err != nil {
+			return err
+		}
+	}
+	if model.Present["knowledge_cutoff"] {
+		cutoff := ""
+		if model.KnowledgeCutoff != nil {
+			cutoff = strings.TrimSpace(*model.KnowledgeCutoff)
+		}
+		if !validSyncKnowledgeCutoff(cutoff) {
+			return errors.New(`knowledge_cutoff must be "YYYY-MM" with month 01-12`)
+		}
+		model.KnowledgeCutoff = &cutoff
+	}
+	if model.Present["released_at"] {
+		released := ""
+		if model.ReleasedAt != nil {
+			released = strings.TrimSpace(*model.ReleasedAt)
+		}
+		normalized, err := parseSyncReleasedAt(released)
+		if err != nil {
+			return err
+		}
+		model.ReleasedAt = normalized
+	}
+	return nil
+}
+
+// parseSyncReleasedAt 与 decodeReleasedAt 同口径（date 或 RFC 3339），输出统一
+// 成 date 列的 YYYY-MM-DD；空串按非法处理——`released_at: ""` 不是「没有值」，
+// 而是上游给了一个写不进 date 列的值。
+func parseSyncReleasedAt(value string) (*string, error) {
+	if value == "" {
+		return nil, errors.New("released_at must be YYYY-MM-DD or RFC 3339")
+	}
+	if parsed, err := time.Parse("2006-01-02", value); err == nil {
+		formatted := parsed.Format("2006-01-02")
+		return &formatted, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return nil, errors.New("released_at must be YYYY-MM-DD or RFC 3339")
+	}
+	formatted := parsed.UTC().Format("2006-01-02")
+	return &formatted, nil
+}
+
+// validSyncKnowledgeCutoff 与 store 的 knowledge_cutoff CHECK / 建档校验同口径
+// （YYYY-MM，月份 01-12）。store 的校验未导出，这里保留一份逐字对应的实现。
+func validSyncKnowledgeCutoff(value string) bool {
+	if len(value) != 7 || value[4] != '-' {
+		return false
+	}
+	for i, r := range value {
+		if i == 4 {
+			continue
+		}
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	month := value[5:]
+	return month >= "01" && month <= "12"
+}
+
+// syncStoreEntry 把（已 parse 过的）清单条目转成 store 的写入值。ReleasedAt
+// 在 parse 阶段已规范成 YYYY-MM-DD；这里再解析一次，失败只可能是 Redis 里的
+// 缓存内容被改坏，调用方按「版本失效」处理即可。
+func syncStoreEntry(model syncManifestModel) (store.ModelSyncModelEntry, error) {
+	entry := store.ModelSyncModelEntry{
+		ModelName: model.ModelName, DisplayName: model.DisplayName,
+		Description: model.Description, Icon: model.Icon,
+		Tags: model.Tags, Capabilities: model.Capabilities,
+		ContextLength: model.ContextLength, MaxOutput: model.MaxOutput,
+		VendorName:      model.Vendor,
+		Endpoints:       model.Endpoints,
+		Modalities:      model.Modalities,
+		Parameters:      model.Parameters,
+		KnowledgeCutoff: model.KnowledgeCutoff,
+	}
+	if model.ReleasedAt != nil {
+		released, err := time.Parse("2006-01-02", *model.ReleasedAt)
+		if err != nil {
+			return store.ModelSyncModelEntry{}, err
+		}
+		entry.ReleasedAt = &released
+	}
+	return entry, nil
+}
+
 // buildSyncPreview 对账上游清单与本地目录，给出六类候选。
 //
-// missing_vendor 的口径：本地模型的 vendor_id 指向不存在的供应商行
-// （逻辑引用没有 FK，只能由检测面暴露）。上游模型条目格式不含 vendor 字段
-// （任务书 §2 冻结），因此不存在「上游引用了不存在供应商」这一类。
+// missing_vendor 的口径是「供应商引用解析不了」，两侧都算：
+//   - 本地模型的 vendor_id 指向不存在的供应商行（逻辑引用没有 FK，只能由
+//     检测面暴露）；
+//   - 上游条目写了 vendor，但该名字既不在本地 vendors、也没在上游清单的
+//     vendors 数组里声明——这种条目 apply 一定失败，提前在 preview 暴露。
 func buildSyncPreview(localModels []store.ModelMeta, localVendors []store.Vendor, manifest syncManifest) syncPreviewGroups {
 	groups := syncPreviewGroups{
 		Create: []syncModelCandidate{}, Update: []syncModelCandidate{},
@@ -2236,20 +2384,35 @@ func buildSyncPreview(localModels []store.ModelMeta, localVendors []store.Vendor
 		MissingUpstream: []string{}, MissingVendor: []string{},
 		Vendors: syncVendorGroups{Create: []string{}, Update: []syncVendorCandidate{}, Unchanged: []string{}},
 	}
+	missingVendorSeen := make(map[string]struct{}, len(localModels))
+	markMissingVendor := func(modelName string) {
+		if _, ok := missingVendorSeen[modelName]; ok {
+			return
+		}
+		missingVendorSeen[modelName] = struct{}{}
+		groups.MissingVendor = append(groups.MissingVendor, modelName)
+	}
 	upstream := make(map[string]syncManifestModel, len(manifest.Models))
 	for _, model := range manifest.Models {
 		upstream[model.ModelName] = model
 	}
 	localByName := make(map[string]store.ModelMeta, len(localModels))
 	vendorIDs := make(map[int64]struct{}, len(localVendors))
+	vendorNamesByID := make(map[int64]string, len(localVendors))
+	knownVendorNames := make(map[string]struct{}, len(localVendors)+len(manifest.Vendors))
 	for _, vendor := range localVendors {
 		vendorIDs[vendor.ID] = struct{}{}
+		vendorNamesByID[vendor.ID] = vendor.Name
+		knownVendorNames[strings.ToLower(strings.TrimSpace(vendor.Name))] = struct{}{}
+	}
+	for _, vendor := range manifest.Vendors {
+		knownVendorNames[strings.ToLower(strings.TrimSpace(vendor.Name))] = struct{}{}
 	}
 	for _, model := range localModels {
 		localByName[model.ModelName] = model
 		if model.VendorID != nil {
 			if _, ok := vendorIDs[*model.VendorID]; !ok {
-				groups.MissingVendor = append(groups.MissingVendor, model.ModelName)
+				markMissingVendor(model.ModelName)
 			}
 		}
 		if _, ok := upstream[model.ModelName]; !ok {
@@ -2258,6 +2421,13 @@ func buildSyncPreview(localModels []store.ModelMeta, localVendors []store.Vendor
 	}
 	for _, model := range manifest.Models {
 		local, exists := localByName[model.ModelName]
+		if model.Vendor != nil {
+			key := strings.ToLower(strings.TrimSpace(*model.Vendor))
+			if _, ok := knownVendorNames[key]; !ok {
+				markMissingVendor(model.ModelName)
+				continue
+			}
+		}
 		if !exists {
 			groups.Create = append(groups.Create, syncModelCandidate{ModelName: model.ModelName})
 			continue
@@ -2267,7 +2437,11 @@ func buildSyncPreview(localModels []store.ModelMeta, localVendors []store.Vendor
 			groups.Blocked = append(groups.Blocked, model.ModelName)
 			continue
 		}
-		changes := diffSyncModel(local, model)
+		localVendorName := ""
+		if local.VendorID != nil {
+			localVendorName = vendorNamesByID[*local.VendorID]
+		}
+		changes := diffSyncModel(local, localVendorName, model)
 		if len(changes) == 0 {
 			groups.Unchanged = append(groups.Unchanged, model.ModelName)
 			continue
@@ -2305,7 +2479,11 @@ func buildSyncPreview(localModels []store.ModelMeta, localVendors []store.Vendor
 
 // diffSyncModel 只比较上游清单提供字段；上游缺失或显式 null 的字段不参与
 // 差异（缺失 ≠ 清空）。preview 与 apply 共用 Present 口径。
-func diffSyncModel(local store.ModelMeta, upstream syncManifestModel) map[string]syncFieldChange {
+//
+// localVendorName 是本地 vendor_id 解析出的名称（无归属时为空串）。供应商按
+// 名字大小写不敏感比较：apply 也是按 lower(name) 解析，只差大小写不该被报成
+// 一次「更新」——否则 preview 永远显示有待办，apply 却什么也不改。
+func diffSyncModel(local store.ModelMeta, localVendorName string, upstream syncManifestModel) map[string]syncFieldChange {
 	changes := map[string]syncFieldChange{}
 	add := func(field string, localValue, upstreamValue any) {
 		if !reflect.DeepEqual(localValue, upstreamValue) {
@@ -2332,6 +2510,34 @@ func diffSyncModel(local store.ModelMeta, upstream syncManifestModel) map[string
 	}
 	if upstream.Present["max_output"] {
 		add("max_output", derefInt64(local.MaxOutput), derefInt64(upstream.MaxOutput))
+	}
+	if upstream.Present["vendor"] {
+		upstreamVendor := ""
+		if upstream.Vendor != nil {
+			upstreamVendor = strings.TrimSpace(*upstream.Vendor)
+		}
+		if !strings.EqualFold(strings.TrimSpace(localVendorName), upstreamVendor) {
+			changes["vendor"] = syncFieldChange{Local: localVendorName, Upstream: upstreamVendor}
+		}
+	}
+	if upstream.Present["endpoints"] {
+		add("endpoints", jsonValue(local.Endpoints, "{}"), jsonValue(upstream.Endpoints, "{}"))
+	}
+	if upstream.Present["modalities"] {
+		add("modalities", jsonValue(local.Modalities, "[]"), jsonValue(upstream.Modalities, "[]"))
+	}
+	if upstream.Present["parameters"] {
+		add("parameters", jsonValue(local.Parameters, "[]"), jsonValue(upstream.Parameters, "[]"))
+	}
+	if upstream.Present["knowledge_cutoff"] {
+		add("knowledge_cutoff", derefString(local.KnowledgeCutoff), derefString(upstream.KnowledgeCutoff))
+	}
+	if upstream.Present["released_at"] {
+		localReleased := ""
+		if local.ReleasedAt != nil {
+			localReleased = local.ReleasedAt.UTC().Format("2006-01-02")
+		}
+		add("released_at", localReleased, derefString(upstream.ReleasedAt))
 	}
 	if len(changes) == 0 {
 		return nil
@@ -2507,12 +2713,15 @@ func (h *ModelCatalogHandlers) handleSyncApply(w http.ResponseWriter, r *http.Re
 				fmt.Sprintf("model %q no longer exists in the previewed manifest; run preview again", selected.ModelName), nil)
 			return
 		}
-		selectedModels = append(selectedModels, store.ModelSyncModelEntry{
-			ModelName: model.ModelName, DisplayName: model.DisplayName,
-			Description: model.Description, Icon: model.Icon,
-			Tags: model.Tags, Capabilities: model.Capabilities,
-			ContextLength: model.ContextLength, MaxOutput: model.MaxOutput,
-		})
+		entry, entryErr := syncStoreEntry(model)
+		if entryErr != nil {
+			// 缓存里的清单是 parse 过的；走到这里说明缓存内容坏了，等同版本失效。
+			h.log.Error("cached model sync manifest is invalid", "error", entryErr)
+			writeCatalogProblem(w, http.StatusConflict, catalogProblemSyncVersion,
+				"Sync source version is expired", "run preview again", nil)
+			return
+		}
+		selectedModels = append(selectedModels, entry)
 	}
 	selectedVendors := make([]store.ModelSyncVendorEntry, 0, len(vendorSelections))
 	for _, selected := range vendorSelections {
@@ -2572,12 +2781,21 @@ func sameOptionalString(a, b *string) bool {
 // 422（字段校验），blocked 仍是 400。
 func (h *ModelCatalogHandlers) writeSyncApplyError(w http.ResponseWriter, op string, err error) {
 	var blocked store.ErrSyncBlocked
+	var missingVendor store.ErrSyncVendorMissing
 	var invalid store.ErrModelMetaInvalid
 	switch {
 	case errors.As(err, &blocked):
 		writeCatalogProblem(w, http.StatusBadRequest, catalogProblemSyncBlocked,
 			"Blocked model selected",
 			fmt.Sprintf("model %q has sync_official=false and cannot be overwritten", blocked.ModelName), nil)
+	case errors.As(err, &missingVendor):
+		// 供应商名解析不到：要么名字写错（改上游清单），要么该供应商还没在本地
+		// 建档又没被勾选（重跑 preview、把它一起勾上）。两种情况都要求调用方
+		// 改选择，不是服务端故障。
+		writeCatalogFieldsProblem(w,
+			fmt.Sprintf("vendor %q is not in the local catalog; select it from the manifest before applying",
+				missingVendor.VendorName),
+			[]string{"vendor"})
 	case errors.Is(err, store.ErrModelMetaDuplicate),
 		errors.Is(err, store.ErrModelMetaConflict),
 		errors.Is(err, store.ErrVendorDuplicate),

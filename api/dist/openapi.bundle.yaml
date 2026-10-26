@@ -19003,7 +19003,7 @@ components:
               type: array
               items:
                 type: string
-              description: 本地 vendor_id 指向不存在的供应商（逻辑引用无 FK）。
+              description: 供应商无法解析的模型名。两种来源：本地 vendor_id 指向已删除的供应商（逻辑引用无 FK），或上游清单给该模型指定的 vendor 本地尚未建档；后者同时从 create/update 中移除，apply 拒绝写入，需先在「供应商」中建档。
             vendors:
               $ref: '#/components/schemas/ModelSyncVendorGroups'
     ModelSyncManifestModel:
@@ -19027,10 +19027,57 @@ components:
           type: array
           items:
             type: string
+        vendor:
+          type: string
+          nullable: true
+          description: 供应商名，大小写不敏感匹配本地 vendors.name；本地无此名称时该模型进 missing_vendor，apply 拒绝写入。
+        endpoints:
+          type: object
+          additionalProperties:
+            type: array
+            minItems: 1
+            items:
+              type: string
+              enum:
+                - GET
+                - POST
+                - PUT
+                - PATCH
+                - DELETE
+          description: 键必须以 / 开头；与 PUT /api/models/{id} 同形状。
         capabilities:
           type: array
           items:
             type: string
+        modalities:
+          type: array
+          items:
+            type: string
+            enum:
+              - text
+              - image
+              - audio
+              - video
+        parameters:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+            required:
+              - name
+              - type
+            properties:
+              name:
+                type: string
+              type:
+                type: string
+                enum:
+                  - string
+                  - number
+                  - integer
+                  - boolean
+                  - array
+                  - object
         context_length:
           type: integer
           format: int64
@@ -19039,6 +19086,16 @@ components:
           type: integer
           format: int64
           nullable: true
+        knowledge_cutoff:
+          type: string
+          nullable: true
+          pattern: ^[0-9]{4}-(0[1-9]|1[0-2])$
+          description: YYYY-MM。
+        released_at:
+          type: string
+          format: date
+          nullable: true
+          description: YYYY-MM-DD；也接受 RFC3339，统一归一化为日期。
     ModelSyncManifestVendor:
       type: object
       additionalProperties: false
