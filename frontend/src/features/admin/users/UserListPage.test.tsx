@@ -26,6 +26,7 @@ function adminUser(id: number, username: string) {
     status: 'enabled' as const,
     balance: 1000,
     group: 'default',
+    customer_type: 'general',
     admin_permissions: null,
     totp_enabled: false,
     must_change_password: false,

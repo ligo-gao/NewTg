@@ -162,7 +162,7 @@ func (r *fakeAdminRepo) addUser(rec AdminUserRecord) *AdminUserRecord {
 	}
 	// 与真实列一致：NOT NULL DEFAULT 'general'。
 	if rec.CustomerType == "" {
-		rec.CustomerType = "general"
+		rec.CustomerType = customerTypeGeneral
 	}
 	rec.CreatedAt = r.tick()
 	rec.UpdatedAt = r.now
@@ -1035,6 +1035,29 @@ func TestCreateUserDefaultsCustomerTypeGeneral(t *testing.T) {
 	}
 }
 
+func TestCreateUserAcceptsExplicitCustomerType(t *testing.T) {
+	env := newAdminTestEnv(t)
+
+	rr := env.request(fullAdmin(), http.MethodPost, "/api/users", map[string]any{
+		"username": "bob", "password": "correct-horse-battery", "customer_type": "enterprise",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d，期望 201（body=%q）", rr.Code, rr.Body.String())
+	}
+	view := decodeUserView(t, rr)
+	if view.CustomerType != customerTypeEnterprise {
+		t.Fatalf("customer_type = %q，期望 enterprise", view.CustomerType)
+	}
+	// 假仓储的 CreateUser 只在收到入参时才落该值：回读证明入参确实带上了它。
+	stored, err := env.repo.GetUser(context.Background(), view.ID)
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if stored.CustomerType != customerTypeEnterprise {
+		t.Fatalf("仓储 customer_type = %q，期望 enterprise", stored.CustomerType)
+	}
+}
+
 func TestCreateUserRejectsUnknownCustomerType(t *testing.T) {
 	env := newAdminTestEnv(t)
 
@@ -1110,6 +1133,23 @@ func TestUpdateUserRejectsUnknownCustomerType(t *testing.T) {
 	rr = env.request(fullAdmin(), http.MethodGet, fmt.Sprintf("/api/users/%d", user.ID), nil)
 	if rr.Code != http.StatusOK || decodeUserView(t, rr).CustomerType != "general" {
 		t.Fatalf("非法 PATCH 后 customer_type 被改写（status=%d body=%q）", rr.Code, rr.Body.String())
+	}
+}
+
+func TestUpdateUserRejectsNullCustomerType(t *testing.T) {
+	env := newAdminTestEnv(t)
+	user := env.repo.addUser(AdminUserRecord{Username: "alice"})
+
+	rr := env.request(fullAdmin(), http.MethodPatch, fmt.Sprintf("/api/users/%d", user.ID),
+		map[string]any{"customer_type": nil, "updated_at": user.UpdatedAt})
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	}
+	assertProblemFields(t, rr, "customer_type")
+
+	rr = env.request(fullAdmin(), http.MethodGet, fmt.Sprintf("/api/users/%d", user.ID), nil)
+	if rr.Code != http.StatusOK || decodeUserView(t, rr).CustomerType != "general" {
+		t.Fatalf("null PATCH 后 customer_type 被改写（status=%d body=%q）", rr.Code, rr.Body.String())
 	}
 }
 

@@ -28,6 +28,7 @@ const USER: AdminUser = {
   status: 'enabled',
   balance: 0,
   group: 'default',
+  customer_type: 'general',
   admin_permissions: null,
   totp_enabled: false,
   must_change_password: false,

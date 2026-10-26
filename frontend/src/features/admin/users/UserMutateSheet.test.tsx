@@ -29,6 +29,7 @@ function adminUser(overrides: Partial<AdminUser> = {}): AdminUser {
     status: 'enabled',
     balance: 1000,
     group: 'default',
+    customer_type: 'general',
     admin_permissions: null,
     totp_enabled: false,
     must_change_password: false,
