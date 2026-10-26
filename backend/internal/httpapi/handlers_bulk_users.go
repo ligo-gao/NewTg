@@ -612,9 +612,11 @@ func (h *BulkUserHandlers) handleBulkGenerate(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if len(created) != len(passwords) {
-		// 行数与口令数必须一致；不一致时宁可不返回任何凭据。
+		// 行数与口令数必须一致；不一致时宁可不返回任何凭据。此时事务已经
+		// 提交、用户已落库，**绝不能**删除 afterInsert 写入的临时口令标记：
+		// DB 的 must_change_password=true 而 Redis 标记缺失会让账号永久
+		// 401 temp_password_expired。保留标记，账号仍可经管理员重置口令恢复。
 		h.log.Error("bulk generate: row/password count mismatch", "rows", len(created), "passwords", len(passwords))
-		h.cleanupMarkers(r.Context(), insertedIDs, true)
 		writeAdminProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error", "")
 		return
 	}

@@ -599,6 +599,39 @@ func TestBulkGenerateKeepsPasswordOrder(t *testing.T) {
 	}
 }
 
+// TestBulkGenerateMismatchKeepsMarkers 钉住「仓储违约返回行数与口令数不一致」
+// 的分支：此时事务已经提交、用户已落库，handler 绝不能删除 afterInsert 写入的
+// 临时口令标记——DB must_change_password=true 而 Redis 标记缺失会让账号永久
+// 401 temp_password_expired。保留标记，账号仍可经管理员重置口令恢复。
+func TestBulkGenerateMismatchKeepsMarkers(t *testing.T) {
+	repo := newFakeBulkUserRepo()
+	env := newBulkTestEnv(t, repo)
+	repo.afterInsertFun = func(_ []store.BulkUserRow, afterInsert func(tx *sql.Tx, ids []int64) error) ([]store.BulkUserRow, error) {
+		if err := afterInsert(nil, []int64{41, 42, 43}); err != nil {
+			t.Fatalf("afterInsert: %v", err)
+		}
+		// 契约违约：请求生成 3 个口令，仓储只返回 1 行。
+		return []store.BulkUserRow{{Username: "NewTG_user0041"}}, nil
+	}
+	rr := env.request(limitedAdmin(rbac.PermUsersCreate), http.MethodPost, "/api/users/bulk/generate",
+		"application/json", strings.NewReader(`{"count":3,"customer_type":"general","group":"default"}`))
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("状态 = %d，期望 500（body=%q）", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "NewTG_user") || strings.Contains(rr.Body.String(), "Username") {
+		t.Fatalf("500 响应泄露了账号信息：%q", rr.Body.String())
+	}
+	for _, id := range []int64{41, 42, 43} {
+		key := tempPasswordKeyPrefix + fmt.Sprint(id)
+		if !env.mr.Exists(key) {
+			t.Fatalf("提交成功后标记 %s 被删除，账号将永久 401", key)
+		}
+		if ttl := env.mr.TTL(key); ttl != 0 {
+			t.Fatalf("标记 %s TTL = %v，期望 0（无过期）", key, ttl)
+		}
+	}
+}
+
 func TestBulkGenerateValidation(t *testing.T) {
 	repo := newFakeBulkUserRepo()
 	repo.existingGroups = map[string]bool{"default": true}

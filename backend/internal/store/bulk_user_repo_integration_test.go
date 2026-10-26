@@ -135,6 +135,38 @@ func TestBulkCreateUsersWritesMarkersBeforeCommit(t *testing.T) {
 	}
 }
 
+// TestBulkCreateUsersPersistsMustChangePassword：成功路径必须把
+// opts.MustChangePassword 真正写进 users.must_change_password。只观察
+// afterInsert 收到的 ids 无法发现 INSERT 漏写该列或把它硬编码成 false——
+// 那会让批量创建的账号要么免改密，要么与 Redis 标记脱节。
+func TestBulkCreateUsersPersistsMustChangePassword(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	suffix := bulkTestSuffix()
+	username := "bulkmcp" + suffix
+
+	var created []string
+	created = append(created, username)
+	cleanupBulkTestUsers(t, db, &created)
+
+	repo := NewBulkUserRepo(db)
+	rows := bulkTestRows(1)
+	rows[0].Username = username
+
+	if _, err := repo.BulkCreateUsers(ctx, rows, BulkCreateOptions{MustChangePassword: true}, nil); err != nil {
+		t.Fatalf("BulkCreateUsers: %v", err)
+	}
+
+	var mustChange bool
+	if err := db.QueryRow(
+		`SELECT must_change_password FROM users WHERE username = $1`, username).Scan(&mustChange); err != nil {
+		t.Fatalf("read must_change_password: %v", err)
+	}
+	if !mustChange {
+		t.Fatal("users.must_change_password = false，期望 true")
+	}
+}
+
 // TestBulkCreateUsersSequentialNames：预先占用当前最大序号 +1，新生用户名必须
 // 从其后再顺延，证明分配基于库内 MAX 而不是从 1 重新开始。
 func TestBulkCreateUsersSequentialNames(t *testing.T) {
