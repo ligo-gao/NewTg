@@ -71,9 +71,19 @@ type Session struct {
 	tokenDeducted  int64 // 本会话已从 api_tokens.remain_quota 扣减的累计（R-73）
 	estimatedQuota int64 // 预扣预算（求值失败时的保守回退值）
 	reservedImages int   // 请求域图像张数（结算回退用）
-	imageRequest   bool
-	freeModel      bool
-	trusted        bool
+
+	// discount 是预扣阶段解析一次并冻结的客户折扣（spec §5.2/§5.4）。
+	// Target 为空表示未命中（原价）；冻结后结算侧复用同一值，不再按当前
+	// 时间重查。discountResolved 防止同一会话重复解析。
+	discount         contract.Discount
+	discountResolved bool
+	// rawConsumed 预留给结算侧记录原价成本（后续任务持有其语义）；预扣阶段
+	// 只声明不读写。
+	rawConsumed int64
+
+	imageRequest bool
+	freeModel    bool
+	trusted      bool
 
 	// 资金来源是每请求冻结一次的（billing-04 §3.3）：预扣与退款必须复用
 	// 同一选择，不能中途重新读取偏好。S4a 实现来源选择/预扣/退款；S4b 在
@@ -289,6 +299,9 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) (err error) {
 	if err != nil {
 		return err
 	}
+	// 折扣只解析一次并冻结：有效期按会话的 requestTime 判定，后续结算复用。
+	// 失败/未命中保持零值，绝不阻断请求。
+	s.resolveDiscountLocked(ctx)
 
 	multiplier, err := s.engine.preConsumeMultiplier(snap)
 	if err != nil {
@@ -364,6 +377,15 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) (err error) {
 		return nil
 	}
 
+	// C4：全免不预扣、不占订阅额度。必须在 resolveFundingPlanLocked 之前
+	// 返回——chargeSubscriptionLocked 会把 0 预算抬成 1。此短路位于静态
+	// 零价早返回之后：零价模型由上面的免费模型策略处理，不经过折扣。
+	if s.discount.Target != "" && s.discount.Rate == 0 {
+		s.fundingSource = contract.FundingWallet
+		succeeded = true
+		return nil
+	}
+
 	factor := ratio
 	if preConsumeMultiplierApplies(snap, usedVars) {
 		factor *= multiplier
@@ -391,6 +413,9 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) (err error) {
 	if err != nil {
 		return err
 	}
+	// §5.4：折扣作用在保底之后、选资金来源之前——保底是「至少冻结一笔」的
+	// 计价下限，折扣是客户实收比例，顺序颠倒会让折扣被保底抵消。
+	budget = ApplyDiscount(budget, s.discount)
 
 	// S4a：每请求解析并冻结资金来源（billing-04 §3.3）。信任旁路与来源
 	// 选择正交——旁路只影响「扣多少」，不影响「从哪扣」；但订阅侧永不

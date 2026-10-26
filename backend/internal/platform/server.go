@@ -573,6 +573,9 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	// spec §5.2：worker 会处理任务轮询/崩溃恢复的 handoff 结算，必须用
 	// request_pricing 读回预扣时冻结的时间与倍率。
 	engine.SetRequestPricingStore(store.NewRequestPricingRepo(sqlDB))
+	// spec §5.2：worker 与 gateway 必须同一份折扣源，否则任务结算按原价
+	// 计费（预扣冻结的折扣在重建会话时无法被同规则复用）。
+	engine.SetDiscountStore(store.NewCustomerDiscountRepo(sqlDB))
 	// S4a：与 gateway 同一装配口径。worker 复用引擎做兜底恢复，
 	// 未装配会让订阅偏好退化为纯钱包行为。
 	engine.SetSubscriptionFunding(billing.NewStoreSubscriptionFunding(

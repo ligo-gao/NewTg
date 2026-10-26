@@ -284,6 +284,10 @@ type Engine struct {
 	// 写入 request_time 与命中倍率，handoff/任务轮询重建会话时读回。
 	// nil 表示未装配（单测/无异步结算的部署），此时行为与旧版一致。
 	requestPricing RequestPricingStore
+	// discountStore 是客户折扣规则的解析缝（spec §5.2）：预扣时解析一次并
+	// 冻结到会话。nil 表示未装配，预扣一律按原价；与 requestPricing 同为
+	// 装配期一次写入、构造后只读的字段。
+	discountStore DiscountStore
 
 	// historyCache 是免费模型可信阈值用的「历史累计消费」短 TTL 缓存。
 	historyMu    sync.Mutex

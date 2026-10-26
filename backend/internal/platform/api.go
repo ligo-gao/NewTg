@@ -340,6 +340,9 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	// spec §5.2：冻结请求时间与时段倍率，供任务轮询/崩溃恢复的异步结算
 	// 读回（不使用 time.Now() 重新匹配窗口）。
 	engine.SetRequestPricingStore(store.NewRequestPricingRepo(db))
+	// spec §5.2：客户折扣与 gateway/worker 必须同一份折扣源，否则任务结算
+	// 会按原价计费（或与预扣命中不同规则）。与上面同为装配期一次写入。
+	engine.SetDiscountStore(store.NewCustomerDiscountRepo(db))
 	// 其余读取面（守卫、中继额度、管理面 RouterConfig）派生自引擎的有效
 	// 配置面，确保三处与计费看到同一个 NEWTG_DEMO_ENABLED 有效值。
 	demoConfig := engine.EffectiveConfig()
