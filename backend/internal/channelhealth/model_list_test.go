@@ -184,8 +184,49 @@ func TestListDetailedOpenAICompatibleMetadata(t *testing.T) {
 		if info.Source != "openai_models" {
 			t.Fatalf("source = %q", info.Source)
 		}
-		if len(info.Endpoints) != 1 || info.Endpoints[0] != "chat.completions" {
-			t.Fatalf("endpoints = %v", info.Endpoints)
+	}
+	// gpt-4o / no-created 没有用途线索 → 对话补全；text-embedding-3-small
+	// 明确是 embedding 族 → 只给 embeddings，不并列 chat。
+	wantEndpoints := map[string]string{
+		"gpt-4o":                 "chat.completions",
+		"text-embedding-3-small": "embeddings",
+		"no-created":             "chat.completions",
+	}
+	for _, info := range infos {
+		want, ok := wantEndpoints[info.ID]
+		if !ok {
+			t.Fatalf("unexpected model %q", info.ID)
+		}
+		if len(info.Endpoints) != 1 || info.Endpoints[0] != want {
+			t.Fatalf("%s: endpoints = %v, want [%s]", info.ID, info.Endpoints, want)
+		}
+	}
+}
+
+// 端点建议只按模型 ID 里明确的用途线索分流：命中第一个族后只给该族，绝不
+// 并列 chat；没有线索的对话模型（含 audio-preview）回落到 chat.completions。
+func TestSuggestOpenAIEndpoints(t *testing.T) {
+	cases := []struct {
+		id   string
+		want string
+	}{
+		{"text-embedding-3-small", "embeddings"},
+		{"bge-reranker-v2-m3", "rerank"},
+		{"whisper-1", "audio.transcriptions"},
+		{"tts-1", "audio.speech"},
+		{"dall-e-3", "images.generations"},
+		{"gpt-image-1", "images.generations"},
+		{"gpt-4o", "chat.completions"},
+		{"gpt-4o-audio-preview", "chat.completions"},
+		{"claude-3-5-sonnet", "chat.completions"},
+		// 大小写不敏感。
+		{"TEXT-EMBEDDING-3-LARGE", "embeddings"},
+		{"WHISPER-1", "audio.transcriptions"},
+	}
+	for _, testCase := range cases {
+		got := suggestOpenAIEndpoints(testCase.id)
+		if len(got) != 1 || got[0] != testCase.want {
+			t.Fatalf("suggestOpenAIEndpoints(%q) = %v, want [%s]", testCase.id, got, testCase.want)
 		}
 	}
 }

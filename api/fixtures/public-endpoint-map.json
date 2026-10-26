@@ -1,0 +1,10 @@
+{
+  "chat.completions": "/v1/chat/completions",
+  "messages": "/v1/messages",
+  "embeddings": "/v1/embeddings",
+  "images.generations": "/v1/images/generations",
+  "audio.speech": "/v1/audio/speech",
+  "audio.transcriptions": "/v1/audio/transcriptions",
+  "rerank": "/v1/rerank",
+  "generateContent": "/v1beta/models/{model}:generateContent"
+}

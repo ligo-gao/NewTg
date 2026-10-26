@@ -57,12 +57,18 @@ const (
 	modelSourceGemini    = "gemini_models"
 )
 
-// 协议默认公开端点。OpenAI 兼容目录不区分模型用途，统一按对话补全处理；
-// 更细的端点拆分留到后续任务。
+// 协议默认公开端点。OpenAI 兼容目录不带用途字段，只能按模型 ID 里明确的
+// 名称线索（embedding / whisper / tts / dall-e 等）保守分流，见
+// suggestOpenAIEndpoints；Anthropic / Gemini 各有唯一的协议默认端点。
 const (
-	endpointChatCompletions = "chat.completions"
-	endpointMessages        = "messages"
-	endpointGenerateContent = "generateContent"
+	endpointChatCompletions     = "chat.completions"
+	endpointMessages            = "messages"
+	endpointGenerateContent     = "generateContent"
+	endpointEmbeddings          = "embeddings"
+	endpointImagesGenerations   = "images.generations"
+	endpointAudioSpeech         = "audio.speech"
+	endpointAudioTranscriptions = "audio.transcriptions"
+	endpointRerank              = "rerank"
 )
 
 // Gemini 的流式生成方法。公开端点枚举里只有 generateContent，流式由同一
@@ -503,13 +509,42 @@ func parseOpenAIModels(body []byte) ([]ModelInfo, error) {
 }
 
 // newOpenAIModelInfo 把一条 OpenAI 兼容目录条目转成 ModelInfo。该协议只
-// 提供 id 与 created，其余字段留零值。
+// 提供 id 与 created，其余字段留零值；端点按 ID 里的名称线索保守建议。
 func newOpenAIModelInfo(id string, created any) ModelInfo {
 	return ModelInfo{
 		ID:         id,
 		ReleasedAt: createdDate(created),
-		Endpoints:  []string{endpointChatCompletions},
+		Endpoints:  suggestOpenAIEndpoints(id),
 		Source:     modelSourceOpenAI,
+	}
+}
+
+// suggestOpenAIEndpoints 按模型 ID 里**明确**的用途线索建议公开端点。
+//
+// OpenAI 兼容目录（含第三方聚合网关）不返回模型用途，公开枚举又只有 8 个
+// 协议端点；无条件标成 chat.completions 会让 `text-embedding-3-*`、
+// `whisper-1`、`tts-1`、`dall-e-*` 污染公开端点筛选，所以这里做保守的关键词
+// 分流（spec §3 明确允许「名称里的 embedding/tts 线索」）。
+//
+// 规则：按优先级取第一个命中的族，命中后**只给该族**，不并列 chat；大小写
+// 不敏感，只按 ID 子串匹配，不推断 capability / modality / 参数。没有线索的
+// 模型（包括 `gpt-4o-audio-preview` 这类对话模型）仍然回落到 chat.completions。
+func suggestOpenAIEndpoints(id string) []string {
+	lower := strings.ToLower(id)
+	switch {
+	case strings.Contains(lower, "rerank"):
+		return []string{endpointRerank}
+	case strings.Contains(lower, "embedding"), strings.Contains(lower, "embed"):
+		return []string{endpointEmbeddings}
+	case strings.Contains(lower, "whisper"), strings.Contains(lower, "transcrib"):
+		return []string{endpointAudioTranscriptions}
+	case strings.Contains(lower, "tts"), strings.Contains(lower, "text-to-speech"):
+		return []string{endpointAudioSpeech}
+	case strings.Contains(lower, "dall-e"), strings.Contains(lower, "gpt-image"),
+		strings.Contains(lower, "imagen"):
+		return []string{endpointImagesGenerations}
+	default:
+		return []string{endpointChatCompletions}
 	}
 }
 
