@@ -10777,8 +10777,31 @@ export interface components {
             base_url?: string;
             credentials?: components["schemas"]["ChannelFetchModelsCredentials"];
         };
+        ChannelFetchModelEntry: {
+            id: string;
+            display_name: string;
+            description: string;
+            /** Format: int64 */
+            context_length: number | null;
+            /** Format: int64 */
+            max_output: number | null;
+            /** @description YYYY-MM-DD；上游没给就是空串。 */
+            released_at: string;
+            endpoints: ("chat.completions" | "messages" | "embeddings" | "images.generations" | "audio.speech" | "audio.transcriptions" | "rerank" | "generateContent")[];
+            /** @description 仅按协议族推导的建议（openai/anthropic/gemini 三种），本地没有同名供应商时留空处理，绝不自动创建。 */
+            vendor_suggestion: string;
+            /** @enum {string} */
+            facts_source: "openai_models" | "anthropic_models" | "gemini_models";
+        };
         ChannelFetchModelsResponse: {
             models: string[];
+            /**
+             * @description 与 models 一一对应的上游事实。空字段表示上游没给，绝不猜测：
+             *     capabilities / modalities / parameters / knowledge_cutoff 永远为空，
+             *     由管理员在向导里手填。display_name / description 已按 model_meta 的
+             *     长度上限（64 / 512 字符）截断。
+             */
+            entries: components["schemas"]["ChannelFetchModelEntry"][];
         };
         ChannelCredentialsRevealRequest: {
             /** @description 揭示目的；纯空白视为缺失（422）。不得包含凭据值或片段。 */

@@ -100,8 +100,11 @@ type ChannelTester func(ctx context.Context, ch *store.Channel, model string) (l
 
 // ChannelModelLister 是「从上游拉取支持模型」的接缝。生产实现是
 // *channelhealth.ModelLister；测试注入内存实现，避免 HTTP 契约依赖真实上游。
+//
+// 用 ListDetailed 而不是 List：响应除了模型 ID，还要带上游声明的事实
+// （显示名、上下文上限、端点等），由前端向导决定是否采纳。
 type ChannelModelLister interface {
-	List(ctx context.Context, req channelhealth.ModelListRequest) ([]string, error)
+	ListDetailed(ctx context.Context, req channelhealth.ModelListRequest) ([]channelhealth.ModelInfo, error)
 }
 
 // ProbeFailureReporter 是手工连通性测试结果的自动禁用接缝（W7/M4-b / R-M4-15）。
@@ -1959,7 +1962,7 @@ func (h *ChannelHandler) handleFetchModels(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	models, err := h.modelLister.List(r.Context(), channelhealth.ModelListRequest{
+	infos, err := h.modelLister.ListDetailed(r.Context(), channelhealth.ModelListRequest{
 		ChannelType: channelType,
 		BaseURL:     baseURL,
 		APIKey:      apiKey,
@@ -1982,8 +1985,64 @@ func (h *ChannelHandler) handleFetchModels(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+	// models 保持旧形状（[]string），entries 是新增的逐模型事实；旧客户端
+	// 只读 models，完全不受影响。
+	models := make([]string, 0, len(infos))
+	for _, info := range infos {
+		models = append(models, info.ID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models":  models,
+		"entries": buildChannelModelEntries(infos, channelType),
+	})
 }
+
+// channelModelEntry 是探针响应里的一条上游模型事实。字段语义与
+// channelhealth.ModelInfo 一一对应；空值表示上游没给，绝不猜测。
+type channelModelEntry struct {
+	ID               string   `json:"id"`
+	DisplayName      string   `json:"display_name"`
+	Description      string   `json:"description"`
+	ContextLength    *int64   `json:"context_length"`
+	MaxOutput        *int64   `json:"max_output"`
+	ReleasedAt       string   `json:"released_at"`
+	Endpoints        []string `json:"endpoints"`
+	VendorSuggestion string   `json:"vendor_suggestion"`
+	FactsSource      string   `json:"facts_source"`
+}
+
+// buildChannelModelEntries 把上游事实投影成响应条目，顺序与 models 一致。
+// display_name / description 按 model_meta 的长度上限截断；endpoints 为空时
+// 用非 nil 空切片，保证 JSON 里是 [] 而不是 null。返回切片恒非 nil。
+func buildChannelModelEntries(infos []channelhealth.ModelInfo, t contract.ChannelType) []channelModelEntry {
+	entries := make([]channelModelEntry, 0, len(infos))
+	vendor := channelhealth.SuggestVendor(t)
+	for _, info := range infos {
+		endpoints := info.Endpoints
+		if len(endpoints) == 0 {
+			endpoints = []string{}
+		}
+		entries = append(entries, channelModelEntry{
+			ID:               info.ID,
+			DisplayName:      truncateRunes(info.DisplayName, channelModelDisplayNameMaxRunes),
+			Description:      truncateRunes(info.Description, channelModelDescriptionMaxRunes),
+			ContextLength:    info.ContextLength,
+			MaxOutput:        info.MaxOutput,
+			ReleasedAt:       info.ReleasedAt,
+			Endpoints:        endpoints,
+			VendorSuggestion: vendor,
+			FactsSource:      info.Source,
+		})
+	}
+	return entries
+}
+
+// 与 model_meta 的列宽上限保持一致（迁移里的 varchar 长度），避免前端拿到
+// 上游的长描述写进档案时被数据库拒绝。
+const (
+	channelModelDisplayNameMaxRunes = 64
+	channelModelDescriptionMaxRunes = 512
+)
 
 // ---------- 连通性测试 ----------
 

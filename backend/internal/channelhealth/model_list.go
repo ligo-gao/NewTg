@@ -368,15 +368,15 @@ func (l *ModelLister) listGemini(
 		if err != nil {
 			return nil, err
 		}
-		page, err := parseGeminiModelsPage(body)
+		parsedPage, err := parseGeminiModelsPage(body)
 		if err != nil {
 			return nil, err
 		}
-		infos = append(infos, geminiModelInfos(page.Models)...)
-		if page.NextPageToken == "" {
+		infos = append(infos, geminiModelInfos(parsedPage.Models)...)
+		if parsedPage.NextPageToken == "" {
 			break
 		}
-		pageToken = page.NextPageToken
+		pageToken = parsedPage.NextPageToken
 	}
 	return normalizeModelInfos(infos), nil
 }
@@ -585,6 +585,22 @@ func dateFromRFC3339(value string) string {
 		return ""
 	}
 	return parsed.UTC().Format("2006-01-02")
+}
+
+// SuggestVendor 只按协议族推导建议的供应商名：只有 OpenAI / Anthropic /
+// Gemini 三种协议有明确对应的供应商。其余渠道（含 OpenAI 兼容的第三方上游）
+// 留空，由管理员在向导里手填——绝不凭渠道名或模型 ID 猜供应商。
+func SuggestVendor(t contract.ChannelType) string {
+	switch t {
+	case contract.ChannelTypeOpenAI:
+		return "OpenAI"
+	case contract.ChannelTypeAnthropic:
+		return "Anthropic"
+	case contract.ChannelTypeGemini:
+		return "Gemini"
+	default:
+		return ""
+	}
 }
 
 func normalizeModelInfos(infos []ModelInfo) []ModelInfo {

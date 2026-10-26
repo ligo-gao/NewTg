@@ -237,6 +237,63 @@ func (e ChannelStatus) Valid() bool {
 	}
 }
 
+// Defines values for ChannelFetchModelEntryEndpoints.
+const (
+	ChannelFetchModelEntryEndpointsAudioSpeech         ChannelFetchModelEntryEndpoints = "audio.speech"
+	ChannelFetchModelEntryEndpointsAudioTranscriptions ChannelFetchModelEntryEndpoints = "audio.transcriptions"
+	ChannelFetchModelEntryEndpointsChatCompletions     ChannelFetchModelEntryEndpoints = "chat.completions"
+	ChannelFetchModelEntryEndpointsEmbeddings          ChannelFetchModelEntryEndpoints = "embeddings"
+	ChannelFetchModelEntryEndpointsGenerateContent     ChannelFetchModelEntryEndpoints = "generateContent"
+	ChannelFetchModelEntryEndpointsImagesGenerations   ChannelFetchModelEntryEndpoints = "images.generations"
+	ChannelFetchModelEntryEndpointsMessages            ChannelFetchModelEntryEndpoints = "messages"
+	ChannelFetchModelEntryEndpointsRerank              ChannelFetchModelEntryEndpoints = "rerank"
+)
+
+// Valid indicates whether the value is a known member of the ChannelFetchModelEntryEndpoints enum.
+func (e ChannelFetchModelEntryEndpoints) Valid() bool {
+	switch e {
+	case ChannelFetchModelEntryEndpointsAudioSpeech:
+		return true
+	case ChannelFetchModelEntryEndpointsAudioTranscriptions:
+		return true
+	case ChannelFetchModelEntryEndpointsChatCompletions:
+		return true
+	case ChannelFetchModelEntryEndpointsEmbeddings:
+		return true
+	case ChannelFetchModelEntryEndpointsGenerateContent:
+		return true
+	case ChannelFetchModelEntryEndpointsImagesGenerations:
+		return true
+	case ChannelFetchModelEntryEndpointsMessages:
+		return true
+	case ChannelFetchModelEntryEndpointsRerank:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ChannelFetchModelEntryFactsSource.
+const (
+	AnthropicModels ChannelFetchModelEntryFactsSource = "anthropic_models"
+	GeminiModels    ChannelFetchModelEntryFactsSource = "gemini_models"
+	OpenaiModels    ChannelFetchModelEntryFactsSource = "openai_models"
+)
+
+// Valid indicates whether the value is a known member of the ChannelFetchModelEntryFactsSource enum.
+func (e ChannelFetchModelEntryFactsSource) Valid() bool {
+	switch e {
+	case AnthropicModels:
+		return true
+	case GeminiModels:
+		return true
+	case OpenaiModels:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ChannelMetricsWindow.
 const (
 	ChannelMetricsWindowN24h ChannelMetricsWindow = "24h"
@@ -5846,6 +5903,29 @@ type ChannelCredentialsRevealed struct {
 	Deployment *string `json:"deployment,omitempty"`
 }
 
+// ChannelFetchModelEntry defines model for ChannelFetchModelEntry.
+type ChannelFetchModelEntry struct {
+	ContextLength int64                             `json:"context_length"`
+	Description   string                            `json:"description"`
+	DisplayName   string                            `json:"display_name"`
+	Endpoints     []ChannelFetchModelEntryEndpoints `json:"endpoints"`
+	FactsSource   ChannelFetchModelEntryFactsSource `json:"facts_source"`
+	Id            string                            `json:"id"`
+	MaxOutput     int64                             `json:"max_output"`
+
+	// ReleasedAt YYYY-MM-DD；上游没给就是空串。
+	ReleasedAt string `json:"released_at"`
+
+	// VendorSuggestion 仅按协议族推导的建议（openai/anthropic/gemini 三种），本地没有同名供应商时留空处理，绝不自动创建。
+	VendorSuggestion string `json:"vendor_suggestion"`
+}
+
+// ChannelFetchModelEntryEndpoints defines model for ChannelFetchModelEntry.Endpoints.
+type ChannelFetchModelEntryEndpoints string
+
+// ChannelFetchModelEntryFactsSource defines model for ChannelFetchModelEntry.FactsSource.
+type ChannelFetchModelEntryFactsSource string
+
 // ChannelFetchModelsCredentials 上游凭据。api_key 可省略的前提是 channel_id 指向已保存凭据的渠道；
 // 否则 422（credentials.api_key is required）。凭据只发往上游，永不回显。
 type ChannelFetchModelsCredentials struct {
@@ -5878,7 +5958,12 @@ type ChannelFetchModelsRequest struct {
 
 // ChannelFetchModelsResponse defines model for ChannelFetchModelsResponse.
 type ChannelFetchModelsResponse struct {
-	Models []string `json:"models"`
+	// Entries 与 models 一一对应的上游事实。空字段表示上游没给，绝不猜测：
+	// capabilities / modalities / parameters / knowledge_cutoff 永远为空，
+	// 由管理员在向导里手填。display_name / description 已按 model_meta 的
+	// 长度上限（64 / 512 字符）截断。
+	Entries []ChannelFetchModelEntry `json:"entries"`
+	Models  []string                 `json:"models"`
 }
 
 // ChannelList GET /api/channels 的 offset 分页信封。

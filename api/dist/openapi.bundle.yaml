@@ -23002,16 +23002,79 @@ components:
           description: 可选 http/https URL；缺省时使用 channel_id 已保存的 base_url。
         credentials:
           $ref: '#/components/schemas/ChannelFetchModelsCredentials'
+    ChannelFetchModelEntry:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - display_name
+        - description
+        - context_length
+        - max_output
+        - released_at
+        - endpoints
+        - vendor_suggestion
+        - facts_source
+      properties:
+        id:
+          type: string
+        display_name:
+          type: string
+        description:
+          type: string
+        context_length:
+          type: integer
+          format: int64
+          nullable: true
+        max_output:
+          type: integer
+          format: int64
+          nullable: true
+        released_at:
+          type: string
+          description: YYYY-MM-DD；上游没给就是空串。
+        endpoints:
+          type: array
+          items:
+            type: string
+            enum:
+              - chat.completions
+              - messages
+              - embeddings
+              - images.generations
+              - audio.speech
+              - audio.transcriptions
+              - rerank
+              - generateContent
+        vendor_suggestion:
+          type: string
+          description: 仅按协议族推导的建议（openai/anthropic/gemini 三种），本地没有同名供应商时留空处理，绝不自动创建。
+        facts_source:
+          type: string
+          enum:
+            - openai_models
+            - anthropic_models
+            - gemini_models
     ChannelFetchModelsResponse:
       type: object
       additionalProperties: false
       required:
         - models
+        - entries
       properties:
         models:
           type: array
           items:
             type: string
+        entries:
+          type: array
+          description: |
+            与 models 一一对应的上游事实。空字段表示上游没给，绝不猜测：
+            capabilities / modalities / parameters / knowledge_cutoff 永远为空，
+            由管理员在向导里手填。display_name / description 已按 model_meta 的
+            长度上限（64 / 512 字符）截断。
+          items:
+            $ref: '#/components/schemas/ChannelFetchModelEntry'
     ChannelCredentialsRevealRequest:
       type: object
       additionalProperties: false

@@ -295,6 +295,31 @@ func TestParseGeminiModelMetadata(t *testing.T) {
 	}
 }
 
+// 流式生成与 generateContent 共用同一个公开端点：公开枚举里没有
+// streamGenerateContent，只有支持流式的模型必须仍然推导出 generateContent。
+func TestGeminiEndpointsMapsStreamMethod(t *testing.T) {
+	endpoints := geminiEndpoints([]string{"streamGenerateContent"})
+	if len(endpoints) != 1 || endpoints[0] != "generateContent" {
+		t.Fatalf("endpoints = %v", endpoints)
+	}
+}
+
+// 供应商建议只按协议族推导；OpenAI 兼容的其他上游同样建议 OpenAI，
+// 其余协议族留空，绝不凭名字猜供应商。
+func TestSuggestVendor(t *testing.T) {
+	cases := map[contract.ChannelType]string{
+		contract.ChannelTypeOpenAI:    "OpenAI",
+		contract.ChannelTypeAnthropic: "Anthropic",
+		contract.ChannelTypeGemini:    "Gemini",
+		contract.ChannelTypeDeepSeek:  "",
+	}
+	for in, want := range cases {
+		if got := SuggestVendor(in); got != want {
+			t.Fatalf("SuggestVendor(%s) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestModelListerRejectsUnsupportedTypes(t *testing.T) {
 	lister := NewModelLister()
 	_, err := lister.List(context.Background(), ModelListRequest{
