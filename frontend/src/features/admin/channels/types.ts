@@ -6,6 +6,8 @@
  * `deleted` state — deletion removes the row.
  */
 
+import type { components } from '@/api/schema'
+
 export type ChannelStatus = 1 | 2 | 3
 
 export type ChannelSort = 'priority' | 'name' | 'response_time'
@@ -211,8 +213,16 @@ export interface FetchChannelModelEntry {
   context_length: number | null
   max_output: number | null
   released_at: string
-  /** `publicEndpointMapping` 的 8 个公开枚举值之一。 */
-  endpoints: string[]
+  /**
+   * `publicEndpointMapping` 的 8 个公开枚举值之一。
+   *
+   * 类型直接取自生成的契约（`ChannelFetchModelEntry.endpoints` 的 enum），
+   * 不再手写 `string[]`：后端契约新增/改名端点时，前端消费处的
+   * `isEndpointKey` 守卫与 `ENDPOINT_PATHS` 会被 TS 强制同步。
+   */
+  endpoints: NonNullable<
+    components['schemas']['ChannelFetchModelEntry']['endpoints']
+  >
   vendor_suggestion: string
   facts_source: string
 }

@@ -14,6 +14,21 @@ type ModelMeta = components['schemas']['ModelMeta']
 export const PAGE_SIZE = 100
 /** 目录是百级规模；封顶避免上游异常 total 时无限翻页。 */
 export const MAX_PAGES = 10
+/** 向导最多读取的档案条数；`total` 更大时目录被截断。 */
+export const MODEL_CATALOG_LIMIT = PAGE_SIZE * MAX_PAGES
+
+export interface ModelCatalog {
+  byName: Map<string, ModelMeta>
+  /** 服务端声明的总数。 */
+  total: number
+  /** 实际读到的条数。 */
+  loaded: number
+  /**
+   * `total > loaded`：分页上限截断了目录。此时「查不到档案」不等于「没有
+   * 档案」，调用方必须停止对未确认行的默认勾选（见 `buildRows`）。
+   */
+  truncated: boolean
+}
 
 export interface VendorDirectory {
   /** `lower(trim(name))` → id，与 Task 6 的建商去重口径一致。 */
@@ -24,21 +39,23 @@ export interface VendorDirectory {
   names: string[]
 }
 
-export async function loadModelCatalog(): Promise<Map<string, ModelMeta>> {
-  const catalog = new Map<string, ModelMeta>()
+export async function loadModelCatalog(): Promise<ModelCatalog> {
+  const byName = new Map<string, ModelMeta>()
   let loaded = 0
+  let total = 0
   for (let page = 1; page <= MAX_PAGES; page += 1) {
     const data = requireData(
       await apiClient.GET('/api/models', {
         params: { query: { p: page, page_size: PAGE_SIZE } },
       }),
     )
+    total = data.total
     const items = data.items ?? []
-    for (const item of items) catalog.set(item.model_name, item)
+    for (const item of items) byName.set(item.model_name, item)
     loaded += items.length
     if (items.length === 0 || loaded >= data.total) break
   }
-  return catalog
+  return { byName, total, loaded, truncated: total > loaded }
 }
 
 export async function loadVendorDirectory(): Promise<VendorDirectory> {

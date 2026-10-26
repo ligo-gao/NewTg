@@ -6,8 +6,13 @@ import type { components } from '@/api/schema'
 // backend/internal/httpapi/handlers_model_catalog_wizard_contract_test.go 读取同一
 // 文件并断言后端接受它。只改一边的形状会让另一侧变红。
 import createFixture from '../../../../../api/fixtures/model-profile-wizard-create.json'
+// 公开端点枚举（枚举 → 档案路径）的共享 fixture：Go 侧
+// backend/internal/httpapi/handlers_public_endpoint_map_test.go 反向核对
+// publicEndpointMapping 并断言键集等于 OpenAPI spec 的 enum。
+import endpointMapFixture from '../../../../../api/fixtures/public-endpoint-map.json'
 import type { FetchChannelModelEntry } from './types'
 import {
+  ENDPOINT_PATHS,
   applyDefaults,
   buildCreateBody,
   buildRows,
@@ -15,6 +20,7 @@ import {
   endpointsObject,
   formatParameterLines,
   knowledgeCutoffIsValid,
+  modelNameIsValid,
   parametersAreValid,
   parseParameterLines,
   rowActionOf,
@@ -123,6 +129,12 @@ describe('endpointsObject', () => {
   })
 })
 
+describe('ENDPOINT_PATHS', () => {
+  it('matches the shared fixture the backend contract test also reads', () => {
+    expect(ENDPOINT_PATHS).toEqual(endpointMapFixture)
+  })
+})
+
 describe('buildRows', () => {
   it('selects models without a profile plus the preselected existing ones', () => {
     const existing = new Map<string, ModelMeta>([
@@ -143,6 +155,44 @@ describe('buildRows', () => {
       ['gpt-4o', false, 'OpenAI', false],
       ['gpt-4o-mini', true, '', false],
       ['o3', true, '', false],
+    ])
+  })
+
+  it('adds upstream suggestions to the inherited endpoints instead of dropping them', () => {
+    // 既有档案有 embedding / rerank，OpenAI 兼容探测只建议 chat：行里必须
+    // 三个 chips 都在，管理员才能看见「覆盖」不会删掉后两个。
+    const row = firstRow(
+      buildRows(
+        [entry({ id: 'gpt-4o', endpoints: ['chat.completions'] })],
+        new Map([
+          [
+            'gpt-4o',
+            modelMeta({
+              endpoints: {
+                '/v1/embeddings': ['POST'],
+                '/v1/rerank': ['POST'],
+              },
+            }),
+          ],
+        ]),
+        [],
+      ),
+    )
+
+    expect(row.endpoints).toEqual(['chat.completions', 'embeddings', 'rerank'])
+  })
+
+  it('only preselects explicitly chosen models when the catalog is truncated', () => {
+    const rows = buildRows(
+      [entry({ id: 'unknown-a' }), entry({ id: 'known-b' })],
+      new Map(),
+      ['known-b'],
+      { catalogTruncated: true },
+    )
+
+    expect(rows.map((row) => [row.id, row.selected])).toEqual([
+      ['unknown-a', false],
+      ['known-b', true],
     ])
   })
 
@@ -235,6 +285,45 @@ describe('applyDefaults', () => {
 
   it('replaces values when emptyOnly is off', () => {
     expect(firstRow(applyDefaults(rows, defaults, false)).capabilities).toEqual(['vision'])
+  })
+
+  it('keeps the required flag from existing parameters when replacing them', () => {
+    // 批量替换用的文本默认值不携带 required；按参数名合并既有标记，避免
+    // 只改一个参数就把必填悄悄清成 false。
+    const current = [
+      wizardRow({
+        parameters: [
+          {
+            name: 'temperature',
+            type: 'number',
+            description: '',
+            defaultValue: '',
+            required: true,
+          },
+        ],
+      }),
+    ]
+    const replacement = {
+      ...emptyDefaults(),
+      parameters: [
+        {
+          name: 'temperature',
+          type: 'number',
+          description: 'sampling',
+          defaultValue: '',
+        },
+      ],
+    }
+
+    expect(firstRow(applyDefaults(current, replacement, false)).parameters).toEqual([
+      {
+        name: 'temperature',
+        type: 'number',
+        description: 'sampling',
+        defaultValue: '',
+        required: true,
+      },
+    ])
   })
 
   it('never overwrites a filled vendor with an empty default', () => {
@@ -387,8 +476,32 @@ describe('buildUpdateBody', () => {
     expect(body.display_name).toBe('New Name')
     expect(body.description).toBe('new description')
     expect(body.tags).toEqual(['new-tag'])
-    expect(body.endpoints).toEqual({ '/v1/chat/completions': ['POST'] })
+    // 端点只增不减：既有 /v1/messages 保留，行内新增 /v1/chat/completions。
+    expect(body.endpoints).toEqual({
+      '/v1/messages': ['POST'],
+      '/v1/chat/completions': ['POST'],
+    })
     expect(body.knowledge_cutoff).toBe('2025-06')
+  })
+
+  it('keeps existing endpoint paths the wizard cannot represent', () => {
+    const existing = modelMeta({
+      endpoints: {
+        '/v1/custom': ['POST'],
+        '/v1/embeddings': ['POST'],
+      },
+    })
+    const body = buildUpdateBody(
+      wizardRow({ endpoints: ['chat.completions'] }),
+      existing,
+      null,
+    )
+
+    expect(body.endpoints).toEqual({
+      '/v1/custom': ['POST'],
+      '/v1/embeddings': ['POST'],
+      '/v1/chat/completions': ['POST'],
+    })
   })
 
   it('falls back to existing numbers when the row value is not a non-negative integer', () => {
@@ -517,6 +630,17 @@ describe('rowIssues', () => {
   const cases: Array<{ name: string; row?: WizardRow; expected: RowIssue[] }> = [
     { name: 'accepts a blank row', expected: [] },
     {
+      name: 'flags a model name the backend cannot store',
+      // Vertex 风格 id 含 @；行内改不了 id，重试也是 422。
+      row: wizardRow({ id: 'gemini-2.5-pro@vertex' }),
+      expected: ['modelName'],
+    },
+    {
+      name: 'accepts slashes, colons and dots in the model name',
+      row: wizardRow({ id: 'openai/gpt-5:latest' }),
+      expected: [],
+    },
+    {
       name: 'allows exactly 64 runes in the display name',
       // U+540D 是双字节 CJK 字符；用码点构造避免源码里出现中文字面量。
       row: wizardRow({ displayName: String.fromCodePoint(0x540d).repeat(64) }),
@@ -595,6 +719,26 @@ describe('rowIssues', () => {
   for (const testCase of cases) {
     it(testCase.name, () => {
       expect(rowIssues(testCase.row ?? wizardRow())).toEqual(testCase.expected)
+    })
+  }
+})
+
+describe('modelNameIsValid', () => {
+  const cases: Array<[string, boolean]> = [
+    ['gpt-4o', true],
+    ['openai/gpt-5', true],
+    ['gemini-2.5-pro:latest', true],
+    ['us.anthropic.claude-3_5', true],
+    ['gemini-2.5-pro@vertex', false],
+    ['has space', false],
+    ['', false],
+    ['x'.repeat(128), true],
+    ['x'.repeat(129), false],
+  ]
+
+  for (const [value, expected] of cases) {
+    it(`${JSON.stringify(value)} → ${String(expected)}`, () => {
+      expect(modelNameIsValid(value)).toBe(expected)
     })
   }
 })

@@ -21,21 +21,44 @@ type Modality = ModelMeta['modalities'][number]
 type ParameterType = ModelMeta['parameters'][number]['type']
 
 /**
- * 公开端点枚举，顺序与后端 `publicEndpointMapping`
- * （backend/internal/httpapi/handlers_public_pricing.go）一致。
+ * 公开端点枚举，直接取自生成的契约（`ChannelFetchModelEntry.endpoints` 的
+ * enum），不再手写联合类型：后端契约新增端点时 `EndpointKey` 会先变，下面的
+ * `ENDPOINT_PATHS` 少一条就编译不过。
  */
-export const ENDPOINT_KEYS = [
-  'chat.completions',
-  'messages',
-  'embeddings',
-  'images.generations',
-  'audio.speech',
-  'audio.transcriptions',
-  'rerank',
-  'generateContent',
-] as const
+export type EndpointKey =
+  components['schemas']['ChannelFetchModelEntry']['endpoints'][number]
 
-export type EndpointKey = (typeof ENDPOINT_KEYS)[number]
+/**
+ * 公开端点枚举 → model_meta `endpoints` 的路径。
+ *
+ * 这是后端 `publicEndpointMapping`（backend/internal/httpapi/
+ * handlers_public_pricing.go）的反向表。`Record<EndpointKey, string>` 让 TS
+ * 强制覆盖契约里的每个枚举值；与后端是否一致由共享 fixture
+ * `api/fixtures/public-endpoint-map.json` 两侧的测试钉住。**新增公开端点时
+ * 同步后端映射、本表与 fixture 三处。**
+ */
+export const ENDPOINT_PATHS: Readonly<Record<EndpointKey, string>> = {
+  'chat.completions': '/v1/chat/completions',
+  messages: '/v1/messages',
+  embeddings: '/v1/embeddings',
+  'images.generations': '/v1/images/generations',
+  'audio.speech': '/v1/audio/speech',
+  'audio.transcriptions': '/v1/audio/transcriptions',
+  rerank: '/v1/rerank',
+  generateContent: '/v1beta/models/{model}:generateContent',
+}
+
+/**
+ * 端点枚举的展示 / 输出顺序。直接由 `ENDPOINT_PATHS` 的键派生，保证两处
+ * 不可能出现一条在表里、一条在键集合里的漂移；对象字面量的插入顺序就是
+ * 这里的顺序。
+ */
+export const ENDPOINT_KEYS = Object.keys(ENDPOINT_PATHS) as EndpointKey[]
+
+/** 档案路径 → 公开枚举；用于把既有档案的端点折叠回可编辑 chips。 */
+const ENDPOINT_KEY_BY_PATH: ReadonlyMap<string, EndpointKey> = new Map(
+  ENDPOINT_KEYS.map((key) => [ENDPOINT_PATHS[key], key]),
+)
 
 /** 与 ModelMutateSheet.tsx / model_meta 契约同序同值。 */
 export const CAPABILITY_KEYS = [
@@ -75,25 +98,6 @@ export const MAX_WIZARD_ROWS = 200
 /** 与后端 `maxModelMetaDisplayNameRunes` / `maxModelMetaDescriptionRunes` 同口径。 */
 export const DISPLAY_NAME_MAX = 64
 export const DESCRIPTION_MAX = 512
-
-/**
- * 公开端点枚举 → model_meta `endpoints` 的路径。
- *
- * 这是 `publicEndpointMapping` 的反向表：后端把档案里的路径折叠成公开
- * 枚举，向导要把勾选的枚举写回路径。**新增公开端点时两处同步**——只改
- * 后端会让这里写出后端不认识的路径，只改这里会让新端点永远不出现在公开
- * 筛选里。
- */
-const ENDPOINT_PATHS: Readonly<Record<EndpointKey, string>> = {
-  'chat.completions': '/v1/chat/completions',
-  messages: '/v1/messages',
-  embeddings: '/v1/embeddings',
-  'images.generations': '/v1/images/generations',
-  'audio.speech': '/v1/audio/speech',
-  'audio.transcriptions': '/v1/audio/transcriptions',
-  rerank: '/v1/rerank',
-  generateContent: '/v1beta/models/{model}:generateContent',
-}
 
 /**
  * 这 8 个公开端点都是 POST 路由。公开 facet 只看路径是否存在
@@ -209,12 +213,34 @@ function profileParameters(profile: ModelMeta | undefined): ParameterRow[] {
   }))
 }
 
+/** 既有档案的 `{path: [METHOD]}` → 能映射到公开枚举的 chips（固定顺序）。 */
+function mappedEndpointKeys(endpoints: ModelMeta['endpoints']): EndpointKey[] {
+  const mapped = new Set<EndpointKey>()
+  for (const path of Object.keys(endpoints)) {
+    const key = ENDPOINT_KEY_BY_PATH.get(path)
+    if (key !== undefined) mapped.add(key)
+  }
+  return ENDPOINT_KEYS.filter((key) => mapped.has(key))
+}
+
+export interface BuildRowsOptions {
+  /**
+   * 目录已被分页上限截断时为 true：此时「查不到档案」不等于「没有档案」，
+   * 不能把未确认的行默认勾选，否则会把已有档案当新档去创建。只有调用方
+   * 明确预选的模型保持勾选。
+   */
+  catalogTruncated?: boolean
+}
+
 /**
  * 把探针条目投影成向导行。
  *
  * - `selected`：创建态全选（没有既有档案）；编辑态只预选 `preselected`
- *   里的模型，避免向导默认改写既有档案。
+ *   里的模型，避免向导默认改写既有档案。目录截断时只保留 `preselected`。
  * - `overwrite` 恒为 false：覆盖必须由操作者逐行勾选。
+ * - `endpoints`：既有档案里能映射到公开枚举的端点 ∪ 上游建议。端点只增
+ *   不减——管理员能看见将从档案继承的 chips，写入时（`buildUpdateBody`）
+ *   还会原样保留无法表示的路径。
  * - 能力 / 模态 / 参数 / 知识截止 / 标签：既有档案取本地值（深拷贝），
  *   没有档案的行留空。**绝不从模型名推断**；既有值只是让第 3 步的勾选
  *   变成叠加/取消，而不是拿空集合盲替换。
@@ -223,10 +249,18 @@ export function buildRows(
   entries: FetchChannelModelEntry[],
   existing: Map<string, ModelMeta>,
   preselected: string[],
+  options: BuildRowsOptions = {},
 ): WizardRow[] {
   const preselectedIds = new Set(preselected)
+  const catalogTruncated = options.catalogTruncated === true
   return entries.map((entry) => {
     const profile = existing.get(entry.id)
+    const suggested = entry.endpoints.filter(isEndpointKey)
+    const inherited =
+      profile === undefined ? [] : mappedEndpointKeys(profile.endpoints)
+    const endpoints = ENDPOINT_KEYS.filter(
+      (key) => suggested.includes(key) || inherited.includes(key),
+    )
     return {
       id: entry.id,
       displayName: entry.display_name,
@@ -234,7 +268,7 @@ export function buildRows(
       contextLength: entry.context_length == null ? '' : String(entry.context_length),
       maxOutput: entry.max_output == null ? '' : String(entry.max_output),
       releasedAt: entry.released_at,
-      endpoints: entry.endpoints.filter(isEndpointKey),
+      endpoints,
       vendorName: profile?.vendor_name ?? entry.vendor_suggestion,
       capabilities: profile === undefined ? [] : [...profile.capabilities],
       modalities: profile === undefined ? [] : [...profile.modalities],
@@ -242,7 +276,9 @@ export function buildRows(
       knowledgeCutoff: profile?.knowledge_cutoff ?? '',
       tags: profile === undefined ? [] : [...profile.tags],
       factsSource: entry.facts_source,
-      selected: preselectedIds.has(entry.id) || profile === undefined,
+      selected:
+        preselectedIds.has(entry.id) ||
+        (profile === undefined && !catalogTruncated),
       overwrite: false,
     }
   })
@@ -263,8 +299,25 @@ function applyParameterList(
   fallback: ParameterRow[],
   emptyOnly: boolean,
 ): ParameterRow[] {
-  const source = emptyOnly && current.length > 0 ? current : fallback
-  return source.map((row) => ({ ...row }))
+  if (emptyOnly && current.length > 0) {
+    return current.map((row) => ({ ...row }))
+  }
+  // 批量替换（emptyOnly=false）时默认值文本不携带 `required`；按参数名把
+  // 既有档案的必填标记合并回来，避免「只改一个字段却把必填悄悄清成 false」。
+  const requiredByName = new Map<string, boolean>()
+  for (const row of current) {
+    if (row.required === true) requiredByName.set(row.name.trim(), true)
+  }
+  return fallback.map((row) => {
+    const next = { ...row }
+    if (
+      next.required !== true &&
+      requiredByName.get(next.name.trim()) === true
+    ) {
+      next.required = true
+    }
+    return next
+  })
 }
 
 /**
@@ -347,12 +400,24 @@ function parseOptionalInt(value: string): number | null {
  * 返回的是字段名而不是文案：文案归 UI（i18n），纯逻辑层不持有翻译。
  */
 export type RowIssue =
+  | 'modelName'
   | 'displayName'
   | 'description'
   | 'contextLength'
   | 'maxOutput'
   | 'knowledgeCutoff'
   | 'parameters'
+
+/**
+ * 与后端 `validateModelName`（backend/internal/httpapi/handlers_model_catalog.go）
+ * 同口径：1–128 个字符，只允许字母、数字与 `. _ : / -`。模型名来自上游、
+ * 行内不可改，非法名会让建档 422；第 1 步就要标出来，免得重试按钮变成死路。
+ */
+const MODEL_NAME_PATTERN = /^[A-Za-z0-9._:/-]{1,128}$/
+
+export function modelNameIsValid(value: string): boolean {
+  return MODEL_NAME_PATTERN.test(value.trim())
+}
 
 /** rune 口径与后端 `utf8.RuneCountInString` 一致（`[...str]` 按码点切分）。 */
 export function runeLength(value: string): number {
@@ -392,6 +457,7 @@ export function parametersAreValid(rows: ParameterRow[]): boolean {
 
 export function rowIssues(row: WizardRow): RowIssue[] {
   const issues: RowIssue[] = []
+  if (!modelNameIsValid(row.id)) issues.push('modelName')
   if (runeLength(row.displayName.trim()) > DISPLAY_NAME_MAX) {
     issues.push('displayName')
   }
@@ -604,8 +670,10 @@ export function buildUpdateBody(
     icon: existing.icon ?? null,
     vendor_id: vendorId ?? existing.vendor_id ?? null,
     tags: tags.length > 0 ? tags : [...existing.tags],
-    endpoints:
-      Object.keys(endpoints).length > 0 ? endpoints : cloneEndpoints(existing.endpoints),
+    // 端点只增不减：既有路径（含无法映射到 8 个公开枚举的私有路径）原样
+    // 保留，行内 chips 只覆盖/新增能表示的那些。后端 `EndpointsSet` 是整表
+    // 替换，这里漏掉一条就等于管理员勾「覆盖」时静默删除它。
+    endpoints: { ...cloneEndpoints(existing.endpoints), ...endpoints },
     capabilities: capabilities.length > 0 ? capabilities : [...existing.capabilities],
     modalities: modalities.length > 0 ? modalities : [...existing.modalities],
     parameters:
