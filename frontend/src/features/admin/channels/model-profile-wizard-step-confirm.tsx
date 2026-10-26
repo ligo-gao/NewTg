@@ -45,6 +45,7 @@ const ACTION_BADGE_CLASSES = {
 
 /** 摘要上的错误标记用字段名做 aria-label，管理员据此决定展开哪行。 */
 const ISSUE_LABEL_KEYS: Record<RowIssue, string> = {
+  modelName: 'common.channels.profileWizard.invalidModelName',
   displayName: 'common.channels.profileWizard.displayName',
   description: 'common.channels.profileWizard.description',
   contextLength: 'common.channels.profileWizard.context',
@@ -97,6 +98,15 @@ export function StepConfirm({
     )
   }
 
+  // 三态汇总：勾选数不等于写库数——未勾覆盖的既有档案和锁定档案都会跳过。
+  const counts = { created: 0, updated: 0, skipped: 0 }
+  for (const row of rows) {
+    const action = rowActionOf(row, catalog.get(row.id))
+    if (action === 'create') counts.created += 1
+    else if (action === 'update') counts.updated += 1
+    else counts.skipped += 1
+  }
+
   return (
     <section
       aria-label={t('common.channels.profileWizard.stepConfirm')}
@@ -105,6 +115,10 @@ export function StepConfirm({
       <h3 className="text-body font-semibold text-ink-1">
         {t('common.channels.profileWizard.stepConfirm')}
       </h3>
+
+      <p aria-live="polite" className="text-meta text-ink-2">
+        {t('common.channels.profileWizard.summary', counts)}
+      </p>
 
       {tooMany ? (
         <FormAlert tone="warning">
@@ -178,6 +192,16 @@ export function StepConfirm({
                   !
                 </span>
               )}
+
+              {vendorState.kind === 'listed' ? (
+                // 折叠摘要里显示已解析到的本地供应商：第三方聚合网关的
+                // vendor_suggestion 可能与本地目录同名，操作者需要看到归属。
+                <span className="inline-flex h-[21px] items-center rounded border border-border-default bg-surface-subtle px-1.5 text-badge whitespace-nowrap text-ink-2">
+                  {t('common.channels.profileWizard.vendorAssigned', {
+                    name: vendorState.name,
+                  })}
+                </span>
+              ) : null}
 
               {profile === undefined ? null : (
                 <label className="ml-auto flex items-center gap-2 text-meta text-ink-2">

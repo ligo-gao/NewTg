@@ -11,7 +11,10 @@ import type { components } from '@/api/schema'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/base/button'
 
-import type { WizardRow } from './model-profile-wizard-logic'
+import {
+  modelNameIsValid,
+  type WizardRow,
+} from './model-profile-wizard-logic'
 
 type ModelMeta = components['schemas']['ModelMeta']
 
@@ -42,6 +45,9 @@ export interface StepModelsProps {
   onSelectVisible: (ids: string[]) => void
   onClearAll: () => void
   catalogFailed: boolean
+  /** 目录超过分页上限被截断：未加载的模型无法在此确认档案状态。 */
+  catalogTruncated: boolean
+  catalogLimit: number
   onRetryCatalog: () => void
 }
 
@@ -90,6 +96,8 @@ export function StepModels({
   onSelectVisible,
   onClearAll,
   catalogFailed,
+  catalogTruncated,
+  catalogLimit,
   onRetryCatalog,
 }: StepModelsProps) {
   const { t } = useI18n()
@@ -118,6 +126,17 @@ export function StepModels({
           <Button variant="secondary" onClick={onRetryCatalog}>
             {t('common.channels.profileWizard.catalogRetry')}
           </Button>
+        </div>
+      ) : null}
+
+      {catalogTruncated ? (
+        <div
+          role="alert"
+          className="rounded-lg border border-warning-line bg-warning-bg px-3 py-2 text-meta text-warning"
+        >
+          {t('common.channels.profileWizard.catalogTruncated', {
+            max: catalogLimit,
+          })}
         </div>
       ) : null}
 
@@ -209,7 +228,22 @@ export function StepModels({
                       />
                     </td>
                     <td className="px-2 py-2">
-                      <span className="font-mono text-ink-1">{row.id}</span>
+                      <span className="flex items-center gap-1.5">
+                        <span className="font-mono text-ink-1">{row.id}</span>
+                        {modelNameIsValid(row.id) ? null : (
+                          // 模型名来自上游、行内不可改；非法名建档必然 422，
+                          // 第 1 步就标出来，免得重试按钮变成死路。
+                          <span
+                            role="img"
+                            aria-label={t(
+                              'common.channels.profileWizard.invalidModelName',
+                            )}
+                            className="inline-flex size-[18px] shrink-0 items-center justify-center rounded-full border border-danger-line bg-danger-bg text-badge font-semibold text-danger"
+                          >
+                            !
+                          </span>
+                        )}
+                      </span>
                     </td>
                     <td className="max-w-[160px] truncate px-2 py-2 text-ink-2">
                       {displayName === '' ? '—' : displayName}

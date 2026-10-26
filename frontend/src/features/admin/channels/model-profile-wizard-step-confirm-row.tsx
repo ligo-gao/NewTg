@@ -180,6 +180,16 @@ export function StepConfirmRowEditor({
         }}
       />
 
+      {row.factsSource === '' ? null : (
+        // `facts_source` 记录事实来自哪个上游目录（openai_models 等），与
+        // 按值推导的 chips 不同。它是只读信息，独立显示。
+        <p className="text-meta text-ink-3 sm:col-span-2">
+          {t('common.channels.profileWizard.factsSourceValue', {
+            source: row.factsSource,
+          })}
+        </p>
+      )}
+
       <div className="flex flex-col gap-1.5">
         <label
           htmlFor={`profile-wizard-vendor-${row.id}`}

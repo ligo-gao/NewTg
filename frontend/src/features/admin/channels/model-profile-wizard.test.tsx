@@ -193,7 +193,7 @@ describe('ModelProfileWizard', () => {
     ).toBeTruthy()
   })
 
-  it('returns the selected models to the channel form when the toggle is on', async () => {
+  it('does not write models back when returning from step 1', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
     const onApplyModels = vi.fn()
@@ -217,10 +217,8 @@ describe('ModelProfileWizard', () => {
     await screen.findByText('gemini-2.5-pro')
     await user.click(screen.getByRole('button', { name: 'Back to channel form' }))
 
-    expect(onApplyModels).toHaveBeenCalledWith([
-      'gemini-2.5-pro',
-      'text-embedding-004',
-    ])
+    // 还没看过确认页，默认勾选不应直接并集写回 supported_models。
+    expect(onApplyModels).not.toHaveBeenCalled()
     expect(onBack).toHaveBeenCalledTimes(1)
   })
 
@@ -305,8 +303,10 @@ describe('ModelProfileWizard', () => {
     await user.click(
       screen.getByRole('checkbox', { name: 'text-embedding-004' }),
     )
+    // 写回只发生在结果页：先提交，再点「返回渠道表单」。
+    await goToConfirmAndSubmit(user)
     await user.click(
-      screen.getByRole('button', { name: 'Back to channel form' }),
+      await screen.findByRole('button', { name: 'Back to channel form' }),
     )
 
     expect(onApplyModels).toHaveBeenCalledWith([
@@ -338,8 +338,9 @@ describe('ModelProfileWizard', () => {
         name: "Also fill the channel's model list",
       }),
     )
+    await goToConfirmAndSubmit(user)
     await user.click(
-      screen.getByRole('button', { name: 'Back to channel form' }),
+      await screen.findByRole('button', { name: 'Back to channel form' }),
     )
 
     expect(onApplyModels).not.toHaveBeenCalled()
@@ -360,11 +361,44 @@ describe('ModelProfileWizard row confirmation and write-back', () => {
     await user.click(
       await screen.findByRole('checkbox', { name: 'gemini-2.5-pro' }),
     )
-    await goToConfirmAndSubmit(user)
+    await goToStep(user, 3)
 
-    expect(await screen.findByText('Skipped 1')).toBeTruthy()
+    // 全部行都会被 skip：不能让人点「写入 0 个」。
+    expect(screen.getByText('Create 0 / Update 0 / Skip 1')).toBeTruthy()
+    expect(
+      screen.getByText(
+        'Nothing to write: existing profiles only update when you check Overwrite on their row.',
+      ),
+    ).toBeTruthy()
+    const submit = screen.getByRole('button', {
+      name: /^Write \d+ profiles$/,
+    }) as HTMLButtonElement
+    expect(submit.disabled).toBe(true)
     expect(mockPut).not.toHaveBeenCalled()
     expect(mockPost).not.toHaveBeenCalled()
+  })
+
+  it('counts only the rows that will actually be written', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['existing-model', 'new-model'],
+      entries: [entry({ id: 'existing-model' }), entry({ id: 'new-model' })],
+    })
+    mockCatalog([modelMeta({ id: 9, model_name: 'existing-model' })])
+
+    renderWizard()
+
+    // 已有档案默认不勾选；新模型默认勾选。
+    await user.click(
+      await screen.findByRole('checkbox', { name: 'existing-model' }),
+    )
+    await goToStep(user, 3)
+
+    expect(screen.getByText('Create 1 / Update 0 / Skip 1')).toBeTruthy()
+    const submit = screen.getByRole('button', {
+      name: 'Write 1 profiles',
+    }) as HTMLButtonElement
+    expect(submit.disabled).toBe(false)
   })
 
   it('updates the selected row and reports per-row results', async () => {
@@ -426,9 +460,12 @@ describe('ModelProfileWizard row confirmation and write-back', () => {
     expect(screen.getByText('Locked locally')).toBeTruthy()
     expect(screen.getByText(/maintained by hand/)).toBeTruthy()
 
-    await submitWizard(user)
-
-    expect(await screen.findByText('Skipped 1')).toBeTruthy()
+    // 锁定行永远 skip，写入按钮随之禁用。
+    expect(
+      (screen.getByRole('button', {
+        name: /^Write \d+ profiles$/,
+      }) as HTMLButtonElement).disabled,
+    ).toBe(true)
     expect(mockPut).not.toHaveBeenCalled()
     expect(mockPost).not.toHaveBeenCalled()
   })
@@ -937,6 +974,154 @@ describe('ModelProfileWizard row confirmation and write-back', () => {
     }) as HTMLButtonElement
     expect(submitButton.disabled).toBe(true)
     expect(mockPost).not.toHaveBeenCalled()
+  })
+
+  it('reports a create conflict as an existing profile and does not retry it', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['alpha-model'],
+      entries: [entry({ id: 'alpha-model' })],
+    })
+    mockCatalog([])
+    mockPost.mockRejectedValue(
+      new ApiError({
+        status: 409,
+        type: 'https://newtg.dev/problems/conflict',
+        title: 'Conflict',
+        kind: 'conflict',
+      }),
+    )
+
+    renderWizard()
+
+    await screen.findByText('alpha-model')
+    await goToConfirmAndSubmit(user)
+
+    expect(await screen.findByText('Failed 1')).toBeTruthy()
+    // 创建路径的 409 是「同名档案已存在」，不是「被他人修改」。
+    expect(
+      screen.getByText(/A profile with this name already exists/),
+    ).toBeTruthy()
+    expect(
+      (screen.getByRole('button', {
+        name: 'Retry failed rows only',
+      }) as HTMLButtonElement).disabled,
+    ).toBe(true)
+  })
+
+  it('does not offer retry for a deterministic 422 failure', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['alpha-model'],
+      entries: [entry({ id: 'alpha-model' })],
+    })
+    mockCatalog([])
+    mockPost.mockRejectedValue(
+      new ApiError({
+        status: 422,
+        type: 'https://newtg.dev/problems/validation',
+        title: 'Unprocessable entity',
+        kind: 'validation',
+      }),
+    )
+
+    renderWizard()
+
+    await screen.findByText('alpha-model')
+    await goToConfirmAndSubmit(user)
+
+    expect(await screen.findByText('Failed 1')).toBeTruthy()
+    expect(
+      (screen.getByRole('button', {
+        name: 'Retry failed rows only',
+      }) as HTMLButtonElement).disabled,
+    ).toBe(true)
+  })
+
+  it('flags an invalid upstream model name on step 1 and never writes it', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['gemini-2.5-pro@vertex'],
+      entries: [entry({ id: 'gemini-2.5-pro@vertex' })],
+    })
+    mockCatalog([])
+
+    renderWizard()
+
+    await screen.findByText('gemini-2.5-pro@vertex')
+    expect(
+      screen.getByRole('img', {
+        name: 'Invalid model name; this row cannot be created (only letters, digits and . _ : / - are allowed).',
+      }),
+    ).toBeTruthy()
+
+    await goToConfirmAndSubmit(user)
+
+    expect(await screen.findByText('Failed 1')).toBeTruthy()
+    expect(screen.getByText('This row has uncorrected input.')).toBeTruthy()
+    expect(mockPost).not.toHaveBeenCalled()
+    expect(
+      (screen.getByRole('button', {
+        name: 'Retry failed rows only',
+      }) as HTMLButtonElement).disabled,
+    ).toBe(true)
+  })
+
+  it('warns about a truncated catalog and does not preselect unconfirmed rows', async () => {
+    mockFetch.mockResolvedValue({
+      models: ['alpha-model'],
+      entries: [entry({ id: 'alpha-model' })],
+    })
+    mockGet.mockImplementation(((path: string) =>
+      path === '/api/models'
+        ? Promise.resolve({ data: { items: [], total: 1001 } })
+        : Promise.resolve(listResponse([]))) as never)
+
+    renderWizard()
+
+    expect(
+      await screen.findByText(/more than 1000 entries/),
+    ).toBeTruthy()
+    const checkbox = screen.getByRole('checkbox', {
+      name: 'alpha-model',
+    }) as HTMLInputElement
+    // 目录没加载全时「查不到档案」不等于「没有档案」，不能默认勾选。
+    expect(checkbox.checked).toBe(false)
+  })
+
+  it('shows the resolved local vendor in the collapsed summary', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['alpha-model'],
+      entries: [entry({ id: 'alpha-model', vendor_suggestion: 'Acme' })],
+    })
+    mockCatalog([], [{ id: 3, name: 'Acme' }])
+
+    renderWizard()
+
+    await screen.findByText('alpha-model')
+    await goToStep(user, 3)
+
+    expect(await screen.findByText('Vendor: Acme')).toBeTruthy()
+  })
+
+  it('shows the probe facts source in the expanded row', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['gemini-2.5-pro'],
+      entries: [
+        entry({ id: 'gemini-2.5-pro', facts_source: 'gemini_models' }),
+      ],
+    })
+    mockCatalog([])
+
+    renderWizard()
+
+    await screen.findByText('gemini-2.5-pro')
+    await goToStep(user, 3)
+    await user.click(screen.getByRole('button', { name: 'gemini-2.5-pro' }))
+
+    expect(screen.getByText('Facts source: gemini_models')).toBeTruthy()
   })
 
   it('keeps applied defaults when a catalog refetch fails after a success', async () => {

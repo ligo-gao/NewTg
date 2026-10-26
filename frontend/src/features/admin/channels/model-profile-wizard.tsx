@@ -15,7 +15,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '@/api/client'
 import { ApiError } from '@/api/errors'
 import { requireData } from '@/api/result'
-import type { components } from '@/api/schema'
 import { useI18n, type TranslateFn } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/base/button'
 
@@ -37,6 +36,8 @@ import {
 import {
   loadModelCatalog,
   loadVendorDirectory,
+  MODEL_CATALOG_LIMIT,
+  type ModelCatalog,
   type VendorDirectory,
 } from './model-profile-wizard-queries'
 import {
@@ -50,8 +51,6 @@ import { StepModels } from './model-profile-wizard-step-models'
 import { ModelProfileWizardResult } from './model-profile-wizard-result'
 import type { FetchChannelModelEntry, FetchChannelModelsInput } from './types'
 
-type ModelMeta = components['schemas']['ModelMeta']
-
 const MODEL_CATALOG_QUERY_KEY = [
   'admin',
   'channel-model-profile-wizard',
@@ -63,7 +62,12 @@ const VENDOR_QUERY_KEY = [
   'vendors',
 ] as const
 
-const EMPTY_CATALOG: Map<string, ModelMeta> = new Map()
+const EMPTY_CATALOG: ModelCatalog = {
+  byName: new Map(),
+  total: 0,
+  loaded: 0,
+  truncated: false,
+}
 
 const EMPTY_VENDOR_DIRECTORY: VendorDirectory = {
   ids: new Map(),
@@ -150,40 +154,88 @@ function vendorNameOf(
 }
 
 /**
- * 单行失败的原因。409 是乐观锁冲突，管理员需要「刷新后重试」而不是看服务端
- * 原始 detail；其它错误用 detail（RFC 7807）或 title，服务端点名字段时附在
- * 后面，方便定位。
+ * 写库行的动作（提交时由 `rowActionOf` 决定，skip 不走到这里）。
+ *
+ * 409 的语义按动作区分：创建撞的是「同名档案已存在」，不是乐观锁；更新才是
+ * 「被他人修改」。前者刷新目录后确认即可，重试原地必再冲突，所以不可重试。
  */
-function writeFailureMessage(error: unknown, t: TranslateFn): string {
+type WriteAction = 'create' | 'update'
+
+/**
+ * 确定性失败的 4xx 重试必然再失败（典型：Vertex 风格 id 含 `@`，行内又改不了
+ * id），只有超时、限流与服务端错误值得重试。
+ */
+function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500
+}
+
+interface WriteFailure {
+  message: string
+  retryable: boolean
+  /** 创建 409：档案可能已被别人建好，刷新目录让管理员确认。 */
+  refetchCatalog?: boolean
+}
+
+function writeFailureOf(
+  error: unknown,
+  action: WriteAction,
+  t: TranslateFn,
+): WriteFailure {
   if (error instanceof ApiError) {
     if (error.status === 409) {
-      return t('common.channels.profileWizard.conflict')
+      return action === 'create'
+        ? {
+            message: t('common.channels.profileWizard.conflictCreate'),
+            retryable: false,
+            refetchCatalog: true,
+          }
+        : {
+            message: t('common.channels.profileWizard.conflict'),
+            retryable: true,
+          }
     }
     const base = error.detail ?? error.title
-    if (error.fields !== undefined && error.fields.length > 0) {
-      return `${base} (${error.fields.join(', ')})`
-    }
-    return base
+    const message =
+      error.fields !== undefined && error.fields.length > 0
+        ? `${base} (${error.fields.join(', ')})`
+        : base
+    return { message, retryable: isRetryableStatus(error.status) }
   }
-  return error instanceof Error ? error.message : String(error)
+  // 网络错误 / 超时没有状态码：重试是合理出路。
+  return {
+    message: error instanceof Error ? error.message : String(error),
+    retryable: true,
+  }
+}
+
+interface VendorFailure {
+  message: string
+  retryable: boolean
 }
 
 /**
  * 建商失败原因。409 是「同名供应商已经存在」——不是乐观锁冲突，并且刷新
- * 目录后重试就能命中，所以单独给一句文案。
+ * 目录后重试就能命中，所以单独给一句文案且仍可重试；其余 4xx 不可重试。
  */
-function vendorFailureMessage(
+function vendorFailureOf(
   error: unknown,
   name: string,
   t: TranslateFn,
-): string {
+): VendorFailure {
   if (error instanceof ApiError && error.status === 409) {
-    return t('common.channels.profileWizard.vendorExists', { name })
+    return {
+      message: t('common.channels.profileWizard.vendorExists', { name }),
+      retryable: true,
+    }
   }
-  return t('common.channels.profileWizard.vendorCreateFailed', {
-    name,
-    message: writeFailureMessage(error, t),
-  })
+  return {
+    message: t('common.channels.profileWizard.vendorCreateFailed', {
+      name,
+      message: writeFailureOf(error, 'create', t).message,
+    }),
+    retryable:
+      error instanceof ApiError ? isRetryableStatus(error.status) : true,
+  }
 }
 
 function WizardLoading({ label }: { label: string }) {
@@ -315,14 +367,19 @@ export function ModelProfileWizard({
     const buildKey = `${nonce}\u0000${channelModelsKey}\u0000${phase}`
     if (builtKeyRef.current === buildKey) return
     builtKeyRef.current = buildKey
+    const catalogData = catalogQuery.data ?? EMPTY_CATALOG
     setRows(
-      buildRows(entries, catalogQuery.data ?? EMPTY_CATALOG, channelModels),
+      buildRows(entries, catalogData.byName, channelModels, {
+        catalogTruncated: catalogData.truncated,
+      }),
     )
     // `channelModels` 以稳定 key 参与依赖，避免父组件内联数组造成重建循环。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [probeState, catalogStatus, entries, catalogQuery.data, channelModelsKey, nonce])
 
-  const catalog = catalogQuery.data ?? EMPTY_CATALOG
+  const catalogData = catalogQuery.data ?? EMPTY_CATALOG
+  const catalog = catalogData.byName
+  const catalogTruncated = catalogData.truncated
   const vendorDirectory = vendorsQuery.data ?? EMPTY_VENDOR_DIRECTORY
   // 唯一允许创建的供应商：第 2 步显式选择「新建供应商」后填的名字。
   // 探测建议值（vendor_suggestion）不在这条路径上，绝不隐式建商。
@@ -331,6 +388,11 @@ export function ModelProfileWizard({
 
   const selectedCount = rows.filter((row) => row.selected).length
   const selectedRows = rows.filter((row) => row.selected)
+  // 真正会写库的行数：未勾「覆盖」的既有档案与锁定档案都 skip，不能把
+  // 纯勾选数写进按钮（全选 137 行可能只更新 3 个）。
+  const writableCount = selectedRows.filter(
+    (row) => rowActionOf(row, catalog.get(row.id)) !== 'skip',
+  ).length
   const submitting = progress !== null
   const tooMany = selectedCount > MAX_WIZARD_ROWS
   // 目录未成功加载前不放开第 2 步：档案状态还不可信，写库必须失败关闭。
@@ -394,10 +456,14 @@ export function ModelProfileWizard({
   }
 
   /**
-   * 写回是**并集**：勾选只表示「要给谁补档案」，不表示「渠道只服务这些
-   * 模型」。因此渠道原有但上游没公布的模型永远保留，空选也不会清空列表。
+   * 结果页「返回渠道表单」：写回是**并集**——勾选只表示「要给谁补档案」，
+   * 不表示「渠道只服务这些模型」。因此渠道原有但上游没公布的模型永远保留，
+   * 空选也不会清空列表。
+   *
+   * 只有结果页走这里；第 1 步的「返回」只调 `onBack()`（见 `backToForm`），
+   * 管理员还没看过确认页，不应仅因默认勾选就把模型并集写回 `supported_models`。
    */
-  function backToForm(): void {
+  function applyModelsAndBack(): void {
     if (fillChannelModels) {
       onApplyModels(
         Array.from(
@@ -411,10 +477,21 @@ export function ModelProfileWizard({
     onBack()
   }
 
+  /** 第 1 步 / 探测错误与空态的「返回」：不改渠道模型列表。 */
+  function backToForm(): void {
+    onBack()
+  }
+
   function invalidateCatalog(): void {
-    // 不 await：结果页要立刻出现，刷新在后台完成即可。
+    // 不 await：结果页要立刻出现，刷新在后台完成即可。除向导自己的目录外，
+    // 也沿用 admin 模型页的失效范围，让管理台其它入口看到刚写入的档案与
+    // 新建的供应商。
     void queryClient.invalidateQueries({ queryKey: MODEL_CATALOG_QUERY_KEY })
     void queryClient.invalidateQueries({ queryKey: VENDOR_QUERY_KEY })
+    void queryClient.invalidateQueries({ queryKey: ['admin-models'] })
+    void queryClient.invalidateQueries({ queryKey: ['admin-vendors'] })
+    void queryClient.invalidateQueries({ queryKey: ['admin-models-missing'] })
+    void queryClient.invalidateQueries({ queryKey: ['admin-vendor-options'] })
   }
 
   /**
@@ -430,7 +507,7 @@ export function ModelProfileWizard({
   async function writeRows(targets: WizardRow[]): Promise<Map<string, RowResult>> {
     const output = new Map<string, RowResult>()
     const vendorIds = new Map<string, number>()
-    const vendorErrors = new Map<string, string>()
+    const vendorErrors = new Map<string, VendorFailure>()
     const explicitKey = explicitVendorName.toLowerCase()
 
     // 只给「真的会写库且通过校验」的行解析供应商：跳过 / 非法行不应产生
@@ -463,7 +540,7 @@ export function ModelProfileWizard({
         createdVendorIdsRef.current.set(key, created.id)
       } catch (error) {
         // 记录失败原因并让同名的后续行复用，避免对同一个名字反复创建。
-        vendorErrors.set(key, vendorFailureMessage(error, name, t))
+        vendorErrors.set(key, vendorFailureOf(error, name, t))
         if (error instanceof ApiError && error.status === 409) {
           // 别人刚建好同名供应商：刷新目录，重试时就能按名字命中。
           void vendorsQuery.refetch()
@@ -500,8 +577,8 @@ export function ModelProfileWizard({
         output.set(row.id, {
           id: row.id,
           action: 'failed',
-          message: vendorError,
-          retryable: true,
+          message: vendorError.message,
+          retryable: vendorError.retryable,
         })
         continue
       }
@@ -529,11 +606,15 @@ export function ModelProfileWizard({
           })
         }
       } catch (error) {
+        const failure = writeFailureOf(error, action, t)
+        // 创建 409 说明档案可能刚被别人建好：刷新目录，结果页的提示会让
+        // 管理员确认，而不是拿「刷新后重试仍冲突」的死路。
+        if (failure.refetchCatalog === true) void catalogQuery.refetch()
         output.set(row.id, {
           id: row.id,
           action: 'failed',
-          message: writeFailureMessage(error, t),
-          retryable: true,
+          message: failure.message,
+          retryable: failure.retryable,
         })
       }
     }
@@ -556,7 +637,7 @@ export function ModelProfileWizard({
   }
 
   async function submitAll(): Promise<void> {
-    if (submitting || tooMany || selectedRows.length === 0) return
+    if (submitting || tooMany || writableCount === 0) return
     const targets = selectedRows
     setResults(null)
     setProgress({ done: 0, total: targets.length })
@@ -699,6 +780,8 @@ export function ModelProfileWizard({
           onSelectVisible={selectVisible}
           onClearAll={clearAll}
           catalogFailed={catalogFailed}
+          catalogTruncated={catalogTruncated}
+          catalogLimit={MODEL_CATALOG_LIMIT}
           onRetryCatalog={() => {
             void catalogQuery.refetch()
           }}
@@ -728,7 +811,7 @@ export function ModelProfileWizard({
           onRetryFailed={() => {
             void retryFailed()
           }}
-          onBackToForm={backToForm}
+          onBackToForm={applyModelsAndBack}
         />
       )}
 
@@ -755,6 +838,11 @@ export function ModelProfileWizard({
             })}
           </span>
         )}
+        {step === 3 && writableCount === 0 ? (
+          <span role="status" className="text-meta text-warning">
+            {t('common.channels.profileWizard.nothingToWrite')}
+          </span>
+        ) : null}
         <div className="ml-auto flex flex-wrap gap-2">
           {step === 1 ? (
             <Button variant="secondary" onClick={backToForm}>
@@ -782,10 +870,10 @@ export function ModelProfileWizard({
               onClick={() => {
                 void submitAll()
               }}
-              disabled={submitting || tooMany || selectedCount === 0}
+              disabled={submitting || tooMany || writableCount === 0}
             >
               {t('common.channels.profileWizard.submit', {
-                count: selectedCount,
+                count: writableCount,
               })}
             </Button>
           ) : null}
