@@ -1500,10 +1500,12 @@ func (s *Session) adjustTokenToCostLocked(ctx context.Context, cost int64) {
 //     防止「表达式写错 → 免费白送」），不是退款；
 //   - 完全无计费用量 → 配额 0，由多退少补释放 hold。
 //
-// rawKnown 只在回退到 estimatedQuota（预扣阶段的**折前**估算额）时为 true：
-// preConsumed+consumed 已由 Reserve/ChargeIncrement 打过折，结算不得再折一次；
-// estimatedQuota 仍是原始估算额，必须应用冻结折扣（CF-2：trusted 旁路没有
-// hold，也没有增量，求值失败时会直接落到这一路）。
+// rawKnown 的取值：正常求值、clamp、snap==nil、FreeModel 都返回 true。
+// 两条失败回退中，只有回退到 estimatedQuota（折前估算额）时为 true；其余
+// 返回都是未打折的原始成本。原因：preConsumed+consumed 已由 Reserve/
+// ChargeIncrement 打过折，结算不得再折一次；estimatedQuota 仍是原始估算额，
+// 必须应用冻结折扣（CF-2：trusted 旁路没有 hold，也没有增量，求值失败时会
+// 直接落到这一路）。
 func (s *Session) actualCostLocked(snap *contract.PriceSnapshot, fact contract.UsageFact) (int64, bool) {
 	if snap == nil {
 		return 0, true
@@ -1517,11 +1519,7 @@ func (s *Session) actualCostLocked(snap *contract.PriceSnapshot, fact contract.U
 	}
 	usedVars, err := s.usedVarsForLocked(snap)
 	if err != nil {
-		// 求值失败：preConsumed+consumed 已是折后口径（Reserve/ChargeIncrement
-		// 打过折），再打折就是二次让利；只有回退到 estimatedQuota（原始估算额）
-		// 时才是未打折成本。
-		rawKnown := s.preConsumed+s.consumed == 0
-		return s.keepPreConsumedCostLocked(), rawKnown
+		return s.fallbackCostLocked()
 	}
 	// 即使 Usage 为空也必须走表达式求值（C1）：`image_count * 10000`、常量
 	// 表达式、按次价等「与 usage 无关」的计费项仍可能产生费用。空 usage 的
@@ -1540,10 +1538,17 @@ func (s *Session) actualCostLocked(snap *contract.PriceSnapshot, fact contract.U
 		return cost, true
 	}
 	if err != nil || cost < 0 {
-		rawKnown := s.preConsumed+s.consumed == 0
-		return s.keepPreConsumedCostLocked(), rawKnown
+		return s.fallbackCostLocked()
 	}
 	return cost, true
+}
+
+// fallbackCostLocked 是两条求值失败分支共用的保守回退，同时给出该金额是否为
+// 未打折的原始成本：只有 preConsumed+consumed 都为 0、回退到 estimatedQuota
+// （预扣阶段的折前估算额）时才是原始成本；否则金额已被 Reserve/
+// ChargeIncrement 打过折，必须标记为 false，结算不得二次打折。
+func (s *Session) fallbackCostLocked() (int64, bool) {
+	return s.keepPreConsumedCostLocked(), s.preConsumed+s.consumed == 0
 }
 
 // noteQuotaClamp 记录首个钳制事件；日志层在写 usage_logs 前读取它

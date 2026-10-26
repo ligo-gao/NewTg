@@ -876,3 +876,201 @@ func TestUsageLogOmitsDiscountKeysWhenNotMatched(t *testing.T) {
 		}
 	}
 }
+
+// TestTerminateForcedCostAppliesDiscount 验证任务计价表达式冻结的成本
+// （forcedCost）同样按折扣收敛：forcedCost=100、rate=0.9 → 只扣 90。
+// 这是 T5 预扣已打折的那条路径，结算若漏折会以原价追回差额。
+func TestTerminateForcedCostAppliesDiscount(t *testing.T) {
+	e, db, sat := newDiscountTerminateEngine(t, nil)
+	userID := createBillingTestUser(t, db, 500)
+	s := newBillingTestSession(e, userID, testRequestID("t5-forced"), perCallSnapshot(100))
+	s.applyFrozenDiscount(0.9, "user:7")
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 410 {
+		t.Fatalf("预扣后 balance = %d, want 410（hold 90）", got)
+	}
+	// 任务提交期冻结的表达式成本（原始口径）。
+	forced := int64(100)
+	s.forcedCost = &forced
+
+	if err := s.Terminate(contract.UsageFact{Model: "m"}); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+	out := sat.outcome
+	if out.Cost != 90 || out.OriginalCost != 100 || out.DiscountRate != 0.9 ||
+		out.DiscountTarget != "user:7" {
+		t.Fatalf("outcome = %+v, want cost 90 / original 100 / rate 0.9 / target user:7", out)
+	}
+	if got := userBalance(t, db, userID); got != 410 {
+		t.Fatalf("balance = %d, want 410（forcedCost 折后 90，不得按原价补扣到 400）", got)
+	}
+	rows := readWalletRows(t, db, s.requestID)
+	if len(rows) != 1 || rows[0].Amount != -90 {
+		t.Fatalf("钱包流水 = %+v, want 仅一笔 hold -90（持平不补扣）", rows)
+	}
+}
+
+// TestTerminateSubscriptionForcedCostAppliesDiscount 验证订阅来源的 forcedCost
+// 同口径：rate=0.8、forcedCost=100、预扣（比例 0.5 折后）40 → delta 基于 80。
+func TestTerminateSubscriptionForcedCostAppliesDiscount(t *testing.T) {
+	funding := newFakeSubscriptionFunding(contract.PrefSubscriptionFirst,
+		subscriptionAccount(7, 1000, nil))
+	e, db, sat := newDiscountTerminateEngine(t, mapConfig{
+		ConfigPreConsumeRatio: json.RawMessage("0.5"),
+	})
+	e.SetSubscriptionFunding(funding)
+	userID := createBillingTestUser(t, db, 500)
+	tokenID := createBillingTestToken(t, db, userID, int64(500))
+	s := newBillingTestSessionWithToken(e, userID, tokenID,
+		testRequestID("t5-sub-forced"), perCallSnapshot(100))
+	s.applyFrozenDiscount(0.8, "user:7")
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	forced := int64(100)
+	s.forcedCost = &forced
+
+	if err := s.Terminate(contract.UsageFact{Model: "m"}); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+	if got := funding.usedOf(7); got != 80 {
+		t.Fatalf("amount_used = %d, want 80（forcedCost 100 × 0.8）", got)
+	}
+	deltas := funding.deltas()
+	if len(deltas) != 1 || deltas[0].delta != 40 {
+		t.Fatalf("结算增量 = %+v, want 单笔 +40（80 − 已扣 40）", deltas)
+	}
+	out := sat.outcome
+	if out.Cost != 80 || out.OriginalCost != 100 || out.DiscountRate != 0.8 ||
+		out.SubscriptionPostDelta != 40 {
+		t.Fatalf("outcome = %+v, want cost 80 / original 100 / rate 0.8 / delta 40", out)
+	}
+}
+
+// TestTerminateDiscountRefundsDifference 验证退款方向的折后收敛：
+// hold 90（估算 100×0.9）、实际原价 50 → 实收 45、退还 45、余额回到 455。
+func TestTerminateDiscountRefundsDifference(t *testing.T) {
+	e, db, sat := newDiscountTerminateEngine(t, nil)
+	userID := createBillingTestUser(t, db, 500)
+	s := newBillingTestSession(e, userID, testRequestID("t5-refund"), perCallSnapshot(100))
+	s.applyFrozenDiscount(0.9, "user:7")
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if got := userBalance(t, db, userID); got != 410 {
+		t.Fatalf("预扣后 balance = %d, want 410（hold 90）", got)
+	}
+	// 结算期实际原价 50（快照下调）→ 折后 45。
+	s.rc.PriceSnapshot = perCallSnapshot(50)
+
+	if err := s.Terminate(contract.UsageFact{Model: "m"}); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+	out := sat.outcome
+	if out.Cost != 45 || out.PreDeducted != 90 || out.Refunded != 45 {
+		t.Fatalf("outcome = %+v, want cost 45 / pre 90 / refunded 45", out)
+	}
+	if out.OriginalCost != 50 || out.DiscountRate != 0.9 {
+		t.Fatalf("outcome = %+v, want original 50 / rate 0.9", out)
+	}
+	if got := userBalance(t, db, userID); got != 455 {
+		t.Fatalf("balance = %d, want 455（410 + 退还 45）", got)
+	}
+	rows := readWalletRows(t, db, s.requestID)
+	want := []walletRow{
+		{Type: "consume_pre", Amount: -90, BalanceAfter: 410, Status: "settled"},
+		{Type: "release", Amount: 45, BalanceAfter: 455, Status: "confirmed"},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("钱包流水 = %+v, want %+v", rows, want)
+	}
+	for i := range want {
+		if rows[i] != want[i] {
+			t.Fatalf("钱包流水[%d] = %+v, want %+v", i, rows[i], want[i])
+		}
+	}
+}
+
+// TestTerminateDiscountChargesWithoutHold 验证无 hold 补扣方向（trusted 旁路）
+// 同样只收折后价：原价 100 → 扣 90，PreDeducted=0，余额从真实余额算。
+// 旁路要求余额 > 10 USD×100=1000 积分阈值，故初始余额取 100000。
+func TestTerminateDiscountChargesWithoutHold(t *testing.T) {
+	e, db, sat := newDiscountTerminateEngine(t, mapConfig{
+		ConfigPreConsumeRatio: json.RawMessage("1.0"),
+		ConfigTrustQuotaUSD:   json.RawMessage("10"),
+	})
+	userID := createBillingTestUser(t, db, 100_000)
+	s := newBillingTestSession(e, userID, testRequestID("t5-nohold"), perCallSnapshot(100))
+	s.applyFrozenDiscount(0.9, "user:7")
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if got := s.Reserved(); got != 0 {
+		t.Fatalf("Reserved = %d, want 0（信任旁路不预扣）", got)
+	}
+	if rows := readWalletRows(t, db, s.requestID); len(rows) != 0 {
+		t.Fatalf("预扣后钱包流水 = %+v, want 0 条", rows)
+	}
+
+	if err := s.Terminate(contract.UsageFact{Model: "m"}); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+	out := sat.outcome
+	if out.Cost != 90 || out.PreDeducted != 0 || out.Refunded != 0 {
+		t.Fatalf("outcome = %+v, want cost 90 / pre 0 / refunded 0", out)
+	}
+	if out.OriginalCost != 100 || out.DiscountRate != 0.9 {
+		t.Fatalf("outcome = %+v, want original 100 / rate 0.9", out)
+	}
+	if got := userBalance(t, db, userID); got != 99_910 {
+		t.Fatalf("balance = %d, want 99910（无 hold 补扣也只收折后 90）", got)
+	}
+	rows := readWalletRows(t, db, s.requestID)
+	want := walletRow{Type: "consume", Amount: -90, BalanceAfter: 99_910, Status: "confirmed"}
+	if len(rows) != 1 || rows[0] != want {
+		t.Fatalf("钱包流水 = %+v, want %+v", rows, want)
+	}
+}
+
+// TestTerminateSkipsDiscountWhenPricingEvalFails 覆盖另一条求值失败回退：
+// 表达式可编译但求值报错（除零）时同样回退到折后 hold（90），不得二次打折。
+// 与 TestTerminateSkipsDiscountWhenCostUnknown（编译失败）一起覆盖两条分支。
+func TestTerminateSkipsDiscountWhenPricingEvalFails(t *testing.T) {
+	e, db, sat := newDiscountTerminateEngine(t, nil)
+	userID := createBillingTestUser(t, db, 500)
+	s := newBillingTestSession(e, userID, testRequestID("t5-evalerr"), perCallSnapshot(100))
+	s.applyFrozenDiscount(0.9, "user:7")
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	broken := &contract.PriceSnapshot{
+		Mode:       contract.BillingModeTieredExpr,
+		ExprString: "p / 0",
+	}
+	s.rc.PriceSnapshot = broken
+	fact := contract.UsageFact{Model: "m", Usage: contract.Usage{Prompt: 10}}
+	if got, rawKnown := s.actualCostLocked(broken, fact); got != 90 || rawKnown {
+		t.Fatalf("actualCostLocked = (%d, rawKnown=%v), want (90, false)", got, rawKnown)
+	}
+
+	if err := s.Terminate(fact); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+	out := sat.outcome
+	if out.Cost != 90 {
+		t.Fatalf("outcome.Cost = %d, want 90（求值失败不得二次打折）", out.Cost)
+	}
+	if out.OriginalCost != 100 || out.DiscountRate != 0.9 {
+		t.Fatalf("outcome = %+v, want original 100 / rate 0.9", out)
+	}
+	if got := userBalance(t, db, userID); got != 410 {
+		t.Fatalf("balance = %d, want 410", got)
+	}
+}
