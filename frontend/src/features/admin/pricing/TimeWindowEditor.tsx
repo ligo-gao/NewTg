@@ -8,6 +8,7 @@ import {
   TIMEZONE_OPTIONS,
   weekdayKey,
   weekdayLongKey,
+  weekdayPeakPreset,
   type TimeConfigDraft,
   type TimeWindowDraft,
 } from './pricing-utils'
@@ -107,6 +108,23 @@ export function TimeWindowEditor({
           />
           {t('admin.pricing.time_enabled')}
         </label>
+      </div>
+
+      {/* 预设是通用时段表：只填窗口与倍率，不绑定任何厂商。点击整体替换窗口。 */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          variant="secondary"
+          className="h-8 px-2 text-meta"
+          disabled={disabled}
+          onClick={() => {
+            onChange(weekdayPeakPreset(t))
+          }}
+        >
+          {t('admin.pricing.time_preset_weekday_peak')}
+        </Button>
+        <p className="text-meta text-ink-3">
+          {t('admin.pricing.time_preset_weekday_peak_hint')}
+        </p>
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

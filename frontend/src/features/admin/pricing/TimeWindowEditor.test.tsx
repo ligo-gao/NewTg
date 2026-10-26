@@ -80,4 +80,48 @@ describe('TimeWindowEditor', () => {
       await findByText(/Overnight window: Monday 22:00 to Tuesday 08:00/),
     ).toBeTruthy()
   })
+
+  it('fills a weekday peak/off-peak schedule in one click', async () => {
+    const onChange = vi.fn()
+    const { getByRole, getByText } = await renderWithProviders(
+      <Harness onChange={onChange} />,
+      ['common', 'admin'],
+    )
+    const user = userEvent.setup()
+
+    expect(getByText(/Weekdays 09:00–12:00 and 14:00–18:00/)).toBeTruthy()
+    await user.click(getByRole('button', { name: 'Weekday peak/off-peak' }))
+
+    const next = onChange.mock.calls.at(-1)?.[0] as TimeConfigDraft
+    expect(next).toMatchObject({
+      enabled: true,
+      timezone: 'Asia/Shanghai',
+      holidayPolicy: 'cn_offpeak',
+      defaultMultiplier: '50',
+    })
+    expect(
+      next.windows.map((window) => [window.start, window.end, window.multiplier]),
+    ).toEqual([
+      ['09:00', '12:00', '100'],
+      ['14:00', '18:00', '100'],
+    ])
+    expect(next.windows.every((window) => window.days.length === 5)).toBe(true)
+  })
+
+  it('replaces existing windows instead of merging them', async () => {
+    const onChange = vi.fn()
+    const { getByLabelText, getByRole } = await renderWithProviders(
+      <Harness onChange={onChange} />,
+      ['common', 'admin'],
+    )
+    const user = userEvent.setup()
+
+    await user.click(getByLabelText('Enable time pricing'))
+    await user.click(getByRole('button', { name: 'Add window' }))
+    await user.click(getByRole('button', { name: 'Add window' }))
+    await user.click(getByRole('button', { name: 'Weekday peak/off-peak' }))
+
+    const next = onChange.mock.calls.at(-1)?.[0] as TimeConfigDraft
+    expect(next.windows).toHaveLength(2)
+  })
 })
