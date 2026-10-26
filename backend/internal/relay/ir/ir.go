@@ -596,12 +596,17 @@ func BuildOpenAIRequestBody(req *contract.Request) ([]byte, error) {
 	}
 	obj["messages"] = messages
 
-	if len(req.Tools) > 0 {
-		tools, err := encodeTools(req.Tools, rawTools)
+	// 会话中段的工具变更（Anthropic tool_addition / tool_removal）没有延迟
+	// 加载语义可表达，降级为工具集合的增删；控制块本身由 encodeMessage 跳过。
+	tools := applyAnthropicToolChanges(req.Tools, req.Messages)
+	if len(tools) > 0 {
+		encoded, err := encodeTools(tools, rawTools)
 		if err != nil {
 			return nil, err
 		}
-		obj["tools"] = tools
+		obj["tools"] = encoded
+	} else {
+		delete(obj, "tools")
 	}
 	if req.ToolChoice.Mode != "" {
 		choice, err := encodeToolChoice(req.ToolChoice)
@@ -675,6 +680,11 @@ func encodeMessages(messages []contract.Message) ([]any, error) {
 // encodeMessage 返回一个或多个 OpenAI 消息：tool 角色的一条 IR 消息若含多个
 // tool_result 部件，必须展开为多条 OpenAI tool 消息（每个调用 ID 一条）。
 func encodeMessage(message contract.Message) ([]any, error) {
+	// 只含 Anthropic 控制块（工具变更 / 服务端工具）的消息在 OpenAI 协议里
+	// 没有对应内容：可表达的增删已落到 tools[]，整条丢弃，绝不能渲染成空 text。
+	if allAnthropicControlParts(message.Content) {
+		return nil, nil
+	}
 	if message.Role == contract.RoleTool {
 		var results []contract.ContentPart
 		for _, part := range message.Content {
@@ -709,6 +719,11 @@ func encodeMessage(message contract.Message) ([]any, error) {
 	for _, part := range message.Content {
 		switch part.Kind {
 		case contract.PartText:
+			// 工具变更与 Anthropic 服务端工具块只对 Anthropic 上游有语义，
+			// 跨协议出站时跳过。
+			if isAnthropicControlPart(part) {
+				continue
+			}
 			// H1：思考/推理部件不能当作可见正文。Anthropic thinking 与
 			// Gemini thought part 在 IR 里都是 PartText + Meta 标记；流式
 			// 渲染器已经把推理放进 reasoning_content，非流式必须同口径，
@@ -717,6 +732,22 @@ func encodeMessage(message contract.Message) ([]any, error) {
 				// redacted_thinking 没有可读文本：只排除，不渲染。
 				if _, redacted := part.Meta["redacted_thinking"]; !redacted {
 					reasoning += part.Text
+				}
+				continue
+			}
+			// document 块按来源类型降级：文本落到正文，base64 发 file 部件，
+			// url/file_id 没有承载位则显式报错（不静默丢内容）。
+			if isAnthropicDocumentPart(part) {
+				encoded, handled, err := encodeOpenAIDocumentPart(part)
+				if err != nil {
+					return nil, err
+				}
+				if handled {
+					content = append(content, encoded)
+					nonText = true
+				} else {
+					content = append(content, map[string]any{"type": "text", "text": part.Text})
+					plainText += part.Text
 				}
 				continue
 			}
@@ -788,6 +819,63 @@ func isReasoningPart(part contract.ContentPart) bool {
 	}
 	_, redacted := part.Meta["redacted_thinking"]
 	return redacted
+}
+
+// encodeOpenAIDocumentPart 把 Anthropic document 块降级为 OpenAI 内容部件。
+// handled=false 表示文本类来源，调用方按普通 text 输出即可；base64 文档
+// 发标准 OpenAI file 部件（file_data 为 data URI）；url/file_id 在 OpenAI
+// 兼容协议里没有承载位，显式报错而不是丢弃用户内容。
+func encodeOpenAIDocumentPart(part contract.ContentPart) (map[string]any, bool, error) {
+	source, sourceType, ok := anthropicDocumentSource(part)
+	if !ok {
+		return nil, false, nil
+	}
+	switch sourceType {
+	case "text", "content":
+		return nil, false, nil
+	case "base64":
+		data, _ := source["data"].(string)
+		mediaType, _ := source["media_type"].(string)
+		if mediaType == "" {
+			mediaType = "application/octet-stream"
+		}
+		return map[string]any{
+			"type": "file",
+			"file": map[string]any{
+				"filename":  anthropicDocumentFilename(part, mediaType),
+				"file_data": "data:" + mediaType + ";base64," + data,
+			},
+		}, true, nil
+	default:
+		return nil, false, paramErrf("document.source.type %q 没有 OpenAI 兼容的承载位", sourceType)
+	}
+}
+
+// anthropicDocumentFilename 为 OpenAI file 部件合成文件名（必填字段）。
+func anthropicDocumentFilename(part contract.ContentPart, mediaType string) string {
+	ext := ".bin"
+	switch mediaType {
+	case "application/pdf":
+		ext = ".pdf"
+	case "text/plain":
+		ext = ".txt"
+	case "text/csv":
+		ext = ".csv"
+	case "text/html":
+		ext = ".html"
+	case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+		ext = ".docx"
+	}
+	block, _ := anthropicDocumentBlock(part)
+	title, _ := block["title"].(string)
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return "document" + ext
+	}
+	if strings.HasSuffix(strings.ToLower(title), ext) {
+		return title
+	}
+	return title + ext
 }
 
 func encodeContentPart(part contract.ContentPart) (map[string]any, error) {

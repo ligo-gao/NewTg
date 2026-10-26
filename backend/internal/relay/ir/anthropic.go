@@ -146,9 +146,11 @@ func parseAnthropicSystem(raw json.RawMessage) (*contract.Message, error) {
 		if err != nil {
 			return nil, fmt.Errorf("system[%d]: %w", i, err)
 		}
-		if part.Kind != contract.PartText || isAnthropicThinkingPart(part) {
-			// Anthropic 的 system 只接受正文文本块；图片/工具/思考块出现在
-			// system 是调用方错误，显式拒绝而不是丢弃。
+		if part.Kind != contract.PartText || isAnthropicThinkingPart(part) || isAnthropicToolChangePart(part) ||
+			isAnthropicDocumentPart(part) || isAnthropicServerToolPart(part) {
+			// Anthropic 的顶层 system 只接受正文文本块；图片/工具/思考块、文档块、
+			// 服务端工具块以及会话中段的工具变更控制块出现在这里是调用方错误，
+			// 显式拒绝而不是丢弃。
 			return nil, paramErrf("system[%d] 只允许正文 text 块", i)
 		}
 		parts = append(parts, part)
@@ -188,6 +190,23 @@ func parseAnthropicMessages(raws []json.RawMessage) ([]contract.Message, error) 
 		parts, err := parseAnthropicContent(msg.Content)
 		if err != nil {
 			return nil, fmt.Errorf("messages[%d]: %w", i, err)
+		}
+		// 工具变更控制块是会话中段的 system 指令（beta
+		// mid-conversation-tool-changes / inline-tools），按 Anthropic 规范
+		// 只能出现在 system 消息里；放到其它角色是调用方错误，显式拒绝。
+		if role != contract.RoleSystem {
+			for _, part := range parts {
+				if isAnthropicToolChangePart(part) {
+					return nil, fmt.Errorf("messages[%d]: %w", i, paramErrf("tool_addition/tool_removal 只能出现在 system 消息"))
+				}
+			}
+		} else {
+			// system 消息只承载会话指令：文档与服务端工具块出现在这里是调用方错误。
+			for _, part := range parts {
+				if isAnthropicDocumentPart(part) || isAnthropicServerToolPart(part) {
+					return nil, fmt.Errorf("messages[%d]: %w", i, paramErrf("system 消息不允许 document/server_tool_use 块"))
+				}
+			}
 		}
 		// Anthropic 把 tool_result 放在 user 消息里；IR/OpenAI 用独立的 tool
 		// 角色。这里拆成两条消息，否则跨协议编码器会拒绝 user 里的
@@ -250,8 +269,10 @@ func parseAnthropicContent(raw json.RawMessage) ([]contract.ContentPart, error) 
 // R-04 冻结的四类显式映射：text / image / tool_use / tool_result；
 // 扩展思考（thinking / redacted_thinking）是 Anthropic 的标准块，
 // 同样显式映射到 Meta 逃生舱（复审 ruling：对有效 200 响应不得返回 502）。
-// 其余任何类型（document、server_tool_use …）都返回参数错误 ——
-// 静默丢弃会让请求内容悄悄缺失，属于不可接受的语义漂移。
+// document 与 server_tool_use / *_tool_result 同属 Anthropic 标准块：
+// document 按 source 降级到各协议，服务端工具块只做原样回写、跨协议丢弃。
+// 其余任何类型都返回参数错误 —— 静默丢弃会让请求内容悄悄缺失，
+// 属于不可接受的语义漂移。
 func parseAnthropicBlock(raw json.RawMessage) (contract.ContentPart, error) {
 	var block map[string]any
 	if err := json.Unmarshal(raw, &block); err != nil {
@@ -317,9 +338,172 @@ func parseAnthropicBlock(raw json.RawMessage) (contract.ContentPart, error) {
 		return contract.ContentPart{Kind: contract.PartToolCall, Text: string(encoded), Meta: meta}, nil
 	case "tool_result":
 		return parseAnthropicToolResultBlock(block)
+	case "tool_addition", "tool_removal":
+		// 会话中段的工具变更控制块（beta mid-conversation-tool-changes /
+		// inline-tools）。它们是 Anthropic 的标准块，不是「未知类型」：
+		// 用 text + Meta 逃生舱原位保存，同协议回写时恢复原块；跨协议
+		// 编码器再把它降级为工具集合的增删（applyAnthropicToolChanges）。
+		return parseAnthropicToolChangeBlock(block, blockType)
+	case "document":
+		// 文档块（PDF / 纯文本 / URL / Files API）是用户正文的一部分，
+		// 不能当作未知块拒绝。IR 没有独立的 document 构件：原始块存入
+		// Meta 逃生舱，同协议回写时逐字节还原；跨协议编码器按来源类型
+		// 降级（文本→正文、base64→file/inlineData、url/file_id→显式报错）。
+		return parseAnthropicDocumentBlock(block)
+	case "server_tool_use", "mcp_tool_use":
+		// 服务端工具（web_search / web_fetch / code_execution / bash /
+		// text_editor / tool_search / MCP 连接器）的调用块只出现在
+		// Anthropic 上游产生的 assistant 历史里。IR 没有对应构件，但历史
+		// 回放必须原样上行，否则上游因缺少配套结果块而 400。
+		return parseAnthropicServerToolBlock(block, blockType)
 	default:
-		return contract.ContentPart{}, paramErrf("不支持的 Anthropic content 块类型 %q（仅 text/image/tool_use/tool_result）", blockType)
+		// 服务端工具的结果块（web_search_tool_result / web_fetch_tool_result /
+		// code_execution_tool_result / bash_code_execution_tool_result /
+		// text_editor_code_execution_tool_result / tool_search_tool_result /
+		// mcp_tool_result …）与上面的调用块成对出现。按后缀识别，新工具的
+		// 结果块无需逐一点名。
+		if strings.HasSuffix(blockType, "_tool_result") {
+			return parseAnthropicServerToolBlock(block, blockType)
+		}
+		return contract.ContentPart{}, paramErrf("不支持的 Anthropic content 块类型 %q", blockType)
 	}
+}
+
+// parseAnthropicDocumentBlock 解析 document 块。
+//
+// source 的合法形态：base64（media_type + data）、text（media_type + data）、
+// content（块数组）、url、file（file_id）。IR 的 Text 只承载可读投影：
+// 文本类来源直接落到 Text，二进制来源留空（原始块在 Meta 里）。
+func parseAnthropicDocumentBlock(block map[string]any) (contract.ContentPart, error) {
+	source, ok := block["source"].(map[string]any)
+	if !ok {
+		return contract.ContentPart{}, paramErrf("document 块缺少 source 对象")
+	}
+	sourceType, _ := source["type"].(string)
+	meta := blockMeta(block, "cache_control")
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	meta[anthropicDocumentMetaKey] = block
+	if mediaType, _ := source["media_type"].(string); mediaType != "" {
+		meta["mime_type"] = mediaType
+	}
+
+	switch sourceType {
+	case "text":
+		text, _ := source["data"].(string)
+		return contract.ContentPart{Kind: contract.PartText, Text: text, Meta: meta}, nil
+	case "content":
+		items, _ := source["content"].([]any)
+		var text strings.Builder
+		for i, item := range items {
+			obj, ok := item.(map[string]any)
+			if !ok {
+				return contract.ContentPart{}, paramErrf("document.source.content[%d] 必须是 JSON 对象", i)
+			}
+			itemType, _ := obj["type"].(string)
+			switch itemType {
+			case "text":
+				if value, ok := obj["text"].(string); ok {
+					text.WriteString(value)
+				}
+			case "image":
+				// 图片只能靠原始块数组回写，Text 里没有承载位。
+			default:
+				return contract.ContentPart{}, paramErrf("document.source.content[%d] 不支持的块类型 %q", i, itemType)
+			}
+		}
+		return contract.ContentPart{Kind: contract.PartText, Text: text.String(), Meta: meta}, nil
+	case "base64":
+		data, _ := source["data"].(string)
+		if data == "" {
+			return contract.ContentPart{}, paramErrf("document.source.data 为空")
+		}
+		if _, err := base64.StdEncoding.DecodeString(data); err != nil {
+			return contract.ContentPart{}, paramErrf("document.source.data 不是合法 base64: %v", err)
+		}
+		return contract.ContentPart{Kind: contract.PartText, Meta: meta}, nil
+	case "url":
+		if rawURL, _ := source["url"].(string); rawURL == "" {
+			return contract.ContentPart{}, paramErrf("document.source.url 为空")
+		}
+		return contract.ContentPart{Kind: contract.PartText, Meta: meta}, nil
+	case "file":
+		if fileID, _ := source["file_id"].(string); fileID == "" {
+			return contract.ContentPart{}, paramErrf("document.source.file_id 为空")
+		}
+		return contract.ContentPart{Kind: contract.PartText, Meta: meta}, nil
+	default:
+		return contract.ContentPart{}, paramErrf("不支持的 document.source.type %q", sourceType)
+	}
+}
+
+// parseAnthropicServerToolBlock 解析服务端工具调用/结果块。
+//
+// 这些块只对产生它们的 Anthropic 上游有语义（结果里可能含 encrypted_content，
+// 改动即被上游拒绝），因此不做结构映射，只做最小形状校验后原样存入 Meta。
+func parseAnthropicServerToolBlock(block map[string]any, blockType string) (contract.ContentPart, error) {
+	if blockType == "server_tool_use" || blockType == "mcp_tool_use" {
+		if name, _ := block["name"].(string); name == "" {
+			return contract.ContentPart{}, paramErrf("%s 缺少 name", blockType)
+		}
+	} else if id, _ := block["tool_use_id"].(string); id == "" {
+		return contract.ContentPart{}, paramErrf("%s 缺少 tool_use_id", blockType)
+	}
+	return contract.ContentPart{
+		Kind: contract.PartText,
+		Meta: map[string]any{anthropicServerToolMetaKey: block},
+	}, nil
+}
+
+// parseAnthropicToolChangeBlock 解析 tool_addition / tool_removal 控制块。
+//
+// 信封形状：{"type":"tool_addition"|"tool_removal","tool":{...}}。
+// tool 的合法形态（Anthropic 文档 mid-conversation-system-messages）：
+//   - tool_reference（mid-conversation-tool-changes-2026-07-01）：按名引用
+//     tools[] 里已声明（常带 defer_loading）的工具；
+//   - mcp_tool_reference / mcp_toolset_reference：按名引用 MCP 服务器提供的
+//     工具或整个工具集；
+//   - tool_definition（inline-tools-2026-09-15）：按值内联定义，definition
+//     是普通 tools 条目，或是 {"type":"mcp_toolset","mcp_server_name":...}。
+//
+// 只做最小形状校验：既无工具名也无服务器名的块无法跨协议降级，必须报参数错误。
+func parseAnthropicToolChangeBlock(block map[string]any, blockType string) (contract.ContentPart, error) {
+	tool, ok := block["tool"].(map[string]any)
+	if !ok {
+		return contract.ContentPart{}, paramErrf("%s 缺少 tool 对象", blockType)
+	}
+	toolType, _ := tool["type"].(string)
+	switch toolType {
+	case "tool_reference", "mcp_tool_reference":
+		if name, _ := tool["name"].(string); name == "" {
+			return contract.ContentPart{}, paramErrf("%s 的 %s 缺少 name", blockType, toolType)
+		}
+	case "mcp_toolset_reference":
+		if server, _ := tool["server_name"].(string); server == "" {
+			return contract.ContentPart{}, paramErrf("%s 的 mcp_toolset_reference 缺少 server_name", blockType)
+		}
+	case "tool_definition":
+		if blockType != "tool_addition" {
+			return contract.ContentPart{}, paramErrf("%s 只支持按引用移除", blockType)
+		}
+		definition, ok := tool["definition"].(map[string]any)
+		if !ok {
+			return contract.ContentPart{}, paramErrf("tool_addition 的 tool_definition 缺少 definition 对象")
+		}
+		if name, _ := definition["name"].(string); name == "" {
+			// MCP 工具集的内联定义没有单一工具名，只有 mcp_server_name。
+			if server, _ := definition["mcp_server_name"].(string); server == "" {
+				return contract.ContentPart{}, paramErrf("tool_addition 的 tool_definition 缺少 name")
+			}
+		}
+	default:
+		return contract.ContentPart{}, paramErrf("%s 的 tool.type %q 不受支持", blockType, toolType)
+	}
+	return contract.ContentPart{
+		Kind: contract.PartText,
+		Meta: map[string]any{anthropicToolChangeMetaKey: block},
+	}, nil
 }
 
 // parseAnthropicImageBlock 把 image 块映射为 PartImageB64 / PartImageURL。
@@ -362,9 +546,10 @@ func parseAnthropicImageBlock(block map[string]any) (contract.ContentPart, error
 
 // parseAnthropicToolResultBlock 把 tool_result 映射为 PartToolResult。
 //
-// content 有两种规范形态：字符串，或「文本 + 图片」块数组。IR 的
-// PartToolResult 只有 Text 字段；非文本块原样保存在 Meta["content_blocks"]，
-// 由编码器回写，避免工具结果里的图片被静默丢弃。
+// content 有两种规范形态：字符串，或块数组（文本、图片、tool_reference 等）。
+// IR 的 PartToolResult 只有 Text 字段；非文本块原样保存在
+// Meta["content_blocks"]，由编码器回写，避免工具结果里的图片/工具引用被
+// 静默丢弃。
 func parseAnthropicToolResultBlock(block map[string]any) (contract.ContentPart, error) {
 	toolUseID, _ := block["tool_use_id"].(string)
 	if toolUseID == "" {
@@ -399,6 +584,14 @@ func parseAnthropicToolResultBlock(block map[string]any) (contract.ContentPart, 
 				}
 			case "image":
 				// 图片属于工具结果内容，IR 的 Text 无法承载；保留原始块数组。
+			case "document":
+				// 工具结果里也可以夹带文档（例如检索工具返回 PDF）；同样只靠
+				// content_blocks 原样保留。
+			case "search_result":
+				// 开启 citations 后，工具结果会带 search_result 块；原样保留。
+			case "tool_reference", "mcp_tool_reference", "mcp_toolset_reference":
+				// 工具搜索/延迟加载的结果用 tool_reference 命名工具，没有正文；
+				// 与图片一样只靠 content_blocks 原样保留来回写。
 			default:
 				return contract.ContentPart{}, paramErrf("tool_result.content[%d] 不支持的块类型 %q", i, itemType)
 			}
@@ -496,14 +689,191 @@ func isAnthropicThinkingPart(part contract.ContentPart) bool {
 	return redacted
 }
 
+// anthropicToolChangeMetaKey 是 tool_addition / tool_removal 控制块在
+// ContentPart.Meta 里的存储键（值为原始块对象）。
+const anthropicToolChangeMetaKey = "anthropic_tool_change"
+
+// anthropicDocumentMetaKey 是 document 块在 ContentPart.Meta 里的存储键
+// （值为原始块对象）。document 是真实用户内容，不能丢弃；同协议逐字节
+// 还原，跨协议由各编码器按 source.type 降级。
+const anthropicDocumentMetaKey = "anthropic_document"
+
+// anthropicServerToolMetaKey 是 server_tool_use / mcp_tool_use 及其结果块在
+// ContentPart.Meta 里的存储键（值为原始块对象）。这些块只对 Anthropic
+// 上游有语义：同协议原样回写，跨协议丢弃。
+const anthropicServerToolMetaKey = "anthropic_server_tool"
+
+// isAnthropicToolChangePart 判断部件是否承载会话中段的工具变更控制块。
+func isAnthropicToolChangePart(part contract.ContentPart) bool {
+	_, ok := anthropicToolChangeBlock(part)
+	return ok
+}
+
+// anthropicToolChangeBlock 取出控制块的原始 JSON 对象。
+func anthropicToolChangeBlock(part contract.ContentPart) (map[string]any, bool) {
+	block, ok := part.Meta[anthropicToolChangeMetaKey].(map[string]any)
+	return block, ok
+}
+
+// hasAnthropicToolChangePart 判断消息里是否含工具变更控制块。
+func hasAnthropicToolChangePart(parts []contract.ContentPart) bool {
+	for _, part := range parts {
+		if isAnthropicToolChangePart(part) {
+			return true
+		}
+	}
+	return false
+}
+
+// isAnthropicDocumentPart 判断部件是否承载 document 块。
+func isAnthropicDocumentPart(part contract.ContentPart) bool {
+	_, ok := anthropicDocumentBlock(part)
+	return ok
+}
+
+// anthropicDocumentBlock 取出 document 块的原始 JSON 对象。
+func anthropicDocumentBlock(part contract.ContentPart) (map[string]any, bool) {
+	block, ok := part.Meta[anthropicDocumentMetaKey].(map[string]any)
+	return block, ok
+}
+
+// anthropicDocumentSource 取出 document 块的 source 对象与来源类型。
+func anthropicDocumentSource(part contract.ContentPart) (map[string]any, string, bool) {
+	block, ok := anthropicDocumentBlock(part)
+	if !ok {
+		return nil, "", false
+	}
+	source, ok := block["source"].(map[string]any)
+	if !ok {
+		return nil, "", false
+	}
+	sourceType, _ := source["type"].(string)
+	return source, sourceType, true
+}
+
+// isAnthropicServerToolPart 判断部件是否承载服务端工具调用/结果块。
+func isAnthropicServerToolPart(part contract.ContentPart) bool {
+	_, ok := anthropicServerToolBlock(part)
+	return ok
+}
+
+// anthropicServerToolBlock 取出服务端工具块的原始 JSON 对象。
+func anthropicServerToolBlock(part contract.ContentPart) (map[string]any, bool) {
+	block, ok := part.Meta[anthropicServerToolMetaKey].(map[string]any)
+	return block, ok
+}
+
+// isAnthropicControlPart 判断部件是否是无法跨协议表达的 Anthropic 控制块。
+func isAnthropicControlPart(part contract.ContentPart) bool {
+	return isAnthropicToolChangePart(part) || isAnthropicServerToolPart(part)
+}
+
+// allAnthropicControlParts 判断消息是否只由控制块组成。这类消息跨协议
+// 出站时没有可表达内容，应整条丢弃（绝不能渲染成空 text）。
+func allAnthropicControlParts(parts []contract.ContentPart) bool {
+	if len(parts) == 0 {
+		return false
+	}
+	for _, part := range parts {
+		if !isAnthropicControlPart(part) {
+			return false
+		}
+	}
+	return true
+}
+
+// anthropicToolChange 是控制块的结构化视图。
+type anthropicToolChange struct {
+	removal    bool
+	name       string
+	definition map[string]any // 仅按值的 tool_addition 非空
+}
+
+// collectAnthropicToolChanges 按出现顺序收集整条请求里的工具变更。
+func collectAnthropicToolChanges(messages []contract.Message) []anthropicToolChange {
+	var changes []anthropicToolChange
+	for _, message := range messages {
+		for _, part := range message.Content {
+			block, ok := anthropicToolChangeBlock(part)
+			if !ok {
+				continue
+			}
+			// 解析阶段已校验形状，这里只需宽松提取。
+			kind, _ := block["type"].(string)
+			tool, _ := block["tool"].(map[string]any)
+			change := anthropicToolChange{removal: kind == "tool_removal"}
+			if definition, ok := tool["definition"].(map[string]any); ok {
+				change.definition = definition
+			}
+			if change.name, _ = tool["name"].(string); change.name == "" && change.definition != nil {
+				change.name, _ = change.definition["name"].(string)
+			}
+			if change.name == "" {
+				continue
+			}
+			changes = append(changes, change)
+		}
+	}
+	return changes
+}
+
+// applyAnthropicToolChanges 把会话中段的工具变更降级到工具集合上：
+//   - tool_removal：按名剔除；
+//   - 按引用的 tool_addition：no-op —— OpenAI/Gemini 本来就把 tools[] 里
+//     的声明整体下发，没有 defer_loading 的「尚未加载」状态需要切换；
+//   - 按值的 tool_addition：并入集合（同名替换）。
+//
+// 没有控制块时原样返回（含 nil），避免无谓分配。
+func applyAnthropicToolChanges(tools []contract.Tool, messages []contract.Message) []contract.Tool {
+	changes := collectAnthropicToolChanges(messages)
+	if len(changes) == 0 {
+		return tools
+	}
+	out := append([]contract.Tool(nil), tools...)
+	for _, change := range changes {
+		switch {
+		case change.removal:
+			kept := make([]contract.Tool, 0, len(out))
+			for _, tool := range out {
+				if tool.Name != change.name {
+					kept = append(kept, tool)
+				}
+			}
+			out = kept
+		case change.definition != nil:
+			added := contract.Tool{Name: change.name}
+			if description, _ := change.definition["description"].(string); description != "" {
+				added.Description = description
+			}
+			if schema, ok := change.definition["input_schema"].(map[string]any); ok {
+				added.Schema = schema
+			}
+			replaced := false
+			for i := range out {
+				if out[i].Name == change.name {
+					out[i] = added
+					replaced = true
+					break
+				}
+			}
+			if !replaced {
+				out = append(out, added)
+			}
+		}
+	}
+	return out
+}
+
 // isKnownAnthropicBlockType 判断块类型是否已显式建模。
 // 用于响应解析区分「已知类型的字段错误」（拒绝）与「未来新增类型」（保留）。
 func isKnownAnthropicBlockType(blockType string) bool {
 	switch blockType {
-	case "text", "image", "tool_use", "tool_result", "thinking", "redacted_thinking":
+	case "text", "image", "tool_use", "tool_result", "thinking", "redacted_thinking",
+		"document", "server_tool_use", "mcp_tool_use":
 		return true
 	default:
-		return false
+		// 服务端工具结果块按后缀识别（web_search_tool_result 等）。
+		return strings.HasSuffix(blockType, "_tool_result")
 	}
 }
 
@@ -648,11 +1018,27 @@ func encodeAnthropicMessages(messages []contract.Message) (any, []any, error) {
 	for i, message := range messages {
 		switch message.Role {
 		case contract.RoleSystem, contract.RoleDeveloper:
+			// 会话中段的工具变更控制块（tool_addition / tool_removal）必须留在
+			// messages[] 的原位置：提升到顶层 system 会改变它们相对对话的位置，
+			// Anthropic 会按「工具变更必须位于消息流中」拒绝。
+			inPlace := hasAnthropicToolChangePart(message.Content)
+			var blocks []any
 			for j, part := range message.Content {
 				if part.Kind != contract.PartText || isAnthropicThinkingPart(part) {
 					return nil, nil, paramErrf("messages[%d].content[%d]: system 消息只允许正文 text 部件", i, j)
 				}
-				systemParts = append(systemParts, part)
+				if !inPlace {
+					systemParts = append(systemParts, part)
+					continue
+				}
+				block, err := encodeAnthropicBlock(part)
+				if err != nil {
+					return nil, nil, paramErrf("messages[%d].content[%d]: %v", i, j, err)
+				}
+				blocks = append(blocks, block)
+			}
+			if inPlace {
+				appendMessage("system", blocks)
 			}
 		case contract.RoleUser:
 			blocks, err := encodeAnthropicBlocks(message.Content)
@@ -710,6 +1096,17 @@ func encodeAnthropicBlocks(parts []contract.ContentPart) ([]any, error) {
 func encodeAnthropicBlock(part contract.ContentPart) (map[string]any, error) {
 	switch part.Kind {
 	case contract.PartText:
+		// 文档块与服务端工具块原位恢复原始 JSON 对象；不能当正文 text 发回上游。
+		if block, ok := anthropicDocumentBlock(part); ok {
+			return cloneMap(block), nil
+		}
+		if block, ok := anthropicServerToolBlock(part); ok {
+			return cloneMap(block), nil
+		}
+		// 工具变更控制块原位恢复原始 JSON 对象；不能当正文 text 发回上游。
+		if block, ok := anthropicToolChangeBlock(part); ok {
+			return cloneMap(block), nil
+		}
 		// 加密思考块与可读思考块在 IR 里都以 text + Meta 承载；
 		// 回写时必须恢复原块类型，不能当成正文 text 发回上游。
 		if data, ok := part.Meta["redacted_thinking"].(string); ok {

@@ -62,20 +62,22 @@ const (
 // 取值均为 Anthropic 公开文档中的 beta 标识；不含 Authorization / Cookie /
 // hop-by-hop 头——本表只作用于 `anthropic-beta` 这一个头。
 var anthropicBetaAllowlist = map[string]struct{}{
-	"messages-2023-12-15":                    {},
-	"prompt-caching-2024-07-31":              {},
-	"computer-use-2024-10-22":                {},
-	"computer-use-2025-01-24":                {},
-	"token-counting-2024-11-01":              {},
-	"max-tokens-3-5-sonnet-2024-07-15":       {},
-	"output-128k-2025-02-19":                 {},
-	"interleaved-thinking-2025-05-14":        {},
-	"extended-cache-ttl-2025-04-11":          {},
-	"fine-grained-tool-streaming-2025-05-14": {},
-	"context-1m-2025-08-07":                  {},
-	"mcp-client-2025-04-04":                  {},
-	"code-execution-2025-05-22":              {},
-	"files-api-2025-04-14":                   {},
+	"messages-2023-12-15":                      {},
+	"prompt-caching-2024-07-31":                {},
+	"computer-use-2024-10-22":                  {},
+	"computer-use-2025-01-24":                  {},
+	"token-counting-2024-11-01":                {},
+	"max-tokens-3-5-sonnet-2024-07-15":         {},
+	"output-128k-2025-02-19":                   {},
+	"interleaved-thinking-2025-05-14":          {},
+	"extended-cache-ttl-2025-04-11":            {},
+	"fine-grained-tool-streaming-2025-05-14":   {},
+	"context-1m-2025-08-07":                    {},
+	"mcp-client-2025-04-04":                    {},
+	"code-execution-2025-05-22":                {},
+	"files-api-2025-04-14":                     {},
+	"mid-conversation-tool-changes-2026-07-01": {},
+	"inline-tools-2026-09-15":                  {},
 }
 
 // FilterAnthropicBeta 对客户端 `anthropic-beta` 原始值做白名单过滤。

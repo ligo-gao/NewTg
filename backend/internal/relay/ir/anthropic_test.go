@@ -144,9 +144,8 @@ func TestAnthropicRequestFourBlockTypesRoundTrip(t *testing.T) {
 
 func TestAnthropicUnknownBlockTypeRejected(t *testing.T) {
 	cases := map[string]string{
-		"document":        `{"model":"m","max_tokens":1,"messages":[{"role":"user","content":[{"type":"document","source":{"type":"base64","data":"x"}}]}]}`,
-		"server_tool_use": `{"model":"m","max_tokens":1,"messages":[{"role":"assistant","content":[{"type":"server_tool_use","id":"s","name":"web"}]}]}`,
-		"system图片":        `{"model":"m","max_tokens":1,"system":[{"type":"image","source":{"type":"url","url":"https://x"}}],"messages":[]}`,
+		"未来新增块":    `{"model":"m","max_tokens":1,"messages":[{"role":"user","content":[{"type":"future_block","payload":1}]}]}`,
+		"system图片": `{"model":"m","max_tokens":1,"system":[{"type":"image","source":{"type":"url","url":"https://x"}}],"messages":[]}`,
 	}
 	for name, body := range cases {
 		_, err := ParseAnthropicRequest([]byte(body))

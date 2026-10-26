@@ -474,8 +474,11 @@ func BuildGeminiRequestBody(req *contract.Request) ([]byte, error) {
 	// name/description/parameters，response、behavior 等声明级字段只能靠
 	// 原始子对象合并保留。
 	rawTools, _ := obj["tools"].([]any)
-	if len(req.Tools) > 0 {
-		declarations, err := encodeGeminiTools(req.Tools, rawTools)
+	// 会话中段的工具变更（Anthropic tool_addition / tool_removal）降级为
+	// 工具集合的增删；控制块本身由 contents 编码器跳过。
+	tools := applyAnthropicToolChanges(req.Tools, req.Messages)
+	if len(tools) > 0 {
+		declarations, err := encodeGeminiTools(tools, rawTools)
 		if err != nil {
 			return nil, err
 		}
@@ -568,9 +571,17 @@ func encodeGeminiContents(messages []contract.Message) (map[string]any, []any, e
 	}
 
 	for i, message := range messages {
+		// 编码后没有任何部件可发的消息整条跳过，不要发出空 content：Gemini
+		// 拒绝 parts 为空的 content（400）。出现这种情况的只有两类消息——纯
+		// Anthropic 控制块消息（已降级到 tools[]）和本身内容为空的消息。
 		switch message.Role {
 		case contract.RoleSystem, contract.RoleDeveloper:
 			for j, part := range message.Content {
+				// Anthropic 控制块（工具变更 / 服务端工具）对 Gemini 无意义，
+				// 跳过；可表达的增删已落到 tools。
+				if isAnthropicControlPart(part) {
+					continue
+				}
 				if part.Kind != contract.PartText {
 					return nil, nil, paramErrf("messages[%d].content[%d]: system 消息只允许 text 部件", i, j)
 				}
@@ -581,19 +592,25 @@ func encodeGeminiContents(messages []contract.Message) (map[string]any, []any, e
 			if err != nil {
 				return nil, nil, fmt.Errorf("messages[%d]: %w", i, err)
 			}
-			appendContent("user", parts)
+			if len(parts) > 0 {
+				appendContent("user", parts)
+			}
 		case contract.RoleAssistant:
 			parts, err := encodeGeminiParts(message.Content, toolCallNames)
 			if err != nil {
 				return nil, nil, fmt.Errorf("messages[%d]: %w", i, err)
 			}
-			appendContent("model", parts)
+			if len(parts) > 0 {
+				appendContent("model", parts)
+			}
 		case contract.RoleTool:
 			parts, err := encodeGeminiParts(message.Content, toolCallNames)
 			if err != nil {
 				return nil, nil, fmt.Errorf("messages[%d]: %w", i, err)
 			}
-			appendContent("user", parts)
+			if len(parts) > 0 {
+				appendContent("user", parts)
+			}
 		default:
 			return nil, nil, paramErrf("messages[%d]: 不支持的消息角色 %q", i, message.Role)
 		}
@@ -660,6 +677,11 @@ func flattenGeminiDeclarations(rawTools []any) map[string]map[string]any {
 func encodeGeminiParts(parts []contract.ContentPart, toolCallNames map[string]string) ([]any, error) {
 	out := make([]any, 0, len(parts))
 	for i, part := range parts {
+		// Anthropic 控制块（工具变更 / 服务端工具）只对 Anthropic 上游有语义，
+		// 跨协议出站时跳过。
+		if isAnthropicControlPart(part) {
+			continue
+		}
 		encoded, err := encodeGeminiPart(part, toolCallNames)
 		if err != nil {
 			return nil, fmt.Errorf("content[%d]: %w", i, err)
@@ -687,9 +709,45 @@ func collectToolCallNames(messages []contract.Message) map[string]string {
 	return names
 }
 
+// encodeGeminiDocumentPart 把 Anthropic document 块降级为 Gemini part。
+// handled=false 表示文本类来源，调用方按普通 text 输出即可；base64 文档
+// 发 inlineData（Gemini 原生支持 application/pdf）；url/file_id 没有承载位，
+// 显式报错而不是丢弃用户内容。
+func encodeGeminiDocumentPart(part contract.ContentPart) (map[string]any, bool, error) {
+	source, sourceType, ok := anthropicDocumentSource(part)
+	if !ok {
+		return nil, false, nil
+	}
+	switch sourceType {
+	case "text", "content":
+		return nil, false, nil
+	case "base64":
+		data, _ := source["data"].(string)
+		mediaType, _ := source["media_type"].(string)
+		if mediaType == "" {
+			mediaType = "application/octet-stream"
+		}
+		return map[string]any{
+			"inlineData": map[string]any{
+				"mimeType": mediaType,
+				"data":     data,
+			},
+		}, true, nil
+	default:
+		return nil, false, paramErrf("document.source.type %q 没有 Gemini 兼容的承载位", sourceType)
+	}
+}
+
 func encodeGeminiPart(part contract.ContentPart, toolCallNames map[string]string) (map[string]any, error) {
 	switch part.Kind {
 	case contract.PartText:
+		// document 块按来源类型降级：文本落到正文，base64 发 inlineData
+		//（Gemini 原生支持 PDF），url/file_id 没有承载位则显式报错。
+		if encoded, handled, err := encodeGeminiDocumentPart(part); err != nil {
+			return nil, err
+		} else if handled {
+			return encoded, nil
+		}
 		item := map[string]any{"text": part.Text}
 		if thought, _ := part.Meta["thought"].(bool); thought {
 			item["thought"] = true

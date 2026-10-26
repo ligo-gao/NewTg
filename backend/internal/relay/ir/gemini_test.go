@@ -550,3 +550,35 @@ func TestGeminiBuildFunctionCallArgsMustBeObject(t *testing.T) {
 		t.Fatalf("非对象参数必须报 ErrParamInvalid，得到 %v", err)
 	}
 }
+
+// TestGeminiBuildDropsEmptyContentMessages 锁定空消息的出口形态：Gemini 拒绝
+// parts 为空的 content（400），所以没有任何可发部件的消息必须整条跳过，而不是
+// 发出一条 {"role":"user","parts":[]}。
+func TestGeminiBuildDropsEmptyContentMessages(t *testing.T) {
+	req := &contract.Request{
+		Model: "gemini",
+		Messages: []contract.Message{
+			{Role: contract.RoleUser, Content: []contract.ContentPart{{Kind: contract.PartText, Text: "hi"}}},
+			{Role: contract.RoleAssistant},
+			{Role: contract.RoleUser, Content: []contract.ContentPart{{Kind: contract.PartText, Text: "more"}}},
+		},
+	}
+	encoded, err := BuildGeminiRequestBody(req)
+	if err != nil {
+		t.Fatalf("BuildGeminiRequestBody: %v", err)
+	}
+	var built map[string]any
+	if err := json.Unmarshal(encoded, &built); err != nil {
+		t.Fatal(err)
+	}
+	contents, _ := built["contents"].([]any)
+	// 空 assistant 消息被跳过；相邻的两条 user 合并成一条。
+	if len(contents) != 1 {
+		t.Fatalf("contents = %v, want 1（空消息不产生空 parts）", contents)
+	}
+	first, _ := contents[0].(map[string]any)
+	parts, _ := first["parts"].([]any)
+	if len(parts) != 2 || first["role"] != "user" {
+		t.Fatalf("合并后的 content = %v, want 两条 user 部件", first)
+	}
+}

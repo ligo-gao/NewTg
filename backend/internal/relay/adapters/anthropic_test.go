@@ -430,6 +430,16 @@ func TestAnthropicBuildRequestForwardsAllowlistedBeta(t *testing.T) {
 	}
 }
 
+// TestAnthropicBetaAllowlistIncludesToolChangeBetas 锁定会话中段工具变更所需
+// 的两个 beta：白名单漏掉它们时，同协议 Anthropic 上游会因缺少 beta 拒绝
+// tool_addition / tool_removal 块。
+func TestAnthropicBetaAllowlistIncludesToolChangeBetas(t *testing.T) {
+	const betas = "mid-conversation-tool-changes-2026-07-01, inline-tools-2026-09-15"
+	if got := FilterAnthropicBeta(betas); got != betas {
+		t.Fatalf("FilterAnthropicBeta(%q) = %q, want both kept", betas, got)
+	}
+}
+
 // TestAnthropicBuildCountTokensRequest 锁定 count_tokens 的路径、模型映射与
 // 未建模字段透传（精确计数必须基于客户端真实内容）。
 func TestAnthropicBuildCountTokensRequest(t *testing.T) {
