@@ -1,27 +1,36 @@
 /**
- * 补全模型档案向导：第 1 步「选模型」与第 2 步「批量默认值」。
+ * 补全模型档案向导：四个步骤的容器。
  *
- * 步骤 3（逐行确认）、步骤 4（结果）与写库循环属于 Task 6，这里只呈现四个
- * 步骤的导航骨架，3/4 步保持禁用。上游事实只来自探测响应；能力 / 模态 /
- * 参数 / 知识截止 *只能* 由管理员在向导里填写，绝不从模型名推断。
+ * 第 1 步「选模型」、第 2 步「批量默认值」、第 3 步「逐行确认」、第 4 步
+ * 「结果」。上游事实只来自探测响应；能力 / 模态 / 参数 / 知识截止 *只能*
+ * 由管理员在向导里填写，绝不从模型名推断。
  *
- * 本文件只保留容器职责：探测、行状态、步骤导航与页脚。目录读取在
- * `model-profile-wizard-queries.ts`，两步的界面各在自己的 step 文件里。
+ * 本文件只保留容器职责：探测、行状态、目录读取、写库循环与步骤导航。
+ * 各步的界面在自己的 step 文件里。写库只有这一份入口：`for...of` 串行、
+ * 逐行 try/catch，一行失败不影响其它行。
  */
 import { useEffect, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 
+import { apiClient } from '@/api/client'
 import { ApiError } from '@/api/errors'
+import { requireData } from '@/api/result'
 import type { components } from '@/api/schema'
-import { useI18n } from '@/shared/lib/i18n-context'
+import { useI18n, type TranslateFn } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/base/button'
 
 import { fetchChannelModels } from './api'
 import {
+  MAX_WIZARD_ROWS,
   applyDefaults,
+  buildCreateBody,
   buildRows,
+  buildUpdateBody,
   parseParameterLines,
+  rowActionOf,
+  rowIsValid,
   type ParameterRow,
+  type RowResult,
   type WizardDefaults,
   type WizardRow,
 } from './model-profile-wizard-logic'
@@ -36,7 +45,9 @@ import {
   emptyDefaultsForm,
   type DefaultsFormState,
 } from './model-profile-wizard-step-defaults'
+import { StepConfirm } from './model-profile-wizard-step-confirm'
 import { StepModels } from './model-profile-wizard-step-models'
+import { ModelProfileWizardResult } from './model-profile-wizard-result'
 import type { FetchChannelModelEntry, FetchChannelModelsInput } from './types'
 
 type ModelMeta = components['schemas']['ModelMeta']
@@ -84,7 +95,7 @@ export interface ModelProfileWizardProps {
 }
 
 type ProbeState = 'loading' | 'ready' | 'error'
-type WizardStep = 1 | 2
+type WizardStep = 1 | 2 | 3 | 4
 
 function sameStrings(
   left: readonly string[],
@@ -138,6 +149,25 @@ function vendorNameOf(
   return directory.nameById.get(Number(form.vendorChoice)) ?? ''
 }
 
+/**
+ * 单行失败的原因。409 是乐观锁冲突，管理员需要「刷新后重试」而不是看服务端
+ * 原始 detail；其它错误用 detail（RFC 7807）或 title，服务端点名字段时附在
+ * 后面，方便定位。
+ */
+function writeFailureMessage(error: unknown, t: TranslateFn): string {
+  if (error instanceof ApiError) {
+    if (error.status === 409) {
+      return t('common.channels.profileWizard.conflict')
+    }
+    const base = error.detail ?? error.title
+    if (error.fields !== undefined && error.fields.length > 0) {
+      return `${base} (${error.fields.join(', ')})`
+    }
+    return base
+  }
+  return error instanceof Error ? error.message : String(error)
+}
+
 function WizardLoading({ label }: { label: string }) {
   return (
     <div
@@ -160,6 +190,7 @@ export function ModelProfileWizard({
   onApplyModels,
 }: ModelProfileWizardProps) {
   const { t } = useI18n()
+  const queryClient = useQueryClient()
   const requestKey = [
     request.channel_id ?? '',
     request.type,
@@ -182,10 +213,17 @@ export function ModelProfileWizard({
   const [fillChannelModels, setFillChannelModels] = useState(true)
   const [form, setForm] = useState<DefaultsFormState>(emptyDefaultsForm)
   const [appliedCount, setAppliedCount] = useState<number | null>(null)
+  // 提交进度与逐行结果。`null` 进度 = 未在写库；`null` 结果 = 还没提交过。
+  const [progress, setProgress] = useState<{
+    done: number
+    total: number
+  } | null>(null)
+  const [results, setResults] = useState<RowResult[] | null>(null)
   // 只为每个探测结果建一次行：目录查询的后台重取不应把管理员已套用的
-  // 默认值 / 勾选状态冲掉。目录「失败 → 成功」算一次新的建行时机，因此
-  // 状态也进入 key，恢复后只重建一次。
+  // 默认值 / 勾选状态 / 第 3 步的编辑冲掉。目录「从未成功 → 成功」算一次
+  // 新的建行时机（恢复后只重建一次）；进入过成功之后再失败**不重建**。
   const builtKeyRef = useRef<string | null>(null)
+  const catalogReadyOnceRef = useRef(false)
 
   const catalogQuery = useQuery({
     queryKey: MODEL_CATALOG_QUERY_KEY,
@@ -234,14 +272,26 @@ export function ModelProfileWizard({
       ? 'error'
       : 'success'
   const catalogSettled = catalogStatus !== 'pending'
-  const catalogReady = catalogStatus === 'success'
+  // 一旦成功拿到过目录就再也不会「不可用」：成功后的后台重取失败只影响
+  // 新鲜度，不应把已解锁的流程重新锁上，也不应重建行。
+  const catalogReady =
+    catalogStatus === 'success' ||
+    (catalogStatus === 'error' && catalogReadyOnceRef.current)
+  const catalogFailed = catalogStatus === 'error' && !catalogReady
 
   // 行由「探测条目 + 既有档案 + 表单当前模型」共同决定，三者都就绪后才建，
-  // 否则会把已有档案误标成「待建档」。目录读取失败时先用空目录建行，好让
-  // 第 1 步显示错误横幅；恢复成功后（key 里的状态变化）再重建一次。
+  // 否则会把已有档案误标成「待建档」。目录读取失败（从未成功）时先用空目录
+  // 建行，好让第 1 步显示错误横幅；恢复成功后只重建一次。
   useEffect(() => {
     if (probeState !== 'ready' || !catalogSettled) return
-    const buildKey = `${nonce}\u0000${channelModelsKey}\u0000${catalogStatus}`
+    if (catalogStatus === 'success') catalogReadyOnceRef.current = true
+    // 成功过之后再失败沿用 `success` 相位，key 不变 ⇒ 不重建（否则会冲掉
+    // 第 2 步默认值与第 3 步编辑）。
+    const phase =
+      catalogStatus === 'error' && catalogReadyOnceRef.current
+        ? 'success'
+        : catalogStatus
+    const buildKey = `${nonce}\u0000${channelModelsKey}\u0000${phase}`
     if (builtKeyRef.current === buildKey) return
     builtKeyRef.current = buildKey
     setRows(
@@ -255,8 +305,17 @@ export function ModelProfileWizard({
   const vendorDirectory = vendorsQuery.data ?? EMPTY_VENDOR_DIRECTORY
 
   const selectedCount = rows.filter((row) => row.selected).length
+  const selectedRows = rows.filter((row) => row.selected)
+  const submitting = progress !== null
+  const tooMany = selectedCount > MAX_WIZARD_ROWS
   // 目录未成功加载前不放开第 2 步：档案状态还不可信，写库必须失败关闭。
   const stepTwoEnabled = selectedCount > 0 && catalogReady
+
+  function updateRow(id: string, patch: Partial<WizardRow>): void {
+    setRows((current) =>
+      current.map((row) => (row.id === id ? { ...row, ...patch } : row)),
+    )
+  }
 
   function toggleRow(id: string): void {
     setRows((current) =>
@@ -321,6 +380,170 @@ export function ModelProfileWizard({
     onBack()
   }
 
+  function invalidateCatalog(): void {
+    // 不 await：结果页要立刻出现，刷新在后台完成即可。
+    void queryClient.invalidateQueries({ queryKey: MODEL_CATALOG_QUERY_KEY })
+    void queryClient.invalidateQueries({ queryKey: VENDOR_QUERY_KEY })
+  }
+
+  /**
+   * 串行写库。供应商先解析（按 `trim()` + 小写去重，本地没有才创建，每个
+   * 名字最多试一次），再逐行写档案；单行失败只记该行，不中断其它行。
+   */
+  async function writeRows(targets: WizardRow[]): Promise<Map<string, RowResult>> {
+    const output = new Map<string, RowResult>()
+    const vendorIds = new Map<string, number | null>()
+    const vendorErrors = new Map<string, string>()
+
+    // 只给「真的会写库且通过校验」的行解析供应商：跳过 / 非法行不应产生
+    // 供应商这类副作用。
+    const writable = targets.filter(
+      (row) =>
+        rowActionOf(row, catalog.get(row.id)) !== 'skip' && rowIsValid(row),
+    )
+    for (const row of writable) {
+      const name = row.vendorName.trim()
+      if (name === '') continue
+      const key = name.toLowerCase()
+      if (vendorIds.has(key) || vendorErrors.has(key)) continue
+      const known = vendorDirectory.ids.get(key)
+      if (known !== undefined) {
+        vendorIds.set(key, known)
+        continue
+      }
+      try {
+        const created = requireData(
+          await apiClient.POST('/api/vendors', {
+            // 新建供应商沿用模型表单的默认值：启用、无描述 / 图标。
+            body: { name, status: 1 },
+          }),
+        )
+        vendorIds.set(key, created.id)
+      } catch (error) {
+        // 记录失败原因并让同名的后续行复用，避免对同一个名字反复创建。
+        vendorErrors.set(key, writeFailureMessage(error, t))
+      }
+    }
+
+    for (const [index, row] of targets.entries()) {
+      setProgress({ done: index, total: targets.length })
+      const profile = catalog.get(row.id)
+      const action = rowActionOf(row, profile)
+      if (action === 'skip') {
+        output.set(row.id, {
+          id: row.id,
+          action: 'skipped',
+          retryable: false,
+        })
+        continue
+      }
+      if (!rowIsValid(row)) {
+        output.set(row.id, {
+          id: row.id,
+          action: 'failed',
+          message: t('common.channels.profileWizard.rowInvalid'),
+          retryable: false,
+        })
+        continue
+      }
+
+      const name = row.vendorName.trim()
+      const key = name.toLowerCase()
+      const vendorError = name === '' ? undefined : vendorErrors.get(key)
+      if (vendorError !== undefined) {
+        output.set(row.id, {
+          id: row.id,
+          action: 'failed',
+          message: t('common.channels.profileWizard.vendorCreateFailed', {
+            name,
+            message: vendorError,
+          }),
+          retryable: true,
+        })
+        continue
+      }
+      const vendorId = name === '' ? null : (vendorIds.get(key) ?? null)
+
+      try {
+        if (profile === undefined) {
+          await apiClient.POST('/api/models', {
+            body: buildCreateBody(row, vendorId),
+          })
+          output.set(row.id, {
+            id: row.id,
+            action: 'created',
+            retryable: false,
+          })
+        } else {
+          await apiClient.PUT('/api/models/{id}', {
+            params: { path: { id: profile.id } },
+            body: buildUpdateBody(row, profile, vendorId),
+          })
+          output.set(row.id, {
+            id: row.id,
+            action: 'updated',
+            retryable: false,
+          })
+        }
+      } catch (error) {
+        output.set(row.id, {
+          id: row.id,
+          action: 'failed',
+          message: writeFailureMessage(error, t),
+          retryable: true,
+        })
+      }
+    }
+    return output
+  }
+
+  function mergeResults(
+    targets: WizardRow[],
+    written: Map<string, RowResult>,
+  ): RowResult[] {
+    return targets.map(
+      (row) =>
+        written.get(row.id) ?? {
+          id: row.id,
+          action: 'failed',
+          message: t('common.channels.profileWizard.rowInvalid'),
+          retryable: false,
+        },
+    )
+  }
+
+  async function submitAll(): Promise<void> {
+    if (submitting || tooMany || selectedRows.length === 0) return
+    const targets = selectedRows
+    setResults(null)
+    setProgress({ done: 0, total: targets.length })
+    const written = await writeRows(targets)
+    setProgress(null)
+    setResults(mergeResults(targets, written))
+    setStep(4)
+    invalidateCatalog()
+  }
+
+  async function retryFailed(): Promise<void> {
+    if (results === null || submitting) return
+    const retryable = new Set(
+      results
+        .filter((result) => result.action === 'failed' && result.retryable)
+        .map((result) => result.id),
+    )
+    const targets = selectedRows.filter((row) => retryable.has(row.id))
+    if (targets.length === 0) return
+    setProgress({ done: 0, total: targets.length })
+    const written = await writeRows(targets)
+    setProgress(null)
+    setResults((current) =>
+      current === null
+        ? null
+        : current.map((result) => written.get(result.id) ?? result),
+    )
+    invalidateCatalog()
+  }
+
   const backButton = (
     <Button variant="secondary" onClick={onBack}>
       {t('common.channels.profileWizard.back')}
@@ -376,7 +599,11 @@ export function ModelProfileWizard({
         className="grid grid-cols-4 border-b border-border-hairline"
       >
         {([1, 2, 3, 4] as const).map((index) => {
-          const enabled = index === 1 || (index === 2 && stepTwoEnabled)
+          const enabled = !submitting
+            ? index === 1 ||
+              ((index === 2 || index === 3) && stepTwoEnabled) ||
+              (index === 4 && results !== null)
+            : false
           const current = step === index
           return (
             <button
@@ -422,12 +649,12 @@ export function ModelProfileWizard({
           onToggleRow={toggleRow}
           onSelectVisible={selectVisible}
           onClearAll={clearAll}
-          catalogFailed={catalogStatus === 'error'}
+          catalogFailed={catalogFailed}
           onRetryCatalog={() => {
             void catalogQuery.refetch()
           }}
         />
-      ) : (
+      ) : step === 2 ? (
         <StepDefaults
           value={form}
           onChange={setForm}
@@ -435,6 +662,23 @@ export function ModelProfileWizard({
           selectedCount={selectedCount}
           appliedCount={appliedCount}
           onApply={applyBatchDefaults}
+        />
+      ) : step === 3 ? (
+        <StepConfirm
+          rows={selectedRows}
+          catalog={catalog}
+          vendorDirectory={vendorDirectory}
+          tooMany={tooMany}
+          onUpdateRow={updateRow}
+        />
+      ) : (
+        <ModelProfileWizardResult
+          results={results ?? []}
+          busy={submitting}
+          onRetryFailed={() => {
+            void retryFailed()
+          }}
+          onBackToForm={backToForm}
         />
       )}
 
@@ -453,22 +697,46 @@ export function ModelProfileWizard({
             count: selectedCount,
           })}
         </span>
+        {progress === null ? null : (
+          <span aria-live="polite" className="text-meta text-ink-3">
+            {t('common.channels.profileWizard.submitting', {
+              done: progress.done,
+              total: progress.total,
+            })}
+          </span>
+        )}
         <div className="ml-auto flex flex-wrap gap-2">
           {step === 1 ? (
             <Button variant="secondary" onClick={backToForm}>
               {t('common.channels.profileWizard.back')}
             </Button>
-          ) : (
-            <Button variant="secondary" onClick={() => setStep(1)}>
+          ) : step === 2 || step === 3 ? (
+            <Button
+              variant="secondary"
+              onClick={() => setStep(step === 2 ? 1 : 2)}
+              disabled={submitting}
+            >
               {t('common.channels.profileWizard.prev')}
             </Button>
-          )}
+          ) : null}
           {step === 1 ? (
-            <Button
-              onClick={() => setStep(2)}
-              disabled={!stepTwoEnabled}
-            >
+            <Button onClick={() => setStep(2)} disabled={!stepTwoEnabled}>
               {t('common.channels.profileWizard.next')}
+            </Button>
+          ) : step === 2 ? (
+            <Button onClick={() => setStep(3)} disabled={!stepTwoEnabled}>
+              {t('common.channels.profileWizard.next')}
+            </Button>
+          ) : step === 3 ? (
+            <Button
+              onClick={() => {
+                void submitAll()
+              }}
+              disabled={submitting || tooMany || selectedCount === 0}
+            >
+              {t('common.channels.profileWizard.submit', {
+                count: selectedCount,
+              })}
             </Button>
           ) : null}
         </div>

@@ -797,7 +797,39 @@
       "next": "次へ",
       "prev": "戻る",
       "back": "チャネルフォームへ戻る",
-      "defaultsApplied": "{count} 件のモデルに適用しました"
+      "defaultsApplied": "{count} 件のモデルに適用しました",
+      "emptySelection": "先にモデルを 1 件以上選択してください。",
+      "stepConfirm": "行ごとに確認",
+      "stepResult": "結果",
+      "locked": "ローカル固定",
+      "lockedHint": "このプロファイルは手動で維持されています（sync_official=false）。ウィザードは上書きしません。",
+      "overwrite": "上書き",
+      "tooMany": "一度に確認できるのは最大 {max} 件です。選択を絞ってください。",
+      "submit": "{count} 件のプロファイルを書き込む",
+      "submitting": "書き込み中 {done}/{total}…",
+      "rowInvalid": "この行に入力エラーがあります。",
+      "conflict": "プロファイルが他の人により変更されました。再読み込みしてからやり直してください。",
+      "paramAdd": "パラメータを追加",
+      "paramRemove": "パラメータを削除",
+      "paramInvalid": "パラメータ行には名前と対応する型が必要です。",
+      "vendorCreateFailed": "ベンダー「{name}」を作成できませんでした: {message}",
+      "displayNameTooLong": "表示名は {count} 文字以内にしてください。",
+      "descriptionTooLong": "説明は {count} 文字以内にしてください。",
+      "nonNegativeInteger": "0 以上の整数を入力してください。",
+      "knowledgeCutoffInvalid": "YYYY-MM 形式で入力してください。",
+      "action": {
+        "create": "新規作成",
+        "update": "更新",
+        "skip": "スキップ"
+      },
+      "result": {
+        "created": "新規作成",
+        "updated": "更新",
+        "skipped": "スキップ",
+        "failed": "失敗",
+        "done": "完了",
+        "retryFailed": "失敗した行のみ再試行"
+      }
     }
   },
   "tokens": {

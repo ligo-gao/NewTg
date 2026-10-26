@@ -797,7 +797,39 @@
       "next": "Suivant",
       "prev": "Précédent",
       "back": "Retour au formulaire du canal",
-      "defaultsApplied": "Appliqué à {count} modèles"
+      "defaultsApplied": "Appliqué à {count} modèles",
+      "emptySelection": "Sélectionnez d’abord au moins un modèle.",
+      "stepConfirm": "Vérifier chaque ligne",
+      "stepResult": "Résultats",
+      "locked": "Verrouillé localement",
+      "lockedHint": "Ce profil est maintenu à la main (sync_official=false). L’assistant ne l’écrasera pas.",
+      "overwrite": "Écraser",
+      "tooMany": "Confirmez au plus {max} modèles à la fois. Réduisez d’abord la sélection.",
+      "submit": "Écrire {count} profils",
+      "submitting": "Écriture {done}/{total}…",
+      "rowInvalid": "Cette ligne contient une saisie non corrigée.",
+      "conflict": "Ce profil a été modifié par quelqu’un d’autre. Actualisez puis réessayez.",
+      "paramAdd": "Ajouter un paramètre",
+      "paramRemove": "Supprimer le paramètre",
+      "paramInvalid": "Chaque paramètre doit avoir un nom et un type pris en charge.",
+      "vendorCreateFailed": "Impossible de créer le fournisseur « {name} » : {message}",
+      "displayNameTooLong": "Le nom affiché doit contenir au plus {count} caractères.",
+      "descriptionTooLong": "La description doit contenir au plus {count} caractères.",
+      "nonNegativeInteger": "Saisissez un entier positif ou nul.",
+      "knowledgeCutoffInvalid": "Utilisez le format AAAA-MM.",
+      "action": {
+        "create": "Créer",
+        "update": "Mettre à jour",
+        "skip": "Ignorer"
+      },
+      "result": {
+        "created": "Créés",
+        "updated": "Mis à jour",
+        "skipped": "Ignorés",
+        "failed": "Échecs",
+        "done": "Terminé",
+        "retryFailed": "Réessayer uniquement les échecs"
+      }
     }
   },
   "tokens": {

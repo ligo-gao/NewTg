@@ -797,7 +797,39 @@
       "next": "Next",
       "prev": "Back",
       "back": "Back to channel form",
-      "defaultsApplied": "Applied to {count} models"
+      "defaultsApplied": "Applied to {count} models",
+      "emptySelection": "Select at least one model first.",
+      "stepConfirm": "Review each row",
+      "stepResult": "Results",
+      "locked": "Locked locally",
+      "lockedHint": "This profile is maintained by hand (sync_official=false). The wizard will not overwrite it.",
+      "overwrite": "Overwrite",
+      "tooMany": "Confirm at most {max} models at once. Narrow the selection first.",
+      "submit": "Write {count} profiles",
+      "submitting": "Writing {done}/{total}…",
+      "rowInvalid": "This row has uncorrected input.",
+      "conflict": "This profile was changed by someone else. Refresh and try again.",
+      "paramAdd": "Add parameter",
+      "paramRemove": "Remove parameter",
+      "paramInvalid": "Parameter rows need a name and a supported type.",
+      "vendorCreateFailed": "Could not create vendor \"{name}\": {message}",
+      "displayNameTooLong": "Display name must be at most {count} characters.",
+      "descriptionTooLong": "Description must be at most {count} characters.",
+      "nonNegativeInteger": "Enter a non-negative integer.",
+      "knowledgeCutoffInvalid": "Use the YYYY-MM format.",
+      "action": {
+        "create": "Create",
+        "update": "Update",
+        "skip": "Skip"
+      },
+      "result": {
+        "created": "Created",
+        "updated": "Updated",
+        "skipped": "Skipped",
+        "failed": "Failed",
+        "done": "Done",
+        "retryFailed": "Retry failed rows only"
+      }
     }
   },
   "tokens": {

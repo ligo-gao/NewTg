@@ -797,7 +797,39 @@
       "next": "Tiếp",
       "prev": "Quay lại",
       "back": "Về biểu mẫu kênh",
-      "defaultsApplied": "Đã áp dụng cho {count} mô hình"
+      "defaultsApplied": "Đã áp dụng cho {count} mô hình",
+      "emptySelection": "Hãy chọn ít nhất một mô hình trước.",
+      "stepConfirm": "Xác nhận từng dòng",
+      "stepResult": "Kết quả",
+      "locked": "Khóa cục bộ",
+      "lockedHint": "Hồ sơ này được bảo trì thủ công (sync_official=false). Trình hướng dẫn sẽ không ghi đè.",
+      "overwrite": "Ghi đè",
+      "tooMany": "Mỗi lần chỉ xác nhận tối đa {max} mô hình. Hãy thu hẹp lựa chọn trước.",
+      "submit": "Ghi {count} hồ sơ",
+      "submitting": "Đang ghi {done}/{total}…",
+      "rowInvalid": "Dòng này có dữ liệu chưa sửa.",
+      "conflict": "Hồ sơ đã bị người khác thay đổi. Hãy làm mới rồi thử lại.",
+      "paramAdd": "Thêm tham số",
+      "paramRemove": "Xóa tham số",
+      "paramInvalid": "Mỗi tham số cần có tên và một kiểu được hỗ trợ.",
+      "vendorCreateFailed": "Không tạo được nhà cung cấp “{name}”: {message}",
+      "displayNameTooLong": "Tên hiển thị tối đa {count} ký tự.",
+      "descriptionTooLong": "Mô tả tối đa {count} ký tự.",
+      "nonNegativeInteger": "Nhập số nguyên không âm.",
+      "knowledgeCutoffInvalid": "Dùng định dạng YYYY-MM.",
+      "action": {
+        "create": "Tạo mới",
+        "update": "Cập nhật",
+        "skip": "Bỏ qua"
+      },
+      "result": {
+        "created": "Đã tạo",
+        "updated": "Đã cập nhật",
+        "skipped": "Đã bỏ qua",
+        "failed": "Thất bại",
+        "done": "Hoàn tất",
+        "retryFailed": "Chỉ thử lại các dòng lỗi"
+      }
     }
   },
   "tokens": {

@@ -1,14 +1,18 @@
-import { screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { apiClient } from '@/api/client'
 import { ApiError } from '@/api/errors'
+import type { components } from '@/api/schema'
 
 import { fetchChannelModels } from './api'
 import { ModelProfileWizard } from './model-profile-wizard'
 import { renderWithProviders } from './test-utils'
 import type { FetchChannelModelEntry } from './types'
+
+type ModelMeta = components['schemas']['ModelMeta']
+type User = ReturnType<typeof userEvent.setup>
 
 vi.mock('./api', () => ({
   fetchChannelModels: vi.fn(),
@@ -19,6 +23,8 @@ vi.mock('@/api/client', () => ({
 
 const mockFetch = vi.mocked(fetchChannelModels)
 const mockGet = vi.mocked(apiClient.GET)
+const mockPost = vi.mocked(apiClient.POST)
+const mockPut = vi.mocked(apiClient.PUT)
 
 const REQUEST = {
   type: 'gemini',
@@ -57,8 +63,74 @@ function renderWizard() {
 beforeEach(() => {
   mockFetch.mockReset()
   mockGet.mockReset()
+  mockPost.mockReset()
+  mockPut.mockReset()
   mockGet.mockResolvedValue({ data: { items: [], total: 0 } } as never)
+  mockPost.mockResolvedValue({ data: {} } as never)
+  mockPut.mockResolvedValue({ data: {} } as never)
 })
+
+function modelMeta(overrides: Partial<ModelMeta> = {}): ModelMeta {
+  return {
+    id: 1,
+    model_name: 'gpt-4o',
+    display_name: null,
+    description: null,
+    icon: null,
+    tags: [],
+    vendor_id: null,
+    endpoints: {},
+    capabilities: [],
+    modalities: [],
+    parameters: [],
+    context_length: null,
+    max_output: null,
+    knowledge_cutoff: null,
+    released_at: null,
+    status: 1,
+    sync_official: true,
+    name_rule: 0,
+    created_at: '2026-10-01T00:00:00Z',
+    updated_at: '2026-10-20T08:00:00Z',
+    vendor_name: null,
+    square_state: 'hidden',
+    configured_channel_count: 0,
+    enable_groups: [],
+    ...overrides,
+  }
+}
+
+function listResponse(items: unknown[]) {
+  return { data: { items, total: items.length } }
+}
+
+/** `/api/models` 与 `/api/vendors` 按路径返回固定条目，其它路径空列表。 */
+function mockCatalog(
+  models: ModelMeta[],
+  vendors: Array<{ id: number; name: string }> = [],
+): void {
+  mockGet.mockImplementation(((path: string) => {
+    if (path === '/api/models') return Promise.resolve(listResponse(models))
+    if (path === '/api/vendors') return Promise.resolve(listResponse(vendors))
+    return Promise.resolve(listResponse([]))
+  }) as never)
+}
+
+async function goToStep(user: User, step: 2 | 3): Promise<void> {
+  await user.click(await screen.findByRole('button', { name: 'Next' }))
+  if (step === 3) {
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+  }
+}
+
+async function submitWizard(user: User): Promise<void> {
+  await user.click(screen.getByRole('button', { name: /^Write \d+ profiles$/ }))
+}
+
+async function goToConfirmAndSubmit(user: User): Promise<void> {
+  await goToStep(user, 3)
+  await submitWizard(user)
+}
 
 describe('ModelProfileWizard', () => {
   it('probes the upstream and shows one row per advertised model', async () => {
@@ -270,5 +342,268 @@ describe('ModelProfileWizard', () => {
     )
 
     expect(onApplyModels).not.toHaveBeenCalled()
+  })
+})
+
+describe('ModelProfileWizard row confirmation and write-back', () => {
+  it('never overwrites an existing profile unless the row opts in', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['gemini-2.5-pro'],
+      entries: [entry({ id: 'gemini-2.5-pro' })],
+    })
+    mockCatalog([modelMeta({ id: 9, model_name: 'gemini-2.5-pro' })])
+
+    renderWizard()
+
+    await user.click(
+      await screen.findByRole('checkbox', { name: 'gemini-2.5-pro' }),
+    )
+    await goToConfirmAndSubmit(user)
+
+    expect(await screen.findByText('Skipped 1')).toBeTruthy()
+    expect(mockPut).not.toHaveBeenCalled()
+    expect(mockPost).not.toHaveBeenCalled()
+  })
+
+  it('updates the selected row and reports per-row results', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['gemini-2.5-pro'],
+      entries: [entry({ id: 'gemini-2.5-pro' })],
+    })
+    mockCatalog([
+      modelMeta({
+        id: 9,
+        model_name: 'gemini-2.5-pro',
+        updated_at: '2026-10-20T08:00:00Z',
+      }),
+    ])
+
+    renderWizard()
+
+    await user.click(
+      await screen.findByRole('checkbox', { name: 'gemini-2.5-pro' }),
+    )
+    await goToStep(user, 3)
+    await user.click(screen.getByRole('checkbox', { name: 'Overwrite' }))
+    await submitWizard(user)
+
+    expect(await screen.findByText('Updated 1')).toBeTruthy()
+    expect(mockPut).toHaveBeenCalledTimes(1)
+    const [path, init] = mockPut.mock.calls[0] as unknown as [
+      string,
+      { params: { path: { id: number } }; body: { updated_at?: string } },
+    ]
+    expect(path).toBe('/api/models/{id}')
+    expect(init.params.path.id).toBe(9)
+    // 乐观锁：更新体必须带既有行的 updated_at。
+    expect(init.body.updated_at).toBe('2026-10-20T08:00:00Z')
+  })
+
+  it('disables overwrite for locally locked profiles', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['gemini-2.5-pro'],
+      entries: [entry({ id: 'gemini-2.5-pro' })],
+    })
+    mockCatalog([
+      modelMeta({ id: 5, model_name: 'gemini-2.5-pro', sync_official: false }),
+    ])
+
+    renderWizard()
+
+    await user.click(
+      await screen.findByRole('checkbox', { name: 'gemini-2.5-pro' }),
+    )
+    await goToStep(user, 3)
+
+    const overwrite = screen.getByRole('checkbox', {
+      name: 'Overwrite',
+    }) as HTMLInputElement
+    expect(overwrite.disabled).toBe(true)
+    expect(screen.getByText('Locked locally')).toBeTruthy()
+    expect(screen.getByText(/maintained by hand/)).toBeTruthy()
+
+    await submitWizard(user)
+
+    expect(await screen.findByText('Skipped 1')).toBeTruthy()
+    expect(mockPut).not.toHaveBeenCalled()
+    expect(mockPost).not.toHaveBeenCalled()
+  })
+
+  it('keeps going when one row fails', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['gpt-4o', 'gemini-2.5-pro'],
+      entries: [entry({ id: 'gpt-4o' }), entry({ id: 'gemini-2.5-pro' })],
+    })
+    mockCatalog([modelMeta({ id: 9, model_name: 'gemini-2.5-pro' })])
+    mockPut.mockRejectedValue(
+      new ApiError({
+        status: 409,
+        type: 'https://newtg.dev/problems/conflict',
+        title: 'Conflict',
+        kind: 'conflict',
+      }),
+    )
+
+    renderWizard()
+
+    await screen.findByText('gpt-4o')
+    await user.click(screen.getByRole('checkbox', { name: 'gemini-2.5-pro' }))
+    await goToStep(user, 3)
+    await user.click(screen.getByRole('checkbox', { name: 'Overwrite' }))
+    await submitWizard(user)
+
+    expect(await screen.findByText('Created 1')).toBeTruthy()
+    expect(screen.getByText('Failed 1')).toBeTruthy()
+    expect(
+      screen.getByText(
+        'This profile was changed by someone else. Refresh and try again.',
+      ),
+    ).toBeTruthy()
+    // 第一行照常写库，第二行的 409 只影响它自己。
+    expect(mockPost).toHaveBeenCalledTimes(1)
+    expect(mockPut).toHaveBeenCalledTimes(1)
+  })
+
+  it('creates a vendor at most once for the same name', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['alpha-model', 'beta-model'],
+      entries: [
+        entry({ id: 'alpha-model', vendor_suggestion: 'OpenAI ' }),
+        entry({ id: 'beta-model', vendor_suggestion: 'openai' }),
+      ],
+    })
+    mockCatalog([])
+    mockPost.mockImplementation(((path: string) => {
+      if (path === '/api/vendors') {
+        return Promise.resolve({ data: { id: 7, name: 'OpenAI', status: 1 } })
+      }
+      return Promise.resolve({ data: {} })
+    }) as never)
+
+    renderWizard()
+
+    await screen.findByText('alpha-model')
+    await goToConfirmAndSubmit(user)
+
+    expect(await screen.findByText('Created 2')).toBeTruthy()
+    const calls = mockPost.mock.calls as unknown as Array<
+      [string, { body?: { name?: string; model_name?: string; vendor_id?: number } }]
+    >
+    const vendorCalls = calls.filter(([path]) => path === '/api/vendors')
+    expect(vendorCalls).toHaveLength(1)
+    expect(vendorCalls[0]?.[1].body?.name).toBe('OpenAI')
+
+    const modelCalls = calls.filter(([path]) => path === '/api/models')
+    expect(modelCalls).toHaveLength(2)
+    expect(modelCalls.map(([, init]) => init.body?.vendor_id)).toEqual([7, 7])
+  })
+
+  it('flags an invalid inline value and skips only that row', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['alpha-model', 'beta-model'],
+      entries: [entry({ id: 'alpha-model' }), entry({ id: 'beta-model' })],
+    })
+    mockCatalog([])
+
+    renderWizard()
+
+    await screen.findByText('alpha-model')
+    await goToStep(user, 3)
+
+    await user.click(screen.getByRole('button', { name: 'beta-model' }))
+    const context = screen.getByLabelText('Context')
+    await user.clear(context)
+    await user.type(context, 'abc')
+    expect(screen.getByText('Enter a non-negative integer.')).toBeTruthy()
+
+    await submitWizard(user)
+
+    expect(await screen.findByText('Created 1')).toBeTruthy()
+    expect(screen.getByText('Failed 1')).toBeTruthy()
+    expect(
+      screen.getByText('This row has uncorrected input.'),
+    ).toBeTruthy()
+
+    const calls = mockPost.mock.calls as unknown as Array<
+      [string, { body?: { model_name?: string } }]
+    >
+    const modelCalls = calls.filter(([path]) => path === '/api/models')
+    expect(modelCalls).toHaveLength(1)
+    expect(modelCalls[0]?.[1].body?.model_name).toBe('alpha-model')
+  })
+
+  it('blocks submission when more than MAX_WIZARD_ROWS are selected', async () => {
+    const user = userEvent.setup()
+    // 用真实目录返回 201 条，端到端覆盖「阻塞提示 + 提交按钮不可用」；
+    // 只单测常量判定证明不了 UI 真的拦住了写库。
+    const entries = Array.from({ length: 201 }, (_, index) =>
+      entry({ id: `model-${index}` }),
+    )
+    mockFetch.mockResolvedValue({
+      models: entries.map((item) => item.id),
+      entries,
+    })
+    mockCatalog([])
+
+    renderWizard()
+
+    await screen.findByText('model-0')
+    await goToStep(user, 3)
+
+    expect(
+      screen.getByText(
+        'Confirm at most 200 models at once. Narrow the selection first.',
+      ),
+    ).toBeTruthy()
+    const submitButton = screen.getByRole('button', {
+      name: /^Write \d+ profiles$/,
+    }) as HTMLButtonElement
+    expect(submitButton.disabled).toBe(true)
+    expect(mockPost).not.toHaveBeenCalled()
+  })
+
+  it('keeps applied defaults when a catalog refetch fails after a success', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['gemini-2.5-pro'],
+      entries: [entry({ id: 'gemini-2.5-pro' })],
+    })
+    let catalogCalls = 0
+    mockGet.mockImplementation(((path: string) => {
+      if (path !== '/api/models') return Promise.resolve(listResponse([]))
+      catalogCalls += 1
+      return catalogCalls === 1
+        ? Promise.resolve(listResponse([]))
+        : Promise.reject(new Error('catalog down'))
+    }) as never)
+
+    const { queryClient } = renderWizard()
+
+    await screen.findByText('gemini-2.5-pro')
+    await goToStep(user, 2)
+    fireEvent.change(screen.getByLabelText('Knowledge cutoff'), {
+      target: { value: '2025-06' },
+    })
+    await user.click(
+      screen.getByRole('button', { name: 'Apply to all selected models' }),
+    )
+
+    // 目录先成功（已建行、已套默认值），再让后台重取失败。
+    await queryClient.invalidateQueries()
+    await waitFor(() => {
+      expect(catalogCalls).toBeGreaterThan(1)
+    })
+
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await user.click(screen.getByRole('button', { name: 'gemini-2.5-pro' }))
+
+    const cutoff = screen.getByLabelText('Knowledge cutoff') as HTMLInputElement
+    expect(cutoff.value).toBe('2025-06')
   })
 })

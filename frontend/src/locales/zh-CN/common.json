@@ -797,7 +797,39 @@
       "next": "下一步",
       "prev": "上一步",
       "back": "返回渠道表单",
-      "defaultsApplied": "已套用到 {count} 个模型"
+      "defaultsApplied": "已套用到 {count} 个模型",
+      "emptySelection": "请先勾选至少一个模型。",
+      "stepConfirm": "逐行确认",
+      "stepResult": "结果",
+      "locked": "本地锁定",
+      "lockedHint": "该档案由人工维护（sync_official=false），向导不会覆盖。",
+      "overwrite": "覆盖",
+      "tooMany": "一次最多确认 {max} 个模型，请先缩小选择。",
+      "submit": "写入 {count} 个档案",
+      "submitting": "正在写入 {done}/{total}…",
+      "rowInvalid": "该行有未修正的输入",
+      "conflict": "档案已被他人修改，请刷新后重试",
+      "paramAdd": "添加参数",
+      "paramRemove": "删除参数",
+      "paramInvalid": "参数行需要名称与受支持的类型。",
+      "vendorCreateFailed": "供应商「{name}」创建失败：{message}",
+      "displayNameTooLong": "显示名最多 {count} 个字符。",
+      "descriptionTooLong": "描述最多 {count} 个字符。",
+      "nonNegativeInteger": "请输入非负整数。",
+      "knowledgeCutoffInvalid": "请使用 YYYY-MM 格式。",
+      "action": {
+        "create": "新建",
+        "update": "更新",
+        "skip": "跳过"
+      },
+      "result": {
+        "created": "新建",
+        "updated": "更新",
+        "skipped": "跳过",
+        "failed": "失败",
+        "done": "完成",
+        "retryFailed": "只重试失败行"
+      }
     }
   },
   "tokens": {

@@ -72,6 +72,10 @@ export const PARAMETER_TYPES = [
 /** 单次确认的模型行数上限（与后端批量写入的规模预期一致）。 */
 export const MAX_WIZARD_ROWS = 200
 
+/** 与后端 `maxModelMetaDisplayNameRunes` / `maxModelMetaDescriptionRunes` 同口径。 */
+export const DISPLAY_NAME_MAX = 64
+export const DESCRIPTION_MAX = 512
+
 /**
  * 公开端点枚举 → model_meta `endpoints` 的路径。
  *
@@ -302,6 +306,105 @@ function parseOptionalInt(value: string): number | null {
   const parsed = Number(trimmed)
   if (!Number.isSafeInteger(parsed) || parsed < 0) return null
   return parsed
+}
+
+/**
+ * 行内校验。写库逻辑（`parseOptionalInt` / `parameterPayload`）遇到非法输入
+ * 会静默丢掉字段，所以第 3 步必须自己把这些情况报出来，不能依赖写入体。
+ *
+ * 返回的是字段名而不是文案：文案归 UI（i18n），纯逻辑层不持有翻译。
+ */
+export type RowIssue =
+  | 'displayName'
+  | 'description'
+  | 'contextLength'
+  | 'maxOutput'
+  | 'knowledgeCutoff'
+  | 'parameters'
+
+/** rune 口径与后端 `utf8.RuneCountInString` 一致（`[...str]` 按码点切分）。 */
+export function runeLength(value: string): number {
+  return [...value].length
+}
+
+function optionalIntIsValid(value: string): boolean {
+  const trimmed = value.trim()
+  if (trimmed === '') return true
+  return /^\d+$/.test(trimmed) && Number.isSafeInteger(Number(trimmed))
+}
+
+/**
+ * `knowledge_cutoff` 的契约是 `YYYY-MM`（后端 `validKnowledgeCutoff` 与
+ * `model_meta_knowledge_cutoff_chk` 同口径），第 2 步的 month 输入也产出
+ * 这个形状；写成别的形状后端会 422。
+ */
+const KNOWLEDGE_CUTOFF_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/
+
+export function knowledgeCutoffIsValid(value: string): boolean {
+  const trimmed = value.trim()
+  return trimmed === '' || KNOWLEDGE_CUTOFF_PATTERN.test(trimmed)
+}
+
+/**
+ * 参数行：完全空白的行视为「尚未添加」，不算错误；有名字就必须有合法类型，
+ * 有类型就必须有名字。类型非法时**不改写**成别的类型，只报错。
+ */
+export function parametersAreValid(rows: ParameterRow[]): boolean {
+  return rows.every((row) => {
+    const name = row.name.trim()
+    const type = row.type.trim()
+    if (name === '' && type === '') return true
+    return name !== '' && isParameterType(type)
+  })
+}
+
+export function rowIssues(row: WizardRow): RowIssue[] {
+  const issues: RowIssue[] = []
+  if (runeLength(row.displayName.trim()) > DISPLAY_NAME_MAX) {
+    issues.push('displayName')
+  }
+  if (runeLength(row.description.trim()) > DESCRIPTION_MAX) {
+    issues.push('description')
+  }
+  if (!optionalIntIsValid(row.contextLength)) issues.push('contextLength')
+  if (!optionalIntIsValid(row.maxOutput)) issues.push('maxOutput')
+  if (!knowledgeCutoffIsValid(row.knowledgeCutoff)) issues.push('knowledgeCutoff')
+  if (!parametersAreValid(row.parameters)) issues.push('parameters')
+  return issues
+}
+
+export function rowIsValid(row: WizardRow): boolean {
+  return rowIssues(row).length === 0
+}
+
+/** 第 3 步摘要与提交循环共用的「这一行会做什么」。 */
+export type RowAction = 'create' | 'update' | 'skip'
+
+/**
+ * 锁定档案（`sync_official === false`）永远跳过；已有档案默认也跳过，
+ * 只有管理员逐行勾了「覆盖」才更新。绝不由模型名或渠道类型推断。
+ */
+export function rowActionOf(
+  row: WizardRow,
+  profile: ModelMeta | undefined,
+): RowAction {
+  if (profile === undefined) return 'create'
+  if (!profile.sync_official) return 'skip'
+  return row.overwrite ? 'update' : 'skip'
+}
+
+export type RowResultAction = 'created' | 'updated' | 'skipped' | 'failed'
+
+export interface RowResult {
+  id: string
+  action: RowResultAction
+  /** 失败原因（已本地化）；成功 / 跳过行没有。 */
+  message?: string
+  /**
+   * 校验失败为 false：输入没改，重试必然再失败。供应商创建失败、409 等
+   * 可重试。
+   */
+  retryable: boolean
 }
 
 function normalizeTags(tags: string[]): string[] {
