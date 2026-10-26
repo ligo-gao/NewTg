@@ -5,6 +5,7 @@ import { TextField } from '@/shared/ui/form'
 import {
   creditsToYuanInput,
   isPerRequest,
+  parsePriceInput,
   type PriceFieldKey,
   type PriceFieldValues,
   type PriceUnit,
@@ -57,11 +58,30 @@ export function PriceFields({
   const fields: FieldSpec[] = perRequest
     ? [{ key: 'prompt', labelKey: 'admin.pricing.price_per_request' }]
     : [
+        // 两档输入并排：左 = 缓存未命中（全价），右 = 缓存命中（折扣价）。
         { key: 'prompt', labelKey: 'admin.pricing.price_prompt' },
-        { key: 'completion', labelKey: 'admin.pricing.price_completion' },
         { key: 'cacheRead', labelKey: 'admin.pricing.price_cache_read' },
+        { key: 'completion', labelKey: 'admin.pricing.price_completion' },
         { key: 'cacheWrite', labelKey: 'admin.pricing.price_cache_write' },
       ]
+
+  const promptCredits = parsePriceInput(values.prompt, unit, quotaPerUnit).value
+  const cacheReadCredits = parsePriceInput(values.cacheRead, unit, quotaPerUnit).value
+  // 只有两档都填了才有比例可谈；未命中价为 0 时比例没有意义（分母为零）。
+  const hitRatio =
+    promptCredits !== null && promptCredits > 0 && cacheReadCredits !== null
+      ? cacheReadCredits / promptCredits
+      : null
+  const hitRatioText =
+    hitRatio !== null
+      ? t('admin.pricing.price_hit_ratio', {
+          percent: `${(hitRatio * 100).toFixed(2)}%`,
+        })
+      : values.cacheRead.trim() === ''
+        ? context === 'group'
+          ? t('admin.pricing.price_hit_ratio_group_empty')
+          : t('admin.pricing.price_hit_ratio_empty')
+        : null
 
   return (
     <section className="flex flex-col gap-3">
@@ -134,10 +154,24 @@ export function PriceFields({
               {unit === 'yuan' && raw.trim() !== '' ? (
                 <p className="text-meta text-ink-3">{conversion}</p>
               ) : null}
+              {field.key === 'cacheRead' && hitRatioText !== null ? (
+                <p className="text-meta text-ink-3" data-testid="pricing-hit-ratio">
+                  {hitRatioText}
+                </p>
+              ) : null}
             </div>
           )
         })}
       </div>
+
+      {hitRatio !== null && hitRatio > 1 ? (
+        <p
+          role="status"
+          className="rounded-md border border-warning-line bg-warning-bg px-3 py-2 text-meta text-ink-1"
+        >
+          {t('admin.pricing.price_cache_hit_above_miss')}
+        </p>
+      ) : null}
 
       {unit === 'yuan' ? (
         <p className="text-meta text-ink-3">

@@ -154,7 +154,7 @@ describe('PricingMutateSheet strategy payload', () => {
     const user = userEvent.setup()
 
     await user.type(getByLabelText('Model'), 'deepseek-flash')
-    await user.type(getByLabelText('Prompt price'), '200')
+    await user.type(getByLabelText('Input price (cache miss)'), '200')
     await user.click(getByLabelText('Enable time pricing'))
     const defaultMultiplier = getByLabelText('Default multiplier (%)')
     await user.clear(defaultMultiplier)
@@ -195,7 +195,7 @@ describe('PricingMutateSheet strategy payload', () => {
     const user = userEvent.setup()
 
     await user.type(getByLabelText('Model'), 'deepseek-flash')
-    await user.type(getByLabelText('Prompt price'), '200')
+    await user.type(getByLabelText('Input price (cache miss)'), '200')
     await user.click(getByRole('button', { name: 'Save' }))
 
     await waitFor(() => {
@@ -294,7 +294,7 @@ describe('PricingMutateSheet strategy payload', () => {
     const user = userEvent.setup()
 
     await user.type(getByLabelText('Model'), 'deepseek-flash')
-    await user.type(getByLabelText('Prompt price'), '200')
+    await user.type(getByLabelText('Input price (cache miss)'), '200')
     await user.click(getByLabelText('Enable time pricing'))
     await user.click(getByRole('button', { name: 'Add window' }))
     await user.click(getByRole('button', { name: 'Save' }))
@@ -310,7 +310,7 @@ describe('PricingMutateSheet strategy payload', () => {
     const user = userEvent.setup()
 
     await user.type(getByLabelText('Model'), 'deepseek-flash')
-    await user.type(getByLabelText('Prompt price'), '200')
+    await user.type(getByLabelText('Input price (cache miss)'), '200')
     await user.click(getByLabelText('Enable time pricing'))
     const defaultMultiplier = getByLabelText('Default multiplier (%)')
     await user.clear(defaultMultiplier)

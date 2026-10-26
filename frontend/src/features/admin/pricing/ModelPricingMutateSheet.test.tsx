@@ -267,7 +267,7 @@ describe('PricingMutateSheet price unit toggle', () => {
 
     await user.type(getByLabelText('Model'), 'gpt-x')
     await user.click(getByRole('button', { name: 'Yuan' }))
-    await user.type(getByLabelText('Prompt price'), '1.5')
+    await user.type(getByLabelText('Input price (cache miss)'), '1.5')
 
     expect(await findByText('= 150 credits')).toBeTruthy()
     await user.click(getByRole('button', { name: 'Save' }))
@@ -313,7 +313,7 @@ describe('PricingMutateSheet optimistic locking', () => {
     )
     const user = userEvent.setup()
 
-    const prompt = getByLabelText('Prompt price')
+    const prompt = getByLabelText('Input price (cache miss)')
     await user.clear(prompt)
     await user.type(prompt, '999')
     await user.click(getByRole('button', { name: 'Save' }))
@@ -360,7 +360,7 @@ describe('PricingMutateSheet optimistic locking', () => {
     const user = userEvent.setup()
 
     await user.click(getByRole('button', { name: 'Per token' }))
-    await user.type(getByLabelText('Prompt price'), '100')
+    await user.type(getByLabelText('Input price (cache miss)'), '100')
     await user.click(getByRole('button', { name: 'Save' }))
 
     await waitFor(() => {
@@ -432,7 +432,7 @@ describe('PricingMutateSheet server field mapping', () => {
     )
     const user = userEvent.setup()
 
-    const prompt = getByLabelText('Prompt price')
+    const prompt = getByLabelText('Input price (cache miss)')
     await user.clear(prompt)
     await user.type(prompt, '999')
     await user.click(getByRole('button', { name: 'Save' }))
@@ -485,7 +485,7 @@ describe('PricingMutateSheet server field mapping', () => {
     const { findByText, getByLabelText } = await renderCreate()
     const user = userEvent.setup()
 
-    await user.type(getByLabelText('Prompt price'), '200')
+    await user.type(getByLabelText('Input price (cache miss)'), '200')
     expect(await findByText('Estimated cost')).toBeTruthy()
     expect(previewCalls).toBe(0)
   })

@@ -168,7 +168,7 @@ describe('GroupPricingMutateSheet', () => {
     await user.selectOptions(getByLabelText('Model'), 'tts-1')
 
     // 按次源模型每次请求只计一个价；其他维度根本不渲染（UI §8.3）。
-    expect(queryByLabelText('Completion price')).toBeNull()
+    expect(queryByLabelText('Output price')).toBeNull()
     await user.type(getByLabelText('Price per request'), '200')
     await user.click(getByRole('button', { name: 'Save' }))
 
@@ -293,7 +293,7 @@ describe('GroupPricingMutateSheet', () => {
     const { getByLabelText, getByRole } = await renderEdit(overrideRow())
     const user = userEvent.setup()
 
-    const prompt = getByLabelText('Prompt price')
+    const prompt = getByLabelText('Input price (cache miss)')
     await user.clear(prompt)
     await user.type(prompt, '450')
     await user.click(getByRole('button', { name: 'Save' }))
@@ -325,7 +325,7 @@ describe('GroupPricingMutateSheet', () => {
     const { findByText, getByLabelText, getByRole } = await renderEdit(overrideRow())
     const user = userEvent.setup()
 
-    const prompt = getByLabelText('Prompt price')
+    const prompt = getByLabelText('Input price (cache miss)')
     await user.clear(prompt)
     await user.type(prompt, '450')
     await user.click(getByRole('button', { name: 'Save' }))
