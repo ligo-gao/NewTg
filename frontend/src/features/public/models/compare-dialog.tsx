@@ -69,10 +69,12 @@ export function CompareDialog({
   onClear,
 }: CompareDialogProps) {
   const { t, locale } = useI18n()
-  // 整列都是按次计价时用单行「每次」，不再用「输入价 / M」的表头；混合目录
-  // 保留两行，按次模型在输入价格内自己声明单位。
+  // 整列都是按次计价时用单行「每次」，不再用「输入价 / M」的表头。混合目录
+  // 里「输入价 ¥/百万 token」会把按次那一列说错一半，因此改用不带单位的
+  // 「输入价 / 输出价」，单位交给每个格自己声明。
   const allPerCall =
     entries.length > 0 && entries.every((entry) => entry.price.perCall === true)
+  const mixed = !allPerCall && entries.some((entry) => entry.price.perCall)
 
   const perCallCell = (value: number | null): ReactNode => (
     <>
@@ -211,7 +213,11 @@ export function CompareDialog({
                   <>
                     <tr>
                       <RowLabel>
-                        {t('public.models.compare.price_input')}
+                        {t(
+                          mixed
+                            ? 'public.models.compare.price_input_plain'
+                            : 'public.models.compare.price_input',
+                        )}
                       </RowLabel>
                       {entries.map((entry) => (
                         <Cell key={entry.card.model_id}>
@@ -227,7 +233,11 @@ export function CompareDialog({
                     </tr>
                     <tr>
                       <RowLabel>
-                        {t('public.models.compare.price_output')}
+                        {t(
+                          mixed
+                            ? 'public.models.compare.price_output_plain'
+                            : 'public.models.compare.price_output',
+                        )}
                       </RowLabel>
                       {entries.map((entry) => (
                         <Cell key={entry.card.model_id}>

@@ -7,7 +7,7 @@
  * 「地址栏是唯一状态源」的唯一例外。
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 
 import { useI18n } from '@/shared/lib/i18n-context'
 
@@ -21,8 +21,9 @@ export interface ToolbarProps {
   activeFilterCount: number
   /**
    * 表格在当前视口不可渲染（<1440px 或 ≤760px）时，卡片是布局强制的生效
-   * 视图。此时「表格」一侧禁用并保持 `aria-pressed` 反映生效视图，而不是
-   * 留一个点了没反应的按钮。判定由页面统一计算后传入。
+   * 视图。此时「表格」一侧保持可聚焦但不可生效，并说明原因：原生 `disabled`
+   * 会把按钮从 Tab 序列里摘掉，读者只看到一个灰块，既不知道它为什么点不
+   * 动，也读不到解释。判定由页面统一计算后传入。
    */
   compact: boolean
   onChange: (next: ModelsSearch, replace?: boolean) => void
@@ -59,6 +60,7 @@ export function Toolbar({
   onOpenFilters,
 }: ToolbarProps) {
   const { t, locale } = useI18n()
+  const tableReasonId = useId()
   const [draft, setDraft] = useState(search.q)
   const lastCommitted = useRef(search.q)
 
@@ -206,9 +208,17 @@ export function Toolbar({
                 key={view}
                 type="button"
                 aria-pressed={selected}
-                disabled={disabled}
                 aria-disabled={disabled ? 'true' : undefined}
-                onClick={() => onChange({ ...search, view })}
+                aria-describedby={disabled ? tableReasonId : undefined}
+                title={
+                  disabled
+                    ? t('public.models.view.table_needs_width')
+                    : undefined
+                }
+                onClick={() => {
+                  if (disabled) return
+                  onChange({ ...search, view })
+                }}
                 className={[
                   'rounded-md px-2.5 py-0.5 text-meta font-medium leading-5 transition-colors duration-150 motion-reduce:transition-none',
                   selected
@@ -224,6 +234,11 @@ export function Toolbar({
               </button>
             )
           })}
+          {compact ? (
+            <span id={tableReasonId} className="sr-only">
+              {t('public.models.view.table_needs_width')}
+            </span>
+          ) : null}
         </div>
 
         {onOpenFilters === undefined ? null : (

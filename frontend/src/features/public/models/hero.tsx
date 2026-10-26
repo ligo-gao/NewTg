@@ -53,8 +53,9 @@ export function ModelHero({ entries }: ModelHeroProps) {
       }
     }
 
-    // 按次计价的价格是「元 / 次」，混进「元 / 百万 token」的区间会把两种
-    // 单位相加；输入价区间只统计按 token 的条目。
+    // 输入价区间只统计「按 token 且输入价已知」的条目：按次计价的价格是
+    // 「元 / 次」，混进「元 / 百万 token」的区间会把两种单位相加；输入价缺
+    // 失的条目也不参与，它既不是 ¥0 也不是免费，放进去只会把下沿拉到零。
     const input = entry.price.perCall ? null : entry.price.input
     if (input !== null && Number.isFinite(input)) {
       if (minInputPrice === null || input < minInputPrice) minInputPrice = input

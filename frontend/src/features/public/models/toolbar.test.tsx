@@ -114,9 +114,9 @@ describe('Toolbar', () => {
     expect(onOpenFilters).toHaveBeenCalledTimes(1)
   })
 
-  it('disables the table side below the table breakpoint instead of ignoring the click', async () => {
+  it('explains why the table side is unavailable instead of dropping it from the tab order', async () => {
     const onChange = vi.fn()
-    const { getByRole } = await renderToolbar(
+    const { getByRole, getByText } = await renderToolbar(
       { ...BASE, view: 'cards' },
       12,
       0,
@@ -126,8 +126,18 @@ describe('Toolbar', () => {
     )
 
     const table = getByRole('button', { name: 'Table' }) as HTMLButtonElement
-    expect(table.disabled).toBe(true)
+    // 原生 disabled 会把按钮移出 Tab 序列，读者只看到灰块，读不到原因。
+    // 保持可聚焦，用 aria-disabled 声明状态，并把理由作为描述朗读出来。
+    expect(table.disabled).toBe(false)
     expect(table.getAttribute('aria-disabled')).toBe('true')
+    expect(table.title).toBe('Table view needs a wider window')
+    const describedBy = table.getAttribute('aria-describedby')
+    expect(describedBy).toBeTruthy()
+    expect(document.getElementById(describedBy as string)?.textContent).toBe(
+      'Table view needs a wider window',
+    )
+    // 名字仍是「Table」：理由不该被拼进按钮名。
+    expect(getByText('Table view needs a wider window')).toBeTruthy()
     // `aria-pressed` keeps reporting the view that is actually in effect.
     expect(table.getAttribute('aria-pressed')).toBe('false')
 

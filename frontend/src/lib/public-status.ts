@@ -42,8 +42,13 @@ export function publicStatusQueryOptions() {
   }
 }
 
-export function usePublicStatus() {
-  return useQuery(publicStatusQueryOptions())
+/**
+ * `enabled: false` lets a component that already received the status from an
+ * ancestor skip its own consumer: `staleTime: 0` makes every mounted consumer
+ * refetch, which is right for a page-level read and wasteful per row.
+ */
+export function usePublicStatus(enabled = true) {
+  return useQuery({ ...publicStatusQueryOptions(), enabled })
 }
 
 /**

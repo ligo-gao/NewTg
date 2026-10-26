@@ -39,6 +39,12 @@ export interface ModelDetailProps {
   compared: boolean
   /** 对比集合已满且当前模型未被选中：按钮禁用并提示上限。 */
   compareFull: boolean
+  /**
+   * 站点对外地址，由页面从 `/api/status` 读一次后下传。给了就不再自取：
+   * 详情每展开一行都会挂载一次，`staleTime: 0` 下自取会每行多发一次
+   * `/api/status`。单独渲染详情（测试、将来的详情页）时省略即可。
+   */
+  serverAddress?: string
 }
 
 const monthFormat = (locale: string) =>
@@ -123,10 +129,11 @@ export function ModelDetail({
   onToggleCompare,
   compared,
   compareFull,
+  serverAddress,
 }: ModelDetailProps) {
   const { t, locale } = useI18n()
   const detail = useQuery(pricingDetailQueryOptions(entry.card.model_id))
-  const status = usePublicStatus()
+  const status = usePublicStatus(serverAddress === undefined)
   const push = useToastStore((state) => state.push)
   const { card, perf } = entry
 
@@ -195,9 +202,9 @@ export function ModelDetail({
           .map((modality) => modalityLabel(modality, t))
           .join(' · ')
 
-  // base URL 只来自 `/api/status` 的 `site.server_address`；未配置时退回相对
-  // 路径并显式提示，绝不把当前页 origin 当成 API 地址。
-  const target = sampleTarget(status.data?.site?.server_address)
+  // base URL 只来自 `/api/status` 的 `site.server_address`（页面已读则直接
+  // 用它）；未配置时退回相对路径并显式提示，绝不把当前页 origin 当成 API 地址。
+  const target = sampleTarget(serverAddress ?? status.data?.site?.server_address)
   const spec = callSpec(entry.kind, card.model_id, false)
   const snippet = [
     `POST ${openaiBase(target.baseUrl)}${spec.path}`,

@@ -277,6 +277,19 @@ describe('Register: table view', () => {
     expect(within(cell).queryByText(/\/ ?M/)).toBeNull()
   })
 
+  it('drops the price unit from the column headline when the catalog mixes both', async () => {
+    await renderRegister({ entries: [TESTED, PER_CALL] })
+
+    // 一半按 token、一半按次，任何带单位的表头都会把另一半说错，所以只写
+    // 「价格」，单位交给每个价格格自己声明。
+    expect(screen.getByRole('columnheader', { name: 'Price' })).toBeTruthy()
+    expect(
+      screen.queryByRole('columnheader', { name: /million tokens/ }),
+    ).toBeNull()
+    expect(screen.queryByRole('columnheader', { name: 'Per call' })).toBeNull()
+    expect(screen.queryByText('Input · output')).toBeNull()
+  })
+
   it('hides the context column when no row has context or output', async () => {
     serveDetails()
     await renderRegister({
@@ -392,6 +405,9 @@ describe('Register: table view', () => {
     await renderRegister({ entries: [contextOnly, outputOnly] })
 
     expect(screen.queryByText('Profile not filled in')).toBeNull()
+    // 档案只由上下文字段撑起时，能力/vendor 两个 chip 来源都是空的：那一行
+    // 整块不渲染，而不是留一个空的 chip 容器（空容器仍会占 mt-1 的行高）。
+    expect(document.querySelector('.model-chips')).toBeNull()
   })
 
   it('prints the model id once when display_name is empty', async () => {

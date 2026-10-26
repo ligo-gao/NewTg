@@ -33,6 +33,10 @@ export interface RegisterProps {
   compact: boolean
   /** 指标窗口；展开行把它带进读数块标题。 */
   range: ModelsRange
+  /**
+   * 站点对外地址，由页面读一次后下传；展开行不再各自请求 `/api/status`。
+   */
+  serverAddress?: string
   compareIds: readonly string[]
   expandedId: string | null
   onToggleExpand: (modelId: string) => void
@@ -44,6 +48,7 @@ export interface RegisterProps {
 interface RowActions {
   expandedId: string | null
   range: ModelsRange
+  serverAddress?: string
   compareIds: readonly string[]
   onToggleExpand: (modelId: string) => void
   onToggleCompare: (modelId: string) => void
@@ -428,6 +433,7 @@ function TableRow({
             <ModelDetail
               entry={entry}
               range={actions.range}
+              serverAddress={actions.serverAddress}
               onCall={actions.onCall}
               onToggleCompare={actions.onToggleCompare}
               compared={checked}
@@ -454,10 +460,12 @@ function ModelTable({
       entry.card.context_length !== null || entry.card.max_output !== null,
   )
   const columnCount = showContext ? 8 : 7
-  // 整列都是按次计价时，表头也不能再声称「¥/百万 token」；混合目录保留
-  // 按 token 的默认表头，由按次行自己在价格格里声明单位。
+  // 整列都是按次计价时，表头也不能再声称「¥/百万 token」；混合目录两种单位
+  // 并存，任何带单位的表头都会把其中一半的行说错，所以退到中性的「价格」。
   const allPerCall =
     entries.length > 0 && entries.every((entry) => entry.price.perCall === true)
+  const anyPerCall = entries.some((entry) => entry.price.perCall === true)
+  const mixed = anyPerCall && !allPerCall
 
   return (
     <div className="table-wrap relative w-full overflow-x-auto rounded-xl border border-border-default bg-surface-card">
@@ -486,10 +494,12 @@ function ModelTable({
                 {t(
                   allPerCall
                     ? 'public.pricing.price_per_call'
-                    : 'public.models.table.price',
+                    : mixed
+                      ? 'public.models.table.price_mixed'
+                      : 'public.models.table.price',
                 )}
               </span>
-              {allPerCall ? null : (
+              {allPerCall || mixed ? null : (
                 <span className="block font-normal text-ink-3">
                   {t('public.models.table.price_sub')}
                 </span>
@@ -679,6 +689,7 @@ function ModelCard({ entry, actions }: { entry: ModelEntry; actions: RowActions 
           <ModelDetail
             entry={entry}
             range={actions.range}
+            serverAddress={actions.serverAddress}
             onCall={actions.onCall}
             onToggleCompare={actions.onToggleCompare}
             compared={checked}
@@ -727,6 +738,7 @@ export function Register({
   view,
   compact,
   range,
+  serverAddress,
   compareIds,
   expandedId,
   onToggleExpand,
@@ -739,6 +751,7 @@ export function Register({
   const actions: RowActions = {
     expandedId,
     range,
+    serverAddress,
     compareIds,
     onToggleExpand,
     onToggleCompare,

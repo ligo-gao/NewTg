@@ -348,6 +348,7 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
             view={search.view}
             compact={!tableAvailable}
             range={search.range}
+            serverAddress={status.data?.site?.server_address}
             compareIds={compareIds(search)}
             expandedId={expandedId}
             onToggleExpand={toggleExpand}

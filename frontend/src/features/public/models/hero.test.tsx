@@ -172,6 +172,18 @@ describe('ModelHero', () => {
     expect(statValue(getByText('Input price / million tokens'))).toBe('¥0.06')
   })
 
+  it('leaves unpriced entries out of the input range instead of pinning it to zero', async () => {
+    const { getByText, queryByText } = await renderHero([
+      entry({ id: 'token/model', name: 'Token', price: { input: 0.06 } }),
+      entry({ id: 'bare/model', name: 'Bare' }),
+    ])
+
+    // 没有价格不等于免费：区间只统计「按 token 且输入价已知」的条目，无价
+    // 条目不参与，更不能被当成 ¥0 把区间下沿拉到零。
+    expect(statValue(getByText('Input price / million tokens'))).toBe('¥0.06')
+    expect(queryByText('¥0.00–¥0.06')).toBeNull()
+  })
+
   it('does not render a capability chip row', async () => {
     const { queryAllByRole, queryByRole } = await renderHero()
 

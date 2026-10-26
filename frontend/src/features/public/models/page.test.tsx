@@ -327,8 +327,8 @@ describe('ModelsPage', () => {
     expect(document.querySelectorAll('.cards > li')).toHaveLength(2)
 
     // The toggle still renders, but reports the view that is actually shown,
-    // and the unreachable table side is explicitly disabled rather than a
-    // button that silently ignores clicks.
+    // and the unreachable table side is explicitly marked unavailable (with
+    // its reason announced) rather than a button that silently ignores clicks.
     expect(
       screen
         .getByRole('button', { name: 'Cards' })
@@ -339,7 +339,9 @@ describe('ModelsPage', () => {
     }) as HTMLButtonElement
     expect(tableToggle.getAttribute('aria-pressed')).toBe('false')
     expect(tableToggle.getAttribute('aria-disabled')).toBe('true')
-    expect(tableToggle.disabled).toBe(true)
+    // 原生 disabled 会把按钮移出 Tab 序列；保持可聚焦并朗读原因。
+    expect(tableToggle.disabled).toBe(false)
+    expect(tableToggle.title).toBe('Table view needs a wider window')
 
     // A view-only click cannot persist the forced view.
     fireEvent.click(tableToggle)
@@ -357,7 +359,7 @@ describe('ModelsPage', () => {
     expect(last.view).toBe('table')
   })
 
-  it('disables the table toggle between 761 and 1439px instead of lying', async () => {
+  it('marks the table toggle unavailable between 761 and 1439px instead of lying', async () => {
     // The table needs 1440px: at 1280/1366 it cannot fit seven columns even
     // though it is well above the 760px card fallback.
     mockViewport(1280)
@@ -374,7 +376,7 @@ describe('ModelsPage', () => {
     const tableToggle = screen.getByRole('button', {
       name: 'Table',
     }) as HTMLButtonElement
-    expect(tableToggle.disabled).toBe(true)
+    expect(tableToggle.disabled).toBe(false)
     expect(tableToggle.getAttribute('aria-disabled')).toBe('true')
     expect(tableToggle.getAttribute('aria-pressed')).toBe('false')
     expect(
@@ -592,6 +594,34 @@ describe('ModelsPage', () => {
         })
         .getAttribute('aria-expanded'),
     ).toBe('true')
+  })
+
+  it('reads /api/status once for the page, not once per expanded row', async () => {
+    serveCatalog()
+    // `server.use` 后注册的先匹配：用它把站点地址的读取次数记下来。
+    let statusCalls = 0
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () => {
+        statusCalls += 1
+        return HttpResponse.json(STATUS)
+      }),
+    )
+    await renderPage()
+    await screen.findByText('GPT-5')
+    const afterLoad = statusCalls
+    expect(afterLoad).toBeGreaterThan(0)
+
+    // 展开详情会挂载一次 ModelDetail。站点地址由页面读一次后下传，详情不再
+    // 自取：`staleTime: 0` 会让每个挂载的消费者各打一次，行数越多越糟。
+    fireEvent.click(screen.getByRole('button', { name: 'Details GPT-5' }))
+    await waitFor(() =>
+      expect(
+        document.getElementById('model-detail-openai/gpt-5'),
+      ).toBeTruthy(),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Details Embed' }))
+
+    expect(statusCalls).toBe(afterLoad)
   })
 
   it('shows the empty state and clears every filter', async () => {
