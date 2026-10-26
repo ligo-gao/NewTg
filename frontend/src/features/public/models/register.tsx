@@ -516,7 +516,14 @@ function ModelCard({ entry, actions }: { entry: ModelEntry; actions: RowActions 
     card.context_length === null
       ? null
       : formatContextTokens(card.context_length, locale)
-  // 副行按「有哪段写哪段」拼装；两段都没有时才退回档案提示。
+  /**
+   * 与表格 `ModelIdentity` 同一判定：能力或厂商任一存在即算有档案。副行按
+   * 「有哪段写哪段」拼装；只有能力、没有厂商/上下文的「部分档案」不再打印
+   * 档案缺失提示（副行留空，chips 自己说明），避免和表格视图对同一条目
+   * 给出互相矛盾的说法。
+   */
+  const hasProfile =
+    card.capabilities.length > 0 || card.vendor !== ''
   const profileParts: string[] = []
   if (card.vendor !== '') profileParts.push(card.vendor)
   if (context !== null) {
@@ -550,11 +557,15 @@ function ModelCard({ entry, actions }: { entry: ModelEntry; actions: RowActions 
               {id}
             </div>
           )}
-          <div className="card-subline text-badge leading-4 text-ink-3">
-            {profileParts.length === 0
-              ? t('public.models.table.profile_missing')
-              : profileParts.join(' · ')}
-          </div>
+          {profileParts.length > 0 ? (
+            <div className="card-subline text-badge leading-4 text-ink-3">
+              {profileParts.join(' · ')}
+            </div>
+          ) : hasProfile ? null : (
+            <div className="card-subline text-badge leading-4 text-ink-3">
+              {t('public.models.table.profile_missing')}
+            </div>
+          )}
         </div>
       </div>
 

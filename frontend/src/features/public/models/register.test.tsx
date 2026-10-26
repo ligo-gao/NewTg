@@ -545,6 +545,68 @@ describe('Register: cards view', () => {
     expect(within(item).queryByText('acme')).toBeNull()
   })
 
+  it('never calls a partially filled profile missing, matching the table', async () => {
+    // Capability-only: the chip is the profile statement, so the subline is
+    // suppressed instead of printing a contradictory missing-profile note.
+    const capsOnly: ModelEntry = {
+      ...EMPTY,
+      card: card({
+        model_id: 'acme/caps',
+        display_name: 'Caps',
+        capabilities: ['text'],
+      }),
+    }
+    // Vendor-only and context-only each fill one half of the composed subline.
+    const vendorOnly: ModelEntry = {
+      ...EMPTY,
+      card: card({
+        model_id: 'acme/vendor',
+        display_name: 'Vendor',
+        vendor: 'acme',
+      }),
+    }
+    const contextOnly: ModelEntry = {
+      ...EMPTY,
+      card: card({
+        model_id: 'acme/ctx',
+        display_name: 'Ctx',
+        context_length: 128_000,
+      }),
+    }
+    await renderRegister({
+      view: 'cards',
+      entries: [capsOnly, vendorOnly, contextOnly],
+    })
+
+    const items = screen.getAllByRole('listitem')
+    const capsCard = items[0] as HTMLElement
+    expect(within(capsCard).getByText('text')).toBeTruthy()
+    expect(within(capsCard).queryByText('Profile not filled in')).toBeNull()
+    expect(capsCard.querySelector('.card-subline')).toBeNull()
+
+    const vendorCard = items[1] as HTMLElement
+    expect(vendorCard.querySelector('.card-subline')?.textContent).toBe('acme')
+    expect(within(vendorCard).queryByText('Profile not filled in')).toBeNull()
+
+    const contextCard = items[2] as HTMLElement
+    expect(contextCard.querySelector('.card-subline')?.textContent).toBe(
+      'Context 128K',
+    )
+    expect(
+      within(contextCard).queryByText('Profile not filled in'),
+    ).toBeNull()
+  })
+
+  it('renders the max output on the card foot and an em dash when absent', async () => {
+    await renderRegister({ view: 'cards', entries: [TESTED, EMPTY] })
+
+    const items = screen.getAllByRole('listitem')
+    expect(items[0]?.querySelector('.card-output')?.textContent).toBe(
+      '32K Max output',
+    )
+    expect(items[1]?.querySelector('.card-output')?.textContent).toBe('—')
+  })
+
   it('keeps the compare checkbox and the detail button on a card', async () => {
     serveDetails()
     const onToggleCompare = vi.fn()
