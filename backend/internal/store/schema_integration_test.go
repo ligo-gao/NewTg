@@ -52,17 +52,27 @@ import (
 // upstream_reconciliation_runs 13 列、upstream_reconciliation_items 36 列、
 // usage_integrity_findings 12 列。五表都以 GENERATED ALWAYS AS IDENTITY 作 id PK。
 //
+// 客户折扣（2026-10-26 客户折扣设计，迁移 20261029090000）追加 discounts 表
+// （10 列，identity id），表数 51→56；并给 users 追加 customer_type
+// （27→28）、request_pricing 追加 discount_rate/discount_target（5→7）。
+// 同批把早于登记册落地、却从未登记的四张表与 model_pricing 的 strategy 列
+// 一次性对齐到迁移实测值：holiday_calendar 6 列、request_pricing 5 列
+// （本次再随客户折扣补两列 → 7）、model_performance_runs 10 列、
+// model_performance_tests 15 列（另含三条 FK）、model_pricing 13→14。
+//
 //	subscription_plans 17 列、subscriptions 26 列（含 R-D5-03 的 5 个快照列
 //	与 S4 的 3 个自动续费状态列）、
 //	subscription_pre_consume_records 5 列（R-D5-02 的 subscription_id）。
 var wantColumns = map[string]int{
-	"users":           27,
+	// 27 列（M6c/G-M6C-19）+ 客户折扣的 customer_type（设计 §4.1）= 28。
+	"users":           28,
 	"api_tokens":      15,
 	"user_groups":     9,
 	"system_settings": 5,
 	// 24 列（M6d Task 7a）+ 上游对账归属列 upstream_account_id = 25。
-	"channels":         25,
-	"model_pricing":    13,
+	"channels": 25,
+	// 13 列（platform-01 §7）+ 定价时段策略的 strategy（迁移 20261027090000）= 14。
+	"model_pricing":    14,
 	"group_pricing":    10,
 	"redemption_codes": 11,
 	// 25 列（platform-01 §0.1）+ S3 退款的 4 列
@@ -149,6 +159,19 @@ var wantColumns = map[string]int{
 	"upstream_reconciliation_runs":  13,
 	"upstream_reconciliation_items": 36,
 	"usage_integrity_findings":      12,
+	// 早于登记册落地、此前未登记的四张表（本次按迁移到 HEAD 的干净库实测值补齐）。
+	// 定价时段策略（迁移 20261027090000）：节假日日历是 (country, date) 复合
+	// 自然主键；request_pricing 是冻结请求计价事实（uuid 自然键），本次再随
+	// 客户折扣加 discount_rate/discount_target 两列（5→7）。
+	"holiday_calendar": 6,
+	"request_pricing":  7,
+	// 模型性能测试两表（迁移 20261026120000）：汇总 15 列、逐次明细 10 列；
+	// 两表都以 identity 作 id PK，三条 FK 见 wantFKs。
+	"model_performance_tests": 15,
+	"model_performance_runs":  10,
+	// 客户折扣规则（设计 §4.2，迁移 20261029090000）：10 列固定形状。
+	// 目标可以是用户或分组，故意不设 FK（应用层级联，design §4.5）。
+	"discounts": 10,
 }
 
 // 四个部分唯一索引（platform-04 §3.3.3；名称钉死）。
@@ -246,27 +269,41 @@ var wantIdentityPKTables = []string{
 	"upstream_reconciliation_runs",
 	"upstream_reconciliation_items",
 	"usage_integrity_findings",
+	// 模型性能测试两表（迁移 20261026120000）：单列 id identity。
+	"model_performance_tests",
+	"model_performance_runs",
+	// 客户折扣（迁移 20261029090000）：bigint GENERATED ALWAYS AS IDENTITY。
+	"discounts",
 }
 
-// identityPKExceptions：13 张「自然键/非 identity 例外」表的 PK（均非 identity）：
+// identityPKExceptions：15 张「自然键/非 identity 例外」表的 PK（均非 identity）：
 // system_settings."key" text 自然键（platform-01 §4）、request_registry.request_id
 // uuid 自然键（§18 / platform-04 V9）、rankings_timeseries 与 rankings_entities 的
 // 自然唯一键（§16/§17）、task_plugins."key" text 自然键（M6d B-11，主表以
 // 插件 key 作 PK，不引入代理 id）、subscription_pre_consume_records.request_id
 // uuid 自然键（D5a：幂等键就是主键，R-D5-02）。
+// 定价时段策略的 holiday_calendar 以 (country, date) 复合自然键作 PK、
+// request_pricing 以 request_id uuid 自然键作 PK（迁移 20261027090000），
+// 是第 14、15 项。
 //
 // 另有两张以 run_id（FK → rankings_snapshot_runs.id，V5）领头的复合自然键表
 // （runIDLedNaturalPKs），以及 uuid 代理主键表（uuidPKTables：id uuid
-// DEFAULT gen_random_uuid()，属「代理主键但非 identity」）。合起来：51 表
+// DEFAULT gen_random_uuid()，属「代理主键但非 identity」）。合起来：56 表
 // （M0 16 + M1 6 + M6c 2 + M6d 4 + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 + T4 2
-// + S1 1 + S4 1 + MJ-d 1 + W17-2 3 + 上游对账 5）
-// = 30 张单列 id identity + 13 张自然键例外 + 5 张 uuid 代理键
+// + S1 1 + S4 1 + MJ-d 1 + W17-2 3 + 上游对账 5 + 定价时段策略 2
+// + 模型性能测试 2 + 客户折扣 1）
+// = 33 张单列 id identity + 15 张自然键例外 + 5 张 uuid 代理键
 // + 2 张 run_id 领头自然键 + 1 张自定义列名 identity（fact_id）；
-// **非 identity PK 的表恰 20 张**，由 TestMainSchemaNonIdentityPKSet 断言。
+// **非 identity PK 的表恰 22 张**，由 TestMainSchemaNonIdentityPKSet 断言。
 var identityPKExceptions = map[string][]string{
 	"system_settings":     {"key"},
 	"rankings_timeseries": {"model", "granularity", "bucket_start"},
 	"rankings_entities":   {"entity", "kind"},
+	// 定价时段策略：节假日日历的主键就是「国家 × 日期」这对自然键。
+	"holiday_calendar": {"country", "date"},
+	// 定价时段策略：冻结请求计价事实以 request_id（uuid）为幂等键，不引入
+	// 代理 id；客户折扣迁移给它补的是两列折扣快照，不改主键形态。
+	"request_pricing": {"request_id"},
 	// B5a：作者时间序列的主键就是幂等键；period 由收口迁移加入并置于键首，
 	// week/month 同桶不再互相覆盖。
 	"rankings_author_timeseries":       {"period", "author", "granularity", "bucket_start"},
@@ -318,8 +355,9 @@ var runIDLedNaturalPKs = map[string][]string{
 }
 
 // wantFKs 是全库真实 FK 清单：platform-04 §3.4 V5 的 6 条 + M6d Task 1 的
-// task_plugin_versions → task_plugins、T4 的两条批次关联、C2 计费域一条，
-// 以及上游对账新增的 5 条（account 三条 RESTRICT、明细 CASCADE、发现 SET NULL）。
+// task_plugin_versions → task_plugins、T4 的两条批次关联、C2 计费域一条、
+// 上游对账新增的 5 条（account 三条 RESTRICT、明细 CASCADE、发现 SET NULL），
+// 以及模型性能测试的 3 条（明细 CASCADE、渠道 CASCADE、操作者 SET NULL）。
 // 键形如 "<table>.<column>-><ref_table>.<ref_column>:<ON DELETE>"。
 var wantFKs = []string{
 	"api_tokens.user_id->users.id:CASCADE",
@@ -345,6 +383,11 @@ var wantFKs = []string{
 	"upstream_reconciliation_runs.account_id->upstream_accounts.id:RESTRICT",
 	"upstream_reconciliation_items.run_id->upstream_reconciliation_runs.id:CASCADE",
 	"usage_integrity_findings.run_id->upstream_reconciliation_runs.id:SET NULL",
+	// 模型性能测试（迁移 20261026120000）：明细随测试行级联删除；测试随渠道
+	// 级联删除；操作者被删除时仅解除关联（测试事实本身保留）。
+	"model_performance_runs.test_id->model_performance_tests.id:CASCADE",
+	"model_performance_tests.channel_id->channels.id:CASCADE",
+	"model_performance_tests.created_by->users.id:SET NULL",
 }
 
 func openTestDB(t *testing.T) *sql.DB {
@@ -373,7 +416,7 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// TestMainSchemaTableCount：（a）主库用户表恰 51 张（M0 16 + M1 认证族 6 + M6c 2 + M6d 4 + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 + T4 2 + S1 1 + S4 1 + MJ-d 1 + W17-2 3 + 上游对账 5，除 schema_migrations）。
+// TestMainSchemaTableCount：（a）主库用户表恰 56 张（M0 16 + M1 认证族 6 + M6c 2 + M6d 4 + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 + T4 2 + S1 1 + S4 1 + MJ-d 1 + W17-2 3 + 上游对账 5 + 定价时段策略 2 + 模型性能测试 2 + 客户折扣 1，除 schema_migrations）。
 func TestMainSchemaTableCount(t *testing.T) {
 	db := openTestDB(t)
 	rows, err := db.Query(`SELECT table_name FROM information_schema.tables
@@ -402,7 +445,7 @@ func TestMainSchemaTableCount(t *testing.T) {
 	}
 }
 
-// TestMainSchemaColumnCounts：（b）逐表列数 == 登记册计数（51 表，共 51 个断言）。
+// TestMainSchemaColumnCounts：（b）逐表列数 == 登记册计数（56 表，共 56 个断言）。
 func TestMainSchemaColumnCounts(t *testing.T) {
 	db := openTestDB(t)
 	for _, table := range sortedKeys(wantColumns) {
@@ -783,8 +826,8 @@ func TestMainSchemaNoFKOnFinancialTables(t *testing.T) {
 	}
 }
 
-// TestMainSchemaFKsMatchV5：全库真实 FK 恰 15 条（V5 6 条 + M6d Task 1 1 条
-// + T4 2 条 + C2 1 条 + 上游对账 5 条），引用列与 ON DELETE 逐条对齐。
+// TestMainSchemaFKsMatchV5：全库真实 FK 恰 18 条（V5 6 条 + M6d Task 1 1 条
+// + T4 2 条 + C2 1 条 + 上游对账 5 条 + 模型性能测试 3 条），引用列与 ON DELETE 逐条对齐。
 func TestMainSchemaFKsMatchV5(t *testing.T) {
 	db := openTestDB(t)
 	rows, err := db.Query(`SELECT cl.relname,
@@ -862,11 +905,11 @@ func pkColumns(t *testing.T, db *sql.DB, table string) []pkCol {
 	return out
 }
 
-// TestMainSchemaIdentityPK：（e）identity PK + 例外清单恰 13 项 + uuid 代理键 5 项
+// TestMainSchemaIdentityPK：（e）identity PK + 例外清单恰 15 项 + uuid 代理键 5 项
 // + run_id 领头复合自然键 2 项 + 自定义列名 identity 1 项。
 func TestMainSchemaIdentityPK(t *testing.T) {
-	if len(identityPKExceptions) != 13 {
-		t.Fatalf("自然键例外清单须恰 13 项（另有 5 张 uuid 代理键 + 2 张 run_id 领头的复合自然键 + 1 张自定义列名 identity），实际 %d 项", len(identityPKExceptions))
+	if len(identityPKExceptions) != 15 {
+		t.Fatalf("自然键例外清单须恰 15 项（另有 5 张 uuid 代理键 + 2 张 run_id 领头的复合自然键 + 1 张自定义列名 identity），实际 %d 项", len(identityPKExceptions))
 	}
 	db := openTestDB(t)
 
@@ -889,8 +932,9 @@ func TestMainSchemaIdentityPK(t *testing.T) {
 		})
 	}
 
-	// (e.1) 30 张单列 id identity 代理主键表（M0 10 + M1 6 + M6c 2 + M6d 2 + D1 2
-	// + D5a 2 + W17-2 1 + 上游对账 5）：单列 id 且 GENERATED ALWAYS AS IDENTITY。
+	// (e.1) 33 张单列 id identity 代理主键表（M0 10 + M1 6 + M6c 2 + M6d 2 + D1 2
+	// + D5a 2 + W17-2 1 + 上游对账 5 + 模型性能测试 2 + 客户折扣 1）：单列 id 且
+	// GENERATED ALWAYS AS IDENTITY。
 	for _, table := range wantIdentityPKTables {
 		table := table
 		t.Run(table, func(t *testing.T) {
@@ -991,8 +1035,8 @@ func TestMainSchemaIdentityPK(t *testing.T) {
 	}
 }
 
-// TestMainSchemaNonIdentityPKSet：非 identity PK 的表恰 20 张 =
-// 13 张自然键例外（identityPKExceptions）+ 5 张 uuid 代理键（uuidPKTables）
+// TestMainSchemaNonIdentityPKSet：非 identity PK 的表恰 22 张 =
+// 15 张自然键例外（identityPKExceptions）+ 5 张 uuid 代理键（uuidPKTables）
 // + 2 张 run_id 领头的复合自然键（runIDLedNaturalPKs）；其余均为 identity
 // 单列代理主键（其中 deployment_cost_facts 的列名是 fact_id）。
 func TestMainSchemaNonIdentityPKSet(t *testing.T) {
@@ -1007,8 +1051,8 @@ func TestMainSchemaNonIdentityPKSet(t *testing.T) {
 	for table := range runIDLedNaturalPKs {
 		wantNonIdentity[table] = true
 	}
-	if len(wantNonIdentity) != 20 {
-		t.Fatalf("非 identity PK 表须恰 20 张（13 自然键 + 5 uuid 代理键 + 2 run_id 领头），实际 %d 张", len(wantNonIdentity))
+	if len(wantNonIdentity) != 22 {
+		t.Fatalf("非 identity PK 表须恰 22 张（15 自然键 + 5 uuid 代理键 + 2 run_id 领头），实际 %d 张", len(wantNonIdentity))
 	}
 
 	var gotNonIdentity, gotIdentity []string

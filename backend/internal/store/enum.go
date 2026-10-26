@@ -87,6 +87,9 @@ var EnumChecks = map[string][]string{
 	"users.role":     {"user", "admin"},
 	"users.status":   {"enabled", "disabled"},
 	"users.language": {"en", "zh-CN", "zh-TW", "fr", "ru", "ja", "vi"},
+	// 客户折扣设计 §4.1（迁移 20261029090000）：仅用于列表筛选与统计，
+	// 不参与折扣匹配（折扣按 users."group" 与 users.id 判定）。
+	"users.customer_type": {"general", "enterprise"},
 
 	// api_tokens（§2）
 	"api_tokens.status": {"enabled", "disabled"},
@@ -276,6 +279,11 @@ var EnumChecks = map[string][]string{
 	"upstream_reconciliation_items.status": {"open", "acknowledged", "resolved"},
 	"usage_integrity_findings.severity":    {"info", "warn", "alert"},
 	"usage_integrity_findings.status":      {"open", "acknowledged", "resolved"},
+
+	// 客户折扣（设计 §4.2，迁移 20261029090000）：目标只有用户与分组两态。
+	// rate_percent 的 0–100 是 BETWEEN 约束（非 IN 枚举），由 documentedChecks
+	// 之外的 DDL 直接兜底，不在此登记。
+	"discounts.target_type": {"user", "group"},
 }
 
 // EnumChecksLogs 是日志库（migrations-logs 流）枚举列的「DB CHECK ↔ 期望值」对照表，
@@ -284,7 +292,7 @@ var EnumChecks = map[string][]string{
 // 日志库与主库是物理分离的两个库（G7-R36），CHECK 必须在日志库连接上对账；
 // 主库的 EnumChecks 只覆盖主库 wantColumns 表集（M0 16 + M1 6 + M6c 2 + M6d 4
 // + D1 2 + D5a 3 + D7a 2 + B5a 1 + C2 2 + T4 2 + S1 1 + S4 1 + MJ-d 1 + W17-2 3
-// + 上游对账 5 = 51 表），二者互不包含。日志库唯一的枚举型 CHECK
+// + 上游对账 5 + 定价时段策略 2 + 模型性能测试 2 + 客户折扣 1 = 56 表），二者互不包含。日志库唯一的枚举型 CHECK
 // 均登记于此（反向对账：日志库每个枚举 CHECK 必须在此有且仅有一个键）。
 var EnumChecksLogs = map[string][]string{
 	// usage_logs（platform-01 §12；smallint：0=refused / 1=success / 2=error / 3=refunded）
