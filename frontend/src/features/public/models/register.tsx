@@ -115,7 +115,10 @@ function ModelIdentity({ entry }: { entry: ModelEntry }) {
   return (
     <div className="model-cell min-w-0">
       <div className="model-name-row group flex min-w-0 items-center gap-1.5">
-        <span className="model-name truncate text-meta font-semibold leading-5 text-ink-1">
+        <span
+          className="model-name truncate text-meta font-semibold leading-5 text-ink-1"
+          title={name}
+        >
           {name}
         </span>
         <button
@@ -469,17 +472,23 @@ function ModelTable({
 
   return (
     <div className="table-wrap relative w-full overflow-x-auto rounded-xl border border-border-default bg-surface-card">
-      <table className="register w-full min-w-[1440px] border-collapse text-meta [table-layout:fixed]">
+      <table className="register w-full min-w-[1040px] border-collapse text-meta [table-layout:fixed]">
         <caption className="sr-only">{t('public.models.title')}</caption>
+        {/*
+          每一列都写了宽度：`table-layout: fixed` 只把余量按列宽比例摊给各列，
+          有一列留空（原来给 `c-model`）时它会把整份余量吃下去，模型名和价格
+          之间就多出几百像素的空白。列宽之和按表格可用宽度（宽屏主栏约
+          1100–1180px）定，余量再按比例摊开。模型名已 `truncate`，窄列不会撑破。
+        */}
         <colgroup>
           <col className="c-pick w-8" />
-          <col className="c-model" />
-          <col className="c-price w-[150px]" />
-          {showContext ? <col className="c-ctx w-28" /> : null}
-          <col className="c-lat w-[206px]" />
-          <col className="c-tps w-24" />
-          <col className="c-ok w-[120px]" />
-          <col className="c-exp w-[42px]" />
+          <col className="c-model w-[300px]" />
+          <col className="c-price w-[168px]" />
+          {showContext ? <col className="c-ctx w-[104px]" /> : null}
+          <col className="c-lat w-[190px]" />
+          <col className="c-tps w-[90px]" />
+          <col className="c-ok w-[118px]" />
+          <col className="c-exp w-[40px]" />
         </colgroup>
         <thead className="bg-surface-subtle text-left text-badge text-ink-2">
           <tr>
