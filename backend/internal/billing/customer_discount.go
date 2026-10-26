@@ -88,11 +88,14 @@ func (s *Session) discountApplies() bool {
 
 // discountFacts 推导结算日志需要的「原价成本 + 生效折扣」（R1）。
 //
-// 返回零值三元组表示「没有可记录的折扣」：未命中、rate >= 1、NaN 都不写。
+// 返回零值三元组表示「没有可记录的折扣」：未命中、rate >= 1、NaN 以及负 rate
+// 都不写。负 rate 是坏配置：若继续走 net/rate 分支会得到负的「原价」，
+// 下游把它当成本事实会反向记账；这里 fail-closed 按无折扣处理，绝不把
+// 坏数据变成负成本或全免。
 // 全免（rate == 0）只返回目标、不写原价：0 是让利结果而不是原价事实，
 // 用 0 反推原价会得到无穷大或 0，都不真实。
 func discountFacts(d contract.Discount, rawCost, netCost int64, rawKnown bool) (int64, float64, string) {
-	if d.Target == "" || math.IsNaN(d.Rate) || d.Rate >= 1 {
+	if d.Target == "" || math.IsNaN(d.Rate) || d.Rate < 0 || d.Rate >= 1 {
 		return 0, 0, ""
 	}
 	if d.Rate == 0 {

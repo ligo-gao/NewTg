@@ -381,6 +381,10 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) (err error) {
 	// 返回——chargeSubscriptionLocked 会把 0 预算抬成 1。此短路位于静态
 	// 零价早返回之后：零价模型由上面的免费模型策略处理，不经过折扣。
 	if s.discount.Target != "" && s.discount.Rate == 0 {
+		// 结算求值失败时 keepPreConsumedCostLocked 会回退到 estimatedQuota；
+		// 全免请求的估算成本就是 0，若仍留着原价 base，求值失败会把 0%
+		// 客户按原价补扣。这里必须同步归零。
+		s.estimatedQuota = 0
 		s.fundingSource = contract.FundingWallet
 		succeeded = true
 		return nil

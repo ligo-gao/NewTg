@@ -118,6 +118,9 @@ func TestPreConsumeZeroRateHoldsNothing(t *testing.T) {
 	if got := s.Reserved(); got != 0 {
 		t.Fatalf("Reserved = %d, want 0（全免不得预扣）", got)
 	}
+	if got := s.estimatedQuota; got != 0 {
+		t.Fatalf("estimatedQuota = %d, want 0（求值失败回退不得按原价补扣全免请求）", got)
+	}
 	if s.fundingSource != contract.FundingWallet {
 		t.Fatalf("fundingSource = %v, want wallet", s.fundingSource)
 	}
@@ -150,6 +153,82 @@ func TestPreConsumeZeroRateSkipsSubscription(t *testing.T) {
 	}
 	if got := s.Reserved(); got != 0 {
 		t.Fatalf("Reserved = %d, want 0", got)
+	}
+}
+
+// TestResolveDiscountFrozenOnce 验证「每请求只解析一次」的冻结契约：
+// 同一会话重复调用 resolveDiscountLocked 不得再次查询仓储。
+func TestResolveDiscountFrozenOnce(t *testing.T) {
+	ds := &fakeDiscountStore{discount: customerDiscount(90, "user", "7"), found: true}
+	e := NewEngine(nil, nil, nil, nil, nil, nil, nil)
+	e.SetDiscountStore(ds)
+	s := &Session{
+		engine: e, requestID: "t3-frozen-once", userID: 7, model: "m",
+		requestTime: time.Date(2026, 10, 26, 0, 0, 0, 0, time.UTC),
+	}
+
+	s.resolveDiscountLocked(context.Background())
+	s.resolveDiscountLocked(context.Background())
+
+	if ds.calls != 1 {
+		t.Fatalf("Resolve 调用 = %d 次, want 1（同一会话只解析一次）", ds.calls)
+	}
+	if !s.discountResolved || s.discount.Rate != 0.9 || s.discount.Target != "user:7" {
+		t.Fatalf("冻结折扣 = %+v (resolved=%v), want user:7 rate 0.9",
+			s.discount, s.discountResolved)
+	}
+}
+
+// TestResolveDiscountSkipsWithoutContext 验证三类没有解析上下文的路径完全不
+// 查库、不产生折扣，但仍标记为已解析（避免后续重复尝试）。
+func TestResolveDiscountSkipsWithoutContext(t *testing.T) {
+	fixed := time.Date(2026, 10, 26, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		build func(ds *fakeDiscountStore) *Session
+	}{
+		{
+			name: "未装配存储",
+			build: func(*fakeDiscountStore) *Session {
+				e := NewEngine(nil, nil, nil, nil, nil, nil, nil)
+				return &Session{engine: e, requestID: "t3-skip-store", userID: 7,
+					model: "m", requestTime: fixed}
+			},
+		},
+		{
+			name: "用户为 0",
+			build: func(ds *fakeDiscountStore) *Session {
+				e := NewEngine(nil, nil, nil, nil, nil, nil, nil)
+				e.SetDiscountStore(ds)
+				return &Session{engine: e, requestID: "t3-skip-user", userID: 0,
+					model: "m", requestTime: fixed}
+			},
+		},
+		{
+			name: "模型为空",
+			build: func(ds *fakeDiscountStore) *Session {
+				e := NewEngine(nil, nil, nil, nil, nil, nil, nil)
+				e.SetDiscountStore(ds)
+				return &Session{engine: e, requestID: "t3-skip-model", userID: 7,
+					model: "", requestTime: fixed}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := &fakeDiscountStore{discount: customerDiscount(0, "user", "7"), found: true}
+			s := tc.build(ds)
+			s.resolveDiscountLocked(context.Background())
+			if ds.calls != 0 {
+				t.Fatalf("Resolve 调用 = %d 次, want 0（无上下文不得查库）", ds.calls)
+			}
+			if s.discount.Target != "" {
+				t.Fatalf("discount = %+v, want 零值", s.discount)
+			}
+			if !s.discountResolved {
+				t.Fatal("跳过路径也必须标记 discountResolved")
+			}
+		})
 	}
 }
 
@@ -284,6 +363,11 @@ func TestLedgerDiscountFacts(t *testing.T) {
 		{
 			name: "空目标", d: contract.Discount{Rate: 0.9, Target: ""},
 			rawCost: 100, netCost: 90, rawKnown: true,
+			wantRaw: 0, wantRate: 0, wantTgt: "",
+		},
+		{
+			name: "负 rate fail-closed", d: contract.Discount{Rate: -0.5, Target: "user:7"},
+			rawCost: 100, netCost: 0, rawKnown: true,
 			wantRaw: 0, wantRate: 0, wantTgt: "",
 		},
 	}
