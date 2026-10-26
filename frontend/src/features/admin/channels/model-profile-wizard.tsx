@@ -4,107 +4,60 @@
  * 步骤 3（逐行确认）、步骤 4（结果）与写库循环属于 Task 6，这里只呈现四个
  * 步骤的导航骨架，3/4 步保持禁用。上游事实只来自探测响应；能力 / 模态 /
  * 参数 / 知识截止 *只能* 由管理员在向导里填写，绝不从模型名推断。
+ *
+ * 本文件只保留容器职责：探测、行状态、步骤导航与页脚。目录读取在
+ * `model-profile-wizard-queries.ts`，两步的界面各在自己的 step 文件里。
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
-import { apiClient } from '@/api/client'
 import { ApiError } from '@/api/errors'
-import { requireData } from '@/api/result'
 import type { components } from '@/api/schema'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/base/button'
 
 import { fetchChannelModels } from './api'
 import {
-  CAPABILITY_KEYS,
-  ENDPOINT_KEYS,
-  MODALITY_KEYS,
   applyDefaults,
   buildRows,
   parseParameterLines,
-  type EndpointKey,
+  type ParameterRow,
   type WizardDefaults,
   type WizardRow,
 } from './model-profile-wizard-logic'
+import {
+  loadModelCatalog,
+  loadVendorDirectory,
+  type VendorDirectory,
+} from './model-profile-wizard-queries'
+import {
+  CREATE_VENDOR,
+  StepDefaults,
+  emptyDefaultsForm,
+  type DefaultsFormState,
+} from './model-profile-wizard-step-defaults'
+import { StepModels } from './model-profile-wizard-step-models'
 import type { FetchChannelModelEntry, FetchChannelModelsInput } from './types'
 
 type ModelMeta = components['schemas']['ModelMeta']
 
-/** `/api/models`、`/api/vendors` 的每页上限（契约上限 100）。 */
-const PAGE_SIZE = 100
-/** 目录是百级规模；封顶避免上游异常 total 时无限翻页。 */
-const MAX_PAGES = 10
+const MODEL_CATALOG_QUERY_KEY = [
+  'admin',
+  'channel-model-profile-wizard',
+  'models',
+] as const
+const VENDOR_QUERY_KEY = [
+  'admin',
+  'channel-model-profile-wizard',
+  'vendors',
+] as const
 
-const MODEL_CATALOG_QUERY_KEY = ['admin', 'channel-model-profile-wizard', 'models'] as const
-const VENDOR_QUERY_KEY = ['admin', 'channel-model-profile-wizard', 'vendors'] as const
+const EMPTY_CATALOG: Map<string, ModelMeta> = new Map()
 
-/** 「本地没有，提交时新建」在下拉里的哨兵值（不会与真实供应商名冲突）。 */
-const CREATE_VENDOR = '__create__'
-
-const EMPTY_CATALOG: ReadonlyMap<string, ModelMeta> = new Map()
-
-const EMPTY_VENDOR_DIRECTORY: VendorDirectory = { ids: new Map(), names: [] }
-
-interface VendorDirectory {
-  /** `lower(trim(name))` → id，与 Task 6 的建商去重口径一致。 */
-  ids: Map<string, number>
-  /** 原始大小写，仅用于下拉展示。 */
-  names: string[]
-}
-
-async function loadModelCatalog(): Promise<Map<string, ModelMeta>> {
-  const catalog = new Map<string, ModelMeta>()
-  let loaded = 0
-  for (let page = 1; page <= MAX_PAGES; page += 1) {
-    const data = requireData(
-      await apiClient.GET('/api/models', {
-        params: { query: { p: page, page_size: PAGE_SIZE } },
-      }),
-    )
-    const items = data.items ?? []
-    for (const item of items) catalog.set(item.model_name, item)
-    loaded += items.length
-    if (items.length === 0 || loaded >= data.total) break
-  }
-  return catalog
-}
-
-async function loadVendorDirectory(): Promise<VendorDirectory> {
-  const ids = new Map<string, number>()
-  const names: string[] = []
-  let loaded = 0
-  for (let page = 1; page <= MAX_PAGES; page += 1) {
-    const data = requireData(
-      await apiClient.GET('/api/vendors', {
-        params: { query: { p: page, page_size: PAGE_SIZE } },
-      }),
-    )
-    const items = data.items ?? []
-    for (const vendor of items) {
-      const name = vendor.name.trim()
-      const key = name.toLowerCase()
-      if (key === '') continue
-      if (!ids.has(key)) names.push(name)
-      ids.set(key, vendor.id)
-    }
-    loaded += items.length
-    if (items.length === 0 || loaded >= data.total) break
-  }
-  names.sort((left, right) => left.localeCompare(right))
-  return { ids, names }
-}
-
-function emptyWizardDefaults(): WizardDefaults {
-  return {
-    vendorName: '',
-    endpoints: [],
-    capabilities: [],
-    modalities: [],
-    parameters: [],
-    knowledgeCutoff: '',
-    tags: [],
-  }
+const EMPTY_VENDOR_DIRECTORY: VendorDirectory = {
+  ids: new Map(),
+  nameById: new Map(),
+  names: [],
 }
 
 function emptyEntry(id: string): FetchChannelModelEntry {
@@ -131,24 +84,74 @@ export interface ModelProfileWizardProps {
 }
 
 type ProbeState = 'loading' | 'ready' | 'error'
-type ProfileState = 'new' | 'existing' | 'locked'
-type FactKind = 'auto' | 'suggest' | 'empty'
 type WizardStep = 1 | 2
 
-const PROFILE_BADGE_CLASSES: Record<ProfileState, string> = {
-  new: 'border-border-default bg-surface-subtle text-ink-2',
-  existing: 'border-info-line bg-info-bg text-info',
-  locked: 'border-border-default bg-surface-subtle text-ink-3',
+function sameStrings(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((item, index) => item === right[index])
+  )
 }
 
-const FACT_CHIP_CLASSES: Record<FactKind, string> = {
-  auto: 'border-info-line bg-info-bg text-info',
-  suggest: 'border-warning-line bg-warning-bg text-warning',
-  empty: 'border-border-default bg-surface-subtle text-ink-3',
+function sameParameters(
+  left: readonly ParameterRow[],
+  right: readonly ParameterRow[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((row, index) => {
+      const other = right[index]
+      return (
+        other !== undefined &&
+        row.name === other.name &&
+        row.type === other.type &&
+        row.description === other.description &&
+        row.defaultValue === other.defaultValue
+      )
+    })
+  )
 }
 
-const INPUT_CLASSES =
-  'h-9 w-full rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none'
+/** 批量默认值是否真的改写了这一行（决定 `appliedCount` 是否出现）。 */
+function rowWasWritten(current: WizardRow, next: WizardRow): boolean {
+  return (
+    current.vendorName !== next.vendorName ||
+    current.knowledgeCutoff !== next.knowledgeCutoff ||
+    !sameStrings(current.endpoints, next.endpoints) ||
+    !sameStrings(current.capabilities, next.capabilities) ||
+    !sameStrings(current.modalities, next.modalities) ||
+    !sameStrings(current.tags, next.tags) ||
+    !sameParameters(current.parameters, next.parameters)
+  )
+}
+
+/** 下拉选中的值（供应商 id / 新建哨兵）→ 写入体需要的供应商名。 */
+function vendorNameOf(
+  form: DefaultsFormState,
+  directory: VendorDirectory,
+): string {
+  if (form.vendorChoice === '') return ''
+  if (form.vendorChoice === CREATE_VENDOR) return form.newVendorName.trim()
+  return directory.nameById.get(Number(form.vendorChoice)) ?? ''
+}
+
+function WizardLoading({ label }: { label: string }) {
+  return (
+    <div
+      role="status"
+      className="flex min-h-[240px] items-center justify-center gap-2 text-body text-ink-2"
+    >
+      <span
+        aria-hidden="true"
+        className="size-4 animate-spin rounded-full border-2 border-border-default border-t-brand"
+      />
+      {label}
+    </div>
+  )
+}
 
 export function ModelProfileWizard({
   request,
@@ -169,21 +172,19 @@ export function ModelProfileWizard({
 
   const [step, setStep] = useState<WizardStep>(1)
   const [probeState, setProbeState] = useState<ProbeState>('loading')
-  const [probeError, setProbeError] = useState('')
+  // null 表示非 ApiError：渲染时再取「读取失败」的本地化文案，避免把 `t`
+  // 塞进探测 effect 的依赖里（语言切换不应重发上游请求）。
+  const [probeError, setProbeError] = useState<string | null>(null)
   const [entries, setEntries] = useState<FetchChannelModelEntry[]>([])
   const [rows, setRows] = useState<WizardRow[]>([])
   const [nonce, setNonce] = useState(0)
   const [query, setQuery] = useState('')
   const [fillChannelModels, setFillChannelModels] = useState(true)
-  const [defaults, setDefaults] = useState<WizardDefaults>(emptyWizardDefaults)
-  const [parameterText, setParameterText] = useState('')
-  const [tagsText, setTagsText] = useState('')
-  const [emptyOnly, setEmptyOnly] = useState(true)
+  const [form, setForm] = useState<DefaultsFormState>(emptyDefaultsForm)
   const [appliedCount, setAppliedCount] = useState<number | null>(null)
-  const [vendorChoice, setVendorChoice] = useState('')
-  const [newVendorName, setNewVendorName] = useState('')
   // 只为每个探测结果建一次行：目录查询的后台重取不应把管理员已套用的
-  // 默认值 / 勾选状态冲掉。
+  // 默认值 / 勾选状态冲掉。目录「失败 → 成功」算一次新的建行时机，因此
+  // 状态也进入 key，恢复后只重建一次。
   const builtKeyRef = useRef<string | null>(null)
 
   const catalogQuery = useQuery({
@@ -202,7 +203,7 @@ export function ModelProfileWizard({
   useEffect(() => {
     let cancelled = false
     setProbeState('loading')
-    setProbeError('')
+    setProbeError(null)
 
     async function load() {
       try {
@@ -214,9 +215,7 @@ export function ModelProfileWizard({
       } catch (error) {
         if (cancelled) return
         setProbeError(
-          error instanceof ApiError
-            ? error.message
-            : t('common.channels.profileWizard.loadError'),
+          error instanceof ApiError ? error.message : null,
         )
         setProbeState('error')
       }
@@ -227,65 +226,37 @@ export function ModelProfileWizard({
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nonce, requestKey, t])
+  }, [nonce, requestKey])
 
-  const catalogSettled = !catalogQuery.isPending
+  const catalogStatus = catalogQuery.isPending
+    ? 'pending'
+    : catalogQuery.isError
+      ? 'error'
+      : 'success'
+  const catalogSettled = catalogStatus !== 'pending'
+  const catalogReady = catalogStatus === 'success'
 
   // 行由「探测条目 + 既有档案 + 表单当前模型」共同决定，三者都就绪后才建，
-  // 否则会把已有档案误标成「待建档」。目录查询失败时降级为空目录，仍允许
-  // 管理员继续；本任务不写库。
+  // 否则会把已有档案误标成「待建档」。目录读取失败时先用空目录建行，好让
+  // 第 1 步显示错误横幅；恢复成功后（key 里的状态变化）再重建一次。
   useEffect(() => {
     if (probeState !== 'ready' || !catalogSettled) return
-    const buildKey = `${nonce}\u0000${channelModelsKey}`
+    const buildKey = `${nonce}\u0000${channelModelsKey}\u0000${catalogStatus}`
     if (builtKeyRef.current === buildKey) return
     builtKeyRef.current = buildKey
     setRows(
-      buildRows(entries, catalogQuery.data ?? new Map(), channelModels),
+      buildRows(entries, catalogQuery.data ?? EMPTY_CATALOG, channelModels),
     )
     // `channelModels` 以稳定 key 参与依赖，避免父组件内联数组造成重建循环。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [probeState, catalogSettled, entries, catalogQuery.data, channelModelsKey])
+  }, [probeState, catalogStatus, entries, catalogQuery.data, channelModelsKey, nonce])
 
   const catalog = catalogQuery.data ?? EMPTY_CATALOG
   const vendorDirectory = vendorsQuery.data ?? EMPTY_VENDOR_DIRECTORY
 
-  const filteredRows = useMemo(() => {
-    const needle = query.trim().toLowerCase()
-    if (needle === '') return rows
-    return rows.filter((row) => row.id.toLowerCase().includes(needle))
-  }, [rows, query])
-
   const selectedCount = rows.filter((row) => row.selected).length
-
-  function profileStateOf(row: WizardRow): ProfileState {
-    const profile = catalog.get(row.id)
-    if (profile === undefined) return 'new'
-    return profile.sync_official ? 'existing' : 'locked'
-  }
-
-  function displayNameOf(row: WizardRow): string {
-    if (row.displayName.trim() !== '') return row.displayName
-    return catalog.get(row.id)?.display_name ?? ''
-  }
-
-  /**
-   * 事实来源只由「上游给没给值」推导，与 `facts_source`（上游目录种类）无关：
-   * 自动 = 显示名 / 描述 / 上下文 / 最大输出 / 发布日期至少一项；
-   * 建议 = 探测到了端点映射；两者都没有 = 待填。
-   */
-  function factKindsOf(row: WizardRow): FactKind[] {
-    const kinds: FactKind[] = []
-    const hasFacts =
-      row.displayName.trim() !== '' ||
-      row.description.trim() !== '' ||
-      row.contextLength !== '' ||
-      row.maxOutput !== '' ||
-      row.releasedAt !== ''
-    if (hasFacts) kinds.push('auto')
-    if (row.endpoints.length > 0) kinds.push('suggest')
-    if (kinds.length === 0) kinds.push('empty')
-    return kinds
-  }
+  // 目录未成功加载前不放开第 2 步：档案状态还不可信，写库必须失败关闭。
+  const stepTwoEnabled = selectedCount > 0 && catalogReady
 
   function toggleRow(id: string): void {
     setRows((current) =>
@@ -295,8 +266,8 @@ export function ModelProfileWizard({
     )
   }
 
-  function selectVisible(): void {
-    const visible = new Set(filteredRows.map((row) => row.id))
+  function selectVisible(ids: string[]): void {
+    const visible = new Set(ids)
     setRows((current) =>
       current.map((row) =>
         visible.has(row.id) ? { ...row, selected: true } : row,
@@ -308,61 +279,43 @@ export function ModelProfileWizard({
     setRows((current) => current.map((row) => ({ ...row, selected: false })))
   }
 
-  function toggleEndpoint(key: EndpointKey): void {
-    setDefaults((current) => ({
-      ...current,
-      endpoints: current.endpoints.includes(key)
-        ? current.endpoints.filter((item) => item !== key)
-        : [...current.endpoints, key],
-    }))
-  }
-
-  function toggleCapability(key: string): void {
-    setDefaults((current) => ({
-      ...current,
-      capabilities: current.capabilities.includes(key)
-        ? current.capabilities.filter((item) => item !== key)
-        : [...current.capabilities, key],
-    }))
-  }
-
-  function toggleModality(key: string): void {
-    setDefaults((current) => ({
-      ...current,
-      modalities: current.modalities.includes(key)
-        ? current.modalities.filter((item) => item !== key)
-        : [...current.modalities, key],
-    }))
-  }
-
   function applyBatchDefaults(): void {
     const selected = new Set(
       rows.filter((row) => row.selected).map((row) => row.id),
     )
-    const vendorName =
-      vendorChoice === CREATE_VENDOR ? newVendorName.trim() : vendorChoice
     const batch: WizardDefaults = {
-      ...defaults,
-      vendorName,
-      parameters: parseParameterLines(parameterText),
-      tags: tagsText
+      ...form.defaults,
+      vendorName: vendorNameOf(form, vendorDirectory),
+      parameters: parseParameterLines(form.parameterText),
+      tags: form.tagsText
         .split(',')
         .map((tag) => tag.trim())
         .filter((tag) => tag !== ''),
     }
-    setRows((current) =>
-      current.map((row) => {
-        if (!selected.has(row.id)) return row
-        return applyDefaults([row], batch, emptyOnly)[0] ?? row
-      }),
-    )
-    setAppliedCount(selected.size)
+    let written = 0
+    const nextRows = rows.map((row) => {
+      if (!selected.has(row.id)) return row
+      const next = applyDefaults([row], batch, form.emptyOnly)[0] ?? row
+      if (rowWasWritten(row, next)) written += 1
+      return next
+    })
+    setRows(nextRows)
+    setAppliedCount(written === 0 ? null : written)
   }
 
+  /**
+   * 写回是**并集**：勾选只表示「要给谁补档案」，不表示「渠道只服务这些
+   * 模型」。因此渠道原有但上游没公布的模型永远保留，空选也不会清空列表。
+   */
   function backToForm(): void {
     if (fillChannelModels) {
       onApplyModels(
-        rows.filter((row) => row.selected).map((row) => row.id),
+        Array.from(
+          new Set([
+            ...channelModels,
+            ...rows.filter((row) => row.selected).map((row) => row.id),
+          ]),
+        ),
       )
     }
     onBack()
@@ -380,7 +333,9 @@ export function ModelProfileWizard({
         role="alert"
         className="flex min-h-[240px] flex-col items-center justify-center gap-3 text-center"
       >
-        <p className="text-body text-danger">{probeError}</p>
+        <p className="text-body text-danger">
+          {probeError ?? t('common.channels.profileWizard.loadError')}
+        </p>
         <div className="flex flex-wrap items-center justify-center gap-2">
           <Button
             variant="secondary"
@@ -395,12 +350,7 @@ export function ModelProfileWizard({
   }
 
   if (probeState === 'loading' || !catalogSettled) {
-    return (
-      <div className="flex min-h-[240px] items-center justify-center gap-2 text-body text-ink-2">
-        <span className="size-4 animate-spin rounded-full border-2 border-border-default border-t-brand" />
-        {t('common.channels.profileWizard.loading')}
-      </div>
-    )
+    return <WizardLoading label={t('common.channels.profileWizard.loading')} />
   }
 
   if (entries.length === 0) {
@@ -416,12 +366,7 @@ export function ModelProfileWizard({
 
   // 条目已就绪、行尚未建好（目录查询刚结束）时仍显示加载态，避免先闪一帧空表。
   if (rows.length === 0) {
-    return (
-      <div className="flex min-h-[240px] items-center justify-center gap-2 text-body text-ink-2">
-        <span className="size-4 animate-spin rounded-full border-2 border-border-default border-t-brand" />
-        {t('common.channels.profileWizard.loading')}
-      </div>
-    )
+    return <WizardLoading label={t('common.channels.profileWizard.loading')} />
   }
 
   return (
@@ -431,7 +376,7 @@ export function ModelProfileWizard({
         className="grid grid-cols-4 border-b border-border-hairline"
       >
         {([1, 2, 3, 4] as const).map((index) => {
-          const enabled = index <= 2
+          const enabled = index === 1 || (index === 2 && stepTwoEnabled)
           const current = step === index
           return (
             <button
@@ -440,7 +385,7 @@ export function ModelProfileWizard({
               disabled={!enabled}
               aria-current={current ? 'step' : undefined}
               onClick={() => {
-                if (index === 1 || index === 2) setStep(index)
+                if (enabled) setStep(index)
               }}
               className={[
                 'flex items-center gap-2 border-b-2 px-1 py-2.5 text-left text-meta transition-colors',
@@ -469,305 +414,28 @@ export function ModelProfileWizard({
       </nav>
 
       {step === 1 ? (
-        <section className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder={t('common.channels.profileWizard.search')}
-              aria-label={t('common.channels.profileWizard.search')}
-              className={`${INPUT_CLASSES} min-w-0 flex-1`}
-            />
-            <Button variant="ghost" onClick={selectVisible}>
-              {t('common.channels.profileWizard.selectAll')}
-            </Button>
-            <Button variant="ghost" onClick={clearAll}>
-              {t('common.channels.profileWizard.clearAll')}
-            </Button>
-          </div>
-
-          <p className="text-meta text-ink-3">
-            {t('common.channels.profileWizard.selectedCount', {
-              count: selectedCount,
-            })}
-          </p>
-
-          <div className="overflow-x-auto rounded-lg border border-border-hairline">
-            <table className="w-full min-w-[620px] border-collapse text-meta">
-              <thead>
-                <tr className="bg-surface-subtle text-left text-badge font-medium text-ink-3">
-                  <th scope="col" className="w-9 px-2 py-2">
-                    <span className="sr-only">
-                      {t('common.channels.profileWizard.selectAll')}
-                    </span>
-                  </th>
-                  <th scope="col" className="px-2 py-2">
-                    {t('common.channels.profileWizard.model')}
-                  </th>
-                  <th scope="col" className="px-2 py-2">
-                    {t('common.channels.profileWizard.displayName')}
-                  </th>
-                  <th scope="col" className="px-2 py-2">
-                    {t('common.channels.profileWizard.profileState')}
-                  </th>
-                  <th scope="col" className="px-2 py-2">
-                    {t('common.channels.profileWizard.context')}
-                  </th>
-                  <th scope="col" className="px-2 py-2">
-                    {t('common.channels.profileWizard.maxOutput')}
-                  </th>
-                  <th scope="col" className="px-2 py-2">
-                    {t('common.channels.profileWizard.factsSource')}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredRows.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-ink-3">
-                      {t('common.channels.fetchModels.empty')}
-                    </td>
-                  </tr>
-                ) : (
-                  filteredRows.map((row) => {
-                    const state = profileStateOf(row)
-                    const displayName = displayNameOf(row)
-                    return (
-                      <tr
-                        key={row.id}
-                        className="border-t border-border-hairline hover:bg-surface-hover"
-                      >
-                        <td className="px-2 py-2">
-                          <input
-                            type="checkbox"
-                            checked={row.selected}
-                            onChange={() => toggleRow(row.id)}
-                            aria-label={row.id}
-                            className="size-4 rounded border-border-default"
-                          />
-                        </td>
-                        <td className="px-2 py-2">
-                          <span className="font-mono text-ink-1">{row.id}</span>
-                        </td>
-                        <td className="max-w-[160px] truncate px-2 py-2 text-ink-2">
-                          {displayName === '' ? '—' : displayName}
-                        </td>
-                        <td className="px-2 py-2">
-                          <span
-                            className={`inline-flex h-[21px] items-center rounded border px-1.5 text-badge whitespace-nowrap ${PROFILE_BADGE_CLASSES[state]}`}
-                          >
-                            {t(`common.channels.profileWizard.state.${state}`)}
-                          </span>
-                        </td>
-                        <td className="px-2 py-2 tabular-nums text-ink-2">
-                          {row.contextLength === '' ? '—' : row.contextLength}
-                        </td>
-                        <td className="px-2 py-2 tabular-nums text-ink-2">
-                          {row.maxOutput === '' ? '—' : row.maxOutput}
-                        </td>
-                        <td className="px-2 py-2">
-                          <span className="flex flex-wrap gap-1">
-                            {factKindsOf(row).map((kind) => (
-                              <span
-                                key={kind}
-                                className={`inline-flex h-[21px] items-center gap-1 rounded border px-1.5 text-badge whitespace-nowrap ${FACT_CHIP_CLASSES[kind]}`}
-                              >
-                                <span
-                                  aria-hidden="true"
-                                  className="h-3 w-0.5 rounded-full bg-current"
-                                />
-                                {t(`common.channels.profileWizard.fact.${kind}`)}
-                              </span>
-                            ))}
-                          </span>
-                        </td>
-                      </tr>
-                    )
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
+        <StepModels
+          rows={rows}
+          catalog={catalog}
+          query={query}
+          onQueryChange={setQuery}
+          onToggleRow={toggleRow}
+          onSelectVisible={selectVisible}
+          onClearAll={clearAll}
+          catalogFailed={catalogStatus === 'error'}
+          onRetryCatalog={() => {
+            void catalogQuery.refetch()
+          }}
+        />
       ) : (
-        <section className="flex flex-col gap-4">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="flex flex-col gap-1.5 sm:col-span-2">
-              <label
-                htmlFor="profile-wizard-vendor"
-                className="text-meta text-ink-2"
-              >
-                {t('common.channels.profileWizard.vendor')}
-              </label>
-              <select
-                id="profile-wizard-vendor"
-                value={vendorChoice}
-                onChange={(event) => setVendorChoice(event.target.value)}
-                className={INPUT_CLASSES}
-              >
-                <option value="">
-                  {t('common.channels.form.none')}
-                </option>
-                {vendorDirectory.names.length === 0 ? null : (
-                  <optgroup
-                    label={t(
-                      'common.channels.profileWizard.vendorExisting',
-                    )}
-                  >
-                    {vendorDirectory.names.map((name) => (
-                      <option key={name} value={name}>
-                        {name}
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-                <option value={CREATE_VENDOR}>
-                  {t('common.channels.profileWizard.vendorCreate')}
-                </option>
-              </select>
-              {vendorChoice === CREATE_VENDOR ? (
-                <input
-                  value={newVendorName}
-                  onChange={(event) => setNewVendorName(event.target.value)}
-                  aria-label={t('common.channels.profileWizard.vendor')}
-                  placeholder={t('common.channels.profileWizard.vendor')}
-                  className={INPUT_CLASSES}
-                />
-              ) : null}
-            </div>
-
-            <fieldset className="flex flex-col gap-2">
-              <legend className="text-meta text-ink-2">
-                {t('common.channels.profileWizard.endpoints')}
-              </legend>
-              <div className="flex flex-wrap gap-1.5">
-                {ENDPOINT_KEYS.map((key) => (
-                  <ChipToggle
-                    key={key}
-                    checked={defaults.endpoints.includes(key)}
-                    label={key}
-                    onToggle={() => toggleEndpoint(key)}
-                  />
-                ))}
-              </div>
-            </fieldset>
-
-            <fieldset className="flex flex-col gap-2">
-              <legend className="text-meta text-ink-2">
-                {t('common.channels.profileWizard.capabilities')}
-              </legend>
-              <div className="flex flex-wrap gap-1.5">
-                {CAPABILITY_KEYS.map((key) => (
-                  <ChipToggle
-                    key={key}
-                    checked={defaults.capabilities.includes(key)}
-                    label={t(`admin.models.capability_${key}`)}
-                    onToggle={() => toggleCapability(key)}
-                  />
-                ))}
-              </div>
-            </fieldset>
-
-            <fieldset className="flex flex-col gap-2">
-              <legend className="text-meta text-ink-2">
-                {t('common.channels.profileWizard.modalities')}
-              </legend>
-              <div className="flex flex-wrap gap-1.5">
-                {MODALITY_KEYS.map((key) => (
-                  <ChipToggle
-                    key={key}
-                    checked={defaults.modalities.includes(key)}
-                    label={t(`admin.models.modality_${key}`)}
-                    onToggle={() => toggleModality(key)}
-                  />
-                ))}
-              </div>
-            </fieldset>
-
-            <div className="flex flex-col gap-1.5">
-              <label
-                htmlFor="profile-wizard-cutoff"
-                className="text-meta text-ink-2"
-              >
-                {t('common.channels.profileWizard.knowledgeCutoff')}
-              </label>
-              <input
-                id="profile-wizard-cutoff"
-                type="month"
-                value={defaults.knowledgeCutoff}
-                onChange={(event) =>
-                  setDefaults((current) => ({
-                    ...current,
-                    knowledgeCutoff: event.target.value,
-                  }))
-                }
-                className={INPUT_CLASSES}
-              />
-            </div>
-
-            <div className="flex flex-col gap-1.5 sm:col-span-2">
-              <label
-                htmlFor="profile-wizard-tags"
-                className="text-meta text-ink-2"
-              >
-                {t('common.channels.profileWizard.tags')}
-              </label>
-              <input
-                id="profile-wizard-tags"
-                value={tagsText}
-                onChange={(event) => setTagsText(event.target.value)}
-                className={INPUT_CLASSES}
-              />
-            </div>
-
-            <div className="flex flex-col gap-1.5 sm:col-span-2">
-              <label
-                htmlFor="profile-wizard-parameters"
-                className="text-meta text-ink-2"
-              >
-                {t('common.channels.profileWizard.parameters')}
-              </label>
-              <textarea
-                id="profile-wizard-parameters"
-                value={parameterText}
-                onChange={(event) => setParameterText(event.target.value)}
-                placeholder={t(
-                  'common.channels.profileWizard.parametersHint',
-                )}
-                className="min-h-20 w-full rounded-lg border border-border-default bg-surface-card px-3 py-2 font-mono text-body text-ink-1 placeholder:font-sans placeholder:text-ink-3 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
-              />
-              <p className="text-meta text-ink-3">
-                {t('common.channels.profileWizard.parametersHint')}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3 border-t border-border-hairline pt-3">
-            <label className="flex items-center gap-2 text-meta text-ink-1">
-              <input
-                type="checkbox"
-                checked={emptyOnly}
-                onChange={(event) => setEmptyOnly(event.target.checked)}
-                className="size-4 rounded border-border-default"
-              />
-              {t('common.channels.profileWizard.emptyOnly')}
-            </label>
-            <Button
-              variant="secondary"
-              onClick={applyBatchDefaults}
-              disabled={selectedCount === 0}
-            >
-              {t('common.channels.profileWizard.applyDefaults')}
-            </Button>
-            {appliedCount === null ? null : (
-              <span aria-live="polite" className="text-meta text-ink-3">
-                {t('common.channels.profileWizard.defaultsApplied', {
-                  count: appliedCount,
-                })}
-              </span>
-            )}
-          </div>
-        </section>
+        <StepDefaults
+          value={form}
+          onChange={setForm}
+          vendorDirectory={vendorDirectory}
+          selectedCount={selectedCount}
+          appliedCount={appliedCount}
+          onApply={applyBatchDefaults}
+        />
       )}
 
       <div className="flex flex-wrap items-center gap-3 border-t border-border-hairline pt-4">
@@ -798,7 +466,7 @@ export function ModelProfileWizard({
           {step === 1 ? (
             <Button
               onClick={() => setStep(2)}
-              disabled={selectedCount === 0}
+              disabled={!stepTwoEnabled}
             >
               {t('common.channels.profileWizard.next')}
             </Button>
@@ -806,32 +474,5 @@ export function ModelProfileWizard({
         </div>
       </div>
     </div>
-  )
-}
-
-interface ChipToggleProps {
-  checked: boolean
-  label: string
-  onToggle: () => void
-}
-
-function ChipToggle({ checked, label, onToggle }: ChipToggleProps) {
-  return (
-    <label
-      className={[
-        'inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 text-badge transition-colors focus-within:shadow-[var(--focus-ring)]',
-        checked
-          ? 'border-brand-line bg-brand-subtle font-medium text-brand'
-          : 'border-border-default bg-surface-card text-ink-2 hover:bg-surface-hover',
-      ].join(' ')}
-    >
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={onToggle}
-        className="sr-only"
-      />
-      {label}
-    </label>
   )
 }

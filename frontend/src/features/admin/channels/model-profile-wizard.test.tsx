@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -149,5 +149,126 @@ describe('ModelProfileWizard', () => {
       'text-embedding-004',
     ])
     expect(onBack).toHaveBeenCalledTimes(1)
+  })
+
+  it('locks the next step when the model catalog fails to load', async () => {
+    mockFetch.mockResolvedValue({
+      models: ['gemini-2.5-pro'],
+      entries: [entry({ id: 'gemini-2.5-pro' })],
+    })
+    mockGet.mockImplementation(((path: string) =>
+      path === '/api/models'
+        ? Promise.reject(new Error('catalog down'))
+        : Promise.resolve({ data: { items: [], total: 0 } })) as never)
+
+    renderWizard()
+
+    expect(
+      await screen.findByText(
+        'Could not load the model catalog. Reload it before continuing.',
+      ),
+    ).toBeTruthy()
+    expect(
+      screen.getByRole('button', { name: 'Reload catalog' }),
+    ).toBeTruthy()
+    expect(
+      (screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true)
+  })
+
+  it('unlocks the next step once a failed catalog retry succeeds', async () => {
+    const user = userEvent.setup()
+    let catalogCalls = 0
+    mockGet.mockImplementation(((path: string) => {
+      if (path === '/api/models') {
+        catalogCalls += 1
+        return catalogCalls === 1
+          ? Promise.reject(new Error('catalog down'))
+          : Promise.resolve({ data: { items: [], total: 0 } })
+      }
+      return Promise.resolve({ data: { items: [], total: 0 } })
+    }) as never)
+    mockFetch.mockResolvedValue({
+      models: ['gemini-2.5-pro'],
+      entries: [entry({ id: 'gemini-2.5-pro' })],
+    })
+
+    renderWizard()
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Reload catalog' }),
+    )
+
+    await waitFor(() => {
+      expect(
+        (screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false)
+    })
+  })
+
+  it('keeps models the upstream did not advertise when writing back', async () => {
+    const user = userEvent.setup()
+    const onApplyModels = vi.fn()
+    mockFetch.mockResolvedValue({
+      models: ['gemini-2.5-pro', 'text-embedding-004'],
+      entries: [
+        entry({ id: 'gemini-2.5-pro' }),
+        entry({ id: 'text-embedding-004' }),
+      ],
+    })
+
+    renderWithProviders(
+      <ModelProfileWizard
+        request={REQUEST}
+        channelModels={['legacy-model']}
+        onBack={vi.fn()}
+        onApplyModels={onApplyModels}
+      />,
+    )
+
+    await screen.findByText('gemini-2.5-pro')
+    await user.click(
+      screen.getByRole('checkbox', { name: 'text-embedding-004' }),
+    )
+    await user.click(
+      screen.getByRole('button', { name: 'Back to channel form' }),
+    )
+
+    expect(onApplyModels).toHaveBeenCalledWith([
+      'legacy-model',
+      'gemini-2.5-pro',
+    ])
+  })
+
+  it('leaves the channel model list untouched when the fill toggle is off', async () => {
+    const user = userEvent.setup()
+    const onApplyModels = vi.fn()
+    mockFetch.mockResolvedValue({
+      models: ['gemini-2.5-pro'],
+      entries: [entry({ id: 'gemini-2.5-pro' })],
+    })
+
+    renderWithProviders(
+      <ModelProfileWizard
+        request={REQUEST}
+        channelModels={[]}
+        onBack={vi.fn()}
+        onApplyModels={onApplyModels}
+      />,
+    )
+
+    await screen.findByText('gemini-2.5-pro')
+    await user.click(
+      screen.getByRole('checkbox', {
+        name: "Also fill the channel's model list",
+      }),
+    )
+    await user.click(
+      screen.getByRole('button', { name: 'Back to channel form' }),
+    )
+
+    expect(onApplyModels).not.toHaveBeenCalled()
   })
 })
