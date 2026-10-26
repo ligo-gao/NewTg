@@ -69,6 +69,18 @@ const EMBED = card('acme/embed', {
   endpoints: ['embeddings'],
 })
 
+// 输入价 60_000 / 4_000_000 积分，配合 quota_per_unit = 1_000_000 即
+// ¥0.06 / ¥4.00：这两个数字只会在 meta 真贯穿到 `entry.price` 时出现。
+const CHEAP = card('acme/cheap', {
+  display_name: 'Cheap',
+  prompt_price: '60000',
+})
+
+const DEAR = card('acme/dear', {
+  display_name: 'Dear',
+  prompt_price: '4000000',
+})
+
 const METRICS = {
   '24h': {
     range: '24h',
@@ -138,6 +150,10 @@ interface ServeOptions {
   total?: number
   catalogStatus?: number
   metricsStatus?: number
+  /** 计费元数据；默认 `{}`（没有 `quota_per_unit`）。 */
+  meta?: Record<string, unknown>
+  /** 模拟裁剪过的旧版响应：整个 `meta` 字段缺失。 */
+  omitMeta?: boolean
   onCatalog?: (page: number) => Response
   onMetrics?: (range: string) => Response
 }
@@ -170,7 +186,7 @@ function serveCatalog(options: ServeOptions = {}) {
           endpoints: [],
           groups: [],
         },
-        meta: {},
+        ...(options.omitMeta ? {} : { meta: options.meta ?? {} }),
       })
     }),
     http.get(`${ORIGIN}/api/pricing/metrics`, ({ request }) => {
@@ -215,14 +231,22 @@ function renderPage(initial: ModelsSearch = BASE, onChange?: ChangeHandler) {
   )
 }
 
+/** 读取页头统计格子的 `dd` 文本；`label` 是英文 `dt` 文案。 */
+function statValue(label: string): string {
+  return (
+    screen.getByText(label).closest('div')?.querySelector('dd')?.textContent?.trim() ??
+    ''
+  )
+}
+
 describe('ModelsPage', () => {
   it('renders the catalog joined with metrics', async () => {
     serveCatalog()
     await renderPage()
 
     expect(await screen.findByText('GPT-5')).toBeTruthy()
-    // The hero may repeat a model name (fastest reading), so scope the catalog
-    // assertions to the register itself.
+    // The hero's fastest-reading note shows the model id, so scope the
+    // catalog assertions to the register itself.
     const table = screen.getByRole('table')
     expect(within(table).getByText('GPT-5')).toBeTruthy()
     expect(within(table).getByText('Embed')).toBeTruthy()
@@ -398,5 +422,33 @@ describe('ModelsPage', () => {
     expect(last.context).toBe('')
     expect(last.endpoint).toBe('')
     expect(last.measured).toBe(false)
+  })
+
+  it('threads the catalog quota_per_unit into the hero price range', async () => {
+    serveCatalog({
+      items: [CHEAP, DEAR],
+      meta: { quota_per_unit: 1_000_000 },
+    })
+    await renderPage()
+
+    // Only reachable if the catalog meta really flows into `entry.price`:
+    // passing `undefined` as `entriesOf`'s third argument would render `—`.
+    expect(await screen.findByText('¥0.06–¥4.00')).toBeTruthy()
+  })
+
+  it('renders an em dash for prices when the catalog omits meta', async () => {
+    serveCatalog({ items: [CHEAP], omitMeta: true })
+    await renderPage()
+
+    expect(await screen.findByText('Cheap')).toBeTruthy()
+    expect(statValue('Input price / million tokens')).toBe('—')
+  })
+
+  it('renders an em dash for prices when quota_per_unit is missing', async () => {
+    serveCatalog({ items: [CHEAP], meta: {} })
+    await renderPage()
+
+    expect(await screen.findByText('Cheap')).toBeTruthy()
+    expect(statValue('Input price / million tokens')).toBe('—')
   })
 })

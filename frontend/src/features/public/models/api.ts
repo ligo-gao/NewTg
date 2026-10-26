@@ -36,8 +36,11 @@ export interface ModelCatalog {
   /**
    * 计费元数据（`quota_per_unit` 等）。公开定价接口每页都会下发，但它是
    * 全局配置而非分页资源：这里只保留第一页的值，后续页忽略。
+   *
+   * 可选：被裁剪的旧版响应可能整个字段都不出现。展示层必须显式判空后
+   * 再读 `quota_per_unit`，缺失时价格退化成一整列 `—`，而不是白屏。
    */
-  meta: PublicPricingMeta
+  meta?: PublicPricingMeta
 }
 
 export type LibraryMetrics = Omit<PublicModelMetricsList, 'range'> & {
@@ -91,9 +94,8 @@ export async function fetchModelCatalog(
     if (items.length >= total) break
   }
 
-  // 循环至少执行一次（MAX_CATALOG_PAGES === 20），`meta` 必然来自第一页；
-  // 断言只是把这一点告诉类型系统，不伪造任何计费数据。
-  return { items, total, truncated: items.length < total, meta: meta! }
+  // 第一页缺失 meta 时保持 `undefined`（不伪造计费数据），由展示层判空。
+  return { items, total, truncated: items.length < total, meta }
 }
 
 export function modelCatalogQueryOptions() {

@@ -20,10 +20,6 @@ import { useI18n } from '@/shared/lib/i18n-context'
 import { useMediaQuery } from '@/shared/lib/use-media-query'
 import { MobileSheet } from '@/features/public/mobile-sheet'
 import type { PublicModelCard } from '@/features/public/pricing/api'
-import {
-  normalizeCapabilities,
-  withCapabilities,
-} from '@/features/public/pricing/params'
 
 import {
   indexMetrics,
@@ -101,11 +97,17 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
   const slots = capabilitySlots(cards ?? [], 12)
   const facets = facetsOf(cards ?? [])
   const metricsIndex = indexMetrics(metrics.data?.items ?? [])
-  const entries = entriesOf(
-    cards ?? [],
-    metricsIndex,
-    catalog.data?.meta.quota_per_unit,
-  )
+  /**
+   * 计费元数据可能缺失（裁剪过的旧版响应）：显式判空后再取
+   * `quota_per_unit`，否则整页会因读取 `undefined` 的字段而白屏。价格换算
+   * 本身也要求 `quota_per_unit` 有限且为正，无效值一律退化成 `—`。
+   */
+  const meta = catalog.data?.meta
+  const quotaPerUnit =
+    meta !== undefined && Number.isFinite(meta.quota_per_unit)
+      ? meta.quota_per_unit
+      : undefined
+  const entries = entriesOf(cards ?? [], metricsIndex, quotaPerUnit)
   // 指标不可用时每条读数都是「无数据」，`measured` 筛选会把整张列表清空。
   // 模型库的保底约定是「读数降级、列表完整」，所以此时绕过该筛选；如果
   // 只是后台重取失败但仍有旧读数，则照常按读数筛选。
@@ -118,9 +120,6 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
     search.sort,
     locale,
   )
-  const selectedCapabilities = normalizeCapabilities(search.cap)
-  const activeCapability =
-    selectedCapabilities.length === 1 ? (selectedCapabilities[0] ?? '') : ''
   const numberFormat = new Intl.NumberFormat(locale)
 
   /**
@@ -208,13 +207,6 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
 
   const clearCompare = () =>
     onSearchChange({ ...search, compare: withCompareIds([]) })
-
-  const pickCapability = (value: string) => {
-    const next = selectedCapabilities.includes(value)
-      ? selectedCapabilities.filter((item) => item !== value)
-      : [...selectedCapabilities, value]
-    onSearchChange({ ...search, cap: withCapabilities(next) })
-  }
 
   const clearFilters = () =>
     onSearchChange(validateModelsSearch({ view: search.view }))
@@ -334,12 +326,7 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
 
   return (
     <div className="flex flex-col gap-6">
-      <ModelHero
-        entries={entries}
-        slots={slots}
-        activeCapability={activeCapability}
-        onPickCapability={pickCapability}
-      />
+      <ModelHero entries={entries} />
 
       <DistPanel
         entries={visible}

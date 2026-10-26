@@ -99,7 +99,7 @@ describe('fetchModelCatalog', () => {
 
     const catalog = await fetchModelCatalog()
 
-    expect(catalog.meta.quota_per_unit).toBe(500000)
+    expect(catalog.meta?.quota_per_unit).toBe(500000)
   })
 
   it('follows pages until total, dedupes by model_id', async () => {

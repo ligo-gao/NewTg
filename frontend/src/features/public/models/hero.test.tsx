@@ -1,14 +1,15 @@
-import { fireEvent, within } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 import type { PublicModelCard } from '@/features/public/pricing/api'
 import { renderWithProviders } from '@/test-support/providers'
 
 import { ModelHero } from './hero'
 import type { ModelEntry, ModelPerformance } from './performance'
-import type { CapabilitySlot } from './taxonomy'
+import type { ModelPrice } from './price'
 
-function performance(overrides: Partial<ModelPerformance>): ModelPerformance {
+function performance(
+  overrides: Partial<ModelPerformance> = {},
+): ModelPerformance {
   return {
     source: 'none',
     measure: 'ttft',
@@ -27,21 +28,19 @@ function performance(overrides: Partial<ModelPerformance>): ModelPerformance {
 function entry({
   id,
   name,
-  vendor,
-  capabilities,
+  price,
   perf,
 }: {
   id: string
   name: string
-  vendor: string
-  capabilities: string[]
-  perf: Partial<ModelPerformance>
+  price?: Partial<ModelPrice>
+  perf?: Partial<ModelPerformance>
 }): ModelEntry {
   const card: PublicModelCard = {
     model_id: id,
     display_name: name,
-    vendor,
-    capabilities,
+    vendor: '',
+    capabilities: [],
     context_length: null,
     max_output: null,
     mode: 'per_token',
@@ -59,91 +58,90 @@ function entry({
   return {
     card,
     kind: 'chat',
-    price: { input: null, output: null, cacheRead: null },
+    price: { input: null, output: null, cacheRead: null, ...price },
     perf: performance(perf),
   }
 }
 
+/** 三个条目：一个实测首字 + 两端输入价，两个没有读数。 */
 const ENTRIES: readonly ModelEntry[] = [
   entry({
     id: 'openai/gpt-5',
     name: 'GPT-5',
-    vendor: 'openai',
-    capabilities: ['vision', 'tool_use'],
-    perf: { source: 'test', p50: 350, hasData: true, samples: 200 },
+    price: { input: 0.06 },
+    perf: { source: 'test', p50: 2340, hasData: true, samples: 200 },
   }),
   entry({
-    id: 'anthropic/claude',
-    name: 'Claude',
-    vendor: 'anthropic',
-    capabilities: ['vision', 'reasoning'],
-    perf: {},
+    id: 'acme/embed',
+    name: 'Embed',
+    price: { input: 4 },
+    perf: { measure: 'latency' },
   }),
-  entry({
-    id: 'meta/llama',
-    name: 'Llama',
-    vendor: '',
-    capabilities: ['text'],
-    perf: { source: 'usage', p50: 900, hasData: true, samples: 40 },
-  }),
-]
-
-const SLOTS: readonly CapabilitySlot[] = [
-  { value: 'vision', label: 'vision', count: 2 },
-  { value: 'text', label: 'text', count: 1 },
+  entry({ id: 'meta/llama', name: 'Llama' }),
 ]
 
 function statValue(label: HTMLElement): string {
   return label.closest('div')?.querySelector('dd')?.textContent?.trim() ?? ''
 }
 
-function renderHero(activeCapability = '', onPickCapability = vi.fn()) {
-  return renderWithProviders(
-    <ModelHero
-      entries={ENTRIES}
-      slots={SLOTS}
-      activeCapability={activeCapability}
-      onPickCapability={onPickCapability}
-    />,
-    ['public'],
-  )
+function renderHero(entries: readonly ModelEntry[] = ENTRIES) {
+  return renderWithProviders(<ModelHero entries={entries} />, ['public'])
 }
 
 describe('ModelHero', () => {
-  it('counts models, vendors, measured entries and capability values', async () => {
-    const { getByText } = await renderHero()
+  it('renders exactly four stat cells', async () => {
+    const { container, getByText } = await renderHero()
 
+    expect(container.querySelectorAll('dd')).toHaveLength(4)
     expect(statValue(getByText('Models'))).toBe('3')
-    expect(statValue(getByText('Vendors'))).toBe('2')
-    expect(statValue(getByText('With measurements'))).toBe('2')
-    // vision + tool_use + reasoning + text; duplicates across models count once.
-    expect(statValue(getByText('Capabilities'))).toBe('4')
+    expect(statValue(getByText('With measurements'))).toBe('1')
+
+    const fastest = statValue(getByText('Fastest P50'))
+    expect(fastest).toContain('2,340 ms')
+    expect(fastest).toContain('openai/gpt-5')
+
+    expect(statValue(getByText('Input price / million tokens'))).toBe(
+      '¥0.06–¥4.00',
+    )
   })
 
-  it('names the fastest measured model with its latency', async () => {
-    const { getByText } = await renderHero()
+  it('renders an em dash when no entry has a price', async () => {
+    const { getByText, queryByText } = await renderHero([
+      entry({ id: 'acme/embed', name: 'Embed' }),
+    ])
 
-    expect(getByText('350 ms')).toBeTruthy()
-    expect(getByText('GPT-5')).toBeTruthy()
+    expect(statValue(getByText('Input price / million tokens'))).toBe('—')
+    expect(queryByText('¥0.00')).toBeNull()
   })
 
-  it('marks the active capability slot with aria-pressed', async () => {
-    const { getByRole } = await renderHero('vision')
+  it('omits the fastest model id when nothing is measured', async () => {
+    const { getByText, queryByText } = await renderHero([
+      entry({ id: 'meta/llama', name: 'Llama' }),
+    ])
 
-    const bar = getByRole('group', { name: 'Capabilities' })
-    const buttons = within(bar).getAllByRole('button')
-    // Order and length come from slots, not from the 12-slot catalogue cap.
-    expect(buttons.map((button) => button.textContent)).toEqual(['vision', 'text'])
-    expect(buttons[0]?.getAttribute('aria-pressed')).toBe('true')
-    expect(buttons[1]?.getAttribute('aria-pressed')).toBe('false')
+    expect(statValue(getByText('Fastest P50'))).toBe('—')
+    expect(queryByText('meta/llama')).toBeNull()
   })
 
-  it('reports the picked capability', async () => {
-    const onPickCapability = vi.fn()
-    const { getByRole } = await renderHero('', onPickCapability)
+  it('only considers first-token readings for the fastest cell', async () => {
+    // 端到端延迟不是首字延迟：即便数值更小，也不能冒充最快首字。
+    const { getByText, queryByText } = await renderHero([
+      entry({
+        id: 'acme/embed',
+        name: 'Embed',
+        perf: { source: 'usage', measure: 'latency', p50: 90, hasData: true },
+      }),
+    ])
 
-    fireEvent.click(getByRole('button', { name: 'text' }))
+    expect(statValue(getByText('Fastest P50'))).toBe('—')
+    expect(queryByText('acme/embed')).toBeNull()
+  })
 
-    expect(onPickCapability).toHaveBeenCalledWith('text')
+  it('does not render a capability chip row', async () => {
+    const { queryAllByRole, queryByRole } = await renderHero()
+
+    expect(queryByRole('group', { name: 'Capabilities' })).toBeNull()
+    // 页头唯一允许出现的可交互元素是页面级操作，不是筛选 chip。
+    expect(queryAllByRole('button')).toEqual([])
   })
 })
