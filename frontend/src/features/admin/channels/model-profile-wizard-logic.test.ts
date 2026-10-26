@@ -224,6 +224,20 @@ describe('buildCreateBody', () => {
     expect(body.released_at).toBe('2025-04-16')
     expect(body.vendor_id).toBe(3)
   })
+
+  it('drops parameter rows whose type is outside the contract enum', () => {
+    const body = buildCreateBody(
+      wizardRow({
+        parameters: [
+          { name: 'temperature', type: 'decimal', description: '', defaultValue: '' },
+          { name: 'stream', type: 'boolean', description: '', defaultValue: '' },
+        ],
+      }),
+      null,
+    )
+
+    expect(body.parameters).toEqual([{ name: 'stream', type: 'boolean', required: false }])
+  })
 })
 
 describe('buildUpdateBody', () => {
@@ -260,6 +274,45 @@ describe('buildUpdateBody', () => {
     expect(body.vendor_id).toBe(4)
     expect(body.name_rule).toBe(0)
     expect(body.sync_official).toBe(true)
+  })
+
+  it('writes non-empty row values instead of the existing ones', () => {
+    const existing = modelMeta({
+      display_name: 'Old Name',
+      description: 'old description',
+      tags: ['old-tag'],
+      endpoints: { '/v1/messages': ['POST'] },
+      knowledge_cutoff: '2024-01',
+    })
+    const body = buildUpdateBody(
+      wizardRow({
+        displayName: 'New Name',
+        description: 'new description',
+        tags: ['new-tag'],
+        endpoints: ['chat.completions'],
+        knowledgeCutoff: '2025-06',
+      }),
+      existing,
+      7,
+    )
+
+    expect(body.display_name).toBe('New Name')
+    expect(body.description).toBe('new description')
+    expect(body.tags).toEqual(['new-tag'])
+    expect(body.endpoints).toEqual({ '/v1/chat/completions': ['POST'] })
+    expect(body.knowledge_cutoff).toBe('2025-06')
+  })
+
+  it('falls back to existing numbers when the row value is not a non-negative integer', () => {
+    const existing = modelMeta({ context_length: 128000, max_output: 8192 })
+    const body = buildUpdateBody(
+      wizardRow({ contextLength: 'abc', maxOutput: '-1' }),
+      existing,
+      null,
+    )
+
+    expect(body.context_length).toBe(128000)
+    expect(body.max_output).toBe(8192)
   })
 })
 

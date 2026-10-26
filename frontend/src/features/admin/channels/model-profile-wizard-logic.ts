@@ -114,6 +114,10 @@ function isModality(value: string): value is Modality {
   return MODALITY_KEY_SET.has(value)
 }
 
+function isParameterType(value: string): value is ParameterType {
+  return PARAMETER_TYPE_SET.has(value)
+}
+
 export interface ParameterRow {
   name: string
   type: string
@@ -154,10 +158,11 @@ export interface WizardRow {
  * 把勾选的公开端点枚举写成 model_meta 的 `{path: [methods]}`。
  *
  * 按 `ENDPOINT_KEYS` 的固定顺序输出（与后端 facet 顺序一致），重复的 key
- * 自然折叠。
+ * 自然折叠。内部构造直接产出契约类型；公开签名按 brief 保持宽松的
+ * `Record<string, string[]>`（`Method[]` 可赋值给 `string[]`）。
  */
-export function endpointsObject(keys: EndpointKey[]): Record<string, string[]> {
-  const out: Record<string, string[]> = {}
+function endpointObjectOf(keys: EndpointKey[]): ModelMeta['endpoints'] {
+  const out: ModelMeta['endpoints'] = {}
   for (const key of ENDPOINT_KEYS) {
     if (keys.includes(key)) {
       out[ENDPOINT_PATHS[key]] = [...ENDPOINT_METHODS]
@@ -166,12 +171,8 @@ export function endpointsObject(keys: EndpointKey[]): Record<string, string[]> {
   return out
 }
 
-/**
- * `endpointsObject` 的公开签名是 `Record<string, string[]>`（brief 契约）；
- * 写入体要求方法枚举，这里收窄一次（值恒为 POST）。
- */
-function endpointObjectFor(row: WizardRow): ModelMeta['endpoints'] {
-  return endpointsObject(row.endpoints) as ModelMeta['endpoints']
+export function endpointsObject(keys: EndpointKey[]): Record<string, string[]> {
+  return endpointObjectOf(keys)
 }
 
 /**
@@ -194,8 +195,8 @@ export function buildRows(
       id: entry.id,
       displayName: entry.display_name,
       description: entry.description,
-      contextLength: entry.context_length === null ? '' : String(entry.context_length),
-      maxOutput: entry.max_output === null ? '' : String(entry.max_output),
+      contextLength: entry.context_length == null ? '' : String(entry.context_length),
+      maxOutput: entry.max_output == null ? '' : String(entry.max_output),
       releasedAt: entry.released_at,
       endpoints: entry.endpoints.filter(isEndpointKey),
       vendorName: profile?.vendor_name ?? entry.vendor_suggestion,
@@ -307,13 +308,12 @@ function normalizeTags(tags: string[]): string[] {
   return tags.map((tag) => tag.trim()).filter((tag) => tag !== '')
 }
 
-function parameterTypeOf(value: string): ParameterType {
-  return PARAMETER_TYPE_SET.has(value) ? (value as ParameterType) : 'string'
-}
-
 /**
  * 参数行的写入体：形状与 ModelMutateSheet 一致，`required` 恒 false（向导
  * 的文本格式不支持必填标记），`default` / `description` 只在非空时携带。
+ *
+ * 类型必须落在契约枚举内，否则整行丢弃——与 `parseParameterLines` /
+ * `filter(isEndpointKey)` 同策略：不替操作者改写他没选的类型。
  */
 function parameterPayload(
   rows: ParameterRow[],
@@ -321,10 +321,11 @@ function parameterPayload(
   const out: NonNullable<ModelMetaCreateRequest['parameters']> = []
   for (const row of rows) {
     const name = row.name.trim()
-    if (name === '') continue
+    const type = row.type.trim()
+    if (name === '' || !isParameterType(type)) continue
     const entry: { name: string; type: ParameterType } & Record<string, unknown> = {
       name,
-      type: parameterTypeOf(row.type),
+      type,
       required: false,
     }
     const defaultValue = row.defaultValue.trim()
@@ -357,7 +358,7 @@ export function buildCreateBody(
   const tags = normalizeTags(row.tags)
   if (tags.length > 0) body.tags = tags
 
-  const endpoints = endpointObjectFor(row)
+  const endpoints = endpointObjectOf(row.endpoints)
   if (Object.keys(endpoints).length > 0) body.endpoints = endpoints
 
   const capabilities = row.capabilities.filter(isCapability)
@@ -411,7 +412,7 @@ export function buildUpdateBody(
   const knowledgeCutoff = row.knowledgeCutoff.trim()
   const releasedAt = row.releasedAt.trim()
   const tags = normalizeTags(row.tags)
-  const endpoints = endpointObjectFor(row)
+  const endpoints = endpointObjectOf(row.endpoints)
   const capabilities = row.capabilities.filter(isCapability)
   const modalities = row.modalities.filter(isModality)
   const parameters = parameterPayload(row.parameters)
