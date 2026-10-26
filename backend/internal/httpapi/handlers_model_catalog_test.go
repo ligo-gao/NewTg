@@ -938,6 +938,11 @@ func catalogAdmin(perms ...string) *auth.Principal {
 
 func decodeCatalogProblem(t *testing.T, rr *httptest.ResponseRecorder) map[string]any {
 	t.Helper()
+	// 与 decodeProblemBody 同口径：problem 文档必须是 application/problem+json，
+	// 否则「字段对了但响应类型错了」的漂移会漏过。
+	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/problem+json") {
+		t.Fatalf("Content-Type = %q，期望 application/problem+json", ct)
+	}
 	var body map[string]any
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatalf("problem JSON 非法: %v（body=%q）", err, rr.Body.String())

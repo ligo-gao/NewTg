@@ -2,47 +2,48 @@ package httpapi
 
 // 「渠道探测补全模型档案」向导的请求体契约。
 //
-// 前端 buildCreateBody / buildUpdateBody（Task 4）按 model_meta 契约拼请求体；
-// 本测试不复用 store 结构体，而是直接提交与前端等价的原始 JSON 对象，钉住
-// 「向导产出的形状必须被后端接受」。两条负例（knowledge_cutoff 的月份形态、
-// endpoints 用公开枚举名当键）正是前后端最容易漂的地方——一旦前端写错，
-// 这里先失败，而不是等管理员在界面上收到 422。
+// 建档体不是手抄的：Go 与前端测试共同读取
+// api/fixtures/model-profile-wizard-create.json。前端
+// frontend/src/features/admin/channels/model-profile-wizard-logic.ts 的
+// buildCreateBody 必须深等于该 fixture（见同名 logic 测试），后端必须接受它；
+// 任何一边单独改形状都会有一侧变红。
+//
+// 更新体（buildUpdateBody）带「空字段回落既有值」的逻辑，不适合整份共享，
+// 因此下面保留手写体。规则：更新体 = 建档体 + updated_at + 既有值回落；
+// 改动 frontend/src/features/admin/channels/model-profile-wizard-logic.ts 的
+// buildCreateBody / buildUpdateBody 时都要同步本文件。
+//
+// 两条负例（knowledge_cutoff 的月份形态、endpoints 用公开枚举名当键）正是
+// 前后端最容易漂的地方——一旦前端写错，这里先失败，而不是等管理员在界面上
+// 收到 422。
 
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"reflect"
 	"strconv"
 	"testing"
 	"time"
 )
 
-// wizardCreateBody 与 frontend buildCreateBody 对一行完整事实的输出一一对应。
-func wizardCreateBody() map[string]any {
-	return map[string]any{
-		"model_name":   "gemini-2.5-pro",
-		"display_name": "Gemini 2.5 Pro",
-		"description":  "Frontier multimodal model",
-		"tags":         []string{"vision", "reasoning"},
-		"endpoints": map[string]any{
-			"/v1/chat/completions":                   []string{"POST"},
-			"/v1beta/models/{model}:generateContent": []string{"POST"},
-		},
-		"capabilities": []string{"text", "vision", "function_calling"},
-		"modalities":   []string{"text", "image"},
-		"parameters": []map[string]any{
-			{
-				"name": "temperature", "type": "number", "required": false,
-				"default": "0.7", "description": "Sampling temperature",
-			},
-			{"name": "stream", "type": "boolean", "required": false},
-		},
-		"context_length":   1048576,
-		"max_output":       65536,
-		"knowledge_cutoff": "2025-06",
-		"released_at":      "2025-06-17",
-		"vendor_id":        nil,
+// 契约 fixture 的路径。Go 测试进程的 cwd 是包目录
+// （backend/internal/httpapi），因此三级向上到仓库根。
+const wizardCreateFixturePath = "../../../api/fixtures/model-profile-wizard-create.json"
+
+// loadWizardCreateFixture 读取前后端共享的建档体；读不到直接失败并打出路径，
+// 避免「fixture 被挪走但测试仍然通过」。
+func loadWizardCreateFixture(t *testing.T) map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(wizardCreateFixturePath)
+	if err != nil {
+		t.Fatalf("读取共享 fixture 失败（路径 %s）: %v", wizardCreateFixturePath, err)
 	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("共享 fixture 不是合法 JSON（路径 %s）: %v", wizardCreateFixturePath, err)
+	}
+	return body
 }
 
 func mustUnmarshalJSON[T any](t *testing.T, raw json.RawMessage) T {
@@ -56,7 +57,18 @@ func mustUnmarshalJSON[T any](t *testing.T, raw json.RawMessage) T {
 
 func TestWizardCreateBodyIsAccepted(t *testing.T) {
 	env := newCatalogTestEnv(t)
-	rr := env.request(catalogFullAdmin(), http.MethodPost, "/api/models", wizardCreateBody(), nil)
+	// fixture 里的 vendor_id 是 7；把假仓储的下一个 id 推到 7 并真的建出它，
+	// 这样测试覆盖的是「非空 vendor_id」而不是 null 的退化形状。
+	env.repo.nextVendor = 6
+	vendor := createTestVendor(t, env, "Google")
+	if vendor.ID != 7 {
+		t.Fatalf("vendor id = %d, want 7", vendor.ID)
+	}
+	body := loadWizardCreateFixture(t)
+	if body["vendor_id"] != float64(7) {
+		t.Fatalf("fixture vendor_id = %v, want 7", body["vendor_id"])
+	}
+	rr := env.request(catalogFullAdmin(), http.MethodPost, "/api/models", body, nil)
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("create = %d（body=%q）", rr.Code, rr.Body.String())
 	}
@@ -105,7 +117,8 @@ func TestWizardCreateBodyIsAccepted(t *testing.T) {
 		parameters[0]["description"] != "Sampling temperature" {
 		t.Fatalf("parameters[0] = %v", parameters[0])
 	}
-	if parameters[1]["name"] != "stream" || parameters[1]["required"] != false {
+	if parameters[1]["name"] != "stream" || parameters[1]["required"] != false ||
+		parameters[1]["default"] != "false" {
 		t.Fatalf("parameters[1] = %v", parameters[1])
 	}
 	if view.ContextLength == nil || *view.ContextLength != 1048576 {
@@ -120,8 +133,8 @@ func TestWizardCreateBodyIsAccepted(t *testing.T) {
 	if view.ReleasedAt == nil || *view.ReleasedAt != "2025-06-17" {
 		t.Fatalf("released_at = %v", view.ReleasedAt)
 	}
-	if view.VendorID != nil {
-		t.Fatalf("vendor_id = %v, want null", view.VendorID)
+	if view.VendorID == nil || *view.VendorID != 7 {
+		t.Fatalf("vendor_id = %v, want 7", view.VendorID)
 	}
 }
 

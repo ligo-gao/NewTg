@@ -433,6 +433,31 @@ describe('ModelProfileWizard row confirmation and write-back', () => {
     expect(mockPost).not.toHaveBeenCalled()
   })
 
+  it('does not flag invalid input on a locked row it will never write', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['gemini-2.5-pro'],
+      entries: [
+        entry({ id: 'gemini-2.5-pro', description: 'x'.repeat(513) }),
+      ],
+    })
+    mockCatalog([
+      modelMeta({ id: 5, model_name: 'gemini-2.5-pro', sync_official: false }),
+    ])
+
+    renderWizard()
+
+    await user.click(
+      await screen.findByRole('checkbox', { name: 'gemini-2.5-pro' }),
+    )
+    await goToStep(user, 3)
+
+    // 锁定行不可展开、永不写库；同一形状的未锁定行会渲染 role="img" 的
+    // Description 错误标记，锁定行不应有。
+    expect(screen.queryByRole('img', { name: 'Description' })).toBeNull()
+    expect(screen.getByText('Locked locally')).toBeTruthy()
+  })
+
   it('keeps going when one row fails', async () => {
     const user = userEvent.setup()
     mockFetch.mockResolvedValue({

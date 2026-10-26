@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest'
 
 import type { components } from '@/api/schema'
 
+// 与后端契约测试共享的建档体：Go 侧
+// backend/internal/httpapi/handlers_model_catalog_wizard_contract_test.go 读取同一
+// 文件并断言后端接受它。只改一边的形状会让另一侧变红。
+import createFixture from '../../../../../api/fixtures/model-profile-wizard-create.json'
 import type { FetchChannelModelEntry } from './types'
 import {
   applyDefaults,
@@ -243,6 +247,40 @@ describe('applyDefaults', () => {
 })
 
 describe('buildCreateBody', () => {
+  it('matches the shared fixture the backend contract test also reads', () => {
+    const row = wizardRow({
+      id: 'gemini-2.5-pro',
+      displayName: 'Gemini 2.5 Pro',
+      description: 'Frontier multimodal model',
+      tags: ['vision', 'reasoning'],
+      endpoints: ['chat.completions', 'generateContent'],
+      capabilities: ['text', 'vision', 'function_calling'],
+      modalities: ['text', 'image'],
+      parameters: [
+        {
+          name: 'temperature',
+          type: 'number',
+          description: 'Sampling temperature',
+          defaultValue: '0.7',
+          required: false,
+        },
+        {
+          name: 'stream',
+          type: 'boolean',
+          description: '',
+          defaultValue: 'false',
+          required: false,
+        },
+      ],
+      contextLength: '1048576',
+      maxOutput: '65536',
+      knowledgeCutoff: '2025-06',
+      releasedAt: '2025-06-17',
+    })
+
+    expect(buildCreateBody(row, 7)).toEqual(createFixture)
+  })
+
   it('only sends the fields the operator filled in', () => {
     const body = buildCreateBody(
       wizardRow({ id: 'o3', endpoints: ['messages'], capabilities: ['text'] }),
@@ -376,9 +414,12 @@ describe('buildUpdateBody', () => {
     expect(body.context_length).toBe(200000)
   })
 
-  it('keeps a numeric parameter default when overwriting', () => {
+  it('keeps numeric and boolean parameter defaults when overwriting', () => {
     const existing = modelMeta({
-      parameters: [{ name: 'temperature', type: 'number', default: 0 }],
+      parameters: [
+        { name: 'temperature', type: 'number', default: 0 },
+        { name: 'stream', type: 'boolean', default: false },
+      ],
     })
     const rows = buildRows(
       [entry({ id: 'gpt-4o' })],
@@ -393,10 +434,17 @@ describe('buildUpdateBody', () => {
         description: '',
         defaultValue: '0',
       },
+      {
+        name: 'stream',
+        type: 'boolean',
+        description: '',
+        defaultValue: 'false',
+      },
     ])
-    // 覆盖后写入体仍带 "0"，不会被静默丢成空串。
+    // 覆盖后写入体仍带 "0" / "false"，不会被静默丢成空串。
     expect(buildUpdateBody(firstRow(rows), existing, null).parameters).toEqual([
       { name: 'temperature', type: 'number', required: false, default: '0' },
+      { name: 'stream', type: 'boolean', required: false, default: 'false' },
     ])
   })
 

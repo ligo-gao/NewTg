@@ -1,0 +1,32 @@
+{
+  "model_name": "gemini-2.5-pro",
+  "vendor_id": 7,
+  "display_name": "Gemini 2.5 Pro",
+  "description": "Frontier multimodal model",
+  "tags": ["vision", "reasoning"],
+  "endpoints": {
+    "/v1/chat/completions": ["POST"],
+    "/v1beta/models/{model}:generateContent": ["POST"]
+  },
+  "capabilities": ["text", "vision", "function_calling"],
+  "modalities": ["text", "image"],
+  "parameters": [
+    {
+      "name": "temperature",
+      "type": "number",
+      "required": false,
+      "default": "0.7",
+      "description": "Sampling temperature"
+    },
+    {
+      "name": "stream",
+      "type": "boolean",
+      "required": false,
+      "default": "false"
+    }
+  ],
+  "context_length": 1048576,
+  "max_output": 65536,
+  "knowledge_cutoff": "2025-06",
+  "released_at": "2025-06-17"
+}
