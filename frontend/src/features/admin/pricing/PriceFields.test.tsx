@@ -104,11 +104,12 @@ describe('PriceFields', () => {
   })
 
   it('renders only the request price for per-request mode', async () => {
-    const { getByLabelText, queryByLabelText } = await renderWithProviders(
+    const { getByLabelText, queryByLabelText, queryByText } = await renderWithProviders(
       <PriceFields
         mode="per_request"
         unit="credits"
-        values={BASE_VALUES}
+        // 切模式不清值：残留的缓存价不能产生与按次计价无关的警告。
+        values={{ prompt: '100', completion: '800', cacheRead: '150', cacheWrite: '' }}
         errors={{}}
         quotaPerUnit={100}
         onChange={() => undefined}
@@ -118,5 +119,6 @@ describe('PriceFields', () => {
     )
     expect(getByLabelText('Price per request')).toBeTruthy()
     expect(queryByLabelText('Input price (cache hit)')).toBeNull()
+    expect(queryByText(/higher than the cache-miss price/)).toBeNull()
   })
 })

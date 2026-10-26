@@ -164,7 +164,7 @@ export function PriceFields({
         })}
       </div>
 
-      {hitRatio !== null && hitRatio > 1 ? (
+      {!perRequest && hitRatio !== null && hitRatio > 1 ? (
         <p
           role="status"
           className="rounded-md border border-warning-line bg-warning-bg px-3 py-2 text-meta text-ink-1"
