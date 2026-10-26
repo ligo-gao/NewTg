@@ -18,7 +18,6 @@ import { useToastStore } from '@/shared/ui/toast'
 
 import {
   formatMs,
-  formatPercent,
   formatSamples,
   formatTPS,
 } from './format'
@@ -66,6 +65,17 @@ function sourceLabel(source: PerfSource, t: TranslateFn): string {
   return t('public.models.source.none')
 }
 
+/**
+ * 成功率的唯一措辞来源：键本身带 `{rate}` 占位符，必须传值；没有读数时
+ * 用专门的 `success_none`，不能把字面 `{rate}` 或 `0%` 渲染出去。
+ */
+function successLabel(perf: ModelPerformance, t: TranslateFn): string {
+  if (perf.successRate === null) return t('public.models.table.success_none')
+  return t('public.models.table.success', {
+    rate: `${(perf.successRate * 100).toFixed(2)}%`,
+  })
+}
+
 function Monogram({ entry }: { entry: ModelEntry }) {
   return (
     <span
@@ -85,9 +95,12 @@ function ModelIdentity({ entry }: { entry: ModelEntry }) {
   const { t } = useI18n()
   const push = useToastStore((state) => state.push)
   const name = displayNameOf(entry)
-  const showId = entry.card.display_name !== entry.card.model_id
+  // Compare the resolved name: an empty display_name already falls back to the
+  // model_id, and printing the id twice is exactly what v3 removes.
+  const showId = name !== entry.card.model_id
   const profileMissing =
     entry.card.capabilities.length === 0 && entry.card.vendor === ''
+  const copyLabel = `${t('public.models.table.copy_id')} ${name}`
 
   const copy = async () => {
     const ok = await copyText(entry.card.model_id)
@@ -108,8 +121,8 @@ function ModelIdentity({ entry }: { entry: ModelEntry }) {
         <button
           type="button"
           className="copy-id inline-flex size-5 shrink-0 items-center justify-center text-ink-3 opacity-0 transition-opacity hover:text-ink-1 focus-visible:opacity-100 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none group-focus-within:opacity-100 group-hover:opacity-100"
-          aria-label={t('public.models.table.copy_id')}
-          title={t('public.models.table.copy_id')}
+          aria-label={copyLabel}
+          title={copyLabel}
           onClick={(event) => {
             event.stopPropagation()
             void copy()
@@ -222,7 +235,7 @@ function PriceCell({ entry }: { entry: ModelEntry }) {
     <div className="price-cell flex items-center gap-1 font-mono text-meta tabular-nums text-ink-1">
       <span>{formatRmb(entry.price.input, locale) ?? '—'}</span>
       <span aria-hidden="true" className="text-ink-3">
-        ·
+        {' · '}
       </span>
       <span>{formatRmb(entry.price.output, locale) ?? '—'}</span>
     </div>
@@ -231,7 +244,7 @@ function PriceCell({ entry }: { entry: ModelEntry }) {
 
 function TpsCell({ perf }: { perf: ModelPerformance }) {
   const value =
-    perf.tps === null || !Number.isFinite(perf.tps)
+    perf.tps === null || !Number.isFinite(perf.tps) || perf.tps < 0
       ? '—'
       : `${perf.tps.toFixed(1)} t/s`
   return (
@@ -255,12 +268,7 @@ function EvidenceCell({ entry }: { entry: ModelEntry }) {
       : perf.source === 'usage'
         ? t('public.models.table.calls', { count })
         : t('public.models.table.evidence_none')
-  const success =
-    perf.successRate === null
-      ? t('public.models.table.success_none')
-      : t('public.models.table.success', {
-          rate: `${(perf.successRate * 100).toFixed(2)}%`,
-        })
+  const success = successLabel(entry.perf, t)
 
   return (
     <div className="evidence-cell">
@@ -585,7 +593,7 @@ function ModelCard({ entry, actions }: { entry: ModelEntry; actions: RowActions 
           {t('public.models.table.speed')} {formatTPS(entry.perf.tps)}
         </span>
         <span className="text-badge tabular-nums text-ink-3">
-          {t('public.models.table.success')} {formatPercent(entry.perf.successRate)}
+          {successLabel(entry.perf, t)}
         </span>
         <div className="card-actions flex shrink-0 items-center gap-1.5">
           <CallButton entry={entry} onCall={actions.onCall} />

@@ -221,8 +221,11 @@ describe('Register: table view', () => {
     ).toBeTruthy()
     expect(screen.getByText('Input · output')).toBeTruthy()
 
-    expect(screen.getByText('¥0.06')).toBeTruthy()
-    expect(screen.getByText('¥4.00')).toBeTruthy()
+    // The whole cell pins input-before-output; two loose matches would pass
+    // even if the prices were swapped.
+    expect(textOf(bodyRows()[0] as HTMLElement, '.price-cell')).toBe(
+      '¥0.06 · ¥4.00',
+    )
 
     // A row without prices keeps its two positions separate, not a fake zero.
     const priceCell = bodyRows()[2]?.querySelector('.price-cell')
@@ -230,6 +233,18 @@ describe('Register: table view', () => {
     expect(
       within(priceCell as HTMLElement).getAllByText('—'),
     ).toHaveLength(2)
+  })
+
+  it('keeps a missing price as its own em dash beside the present one', async () => {
+    const partial: ModelEntry = {
+      ...TESTED,
+      price: { input: 0.06, output: null, cacheRead: null },
+    }
+    await renderRegister({ entries: [partial] })
+
+    expect(textOf(bodyRows()[0] as HTMLElement, '.price-cell')).toBe(
+      '¥0.06 · —',
+    )
   })
 
   it('hides the context column when no row has context or output', async () => {
@@ -310,16 +325,29 @@ describe('Register: table view', () => {
     for (const chip of ['text', 'Vision', 'hologram', 'openai']) {
       expect(within(tested).getByText(chip)).toBeTruthy()
     }
+  })
 
+  it('shows the profile placeholder and prints a matched id once', async () => {
     // No profile at all: one explicit placeholder instead of empty chips.
     const bare: ModelEntry = {
       ...EMPTY,
       card: card({ model_id: 'acme/bare' }),
     }
     await renderRegister({ entries: [bare] })
+
     expect(screen.getByText('Profile not filled in')).toBeTruthy()
     // display_name falls back to model_id, so the id is printed once, not twice.
     expect(screen.getAllByText('acme/bare')).toHaveLength(1)
+  })
+
+  it('prints the model id once when display_name is empty', async () => {
+    const blank: ModelEntry = {
+      ...EMPTY,
+      card: card({ model_id: 'acme/raw', display_name: '' }),
+    }
+    await renderRegister({ entries: [blank] })
+
+    expect(screen.getAllByText('acme/raw')).toHaveLength(1)
   })
 
   it('copies the model id, not the display name', async () => {
@@ -328,16 +356,24 @@ describe('Register: table view', () => {
       value: { writeText },
       configurable: true,
     })
+    const onToggleExpand = vi.fn()
 
-    await renderRegister()
+    await renderRegister({ onToggleExpand })
 
-    const buttons = screen.getAllByRole('button', { name: 'Copy model ID' })
-    expect(buttons.length).toBeGreaterThanOrEqual(3)
+    // The accessible name carries the row's model, so each row is distinct.
+    const button = screen.getByRole('button', { name: 'Copy model ID GPT-5' })
 
-    fireEvent.click(buttons[0] as HTMLElement)
+    // Reachable by keyboard even though it only appears on hover/focus.
+    expect(button.tabIndex).toBeGreaterThanOrEqual(0)
+    expect(button.hasAttribute('hidden')).toBe(false)
+    expect(button.classList.contains('pointer-events-none')).toBe(false)
+    expect(button.className).toContain('focus-visible:opacity-100')
+
+    fireEvent.click(button)
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith('openai/gpt-5')
     })
+    expect(onToggleExpand).not.toHaveBeenCalled()
   })
 
   it('never renders a capability barcode column or a call button', async () => {
@@ -348,10 +384,6 @@ describe('Register: table view', () => {
     ).toBeNull()
     expect(screen.getByRole('table').querySelector('.barcode')).toBeNull()
     expect(screen.queryByRole('button', { name: /^Call / })).toBeNull()
-    // The onCall prop stays on Register for the expanded detail (Task 5).
-    expect(screen.getAllByRole('button', { name: 'Copy model ID' })).toHaveLength(
-      3,
-    )
   })
 
   it('renders an em dash, never 0, when a measurement is missing', async () => {
@@ -362,7 +394,7 @@ describe('Register: table view', () => {
     expect(emptyRow).toBeTruthy()
 
     expect(within(emptyRow).queryByText('0 ms')).toBeNull()
-    expect(within(emptyRow).queryByText('0.0%')).toBeNull()
+    expect(textOf(emptyRow, '.evidence-cell')).toContain('No success rate yet')
     expect(textOf(emptyRow, '.lat-cell')).toBe('—')
     expect(textOf(emptyRow, '.tps-cell')).toBe('—')
     expect(
@@ -370,6 +402,16 @@ describe('Register: table view', () => {
         '—',
       ),
     ).toHaveLength(2)
+  })
+
+  it('renders an em dash for a negative throughput', async () => {
+    const negative: ModelEntry = {
+      ...EMPTY,
+      perf: perf({ source: 'test', p50: 100, tps: -3, samples: 5, hasData: true }),
+    }
+    await renderRegister({ entries: [negative] })
+
+    expect(textOf(bodyRows()[0] as HTMLElement, '.tps-cell')).toBe('—')
   })
 
   it('disables an unselected compare box once four are chosen', async () => {
@@ -417,5 +459,13 @@ describe('Register: cards view', () => {
 
     expect(screen.queryByRole('table')).toBeNull()
     expect(screen.getAllByRole('listitem')).toHaveLength(3)
+  })
+
+  it('renders the success rate without leaking the key placeholder', async () => {
+    await renderRegister({ view: 'cards' })
+
+    expect(screen.getByText('Success 99.20%')).toBeTruthy()
+    expect(screen.getByText('No success rate yet')).toBeTruthy()
+    expect(screen.queryByText(/\{rate\}/)).toBeNull()
   })
 })
