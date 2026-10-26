@@ -77,8 +77,9 @@ type Session struct {
 	// 时间重查。discountResolved 防止同一会话重复解析。
 	discount         contract.Discount
 	discountResolved bool
-	// rawConsumed 预留给结算侧记录原价成本（后续任务持有其语义）；预扣阶段
-	// 只声明不读写。
+	// rawConsumed 累计**原始（未打折）增量**，用于按累计口径折算折扣；
+	// 预扣与上浮只进 preConsumed/tokenDeducted，绝不计入这里（两条账本
+	// 分离，见 ChargeIncrement 的累计折扣）。未命中折扣时保持 0。
 	rawConsumed int64
 
 	imageRequest bool
@@ -611,6 +612,13 @@ func (s *Session) Reserve(delta int64) error {
 		return nil
 	}
 
+	// §5.4：上浮同样按客户折扣折算（预扣与上浮共用一个 hold 账本）。
+	// rawConsumed 只累计增量，预扣额绝不进入这里，两条路径保持独立。
+	if delta = ApplyDiscount(delta, s.discount); delta <= 0 {
+		// 全免：预留也是 0，不产生 hold（C4）。
+		return nil
+	}
+
 	ctx, cancel := opCtx()
 	defer cancel()
 
@@ -682,6 +690,20 @@ func (s *Session) ChargeIncrement(delta int64, fact contract.UsageFact) error {
 	// fact 用于日志/审计上下文；增量金额以调用方传入的 delta 为准
 	// （实时连接已按每个 response.done 完成本地计数/上游用量换算）。
 	_ = fact
+
+	// §5.3：折扣按「累计原始增量」折算，而不是逐笔折半：逐笔折算会把
+	// 每笔的取整误差累积成多收或少收，且第二笔无法纠正第一笔的舍入。
+	// 这里只算出「本轮相对已扣额的应收增量」，下游钱包/订阅两条分支
+	// 都自行 s.consumed += delta，因此不得提前累加。
+	if s.discountApplies() {
+		s.rawConsumed += delta
+		target := ApplyDiscount(s.rawConsumed, s.discount)
+		delta = target - s.consumed
+		if delta <= 0 {
+			// 本轮折后应收不增长（含全免）：只是累计原始增量，不扣款。
+			return nil
+		}
+	}
 
 	ctx, cancel := opCtx()
 	defer cancel()

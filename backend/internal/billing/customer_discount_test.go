@@ -300,6 +300,247 @@ func TestPreConsumeExpandsModelCandidates(t *testing.T) {
 	}
 }
 
+// newDiscountedSession 用真实账本库构造一个已冻结折扣、尚未预扣的会话。
+// 折扣用 applyFrozenDiscount 直接写入：它正是生产路径 PreConsume 解析后
+// 冻结到会话的形态，这里只关心 Reserve/ChargeIncrement 如何使用它。
+func newDiscountedSession(t *testing.T, rate float64) (*Session, *sql.DB, int64) {
+	t.Helper()
+	e, db := newDiscountTestEngine(t, nil, nil)
+	userID := createBillingTestUser(t, db, 500)
+	s := newBillingTestSession(e, userID, testRequestID("t4"), perCallSnapshot(10))
+	s.applyFrozenDiscount(rate, "user:7")
+	return s, db, userID
+}
+
+// TestChargeIncrementCumulativeDiscount 验证增量按「累计原价」折算：
+// rate=0.5 时 3、3 两笔应扣 1、2（合计 3 == ApplyDiscount(6)），
+// 而不是各自折半后各自保底（会变成 1、2 之外的重复计费或 1、1 少收）。
+func TestChargeIncrementCumulativeDiscount(t *testing.T) {
+	s, db, userID := newDiscountedSession(t, 0.5)
+
+	if err := s.ChargeIncrement(3, contract.UsageFact{Model: "m"}); err != nil {
+		t.Fatalf("第一次 ChargeIncrement: %v", err)
+	}
+	if got := s.consumed; got != 1 {
+		t.Fatalf("首次 consumed = %d, want 1（ApplyDiscount(3)=1）", got)
+	}
+	if err := s.ChargeIncrement(3, contract.UsageFact{Model: "m"}); err != nil {
+		t.Fatalf("第二次 ChargeIncrement: %v", err)
+	}
+	if got := s.consumed; got != 3 {
+		t.Fatalf("累计 consumed = %d, want 3（ApplyDiscount(6)=3，第二笔只补扣 2）", got)
+	}
+	if got := s.rawConsumed; got != 6 {
+		t.Fatalf("rawConsumed = %d, want 6（原始增量累计）", got)
+	}
+	if got := userBalance(t, db, userID); got != 497 {
+		t.Fatalf("balance = %d, want 497（只扣折后 1+2）", got)
+	}
+
+	rows := readWalletRows(t, db, s.requestID)
+	want := []walletRow{
+		{Type: "consume", Amount: -1, BalanceAfter: 499, Status: "confirmed"},
+		{Type: "consume", Amount: -2, BalanceAfter: 497, Status: "confirmed"},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("钱包流水 = %+v, want %+v", rows, want)
+	}
+	for i := range want {
+		if rows[i] != want[i] {
+			t.Fatalf("钱包流水[%d] = %+v, want %+v", i, rows[i], want[i])
+		}
+	}
+}
+
+// TestChargeIncrementSkipsWhenRoundedToSame 验证折后应收不增长时不重复扣款：
+// rate=0.5 下 1 与 1 两笔，ApplyDiscount(1)=1、ApplyDiscount(2)=1，
+// 第二笔折后应收与已扣相同，必须整笔跳过（不得借最小保底再抬 1）。
+func TestChargeIncrementSkipsWhenRoundedToSame(t *testing.T) {
+	s, db, userID := newDiscountedSession(t, 0.5)
+
+	if err := s.ChargeIncrement(1, contract.UsageFact{Model: "m"}); err != nil {
+		t.Fatalf("第一次 ChargeIncrement: %v", err)
+	}
+	if err := s.ChargeIncrement(1, contract.UsageFact{Model: "m"}); err != nil {
+		t.Fatalf("第二次 ChargeIncrement: %v", err)
+	}
+	if got := s.consumed; got != 1 {
+		t.Fatalf("consumed = %d, want 1（第二笔折后应收不增长，不得再扣）", got)
+	}
+	if got := s.rawConsumed; got != 2 {
+		t.Fatalf("rawConsumed = %d, want 2（原始增量仍须累计）", got)
+	}
+	if got := userBalance(t, db, userID); got != 499 {
+		t.Fatalf("balance = %d, want 499（只扣一笔 1）", got)
+	}
+	rows := readWalletRows(t, db, s.requestID)
+	if len(rows) != 1 || rows[0].Amount != -1 {
+		t.Fatalf("钱包流水 = %+v, want 仅一笔 -1", rows)
+	}
+}
+
+// TestChargeIncrementZeroRateChargesNothing 验证全免规则在增量路径同样零扣减。
+func TestChargeIncrementZeroRateChargesNothing(t *testing.T) {
+	s, db, userID := newDiscountedSession(t, 0)
+
+	if err := s.ChargeIncrement(10, contract.UsageFact{Model: "m"}); err != nil {
+		t.Fatalf("第一次 ChargeIncrement: %v", err)
+	}
+	if err := s.ChargeIncrement(5, contract.UsageFact{Model: "m"}); err != nil {
+		t.Fatalf("第二次 ChargeIncrement: %v", err)
+	}
+	if got := s.consumed; got != 0 {
+		t.Fatalf("consumed = %d, want 0（全免不得扣款）", got)
+	}
+	if got := s.rawConsumed; got != 15 {
+		t.Fatalf("rawConsumed = %d, want 15（原始增量仍须累计）", got)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("balance = %d, want 500（全免不得动余额）", got)
+	}
+	if rows := readWalletRows(t, db, s.requestID); len(rows) != 0 {
+		t.Fatalf("钱包流水 = %+v, want 0 条", rows)
+	}
+}
+
+// TestReserveDiscountsDelta 验证 Reserve 上浮同样打折：rate=0.5、上浮 10
+// 只冻结 5。rawConsumed 只记增量，不得在这里被预扣额污染。
+func TestReserveDiscountsDelta(t *testing.T) {
+	s, db, userID := newDiscountedSession(t, 0.5)
+
+	if err := s.Reserve(10); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if got := s.preConsumed; got != 5 {
+		t.Fatalf("preConsumed = %d, want 5（ApplyDiscount(10)=5）", got)
+	}
+	if got := s.tokenDeducted; got != 5 {
+		t.Fatalf("tokenDeducted = %d, want 5", got)
+	}
+	if got := s.rawConsumed; got != 0 {
+		t.Fatalf("rawConsumed = %d, want 0（预扣不是增量）", got)
+	}
+	if got := userBalance(t, db, userID); got != 495 {
+		t.Fatalf("balance = %d, want 495（hold 5）", got)
+	}
+	rows := readWalletRows(t, db, s.requestID)
+	want := walletRow{Type: "consume_pre", Amount: -5, BalanceAfter: 495, Status: "hold"}
+	if len(rows) != 1 || rows[0] != want {
+		t.Fatalf("钱包流水 = %+v, want %+v", rows, want)
+	}
+}
+
+// TestReserveZeroRateReturnsNil 验证全免上浮不产生 hold、不报错。
+func TestReserveZeroRateReturnsNil(t *testing.T) {
+	s, db, userID := newDiscountedSession(t, 0)
+
+	if err := s.Reserve(10); err != nil {
+		t.Fatalf("Reserve: %v, want nil（全免上浮是 no-op）", err)
+	}
+	if got := s.preConsumed; got != 0 {
+		t.Fatalf("preConsumed = %d, want 0", got)
+	}
+	if got := s.tokenDeducted; got != 0 {
+		t.Fatalf("tokenDeducted = %d, want 0", got)
+	}
+	if got := s.rawConsumed; got != 0 {
+		t.Fatalf("rawConsumed = %d, want 0", got)
+	}
+	if got := userBalance(t, db, userID); got != 500 {
+		t.Fatalf("balance = %d, want 500（全免不得动余额）", got)
+	}
+	if rows := readWalletRows(t, db, s.requestID); len(rows) != 0 {
+		t.Fatalf("钱包流水 = %+v, want 0 条", rows)
+	}
+}
+
+// TestChargeIncrementAfterReserveStaysDisjoint 钉死预扣与增量的账本分离：
+// rate=0.5 下 Reserve(10) 建立 hold 5，但 rawConsumed 必须保持 0；
+// 随后的 ChargeIncrement(6) 只按增量累计折算，应扣 3 而不是 6 或 8。
+// 若把 hold 计入 rawConsumed，运行目标会变成 ApplyDiscount(5+6) 并把
+// hold 的折后部分再收一次。
+func TestChargeIncrementAfterReserveStaysDisjoint(t *testing.T) {
+	s, db, userID := newDiscountedSession(t, 0.5)
+
+	if err := s.Reserve(10); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if got := s.preConsumed; got != 5 {
+		t.Fatalf("preConsumed = %d, want 5", got)
+	}
+	if got := s.rawConsumed; got != 0 {
+		t.Fatalf("Reserve 后 rawConsumed = %d, want 0（预扣不得计入增量累计）", got)
+	}
+	if got := s.consumed; got != 0 {
+		t.Fatalf("Reserve 后 consumed = %d, want 0（预扣不是消耗）", got)
+	}
+
+	if err := s.ChargeIncrement(6, contract.UsageFact{Model: "m"}); err != nil {
+		t.Fatalf("ChargeIncrement: %v", err)
+	}
+	if got := s.consumed; got != 3 {
+		t.Fatalf("consumed = %d, want 3（ApplyDiscount(6)=3，不叠加 hold）", got)
+	}
+	if got := s.rawConsumed; got != 6 {
+		t.Fatalf("rawConsumed = %d, want 6", got)
+	}
+	if got := userBalance(t, db, userID); got != 492 {
+		t.Fatalf("balance = %d, want 492（hold 5 + 折后增量 3）", got)
+	}
+
+	rows := readWalletRows(t, db, s.requestID)
+	want := []walletRow{
+		{Type: "consume_pre", Amount: -5, BalanceAfter: 495, Status: "hold"},
+		{Type: "consume", Amount: -3, BalanceAfter: 492, Status: "confirmed"},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("钱包流水 = %+v, want %+v", rows, want)
+	}
+	for i := range want {
+		if rows[i] != want[i] {
+			t.Fatalf("钱包流水[%d] = %+v, want %+v", i, rows[i], want[i])
+		}
+	}
+}
+
+// TestChargeIncrementDiscountsSubscriptionPath 验证累计折扣位于资金来源
+// 分支之前：订阅增量同样按折后金额追加订阅额度与令牌扣减。
+func TestChargeIncrementDiscountsSubscriptionPath(t *testing.T) {
+	ds := &fakeDiscountStore{discount: customerDiscount(50, "user", "7"), found: true}
+	funding := newFakeSubscriptionFunding(contract.PrefSubscriptionFirst, subscriptionAccount(7, 1000, nil))
+	e, db := newDiscountTestEngine(t, nil, ds)
+	e.SetSubscriptionFunding(funding)
+	userID := createBillingTestUser(t, db, 500)
+	tokenID := createBillingTestToken(t, db, userID, int64(500))
+	s := newBillingTestSessionWithToken(e, userID, tokenID, testRequestID("t4-sub"), perCallSnapshot(100))
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if s.fundingSource != contract.FundingSubscription {
+		t.Fatalf("fundingSource = %v, want subscription", s.fundingSource)
+	}
+	if got := funding.usedOf(7); got != 50 {
+		t.Fatalf("订阅预扣 = %d, want 50（原价 100 折半）", got)
+	}
+
+	if err := s.ChargeIncrement(30, contract.UsageFact{Model: "m"}); err != nil {
+		t.Fatalf("ChargeIncrement: %v", err)
+	}
+	if got := s.consumed; got != 15 {
+		t.Fatalf("consumed = %d, want 15（ApplyDiscount(30)=15）", got)
+	}
+	if got := s.rawConsumed; got != 30 {
+		t.Fatalf("rawConsumed = %d, want 30", got)
+	}
+	if got := funding.usedOf(7); got != 65 {
+		t.Fatalf("订阅已用 = %d, want 65（预扣 50 + 折后增量 15）", got)
+	}
+	if got := tokenRemain(t, db, tokenID).Int64; got != 435 {
+		t.Fatalf("令牌剩余 = %d, want 435（预扣 50 + 增量 15）", got)
+	}
+}
+
 // TestSessionFrozenDiscountSemantics 覆盖冻结值入口与生效判据：
 // 零值 Rate + 空 Target 是「未命中」而不是全免；NaN 因无法比较而不适用。
 // 结算侧（后续任务）通过 applyFrozenDiscount 复用预扣冻结的折扣。
