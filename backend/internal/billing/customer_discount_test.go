@@ -1074,3 +1074,61 @@ func TestTerminateSkipsDiscountWhenPricingEvalFails(t *testing.T) {
 		t.Fatalf("balance = %d, want 410", got)
 	}
 }
+
+// TestTerminateFallbackEstimatedQuotaAppliesDiscount 钉住 CF-2 唯一的
+// rawKnown=true 回退支路：trusted 旁路无 hold、结算求值失败时回退到
+// estimatedQuota（折前估算额 100），必须按折后 90 结算，而不是把折扣客户
+// 按原价 100 补扣。
+func TestTerminateFallbackEstimatedQuotaAppliesDiscount(t *testing.T) {
+	e, db, sat := newDiscountTerminateEngine(t, mapConfig{
+		ConfigPreConsumeRatio: json.RawMessage("1.0"),
+		ConfigTrustQuotaUSD:   json.RawMessage("10"),
+	})
+	userID := createBillingTestUser(t, db, 100_000)
+	s := newBillingTestSession(e, userID, testRequestID("t5-fallback-est"), perCallSnapshot(100))
+	s.applyFrozenDiscount(0.9, "user:7")
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m"}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	if got := s.Reserved(); got != 0 {
+		t.Fatalf("Reserved = %d, want 0（信任旁路不预扣）", got)
+	}
+	if got := s.estimatedQuota; got != 100 {
+		t.Fatalf("estimatedQuota = %d, want 100（折前估算额，回退基准）", got)
+	}
+
+	// 复用求值失败机制：表达式可编译但求值除零，走 fallbackCostLocked。
+	broken := &contract.PriceSnapshot{
+		Mode:       contract.BillingModeTieredExpr,
+		ExprString: "p / 0",
+	}
+	s.rc.PriceSnapshot = broken
+	fact := contract.UsageFact{Model: "m", Usage: contract.Usage{Prompt: 10}}
+	if got, rawKnown := s.actualCostLocked(broken, fact); got != 100 || !rawKnown {
+		t.Fatalf("actualCostLocked = (%d, rawKnown=%v), want (100, true)（回退到折前估算额须标记原始成本）",
+			got, rawKnown)
+	}
+
+	if err := s.Terminate(fact); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+	out := sat.outcome
+	if out.Cost != 90 {
+		t.Fatalf("outcome.Cost = %d, want 90（折前估算额回退后仍须打折）", out.Cost)
+	}
+	if out.PreDeducted != 0 || out.Refunded != 0 {
+		t.Fatalf("outcome = %+v, want pre 0 / refunded 0（旁路无 hold）", out)
+	}
+	if out.OriginalCost != 100 || out.DiscountRate != 0.9 || out.DiscountTarget != "user:7" {
+		t.Fatalf("outcome = %+v, want original 100 / rate 0.9 / target user:7", out)
+	}
+	if got := userBalance(t, db, userID); got != 99_910 {
+		t.Fatalf("balance = %d, want 99910（只收折后 90，不是原价 100）", got)
+	}
+	rows := readWalletRows(t, db, s.requestID)
+	want := walletRow{Type: "consume", Amount: -90, BalanceAfter: 99_910, Status: "confirmed"}
+	if len(rows) != 1 || rows[0] != want {
+		t.Fatalf("钱包流水 = %+v, want 单笔 %+v", rows, want)
+	}
+}
