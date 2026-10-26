@@ -22,7 +22,7 @@ import {
   formatTPS,
 } from './format'
 import { ModelDetail } from './model-detail'
-import { MAX_COMPARE, type ModelsView } from './params'
+import { MAX_COMPARE, type ModelsRange, type ModelsView } from './params'
 import type { ModelEntry, ModelPerformance, PerfSource } from './performance'
 import { formatRmb } from './price'
 import { monogram, uniqueCapabilityNames, type CapabilitySlot } from './taxonomy'
@@ -30,6 +30,8 @@ import { monogram, uniqueCapabilityNames, type CapabilitySlot } from './taxonomy
 export interface RegisterProps {
   entries: readonly ModelEntry[]
   view: ModelsView
+  /** 指标窗口；展开行把它带进读数块标题。 */
+  range: ModelsRange
   compareIds: readonly string[]
   slots: readonly CapabilitySlot[]
   expandedId: string | null
@@ -44,6 +46,7 @@ const WIDE_QUERY = '(min-width: 1440px)'
 
 interface RowActions {
   expandedId: string | null
+  range: ModelsRange
   compareIds: readonly string[]
   slots: readonly CapabilitySlot[]
   onToggleExpand: (modelId: string) => void
@@ -465,7 +468,14 @@ function TableRow({
       {expanded ? (
         <tr className="detail-row" id={detailIdOf(id)}>
           <td colSpan={columnCount} className="p-0">
-            <ModelDetail entry={entry} />
+            <ModelDetail
+              entry={entry}
+              range={actions.range}
+              onCall={actions.onCall}
+              onToggleCompare={actions.onToggleCompare}
+              compared={checked}
+              compareFull={full}
+            />
           </td>
         </tr>
       ) : null}
@@ -624,7 +634,14 @@ function ModelCard({ entry, actions }: { entry: ModelEntry; actions: RowActions 
           className="card-detail mt-2.5 border-t border-border-hairline pt-2.5"
           id={detailIdOf(id)}
         >
-          <ModelDetail entry={entry} />
+          <ModelDetail
+            entry={entry}
+            range={actions.range}
+            onCall={actions.onCall}
+            onToggleCompare={actions.onToggleCompare}
+            compared={checked}
+            compareFull={full}
+          />
         </div>
       ) : null}
     </li>
@@ -666,6 +683,7 @@ function CompareTray({
 export function Register({
   entries,
   view,
+  range,
   compareIds,
   slots,
   expandedId,
@@ -678,6 +696,7 @@ export function Register({
   const effectiveView: ModelsView = wide ? view : 'cards'
   const actions: RowActions = {
     expandedId,
+    range,
     compareIds,
     onToggleExpand,
     onToggleCompare,

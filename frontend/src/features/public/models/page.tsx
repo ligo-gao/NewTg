@@ -300,6 +300,7 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
           <Register
             entries={visible}
             view={search.view}
+            range={search.range}
             compareIds={compareIds(search)}
             slots={slots}
             expandedId={expandedId}

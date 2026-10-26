@@ -152,6 +152,7 @@ function props(overrides: Partial<RegisterProps> = {}): RegisterProps {
   return {
     entries: [TESTED, AVERAGED, EMPTY],
     view: 'table',
+    range: '7d',
     compareIds: [],
     slots: SLOTS,
     expandedId: null,
@@ -165,6 +166,13 @@ function props(overrides: Partial<RegisterProps> = {}): RegisterProps {
 
 function serveDetails(): void {
   server.use(
+    http.get(`${ORIGIN}/api/status`, () =>
+      HttpResponse.json({
+        system_initialized: true,
+        auth: {},
+        site: { server_address: 'https://api.example.com/' },
+      }),
+    ),
     http.get(`${ORIGIN}/api/pricing/:modelId`, ({ params }) =>
       HttpResponse.json(
         detailOf(
@@ -450,6 +458,35 @@ describe('Register: table view', () => {
     )
     expect(document.getElementById('model-detail-openai/gpt-5')).toBeTruthy()
     expect(document.getElementById('model-detail-acme/embed')).toBeNull()
+  })
+
+  it('opens call examples from the expanded detail without collapsing the row', async () => {
+    serveDetails()
+    const onCall = vi.fn()
+    const onToggleExpand = vi.fn()
+    await renderRegister({
+      expandedId: TESTED.card.model_id,
+      onCall,
+      onToggleExpand,
+    })
+
+    const detail = document.getElementById('model-detail-openai/gpt-5')
+    expect(detail).toBeTruthy()
+    fireEvent.click(
+      within(detail as HTMLElement).getByRole('button', {
+        name: 'View call examples',
+      }),
+    )
+
+    expect(onCall).toHaveBeenCalledWith(TESTED)
+    expect(onToggleExpand).not.toHaveBeenCalled()
+    // The row stays expanded behind the dialog.
+    expect(document.getElementById('model-detail-openai/gpt-5')).toBeTruthy()
+    expect(
+      screen
+        .getByRole('button', { name: 'Hide details GPT-5' })
+        .getAttribute('aria-expanded'),
+    ).toBe('true')
   })
 })
 

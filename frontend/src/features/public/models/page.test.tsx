@@ -98,7 +98,7 @@ function metricsItems() {
   return [
     {
       model_id: 'openai/gpt-5',
-      summary: { sample_size: 120 },
+      summary: { sample_size: 3 },
       latest_test: {
         ttft_ms_p50: 300,
         ttft_ms_p95: 600,
@@ -106,7 +106,7 @@ function metricsItems() {
         latency_ms_p95: 900,
         tps: 42,
         success_rate: 0.99,
-        sample_size: 120,
+        sample_size: 3,
         tested_at: '2026-10-24T00:00:00Z',
       },
     },
@@ -117,7 +117,7 @@ function metricsItems() {
         avg_ttft_ms: null,
         success_rate: 0.98,
         tps: 30,
-        sample_size: 50,
+        sample_size: 1_204,
       },
       latest_test: null,
     },
@@ -202,6 +202,21 @@ function serveCatalog(options: ServeOptions = {}) {
         METRICS[range === '24h' ? '24h' : '7d'],
       )
     }),
+    http.get(`${ORIGIN}/api/pricing/:modelId`, ({ params }) => {
+      const modelId = String(params.modelId)
+      const source =
+        items.find((item) => item.model_id === modelId) ?? items[0] ?? GPT
+      return HttpResponse.json({
+        ...source,
+        modalities: ['text'],
+        knowledge_cutoff: null,
+        released_at: null,
+        group_prices: [],
+        parameters: [],
+        rate_limits: [],
+        auth_style: 'bearer',
+      })
+    }),
   )
 }
 
@@ -250,11 +265,16 @@ describe('ModelsPage', () => {
     const table = screen.getByRole('table')
     expect(within(table).getByText('GPT-5')).toBeTruthy()
     expect(within(table).getByText('Embed')).toBeTruthy()
-    // The chat model takes the measured-test reading; the embedding falls back
-    // to the real-call average, which proves the metrics join happened.
-    expect(await screen.findByText('Measured test')).toBeTruthy()
+    // The evidence column proves the metrics join happened: the measured chat
+    // model reports probe runs, while the embedding has no probe record and
+    // falls back to real-call counts.
+    const tested = within(table).getByText('GPT-5').closest('tr')
+    expect(tested).toBeTruthy()
+    expect(within(tested as HTMLElement).getByText('3 probe runs')).toBeTruthy()
+    const averaged = within(table).getByText('Embed').closest('tr')
+    expect(averaged).toBeTruthy()
     expect(
-      await screen.findByText(/Total latency average 120 ms/),
+      within(averaged as HTMLElement).getByText('1,204 calls'),
     ).toBeTruthy()
   })
 
@@ -390,18 +410,37 @@ describe('ModelsPage', () => {
     })
   })
 
-  it('opens the call dialog from a row without expanding it', async () => {
+  it('opens the call dialog from the expanded row and keeps it expanded', async () => {
     serveCatalog()
     await renderPage()
     await screen.findByText('GPT-5')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Call GPT-5' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Details GPT-5' }))
+
+    const detail = await waitFor(() => {
+      const element = document.getElementById('model-detail-openai/gpt-5')
+      expect(element).toBeTruthy()
+      return element as HTMLElement
+    })
+    fireEvent.click(
+      within(detail).getByRole('button', { name: 'View call examples' }),
+    )
 
     expect(await screen.findByRole('dialog')).toBeTruthy()
     expect(
       screen.getByRole('heading', { name: 'Call GPT-5' }),
     ).toBeTruthy()
-    expect(document.getElementById('model-detail-openai/gpt-5')).toBeNull()
+    // Opening the dialog must not collapse the row behind it. The dialog makes
+    // the page inert, so the background button is only reachable as hidden.
+    expect(document.getElementById('model-detail-openai/gpt-5')).toBeTruthy()
+    expect(
+      screen
+        .getByRole('button', {
+          name: 'Hide details GPT-5',
+          hidden: true,
+        })
+        .getAttribute('aria-expanded'),
+    ).toBe('true')
   })
 
   it('shows the empty state and clears every filter', async () => {
