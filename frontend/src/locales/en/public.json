@@ -546,7 +546,7 @@
   "models.detail.copy_model_id": "Copy model_id",
   "models.detail.call_examples": "View call examples",
   "models.detail.block_notes": "Notes",
-  "models.detail.notes_window": "First-token latency comes from gateway probes; end-to-end includes upstream queueing and generation time. Update window: {window}.",
+  "models.detail.notes_window": "First-token latency comes from gateway probes; end-to-end includes upstream queueing and generation time. Rolling window: {window}.",
   "models.detail.profile": "Profile: {vendor} · {context} context · max output {output}.",
   "models.detail.modalities": "Input / output",
   "models.detail.endpoints": "Endpoints",

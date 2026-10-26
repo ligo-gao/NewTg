@@ -488,7 +488,7 @@
   "models.table.price": "價格 ¥/百萬 token",
   "models.table.price_sub": "輸入 · 輸出",
   "models.table.capabilities": "能力",
-  "models.table.context": "上下文 · 輸出",
+  "models.table.context": "上下文 / 輸出",
   "models.table.latency": "首字 / 延遲（P50–P95）",
   "models.table.speed": "輸出吞吐",
   "models.table.success": "成功率 {rate}",

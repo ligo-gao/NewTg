@@ -491,7 +491,7 @@
   "models.table.context": "Contexte / sortie",
   "models.table.latency": "Latence (P50–P95)",
   "models.table.speed": "Débit",
-  "models.table.success": "Réussite {rate}",
+  "models.table.success": "Taux de réussite {rate}",
   "models.table.success_none": "Taux de réussite indisponible",
   "models.table.evidence": "Mesuré",
   "models.table.evidence_none": "Non mesuré",
