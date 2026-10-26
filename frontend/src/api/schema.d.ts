@@ -1505,8 +1505,8 @@ export interface paths {
         };
         /**
          * 用户列表（分页 + 筛选 + 排序）
-         * @description keyword 匹配用户名/显示名/邮箱（最多 64 字符）；status/role/group
-         *     为精确筛选；sort 白名单 id|username|balance|created_at|updated_at，
+         * @description keyword 匹配用户名/显示名/邮箱（最多 64 字符）；status/role/group/
+         *     customer_type 为精确筛选；sort 白名单 id|username|balance|created_at|updated_at，
          *     前缀 - 表示降序，默认 -created_at。非法枚举/排序列 400（不静默忽略）。
          */
         get: operations["listUsers"];
@@ -8103,6 +8103,11 @@ export interface components {
             balance: number;
             group: string;
             /**
+             * @description 客户属性。仅用于筛选与统计，折扣规则绝不按它匹配。
+             * @enum {string}
+             */
+            customer_type: "general" | "enterprise";
+            /**
              * @description 权限矩阵。null = FULL（数据库 NULL）；["*"] 是 FULL 的显式形态；
              *     空数组 = 明确无任何权限。两者语义不同，客户端不得混用。
              */
@@ -8135,6 +8140,11 @@ export interface components {
             role?: components["schemas"]["UserRole"];
             /** @description 缺省 default。 */
             group?: string;
+            /**
+             * @description 客户属性；缺省 general。仅用于筛选与统计，折扣规则绝不按它匹配。
+             * @enum {string|null}
+             */
+            customer_type?: "general" | "enterprise" | null;
             password: string;
             remark?: string | null;
         };
@@ -8146,6 +8156,11 @@ export interface components {
         AdminUpdateUserRequest: {
             display_name?: string | null;
             group?: string;
+            /**
+             * @description 客户属性（general/enterprise）；不可为 null。
+             * @enum {string}
+             */
+            customer_type?: "general" | "enterprise";
             remark?: string | null;
             role?: components["schemas"]["UserRole"];
             /** Format: date-time */
@@ -14409,6 +14424,8 @@ export interface operations {
                 status?: components["schemas"]["UserStatus"];
                 role?: components["schemas"]["UserRole"];
                 group?: string;
+                /** @description 按客户属性精确筛选；非法枚举 400。 */
+                customer_type?: "general" | "enterprise";
                 sort?: string;
             };
             header?: never;

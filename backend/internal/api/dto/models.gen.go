@@ -33,6 +33,24 @@ func (e ActiveAnnouncementCategory) Valid() bool {
 	}
 }
 
+// Defines values for AdminCreateUserRequestCustomerType.
+const (
+	AdminCreateUserRequestCustomerTypeEnterprise AdminCreateUserRequestCustomerType = "enterprise"
+	AdminCreateUserRequestCustomerTypeGeneral    AdminCreateUserRequestCustomerType = "general"
+)
+
+// Valid indicates whether the value is a known member of the AdminCreateUserRequestCustomerType enum.
+func (e AdminCreateUserRequestCustomerType) Valid() bool {
+	switch e {
+	case AdminCreateUserRequestCustomerTypeEnterprise:
+		return true
+	case AdminCreateUserRequestCustomerTypeGeneral:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AdminSubscriptionStatus.
 const (
 	AdminSubscriptionStatusActive    AdminSubscriptionStatus = "active"
@@ -48,6 +66,42 @@ func (e AdminSubscriptionStatus) Valid() bool {
 	case AdminSubscriptionStatusCancelled:
 		return true
 	case AdminSubscriptionStatusExpired:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminUpdateUserRequestCustomerType.
+const (
+	AdminUpdateUserRequestCustomerTypeEnterprise AdminUpdateUserRequestCustomerType = "enterprise"
+	AdminUpdateUserRequestCustomerTypeGeneral    AdminUpdateUserRequestCustomerType = "general"
+)
+
+// Valid indicates whether the value is a known member of the AdminUpdateUserRequestCustomerType enum.
+func (e AdminUpdateUserRequestCustomerType) Valid() bool {
+	switch e {
+	case AdminUpdateUserRequestCustomerTypeEnterprise:
+		return true
+	case AdminUpdateUserRequestCustomerTypeGeneral:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminUserCustomerType.
+const (
+	AdminUserCustomerTypeEnterprise AdminUserCustomerType = "enterprise"
+	AdminUserCustomerTypeGeneral    AdminUserCustomerType = "general"
+)
+
+// Valid indicates whether the value is a known member of the AdminUserCustomerType enum.
+func (e AdminUserCustomerType) Valid() bool {
+	switch e {
+	case AdminUserCustomerTypeEnterprise:
+		return true
+	case AdminUserCustomerTypeGeneral:
 		return true
 	default:
 		return false
@@ -5001,6 +5055,24 @@ func (e GetUsageStatsTimeseriesParamsGranularity) Valid() bool {
 	}
 }
 
+// Defines values for ListUsersParamsCustomerType.
+const (
+	ListUsersParamsCustomerTypeEnterprise ListUsersParamsCustomerType = "enterprise"
+	ListUsersParamsCustomerTypeGeneral    ListUsersParamsCustomerType = "general"
+)
+
+// Valid indicates whether the value is a known member of the ListUsersParamsCustomerType enum.
+func (e ListUsersParamsCustomerType) Valid() bool {
+	switch e {
+	case ListUsersParamsCustomerTypeEnterprise:
+		return true
+	case ListUsersParamsCustomerTypeGeneral:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ListVendorsParamsStatus.
 const (
 	ListVendorsParamsStatusDisabled ListVendorsParamsStatus = "disabled"
@@ -5417,7 +5489,9 @@ type AdminCreateGroupRequest struct {
 // AdminCreateUserRequest 必须携带 Idempotency-Key；同键重放只创建一条。请求体没有 email 字段：
 // 管理员创建的用户 email 为 NULL。用户名冲突 409。
 type AdminCreateUserRequest struct {
-	DisplayName *string `json:"display_name,omitempty"`
+	// CustomerType 客户属性；缺省 general。仅用于筛选与统计，折扣规则绝不按它匹配。
+	CustomerType *AdminCreateUserRequestCustomerType `json:"customer_type,omitempty"`
+	DisplayName  *string                             `json:"display_name,omitempty"`
 
 	// Group 缺省 default。
 	Group    *string `json:"group,omitempty"`
@@ -5428,6 +5502,9 @@ type AdminCreateUserRequest struct {
 	Role     *UserRole `json:"role,omitempty"`
 	Username string    `json:"username"`
 }
+
+// AdminCreateUserRequestCustomerType 客户属性；缺省 general。仅用于筛选与统计，折扣规则绝不按它匹配。
+type AdminCreateUserRequestCustomerType string
 
 // AdminGroup defines model for AdminGroup.
 type AdminGroup struct {
@@ -5524,12 +5601,17 @@ type AdminUpdateGroupRequest struct {
 // POST /api/users/{id}/reset-password）。未知字段 403 field_not_writable。
 // role 变更会吊销该用户全部会话；不能修改自己的角色/状态/权限（400）。
 type AdminUpdateUserRequest struct {
-	DisplayName *string   `json:"display_name,omitempty"`
-	Group       *string   `json:"group,omitempty"`
-	Remark      *string   `json:"remark,omitempty"`
-	Role        *UserRole `json:"role,omitempty"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	// CustomerType 客户属性（general/enterprise）；不可为 null。
+	CustomerType *AdminUpdateUserRequestCustomerType `json:"customer_type,omitempty"`
+	DisplayName  *string                             `json:"display_name,omitempty"`
+	Group        *string                             `json:"group,omitempty"`
+	Remark       *string                             `json:"remark,omitempty"`
+	Role         *UserRole                           `json:"role,omitempty"`
+	UpdatedAt    time.Time                           `json:"updated_at"`
 }
+
+// AdminUpdateUserRequestCustomerType 客户属性（general/enterprise）；不可为 null。
+type AdminUpdateUserRequestCustomerType string
 
 // AdminUser 管理面用户投影。永不含口令哈希、TOTP 种子或备用码。admin_permissions
 // 为 null 表示 FULL（数据库 NULL）；空数组表示明确无任何权限——两者语义
@@ -5540,9 +5622,12 @@ type AdminUser struct {
 	AdminPermissions []PermissionGrant `json:"admin_permissions"`
 
 	// Balance 当前余额（credits 最小单位）。
-	Balance     int64     `json:"balance"`
-	CreatedAt   time.Time `json:"created_at"`
-	DisplayName *string   `json:"display_name,omitempty"`
+	Balance   int64     `json:"balance"`
+	CreatedAt time.Time `json:"created_at"`
+
+	// CustomerType 客户属性。仅用于筛选与统计，折扣规则绝不按它匹配。
+	CustomerType AdminUserCustomerType `json:"customer_type"`
+	DisplayName  *string               `json:"display_name,omitempty"`
 
 	// Email 管理员创建的用户可为 null（不绑定邮箱）。
 	Email              *openapi_types.Email `json:"email,omitempty"`
@@ -5561,6 +5646,9 @@ type AdminUser struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	Username  string    `json:"username"`
 }
+
+// AdminUserCustomerType 客户属性。仅用于筛选与统计，折扣规则绝不按它匹配。
+type AdminUserCustomerType string
 
 // AdminUserList GET /api/users 的 offset 分页信封。
 type AdminUserList struct {
@@ -13605,8 +13693,14 @@ type ListUsersParams struct {
 	Status   *UserStatus `form:"status,omitempty" json:"status,omitempty"`
 	Role     *UserRole   `form:"role,omitempty" json:"role,omitempty"`
 	Group    *string     `form:"group,omitempty" json:"group,omitempty"`
-	Sort     *string     `form:"sort,omitempty" json:"sort,omitempty"`
+
+	// CustomerType 按客户属性精确筛选；非法枚举 400。
+	CustomerType *ListUsersParamsCustomerType `form:"customer_type,omitempty" json:"customer_type,omitempty"`
+	Sort         *string                      `form:"sort,omitempty" json:"sort,omitempty"`
 }
+
+// ListUsersParamsCustomerType defines parameters for ListUsers.
+type ListUsersParamsCustomerType string
 
 // CreateUserParams defines parameters for CreateUser.
 type CreateUserParams struct {

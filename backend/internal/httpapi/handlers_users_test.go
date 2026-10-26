@@ -160,6 +160,10 @@ func (r *fakeAdminRepo) addUser(rec AdminUserRecord) *AdminUserRecord {
 	if rec.Group == "" {
 		rec.Group = "default"
 	}
+	// 与真实列一致：NOT NULL DEFAULT 'general'。
+	if rec.CustomerType == "" {
+		rec.CustomerType = "general"
+	}
 	rec.CreatedAt = r.tick()
 	rec.UpdatedAt = r.now
 	// 存入与返回各自的副本：调用方拿到的快照不能随后续写操作一起变化
@@ -253,6 +257,9 @@ func (r *fakeAdminRepo) ListUsers(_ context.Context, filter UserListFilter) ([]A
 		if filter.Group != "" && rec.Group != filter.Group {
 			continue
 		}
+		if filter.CustomerType != "" && rec.CustomerType != filter.CustomerType {
+			continue
+		}
 		if filter.Keyword != "" && !strings.Contains(strings.ToLower(rec.Username), strings.ToLower(filter.Keyword)) {
 			continue
 		}
@@ -294,6 +301,7 @@ func (r *fakeAdminRepo) CreateUser(_ context.Context, in AdminCreateUserInput) (
 		Status:           "enabled",
 		Balance:          0,
 		Group:            in.Group,
+		CustomerType:     in.CustomerType,
 		Remark:           in.Remark,
 		TOTPEnabled:      false,
 		CreatedAt:        r.tick(),
@@ -347,6 +355,9 @@ func (r *fakeAdminRepo) UpdateUser(_ context.Context, id int64, patch AdminUserP
 	}
 	if patch.RemarkSet {
 		rec.Remark = patch.Remark
+	}
+	if patch.CustomerType != nil {
+		rec.CustomerType = *patch.CustomerType
 	}
 	if patch.Role != nil && *patch.Role != rec.Role {
 		oldRole := rec.Role
@@ -1004,6 +1015,101 @@ func TestUsersCreateDefaultsAndValidation(t *testing.T) {
 	}
 	if len(perms) != 2 || perms[0] != rbac.PermUsersRead || perms[1] != rbac.PermLogsRead {
 		t.Fatalf("新 admin 权限 = %v，期望只读起步 [users:read logs:read]", perms)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// (b2) 客户属性 customer_type：仅用于筛选/统计，折扣规则绝不按它匹配
+// ---------------------------------------------------------------------------
+
+func TestCreateUserDefaultsCustomerTypeGeneral(t *testing.T) {
+	env := newAdminTestEnv(t)
+
+	rr := env.request(fullAdmin(), http.MethodPost, "/api/users",
+		map[string]any{"username": "bob", "password": "correct-horse-battery"})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d，期望 201（body=%q）", rr.Code, rr.Body.String())
+	}
+	if view := decodeUserView(t, rr); view.CustomerType != "general" {
+		t.Fatalf("customer_type = %q，期望 general", view.CustomerType)
+	}
+}
+
+func TestCreateUserRejectsUnknownCustomerType(t *testing.T) {
+	env := newAdminTestEnv(t)
+
+	rr := env.request(fullAdmin(), http.MethodPost, "/api/users", map[string]any{
+		"username": "bob", "password": "correct-horse-battery", "customer_type": "vip",
+	})
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	}
+	assertProblemFields(t, rr, "customer_type")
+	if env.repo.createCalls != 0 {
+		t.Fatalf("createCalls = %d，期望 0（校验失败不得落库）", env.repo.createCalls)
+	}
+}
+
+func TestUpdateUserChangesCustomerType(t *testing.T) {
+	env := newAdminTestEnv(t)
+	user := env.repo.addUser(AdminUserRecord{Username: "alice"})
+
+	rr := env.request(fullAdmin(), http.MethodPatch, fmt.Sprintf("/api/users/%d", user.ID),
+		map[string]any{"customer_type": "enterprise", "updated_at": user.UpdatedAt})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PATCH status = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+	}
+	if view := decodeUserView(t, rr); view.CustomerType != "enterprise" {
+		t.Fatalf("customer_type = %q，期望 enterprise", view.CustomerType)
+	}
+
+	rr = env.request(fullAdmin(), http.MethodGet, fmt.Sprintf("/api/users/%d", user.ID), nil)
+	if rr.Code != http.StatusOK || decodeUserView(t, rr).CustomerType != "enterprise" {
+		t.Fatalf("GET user status = %d（body=%q），期望 customer_type=enterprise", rr.Code, rr.Body.String())
+	}
+}
+
+func TestListUsersFiltersByCustomerType(t *testing.T) {
+	env := newAdminTestEnv(t)
+	env.repo.addUser(AdminUserRecord{Username: "alice", CustomerType: "general"})
+	env.repo.addUser(AdminUserRecord{Username: "bob", CustomerType: "enterprise"})
+
+	rr := env.request(fullAdmin(), http.MethodGet, "/api/users?customer_type=enterprise", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d，期望 200（body=%q）", rr.Code, rr.Body.String())
+	}
+	if got := env.repo.lastFilter.CustomerType; got != "enterprise" {
+		t.Fatalf("filter.customer_type = %q，期望 enterprise", got)
+	}
+	list := decodeAdminList(t, rr)
+	if list.Total != 1 || len(list.Items) != 1 || list.Items[0].Username != "bob" {
+		t.Fatalf("列表 = %+v，期望只回企业客户 bob", list)
+	}
+	if list.Items[0].CustomerType != "enterprise" {
+		t.Fatalf("customer_type = %q，期望 enterprise", list.Items[0].CustomerType)
+	}
+
+	// 非法枚举 → 400，而不是静默忽略筛选。
+	rr = env.request(fullAdmin(), http.MethodGet, "/api/users?customer_type=vip", nil)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("非法 customer_type status = %d，期望 400（body=%q）", rr.Code, rr.Body.String())
+	}
+}
+
+func TestUpdateUserRejectsUnknownCustomerType(t *testing.T) {
+	env := newAdminTestEnv(t)
+	user := env.repo.addUser(AdminUserRecord{Username: "alice"})
+
+	rr := env.request(fullAdmin(), http.MethodPatch, fmt.Sprintf("/api/users/%d", user.ID),
+		map[string]any{"customer_type": "vip", "updated_at": user.UpdatedAt})
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d，期望 422（body=%q）", rr.Code, rr.Body.String())
+	}
+	assertProblemFields(t, rr, "customer_type")
+
+	rr = env.request(fullAdmin(), http.MethodGet, fmt.Sprintf("/api/users/%d", user.ID), nil)
+	if rr.Code != http.StatusOK || decodeUserView(t, rr).CustomerType != "general" {
+		t.Fatalf("非法 PATCH 后 customer_type 被改写（status=%d body=%q）", rr.Code, rr.Body.String())
 	}
 }
 

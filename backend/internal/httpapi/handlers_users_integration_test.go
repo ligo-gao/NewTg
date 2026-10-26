@@ -710,3 +710,83 @@ func TestIntegrationAdminQuotaAdjustmentBindsParams(t *testing.T) {
 		t.Fatalf("admin_adjustment rows = %d，期望 1", rows)
 	}
 }
+
+// TestAdminUserCustomerTypeRoundTrip 证明 customer_type 真的落库并在列表/
+// 局部更新 SQL 中往返：创建缺省 general → PATCH enterprise → 按企业属性筛选命中。
+func TestAdminUserCustomerTypeRoundTrip(t *testing.T) {
+	env := newAdminIntegrationEnv(t)
+	username := "it" + uniqueAuthSuffix()
+
+	var createdID int64
+	t.Cleanup(func() { cleanupAdminIntegrationUser(t, env.db, createdID) })
+
+	rr := env.request(t, http.MethodPost, "/api/users",
+		map[string]any{"username": username, "password": "correct-horse-battery"}, "")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201 (body=%q)", rr.Code, rr.Body.String())
+	}
+	var created adminUserView
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created: %v", err)
+	}
+	createdID = created.ID
+	if created.CustomerType != customerTypeGeneral {
+		t.Fatalf("created customer_type = %q, want %q", created.CustomerType, customerTypeGeneral)
+	}
+
+	// 列表回读：缺省属性为 general。
+	rr = env.request(t, http.MethodGet, "/api/users?customer_type=general&keyword="+username, nil, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want 200 (body=%q)", rr.Code, rr.Body.String())
+	}
+	var list adminUserListView
+	if err := json.Unmarshal(rr.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if list.Total != 1 || len(list.Items) != 1 || list.Items[0].CustomerType != customerTypeGeneral {
+		t.Fatalf("general list = %+v, want the created user with customer_type=general", list)
+	}
+
+	// 局部更新为客户属性，并回读。
+	rr = env.request(t, http.MethodPatch, fmt.Sprintf("/api/users/%d", createdID),
+		map[string]any{"customer_type": customerTypeEnterprise, "updated_at": created.UpdatedAt}, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch status = %d, want 200 (body=%q)", rr.Code, rr.Body.String())
+	}
+	var patched adminUserView
+	if err := json.Unmarshal(rr.Body.Bytes(), &patched); err != nil {
+		t.Fatalf("decode patched: %v", err)
+	}
+	if patched.CustomerType != customerTypeEnterprise {
+		t.Fatalf("patched customer_type = %q, want %q", patched.CustomerType, customerTypeEnterprise)
+	}
+
+	// 按 enterprise 筛选应命中该用户，按 general 则不应命中。
+	rr = env.request(t, http.MethodGet, "/api/users?customer_type=enterprise&keyword="+username, nil, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("enterprise list status = %d, want 200 (body=%q)", rr.Code, rr.Body.String())
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode enterprise list: %v", err)
+	}
+	if list.Total != 1 || len(list.Items) != 1 || list.Items[0].ID != createdID {
+		t.Fatalf("enterprise list = %+v, want only user %d", list, createdID)
+	}
+
+	rr = env.request(t, http.MethodGet, "/api/users?customer_type=general&keyword="+username, nil, "")
+	if err := json.Unmarshal(rr.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode general list after patch: %v", err)
+	}
+	if list.Total != 0 || len(list.Items) != 0 {
+		t.Fatalf("general list after patch = %+v, want empty", list)
+	}
+
+	// 直查数据库，排除「只改了视图没落库」。
+	var stored string
+	if err := env.db.QueryRow(`SELECT customer_type FROM users WHERE id = $1`, createdID).Scan(&stored); err != nil {
+		t.Fatalf("read stored customer_type: %v", err)
+	}
+	if stored != customerTypeEnterprise {
+		t.Fatalf("stored customer_type = %q, want %q", stored, customerTypeEnterprise)
+	}
+}

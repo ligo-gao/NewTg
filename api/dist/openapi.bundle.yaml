@@ -2961,8 +2961,8 @@ paths:
       x-required-permission: users:read
       summary: 用户列表（分页 + 筛选 + 排序）
       description: |
-        keyword 匹配用户名/显示名/邮箱（最多 64 字符）；status/role/group
-        为精确筛选；sort 白名单 id|username|balance|created_at|updated_at，
+        keyword 匹配用户名/显示名/邮箱（最多 64 字符）；status/role/group/
+        customer_type 为精确筛选；sort 白名单 id|username|balance|created_at|updated_at，
         前缀 - 表示降序，默认 -created_at。非法枚举/排序列 400（不静默忽略）。
       security:
         - sessionCookie: []
@@ -2991,6 +2991,15 @@ paths:
           schema:
             type: string
             maxLength: 32
+        - name: customer_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - general
+              - enterprise
+          description: 按客户属性精确筛选；非法枚举 400。
         - name: sort
           in: query
           required: false
@@ -16964,6 +16973,7 @@ components:
         - status
         - balance
         - group
+        - customer_type
         - admin_permissions
         - totp_enabled
         - must_change_password
@@ -16999,6 +17009,12 @@ components:
           description: 当前余额（credits 最小单位）。
         group:
           type: string
+        customer_type:
+          type: string
+          enum:
+            - general
+            - enterprise
+          description: 客户属性。仅用于筛选与统计，折扣规则绝不按它匹配。
         admin_permissions:
           type: array
           items:
@@ -17055,6 +17071,13 @@ components:
         group:
           type: string
           description: 缺省 default。
+        customer_type:
+          type: string
+          enum:
+            - general
+            - enterprise
+          nullable: true
+          description: 客户属性；缺省 general。仅用于筛选与统计，折扣规则绝不按它匹配。
         password:
           type: string
           minLength: 8
@@ -17082,6 +17105,12 @@ components:
           nullable: true
         group:
           type: string
+        customer_type:
+          type: string
+          enum:
+            - general
+            - enterprise
+          description: 客户属性（general/enterprise）；不可为 null。
         remark:
           type: string
           maxLength: 255

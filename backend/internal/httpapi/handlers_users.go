@@ -98,6 +98,18 @@ const (
 	tempPasswordKeyPrefix = "newtg:temp_password:"
 )
 
+// 客户属性（users.customer_type）的冻结枚举。它只用于筛选与统计，
+// 折扣规则绝不按它匹配。
+const (
+	customerTypeGeneral    = "general"
+	customerTypeEnterprise = "enterprise"
+)
+
+// validCustomerType 判断客户属性是否落在冻结枚举内。
+func validCustomerType(value string) bool {
+	return value == customerTypeGeneral || value == customerTypeEnterprise
+}
+
 // 管理用户仓储的错误哨兵；HTTP 映射集中在 writeUserRepoError。
 var (
 	ErrAdminUserNotFound    = errors.New("httpapi: admin user not found")
@@ -127,6 +139,7 @@ type AdminUserRecord struct {
 	Status             string
 	Balance            int64
 	Group              string
+	CustomerType       string
 	AdminPermissions   json.RawMessage
 	TOTPEnabled        bool
 	MustChangePassword bool
@@ -139,13 +152,14 @@ type AdminUserRecord struct {
 // UserListFilter 是 GET /api/users 的查询条件。Sort 已归一化为
 // "<column>" 或 "-<column>"，列名白名单在 parseUserListFilter 冻结。
 type UserListFilter struct {
-	Keyword  string
-	Status   string
-	Role     string
-	Group    string
-	Page     int
-	PageSize int
-	Sort     string
+	Keyword      string
+	Status       string
+	Role         string
+	Group        string
+	CustomerType string
+	Page         int
+	PageSize     int
+	Sort         string
 }
 
 // AdminCreateUserInput 是 POST /api/users 的写侧入参。Email 刻意不存在：
@@ -155,6 +169,7 @@ type AdminCreateUserInput struct {
 	DisplayName      *string
 	Role             string
 	Group            string
+	CustomerType     string
 	PasswordHash     string
 	Remark           *string
 	AdminPermissions []string // nil → SQL NULL（仅 role=user 时使用）
@@ -166,6 +181,7 @@ type AdminUserPatch struct {
 	DisplayNameSet bool
 	DisplayName    *string
 	Group          *string
+	CustomerType   *string
 	RemarkSet      bool
 	Remark         *string
 	Role           *string
@@ -303,19 +319,21 @@ func NewUserHandlers(cfg UserHandlerConfig) (*UserHandlers, error) {
 
 func (h *UserHandlers) registerPolicies() {
 	h.authz.SetWritePolicy(adminUserCreateAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{
-		"username":     nil,
-		"display_name": nil,
-		"role":         nil,
-		"group":        nil,
-		"password":     nil,
-		"remark":       nil,
+		"username":      nil,
+		"display_name":  nil,
+		"role":          nil,
+		"group":         nil,
+		"customer_type": nil,
+		"password":      nil,
+		"remark":        nil,
 	}})
 	h.authz.SetWritePolicy(adminUserUpdateAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{
-		"display_name": nil,
-		"group":        nil,
-		"remark":       nil,
-		"role":         nil,
-		"updated_at":   nil,
+		"display_name":  nil,
+		"group":         nil,
+		"customer_type": nil,
+		"remark":        nil,
+		"role":          nil,
+		"updated_at":    nil,
 		// password 登记为叶子不是为了允许写：F-07-03 的验收要求提交该字段
 		// 返回 400（而不是字段层的 403）。放行到 handler 后立刻显式拒绝，
 		// password_hash/其它任何字段仍由字段层 403 兜底。
@@ -402,6 +420,7 @@ type adminUserView struct {
 	Status             string          `json:"status"`
 	Balance            int64           `json:"balance"`
 	Group              string          `json:"group"`
+	CustomerType       string          `json:"customer_type"`
 	AdminPermissions   json.RawMessage `json:"admin_permissions"` // null = FULL
 	TOTPEnabled        bool            `json:"totp_enabled"`
 	MustChangePassword bool            `json:"must_change_password"`
@@ -425,6 +444,7 @@ func newAdminUserView(rec AdminUserRecord) adminUserView {
 		Status:             rec.Status,
 		Balance:            rec.Balance,
 		Group:              rec.Group,
+		CustomerType:       rec.CustomerType,
 		AdminPermissions:   perms,
 		TOTPEnabled:        rec.TOTPEnabled,
 		MustChangePassword: rec.MustChangePassword,
@@ -516,6 +536,10 @@ func parseUserListFilter(r *http.Request) (UserListFilter, error) {
 	if utf8.RuneCountInString(filter.Group) > adminMaxGroupRunes {
 		return UserListFilter{}, errors.New("group is too long")
 	}
+	filter.CustomerType = strings.TrimSpace(q.Get("customer_type"))
+	if filter.CustomerType != "" && !validCustomerType(filter.CustomerType) {
+		return UserListFilter{}, errors.New("customer_type must be general or enterprise")
+	}
 	sort, ok := normalizeUserSort(q.Get("sort"))
 	if !ok {
 		return UserListFilter{}, errors.New("sort must be one of id, username, balance, created_at, updated_at (prefix - for descending)")
@@ -549,12 +573,13 @@ func normalizeUserSort(raw string) (string, bool) {
 // ---------------------------------------------------------------------------
 
 type adminCreateUserRequest struct {
-	Username    string  `json:"username"`
-	DisplayName *string `json:"display_name"`
-	Role        string  `json:"role"`
-	Group       string  `json:"group"`
-	Password    string  `json:"password"`
-	Remark      *string `json:"remark"`
+	Username     string  `json:"username"`
+	DisplayName  *string `json:"display_name"`
+	Role         string  `json:"role"`
+	Group        string  `json:"group"`
+	CustomerType *string `json:"customer_type"`
+	Password     string  `json:"password"`
+	Remark       *string `json:"remark"`
 }
 
 func (h *UserHandlers) handleCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -600,6 +625,18 @@ func (h *UserHandlers) handleCreateUser(w http.ResponseWriter, r *http.Request) 
 		writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request", "group is too long")
 		return
 	}
+	// 客户属性缺省为 general；显式非空值必须命中冻结枚举。422 + fields 是
+	// 管理面既有的字段校验口径（见 writeValidationProblem）。
+	customerType := customerTypeGeneral
+	if req.CustomerType != nil {
+		if value := strings.TrimSpace(*req.CustomerType); value != "" {
+			if !validCustomerType(value) {
+				writeValidationProblem(w, []string{"customer_type"})
+				return
+			}
+			customerType = value
+		}
+	}
 	if !auth.ValidatePasswordLength(req.Password) {
 		writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request",
 			fmt.Sprintf("password must be %d-%d characters", auth.PWDMinLen, auth.PWDMaxLen))
@@ -639,6 +676,7 @@ func (h *UserHandlers) handleCreateUser(w http.ResponseWriter, r *http.Request) 
 		DisplayName:      displayName,
 		Role:             role,
 		Group:            group,
+		CustomerType:     customerType,
 		PasswordHash:     passwordHash,
 		Remark:           remark,
 		AdminPermissions: permissions,
@@ -728,6 +766,19 @@ func (h *UserHandlers) handleUpdateUser(w http.ResponseWriter, r *http.Request) 
 		}
 		patch.Group = &group
 	}
+	if raw, present := body["customer_type"]; present {
+		var customerType string
+		if string(raw) == "null" || json.Unmarshal(raw, &customerType) != nil {
+			writeValidationProblem(w, []string{"customer_type"})
+			return
+		}
+		customerType = strings.TrimSpace(customerType)
+		if !validCustomerType(customerType) {
+			writeValidationProblem(w, []string{"customer_type"})
+			return
+		}
+		patch.CustomerType = &customerType
+	}
 	if raw, present := body["remark"]; present {
 		value, valid := decodeNullableText(raw)
 		if !valid {
@@ -766,7 +817,7 @@ func (h *UserHandlers) handleUpdateUser(w http.ResponseWriter, r *http.Request) 
 		}
 		patch.Role = &role
 	}
-	if !patch.DisplayNameSet && patch.Group == nil && !patch.RemarkSet && patch.Role == nil {
+	if !patch.DisplayNameSet && patch.Group == nil && patch.CustomerType == nil && !patch.RemarkSet && patch.Role == nil {
 		writeAdminProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request", "no fields to update")
 		return
 	}
@@ -1389,6 +1440,7 @@ func adminUserSnapshot(rec AdminUserRecord) map[string]any {
 		"status":               rec.Status,
 		"balance":              rec.Balance,
 		"group":                rec.Group,
+		"customer_type":        rec.CustomerType,
 		"totp_enabled":         rec.TOTPEnabled,
 		"must_change_password": rec.MustChangePassword,
 		"remark":               rec.Remark,
@@ -1632,7 +1684,7 @@ func defaultAdminPermissions() []string {
 
 // adminUserColumns 是 AdminUserRecord 的基础列序；token_count 由查询单独
 // 追加一列（列表/详情用相关子查询，写入路径用 0 占位）。
-const adminUserColumns = `id, username, display_name, email, role, status, balance, "group",
+const adminUserColumns = `id, username, display_name, email, role, status, balance, "group", customer_type,
 	admin_permissions, totp_enabled, must_change_password, remark, created_at, updated_at`
 
 // SQLAdminUserRepo 是 AdminUserRepo 的 PostgreSQL 实现（database/sql + pgx stdlib）。
@@ -1647,7 +1699,7 @@ func scanAdminUserRecord(row rowScanner) (AdminUserRecord, error) {
 		perms []byte
 	)
 	err := row.Scan(&rec.ID, &rec.Username, &rec.DisplayName, &rec.Email, &rec.Role,
-		&rec.Status, &rec.Balance, &rec.Group, &perms, &rec.TOTPEnabled,
+		&rec.Status, &rec.Balance, &rec.Group, &rec.CustomerType, &perms, &rec.TOTPEnabled,
 		&rec.MustChangePassword, &rec.Remark, &rec.CreatedAt, &rec.UpdatedAt,
 		&rec.TokenCount)
 	if err != nil {
@@ -1715,11 +1767,17 @@ func (r *SQLAdminUserRepo) CreateUser(ctx context.Context, in AdminCreateUserInp
 		}
 		permissions = string(raw)
 	}
+	// 列是 NOT NULL DEFAULT 'general'，但 struct 没有 default: 标签（A1 规则），
+	// 空值会被显式写成 '' 而违反 CHECK；仓储层兜底为 general，让绕过 HTTP
+	// 入参默认值的直接调用同样合法。
+	if in.CustomerType == "" {
+		in.CustomerType = customerTypeGeneral
+	}
 	row := r.db.QueryRowContext(ctx, `
-		INSERT INTO users (username, display_name, role, "group", password_hash, remark, admin_permissions)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+		INSERT INTO users (username, display_name, role, "group", customer_type, password_hash, remark, admin_permissions)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
 		RETURNING `+adminUserColumns+`, 0::bigint`,
-		in.Username, in.DisplayName, in.Role, in.Group, in.PasswordHash, in.Remark, permissions)
+		in.Username, in.DisplayName, in.Role, in.Group, in.CustomerType, in.PasswordHash, in.Remark, permissions)
 	rec, err := scanAdminUserRecord(row)
 	if isUniqueViolation(err) {
 		return AdminUserRecord{}, ErrAdminDuplicate
@@ -1745,6 +1803,9 @@ func (r *SQLAdminUserRepo) UpdateUser(ctx context.Context, id int64, patch Admin
 	}
 	if patch.Group != nil {
 		add(`"group" = $%d`, *patch.Group)
+	}
+	if patch.CustomerType != nil {
+		add("customer_type = $%d", *patch.CustomerType)
 	}
 	if patch.RemarkSet {
 		add("remark = $%d", patch.Remark)
@@ -2189,6 +2250,10 @@ func adminUserWhere(f UserListFilter) (string, []any) {
 	if f.Group != "" {
 		args = append(args, f.Group)
 		clauses = append(clauses, fmt.Sprintf(`"group" = $%d`, len(args)))
+	}
+	if f.CustomerType != "" {
+		args = append(args, f.CustomerType)
+		clauses = append(clauses, fmt.Sprintf("customer_type = $%d", len(args)))
 	}
 	if len(clauses) == 0 {
 		return "", args

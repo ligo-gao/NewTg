@@ -24,11 +24,15 @@ type User struct {
 	EmailVerifiedAt *time.Time `gorm:"column:email_verified_at"`
 	// PasswordHash 可为 NULL：OAuth 即时注册用户没有口令，只能走 OAuth
 	// 或之后自行设密码（platform-01 §1 / R-01-11），故用指针区分「无口令」。
-	PasswordHash            *string `gorm:"column:password_hash"`
-	Role                    string  `gorm:"column:role"`
-	Status                  string  `gorm:"column:status"`
-	Balance                 int64   `gorm:"column:balance"`
-	Group                   string  `gorm:"column:group"` // SQL 标识符引用由 dialector 负责，tag 只写列名（platform-04 §3.7 V8）
+	PasswordHash *string `gorm:"column:password_hash"`
+	Role         string  `gorm:"column:role"`
+	Status       string  `gorm:"column:status"`
+	Balance      int64   `gorm:"column:balance"`
+	Group        string  `gorm:"column:group"` // SQL 标识符引用由 dialector 负责，tag 只写列名（platform-04 §3.7 V8）
+	// CustomerType 是客户属性（general/enterprise），只用于筛选与统计；
+	// 折扣规则绝不按它匹配。按 A1 规则不写 default: 标签（DB 侧已是
+	// NOT NULL DEFAULT 'general'），GORM 写入路径需显式给出合法值。
+	CustomerType            string  `gorm:"column:customer_type"`
 	AdminPermissions        []byte  `gorm:"column:admin_permissions"`
 	TOTPSecretEnc           []byte  `gorm:"column:totp_secret"` // DB 列名 totp_secret；内容是 AES-256-GCM 密文（§1）
 	TOTPEnabled             bool    `gorm:"column:totp_enabled"`

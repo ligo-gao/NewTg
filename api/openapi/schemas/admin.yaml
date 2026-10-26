@@ -547,6 +547,7 @@ schemas:
       - status
       - balance
       - group
+      - customer_type
       - admin_permissions
       - totp_enabled
       - must_change_password
@@ -582,6 +583,10 @@ schemas:
         description: 当前余额（credits 最小单位）。
       group:
         type: string
+      customer_type:
+        type: string
+        enum: [general, enterprise]
+        description: 客户属性。仅用于筛选与统计，折扣规则绝不按它匹配。
       admin_permissions:
         type: array
         items:
@@ -672,6 +677,11 @@ schemas:
       group:
         type: string
         description: 缺省 default。
+      customer_type:
+        type: string
+        enum: [general, enterprise]
+        nullable: true
+        description: 客户属性；缺省 general。仅用于筛选与统计，折扣规则绝不按它匹配。
       password:
         type: string
         minLength: 8
@@ -700,6 +710,10 @@ schemas:
         nullable: true
       group:
         type: string
+      customer_type:
+        type: string
+        enum: [general, enterprise]
+        description: 客户属性（general/enterprise）；不可为 null。
       remark:
         type: string
         maxLength: 255

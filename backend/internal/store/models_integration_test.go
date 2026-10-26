@@ -30,12 +30,13 @@ func TestModelZeroValuesPersist(t *testing.T) {
 	suffix := randomSuffix(t)
 
 	user := User{
-		Username:    "zero" + suffix,
-		Role:        "user",
-		Status:      "enabled",
-		Group:       "default",
-		Language:    "en",
-		RecordIPLog: false, // 显式 false 必须原样落库，不能被 default:true 覆盖
+		Username:     "zero" + suffix,
+		Role:         "user",
+		Status:       "enabled",
+		Group:        "default",
+		CustomerType: "general", // NOT NULL CHECK 列没有 default: 标签，GORM 显式写入零值 ''
+		Language:     "en",
+		RecordIPLog:  false, // 显式 false 必须原样落库，不能被 default:true 覆盖
 	}
 	if err := gormDB.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
