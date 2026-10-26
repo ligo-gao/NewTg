@@ -15,6 +15,7 @@ import {
 } from './api'
 import { ChannelTypeSelect } from './channel-type-select'
 import { FetchModelsDialog } from './fetch-models-dialog'
+import { ModelProfileWizard } from './model-profile-wizard'
 import { Sheet } from './ui/sheet'
 import {
   REQUIRED_BASE_URL_TYPES,
@@ -22,6 +23,7 @@ import {
   type Channel,
   type ChannelCredentials,
   type CreateChannelInput,
+  type FetchChannelModelsInput,
   type UpdateChannelInput,
 } from './types'
 
@@ -335,6 +337,8 @@ function ChannelForm({
   const [credentialNotice, setCredentialNotice] = useState<string | null>(null)
   const [modelInput, setModelInput] = useState('')
   const [fetchModelsOpen, setFetchModelsOpen] = useState(false)
+  // 模型分区可以在「表单」与「补全模型档案向导」之间切换；Sheet 与标题不变。
+  const [view, setView] = useState<'form' | 'wizard'>('form')
   const [showApiKey, setShowApiKey] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   // The optimistic-concurrency baseline. It starts as the loaded channel and
@@ -710,8 +714,34 @@ function ChannelForm({
     }
   }
 
+  const probeRequest: FetchChannelModelsInput = {
+    channel_id: mode === 'edit' ? channel?.id : undefined,
+    type: form.type,
+    base_url: form.baseUrl.trim() === '' ? undefined : form.baseUrl.trim(),
+    credentials: {
+      api_key: form.apiKey.trim() === '' ? undefined : form.apiKey.trim(),
+      deployment:
+        form.deployment.trim() === '' ? undefined : form.deployment.trim(),
+      api_version:
+        form.apiVersion.trim() === '' ? undefined : form.apiVersion.trim(),
+    },
+  }
+
   return (
     <>
+    {view === 'wizard' ? (
+      <ModelProfileWizard
+        request={probeRequest}
+        channelModels={form.models}
+        onBack={() => {
+          setView('form')
+        }}
+        onApplyModels={(models) => {
+          patch('models', models)
+          setModelInput('')
+        }}
+      />
+    ) : (
     <form
       id={formId}
       onSubmit={(event) => {
@@ -944,13 +974,22 @@ function ChannelForm({
           <h3 className="text-card-title font-semibold text-ink-1">
             {t('common.channels.form.modelsSection')}
           </h3>
-          <Button
-            variant="secondary"
-            onClick={() => setFetchModelsOpen(true)}
-            disabled={submitting}
-          >
-            {t('common.channels.form.fetchModels')}
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="secondary"
+              onClick={() => setFetchModelsOpen(true)}
+              disabled={submitting}
+            >
+              {t('common.channels.form.fetchModels')}
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => setView('wizard')}
+              disabled={submitting}
+            >
+              {t('common.channels.profileWizard.entry')}
+            </Button>
+          </div>
         </div>
 
         <Field id={idFor('models')} label={t('common.channels.form.models')} error={errorFor('models')}>
@@ -1180,21 +1219,11 @@ function ChannelForm({
         </Button>
       </div>
     </form>
+    )}
     <FetchModelsDialog
       open={fetchModelsOpen}
       onOpenChange={setFetchModelsOpen}
-      request={{
-        channel_id: mode === 'edit' ? channel?.id : undefined,
-        type: form.type,
-        base_url: form.baseUrl.trim() === '' ? undefined : form.baseUrl.trim(),
-        credentials: {
-          api_key: form.apiKey.trim() === '' ? undefined : form.apiKey.trim(),
-          deployment:
-            form.deployment.trim() === '' ? undefined : form.deployment.trim(),
-          api_version:
-            form.apiVersion.trim() === '' ? undefined : form.apiVersion.trim(),
-        },
-      }}
+      request={probeRequest}
       existingModels={form.models}
       onApply={(models) => {
         patch('models', models)
