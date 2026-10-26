@@ -16,20 +16,21 @@ import type { TranslateFn } from '@/shared/lib/i18n-context'
 import { useMediaQuery } from '@/shared/lib/use-media-query'
 import { useToastStore } from '@/shared/ui/toast'
 
-import {
-  formatMs,
-  formatSamples,
-  formatTPS,
-} from './format'
+import { formatMs } from './format'
 import { ModelDetail } from './model-detail'
 import { MAX_COMPARE, type ModelsRange, type ModelsView } from './params'
-import type { ModelEntry, ModelPerformance, PerfSource } from './performance'
+import type { ModelEntry, ModelPerformance } from './performance'
 import { formatRmb } from './price'
-import { monogram, uniqueCapabilityNames, type CapabilitySlot } from './taxonomy'
+import type { CapabilitySlot } from './taxonomy'
 
 export interface RegisterProps {
   entries: readonly ModelEntry[]
   view: ModelsView
+  /**
+   * 窄屏（≤760px）由页面按媒体查询判定：表格在这个宽度无法阅读，视图无条件
+   * 落到卡片，地址栏里的 `view` 仍保持用户原来的选择。
+   */
+  narrow: boolean
   /** 指标窗口；展开行把它带进读数块标题。 */
   range: ModelsRange
   compareIds: readonly string[]
@@ -41,7 +42,10 @@ export interface RegisterProps {
   onCall: (entry: ModelEntry) => void
 }
 
-/** 视图切换宽度的唯一来源：1440px 以下表格放不下，统一落到卡片。 */
+/**
+ * 表格自身的宽度门槛：1440px 以下表格放不下，统一落到卡片。更窄的 760px
+ * 由页面通过 `narrow` 判定并强制卡片（见 `Register`）。
+ */
 const WIDE_QUERY = '(min-width: 1440px)'
 
 interface RowActions {
@@ -62,12 +66,6 @@ function displayNameOf(entry: ModelEntry): string {
   return entry.card.display_name === '' ? entry.card.model_id : entry.card.display_name
 }
 
-function sourceLabel(source: PerfSource, t: TranslateFn): string {
-  if (source === 'test') return t('public.models.source.test')
-  if (source === 'usage') return t('public.models.source.usage')
-  return t('public.models.source.none')
-}
-
 /**
  * 成功率的唯一措辞来源：键本身带 `{rate}` 占位符，必须传值；没有读数时
  * 用专门的 `success_none`，不能把字面 `{rate}` 或 `0%` 渲染出去。
@@ -77,17 +75,6 @@ function successLabel(perf: ModelPerformance, t: TranslateFn): string {
   return t('public.models.table.success', {
     rate: `${(perf.successRate * 100).toFixed(2)}%`,
   })
-}
-
-function Monogram({ entry }: { entry: ModelEntry }) {
-  return (
-    <span
-      className="monogram flex size-7 shrink-0 items-center justify-center border border-border-default bg-surface-subtle font-mono text-badge text-ink-2"
-      aria-hidden="true"
-    >
-      {monogram(entry.card.vendor, displayNameOf(entry))}
-    </span>
-  )
 }
 
 /**
@@ -176,36 +163,6 @@ function ModelIdentity({ entry }: { entry: ModelEntry }) {
   )
 }
 
-function CapabilityBarcode({
-  entry,
-  slots,
-}: {
-  entry: ModelEntry
-  slots: readonly CapabilitySlot[]
-}) {
-  const { t } = useI18n()
-  const names = uniqueCapabilityNames(entry.card.capabilities)
-  const present = new Set(names.map((value) => value.toLowerCase()))
-  const label = names.join(t('public.models.list_separator'))
-
-  return (
-    <div
-      className="barcode flex h-4 items-center gap-0.5"
-      role={label === '' ? undefined : 'img'}
-      aria-label={label}
-      title={label}
-    >
-      {slots.map((slot) => (
-        <i
-          key={slot.value}
-          aria-hidden="true"
-          className={present.has(slot.value) ? 'on' : ''}
-        />
-      ))}
-    </div>
-  )
-}
-
 /**
  * 首字延迟格：只有真实存在的 P95 才写副行；读数缺失时整格是 `—`。
  * 非 chat 模型只有端到端延迟，必须带上口径标签，免得被读成首字。
@@ -245,14 +202,17 @@ function PriceCell({ entry }: { entry: ModelEntry }) {
   )
 }
 
+/** 吞吐的唯一口径：固定一位小数；缺失或非法值 `—`（表格与卡片共用）。 */
+function tpsText(tps: number | null): string {
+  return tps === null || !Number.isFinite(tps) || tps < 0
+    ? '—'
+    : `${tps.toFixed(1)} t/s`
+}
+
 function TpsCell({ perf }: { perf: ModelPerformance }) {
-  const value =
-    perf.tps === null || !Number.isFinite(perf.tps) || perf.tps < 0
-      ? '—'
-      : `${perf.tps.toFixed(1)} t/s`
   return (
     <span className="tps-cell metric font-mono text-meta tabular-nums text-ink-1">
-      {value}
+      {tpsText(perf.tps)}
     </span>
   )
 }
@@ -315,29 +275,6 @@ function CompareCheckbox({
       onChange={() => onToggleCompare(entry.card.model_id)}
       onClick={(event) => event.stopPropagation()}
     />
-  )
-}
-
-function CallButton({
-  entry,
-  onCall,
-}: {
-  entry: ModelEntry
-  onCall: (entry: ModelEntry) => void
-}) {
-  const { t } = useI18n()
-  return (
-    <button
-      type="button"
-      className="call-btn inline-flex min-h-7 items-center justify-center border border-border-default px-2 text-badge leading-none text-ink-2 hover:border-brand hover:bg-brand-subtle hover:text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
-      aria-label={`${t('public.models.table.call')} ${displayNameOf(entry)}`}
-      onClick={(event) => {
-        event.stopPropagation()
-        onCall(entry)
-      }}
-    >
-      {t('public.models.table.call')}
-    </button>
   )
 }
 
@@ -561,72 +498,131 @@ function ModelTable({
   )
 }
 
+/**
+ * 卡片：演示稿 cardView 的结构——对比勾选与名称在最上，档案副行、能力 chip、
+ * 三格读数（首字 P50 / 输出吞吐 / 输入价），底行是最大输出与「详情」。
+ * 读数与表格共用同一套格式函数，两种视图永远不会对同一个数字给出不同写法。
+ */
 function ModelCard({ entry, actions }: { entry: ModelEntry; actions: RowActions }) {
   const { t, locale } = useI18n()
-  const id = entry.card.model_id
+  const { card, perf } = entry
+  const id = card.model_id
+  const name = displayNameOf(entry)
   const expanded = actions.expandedId === id
   const checked = actions.compareIds.includes(id)
   const full = !checked && actions.compareIds.length >= MAX_COMPARE
 
+  const context =
+    card.context_length === null
+      ? null
+      : formatContextTokens(card.context_length, locale)
+  // 副行按「有哪段写哪段」拼装；两段都没有时才退回档案提示。
+  const profileParts: string[] = []
+  if (card.vendor !== '') profileParts.push(card.vendor)
+  if (context !== null) {
+    profileParts.push(t('public.pricing.context', { value: context }))
+  }
+  const output =
+    card.max_output === null
+      ? null
+      : formatContextTokens(card.max_output, locale)
+  const latencyLabel = t(
+    perf.measure === 'ttft'
+      ? 'public.models.detail.ttft_p50'
+      : 'public.models.detail.latency_p50',
+  )
+
   return (
-    <li className="card min-w-0 bg-surface-card p-3.5">
+    <li className="card flex min-w-0 flex-col gap-3 rounded-lg border border-border-default bg-surface-card p-4">
       <div className="card-top flex items-start gap-2.5">
-        <Monogram entry={entry} />
-        <div className="card-id min-w-0 flex-1">
-          <div className="model-name text-meta font-semibold leading-5 text-ink-1">
-            {displayNameOf(entry)}
-          </div>
-          <div className="model-id break-all font-mono text-badge text-ink-3">
-            {entry.card.model_id}
-          </div>
-          {entry.card.vendor !== '' ? (
-            <div className="text-badge text-ink-3">{entry.card.vendor}</div>
-          ) : null}
-        </div>
         <CompareCheckbox
           entry={entry}
           checked={checked}
           disabled={full}
           onToggleCompare={actions.onToggleCompare}
         />
-      </div>
-
-      <div className="mt-2.5">
-        <CapabilityBarcode entry={entry} slots={actions.slots} />
-      </div>
-
-      <div className="card-foot mt-2.5 flex flex-wrap items-center justify-between gap-2 border-t border-border-hairline pt-2.5">
-        <span className="text-badge tabular-nums text-ink-3">
-          {t('public.models.table.latency')} {formatMs(entry.perf.p50)}
-        </span>
-        <span className="text-badge tabular-nums text-ink-3">
-          {t('public.models.table.speed')} {formatTPS(entry.perf.tps)}
-        </span>
-        <span className="text-badge tabular-nums text-ink-3">
-          {successLabel(entry.perf, t)}
-        </span>
-        <div className="card-actions flex shrink-0 items-center gap-1.5">
-          <CallButton entry={entry} onCall={actions.onCall} />
-          <ExpandButton
-            entry={entry}
-            expanded={expanded}
-            onToggleExpand={actions.onToggleExpand}
-          />
+        <div className="card-id min-w-0 flex-1">
+          <div className="model-name truncate text-meta font-semibold leading-5 text-ink-1">
+            {name}
+          </div>
+          {name === id ? null : (
+            <div className="model-id break-all font-mono text-badge text-ink-3">
+              {id}
+            </div>
+          )}
+          <div className="card-subline text-badge leading-4 text-ink-3">
+            {profileParts.length === 0
+              ? t('public.models.table.profile_missing')
+              : profileParts.join(' · ')}
+          </div>
         </div>
-        <span className="flex basis-full flex-wrap items-center gap-x-1 text-badge text-ink-3">
-          <span>{sourceLabel(entry.perf.source, t)}</span>
-          {entry.perf.source === 'usage' ? (
-            <span>{t('public.models.source.average')}</span>
-          ) : null}
-          {entry.perf.lowSample ? (
-            <span className="text-warning">
-              {t('public.models.source.low_sample')}
+      </div>
+
+      {card.capabilities.length === 0 ? null : (
+        <div className="card-chips flex flex-wrap gap-1">
+          {card.capabilities.map((capability) => (
+            <span
+              className="chip border border-border-default px-1.5 text-badge leading-4 text-ink-2"
+              key={capability}
+            >
+              {capability}
             </span>
-          ) : null}
-          <span className="tabular-nums">
-            {formatSamples(entry.perf.samples, locale)}
+          ))}
+        </div>
+      )}
+
+      <div className="card-metrics grid grid-cols-3 gap-2.5 border-t border-border-hairline pt-3">
+        <div className="card-metric">
+          <span className="card-metric-value block font-mono text-meta tabular-nums text-ink-1">
+            {formatMs(perf.p50)}
           </span>
+          <span className="card-metric-label block text-badge text-ink-3">
+            {latencyLabel}
+          </span>
+        </div>
+        <div className="card-metric">
+          <span className="card-metric-value block font-mono text-meta tabular-nums text-ink-1">
+            {tpsText(perf.tps)}
+          </span>
+          <span className="card-metric-label block text-badge text-ink-3">
+            {t('public.models.detail.tps')}
+          </span>
+        </div>
+        <div className="card-metric card-price">
+          <span className="card-metric-value block font-mono text-meta tabular-nums text-ink-1">
+            {formatRmb(entry.price.input, locale) ?? '—'}
+          </span>
+          <span className="card-metric-label block text-badge text-ink-3">
+            {t('public.models.compare.price_input')}
+          </span>
+        </div>
+      </div>
+
+      <div className="card-foot flex items-center justify-between gap-2.5 border-t border-border-hairline pt-3">
+        <span className="card-output text-badge tabular-nums text-ink-3">
+          {output === null
+            ? '—'
+            : `${output} ${t('public.models.detail.max_output')}`}
         </span>
+        <button
+          type="button"
+          className="card-detail-btn inline-flex min-h-7 items-center justify-center border border-border-default px-2 text-badge leading-none text-ink-2 hover:border-brand hover:bg-brand-subtle hover:text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          aria-expanded={expanded}
+          aria-controls={detailIdOf(id)}
+          aria-label={`${
+            expanded
+              ? t('public.models.table.collapse')
+              : t('public.models.table.expand')
+          } ${name}`}
+          onClick={(event) => {
+            event.stopPropagation()
+            actions.onToggleExpand(id)
+          }}
+        >
+          {expanded
+            ? t('public.models.table.collapse')
+            : t('public.models.table.expand')}
+        </button>
       </div>
 
       {expanded ? (
@@ -683,6 +679,7 @@ function CompareTray({
 export function Register({
   entries,
   view,
+  narrow,
   range,
   compareIds,
   slots,
@@ -693,7 +690,8 @@ export function Register({
   onCall,
 }: RegisterProps) {
   const wide = useMediaQuery(WIDE_QUERY)
-  const effectiveView: ModelsView = wide ? view : 'cards'
+  // 窄屏是布局强制，优先于地址栏里的 view；表格在 ≤760px 无法阅读。
+  const effectiveView: ModelsView = narrow || !wide ? 'cards' : view
   const actions: RowActions = {
     expandedId,
     range,
@@ -711,7 +709,7 @@ export function Register({
       {effectiveView === 'table' ? (
         <ModelTable entries={entries} actions={actions} />
       ) : (
-        <ul className="cards grid gap-px">
+        <ul className="cards grid gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
           {entries.map((entry) => (
             <ModelCard key={entry.card.model_id} entry={entry} actions={actions} />
           ))}

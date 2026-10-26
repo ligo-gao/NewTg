@@ -2,7 +2,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import { useState } from 'react'
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { PublicModelCard } from '@/features/public/pricing/api'
 import { renderWithProviders } from '@/test-support/providers'
@@ -141,8 +141,34 @@ type ChangeHandler = (next: ModelsSearch, replace?: boolean) => void
 
 const server = setupServer()
 
+const originalMatchMedia = window.matchMedia
+const NARROW_QUERY = '(max-width: 760px)'
+
+/**
+ * jsdom ships no `matchMedia`, and `useMediaQuery` treats a missing API as
+ * "wide". These cases assert both sides of the 760px gate, so install a stub
+ * that reports a single viewport: narrow matches only the card query, wide
+ * matches the min-width queries instead.
+ */
+function mockViewport(narrow: boolean): void {
+  window.matchMedia = ((query: string) => ({
+    matches: query.includes(NARROW_QUERY) ? narrow : !narrow,
+    media: query,
+    onchange: null,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    addListener: () => undefined,
+    removeListener: () => undefined,
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia
+}
+
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
-afterEach(() => server.resetHandlers())
+beforeEach(() => mockViewport(false))
+afterEach(() => {
+  server.resetHandlers()
+  window.matchMedia = originalMatchMedia
+})
 afterAll(() => server.close())
 
 interface ServeOptions {
@@ -278,6 +304,45 @@ describe('ModelsPage', () => {
     expect(
       await within(averaged as HTMLElement).findByText('1,204 calls'),
     ).toBeTruthy()
+  })
+
+  it('forces cards below 760px and never writes the forced view to the URL', async () => {
+    mockViewport(true)
+    serveCatalog()
+    const onChange = vi.fn<ChangeHandler>()
+    await renderPage({ ...BASE, view: 'table' }, onChange)
+    await screen.findByText('GPT-5')
+
+    // The URL still says table; the layout overrides it with cards.
+    expect(screen.queryByRole('table')).toBeNull()
+    expect(document.querySelectorAll('.cards > li')).toHaveLength(2)
+
+    // The toggle still renders, but reports the view that is actually shown.
+    expect(
+      screen
+        .getByRole('button', { name: 'Cards' })
+        .getAttribute('aria-pressed'),
+    ).toBe('true')
+    expect(
+      screen
+        .getByRole('button', { name: 'Table' })
+        .getAttribute('aria-pressed'),
+    ).toBe('false')
+
+    // A view-only click cannot persist the forced view.
+    fireEvent.click(screen.getByRole('button', { name: 'Table' }))
+    expect(onChange).not.toHaveBeenCalled()
+    expect(
+      screen
+        .getByRole('button', { name: 'Cards' })
+        .getAttribute('aria-pressed'),
+    ).toBe('true')
+
+    // Any other toolbar change keeps the URL's own view, never the forced one.
+    fireEvent.click(screen.getByRole('button', { name: 'Last 24h' }))
+    const last = onChange.mock.lastCall?.[0] as ModelsSearch
+    expect(last.range).toBe('24h')
+    expect(last.view).toBe('table')
   })
 
   it('keeps the list when metrics fail and shows the unavailable banner', async () => {

@@ -152,6 +152,7 @@ function props(overrides: Partial<RegisterProps> = {}): RegisterProps {
   return {
     entries: [TESTED, AVERAGED, EMPTY],
     view: 'table',
+    narrow: false,
     range: '7d',
     compareIds: [],
     slots: SLOTS,
@@ -498,11 +499,91 @@ describe('Register: cards view', () => {
     expect(screen.getAllByRole('listitem')).toHaveLength(3)
   })
 
-  it('renders the success rate without leaking the key placeholder', async () => {
+  it('renders three card metrics: first token, throughput and input price', async () => {
     await renderRegister({ view: 'cards' })
 
-    expect(screen.getByText('Success 99.20%')).toBeTruthy()
-    expect(screen.getByText('No success rate yet')).toBeTruthy()
+    const cards = screen.getAllByRole('listitem')
+    const tested = cards[0] as HTMLElement
+    expect(within(tested).getByText('First token P50')).toBeTruthy()
+    expect(within(tested).getByText('350 ms')).toBeTruthy()
+    expect(within(tested).getByText('Output throughput')).toBeTruthy()
+    // One decimal, exactly like the table's throughput cell.
+    expect(within(tested).getByText('42.5 t/s')).toBeTruthy()
+    expect(within(tested).getByText('Input price / M')).toBeTruthy()
+    expect(within(tested).getByText('¥0.06')).toBeTruthy()
+
+    // A non-chat reading keeps its end-to-end name instead of posing as TTFT.
+    const averaged = cards[1] as HTMLElement
+    expect(within(averaged).getByText('End-to-end P50')).toBeTruthy()
+    expect(within(averaged).getByText('30.0 t/s')).toBeTruthy()
+
+    // Missing readings are three separate em dashes, never a fake zero.
+    const missing = cards[2] as HTMLElement
+    expect(
+      [...missing.querySelectorAll('.card-metric-value')].map(
+        (node) => node.textContent,
+      ),
+    ).toEqual(['—', '—', '—'])
+  })
+
+  it('forces the card view when narrow even if the stored view is table', async () => {
+    await renderRegister({ view: 'table', narrow: true })
+
+    expect(screen.queryByRole('table')).toBeNull()
+    expect(screen.getAllByRole('listitem')).toHaveLength(3)
+  })
+
+  it('falls back to the profile note on a card without a profile', async () => {
+    const bare: ModelEntry = {
+      ...EMPTY,
+      card: card({ model_id: 'acme/bare' }),
+    }
+    await renderRegister({ view: 'cards', entries: [bare] })
+
+    const item = screen.getByRole('listitem')
+    expect(within(item).getByText('Profile not filled in')).toBeTruthy()
+    expect(within(item).queryByText('acme')).toBeNull()
+  })
+
+  it('keeps the compare checkbox and the detail button on a card', async () => {
+    serveDetails()
+    const onToggleCompare = vi.fn()
+    const onToggleExpand = vi.fn()
+    await renderRegister({
+      view: 'cards',
+      expandedId: TESTED.card.model_id,
+      onToggleCompare,
+      onToggleExpand,
+    })
+
+    const item = screen.getAllByRole('listitem')[0] as HTMLElement
+    const checkbox = within(item).getByRole('checkbox', {
+      name: 'Compare GPT-5',
+    })
+    fireEvent.click(checkbox)
+    expect(onToggleCompare).toHaveBeenCalledWith('openai/gpt-5')
+
+    // The foot's detail button expands the card in place, not in a dialog.
+    const details = within(item).getByRole('button', {
+      name: 'Hide details GPT-5',
+    })
+    expect(details.getAttribute('aria-expanded')).toBe('true')
+    expect(details.getAttribute('aria-controls')).toBe(
+      'model-detail-openai/gpt-5',
+    )
+    expect(document.getElementById('model-detail-openai/gpt-5')).toBeTruthy()
+    fireEvent.click(details)
+    expect(onToggleExpand).toHaveBeenCalledWith('openai/gpt-5')
+  })
+
+  it('shows the success rate inside the expanded card, never a raw placeholder', async () => {
+    serveDetails()
+    await renderRegister({ view: 'cards', expandedId: AVERAGED.card.model_id })
+
+    const detail = document.getElementById('model-detail-acme/embed')
+    expect(detail).toBeTruthy()
+    expect(within(detail as HTMLElement).getByText('Success rate')).toBeTruthy()
+    expect(within(detail as HTMLElement).getByText('98.00%')).toBeTruthy()
     expect(screen.queryByText(/\{rate\}/)).toBeNull()
   })
 })
