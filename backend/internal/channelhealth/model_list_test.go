@@ -156,6 +156,40 @@ func TestModelListerGeminiStripsPrefixAndPaginates(t *testing.T) {
 	}
 }
 
+// OpenAI 兼容目录里的 created 是 Unix 秒，转成 YYYY-MM-DD 作为「发布日期」；
+// 上游没给 created 时保持空字符串，绝不猜测。
+func TestListDetailedOpenAICompatibleMetadata(t *testing.T) {
+	body := `{"data":[
+		{"id":"gpt-4o","created":1715644800,"owned_by":"openai"},
+		{"id":"text-embedding-3-small","created":1706140800},
+		{"id":"no-created"}
+	]}`
+	infos, err := parseOpenAIModels([]byte(body))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(infos) != 3 {
+		t.Fatalf("len = %d", len(infos))
+	}
+	if infos[0].ReleasedAt != "2024-05-14" {
+		t.Fatalf("released_at = %q", infos[0].ReleasedAt)
+	}
+	if infos[1].ReleasedAt != "2024-01-25" {
+		t.Fatalf("released_at = %q", infos[1].ReleasedAt)
+	}
+	if infos[2].ReleasedAt != "" {
+		t.Fatalf("missing created should stay empty, got %q", infos[2].ReleasedAt)
+	}
+	for _, info := range infos {
+		if info.Source != "openai_models" {
+			t.Fatalf("source = %q", info.Source)
+		}
+		if len(info.Endpoints) != 1 || info.Endpoints[0] != "chat.completions" {
+			t.Fatalf("endpoints = %v", info.Endpoints)
+		}
+	}
+}
+
 func TestModelListerRejectsUnsupportedTypes(t *testing.T) {
 	lister := NewModelLister()
 	_, err := lister.List(context.Background(), ModelListRequest{

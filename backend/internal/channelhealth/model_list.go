@@ -34,6 +34,35 @@ type ModelListRequest struct {
 	APIVersion  string
 }
 
+// ModelInfo 是上游模型目录里的一条模型事实。所有字段只来自上游声明，
+// 不做推断：上游没给的保持零值（ReleasedAt 为空串、指针为 nil），由调用方
+// 决定如何展示与合并。
+type ModelInfo struct {
+	ID            string
+	DisplayName   string
+	Description   string
+	ContextLength *int64
+	MaxOutput     *int64
+	ReleasedAt    string   // "YYYY-MM-DD"；上游没给就是 ""
+	Endpoints     []string // 公开端点枚举：chat.completions / messages / embeddings / ... / generateContent
+	Source        string   // "openai_models" | "anthropic_models" | "gemini_models"
+}
+
+// 目录来源，与上游协议一一对应。
+const (
+	modelSourceOpenAI    = "openai_models"
+	modelSourceAnthropic = "anthropic_models"
+	modelSourceGemini    = "gemini_models"
+)
+
+// 协议默认公开端点。OpenAI 兼容目录不区分模型用途，统一按对话补全处理；
+// 更细的端点拆分留到后续任务。
+const (
+	endpointChatCompletions = "chat.completions"
+	endpointMessages        = "messages"
+	endpointGenerateContent = "generateContent"
+)
+
 // ModelLister 调用上游的模型目录接口。HTTPS 与 HTTP 都允许（渠道 base_url
 // 本身支持自建网关），但沿用测试探针的“不跟随重定向”策略，避免凭据被
 // 重定向到其他主机。
@@ -60,6 +89,20 @@ const (
 
 // List 返回上游声明的模型 ID（已去重、保持上游顺序）。
 func (l *ModelLister) List(ctx context.Context, req ModelListRequest) ([]string, error) {
+	infos, err := l.ListDetailed(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(infos))
+	for _, info := range infos {
+		ids = append(ids, info.ID)
+	}
+	return ids, nil
+}
+
+// ListDetailed 返回上游声明的模型及其可信元数据（已按 ID 去重、保持上游
+// 顺序）。
+func (l *ModelLister) ListDetailed(ctx context.Context, req ModelListRequest) ([]ModelInfo, error) {
 	key := strings.TrimSpace(req.APIKey)
 	if key == "" {
 		return nil, fmt.Errorf("%w: api key is required", ErrModelListConfig)
@@ -147,7 +190,7 @@ func (l *ModelLister) listAzure(
 	ctx context.Context,
 	req ModelListRequest,
 	base, key string,
-) ([]string, error) {
+) ([]ModelInfo, error) {
 	if strings.TrimSpace(req.APIVersion) == "" {
 		return nil, fmt.Errorf("%w: api_version is required for azure", ErrModelListConfig)
 	}
@@ -165,7 +208,7 @@ func (l *ModelLister) listOpenAICompatible(
 	ctx context.Context,
 	req ModelListRequest,
 	base, key string,
-) ([]string, error) {
+) ([]ModelInfo, error) {
 	if req.ChannelType == contract.ChannelTypeCustom {
 		return nil, fmt.Errorf("%w: custom base URLs cannot be used to discover models", ErrModelListUnsupported)
 	}
@@ -222,7 +265,7 @@ func (l *ModelLister) listAnthropic(
 	ctx context.Context,
 	req ModelListRequest,
 	base, key string,
-) ([]string, error) {
+) ([]ModelInfo, error) {
 	prefix := ""
 	if req.ChannelType == contract.ChannelTypeMoonshot && !strings.HasSuffix(base, "/anthropic") {
 		prefix = "/anthropic"
@@ -233,7 +276,7 @@ func (l *ModelLister) listAnthropic(
 	headers.Set("anthropic-version", "2023-06-01")
 	headers.Set("Accept", "application/json")
 
-	models := make([]string, 0, 64)
+	infos := make([]ModelInfo, 0, 64)
 	afterID := ""
 	for page := 0; page < modelListMaxPages; page++ {
 		query := url.Values{}
@@ -260,20 +303,24 @@ func (l *ModelLister) listAnthropic(
 			return nil, fmt.Errorf("channel models: invalid anthropic response: %w", err)
 		}
 		for _, item := range payload.Data {
-			models = append(models, item.ID)
+			infos = append(infos, ModelInfo{
+				ID:        item.ID,
+				Endpoints: []string{endpointMessages},
+				Source:    modelSourceAnthropic,
+			})
 		}
 		if !payload.HasMore || payload.LastID == "" {
 			break
 		}
 		afterID = payload.LastID
 	}
-	return normalizeModels(models), nil
+	return normalizeModelInfos(infos), nil
 }
 
 func (l *ModelLister) listGemini(
 	ctx context.Context,
 	base, key string,
-) ([]string, error) {
+) ([]ModelInfo, error) {
 	if !strings.HasSuffix(base, "/v1beta") && !strings.HasSuffix(base, "/v1") {
 		base += "/v1beta"
 	}
@@ -281,7 +328,7 @@ func (l *ModelLister) listGemini(
 	headers.Set("x-goog-api-key", key)
 	headers.Set("Accept", "application/json")
 
-	models := make([]string, 0, 64)
+	infos := make([]ModelInfo, 0, 64)
 	pageToken := ""
 	for page := 0; page < modelListMaxPages; page++ {
 		path := base + "/models?pageSize=1000"
@@ -302,14 +349,18 @@ func (l *ModelLister) listGemini(
 			return nil, fmt.Errorf("channel models: invalid gemini response: %w", err)
 		}
 		for _, item := range payload.Models {
-			models = append(models, strings.TrimPrefix(item.Name, "models/"))
+			infos = append(infos, ModelInfo{
+				ID:        strings.TrimPrefix(item.Name, "models/"),
+				Endpoints: []string{endpointGenerateContent},
+				Source:    modelSourceGemini,
+			})
 		}
 		if payload.NextPageToken == "" {
 			break
 		}
 		pageToken = payload.NextPageToken
 	}
-	return normalizeModels(models), nil
+	return normalizeModelInfos(infos), nil
 }
 
 func (l *ModelLister) get(ctx context.Context, requestURL string, headers http.Header) ([]byte, error) {
@@ -337,50 +388,72 @@ func (l *ModelLister) get(ctx context.Context, requestURL string, headers http.H
 	return body, nil
 }
 
-func parseOpenAIModels(body []byte) ([]string, error) {
+func parseOpenAIModels(body []byte) ([]ModelInfo, error) {
 	var payload struct {
 		Data []struct {
-			ID string `json:"id"`
+			ID      string `json:"id"`
+			Created int64  `json:"created"`
 		} `json:"data"`
 		Models []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
+			ID      string `json:"id"`
+			Name    string `json:"name"`
+			Created int64  `json:"created"`
 		} `json:"models"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("channel models: invalid models response: %w", err)
 	}
-	models := make([]string, 0, len(payload.Data)+len(payload.Models))
+	infos := make([]ModelInfo, 0, len(payload.Data)+len(payload.Models))
 	for _, item := range payload.Data {
-		models = append(models, item.ID)
+		infos = append(infos, newOpenAIModelInfo(item.ID, item.Created))
 	}
 	for _, item := range payload.Models {
-		if item.ID != "" {
-			models = append(models, item.ID)
-		} else {
-			models = append(models, item.Name)
+		id := item.ID
+		if id == "" {
+			id = item.Name
 		}
+		infos = append(infos, newOpenAIModelInfo(id, item.Created))
 	}
-	normalized := normalizeModels(models)
+	normalized := normalizeModelInfos(infos)
 	if len(normalized) == 0 {
 		return nil, errors.New("channel models: upstream returned no models")
 	}
 	return normalized, nil
 }
 
-func normalizeModels(models []string) []string {
-	out := make([]string, 0, len(models))
-	seen := make(map[string]struct{}, len(models))
-	for _, raw := range models {
-		model := strings.TrimSpace(raw)
-		if model == "" {
+// newOpenAIModelInfo 把一条 OpenAI 兼容目录条目转成 ModelInfo。该协议只
+// 提供 id 与 created，其余字段留零值。
+func newOpenAIModelInfo(id string, created int64) ModelInfo {
+	return ModelInfo{
+		ID:         id,
+		ReleasedAt: dateFromUnixSeconds(created),
+		Endpoints:  []string{endpointChatCompletions},
+		Source:     modelSourceOpenAI,
+	}
+}
+
+// dateFromUnixSeconds 把上游的 Unix 秒转成 "YYYY-MM-DD"；0 与负数视为
+// 「上游没给」，返回空串。
+func dateFromUnixSeconds(sec int64) string {
+	if sec <= 0 {
+		return ""
+	}
+	return time.Unix(sec, 0).UTC().Format("2006-01-02")
+}
+
+func normalizeModelInfos(infos []ModelInfo) []ModelInfo {
+	out := make([]ModelInfo, 0, len(infos))
+	seen := make(map[string]struct{}, len(infos))
+	for _, info := range infos {
+		info.ID = strings.TrimSpace(info.ID)
+		if info.ID == "" {
 			continue
 		}
-		if _, ok := seen[model]; ok {
+		if _, ok := seen[info.ID]; ok {
 			continue
 		}
-		seen[model] = struct{}{}
-		out = append(out, model)
+		seen[info.ID] = struct{}{}
+		out = append(out, info)
 		if len(out) >= modelListMaxItems {
 			break
 		}
