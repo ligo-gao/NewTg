@@ -839,6 +839,7 @@ func (s *Session) Terminate(fact contract.UsageFact) (err error) {
 	// T5：forcedCost 非 nil 时价格已在提交期冻结（任务计价表达式），不得
 	// 重新解析——跳过整段快照刷新与定价求值，只做资金差额收敛。
 	var cost int64
+	rawKnown := true
 	if s.forcedCost != nil {
 		cost = *s.forcedCost
 	} else {
@@ -853,7 +854,7 @@ func (s *Session) Terminate(fact contract.UsageFact) (err error) {
 		// 上游格式事实（只读派生元信息）：Claude 语义 = 缓存读是独立维度。
 		// usage_logs.other.usage_semantic 的生产写者（R-63 相邻的 T9 项）。
 		s.noteUsageSemanticFromFactLocked(snap, fact.Usage)
-		cost = s.actualCostLocked(snap, fact)
+		cost, rawKnown = s.actualCostLocked(snap, fact)
 	}
 
 	// §3.17.2 的计费口径（控制端裁决 I1）：演示账号的中继请求照常写
@@ -864,6 +865,13 @@ func (s *Session) Terminate(fact contract.UsageFact) (err error) {
 		return s.terminateDemoExemptLocked(ctx, fact, cost, st)
 	}
 
+	// §5.3：折扣只应用在**原始成本**上，且只应用一次。求值失败时成本已是折后
+	// 的预扣额（rawKnown=false），再打折会二次让利。
+	rawCost := cost
+	if rawKnown {
+		cost = ApplyDiscount(cost, s.discount)
+	}
+
 	preDeducted := s.preConsumed
 	if preDeducted == 0 && st.Held > 0 {
 		// 内存值缺失（例如会话被重建）时以数据库 hold 为准。
@@ -871,11 +879,15 @@ func (s *Session) Terminate(fact contract.UsageFact) (err error) {
 	}
 	refunded := max(preDeducted+s.consumed-cost, 0)
 
+	originalCost, discountRate, discountTarget := s.ledgerDiscount(rawCost, cost, rawKnown)
 	outcome := SettlementOutcome{
-		Cost:        cost,
-		PreDeducted: preDeducted,
-		Refunded:    refunded,
-		Status:      UsageLogStatusSuccess,
+		Cost:           cost,
+		PreDeducted:    preDeducted,
+		Refunded:       refunded,
+		Status:         UsageLogStatusSuccess,
+		OriginalCost:   originalCost,
+		DiscountRate:   discountRate,
+		DiscountTarget: discountTarget,
 	}
 
 	// I3：无 hold 且需要补扣时，这笔钱没有任何 worker 可回收的 hold 锚点。
@@ -1480,26 +1492,36 @@ func (s *Session) adjustTokenToCostLocked(ctx context.Context, cost int64) {
 	s.tokenDeducted = cost
 }
 
-// actualCostLocked 按真实用量计算最终应扣总额。
+// actualCostLocked 按真实用量计算最终应扣总额；第二返回值表示该金额是否为
+// **未打折的原始成本**（rawKnown）。
 //
 // 失败行为（billing-03 §5.6 / billing-00 §7.5）：
 //   - 表达式求值/编译失败 → **保留**已预扣与已增量扣减的额度（保守方向，
 //     防止「表达式写错 → 免费白送」），不是退款；
 //   - 完全无计费用量 → 配额 0，由多退少补释放 hold。
-func (s *Session) actualCostLocked(snap *contract.PriceSnapshot, fact contract.UsageFact) int64 {
+//
+// rawKnown 只在回退到 estimatedQuota（预扣阶段的**折前**估算额）时为 true：
+// preConsumed+consumed 已由 Reserve/ChargeIncrement 打过折，结算不得再折一次；
+// estimatedQuota 仍是原始估算额，必须应用冻结折扣（CF-2：trusted 旁路没有
+// hold，也没有增量，求值失败时会直接落到这一路）。
+func (s *Session) actualCostLocked(snap *contract.PriceSnapshot, fact contract.UsageFact) (int64, bool) {
 	if snap == nil {
-		return 0
+		return 0, true
 	}
 	// 只有模型级 FreeModel 事实在结算时直接短路为 0。**不信任预扣阶段的
 	// s.freeModel 分类**（R-40）：若估算为 0 导致误判，结算必须仍按真实
 	// 用量与真实价格求值；真正零价的模型 ComputeQuota 自身会返回 0
 	// （Ratio 全零价 / PerCall 单价 0 / 恒零表达式）。
 	if snap.Price.FreeModel {
-		return 0
+		return 0, true
 	}
 	usedVars, err := s.usedVarsForLocked(snap)
 	if err != nil {
-		return s.keepPreConsumedCostLocked()
+		// 求值失败：preConsumed+consumed 已是折后口径（Reserve/ChargeIncrement
+		// 打过折），再打折就是二次让利；只有回退到 estimatedQuota（原始估算额）
+		// 时才是未打折成本。
+		rawKnown := s.preConsumed+s.consumed == 0
+		return s.keepPreConsumedCostLocked(), rawKnown
 	}
 	// 即使 Usage 为空也必须走表达式求值（C1）：`image_count * 10000`、常量
 	// 表达式、按次价等「与 usage 无关」的计费项仍可能产生费用。空 usage 的
@@ -1515,12 +1537,13 @@ func (s *Session) actualCostLocked(snap *contract.PriceSnapshot, fact contract.U
 		// 「用饱和值完成结算，同时把钳制标记落日志」（billing-00 §7.3）。
 		// 首个非 nil 标记胜出，写入 rc.QuotaClamp（billing-07 §4.2）。
 		s.noteQuotaClamp(clamp)
-		return cost
+		return cost, true
 	}
 	if err != nil || cost < 0 {
-		return s.keepPreConsumedCostLocked()
+		rawKnown := s.preConsumed+s.consumed == 0
+		return s.keepPreConsumedCostLocked(), rawKnown
 	}
-	return cost
+	return cost, true
 }
 
 // noteQuotaClamp 记录首个钳制事件；日志层在写 usage_logs 前读取它

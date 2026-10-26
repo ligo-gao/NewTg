@@ -719,6 +719,7 @@ func TestSaturateNilLogsDB(t *testing.T) {
 func TestSaturateOtherPartitions(t *testing.T) {
 	row, err := buildUsageLogRow(testUsageFact(), testRelayContext(), SettlementOutcome{
 		Cost: 10, Status: UsageLogStatusSuccess,
+		OriginalCost: 13, DiscountRate: 0.8, DiscountTarget: "user:7",
 	}, false)
 	if err != nil {
 		t.Fatalf("buildUsageLogRow: %v", err)
@@ -766,7 +767,9 @@ func TestSaturateOtherPartitions(t *testing.T) {
 		t.Fatal("M3 不写 audit_info 分区")
 	}
 
-	// 折扣/路径/映射/资金来源等 public 键。
+	// 折扣/路径/映射/资金来源等 public 键。折扣事实来自 SettlementOutcome
+	// （上面的 outcome 传入 OriginalCost/DiscountRate/DiscountTarget），
+	// RelayContext.Discount 不再是数据来源。
 	if got := other["applied_discount"]; got != 0.8 {
 		t.Fatalf("applied_discount = %v, want 0.8", got)
 	}
@@ -809,24 +812,29 @@ func TestSaturateOtherPartitions(t *testing.T) {
 	assertNoEstimatedKeys(t, other, "other")
 }
 
-// TestSaturateOtherNoDiscountForZeroRate 钉死已知契约缺口的行为：
-// RelayContext 只有 Discount float64，rate=0 与未命中无法区分，故只记录
-// 0<rate<1；任何情况下都不得凭空写出 discount_target。
-func TestSaturateOtherNoDiscountForZeroRate(t *testing.T) {
-	rc := testRelayContext()
-	rc.Discount = 0
-	other := buildUsageLogOther(rc, "gpt-4o", sql.NullInt64{}, SettlementOutcome{}, false, nil)
-	if _, ok := other["applied_discount"]; ok {
-		t.Fatal("rate=0 不得凭零值写入 applied_discount")
+// TestSaturateOtherZeroRateWritesFreeDiscount 钉死 rate=0 是**确定的**全免：
+// 写 applied_discount=0 与 discount_target，但 R1 规定不写 original_cost
+// （0 是让利结果，无法反推原价）。
+func TestSaturateOtherZeroRateWritesFreeDiscount(t *testing.T) {
+	other := buildUsageLogOther(testRelayContext(), "gpt-4o", sql.NullInt64{},
+		SettlementOutcome{DiscountRate: 0, DiscountTarget: "user:7"}, false, nil)
+	if got, ok := other["applied_discount"]; !ok || got != float64(0) {
+		t.Fatalf("applied_discount = %v (present=%v), want 0（全免必须写 0）", got, ok)
 	}
-	if _, ok := other["discount_target"]; ok {
-		t.Fatal("契约无 DiscountTarget 字段，不得凭空写入 discount_target")
+	if got := other["discount_target"]; got != "user:7" {
+		t.Fatalf("discount_target = %v, want user:7（0%% 可区分于未命中）", got)
+	}
+	if _, ok := other["original_cost"]; ok {
+		t.Fatal("rate=0 不得写 original_cost（R1）")
 	}
 
-	rc.Discount = 0.75
-	other = buildUsageLogOther(rc, "gpt-4o", sql.NullInt64{}, SettlementOutcome{}, false, nil)
-	if got := other["applied_discount"]; got != 0.75 {
-		t.Fatalf("applied_discount = %v, want 0.75", got)
+	// 未命中（零值 outcome，即使 rc.Discount 非零）不得写任何折扣键。
+	other = buildUsageLogOther(testRelayContext(), "gpt-4o", sql.NullInt64{},
+		SettlementOutcome{}, false, nil)
+	for _, key := range []string{"original_cost", "applied_discount", "discount_target"} {
+		if _, ok := other[key]; ok {
+			t.Fatalf("未命中不得写 %q", key)
+		}
 	}
 }
 

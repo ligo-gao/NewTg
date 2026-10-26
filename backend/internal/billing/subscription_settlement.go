@@ -140,10 +140,12 @@ func (s *Session) terminateSubscriptionLocked(ctx context.Context, fact contract
 
 	already := s.preConsumed + s.consumed
 	cost := already
+	rawKnown := false
 	if s.forcedCost != nil {
 		// T5：任务计价表达式在提交期冻结，结算只读该成本，不重新解析定价
 		// （订阅路径同样不得按当前配置重算）。
 		cost = *s.forcedCost
+		rawKnown = true
 	} else if !emptyUsageFact(fact) {
 		// N3：结算必须使用最终选中分组的快照。
 		if err := s.refreshSnapshotForGroupLocked(ctx); err != nil {
@@ -156,7 +158,15 @@ func (s *Session) terminateSubscriptionLocked(ctx context.Context, fact contract
 			return err
 		}
 		s.noteUsageSemanticFromFactLocked(snap, fact.Usage)
-		cost = s.actualCostLocked(snap, fact)
+		cost, rawKnown = s.actualCostLocked(snap, fact)
+	}
+
+	// §5.3：与钱包路径同口径——折扣只应用在原始成本上，且只应用一次。
+	// 空 fact 与求值失败时 cost 已是折后的已扣额（rawKnown=false），
+	// 再打折会二次让利。
+	rawCost := cost
+	if rawKnown {
+		cost = ApplyDiscount(cost, s.discount)
 	}
 
 	delta := cost - already
@@ -203,6 +213,7 @@ func (s *Session) terminateSubscriptionLocked(ctx context.Context, fact contract
 	if already > cost {
 		refunded = already - cost
 	}
+	originalCost, discountRate, discountTarget := s.ledgerDiscount(rawCost, cost, rawKnown)
 	outcome := SettlementOutcome{
 		Cost:                    cost,
 		PreDeducted:             s.preConsumed,
@@ -217,6 +228,9 @@ func (s *Session) terminateSubscriptionLocked(ctx context.Context, fact contract
 		SubscriptionTotal:       settle.AmountTotal,
 		SubscriptionUsed:        settle.AmountUsed,
 		BillingPreference:       s.billingPreferenceTextLocked(),
+		OriginalCost:            originalCost,
+		DiscountRate:            discountRate,
+		DiscountTarget:          discountTarget,
 	}
 	if s.engine.saturator != nil {
 		if err := s.engine.saturator.Saturate(ctx, &fact, s.rc, outcome); err != nil {

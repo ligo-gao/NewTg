@@ -830,8 +830,8 @@ func usageField(fact *contract.UsageFact, pick func(*contract.Usage) int64) int6
 //
 // 本任务只写有可靠来源的键，不臆造字段：
 //   - public 顶层平铺：request_path / frt / upstream_model_name /
-//     is_model_mapped / applied_discount / billing_source /
-//     usage_semantic / billing_mode / expr_b64；
+//     is_model_mapped / original_cost / applied_discount / discount_target /
+//     billing_source / usage_semantic / billing_mode / expr_b64；
 //   - 订阅来源成功日志额外写 billing_preference 与 subscription_* 快照
 //     （billing-08 §5.3）：所有值来自结算结果，不做二次查询；
 //   - admin_info：quota_saturation（4 键 op/kind/original/clamped）、
@@ -844,11 +844,11 @@ func usageField(fact *contract.UsageFact, pick func(*contract.Usage) int64) int6
 // **禁止 estimated_* 键**（billing-00 §11、billing-07 §6.9）：估算值在结果
 // 缺失时复用同名键，不引入新前缀。本函数不写任何 estimated_ 前缀键。
 //
-// 【已知契约缺口】contract.RelayContext 只有 Discount float64，没有
-// DiscountTarget 字段（billing-99 R-5）。因此日志只能记录 0<rate<1 的
-// applied_discount；rate=0 的合法全免与「未命中」在上下文里无法区分，
-// discount_target 也无处取值。该缺口登记在 task-6-report，待契约补字段后
-// 由本函数补写（billing-04 §2.6 要求的两个 public 键）。
+// 【折扣键】original_cost / applied_discount / discount_target 全部来自
+// SettlementOutcome（spec §4.4），不读 RelayContext.Discount：未命中时三者
+// 均为零值（一个键都不写）；rate=0 的合法全免由非空 DiscountTarget 与
+// Rate=0 明确表达，与未命中可区分；original_cost 只在 >0 时写（R1：全免
+// 无法反推原价）。
 // rawUsage 为 true 且 usageRaw 非空时，把原始 usage JSON 写进 admin_info
 // （非管理员视图会整体剥离该分区，billing-07 §7.2）。
 func buildUsageLogOther(rc *contract.RelayContext,
@@ -915,10 +915,14 @@ func buildUsageLogOther(rc *contract.RelayContext,
 		setPublicKey(other, "wallet_quota_deducted", int64(0))
 	}
 
-	// 折扣日志：0<rate<1 才可判定为「命中且未全免」；rate=0 与零值无法
-	// 区分（见上方契约缺口注释），不在本函数猜测。
-	if rc.Discount > 0 && rc.Discount < 1 && !math.IsNaN(rc.Discount) {
-		setPublicKey(other, "applied_discount", rc.Discount)
+	// 折扣事实来自 SettlementOutcome（spec §4.4）：命中且 rate<1 才写。
+	// rate=0 是全免：写 0 与目标，但不写 original_cost（无法反推，R1）。
+	if outcome.DiscountTarget != "" && !math.IsNaN(outcome.DiscountRate) && outcome.DiscountRate < 1 {
+		if outcome.OriginalCost > 0 {
+			setPublicKey(other, "original_cost", outcome.OriginalCost)
+		}
+		setPublicKey(other, "applied_discount", outcome.DiscountRate)
+		setPublicKey(other, "discount_target", outcome.DiscountTarget)
 	}
 
 	if snap := rc.PriceSnapshot; snap != nil {

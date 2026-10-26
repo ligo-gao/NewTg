@@ -87,6 +87,14 @@ type SettlementOutcome struct {
 	// 只在订阅来源时写 billing_preference；钱包路径保持既有日志口径不变。
 	BillingPreference string
 
+	// 客户折扣事实（spec §4.4）。三者全零值 = 未命中，日志层不写三个折扣键
+	// （original_cost / applied_discount / discount_target）。
+	// Rate=0 + Target 非空是确定的「全免」，与未命中可区分；此时 OriginalCost
+	// 恒为 0（R1：0 是让利结果，无法反推原价）。
+	OriginalCost   int64   // original_cost：折前原始成本；未知或全免时为 0
+	DiscountRate   float64 // applied_discount：实收比例（0..1）
+	DiscountTarget string  // discount_target：命中规则的作用域标识（如 user:7）
+
 	ErrorClass   string
 	ErrorMessage string
 }

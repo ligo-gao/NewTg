@@ -32,9 +32,10 @@ import (
 // 在调用 ResolveDiscount 之前过滤：本函数只收到「已经按用户、时间、启用
 // 状态筛过」的候选规则，因此不再做用户匹配。`user:` 前缀在这里**保持
 // fail-closed**（未命中），绝不把它当通配符——否则任一用户的规则都会命中
-// 所有人。T9 的配置层必须在预扣与结算两侧应用同一份冻结折扣，并把
-// applied_discount / discount_target 写入 usage_logs.other（见 task-6-report
-// 的契约缺口：RelayContext 尚无 DiscountTarget 字段）。
+// 所有人。配置层在预扣时解析一次并冻结到会话；结算侧复用同一份冻结折扣，
+// 由 SettlementOutcome 携带 original_cost / applied_discount /
+// discount_target 写入 usage_logs.other——折扣事实来自结算结果，不依赖
+// RelayContext 字段。
 type DiscountTarget struct {
 	Model   string
 	Group   string
