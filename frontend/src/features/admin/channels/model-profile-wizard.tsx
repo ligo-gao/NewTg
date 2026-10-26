@@ -164,9 +164,13 @@ type WriteAction = 'create' | 'update'
 /**
  * 确定性失败的 4xx 重试必然再失败（典型：Vertex 风格 id 含 `@`，行内又改不了
  * id），只有超时、限流与服务端错误值得重试。
+ *
+ * status 0 是 `apiClient` 对断网 / 连接重置 / 离线的归一化结果（`api/errors.ts`
+ * 与 `api/client.ts` 把 fetch 的 TypeError 也包成 ApiError），没有状态码可判，
+ * 重试是唯一出路 —— 不能按 4xx 处理。
  */
 function isRetryableStatus(status: number): boolean {
-  return status === 408 || status === 429 || status >= 500
+  return status === 0 || status === 408 || status === 429 || status >= 500
 }
 
 interface WriteFailure {

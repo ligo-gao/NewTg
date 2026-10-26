@@ -1038,6 +1038,37 @@ describe('ModelProfileWizard row confirmation and write-back', () => {
     ).toBe(true)
   })
 
+  it('offers retry when the write fails offline (no status code)', async () => {
+    const user = userEvent.setup()
+    mockFetch.mockResolvedValue({
+      models: ['alpha-model'],
+      entries: [entry({ id: 'alpha-model' })],
+    })
+    mockCatalog([])
+    // `apiClient` wraps a transport failure as ApiError(status: 0) — the retry
+    // policy must not treat it like a deterministic 4xx.
+    mockPost.mockRejectedValue(
+      new ApiError({
+        status: 0,
+        type: 'https://newtg.dev/problems/offline',
+        title: 'Network request failed',
+        kind: 'offline',
+      }),
+    )
+
+    renderWizard()
+
+    await screen.findByText('alpha-model')
+    await goToConfirmAndSubmit(user)
+
+    expect(await screen.findByText('Failed 1')).toBeTruthy()
+    expect(
+      (screen.getByRole('button', {
+        name: 'Retry failed rows only',
+      }) as HTMLButtonElement).disabled,
+    ).toBe(false)
+  })
+
   it('flags an invalid upstream model name on step 1 and never writes it', async () => {
     const user = userEvent.setup()
     mockFetch.mockResolvedValue({
