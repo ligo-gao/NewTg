@@ -197,8 +197,33 @@ export interface FetchChannelModelsInput {
   }
 }
 
+/**
+ * 一次上游模型探测返回的逐模型事实（POST /api/channels/fetch-models）。
+ *
+ * 与 `models` 一一对应；空字段表示上游没给，绝不猜测。`capabilities` /
+ * `modalities` / `parameters` / `knowledge_cutoff` 不在响应里——它们只能由
+ * 管理员在向导里填写，绝不能从模型名推断。
+ */
+export interface FetchChannelModelEntry {
+  id: string
+  display_name: string
+  description: string
+  context_length: number | null
+  max_output: number | null
+  released_at: string
+  /** `publicEndpointMapping` 的 8 个公开枚举值之一。 */
+  endpoints: string[]
+  vendor_suggestion: string
+  facts_source: string
+}
+
 export interface FetchChannelModelsResponse {
   models: string[]
+  /**
+   * 旧后端没有这个字段，消费方必须按 `[]` 兜底（见 `response.entries ??
+   * response.models.map(...)`）。字段缺失与空数组同义。
+   */
+  entries?: FetchChannelModelEntry[]
 }
 
 export interface ChannelTestInput {

@@ -1,0 +1,443 @@
+/**
+ * 模型档案向导的纯数据层（Task 4）。
+ *
+ * 这层只做「上游事实 + 管理员默认值 → model_meta 写入体」的转换：不渲染、
+ * 不发请求、不读全局状态，便于单测。UI 在 Task 5/6。
+ *
+ * 重要约束：能力 / 模态 / 参数 / 知识截止 *只能* 来自管理员输入或向导默认
+ * 值。探针响应（`FetchChannelModelEntry`）没有这些字段，因此这里绝不从
+ * 模型名或供应商推断它们。
+ */
+import type { components } from '@/api/schema'
+
+import type { FetchChannelModelEntry } from './types'
+
+type ModelMeta = components['schemas']['ModelMeta']
+type ModelMetaCreateRequest = components['schemas']['ModelMetaCreateRequest']
+type ModelMetaUpdateRequest = components['schemas']['ModelMetaUpdateRequest']
+type Method = ModelMeta['endpoints'][string][number]
+type Capability = ModelMeta['capabilities'][number]
+type Modality = ModelMeta['modalities'][number]
+type ParameterType = ModelMeta['parameters'][number]['type']
+
+/**
+ * 公开端点枚举，顺序与后端 `publicEndpointMapping`
+ * （backend/internal/httpapi/handlers_public_pricing.go）一致。
+ */
+export const ENDPOINT_KEYS = [
+  'chat.completions',
+  'messages',
+  'embeddings',
+  'images.generations',
+  'audio.speech',
+  'audio.transcriptions',
+  'rerank',
+  'generateContent',
+] as const
+
+export type EndpointKey = (typeof ENDPOINT_KEYS)[number]
+
+/** 与 ModelMutateSheet.tsx / model_meta 契约同序同值。 */
+export const CAPABILITY_KEYS = [
+  'text',
+  'vision',
+  'audio',
+  'video',
+  'function_calling',
+  'tool_use',
+  'reasoning',
+  'embedding',
+  'rerank',
+  'image_generation',
+  'speech',
+  'transcription',
+] as const satisfies readonly Capability[]
+
+export const MODALITY_KEYS = [
+  'text',
+  'image',
+  'audio',
+  'video',
+] as const satisfies readonly Modality[]
+
+export const PARAMETER_TYPES = [
+  'string',
+  'number',
+  'integer',
+  'boolean',
+  'array',
+  'object',
+] as const satisfies readonly ParameterType[]
+
+/** 单次确认的模型行数上限（与后端批量写入的规模预期一致）。 */
+export const MAX_WIZARD_ROWS = 200
+
+/**
+ * 公开端点枚举 → model_meta `endpoints` 的路径。
+ *
+ * 这是 `publicEndpointMapping` 的反向表：后端把档案里的路径折叠成公开
+ * 枚举，向导要把勾选的枚举写回路径。**新增公开端点时两处同步**——只改
+ * 后端会让这里写出后端不认识的路径，只改这里会让新端点永远不出现在公开
+ * 筛选里。
+ */
+const ENDPOINT_PATHS: Readonly<Record<EndpointKey, string>> = {
+  'chat.completions': '/v1/chat/completions',
+  messages: '/v1/messages',
+  embeddings: '/v1/embeddings',
+  'images.generations': '/v1/images/generations',
+  'audio.speech': '/v1/audio/speech',
+  'audio.transcriptions': '/v1/audio/transcriptions',
+  rerank: '/v1/rerank',
+  generateContent: '/v1beta/models/{model}:generateContent',
+}
+
+/**
+ * 这 8 个公开端点都是 POST 路由。公开 facet 只看路径是否存在
+ * （`deriveEndpointTypes`），方法只是 model_meta 展示的一部分。
+ */
+const ENDPOINT_METHODS: readonly Method[] = ['POST']
+
+const ENDPOINT_KEY_SET: ReadonlySet<string> = new Set(ENDPOINT_KEYS)
+const CAPABILITY_KEY_SET: ReadonlySet<string> = new Set(CAPABILITY_KEYS)
+const MODALITY_KEY_SET: ReadonlySet<string> = new Set(MODALITY_KEYS)
+const PARAMETER_TYPE_SET: ReadonlySet<string> = new Set(PARAMETER_TYPES)
+
+function isEndpointKey(value: string): value is EndpointKey {
+  return ENDPOINT_KEY_SET.has(value)
+}
+
+function isCapability(value: string): value is Capability {
+  return CAPABILITY_KEY_SET.has(value)
+}
+
+function isModality(value: string): value is Modality {
+  return MODALITY_KEY_SET.has(value)
+}
+
+export interface ParameterRow {
+  name: string
+  type: string
+  description: string
+  defaultValue: string
+}
+
+export interface WizardDefaults {
+  vendorName: string
+  endpoints: EndpointKey[]
+  capabilities: string[]
+  modalities: string[]
+  parameters: ParameterRow[]
+  knowledgeCutoff: string
+  tags: string[]
+}
+
+export interface WizardRow {
+  id: string
+  displayName: string
+  description: string
+  contextLength: string
+  maxOutput: string
+  releasedAt: string
+  endpoints: EndpointKey[]
+  vendorName: string
+  capabilities: string[]
+  modalities: string[]
+  parameters: ParameterRow[]
+  knowledgeCutoff: string
+  tags: string[]
+  factsSource: string
+  selected: boolean
+  overwrite: boolean
+}
+
+/**
+ * 把勾选的公开端点枚举写成 model_meta 的 `{path: [methods]}`。
+ *
+ * 按 `ENDPOINT_KEYS` 的固定顺序输出（与后端 facet 顺序一致），重复的 key
+ * 自然折叠。
+ */
+export function endpointsObject(keys: EndpointKey[]): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const key of ENDPOINT_KEYS) {
+    if (keys.includes(key)) {
+      out[ENDPOINT_PATHS[key]] = [...ENDPOINT_METHODS]
+    }
+  }
+  return out
+}
+
+/**
+ * `endpointsObject` 的公开签名是 `Record<string, string[]>`（brief 契约）；
+ * 写入体要求方法枚举，这里收窄一次（值恒为 POST）。
+ */
+function endpointObjectFor(row: WizardRow): ModelMeta['endpoints'] {
+  return endpointsObject(row.endpoints) as ModelMeta['endpoints']
+}
+
+/**
+ * 把探针条目投影成向导行。
+ *
+ * - `selected`：创建态全选（没有既有档案）；编辑态只预选 `preselected`
+ *   里的模型，避免向导默认改写既有档案。
+ * - `overwrite` 恒为 false：覆盖必须由操作者逐行勾选。
+ * - 能力 / 模态 / 参数 / 知识截止 / 标签留空，绝不从模型名推断。
+ */
+export function buildRows(
+  entries: FetchChannelModelEntry[],
+  existing: Map<string, ModelMeta>,
+  preselected: string[],
+): WizardRow[] {
+  const preselectedIds = new Set(preselected)
+  return entries.map((entry) => {
+    const profile = existing.get(entry.id)
+    return {
+      id: entry.id,
+      displayName: entry.display_name,
+      description: entry.description,
+      contextLength: entry.context_length === null ? '' : String(entry.context_length),
+      maxOutput: entry.max_output === null ? '' : String(entry.max_output),
+      releasedAt: entry.released_at,
+      endpoints: entry.endpoints.filter(isEndpointKey),
+      vendorName: profile?.vendor_name ?? entry.vendor_suggestion,
+      capabilities: [],
+      modalities: [],
+      parameters: [],
+      knowledgeCutoff: '',
+      tags: [],
+      factsSource: entry.facts_source,
+      selected: preselectedIds.has(entry.id) || profile === undefined,
+      overwrite: false,
+    }
+  })
+}
+
+function applyString(current: string, fallback: string, emptyOnly: boolean): string {
+  if (!emptyOnly) return fallback
+  return current.trim() === '' ? fallback : current
+}
+
+function applyList<T>(current: T[], fallback: T[], emptyOnly: boolean): T[] {
+  const source = emptyOnly && current.length > 0 ? current : fallback
+  return [...source]
+}
+
+function applyParameterList(
+  current: ParameterRow[],
+  fallback: ParameterRow[],
+  emptyOnly: boolean,
+): ParameterRow[] {
+  const source = emptyOnly && current.length > 0 ? current : fallback
+  return source.map((row) => ({ ...row }))
+}
+
+/**
+ * 把批量默认值套用到行。
+ *
+ * `emptyOnly` 为 true 时只填空白字段（字符串空 / 数组空 / 参数表空），为
+ * false 时整体替换。`defaults.vendorName` 为空串时不覆盖任何行——空供应商
+ * 没有意义，而 buildRows 可能已经带了上游建议。
+ */
+export function applyDefaults(
+  rows: WizardRow[],
+  defaults: WizardDefaults,
+  emptyOnly: boolean,
+): WizardRow[] {
+  return rows.map((row) => ({
+    ...row,
+    endpoints: applyList(row.endpoints, defaults.endpoints, emptyOnly),
+    capabilities: applyList(row.capabilities, defaults.capabilities, emptyOnly),
+    modalities: applyList(row.modalities, defaults.modalities, emptyOnly),
+    parameters: applyParameterList(row.parameters, defaults.parameters, emptyOnly),
+    knowledgeCutoff: applyString(row.knowledgeCutoff, defaults.knowledgeCutoff, emptyOnly),
+    tags: applyList(row.tags, defaults.tags, emptyOnly),
+    vendorName:
+      defaults.vendorName === ''
+        ? row.vendorName
+        : applyString(row.vendorName, defaults.vendorName, emptyOnly),
+  }))
+}
+
+/**
+ * 解析 `name:type[:描述]` 文本（一行一个参数）。
+ *
+ * 缺少冒号、名字为空、类型不在契约枚举里的行整行丢弃；描述可以再含冒号。
+ * `defaultValue` 不在这套文本格式里，恒为空串。
+ */
+export function parseParameterLines(text: string): ParameterRow[] {
+  const rows: ParameterRow[] = []
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim()
+    if (line === '') continue
+    const parts = line.split(':')
+    const name = (parts[0] ?? '').trim()
+    const type = (parts[1] ?? '').trim()
+    if (name === '' || !PARAMETER_TYPE_SET.has(type)) continue
+    rows.push({
+      name,
+      type,
+      description: parts.slice(2).join(':').trim(),
+      defaultValue: '',
+    })
+  }
+  return rows
+}
+
+/** `parseParameterLines` 的逆操作。 */
+export function formatParameterLines(rows: ParameterRow[]): string {
+  return rows
+    .filter((row) => row.name.trim() !== '')
+    .map((row) => {
+      const name = row.name.trim()
+      const type = row.type.trim()
+      const description = row.description.trim()
+      return description === '' ? `${name}:${type}` : `${name}:${type}:${description}`
+    })
+    .join('\n')
+}
+
+function parseOptionalInt(value: string): number | null {
+  const trimmed = value.trim()
+  if (trimmed === '') return null
+  const parsed = Number(trimmed)
+  if (!Number.isSafeInteger(parsed) || parsed < 0) return null
+  return parsed
+}
+
+function normalizeTags(tags: string[]): string[] {
+  return tags.map((tag) => tag.trim()).filter((tag) => tag !== '')
+}
+
+function parameterTypeOf(value: string): ParameterType {
+  return PARAMETER_TYPE_SET.has(value) ? (value as ParameterType) : 'string'
+}
+
+/**
+ * 参数行的写入体：形状与 ModelMutateSheet 一致，`required` 恒 false（向导
+ * 的文本格式不支持必填标记），`default` / `description` 只在非空时携带。
+ */
+function parameterPayload(
+  rows: ParameterRow[],
+): NonNullable<ModelMetaCreateRequest['parameters']> {
+  const out: NonNullable<ModelMetaCreateRequest['parameters']> = []
+  for (const row of rows) {
+    const name = row.name.trim()
+    if (name === '') continue
+    const entry: { name: string; type: ParameterType } & Record<string, unknown> = {
+      name,
+      type: parameterTypeOf(row.type),
+      required: false,
+    }
+    const defaultValue = row.defaultValue.trim()
+    if (defaultValue !== '') entry.default = defaultValue
+    const description = row.description.trim()
+    if (description !== '') entry.description = description
+    out.push(entry)
+  }
+  return out
+}
+
+/**
+ * 新建档案的请求体：只放非空字段，其余交给服务端默认值（status=1、
+ * sync_official=true、name_rule=0）。`vendor_id` 始终携带，null 表示不归属。
+ */
+export function buildCreateBody(
+  row: WizardRow,
+  vendorId: number | null,
+): ModelMetaCreateRequest {
+  const body: ModelMetaCreateRequest = {
+    model_name: row.id.trim(),
+    vendor_id: vendorId,
+  }
+
+  const displayName = row.displayName.trim()
+  if (displayName !== '') body.display_name = displayName
+
+  if (row.description.trim() !== '') body.description = row.description
+
+  const tags = normalizeTags(row.tags)
+  if (tags.length > 0) body.tags = tags
+
+  const endpoints = endpointObjectFor(row)
+  if (Object.keys(endpoints).length > 0) body.endpoints = endpoints
+
+  const capabilities = row.capabilities.filter(isCapability)
+  if (capabilities.length > 0) body.capabilities = capabilities
+
+  const modalities = row.modalities.filter(isModality)
+  if (modalities.length > 0) body.modalities = modalities
+
+  const parameters = parameterPayload(row.parameters)
+  if (parameters.length > 0) body.parameters = parameters
+
+  const contextLength = parseOptionalInt(row.contextLength)
+  if (contextLength !== null) body.context_length = contextLength
+
+  const maxOutput = parseOptionalInt(row.maxOutput)
+  if (maxOutput !== null) body.max_output = maxOutput
+
+  const knowledgeCutoff = row.knowledgeCutoff.trim()
+  if (knowledgeCutoff !== '') body.knowledge_cutoff = knowledgeCutoff
+
+  const releasedAt = row.releasedAt.trim()
+  if (releasedAt !== '') body.released_at = releasedAt
+
+  return body
+}
+
+function cloneEndpoints(endpoints: ModelMeta['endpoints']): ModelMeta['endpoints'] {
+  const out: ModelMeta['endpoints'] = {}
+  for (const [path, methods] of Object.entries(endpoints)) out[path] = [...methods]
+  return out
+}
+
+/**
+ * 更新档案的请求体。
+ *
+ * `pick(rowValue, existingValue)`：向导字段为空串 / 空数组 / null 时一律回
+ * 落到既有值，绝不把已填好的列清空。`updated_at` 抄既有值（乐观锁）；
+ * `icon` / `status` / `sync_official` / `name_rule` 向导不维护，始终从既有
+ * 值来。`model_name` 刻意不发送：编辑路径上它不可改，行由路径 id 定位。
+ *
+ * 是否覆盖既有档案由调用方按 `row.overwrite` 决定，这里只负责生成安全
+ * 的请求体。
+ */
+export function buildUpdateBody(
+  row: WizardRow,
+  existing: ModelMeta,
+  vendorId: number | null,
+): ModelMetaUpdateRequest {
+  const displayName = row.displayName.trim()
+  const description = row.description.trim()
+  const knowledgeCutoff = row.knowledgeCutoff.trim()
+  const releasedAt = row.releasedAt.trim()
+  const tags = normalizeTags(row.tags)
+  const endpoints = endpointObjectFor(row)
+  const capabilities = row.capabilities.filter(isCapability)
+  const modalities = row.modalities.filter(isModality)
+  const parameters = parameterPayload(row.parameters)
+
+  return {
+    updated_at: existing.updated_at,
+    display_name: displayName === '' ? (existing.display_name ?? null) : displayName,
+    description: description === '' ? (existing.description ?? null) : row.description,
+    icon: existing.icon ?? null,
+    vendor_id: vendorId ?? existing.vendor_id ?? null,
+    tags: tags.length > 0 ? tags : [...existing.tags],
+    endpoints:
+      Object.keys(endpoints).length > 0 ? endpoints : cloneEndpoints(existing.endpoints),
+    capabilities: capabilities.length > 0 ? capabilities : [...existing.capabilities],
+    modalities: modalities.length > 0 ? modalities : [...existing.modalities],
+    parameters:
+      parameters.length > 0
+        ? parameters
+        : existing.parameters.map((parameter) => ({ ...parameter })),
+    context_length: parseOptionalInt(row.contextLength) ?? existing.context_length ?? null,
+    max_output: parseOptionalInt(row.maxOutput) ?? existing.max_output ?? null,
+    knowledge_cutoff:
+      knowledgeCutoff === '' ? (existing.knowledge_cutoff ?? null) : knowledgeCutoff,
+    released_at: releasedAt === '' ? (existing.released_at ?? null) : releasedAt,
+    status: existing.status,
+    sync_official: existing.sync_official,
+    name_rule: existing.name_rule,
+  }
+}
