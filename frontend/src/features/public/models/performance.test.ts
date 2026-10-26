@@ -258,4 +258,29 @@ describe('entriesOf', () => {
     expect(entries[1]?.kind).toBe('embedding')
     expect(entries[1]?.perf.source).toBe('none')
   })
+
+  it('attaches per-million prices when quota_per_unit is given', () => {
+    const cards = [
+      card({
+        model_id: 'openai/gpt-4o',
+        prompt_price: '30000',
+        completion_price: '60000',
+        cache_read_price: '15000',
+      }),
+    ]
+
+    const priced = entriesOf(cards, new Map(), 500000)
+    expect(priced[0]?.price).toEqual({
+      input: 0.06,
+      output: 0.12,
+      cacheRead: 0.03,
+    })
+
+    const unpriced = entriesOf(cards, new Map())
+    expect(unpriced[0]?.price).toEqual({
+      input: null,
+      output: null,
+      cacheRead: null,
+    })
+  })
 })

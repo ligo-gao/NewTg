@@ -38,6 +38,7 @@ interface EntryOptions {
   p50?: number | null
   tps?: number | null
   successRate?: number | null
+  input?: number | null
 }
 
 function entry(options: EntryOptions = {}): ModelEntry {
@@ -66,6 +67,11 @@ function entry(options: EntryOptions = {}): ModelEntry {
   return {
     card,
     kind: 'chat',
+    price: {
+      input: options.input ?? null,
+      output: null,
+      cacheRead: null,
+    },
     perf: {
       source: options.hasData === true ? 'test' : 'none',
       measure: 'ttft',
@@ -247,6 +253,22 @@ describe('sortEntries', () => {
       'large',
       'small',
       'none',
+    ])
+  })
+
+  it('sorts by input price with unpriced models last', () => {
+    const priced = [
+      entry({ model_id: 'unpriced' }),
+      entry({ model_id: 'price-high', input: 4 }),
+      entry({ model_id: 'price-low-b', input: 0.06 }),
+      entry({ model_id: 'price-low-a', input: 0.06 }),
+    ]
+
+    expect(ids(sortEntries(priced, 'price', 'en'))).toEqual([
+      'price-low-a',
+      'price-low-b',
+      'price-high',
+      'unpriced',
     ])
   })
 

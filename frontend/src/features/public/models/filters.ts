@@ -103,6 +103,9 @@ function compareForSort(
       return a.card.display_name.localeCompare(b.card.display_name, locale)
     case 'latency':
       return compareNullable(a.perf.p50, b.perf.p50, 1)
+    case 'price':
+      // 输入价升序（便宜优先）；无价模型排在最后，平局交给 model_id。
+      return compareNullable(a.price.input, b.price.input, 1)
     case 'tps':
       return compareNullable(a.perf.tps, b.perf.tps, -1)
     case 'success':

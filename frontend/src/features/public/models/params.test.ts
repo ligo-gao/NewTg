@@ -79,6 +79,16 @@ describe('models URL contract', () => {
     expect(validateModelsSearch({ view: 'cards' }).view).toBe('cards')
   })
 
+  it('accepts a price sort and writes it to the canonical query', () => {
+    const search = validateModelsSearch({ sort: 'price' })
+    expect(search.sort).toBe('price')
+    expect(new URLSearchParams(canonicalModelsSearch(search)).get('sort')).toBe(
+      'price',
+    )
+    // 非法 sort 仍回落默认值。
+    expect(validateModelsSearch({ sort: 'bogus' }).sort).toBe('measured')
+  })
+
   it('parses the measured flag from its accepted spellings', () => {
     for (const raw of [true, 1, '1', 'true']) {
       expect(validateModelsSearch({ measured: raw }).measured).toBe(true)

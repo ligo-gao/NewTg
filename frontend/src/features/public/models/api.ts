@@ -26,12 +26,18 @@ export const MAX_CATALOG_PAGES = 20
 
 export type PublicModelMetricsList = components['schemas']['PublicModelMetricsList']
 export type MetricsItem = components['schemas']['PublicModelMetricsItem']
+export type PublicPricingMeta = components['schemas']['PublicPricingMeta']
 
 export interface ModelCatalog {
   items: PublicModelCard[]
   total: number
   /** 服务端报告的 `total` 大于实际取到的条数（达到页数上限或遇到空页）。 */
   truncated: boolean
+  /**
+   * 计费元数据（`quota_per_unit` 等）。公开定价接口每页都会下发，但它是
+   * 全局配置而非分页资源：这里只保留第一页的值，后续页忽略。
+   */
+  meta: PublicPricingMeta
 }
 
 export type LibraryMetrics = Omit<PublicModelMetricsList, 'range'> & {
@@ -52,6 +58,7 @@ export async function fetchModelCatalog(
   const items: PublicModelCard[] = []
   const seen = new Set<string>()
   let total = 0
+  let meta: PublicPricingMeta | undefined
 
   for (let p = 1; p <= MAX_CATALOG_PAGES; p += 1) {
     const page = requireData(
@@ -62,6 +69,9 @@ export async function fetchModelCatalog(
         signal,
       }),
     )
+
+    // 计费元数据是全局配置：只用第一页的值，避免后续页异常覆盖。
+    if (meta === undefined) meta = page.meta
 
     const parsedTotal = Number.parseInt(page.total, 10)
     for (const item of page.items) {
@@ -81,7 +91,9 @@ export async function fetchModelCatalog(
     if (items.length >= total) break
   }
 
-  return { items, total, truncated: items.length < total }
+  // 循环至少执行一次（MAX_CATALOG_PAGES === 20），`meta` 必然来自第一页；
+  // 断言只是把这一点告诉类型系统，不伪造任何计费数据。
+  return { items, total, truncated: items.length < total, meta: meta! }
 }
 
 export function modelCatalogQueryOptions() {

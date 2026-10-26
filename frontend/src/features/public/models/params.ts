@@ -25,6 +25,7 @@ export type ModelsSort =
   | 'measured'
   | 'name'
   | 'latency'
+  | 'price'
   | 'tps'
   | 'success'
   | 'context'
@@ -104,6 +105,7 @@ export function validateModelsSearch(
   const sort: ModelsSort =
     raw.sort === 'name' ||
     raw.sort === 'latency' ||
+    raw.sort === 'price' ||
     raw.sort === 'tps' ||
     raw.sort === 'success' ||
     raw.sort === 'context'

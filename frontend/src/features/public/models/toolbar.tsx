@@ -36,6 +36,7 @@ const SORTS: readonly ModelsSort[] = [
   'measured',
   'name',
   'latency',
+  'price',
   'tps',
   'success',
   'context',

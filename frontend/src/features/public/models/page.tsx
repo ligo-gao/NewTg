@@ -101,7 +101,11 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
   const slots = capabilitySlots(cards ?? [], 12)
   const facets = facetsOf(cards ?? [])
   const metricsIndex = indexMetrics(metrics.data?.items ?? [])
-  const entries = entriesOf(cards ?? [], metricsIndex)
+  const entries = entriesOf(
+    cards ?? [],
+    metricsIndex,
+    catalog.data?.meta.quota_per_unit,
+  )
   // 指标不可用时每条读数都是「无数据」，`measured` 筛选会把整张列表清空。
   // 模型库的保底约定是「读数降级、列表完整」，所以此时绕过该筛选；如果
   // 只是后台重取失败但仍有旧读数，则照常按读数筛选。

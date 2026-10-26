@@ -86,6 +86,19 @@ describe('Toolbar', () => {
     expect(onChange).toHaveBeenLastCalledWith({ ...BASE, view: 'cards' })
   })
 
+  it('offers a price sort option and writes it back', async () => {
+    const { getByRole, onChange } = await renderToolbar()
+    const select = getByRole('combobox', { name: 'Sort by' })
+
+    const option = Array.from(select.querySelectorAll('option')).find(
+      (candidate) => candidate.value === 'price',
+    )
+    expect(option).toBeTruthy()
+
+    fireEvent.change(select, { target: { value: 'price' } })
+    expect(onChange).toHaveBeenLastCalledWith({ ...BASE, sort: 'price' })
+  })
+
   it('shows the active filter count on the filter button', async () => {
     const { getByRole, getByText, onOpenFilters } = await renderToolbar(
       BASE,

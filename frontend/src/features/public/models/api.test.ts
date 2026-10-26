@@ -79,6 +79,29 @@ describe('fetchModelCatalog', () => {
     expect(requested[0]?.searchParams.get('sort')).toBe('name')
   })
 
+  it('keeps the meta from the first page and ignores later pages', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/pricing`, ({ request }) => {
+        const p = Number(new URL(request.url).searchParams.get('p'))
+        return HttpResponse.json({
+          items: cards(`page${p}`, 100),
+          total: '150',
+          meta: {
+            credit_symbol: '¥',
+            quota_per_unit: p === 1 ? 500000 : 1,
+            usd_exchange_rate: 7.2,
+            version: 'v1',
+            generated_at: '2026-10-26T00:00:00Z',
+          },
+        })
+      }),
+    )
+
+    const catalog = await fetchModelCatalog()
+
+    expect(catalog.meta.quota_per_unit).toBe(500000)
+  })
+
   it('follows pages until total, dedupes by model_id', async () => {
     // 250 unique models spread over three pages; the last page repeats an id
     // from page 1, so the raw item count (251) exceeds the deduped total.

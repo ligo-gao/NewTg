@@ -14,6 +14,7 @@
 import type { PublicModelCard } from '@/features/public/pricing/api'
 
 import type { MetricsItem } from './api'
+import { priceOf, type ModelPrice } from './price'
 import { kindOf } from './taxonomy'
 
 export type CallKind =
@@ -44,6 +45,8 @@ export interface ModelEntry {
   card: PublicModelCard
   kind: CallKind
   perf: ModelPerformance
+  /** 每百万 token 的元价格；缺价字段为 `null`（渲染 `—`）。 */
+  price: ModelPrice
 }
 
 /** 低于该样本量的读数标记「低样本」，标注后仍展示。 */
@@ -137,9 +140,15 @@ export function performanceOf(
 export function entriesOf(
   cards: readonly PublicModelCard[],
   index: ReadonlyMap<string, MetricsItem>,
+  quotaPerUnit?: number,
 ): ModelEntry[] {
   return cards.map((card) => {
     const kind = kindOf(card)
-    return { card, kind, perf: performanceOf(kind, index.get(card.model_id)) }
+    return {
+      card,
+      kind,
+      perf: performanceOf(kind, index.get(card.model_id)),
+      price: priceOf(card, quotaPerUnit),
+    }
   })
 }
