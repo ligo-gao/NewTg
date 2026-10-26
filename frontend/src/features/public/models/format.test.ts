@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  formatMs,
-  formatPercent,
-  formatSamples,
-  formatTPS,
-} from './format'
+import { formatMs, formatSamples } from './format'
 
 describe('formatMs', () => {
   it('renders null as an em dash', () => {
@@ -21,25 +16,12 @@ describe('formatMs', () => {
     expect(formatMs(12_400)).toBe('12.4 s')
     expect(formatMs(10_000)).toBe('10.0 s')
   })
-})
 
-describe('formatTPS', () => {
-  it('renders null as an em dash', () => {
-    expect(formatTPS(null)).toBe('—')
-  })
-
-  it('keeps one decimal below ten and rounds above', () => {
-    expect(formatTPS(8.44)).toBe('8.4 t/s')
-    expect(formatTPS(12.7)).toBe('13 t/s')
-  })
-})
-
-describe('formatPercent', () => {
-  it('renders null as an em dash and one decimal otherwise', () => {
-    expect(formatPercent(null)).toBe('—')
-    expect(formatPercent(0.998)).toBe('99.8%')
-    expect(formatPercent(1)).toBe('100.0%')
-    expect(formatPercent(0)).toBe('0.0%')
+  it('groups digits with the requested locale', () => {
+    const expected = new Intl.NumberFormat('fr', {
+      maximumFractionDigits: 0,
+    }).format(2_340)
+    expect(formatMs(2_340, 'fr')).toBe(`${expected} ms`)
   })
 })
 

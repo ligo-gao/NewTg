@@ -121,6 +121,39 @@ describe('CompareDialog', () => {
     expect(within(outputRow).getAllByText('—')).toHaveLength(1)
   })
 
+  it('renders a per-request model in the per-call unit, not per million tokens', async () => {
+    await renderDialog([
+      entry('vendor/ocr', {}, { input: 0.5, perCall: true }),
+    ])
+
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText('Per call')).toBeTruthy()
+    expect(within(dialog).getByText('¥0.50')).toBeTruthy()
+    // A single per-call row replaces both per-million rows entirely.
+    expect(within(dialog).queryByText('Input price / M')).toBeNull()
+    expect(within(dialog).queryByText('Output price / M')).toBeNull()
+    expect(within(dialog).queryByText(/\/ ?M/)).toBeNull()
+  })
+
+  it('omits the P95 subline when the reading has no percentile', async () => {
+    await renderDialog([
+      entry('vendor/avg', {
+        source: 'usage',
+        measure: 'latency',
+        p50: 240,
+        p95: null,
+      }),
+    ])
+
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText('240 ms')).toBeTruthy()
+    // An average has no P95; printing `P95 —` would invent a percentile row.
+    expect(within(dialog).queryByText(/^P95 /)).toBeNull()
+    expect(within(dialog).queryByText('P95 —')).toBeNull()
+    // The end-to-end qualifier keeps the number from reading as first-token.
+    expect(within(dialog).getByText('Total latency')).toBeTruthy()
+  })
+
   it('uses the table wording for success rate and throughput', async () => {
     await renderDialog([
       entry('vendor/tested', {

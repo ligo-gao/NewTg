@@ -137,6 +137,41 @@ describe('ModelHero', () => {
     expect(queryByText('acme/embed')).toBeNull()
   })
 
+  it('picks the smallest P50 among several first-token readings', async () => {
+    const { getByText } = await renderHero([
+      entry({
+        id: 'slow/model',
+        name: 'Slow',
+        perf: { source: 'test', p50: 900, hasData: true },
+      }),
+      entry({
+        id: 'fast/model',
+        name: 'Fast',
+        perf: { source: 'test', p50: 200, hasData: true },
+      }),
+    ])
+
+    const fastest = statValue(getByText('Fastest P50'))
+    expect(fastest).toContain('200 ms')
+    expect(fastest).toContain('fast/model')
+    expect(fastest).not.toContain('900 ms')
+  })
+
+  it('keeps per-call prices out of the per-million input range', async () => {
+    const { getByText } = await renderHero([
+      entry({ id: 'token/model', name: 'Token', price: { input: 0.06 } }),
+      entry({
+        id: 'call/model',
+        name: 'Call',
+        price: { input: 100, perCall: true },
+      }),
+    ])
+
+    // ¥100 per call is not ¥100 per million tokens; mixing them would publish
+    // a range in which the two ends have different units.
+    expect(statValue(getByText('Input price / million tokens'))).toBe('¥0.06')
+  })
+
   it('does not render a capability chip row', async () => {
     const { queryAllByRole, queryByRole } = await renderHero()
 

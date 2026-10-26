@@ -69,7 +69,19 @@ export function CompareDialog({
   onClear,
 }: CompareDialogProps) {
   const { t, locale } = useI18n()
+  // 整列都是按次计价时用单行「每次」，不再用「输入价 / M」的表头；混合目录
+  // 保留两行，按次模型在输入价格内自己声明单位。
+  const allPerCall =
+    entries.length > 0 && entries.every((entry) => entry.price.perCall === true)
 
+  const perCallCell = (value: number | null): ReactNode => (
+    <>
+      <span className="font-mono">{formatRmb(value, locale) ?? '—'}</span>
+      <span className="block text-badge text-ink-3">
+        {t('public.pricing.price_per_call')}
+      </span>
+    </>
+  )
   return (
     <Dialog
       open={open}
@@ -184,36 +196,68 @@ export function CompareDialog({
                     )
                   })}
                 </tr>
-                <tr>
-                  <RowLabel>{t('public.models.compare.price_input')}</RowLabel>
-                  {entries.map((entry) => (
-                    <Cell key={entry.card.model_id}>
-                      <span className="font-mono">
-                        {formatRmb(entry.price.input, locale) ?? '—'}
-                      </span>
-                    </Cell>
-                  ))}
-                </tr>
-                <tr>
-                  <RowLabel>{t('public.models.compare.price_output')}</RowLabel>
-                  {entries.map((entry) => (
-                    <Cell key={entry.card.model_id}>
-                      <span className="font-mono">
-                        {formatRmb(entry.price.output, locale) ?? '—'}
-                      </span>
-                    </Cell>
-                  ))}
-                </tr>
+                {allPerCall ? (
+                  <tr>
+                    <RowLabel>{t('public.pricing.price_per_call')}</RowLabel>
+                    {entries.map((entry) => (
+                      <Cell key={entry.card.model_id}>
+                        <span className="font-mono">
+                          {formatRmb(entry.price.input, locale) ?? '—'}
+                        </span>
+                      </Cell>
+                    ))}
+                  </tr>
+                ) : (
+                  <>
+                    <tr>
+                      <RowLabel>
+                        {t('public.models.compare.price_input')}
+                      </RowLabel>
+                      {entries.map((entry) => (
+                        <Cell key={entry.card.model_id}>
+                          {entry.price.perCall ? (
+                            perCallCell(entry.price.input)
+                          ) : (
+                            <span className="font-mono">
+                              {formatRmb(entry.price.input, locale) ?? '—'}
+                            </span>
+                          )}
+                        </Cell>
+                      ))}
+                    </tr>
+                    <tr>
+                      <RowLabel>
+                        {t('public.models.compare.price_output')}
+                      </RowLabel>
+                      {entries.map((entry) => (
+                        <Cell key={entry.card.model_id}>
+                          <span className="font-mono">
+                            {entry.price.perCall
+                              ? '—'
+                              : (formatRmb(entry.price.output, locale) ?? '—')}
+                          </span>
+                        </Cell>
+                      ))}
+                    </tr>
+                  </>
+                )}
                 <tr>
                   <RowLabel>{t('public.models.table.latency')}</RowLabel>
                   {entries.map((entry) => (
                     <Cell key={entry.card.model_id}>
                       <span className="font-mono">
-                        {formatMs(entry.perf.p50)}
+                        {formatMs(entry.perf.p50, locale)}
                       </span>
-                      <span className="block font-mono text-badge text-ink-3">
-                        P95 {formatMs(entry.perf.p95)}
-                      </span>
+                      {entry.perf.p95 === null ? null : (
+                        <span className="block font-mono text-badge text-ink-3">
+                          P95 {formatMs(entry.perf.p95, locale)}
+                        </span>
+                      )}
+                      {entry.perf.measure === 'latency' ? (
+                        <span className="block text-badge text-ink-3">
+                          {t('public.models.source.measure.latency')}
+                        </span>
+                      ) : null}
                     </Cell>
                   ))}
                 </tr>

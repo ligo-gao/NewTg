@@ -57,6 +57,9 @@ export interface ModelsPageProps {
 /** 与演示稿 workbench 同宽：低于 1200px 时筛选栏收进抽屉。 */
 const WIDE_QUERY = '(min-width: 1200px)'
 
+/** 表格需要 1440px 才能放下七列；低于此宽度列表落到卡片。 */
+const TABLE_QUERY = '(min-width: 1440px)'
+
 /** ≤760px 表格不可读：卡片成为唯一的列表视图。 */
 const NARROW_QUERY = '(max-width: 760px)'
 
@@ -88,6 +91,10 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
     enabled: catalog.isSuccess,
   })
   const wide = useMediaQuery(WIDE_QUERY)
+  // 表格的可用性是唯一的宽度判定：≥1440px 才渲染七列表格；760px 以下同样
+  // 强制卡片。工具栏、写 URL 的守卫与列表本身都读这一个值，不会出现
+  // 「按钮说表格、列表仍是卡片」的分裂。
+  const tableWide = useMediaQuery(TABLE_QUERY)
   // `useMediaQuery` treats a missing `matchMedia` (SSR, old embedded webviews)
   // as a match so the page degrades to desktop. A max-width query must not read
   // that fallback as "narrow", or those environments would be forced to cards.
@@ -95,6 +102,7 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
     useMediaQuery(NARROW_QUERY) &&
     typeof window !== 'undefined' &&
     typeof window.matchMedia === 'function'
+  const tableAvailable = tableWide && !narrow
 
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [filtersOpen, setFiltersOpen] = useState(false)
@@ -221,13 +229,14 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
     onSearchChange(validateModelsSearch({ view: search.view }))
 
   /**
-   * 窄屏下卡片是布局强制，不是用户选择：表格/卡片切换仍渲染（`aria-pressed`
-   * 由 `toolbarView` 反映生效视图），但 view 变化绝不写回 URL；其它工具栏
-   * 改动也必须保留地址栏里原有的 view，不能把强制的 cards 带进去。
+   * 表格不可用时卡片是布局强制，不是用户选择：表格/卡片切换仍渲染
+   * （`aria-pressed` 由 `toolbarView` 反映生效视图），但 view 变化绝不写回
+   * URL；其它工具栏改动也必须保留地址栏里原有的 view，不能把强制的 cards
+   * 带进去。`tableAvailable` 同时驱动工具条、写回守卫与列表渲染。
    */
-  const toolbarView: ModelsView = narrow ? 'cards' : search.view
+  const toolbarView: ModelsView = tableAvailable ? search.view : 'cards'
   const handleToolbarChange = (next: ModelsSearch, replace?: boolean) => {
-    if (!narrow) {
+    if (tableAvailable) {
       onSearchChange(next, replace)
       return
     }
@@ -337,7 +346,7 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
           <Register
             entries={visible}
             view={search.view}
-            narrow={narrow}
+            compact={!tableAvailable}
             range={search.range}
             compareIds={compareIds(search)}
             expandedId={expandedId}
@@ -401,7 +410,7 @@ export function ModelsPage({ search, onSearchChange }: ModelsPageProps) {
             }
             resultCount={visible.length}
             activeFilterCount={activeFilterCount(search)}
-            narrow={narrow}
+            compact={!tableAvailable}
             onChange={handleToolbarChange}
             onOpenFilters={wide ? undefined : () => setFiltersOpen(true)}
           />

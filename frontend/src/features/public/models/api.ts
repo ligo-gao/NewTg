@@ -35,7 +35,8 @@ export interface ModelCatalog {
   truncated: boolean
   /**
    * 计费元数据（`quota_per_unit` 等）。公开定价接口每页都会下发，但它是
-   * 全局配置而非分页资源：这里只保留第一页的值，后续页忽略。
+   * 全局配置而非分页资源：采用第一个带 `meta` 的页面的值（第一页缺失时由
+   * 后续页补上），一旦取得就不再被后面的页面覆盖。
    *
    * 可选：被裁剪的旧版响应可能整个字段都不出现。展示层必须显式判空后
    * 再读 `quota_per_unit`，缺失时价格退化成一整列 `—`，而不是白屏。
@@ -73,7 +74,8 @@ export async function fetchModelCatalog(
       }),
     )
 
-    // 计费元数据是全局配置：只用第一页的值，避免后续页异常覆盖。
+    // 计费元数据是全局配置：采用第一个带 `meta` 的页面（第一页缺失时由
+    // 后续页补上），取得后不再被后面的页面覆盖。
     if (meta === undefined) meta = page.meta
 
     const parsedTotal = Number.parseInt(page.total, 10)

@@ -20,11 +20,11 @@ export interface ToolbarProps {
   resultCount: number
   activeFilterCount: number
   /**
-   * 窄屏（≤760px）下表格无法阅读，卡片是布局强制的生效视图。此时「表格」
-   * 一侧禁用并保持 `aria-pressed` 反映生效视图，而不是留一个点了没反应的
-   * 按钮。
+   * 表格在当前视口不可渲染（<1440px 或 ≤760px）时，卡片是布局强制的生效
+   * 视图。此时「表格」一侧禁用并保持 `aria-pressed` 反映生效视图，而不是
+   * 留一个点了没反应的按钮。判定由页面统一计算后传入。
    */
-  narrow: boolean
+  compact: boolean
   onChange: (next: ModelsSearch, replace?: boolean) => void
   /**
    * 只在筛选栏能打开时传入（窄屏抽屉）。宽屏筛选栏常驻，按钮会成为一个
@@ -54,7 +54,7 @@ export function Toolbar({
   search,
   resultCount,
   activeFilterCount,
-  narrow,
+  compact,
   onChange,
   onOpenFilters,
 }: ToolbarProps) {
@@ -199,8 +199,8 @@ export function Toolbar({
         >
           {VIEWS.map((view) => {
             const selected = search.view === view
-            // 窄屏只有卡片可用；表格侧的 aria-pressed 仍如实反映生效视图。
-            const disabled = narrow && view === 'table'
+            // 表格不可渲染时只有卡片可用；表格侧的 aria-pressed 仍如实反映生效视图。
+            const disabled = compact && view === 'table'
             return (
               <button
                 key={view}

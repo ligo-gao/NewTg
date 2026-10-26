@@ -132,11 +132,24 @@ const EMPTY: ModelEntry = {
   perf: perf({}),
 }
 
+/** 按次计价：`input` 是每次调用的元金额，不能套每百万 token 的单位。 */
+const PER_CALL: ModelEntry = {
+  card: card({
+    model_id: 'acme/vision-ocr',
+    display_name: 'OCR',
+    vendor: 'acme',
+    mode: 'per_request',
+  }),
+  kind: 'chat',
+  price: { input: 0.5, output: null, cacheRead: null, perCall: true },
+  perf: perf({}),
+}
+
 function props(overrides: Partial<RegisterProps> = {}): RegisterProps {
   return {
     entries: [TESTED, AVERAGED, EMPTY],
     view: 'table',
-    narrow: false,
+    compact: false,
     range: '7d',
     compareIds: [],
     expandedId: null,
@@ -183,6 +196,12 @@ function textOf(row: HTMLElement, selector: string): string {
   const cell = row.querySelector(selector)
   expect(cell).toBeTruthy()
   return cell?.textContent ?? ''
+}
+
+/** Card metric value: the value block immediately before its visible label. */
+function metricValue(card: HTMLElement, label: string): string {
+  const labelNode = within(card).getByText(label)
+  return labelNode.previousElementSibling?.textContent ?? ''
 }
 
 describe('Register: table view', () => {
@@ -237,6 +256,25 @@ describe('Register: table view', () => {
     expect(textOf(bodyRows()[0] as HTMLElement, '.price-cell')).toBe(
       '¥0.06 · —',
     )
+  })
+
+  it('renders a per-request row as a per-call price, never per million tokens', async () => {
+    await renderRegister({ entries: [PER_CALL] })
+
+    // The column headline follows the catalog when every row is per-call.
+    expect(
+      screen.getByRole('columnheader', { name: 'Per call' }),
+    ).toBeTruthy()
+    expect(
+      screen.queryByRole('columnheader', { name: /million tokens/ }),
+    ).toBeNull()
+
+    const cell = bodyRows()[0]?.querySelector('.price-cell') as HTMLElement
+    expect(cell).toBeTruthy()
+    expect(within(cell).getByText('¥0.50')).toBeTruthy()
+    expect(within(cell).getByText('Per call')).toBeTruthy()
+    // The 10^6 scale factor must not be implied anywhere in the cell.
+    expect(within(cell).queryByText(/\/ ?M/)).toBeNull()
   })
 
   it('hides the context column when no row has context or output', async () => {
@@ -526,15 +564,23 @@ describe('Register: cards view', () => {
 
     // Missing readings are three separate em dashes, never a fake zero.
     const missing = cards[2] as HTMLElement
-    expect(
-      [...missing.querySelectorAll('.card-metric-value')].map(
-        (node) => node.textContent,
-      ),
-    ).toEqual(['—', '—', '—'])
+    expect(metricValue(missing, 'First token P50')).toBe('—')
+    expect(metricValue(missing, 'Output throughput')).toBe('—')
+    expect(metricValue(missing, 'Input price / M')).toBe('—')
   })
 
-  it('forces the card view when narrow even if the stored view is table', async () => {
-    await renderRegister({ view: 'table', narrow: true })
+  it('labels the card price as per call for a per-request model', async () => {
+    await renderRegister({ view: 'cards', entries: [PER_CALL] })
+
+    const item = screen.getByRole('listitem')
+    expect(metricValue(item, 'Per call')).toBe('¥0.50')
+    // The per-million label is the wrong unit for this model.
+    expect(within(item).queryByText('Input price / M')).toBeNull()
+    expect(within(item).queryByText(/\/ ?M/)).toBeNull()
+  })
+
+  it('forces the card view when the table cannot fit even if the stored view is table', async () => {
+    await renderRegister({ view: 'table', compact: true })
 
     expect(screen.queryByRole('table')).toBeNull()
     expect(screen.getAllByRole('listitem')).toHaveLength(3)
@@ -589,16 +635,16 @@ describe('Register: cards view', () => {
     const capsCard = items[0] as HTMLElement
     expect(within(capsCard).getByText('text')).toBeTruthy()
     expect(within(capsCard).queryByText('Profile not filled in')).toBeNull()
-    expect(capsCard.querySelector('.card-subline')).toBeNull()
+    // A capability-only profile has no vendor/context line to print.
+    expect(within(capsCard).queryByText('acme')).toBeNull()
+    expect(within(capsCard).queryByText(/^Context /)).toBeNull()
 
     const vendorCard = items[1] as HTMLElement
-    expect(vendorCard.querySelector('.card-subline')?.textContent).toBe('acme')
+    expect(within(vendorCard).getByText('acme')).toBeTruthy()
     expect(within(vendorCard).queryByText('Profile not filled in')).toBeNull()
 
     const contextCard = items[2] as HTMLElement
-    expect(contextCard.querySelector('.card-subline')?.textContent).toBe(
-      'Context 128K',
-    )
+    expect(within(contextCard).getByText('Context 128K')).toBeTruthy()
     expect(
       within(contextCard).queryByText('Profile not filled in'),
     ).toBeNull()
@@ -608,10 +654,15 @@ describe('Register: cards view', () => {
     await renderRegister({ view: 'cards', entries: [TESTED, EMPTY] })
 
     const items = screen.getAllByRole('listitem')
-    expect(items[0]?.querySelector('.card-output')?.textContent).toBe(
-      '32K Max output',
-    )
-    expect(items[1]?.querySelector('.card-output')?.textContent).toBe('—')
+    expect(within(items[0] as HTMLElement).getByText('32K Max output')).toBeTruthy()
+
+    // The empty card prints an em dash in the foot instead of inventing an output.
+    const emptyCard = items[1] as HTMLElement
+    expect(within(emptyCard).queryByText(/Max output/)).toBeNull()
+    const foot = within(emptyCard).getByRole('button', {
+      name: 'Details Empty',
+    }).parentElement as HTMLElement
+    expect(foot.firstElementChild?.textContent).toBe('—')
   })
 
   it('keeps the compare checkbox and the detail button on a card', async () => {

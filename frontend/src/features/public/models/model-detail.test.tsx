@@ -158,7 +158,7 @@ describe('ModelDetail', () => {
     await renderDetail()
 
     expect(screen.getByText('First token P50 / P95')).toBeTruthy()
-    expect(screen.getByText('350 / 700 ms')).toBeTruthy()
+    expect(screen.getByText('350 ms / 700 ms')).toBeTruthy()
     expect(screen.getByText('42.5 t/s')).toBeTruthy()
     expect(screen.getByText('99.80%')).toBeTruthy()
     // Probe runs are not calls: the count row must name the probe source.
@@ -179,7 +179,7 @@ describe('ModelDetail', () => {
     await renderDetail(latency)
 
     expect(screen.getByText('End-to-end P50 / P95')).toBeTruthy()
-    expect(screen.getByText('500 / 900 ms')).toBeTruthy()
+    expect(screen.getByText('500 ms / 900 ms')).toBeTruthy()
   })
 
   it('names the P50 alone when an end-to-end average has no percentile', async () => {
@@ -242,6 +242,43 @@ describe('ModelDetail', () => {
     expect(screen.getByText('¥0.06 / M')).toBeTruthy()
     expect(screen.getByText('¥4.00 / M')).toBeTruthy()
     expect(screen.getByText('Per token')).toBeTruthy()
+  })
+
+  it('renders a per-request model as a per-call price', async () => {
+    const perCall: ModelEntry = {
+      ...ENTRY,
+      card: { ...CARD, mode: 'per_request' },
+      price: { input: 0.5, output: null, cacheRead: null, perCall: true },
+    }
+    serveDetail({ ...DETAIL, mode: 'per_request' })
+    await renderDetail(perCall)
+
+    // One price row, in the per-call unit, and a billing label that names the
+    // mode — never `¥0.50 / M`, which would be off by 10^6.
+    expect(screen.getByText('Per call')).toBeTruthy()
+    expect(screen.getByText('¥0.50')).toBeTruthy()
+    expect(screen.queryByText('¥0.50 / M')).toBeNull()
+    expect(screen.queryByText(/\/ ?M/)).toBeNull()
+    expect(screen.getByText('Per-request')).toBeTruthy()
+    expect(screen.queryByText('Per token')).toBeNull()
+    // The per-million-token note cannot describe a per-call price.
+    expect(screen.queryByText('Unit: CNY per million tokens.')).toBeNull()
+    expect(screen.queryByText('Output')).toBeNull()
+    expect(screen.queryByText('Cache read')).toBeNull()
+  })
+
+  it('formats long readings in seconds, exactly like the table cell', async () => {
+    const slow: ModelEntry = {
+      ...ENTRY,
+      perf: { ...ENTRY.perf, p50: 12_400, p95: null },
+    }
+    serveDetail()
+    await renderDetail(slow)
+
+    // `formatMs` per side: the detail must not fall back to `12,400 ms` when
+    // the table already switches to `12.4 s`.
+    expect(screen.getByText('12.4 s')).toBeTruthy()
+    expect(screen.queryByText('12,400 ms')).toBeNull()
   })
 
   it('renders the free billing mode when the model is free', async () => {

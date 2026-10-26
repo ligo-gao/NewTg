@@ -57,7 +57,11 @@ describe('priceOf', () => {
       }),
       500000,
     )
-    expect(priced).toEqual({ input: 0.06, output: 0.12, cacheRead: 0.03 })
+    expect(priced).toEqual({
+      input: 0.06,
+      output: 0.12,
+      cacheRead: 0.03,
+    })
 
     expect(priceOf(card(), 500000)).toEqual({
       input: null,
@@ -65,6 +69,43 @@ describe('priceOf', () => {
       cacheRead: null,
     })
     expect(priceOf(card({ prompt_price: '30000' }), undefined)).toEqual({
+      input: null,
+      output: null,
+      cacheRead: null,
+    })
+  })
+
+  it('treats per_request prompt_price as a per-call price', () => {
+    // 30000 credits per call at 500000 credits per yuan = ¥0.06 per call.
+    // completion/cache fields are meaningless in this mode and must stay null.
+    const priced = priceOf(
+      card({
+        mode: 'per_request',
+        prompt_price: '30000',
+        completion_price: '60000',
+        cache_read_price: '15000',
+      }),
+      500000,
+    )
+    expect(priced).toEqual({
+      input: 0.06,
+      output: null,
+      cacheRead: null,
+      perCall: true,
+    })
+  })
+
+  it('renders no prices for a mode it does not understand', () => {
+    expect(
+      priceOf(
+        card({
+          mode: 'per_batch',
+          prompt_price: '30000',
+          completion_price: '60000',
+        }),
+        500000,
+      ),
+    ).toEqual({
       input: null,
       output: null,
       cacheRead: null,
@@ -79,5 +120,11 @@ describe('formatRmb', () => {
     expect(formatRmbRange(0.06, 4, 'zh-CN')).toBe('¥0.06–¥4.00')
     expect(formatRmbRange(4, 4, 'zh-CN')).toBe('¥4.00')
     expect(formatRmbRange(0.06, null, 'zh-CN')).toBeNull()
+  })
+
+  it('collapses a range whose endpoints format identically', () => {
+    // ¥0.0002 and ¥0.0018 are different inputs but both print ¥0.00; a
+    // `¥0.00–¥0.00` range would invent a spread that readers cannot see.
+    expect(formatRmbRange(0.0002, 0.0018, 'en')).toBe('¥0.00')
   })
 })

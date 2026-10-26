@@ -7,7 +7,6 @@ import {
   facetsOf,
   kindForEndpoints,
   kindOf,
-  monogram,
 } from './taxonomy'
 
 function card(
@@ -110,21 +109,5 @@ describe('contextBucketOf', () => {
     expect(contextBucketOf(32_769)).toBe('128k')
     expect(contextBucketOf(131_072)).toBe('128k')
     expect(contextBucketOf(131_073)).toBe('200k+')
-  })
-})
-
-describe('monogram', () => {
-  it('uses the first two letters of the vendor uppercased', () => {
-    expect(monogram('OpenAI', 'GPT-4o')).toBe('OP')
-    expect(monogram('deepseek', 'DeepSeek-V3')).toBe('DE')
-  })
-
-  it('falls back to the display name and takes one CJK character', () => {
-    expect(monogram('', 'GPT-4o')).toBe('GP')
-    expect(monogram('   ', 'Claude')).toBe('CL')
-    expect(monogram(String.fromCodePoint(0x667a, 0x8c31), 'GLM-4')).toBe(
-      String.fromCodePoint(0x667a),
-    )
-    expect(monogram('', '')).toBe('')
   })
 })

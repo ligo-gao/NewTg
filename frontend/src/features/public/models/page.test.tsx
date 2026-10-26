@@ -142,29 +142,38 @@ type ChangeHandler = (next: ModelsSearch, replace?: boolean) => void
 const server = setupServer()
 
 const originalMatchMedia = window.matchMedia
-const NARROW_QUERY = '(max-width: 760px)'
 
 /**
  * jsdom ships no `matchMedia`, and `useMediaQuery` treats a missing API as
- * "wide". These cases assert both sides of the 760px gate, so install a stub
- * that reports a single viewport: narrow matches only the card query, wide
- * matches the min-width queries instead.
+ * "wide". These cases cross both width gates (1200px rail, 1440px table, 760px
+ * cards), so install a stub that answers every `min-width` / `max-width` query
+ * for one concrete viewport width.
  */
-function mockViewport(narrow: boolean): void {
-  window.matchMedia = ((query: string) => ({
-    matches: query.includes(NARROW_QUERY) ? narrow : !narrow,
-    media: query,
-    onchange: null,
-    addEventListener: () => undefined,
-    removeEventListener: () => undefined,
-    addListener: () => undefined,
-    removeListener: () => undefined,
-    dispatchEvent: () => false,
-  })) as unknown as typeof window.matchMedia
+function mockViewport(width: number): void {
+  window.matchMedia = ((query: string) => {
+    const min = /min-width:\s*(\d+)px/.exec(query)
+    const max = /max-width:\s*(\d+)px/.exec(query)
+    const matches =
+      min !== null
+        ? width >= Number(min[1])
+        : max !== null
+          ? width <= Number(max[1])
+          : true
+    return {
+      matches,
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    }
+  }) as unknown as typeof window.matchMedia
 }
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
-beforeEach(() => mockViewport(false))
+beforeEach(() => mockViewport(1600))
 afterEach(() => {
   server.resetHandlers()
   window.matchMedia = originalMatchMedia
@@ -307,7 +316,7 @@ describe('ModelsPage', () => {
   })
 
   it('forces cards below 760px and never writes the forced view to the URL', async () => {
-    mockViewport(true)
+    mockViewport(600)
     serveCatalog()
     const onChange = vi.fn<ChangeHandler>()
     await renderPage({ ...BASE, view: 'table' }, onChange)
@@ -346,6 +355,38 @@ describe('ModelsPage', () => {
     const last = onChange.mock.lastCall?.[0] as ModelsSearch
     expect(last.range).toBe('24h')
     expect(last.view).toBe('table')
+  })
+
+  it('disables the table toggle between 761 and 1439px instead of lying', async () => {
+    // The table needs 1440px: at 1280/1366 it cannot fit seven columns even
+    // though it is well above the 760px card fallback.
+    mockViewport(1280)
+    serveCatalog()
+    const onChange = vi.fn<ChangeHandler>()
+    await renderPage({ ...BASE, view: 'table' }, onChange)
+    await screen.findByText('GPT-5')
+
+    // The URL still says `table`; the list renders cards and the toggle must
+    // report that reality rather than claim a table that is not on screen.
+    expect(screen.queryByRole('table')).toBeNull()
+    expect(document.querySelectorAll('.cards > li')).toHaveLength(2)
+
+    const tableToggle = screen.getByRole('button', {
+      name: 'Table',
+    }) as HTMLButtonElement
+    expect(tableToggle.disabled).toBe(true)
+    expect(tableToggle.getAttribute('aria-disabled')).toBe('true')
+    expect(tableToggle.getAttribute('aria-pressed')).toBe('false')
+    expect(
+      screen
+        .getByRole('button', { name: 'Cards' })
+        .getAttribute('aria-pressed'),
+    ).toBe('true')
+
+    // Clicking the unavailable view cannot persist something unrenderable.
+    fireEvent.click(tableToggle)
+    expect(onChange).not.toHaveBeenCalled()
+    expect(screen.queryByRole('table')).toBeNull()
   })
 
   it('keeps the list when metrics fail and shows the unavailable banner', async () => {

@@ -14,7 +14,6 @@ import { copyText } from '@/features/public/pricing/copy'
 import { formatContextTokens } from '@/features/public/pricing/format'
 import { useI18n } from '@/shared/lib/i18n-context'
 import type { TranslateFn } from '@/shared/lib/i18n-context'
-import { useMediaQuery } from '@/shared/lib/use-media-query'
 import { useToastStore } from '@/shared/ui/toast'
 
 import { formatMs } from './format'
@@ -27,10 +26,11 @@ export interface RegisterProps {
   entries: readonly ModelEntry[]
   view: ModelsView
   /**
-   * 窄屏（≤760px）由页面按媒体查询判定：表格在这个宽度无法阅读，视图无条件
-   * 落到卡片，地址栏里的 `view` 仍保持用户原来的选择。
+   * 表格在当前视口不可渲染（<1440px，或 ≤760px 的窄屏）：视图无条件落到
+   * 卡片，地址栏里的 `view` 仍保持用户原来的选择。判定由页面算一次后传入，
+   * 工具栏与列表共用同一个值。
    */
-  narrow: boolean
+  compact: boolean
   /** 指标窗口；展开行把它带进读数块标题。 */
   range: ModelsRange
   compareIds: readonly string[]
@@ -40,12 +40,6 @@ export interface RegisterProps {
   onOpenCompare: () => void
   onCall: (entry: ModelEntry) => void
 }
-
-/**
- * 表格自身的宽度门槛：1440px 以下表格放不下，统一落到卡片。更窄的 760px
- * 由页面通过 `narrow` 判定并强制卡片（见 `Register`）。
- */
-const WIDE_QUERY = '(min-width: 1440px)'
 
 interface RowActions {
   expandedId: string | null
@@ -147,29 +141,29 @@ function ModelIdentity({ entry }: { entry: ModelEntry }) {
           {entry.card.model_id}
         </div>
       ) : null}
-      <div className="model-chips mt-1 flex flex-wrap gap-1">
-        {profileMissing ? (
+      {profileMissing ? (
+        <div className="model-chips mt-1 flex flex-wrap gap-1">
           <span className="chip plain border border-border-default px-1.5 text-badge leading-4 text-ink-3">
             {t('public.models.table.profile_missing')}
           </span>
-        ) : (
-          <>
-            {entry.card.capabilities.map((capability) => (
-              <span
-                className="chip border border-border-default px-1.5 text-badge leading-4 text-ink-2"
-                key={capability}
-              >
-                {capability}
-              </span>
-            ))}
-            {entry.card.vendor !== '' ? (
-              <span className="chip plain border border-border-default px-1.5 text-badge leading-4 text-ink-3">
-                {entry.card.vendor}
-              </span>
-            ) : null}
-          </>
-        )}
-      </div>
+        </div>
+      ) : entry.card.capabilities.length > 0 || entry.card.vendor !== '' ? (
+        <div className="model-chips mt-1 flex flex-wrap gap-1">
+          {entry.card.capabilities.map((capability) => (
+            <span
+              className="chip border border-border-default px-1.5 text-badge leading-4 text-ink-2"
+              key={capability}
+            >
+              {capability}
+            </span>
+          ))}
+          {entry.card.vendor !== '' ? (
+            <span className="chip plain border border-border-default px-1.5 text-badge leading-4 text-ink-3">
+              {entry.card.vendor}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -179,15 +173,15 @@ function ModelIdentity({ entry }: { entry: ModelEntry }) {
  * 非 chat 模型只有端到端延迟，必须带上口径标签，免得被读成首字。
  */
 function LatencyCell({ perf }: { perf: ModelPerformance }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   return (
     <div className="lat-cell">
       <span className="metric block font-mono text-meta tabular-nums text-ink-1">
-        {formatMs(perf.p50)}
+        {formatMs(perf.p50, locale)}
       </span>
       {perf.p95 !== null ? (
         <span className="metric-sub block font-mono text-badge tabular-nums text-ink-3">
-          P95 {formatMs(perf.p95)}
+          P95 {formatMs(perf.p95, locale)}
         </span>
       ) : null}
       {perf.measure === 'latency' ? (
@@ -199,16 +193,31 @@ function LatencyCell({ perf }: { perf: ModelPerformance }) {
   )
 }
 
-/** 价格格：输入价 · 输出价（每百万 token），每一位缺失都单独渲染 `—`。 */
+/**
+ * 价格格：按 token 是「输入价 · 输出价（每百万 token）」；按次只有一次
+ * 调用价，单位由「每次」这一行说明——表头是整列默认口径，单行必须自己
+ * 声明单位，不能把按次价读成每百万 token。任何缺失位置仍单独渲染 `—`。
+ */
 function PriceCell({ entry }: { entry: ModelEntry }) {
-  const { locale } = useI18n()
+  const { t, locale } = useI18n()
+  const { price } = entry
+  if (price.perCall) {
+    return (
+      <div className="price-cell flex flex-col justify-center font-mono text-meta tabular-nums text-ink-1">
+        <span>{formatRmb(price.input, locale) ?? '—'}</span>
+        <span className="metric-sub block text-badge text-ink-3">
+          {t('public.pricing.price_per_call')}
+        </span>
+      </div>
+    )
+  }
   return (
     <div className="price-cell flex items-center gap-1 font-mono text-meta tabular-nums text-ink-1">
-      <span>{formatRmb(entry.price.input, locale) ?? '—'}</span>
+      <span>{formatRmb(price.input, locale) ?? '—'}</span>
       <span aria-hidden="true" className="text-ink-3">
         {' · '}
       </span>
-      <span>{formatRmb(entry.price.output, locale) ?? '—'}</span>
+      <span>{formatRmb(price.output, locale) ?? '—'}</span>
     </div>
   )
 }
@@ -445,6 +454,10 @@ function ModelTable({
       entry.card.context_length !== null || entry.card.max_output !== null,
   )
   const columnCount = showContext ? 8 : 7
+  // 整列都是按次计价时，表头也不能再声称「¥/百万 token」；混合目录保留
+  // 按 token 的默认表头，由按次行自己在价格格里声明单位。
+  const allPerCall =
+    entries.length > 0 && entries.every((entry) => entry.price.perCall === true)
 
   return (
     <div className="table-wrap relative w-full overflow-x-auto rounded-xl border border-border-default bg-surface-card">
@@ -469,10 +482,18 @@ function ModelTable({
               {t('public.models.table.model')}
             </th>
             <th scope="col" className="px-2 py-2">
-              <span className="block">{t('public.models.table.price')}</span>
-              <span className="block font-normal text-ink-3">
-                {t('public.models.table.price_sub')}
+              <span className="block">
+                {t(
+                  allPerCall
+                    ? 'public.pricing.price_per_call'
+                    : 'public.models.table.price',
+                )}
               </span>
+              {allPerCall ? null : (
+                <span className="block font-normal text-ink-3">
+                  {t('public.models.table.price_sub')}
+                </span>
+              )}
             </th>
             {showContext ? (
               <th scope="col" className="px-2 py-2">
@@ -595,7 +616,7 @@ function ModelCard({ entry, actions }: { entry: ModelEntry; actions: RowActions 
       <div className="card-metrics grid grid-cols-3 gap-2.5 border-t border-border-hairline pt-3">
         <div className="card-metric">
           <span className="card-metric-value block font-mono text-meta tabular-nums text-ink-1">
-            {formatMs(perf.p50)}
+            {formatMs(perf.p50, locale)}
           </span>
           <span className="card-metric-label block text-badge text-ink-3">
             {latencyLabel}
@@ -614,7 +635,11 @@ function ModelCard({ entry, actions }: { entry: ModelEntry; actions: RowActions 
             {formatRmb(entry.price.input, locale) ?? '—'}
           </span>
           <span className="card-metric-label block text-badge text-ink-3">
-            {t('public.models.compare.price_input')}
+            {t(
+              entry.price.perCall
+                ? 'public.pricing.price_per_call'
+                : 'public.models.compare.price_input',
+            )}
           </span>
         </div>
       </div>
@@ -700,7 +725,7 @@ function CompareTray({
 export function Register({
   entries,
   view,
-  narrow,
+  compact,
   range,
   compareIds,
   expandedId,
@@ -709,9 +734,8 @@ export function Register({
   onOpenCompare,
   onCall,
 }: RegisterProps) {
-  const wide = useMediaQuery(WIDE_QUERY)
-  // 窄屏是布局强制，优先于地址栏里的 view；表格在 ≤760px 无法阅读。
-  const effectiveView: ModelsView = narrow || !wide ? 'cards' : view
+  // 表格不可用时（窄屏或 <1440px）卡片是布局强制，优先于地址栏里的 view。
+  const effectiveView: ModelsView = compact ? 'cards' : view
   const actions: RowActions = {
     expandedId,
     range,

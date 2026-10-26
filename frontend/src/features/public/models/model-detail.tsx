@@ -23,6 +23,7 @@ import { modalityLabel } from '@/features/public/pricing/metadata'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { useToastStore } from '@/shared/ui/toast'
 
+import { formatMs } from './format'
 import { MAX_COMPARE, type ModelsRange } from './params'
 import type { ModelEntry } from './performance'
 import { formatRmb } from './price'
@@ -75,8 +76,10 @@ function formatDay(value: string | null, locale: string): string {
 }
 
 /**
- * P50 / P95 的唯一口径：两个都在才写 `x / y ms`，缺 P95 只写 `x ms`。
- * 均值来源的 `p95` 恒为 null，因此永远不会出现拿均值冒充分位数的副读数。
+ * P50 / P95 的唯一口径：两个都在才写 `x / y`，缺 P95 只写 `x`。
+ * 每一侧都走表格的 `formatMs`，因此详情与表格对同一个读数给出同一个写法
+ * （包括区域分组符号和 ≥10s 的秒制）。均值来源的 `p95` 恒为 null，因此
+ * 永远不会出现拿均值冒充分位数的副读数。
  */
 function formatPair(
   p50: number | null,
@@ -84,10 +87,9 @@ function formatPair(
   locale: string,
 ): string {
   if (p50 === null || !Number.isFinite(p50) || p50 < 0) return '—'
-  const nf = new Intl.NumberFormat(locale, { maximumFractionDigits: 0 })
-  const low = nf.format(Math.round(p50))
-  if (p95 === null || !Number.isFinite(p95) || p95 < 0) return `${low} ms`
-  return `${low} / ${nf.format(Math.round(p95))} ms`
+  const low = formatMs(p50, locale)
+  if (p95 === null || !Number.isFinite(p95) || p95 < 0) return low
+  return `${low} / ${formatMs(p95, locale)}`
 }
 
 /** 成功率固定两位小数；没有读数写 `—`，绝不写 `0%`。 */
@@ -203,11 +205,16 @@ export function ModelDetail({
     `${t('public.models.detail.access_auth')}   Bearer <your key>`,
   ].join('\n')
 
-  const priceText = (value: number | null): string => {
+  /**
+   * 按 token：金额 + 「/ M」；按次：金额本身就是元 / 次，不能再缀每百万
+   * token 的单位。`perCall` 来自 `ModelPrice`，这里不重读 `card.mode`。
+   */
+  const priceText = (value: number | null, perMillion = true): string => {
     const formatted = formatRmb(value, locale)
-    return formatted === null
-      ? '—'
-      : `${formatted} ${t('public.models.detail.per_million')}`
+    if (formatted === null) return '—'
+    return perMillion
+      ? `${formatted} ${t('public.models.detail.per_million')}`
+      : formatted
   }
 
   const copyModelId = async () => {
@@ -267,30 +274,43 @@ export function ModelDetail({
           {t('public.models.detail.block_price')}
         </h4>
         <dl className="grid gap-1">
-          <Kv
-            label={t('public.models.detail.price_input')}
-            value={priceText(entry.price.input)}
-          />
-          <Kv
-            label={t('public.models.detail.price_output')}
-            value={priceText(entry.price.output)}
-          />
-          <Kv
-            label={t('public.models.detail.price_cache')}
-            value={priceText(entry.price.cacheRead)}
-          />
+          {entry.price.perCall ? (
+            <Kv
+              label={t('public.pricing.price_per_call')}
+              value={priceText(entry.price.input, false)}
+            />
+          ) : (
+            <>
+              <Kv
+                label={t('public.models.detail.price_input')}
+                value={priceText(entry.price.input)}
+              />
+              <Kv
+                label={t('public.models.detail.price_output')}
+                value={priceText(entry.price.output)}
+              />
+              <Kv
+                label={t('public.models.detail.price_cache')}
+                value={priceText(entry.price.cacheRead)}
+              />
+            </>
+          )}
           <Kv
             label={t('public.models.detail.billing')}
             value={t(
               card.is_free
                 ? 'public.models.detail.billing_free'
-                : 'public.models.detail.billing_token',
+                : entry.price.perCall
+                  ? 'public.pricing.mode_request'
+                  : 'public.models.detail.billing_token',
             )}
           />
         </dl>
-        <p className="text-badge leading-4 text-ink-3">
-          {t('public.models.detail.price_note')}
-        </p>
+        {entry.price.perCall ? null : (
+          <p className="text-badge leading-4 text-ink-3">
+            {t('public.models.detail.price_note')}
+          </p>
+        )}
       </div>
 
       <div className="flex min-w-0 flex-col gap-1">

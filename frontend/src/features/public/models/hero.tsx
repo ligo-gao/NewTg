@@ -4,7 +4,8 @@
  * 统计必须来自**完整目录**（`entries`），不是当前筛选结果。最快首字 P50
  * 只在 `measure === 'ttft'` 且有读数的模型里取最小——端到端延迟不能冒充首字
  * 延迟；没有读数时如实显示 `—`，副标题是 `model_id`。输入价取全目录
- * `price.input` 的区间，任一端缺失即 `—`，不把未知价格伪装成免费。
+ * 按 token 计价条目的 `price.input` 区间（按次价格不是每百万 token，不能
+ * 混进同一区间），任一端缺失即 `—`，不把未知价格伪装成免费。
  *
  * 能力筛选只属于左侧筛选栏：页头不再重复渲染 chip 行。
  */
@@ -52,7 +53,9 @@ export function ModelHero({ entries }: ModelHeroProps) {
       }
     }
 
-    const input = entry.price.input
+    // 按次计价的价格是「元 / 次」，混进「元 / 百万 token」的区间会把两种
+    // 单位相加；输入价区间只统计按 token 的条目。
+    const input = entry.price.perCall ? null : entry.price.input
     if (input !== null && Number.isFinite(input)) {
       if (minInputPrice === null || input < minInputPrice) minInputPrice = input
       if (maxInputPrice === null || input > maxInputPrice) maxInputPrice = input
@@ -70,7 +73,7 @@ export function ModelHero({ entries }: ModelHeroProps) {
     },
     {
       label: t('public.models.stat.fastest'),
-      value: formatMs(fastestP50),
+      value: formatMs(fastestP50, locale),
       note: fastestEntry?.card.model_id,
     },
     {

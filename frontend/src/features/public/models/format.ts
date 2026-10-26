@@ -5,35 +5,19 @@
  * `—`。样本数为 0 则是真实的零，必须渲染 `0`。
  */
 
-/** 349.6 → `350 ms`；≥10,000ms 用秒并保留一位小数（12_400 → `12.4 s`）。 */
-export function formatMs(value: number | null): string {
+/**
+ * 349.6 → `350 ms`；≥10,000ms 用秒并保留一位小数（12_400 → `12.4 s`）。
+ *
+ * 分组符号跟随 `locale`（fr/ru/vi 读作 `2 340 ms`）：表格格、卡片、页头与
+ * 展开行的详情必须传同一个 locale，否则同一个数字会出现两种写法。
+ */
+export function formatMs(value: number | null, locale = 'en-US'): string {
   if (value === null || !Number.isFinite(value) || value < 0) return '—'
   if (value >= 10_000) return `${(value / 1_000).toFixed(1)} s`
-  const rounded = new Intl.NumberFormat('en-US', {
+  const rounded = new Intl.NumberFormat(locale, {
     maximumFractionDigits: 0,
   }).format(Math.round(value))
   return `${rounded} ms`
-}
-
-/** 低于 10 保留一位小数，10 以上取整；缺失渲染 `—`。 */
-export function formatTPS(value: number | null): string {
-  if (value === null || !Number.isFinite(value) || value < 0) return '—'
-  const text =
-    value < 10
-      ? new Intl.NumberFormat('en-US', {
-          minimumFractionDigits: 1,
-          maximumFractionDigits: 1,
-        }).format(value)
-      : new Intl.NumberFormat('en-US', {
-          maximumFractionDigits: 0,
-        }).format(Math.round(value))
-  return `${text} t/s`
-}
-
-/** 0.998 → `99.8%`（一位小数）；缺失渲染 `—`。 */
-export function formatPercent(value: number | null): string {
-  if (value === null || !Number.isFinite(value)) return '—'
-  return `${(value * 100).toFixed(1)}%`
 }
 
 /** 样本量：0 渲染 `0`；≥10,000 用 compact（10K / 1.2M）。 */

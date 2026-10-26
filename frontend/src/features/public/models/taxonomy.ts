@@ -1,5 +1,5 @@
 /**
- * 模型库的分类法：能力槽、供应商/上下文/端点 facet、主调用类型与字母标。
+ * 模型库的分类法：能力槽、供应商/上下文/端点 facet 与主调用类型。
  *
  * 能力是自由文本（后端允许新枚举先于前端上线），因此这里的所有计数都以
  * 小写 `value` 归并、以首次出现的原值作为 `label`；未知能力保留原样，
@@ -167,21 +167,4 @@ export function facetsOf(cards: readonly PublicModelCard[]): ModelFacets {
     }),
     endpoints: tallyValues(cards, validEndpoints),
   }
-}
-
-/** CJK 统一表意文字、扩展 A、兼容区、假名与谚文：只取首字。 */
-const CJK_PATTERN = /^[぀-ヿ㐀-䶿一-鿿豈-﫿가-힯]/
-
-/**
- * 模型标识方块：优先供应商，缺失时回退展示名。
- * 拉丁文本取前两个字符并大写；CJK 取首字（两个汉字会挤满方块）。
- */
-export function monogram(vendor: string, displayName: string): string {
-  const source = vendor.trim() || displayName.trim()
-  if (source === '') return ''
-  const chars = Array.from(source)
-  const first = chars[0]
-  if (first === undefined) return ''
-  if (CJK_PATTERN.test(first)) return first
-  return chars.slice(0, 2).join('').toUpperCase()
 }
