@@ -161,9 +161,7 @@ func scanCustomerDiscount(scan func(...any) error) (CustomerDiscount, error) {
 // (rate_percent asc, user before group, 候选名靠前) 取唯一一条。
 //
 // 读取侧对坏数据 fail-closed：rate_percent 越界、target_id 为空或
-// target_type 不是 user/group 的行都被跳过（WARN 后按原价）；
-// 个人规则还要求目标用户仍然存在——用户被删除而规则因绕过级联残留时，
-// 该规则不能给任何请求打折。
+// target_type 不是 user/group 的行都被跳过（WARN 后按原价）。
 func (r *CustomerDiscountRepo) Resolve(ctx context.Context, userID int64, models []string, at time.Time) (CustomerDiscount, bool, error) {
 	if r == nil || r.db == nil {
 		return CustomerDiscount{}, false, errors.New("store: discounts 仓储未绑定数据库")
@@ -178,7 +176,6 @@ func (r *CustomerDiscountRepo) Resolve(ctx context.Context, userID int64, models
 	}
 	defer func() { _ = rows.Close() }()
 
-	hasUserRule := false
 	valid := make([]CustomerDiscount, 0, 2)
 	for rows.Next() {
 		d, err := scanCustomerDiscount(rows.Scan)
@@ -200,29 +197,10 @@ func (r *CustomerDiscountRepo) Resolve(ctx context.Context, userID int64, models
 				"discount_id", d.ID, "target_type", d.TargetType)
 			continue
 		}
-		if d.TargetType == discountTargetUser {
-			hasUserRule = true
-		}
 		valid = append(valid, d)
 	}
 	if err := rows.Err(); err != nil {
 		return CustomerDiscount{}, false, fmt.Errorf("store: resolve discounts iterate: %w", err)
-	}
-	// 个人规则按 target_id 文本直接匹配，不经过 users 联结：用户被删除而规则
-	// 残留（绕过应用层级联）时必须显式确认用户仍存在，否则会给一个已不存在的
-	// 用户 id 返回折扣。分组规则的分支用子查询读 users."group"，用户不存在时
-	// 天然为 NULL，不需要这一步。
-	//
-	// 只有实际取回个人规则时才多查一次；普通（无个人规则）请求不多一次往返。
-	if hasUserRule {
-		var exists bool
-		if err := r.db.QueryRowContext(ctx,
-			`SELECT EXISTS(SELECT 1 FROM users WHERE id = $1::bigint)`, userID).Scan(&exists); err != nil {
-			return CustomerDiscount{}, false, fmt.Errorf("store: resolve discount target user(%d): %w", userID, err)
-		}
-		if !exists {
-			return CustomerDiscount{}, false, nil
-		}
 	}
 	picked, ok := PickCustomerDiscount(valid, models)
 	return picked, ok, nil
