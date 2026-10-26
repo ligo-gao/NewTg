@@ -834,7 +834,14 @@
         "failed": "Failed",
         "done": "Done",
         "retryFailed": "Retry failed rows only"
-      }
+      },
+      "summary": "Create {created} / Update {updated} / Skip {skipped}",
+      "nothingToWrite": "Nothing to write: existing profiles only update when you check Overwrite on their row.",
+      "conflictCreate": "A profile with this name already exists (it may have just been created). Refresh the catalog and confirm whether it was created.",
+      "catalogTruncated": "The model catalog has more than {max} entries; only the first {max} were loaded. Profiles for unloaded models cannot be confirmed here, and only the models you selected are preselected.",
+      "vendorAssigned": "Vendor: {name}",
+      "factsSourceValue": "Facts source: {source}",
+      "invalidModelName": "Invalid model name; this row cannot be created (only letters, digits and . _ : / - are allowed)."
     }
   },
   "tokens": {

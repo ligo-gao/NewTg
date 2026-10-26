@@ -834,7 +834,14 @@
         "failed": "失敗",
         "done": "完成",
         "retryFailed": "只重試失敗列"
-      }
+      },
+      "summary": "新建 {created} / 更新 {updated} / 跳過 {skipped}",
+      "nothingToWrite": "沒有可寫入的檔案：既有檔案需要逐列勾選「覆蓋」才會更新。",
+      "conflictCreate": "同名檔案已存在（可能已由他人建立）。重新整理目錄後請確認是否已建立。",
+      "catalogTruncated": "模型目錄超過 {max} 筆，只載入了前 {max} 筆；未載入的模型無法在此確認檔案狀態，嚮導只預選你已選取的模型。",
+      "vendorAssigned": "供應商：{name}",
+      "factsSourceValue": "事實來源：{source}",
+      "invalidModelName": "模型名稱不合法，無法建立檔案（只允許字母、數字與 . _ : / -）。"
     }
   },
   "tokens": {

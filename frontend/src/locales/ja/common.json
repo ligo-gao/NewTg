@@ -834,7 +834,14 @@
         "failed": "失敗",
         "done": "完了",
         "retryFailed": "失敗した行のみ再試行"
-      }
+      },
+      "summary": "新規 {created} / 更新 {updated} / スキップ {skipped}",
+      "nothingToWrite": "書き込む対象がありません。既存のプロファイルは行ごとに「上書き」を選んだ場合のみ更新されます。",
+      "conflictCreate": "同名のプロファイルが既に存在します（他の人が作成した可能性があります）。カタログを更新して、作成済みか確認してください。",
+      "catalogTruncated": "モデルカタログが {max} 件を超えています。先頭 {max} 件のみ読み込みました。未読み込みのモデルはここでプロファイルを確認できないため、選択済みのモデルのみが事前選択されます。",
+      "vendorAssigned": "ベンダー：{name}",
+      "factsSourceValue": "事実の出所：{source}",
+      "invalidModelName": "モデル名が無効なため作成できません（使用できるのは英数字と . _ : / - のみです）。"
     }
   },
   "tokens": {

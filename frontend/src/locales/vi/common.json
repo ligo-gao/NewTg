@@ -834,7 +834,14 @@
         "failed": "Thất bại",
         "done": "Hoàn tất",
         "retryFailed": "Chỉ thử lại các dòng lỗi"
-      }
+      },
+      "summary": "Tạo {created} / Cập nhật {updated} / Bỏ qua {skipped}",
+      "nothingToWrite": "Không có gì để ghi: hồ sơ hiện có chỉ được cập nhật khi bạn chọn «Ghi đè» trên dòng của nó.",
+      "conflictCreate": "Đã tồn tại hồ sơ cùng tên (có thể vừa được người khác tạo). Hãy làm mới danh mục và xác nhận xem hồ sơ đã được tạo chưa.",
+      "catalogTruncated": "Danh mục mô hình có hơn {max} mục; chỉ tải {max} mục đầu tiên. Không thể xác nhận hồ sơ của các mô hình chưa tải tại đây, và chỉ những mô hình bạn đã chọn mới được chọn sẵn.",
+      "vendorAssigned": "Nhà cung cấp: {name}",
+      "factsSourceValue": "Nguồn dữ kiện: {source}",
+      "invalidModelName": "Tên mô hình không hợp lệ; không thể tạo dòng này (chỉ cho phép chữ cái, chữ số và . _ : / -)."
     }
   },
   "tokens": {

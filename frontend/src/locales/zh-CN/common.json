@@ -834,7 +834,14 @@
         "failed": "失败",
         "done": "完成",
         "retryFailed": "只重试失败行"
-      }
+      },
+      "summary": "新建 {created} / 更新 {updated} / 跳过 {skipped}",
+      "nothingToWrite": "没有可写入的档案：已有档案需要逐行勾选「覆盖」才会更新。",
+      "conflictCreate": "同名档案已存在（可能已由他人创建）。刷新目录后确认是否已创建。",
+      "catalogTruncated": "模型目录超过 {max} 条，只加载了前 {max} 条；未加载的模型无法在此确认档案状态，向导只预选你已选中的模型。",
+      "vendorAssigned": "供应商：{name}",
+      "factsSourceValue": "事实来源：{source}",
+      "invalidModelName": "模型名不合法，无法建档（只允许字母、数字与 . _ : / -）。"
     }
   },
   "tokens": {

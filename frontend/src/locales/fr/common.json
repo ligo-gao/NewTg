@@ -834,7 +834,14 @@
         "failed": "Échecs",
         "done": "Terminé",
         "retryFailed": "Réessayer uniquement les échecs"
-      }
+      },
+      "summary": "Créer {created} / Mettre à jour {updated} / Ignorer {skipped}",
+      "nothingToWrite": "Rien à écrire : les profils existants ne sont mis à jour que si vous cochez « Écraser » sur leur ligne.",
+      "conflictCreate": "Un profil portant ce nom existe déjà (il vient peut-être d’être créé). Actualisez le catalogue et vérifiez s’il a été créé.",
+      "catalogTruncated": "Le catalogue contient plus de {max} entrées ; seules les {max} premières ont été chargées. Les profils des modèles non chargés ne peuvent pas être confirmés ici, et seuls les modèles que vous avez sélectionnés sont présélectionnés.",
+      "vendorAssigned": "Fournisseur : {name}",
+      "factsSourceValue": "Source des faits : {source}",
+      "invalidModelName": "Nom de modèle invalide ; cette ligne ne peut pas être créée (lettres, chiffres et . _ : / - uniquement)."
     }
   },
   "tokens": {
