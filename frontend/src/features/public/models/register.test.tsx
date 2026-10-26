@@ -83,6 +83,7 @@ const TESTED: ModelEntry = {
     endpoints: ['chat.completions'],
   }),
   kind: 'chat',
+  price: { input: null, output: null, cacheRead: null },
   perf: perf({
     source: 'test',
     measure: 'ttft',
@@ -105,6 +106,7 @@ const AVERAGED: ModelEntry = {
     endpoints: ['embeddings'],
   }),
   kind: 'embedding',
+  price: { input: null, output: null, cacheRead: null },
   perf: perf({
     source: 'usage',
     measure: 'latency',
@@ -123,6 +125,7 @@ const EMPTY: ModelEntry = {
     vendor: 'acme',
   }),
   kind: 'chat',
+  price: { input: null, output: null, cacheRead: null },
   perf: perf({}),
 }
 

@@ -58,6 +58,7 @@ function entry({
   return {
     card,
     kind,
+    price: { input: null, output: null, cacheRead: null },
     perf: performance({
       source,
       p50,

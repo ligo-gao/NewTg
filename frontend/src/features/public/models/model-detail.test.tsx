@@ -40,6 +40,7 @@ const CARD: PublicModelCard = {
 const ENTRY: ModelEntry = {
   card: CARD,
   kind: 'chat',
+  price: { input: null, output: null, cacheRead: null },
   perf: {
     source: 'test',
     measure: 'ttft',

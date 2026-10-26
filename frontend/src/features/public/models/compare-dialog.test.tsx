@@ -56,6 +56,7 @@ function entry(
   return {
     card: card(modelId),
     kind: 'chat',
+    price: { input: null, output: null, cacheRead: null },
     perf: performance(overrides),
   }
 }

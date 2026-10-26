@@ -56,7 +56,12 @@ function entry({
     tags: [],
     description: '',
   }
-  return { card, kind: 'chat', perf: performance(perf) }
+  return {
+    card,
+    kind: 'chat',
+    price: { input: null, output: null, cacheRead: null },
+    perf: performance(perf),
+  }
 }
 
 const ENTRIES: readonly ModelEntry[] = [
