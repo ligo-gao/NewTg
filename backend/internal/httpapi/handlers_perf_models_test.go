@@ -129,6 +129,21 @@ func modelsTestBucket(model string, start time.Time, total, success int64, laten
 	return bucket
 }
 
+// modelsTestOverflowBucket 构造延迟 p95 落进 +Inf 桶的桶：只有 finite 个样本
+// 归属首桶，其余（total-finite）没有有限桶归属，即 >30s。TTFT 保持全有限。
+func modelsTestOverflowBucket(model string, start time.Time, total, finite int64) perfmetrics.Bucket {
+	bucket := perfmetrics.Bucket{
+		Model:        model,
+		Start:        start.UTC(),
+		Success:      total,
+		LatencyCount: total,
+		TTFTCount:    total,
+	}
+	bucket.LatencyBuckets[0] = finite
+	bucket.TTFTBuckets[0] = total
+	return bucket
+}
+
 func modelsTestProbe(model string, at time.Time, runs, success int, rate float64) store.ModelPerformanceTest {
 	return store.ModelPerformanceTest{
 		Model:        model,
@@ -642,18 +657,8 @@ func TestModelsInfinityP95Flagged(t *testing.T) {
 	recent := modelsTestNow.Add(-10 * time.Minute)
 	// 100 个样本里 94 个在 [0,50)，其余 6 个落进 +Inf（>30s）：p95 秩 = 95
 	// 越过 94 个有限样本，落进 +Inf 桶。
-	overflow := perfmetrics.Bucket{
-		Model:        "overflow",
-		Start:        recent,
-		Success:      100,
-		LatencyCount: 100,
-		TTFTCount:    100,
-	}
-	overflow.LatencyBuckets[0] = 94
-	overflow.TTFTBuckets[0] = 100
-
 	source := &fakeModelPerfSource{
-		minute: []perfmetrics.Bucket{overflow},
+		minute: []perfmetrics.Bucket{modelsTestOverflowBucket("overflow", recent, 100, 94)},
 		hourly: []perfmetrics.Bucket{
 			modelsTestBucket("overflow", recent.Add(-3*time.Hour), 100, 100, 20000),
 			modelsTestBucket("overflow", recent.Add(-4*time.Hour), 100, 100, 20000),
@@ -682,6 +687,106 @@ func TestModelsInfinityP95Flagged(t *testing.T) {
 	// 唯一的分钟桶在 12:20（当前小时 → 下标 23），p95 落 +Inf → null。
 	if row.Spark[23] != nil {
 		t.Errorf("spark[23] = %v, want null（+Inf 小时不画 30000）", *row.Spark[23])
+	}
+}
+
+// TestModelsTTFTP50Over30sFlagged：TTFT p50 落进 +Inf 桶时，ttft_p50_ms 仍是
+// 30000 下界，ttft_p50_over_30s 必须为 true。
+func TestModelsTTFTP50Over30sFlagged(t *testing.T) {
+	bucket := perfmetrics.Bucket{
+		Model:        "slow-ttft",
+		Start:        modelsTestNow.Add(-10 * time.Minute),
+		Success:      100,
+		LatencyCount: 100,
+		TTFTCount:    100,
+	}
+	bucket.LatencyBuckets[0] = 100
+	// 60 个 TTFT 样本 >30s：p50 秩 = 50 越过 40 个有限样本，落进 +Inf 桶。
+	bucket.TTFTBuckets[0] = 40
+
+	resp := getModels(t, newModelsTestMux(t, PerformanceHandlerConfig{
+		Perf:     &fakeModelPerfSource{minute: []perfmetrics.Bucket{bucket}},
+		Probes:   &fakeProbeStore{latest: map[string]store.ModelPerformanceTest{}},
+		Channels: &fakeChannelCatalog{enabled: []string{"slow-ttft"}},
+	}))
+
+	row := modelsRow(t, resp, "slow-ttft")
+	if !row.TTFTP50Over30s {
+		t.Errorf("ttft_p50_over_30s = false, want true（p50 落 +Inf 桶）")
+	}
+	if row.TTFTp50 == nil || *row.TTFTp50 != modelPerfInfinityMS {
+		t.Errorf("ttft_p50_ms = %v, want 下界标记 %v", row.TTFTp50, modelPerfInfinityMS)
+	}
+	if !row.TTFTP95Over30s {
+		t.Errorf("ttft_p95_over_30s = false, want true（p95 同样落 +Inf 桶）")
+	}
+	if row.LatencyP95Over30s {
+		t.Errorf("latency_p95_over_30s = true, want false（延迟全在有限桶）")
+	}
+	if row.Status != perfModelStatusNormal {
+		t.Errorf("status = %q, want normal", row.Status)
+	}
+}
+
+// TestModelsNoDegradedWhenBaselineAllInfinity：24h 与 7d 的 p95 全落 +Inf 时
+// 没有有限基线可比，不判 degraded。
+func TestModelsNoDegradedWhenBaselineAllInfinity(t *testing.T) {
+	recent := modelsTestNow.Add(-10 * time.Minute)
+	source := &fakeModelPerfSource{
+		minute: []perfmetrics.Bucket{modelsTestOverflowBucket("all-inf", recent, 100, 94)},
+		hourly: []perfmetrics.Bucket{
+			modelsTestOverflowBucket("all-inf", recent.Add(-3*time.Hour), 100, 94),
+			modelsTestOverflowBucket("all-inf", recent.Add(-4*time.Hour), 100, 94),
+		},
+	}
+	resp := getModels(t, newModelsTestMux(t, PerformanceHandlerConfig{
+		Perf:     source,
+		Probes:   &fakeProbeStore{latest: map[string]store.ModelPerformanceTest{}},
+		Channels: &fakeChannelCatalog{enabled: []string{"all-inf"}},
+	}))
+
+	row := modelsRow(t, resp, "all-inf")
+	if !row.LatencyP95Over30s {
+		t.Fatalf("latency_p95_over_30s = false, want true（用例前提）")
+	}
+	if row.Status == perfModelStatusDegraded {
+		t.Errorf("status = degraded, want 非 degraded（7d 无有限基线）")
+	}
+	if resp.Summary.Degraded != 0 {
+		t.Errorf("summary.degraded = %d, want 0", resp.Summary.Degraded)
+	}
+}
+
+// TestModelsDegradedBaselineIgnoresInfinityHours：7d 既有有限小时又有 +Inf
+// 小时时，中位数只能用有限小时。有限基线 1950ms、24h p95 29000ms → degraded；
+// 若 +Inf 小时的 30000 下界混进中位数（中位数 15975ms，2× = 31950ms），
+// 29000 不会超过阈值，状态会错误地留在 normal。
+func TestModelsDegradedBaselineIgnoresInfinityHours(t *testing.T) {
+	recent := modelsTestNow.Add(-10 * time.Minute)
+	source := &fakeModelPerfSource{
+		minute: []perfmetrics.Bucket{
+			modelsTestBucket("mixed-base", recent, 100, 100, 25000), // p95 = 29000ms
+		},
+		hourly: []perfmetrics.Bucket{
+			modelsTestBucket("mixed-base", recent.Add(-3*time.Hour), 100, 100, 1500),  // p95 = 1950ms
+			modelsTestOverflowBucket("mixed-base", recent.Add(-4*time.Hour), 100, 94), // +Inf 小时
+		},
+	}
+	resp := getModels(t, newModelsTestMux(t, PerformanceHandlerConfig{
+		Perf:     source,
+		Probes:   &fakeProbeStore{latest: map[string]store.ModelPerformanceTest{}},
+		Channels: &fakeChannelCatalog{enabled: []string{"mixed-base"}},
+	}))
+
+	row := modelsRow(t, resp, "mixed-base")
+	if row.LatencyP95Over30s {
+		t.Fatalf("latency_p95_over_30s = true, want false（用例前提：24h p95 有限）")
+	}
+	if row.LatencyP95 == nil || math.Abs(*row.LatencyP95-29000) > 1 {
+		t.Fatalf("latency_p95_ms = %v, want ≈29000", row.LatencyP95)
+	}
+	if row.Status != perfModelStatusDegraded {
+		t.Errorf("status = %q, want degraded（中位数只取有限小时）", row.Status)
 	}
 }
 

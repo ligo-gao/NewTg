@@ -198,3 +198,35 @@ func TestModelPerfUnavailableReason(t *testing.T) {
 		}
 	}
 }
+
+// TestModelPerfDimensionsInfinityP95Flagged：维度分解行的 p95 也要带 +Inf 标记，
+// 否则前端 formatMs 会把 30000 下界显示成 30.0s。
+func TestModelPerfDimensionsInfinityP95Flagged(t *testing.T) {
+	channelID := int64(7)
+	bucket := perfmetrics.Bucket{
+		Model:        "gpt-4o",
+		Start:        time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC),
+		Success:      100,
+		LatencyCount: 100,
+		TTFTCount:    100,
+		ChannelID:    &channelID,
+	}
+	// 100 个样本 94 个在 [0,50)、6 个 >30s：p95 秩 95 落进 +Inf 桶。
+	bucket.LatencyBuckets[0] = 94
+	bucket.TTFTBuckets[0] = 100
+
+	items := buildModelPerfDimensions([]ModelPerfBucket{bucket}, "channel")
+	if len(items) != 1 {
+		t.Fatalf("dimensions 数 = %d, want 1", len(items))
+	}
+	item := items[0]
+	if !item.LatP95Over30s {
+		t.Errorf("latency_p95_over_30s = false, want true")
+	}
+	if item.LatencyP95 == nil || *item.LatencyP95 != modelPerfInfinityMS {
+		t.Errorf("latency_p95_ms = %v, want 下界标记 %v", item.LatencyP95, modelPerfInfinityMS)
+	}
+	if item.TTFTP95Over30s {
+		t.Errorf("ttft_p95_over_30s = true, want false（TTFT 全有限）")
+	}
+}

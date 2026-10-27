@@ -123,8 +123,8 @@ func assertGone(t *testing.T, path string) {
 	}
 }
 
-// TestPerformanceEndpointsRequireSettingsManage：六个端点同一权限门，普通
-// 用户直链接口 403（Q2）。
+// TestPerformanceEndpointsRequireSettingsManage：性能管理端点走同一权限门，
+// 普通用户直链接口 403（Q2）。
 func TestPerformanceEndpointsRequireSettingsManage(t *testing.T) {
 	env := newPerfTestEnv(t)
 	user := &auth.Principal{UserID: 7, Role: rbac.RoleUser}

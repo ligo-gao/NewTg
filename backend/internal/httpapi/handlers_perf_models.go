@@ -95,8 +95,9 @@ type perfModelRow struct {
 	Channels *int     `json:"channels"`
 	TTFTp50  *float64 `json:"ttft_p50_ms"`
 	TTFTp95  *float64 `json:"ttft_p95_ms"`
-	// p95 落进 +Inf 桶时，*_ms 仍是 modelPerfInfinityMS（30000，只代表下界），
-	// 下面的布尔位告诉前端这个数字不是真实分位值；前端应显示「>30s」。
+	// p50/p95 落进 +Inf 桶时，*_ms 仍是 modelPerfInfinityMS（30000，只代表
+	// 下界），下面的布尔位告诉前端这个数字不是真实分位值；前端应显示「>30s」。
+	TTFTP50Over30s    bool            `json:"ttft_p50_over_30s"`
 	TTFTP95Over30s    bool            `json:"ttft_p95_over_30s"`
 	LatencyP95        *float64        `json:"latency_p95_ms"`
 	LatencyP95Over30s bool            `json:"latency_p95_over_30s"`
@@ -291,8 +292,9 @@ func buildPerfModelRow(
 		TPS:         perfFiniteFloatPtr(agg.tps()),
 		Spark:       perfModelSpark(minuteBuckets, now),
 	}
-	if value, _, ok := quantileFromBuckets(agg.TTFTCount, agg.TTFT, 0.50); ok {
+	if value, over, ok := quantileFromBuckets(agg.TTFTCount, agg.TTFT, 0.50); ok {
 		row.TTFTp50 = perfFinitePtr(value)
+		row.TTFTP50Over30s = over
 	}
 	// over=true 表示分位落进 +Inf 桶：value 只是 modelPerfInfinityMS 下界，
 	// 不能当作有限 p95 展示，用布尔位标记出来。

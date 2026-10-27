@@ -166,6 +166,9 @@ type modelPerfDimension struct {
 	LatencyP95  *float64 `json:"latency_p95_ms"`
 	TTFTp95     *float64 `json:"ttft_p95_ms"`
 	Uptime      *float64 `json:"uptime"`
+	// p95 落进 +Inf 桶时值仍是 30000 下界；布尔位让前端显示「>30s」。
+	LatP95Over30s  bool `json:"latency_p95_over_30s"`
+	TTFTP95Over30s bool `json:"ttft_p95_over_30s"`
 }
 
 type modelPerfResponse struct {
@@ -727,11 +730,13 @@ func buildModelPerfDimensions(buckets []ModelPerfBucket, dimension string) []mod
 			SuccessRate: agg.successRate(),
 			Uptime:      agg.uptime(),
 		}
-		if value, _, ok := quantileFromBuckets(agg.LatencyCount, agg.Latency, 0.95); ok {
+		if value, over, ok := quantileFromBuckets(agg.LatencyCount, agg.Latency, 0.95); ok {
 			item.LatencyP95 = &value
+			item.LatP95Over30s = over
 		}
-		if value, _, ok := quantileFromBuckets(agg.TTFTCount, agg.TTFT, 0.95); ok {
+		if value, over, ok := quantileFromBuckets(agg.TTFTCount, agg.TTFT, 0.95); ok {
 			item.TTFTp95 = &value
+			item.TTFTP95Over30s = over
 		}
 		out = append(out, item)
 	}
