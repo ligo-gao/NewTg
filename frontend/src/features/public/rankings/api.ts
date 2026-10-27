@@ -50,6 +50,20 @@ const REFRESH_INTERVAL_MS: Record<RankingsPeriod, number> = {
 
 export type FreshnessState = 'fresh' | 'stale' | 'expired'
 
+/**
+ * 把冻结的刷新间隔折成「每 N 分钟 / 每 N 小时」，供「统计详情」的更新
+ * 频率一行使用。页面不许写死「每日凌晨 2 点」这类与 worker 无关的文案。
+ */
+export function refreshCadence(period: RankingsPeriod): {
+  unit: 'minutes' | 'hours'
+  count: number
+} {
+  const minutes = REFRESH_INTERVAL_MS[period] / 60_000
+  return minutes >= 60
+    ? { unit: 'hours', count: minutes / 60 }
+    : { unit: 'minutes', count: minutes }
+}
+
 /** fresh ≤ 2×刷新间隔；stale ≤ 24h；超过 24h 为 expired（UI §F-09-29）。 */
 export function freshnessState(
   freshnessSeconds: number | null,

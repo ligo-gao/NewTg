@@ -115,180 +115,12 @@
 
 .public-shell .mono { font-family: var(--font-public-mono); }
 
-/* ---------- Header ---------- */
-
-.public-shell .site-header {
-  position: fixed;
-  inset-inline: 0;
-  top: 0;
-  z-index: 50;
-  border-bottom: 1px solid var(--home-rule);
-  background: var(--home-nav-bg);
-  backdrop-filter: blur(14px);
-}
-
-/* Fixed header: reserve its height so the first heading is never covered. */
+/* The shared header is fixed; every public page reserves its height so the
+   first heading is never covered. (The header itself lives in
+   `packages/public-shell`.) */
 .public-shell main#main { padding-top: 64px; }
 
-.public-shell .header-row {
-  display: flex;
-  align-items: center;
-  gap: 36px;
-  height: 64px;
-}
-
-.public-shell .brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  flex: none;
-  color: var(--home-ink);
-  text-decoration: none;
-}
-
-/* Same wave mark as the marketing header, in the header's signal colour; the
-   footer keeps the surrounding text colour (as the marketing footer does). */
-.public-shell .brand-mark {
-  width: 22px;
-  height: 22px;
-  flex: none;
-  color: var(--home-signal);
-}
-.public-shell .site-footer .brand-mark { color: inherit; }
-
-.public-shell .nav-skeleton {
-  height: 14px;
-  border-radius: 3px;
-  background: var(--home-rule);
-}
-.public-shell .avatar-rule {
-  margin: 4px 0;
-  border-top: 1px solid var(--home-rule);
-}
-
-.public-shell .brand-logo {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  object-fit: cover;
-}
-
-.public-shell .brand-name {
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 700;
-  letter-spacing: 0.09em;
-}
-
-.public-shell .nav {
-  display: flex;
-  align-items: center;
-  gap: 28px;
-}
-
-.public-shell .nav-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  color: var(--home-muted);
-  text-decoration: none;
-  font-size: 14px;
-  line-height: 22px;
-  font-weight: 400;
-  transition: color 150ms ease;
-}
-
-.public-shell .nav-link:hover { color: var(--home-ink); }
-
-.public-shell .nav-link[aria-current='page'] { color: var(--home-ink); }
-
-.public-shell .header-tools {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.public-shell .home-lang select {
-  height: 36px;
-  max-width: 150px;
-  padding: 0 8px;
-  border: 1px solid var(--home-rule-strong);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--home-muted);
-  font-family: var(--font-public);
-  font-size: 12.5px;
-  line-height: 20px;
-  cursor: pointer;
-}
-.public-shell .home-lang select:hover {
-  color: var(--home-ink);
-  border-color: var(--home-ink);
-}
-.public-shell .home-lang select:focus-visible {
-  outline: 2px solid var(--home-signal);
-  outline-offset: 2px;
-}
-
-/* Compact language pill for the collapsed row: the visible code is the
-   selected locale; the native select stays on top for keyboard and mobile. */
-.public-shell .home-lang-compact {
-  position: relative;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  height: 36px;
-  min-width: 52px;
-  padding: 0 8px;
-  border: 1px solid var(--home-rule-strong);
-  border-radius: 6px;
-  color: var(--home-muted);
-  font-family: var(--font-public);
-  font-size: 12.5px;
-  line-height: 20px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.public-shell .home-lang-compact:hover {
-  color: var(--home-ink);
-  border-color: var(--home-ink);
-}
-.public-shell .home-lang-compact select {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  opacity: 0;
-  cursor: pointer;
-}
-.public-shell .home-lang-compact:focus-within {
-  outline: 2px solid var(--home-signal);
-  outline-offset: 2px;
-}
-
-.public-shell .theme-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: 36px;
-  height: 36px;
-  border: 1px solid var(--home-rule-strong);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--home-muted);
-  cursor: pointer;
-  transition: color 150ms ease, border-color 150ms ease;
-}
-.public-shell .theme-btn:hover {
-  color: var(--home-ink);
-  border-color: var(--home-ink);
-}
-.public-shell .theme-btn:focus-visible {
-  outline: 2px solid var(--home-signal);
-  outline-offset: 2px;
-}
+/* ---------- Buttons ---------- */
 
 .public-shell .btn {
   display: inline-flex;
@@ -342,114 +174,7 @@
 
 .public-shell .btn-sm { height: 34px; padding: 0 13px; font-size: 13px; line-height: 20px; }
 
-/* Sign-in entry mirrors the marketing header's plain text link (same size,
-   colour and hover); the header carries no sign-up CTA on any public page. */
-.public-shell .sign-in {
-  display: inline-flex;
-  align-items: center;
-  color: var(--home-muted);
-  font-size: 14px;
-  line-height: 22px;
-  font-weight: 400;
-  text-decoration: none;
-  transition: color 150ms ease;
-}
-.public-shell .sign-in:hover { color: var(--home-ink); }
-
-.public-shell .menu-btn {
-  display: none;
-  flex: none;
-  width: 38px;
-  height: 38px;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--home-rule-strong);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--home-ink);
-  cursor: pointer;
-}
-.public-shell .menu-btn:hover { border-color: var(--home-ink); }
-
-.public-shell .avatar-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border: 1px solid var(--home-rule-strong);
-  border-radius: 50%;
-  background: transparent;
-  color: var(--home-ink);
-  cursor: pointer;
-}
-.public-shell .avatar-btn:hover { border-color: var(--home-ink); }
-
-.public-shell .avatar-menu {
-  position: absolute;
-  right: 0;
-  top: 42px;
-  z-index: 50;
-  width: 200px;
-  padding: 4px;
-  border: 1px solid var(--home-rule);
-  border-radius: 8px;
-  background: var(--home-card);
-  box-shadow: var(--home-shadow);
-}
-
-.public-shell .avatar-menu a,
-.public-shell .avatar-menu button {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  height: 36px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--home-ink);
-  font-size: 14px;
-  line-height: 22px;
-  text-align: left;
-  text-decoration: none;
-  cursor: pointer;
-}
-.public-shell .avatar-menu a:hover,
-.public-shell .avatar-menu button:hover { background: var(--home-paper-2); }
-
-/* ---------- Mobile navigation panel ---------- */
-
-.public-shell .mobile-nav-panel {
-  border-top: 1px solid var(--home-rule);
-  background: var(--home-card);
-  max-height: calc(100dvh - 64px);
-  overflow-y: auto;
-}
-
-.public-shell .mobile-nav-inner {
-  display: flex;
-  flex-direction: column;
-  padding-block: 8px 18px;
-}
-
-.public-shell .mobile-nav-link {
-  display: block;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--home-rule);
-  color: var(--home-muted);
-  font-size: 16px;
-  line-height: 24px;
-  text-decoration: none;
-}
-
-.public-shell .mobile-nav-link:hover { color: var(--home-ink); }
-.public-shell .mobile-nav-link[aria-current='page'] { color: var(--home-ink); }
-
-@media (min-width: 1024px) {
-  .public-shell .mobile-nav-panel { display: none; }
-}
-
+/* ---------- Hero ---------- */
 /* ---------- Hero ---------- */
 
 .public-shell .home-hero { padding-block: 78px 84px; }
@@ -1334,13 +1059,14 @@
 }
 
 /* ---------- Rankings ----------
-   Ported from demos/shell-unified/frame.html. Demo class names that could
-   later collide with other public-page primitives carry a `rank-` prefix
-   (`panel` → `rank-panel`, `seg` → `rank-seg`, `ladder` → `rank-ladder`,
-   `lane` → `rank-lane`, `rail-col` → `rank-rail`, `facts` → `rank-facts`,
-   `dist`/`eff`/`moments` → `rank-dist`/`rank-eff`/`rank-moments`).
-   Sizes follow the file's type scale; the demo's 12.5/15/19/20/23px map to
-   12/16/18/18/24px. */
+   Ported from demos/model-library-v3/rankings-redesign-v5.html. Page-level
+   wrappers keep the `rank-` prefix (`rank-head`, `rank-seg`, `rank-refresh`,
+   `rank-window`, `rank-sum`, `rank-panel-body`) so they cannot collide with
+   other public-page primitives; panel internals use the demo's own names
+   (`ranking-*`, `info-panel`, `share-bar`, `benchmark-*`), which are unique to
+   this page. Colours map demo variables onto the home tokens: panel→card,
+   line→rule, ink-2→muted, muted/faint→faint. Demo sizes are snapped onto the
+   file's type scale (11→12, 15→16, 20→18, 22→24). */
 
 .public-shell .rank-head {
   display: flex;
@@ -1348,21 +1074,22 @@
   gap: 16px;
   align-items: flex-end;
   justify-content: space-between;
-  padding-block: 0 18px;
+  padding-block: 32px 24px;
+  border-bottom: 1px solid var(--home-rule);
 }
 
 .public-shell .rank-head h1 {
   margin: 0;
   color: var(--home-ink);
   font-size: clamp(1.5rem, 2.4vw, 2rem);
-  line-height: 1.25;
+  line-height: 1.2;
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.025em;
 }
 
 .public-shell .rank-head p {
-  margin: 8px 0 0;
-  max-width: 44em;
+  margin: 10px 0 0;
+  max-width: 52em;
   color: var(--home-faint);
   font-size: 16px;
   line-height: 24px;
@@ -1372,23 +1099,26 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 /* Let the actions shrink to the column instead of holding their max-content
    width; the segmented control then scrolls its own tabs (see below). */
 .public-shell .rank-head .rank-actions { min-width: 0; max-width: 100%; }
 
 /* Shared segmented control: period tabs and the ladder metric toggle. */
+.public-shell .seg,
 .public-shell .rank-seg {
   display: inline-flex;
+  max-width: 100%;
   overflow-x: auto;
   border: 1px solid var(--home-rule-strong);
   border-radius: 6px;
 }
 
+.public-shell .seg button,
 .public-shell .rank-seg button {
   height: 36px;
-  padding-inline: 12px;
+  padding-inline: 14px;
   border: 0;
   background: transparent;
   color: var(--home-faint);
@@ -1397,17 +1127,22 @@
   line-height: 20px;
   white-space: nowrap;
   cursor: pointer;
+  transition: color 150ms ease, background-color 150ms ease;
 }
 
+.public-shell .seg button:hover,
 .public-shell .rank-seg button:hover { color: var(--home-ink); }
 
+.public-shell .seg button[aria-pressed='true'],
+.public-shell .seg button[aria-selected='true'],
 .public-shell .rank-seg button[aria-pressed='true'],
 .public-shell .rank-seg button[aria-selected='true'] {
-  background: var(--home-paper-2);
+  background: var(--home-signal-soft);
   color: var(--home-ink);
   font-weight: 600;
 }
 
+.public-shell .seg button:focus-visible,
 .public-shell .rank-seg button:focus-visible {
   outline: 2px solid var(--home-signal);
   outline-offset: -2px;
@@ -1416,22 +1151,23 @@
 .public-shell .rank-refresh {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   height: 36px;
-  padding-inline: 12px;
+  padding-inline: 13px;
   border: 1px solid var(--home-rule-strong);
   border-radius: 6px;
   background: transparent;
-  color: var(--home-muted);
+  color: var(--home-faint);
   font: inherit;
   font-size: 13px;
   line-height: 20px;
   white-space: nowrap;
   cursor: pointer;
+  transition: color 150ms ease, border-color 150ms ease;
 }
 
 .public-shell .rank-refresh:hover {
-  border-color: var(--home-signal-bright);
+  border-color: var(--home-signal);
   color: var(--home-ink);
 }
 
@@ -1442,17 +1178,17 @@
   outline-offset: 2px;
 }
 
-/* Window / timezone / threshold / basis line. */
+/* Window / timezone / threshold / benchmark-source line. */
 .public-shell .rank-window {
   display: flex;
   flex-wrap: wrap;
   gap: 6px 20px;
   align-items: center;
-  padding-block: 12px;
-  border-block: 1px solid var(--home-rule);
+  padding-block: 14px;
+  border-bottom: 1px solid var(--home-rule);
   color: var(--home-faint);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 13px;
+  line-height: 20px;
 }
 
 .public-shell .rank-window b {
@@ -1462,7 +1198,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Summary four-up. */
+/* Summary five-up. */
 .public-shell .rank-sum {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1474,7 +1210,7 @@
 }
 
 .public-shell .rank-sum > div {
-  padding: 14px 18px 16px;
+  padding: 16px 20px 18px;
   border-top: 1px solid var(--home-rule);
 }
 
@@ -1483,8 +1219,8 @@
 
 .public-shell .rank-sum .rank-k {
   color: var(--home-faint);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 13px;
+  line-height: 20px;
 }
 
 .public-shell .rank-sum .rank-v {
@@ -1500,182 +1236,117 @@
 .public-shell .rank-sum .rank-s {
   margin-top: 3px;
   color: var(--home-faint);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 13px;
+  line-height: 20px;
   font-variant-numeric: tabular-nums;
 }
 
 @media (min-width: 621px) {
-  .public-shell .rank-sum { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .public-shell .rank-sum > div { border-top: 0; border-right: 1px solid var(--home-rule); }
+  .public-shell .rank-sum { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .public-shell .rank-sum > div {
+    border-top: 0;
+    border-right: 1px solid var(--home-rule);
+  }
   .public-shell .rank-sum > div:last-child { border-right: 0; }
 }
 
-/* Stacked trend panel. */
-.public-shell .rank-panel {
-  margin-top: 18px;
-  padding: 16px 18px 18px;
+@media (max-width: 620px) {
+  /* The fifth cell (efficiency) has no pair in the 2-column grid. */
+  .public-shell .rank-sum > div:last-child {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--home-rule);
+    border-right: 0;
+  }
+}
+
+/* Dual leaderboard: actual usage + global benchmarks. */
+.public-shell .dual-rankings {
+  display: grid;
+  gap: 24px;
+  margin-top: 24px;
+}
+
+@media (min-width: 1080px) {
+  .public-shell .dual-rankings {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.public-shell .ranking-panel {
+  min-width: 0;
+  padding: 20px 22px 24px;
   border: 1px solid var(--home-rule);
   border-radius: 8px;
   background: var(--home-card);
 }
 
-.public-shell .rank-panel-head {
+.public-shell .ranking-header {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 16px;
-  align-items: baseline;
+  gap: 12px;
+  align-items: center;
   justify-content: space-between;
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--home-rule);
 }
 
-.public-shell .rank-panel h2 {
+.public-shell .ranking-title {
   margin: 0;
   color: var(--home-ink);
-  font-size: 14px;
-  line-height: 22px;
+  font-size: 16px;
+  line-height: 24px;
   font-weight: 600;
 }
 
-.public-shell .rank-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 14px;
-  margin: 2px 0 0;
-  padding: 0;
-  list-style: none;
+.public-shell .ranking-meta {
   color: var(--home-faint);
   font-size: 13px;
   line-height: 20px;
 }
 
-.public-shell .rank-legend li {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.public-shell .rank-legend i { width: 10px; height: 3px; border-radius: 1px; flex: none; }
-
-.public-shell .rank-chart { margin-top: 16px; }
-
-.public-shell .rank-trend-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 16px 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-/* The chart component hides itself below Tailwind's md (768); the public
-   pages only break at 621, so show the chart and keep the list as the
-   accessible copy of its per-bucket values (visually hidden, still read). */
-@media (min-width: 621px) {
-  .public-shell .rank-trend-list {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    padding: 0;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-    border: 0;
-  }
-  .public-shell .rank-chart > div { display: block; }
-}
-
-.public-shell .rank-trend-label {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 4px;
-  color: var(--home-faint);
-  font-size: 12px;
-  line-height: 18px;
-  font-variant-numeric: tabular-nums;
-}
-
-.public-shell .rank-trend-track {
-  display: flex;
-  width: 100%;
-  height: 8px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: var(--home-paper-2);
-}
-
-.public-shell .rank-trend-track i { display: block; height: 100%; }
-
-/* Ladder + rail. The 1180px split is the demo's page-level layout break. */
-.public-shell .rank-body {
-  display: grid;
-  gap: 26px;
-  padding-block: 26px 0;
-}
-
-@media (min-width: 1180px) {
-  .public-shell .rank-body {
-    grid-template-columns: minmax(0, 1fr) 316px;
-    gap: 40px;
-    align-items: start;
-  }
-}
-
-.public-shell .rank-rail {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  min-width: 0;
-}
-
-.public-shell .rank-ladder-block { min-width: 0; }
-
-.public-shell .rank-ladder-head {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
-}
-
-.public-shell .rank-ladder-head h2 {
-  margin: 0;
-  color: var(--home-ink);
-  font-size: 14px;
-  line-height: 22px;
-  font-weight: 600;
-}
-
-.public-shell .rank-ladder {
+.public-shell .ranking-list {
   margin: 0;
   padding: 0;
   list-style: none;
-  border-top: 1px solid var(--home-rule);
 }
 
-.public-shell .rank-lane {
+.public-shell .ranking-row {
   display: grid;
   grid-template-columns: 40px minmax(0, 1fr) 84px;
   gap: 0 14px;
-  align-items: start;
-  padding: 16px 0;
+  align-items: center;
+  padding: 15px 0;
   border-bottom: 1px solid var(--home-rule);
+  transition: background-color 150ms ease;
 }
 
-.public-shell .rank-lane .rank {
+.public-shell .ranking-row:last-child { border-bottom: 0; }
+.public-shell .ranking-row:hover { background: var(--home-paper-2); }
+
+.public-shell .ranking-row:focus-visible {
+  outline: 2px solid var(--home-signal);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+
+.public-shell .rank-num {
   color: var(--home-faint);
   font-family: var(--font-public-mono);
   font-size: 14px;
   line-height: 22px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
 
-.public-shell .rank-lane-main { min-width: 0; }
+.public-shell .ranking-row.top-1 .rank-num { color: var(--home-signal); font-size: 16px; }
+.public-shell .ranking-row.top-2 .rank-num { color: var(--home-muted); font-size: 16px; }
+.public-shell .ranking-row.top-3 .rank-num { color: var(--chart-cat-4); font-size: 16px; }
 
-.public-shell .rank-name {
+.public-shell .rank-main { min-width: 0; }
+
+.public-shell .rank-model {
   display: block;
   overflow: hidden;
   color: var(--home-ink);
@@ -1687,195 +1358,184 @@
   white-space: nowrap;
 }
 
-.public-shell .rank-bar {
-  height: 6px;
-  margin-top: 9px;
-  overflow: hidden;
-  border-radius: 2px;
-  background: var(--home-paper-2);
-  box-shadow: inset 0 0 0 1px var(--home-rule);
-}
-
-.public-shell .rank-bar i {
+.public-shell .rank-meta {
   display: block;
-  height: 100%;
-  border-radius: 2px;
-  background: var(--home-signal-bright);
-  transition: width 300ms ease;
-}
-
-.public-shell .rank-sub {
-  display: block;
-  margin-top: 8px;
+  margin-top: 4px;
   color: var(--home-faint);
   font-size: 12px;
   line-height: 18px;
   font-variant-numeric: tabular-nums;
 }
 
-.public-shell .rank-val {
+.public-shell .rank-value {
   color: var(--home-muted);
   font-family: var(--font-public-mono);
   font-size: 13px;
   line-height: 20px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
 
-.public-shell .rank-val small {
+.public-shell .ranking-row.top-1 .rank-value {
+  color: var(--home-signal);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.public-shell .rank-value small {
   display: block;
+  margin-top: 3px;
   color: var(--home-faint);
   font-size: 12px;
   line-height: 18px;
+  font-weight: 400;
 }
 
-.public-shell .rank-lane--lead { padding-block: 20px; }
-.public-shell .rank-lane--lead .rank { color: var(--home-ink); font-size: 18px; line-height: 28px; }
-.public-shell .rank-lane--lead .rank-name { font-size: 18px; line-height: 28px; }
-.public-shell .rank-lane--lead .rank-val { color: var(--home-ink); font-size: 16px; line-height: 24px; }
-.public-shell .rank-lane--lead .rank-bar { height: 10px; }
-.public-shell .rank-lane--lead .rank-bar i { background: var(--home-signal); }
-
-/* Rail panels. */
-.public-shell .rank-dist h2,
-.public-shell .rank-eff h2,
-.public-shell .rank-moments h2 {
-  margin: 0 0 12px;
-  color: var(--home-ink);
-  font-size: 13px;
-  line-height: 20px;
-  font-weight: 600;
+/* Benchmark leaderboard specifics. */
+.public-shell .benchmark-scores {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 5px;
 }
 
-.public-shell .rank-dist-rows {
-  margin: 12px 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.public-shell .rank-prov {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 4px 8px;
-  align-items: baseline;
-  padding-block: 7px;
-  border-bottom: 1px solid var(--home-rule);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.public-shell .rank-prov:last-child { border-bottom: 0; }
-
-.public-shell .rank-prov .n {
-  overflow: hidden;
-  color: var(--home-muted);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.public-shell .rank-prov .p {
-  color: var(--home-ink);
-  font-family: var(--font-public-mono);
-  font-variant-numeric: tabular-nums;
-}
-
-.public-shell .rank-prov .t {
-  grid-column: 1 / -1;
-  color: var(--home-faint);
-  font-family: var(--font-public-mono);
-}
-
-.public-shell .rank-note {
-  margin: 12px 0 0;
-  padding-top: 11px;
-  border-top: 1px solid var(--home-rule);
-  color: var(--home-faint);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.public-shell .rank-empty {
-  margin: 0;
-  padding: 12px;
-  border: 1px dashed var(--home-rule-strong);
-  border-radius: 6px;
-  color: var(--home-faint);
-  font-size: 12px;
-  line-height: 18px;
-  text-align: center;
-}
-
-.public-shell .rank-eff-rows {
-  display: grid;
-  gap: 10px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.public-shell .rank-eff-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 62px;
-  gap: 6px 12px;
+.public-shell .benchmark-badge {
+  display: inline-flex;
   align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: var(--home-paper-2);
+  color: var(--home-faint);
   font-size: 12px;
   line-height: 18px;
+  white-space: nowrap;
 }
 
-.public-shell .rank-eff-row .n {
+.public-shell .benchmark-badge strong {
+  color: var(--home-muted);
+  font-weight: 600;
+}
+
+.public-shell .ranking-panel.benchmark .ranking-row { cursor: pointer; }
+.public-shell .ranking-panel.benchmark .ranking-row:hover {
+  background: var(--home-signal-soft);
+}
+
+.public-shell .ranking-panel.benchmark .rank-model {
+  position: relative;
+  padding-right: 20px;
+}
+
+.public-shell .ranking-panel.benchmark .rank-model::after {
+  content: '→';
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  color: var(--home-signal);
+  font-size: 14px;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.public-shell .ranking-panel.benchmark .ranking-row:hover .rank-model::after,
+.public-shell .ranking-panel.benchmark .ranking-row:focus-visible .rank-model::after {
+  opacity: 1;
+}
+
+/* Info panels: provider share / movers / facts. */
+.public-shell .info-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 24px;
+  margin-top: 24px;
+}
+
+@media (min-width: 900px) {
+  .public-shell .info-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.public-shell .info-panel {
+  padding: 20px 22px;
+  border: 1px solid var(--home-rule);
+  border-radius: 8px;
+  background: var(--home-card);
+}
+
+.public-shell .info-panel h3 {
+  margin: 0 0 14px;
+  color: var(--home-ink);
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+
+.public-shell .share-bar {
+  display: flex;
+  height: 12px;
+  margin-bottom: 14px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--home-paper-2);
+}
+
+.public-shell .share-segment { height: 100%; transition: opacity 200ms; }
+.public-shell .share-segment:hover { opacity: 0.85; cursor: pointer; }
+
+.public-shell .provider-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.public-shell .provider-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding-block: 8px;
+  border-bottom: 1px solid var(--home-rule);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.public-shell .provider-row:last-child { border-bottom: 0; }
+
+.public-shell .provider-name {
+  flex: 1;
   overflow: hidden;
   color: var(--home-muted);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.public-shell .rank-eff-row .p {
-  color: var(--home-muted);
+.public-shell .provider-share {
+  flex: none;
+  color: var(--home-ink);
   font-family: var(--font-public-mono);
   font-variant-numeric: tabular-nums;
-  text-align: right;
-}
-
-.public-shell .rank-eff-track {
-  grid-column: 1 / -1;
-  display: block;
-  height: 5px;
-  margin-top: -4px;
-  overflow: hidden;
-  border-radius: 2px;
-  background: var(--home-paper-2);
-  box-shadow: inset 0 0 0 1px var(--home-rule);
-}
-
-.public-shell .rank-eff-track i {
-  display: block;
-  height: 100%;
-  background: var(--home-signal-bright);
-  transition: width 300ms ease;
-}
-
-.public-shell .rank-moments-empty {
-  padding: 12px;
-  border: 1px dashed var(--home-rule-strong);
-  border-radius: 6px;
-  color: var(--home-faint);
-  font-size: 12px;
-  line-height: 18px;
-  text-align: center;
-}
-
-.public-shell .rank-mover-group { margin-top: 12px; }
-.public-shell .rank-mover-group:first-of-type { margin-top: 0; }
-
-.public-shell .rank-mover-group h3 {
-  margin: 0 0 6px;
-  color: var(--home-muted);
-  font-size: 12px;
-  line-height: 18px;
   font-weight: 600;
 }
 
-.public-shell .rank-mover-group ul {
+.public-shell .mover-group { margin-bottom: 16px; }
+.public-shell .mover-group:last-child { margin-bottom: 0; }
+
+.public-shell .mover-group h4 {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 0 8px;
+  color: var(--home-muted);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 600;
+}
+
+.public-shell .mover-list {
   display: grid;
   gap: 6px;
   margin: 0;
@@ -1883,62 +1543,320 @@
   list-style: none;
 }
 
-.public-shell .rank-mover-group li {
+.public-shell .mover-item {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
-  line-height: 18px;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 20px;
 }
 
-.public-shell .rank-mover-group .n {
+.public-shell .mover-name {
   overflow: hidden;
   color: var(--home-muted);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.public-shell .rank-mover-group .p {
-  color: var(--home-ink);
+.public-shell .mover-change {
+  color: var(--home-muted);
   font-family: var(--font-public-mono);
   font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
-/* Methodology facts. */
-.public-shell .rank-facts {
-  padding: 14px 16px;
-  border: 1px solid var(--home-rule);
-  border-radius: 8px;
-  background: var(--home-card);
+.public-shell .mover-change.up { color: var(--success-fg); }
+.public-shell .mover-change.down { color: var(--danger-fg); }
+
+.public-shell .facts-list {
+  display: grid;
+  gap: 10px;
 }
 
-.public-shell .rank-facts h2 {
-  margin: 0 0 10px;
-  color: var(--home-ink);
+.public-shell .fact-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
   font-size: 13px;
   line-height: 20px;
+}
+
+.public-shell .fact-label { color: var(--home-faint); }
+
+.public-shell .fact-value {
+  color: var(--home-muted);
+  font-family: var(--font-public-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  text-align: right;
+}
+
+.public-shell .rank-empty {
+  margin: 12px 0 0;
+  padding: 12px;
+  border: 1px dashed var(--home-rule-strong);
+  border-radius: 6px;
+  color: var(--home-faint);
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+}
+
+/* Benchmark detail modal. */
+.public-shell .benchmark-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgb(0 0 0 / 0.5);
+  backdrop-filter: blur(4px);
+  animation: rank-fade-in 200ms ease;
+}
+
+.public-shell .benchmark-modal-content {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 720px;
+  max-height: 90vh;
+  overflow: hidden;
+  border: 1px solid var(--home-rule);
+  border-radius: 12px;
+  background: var(--home-card);
+  box-shadow: var(--home-shadow);
+  animation: rank-slide-up 300ms ease;
+}
+
+.public-shell .benchmark-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px 28px 20px;
+  border-bottom: 1px solid var(--home-rule);
+}
+
+.public-shell .benchmark-modal-title-group h3 {
+  margin: 0 0 6px;
+  color: var(--home-ink);
+  font-size: 18px;
+  line-height: 28px;
   font-weight: 600;
 }
 
-.public-shell .rank-facts dl {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 7px 12px;
+.public-shell .benchmark-modal-subtitle {
   margin: 0;
+  color: var(--home-faint);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.public-shell .benchmark-modal-close {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--home-rule-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--home-faint);
+  cursor: pointer;
+  transition: color 150ms ease, border-color 150ms ease;
+}
+
+.public-shell .benchmark-modal-close:hover {
+  border-color: var(--home-signal);
+  color: var(--home-ink);
+}
+
+.public-shell .benchmark-modal-close:focus-visible {
+  outline: 2px solid var(--home-signal);
+  outline-offset: 2px;
+}
+
+.public-shell .benchmark-modal-body {
+  flex: 1;
+  padding: 24px 28px;
+  overflow-y: auto;
+}
+
+.public-shell .benchmark-category { margin-bottom: 20px; }
+
+.public-shell .benchmark-category-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  color: var(--home-muted);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.public-shell .benchmark-category-title::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--home-signal);
+}
+
+.public-shell .benchmark-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (min-width: 621px) {
+  .public-shell .benchmark-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.public-shell .benchmark-card {
+  padding: 12px 14px;
+  border: 1px solid var(--home-rule);
+  border-radius: 6px;
+  background: var(--home-paper-2);
+  transition: border-color 150ms ease;
+}
+
+.public-shell .benchmark-card:hover { border-color: var(--home-signal-line); }
+
+.public-shell .benchmark-card.highlight {
+  border-color: var(--home-signal-line);
+  background: var(--home-signal-soft);
+}
+
+.public-shell .benchmark-name {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--home-faint);
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+}
+
+.public-shell .benchmark-score {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--home-ink);
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.public-shell .benchmark-card.highlight .benchmark-score { color: var(--home-signal); }
+
+.public-shell .benchmark-percentile {
+  color: var(--home-faint);
   font-size: 12px;
   line-height: 18px;
 }
 
-.public-shell .rank-facts dt { color: var(--home-faint); white-space: nowrap; }
+.public-shell .benchmark-detail-section {
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--home-rule);
+}
 
-.public-shell .rank-facts dd {
+.public-shell .benchmark-detail-section h4 {
+  margin: 0 0 12px;
+  color: var(--home-ink);
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+
+.public-shell .benchmark-detail-list {
   margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.public-shell .benchmark-detail-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--home-rule);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.public-shell .benchmark-detail-item:last-child { border-bottom: 0; }
+
+.public-shell .benchmark-detail-label {
+  flex: 1;
   color: var(--home-muted);
+}
+
+.public-shell .benchmark-detail-value {
+  flex: none;
+  color: var(--home-ink);
+  font-family: var(--font-public-mono);
   font-variant-numeric: tabular-nums;
+  font-weight: 500;
   text-align: right;
 }
 
-.public-shell .rank-facts dd.mono { font-family: var(--font-public-mono); }
+.public-shell .benchmark-detail-note {
+  margin: 0 0 10px;
+  color: var(--home-muted);
+  font-size: 13px;
+  line-height: 21px;
+}
+
+.public-shell .benchmark-detail-note:last-child { margin-bottom: 0; }
+
+.public-shell .benchmark-detail-note a {
+  color: var(--home-signal);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.public-shell .benchmark-detail-note a:hover { text-decoration: underline; }
+
+.public-shell .benchmark-detail-sample {
+  padding-top: 12px;
+  border-top: 1px dashed var(--home-rule-strong);
+  color: var(--home-faint);
+}
+
+@keyframes rank-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes rank-slide-up {
+  from { opacity: 0; transform: translateY(40px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .public-shell .benchmark-modal-overlay,
+  .public-shell .benchmark-modal-content { animation: none; }
+}
+
+@media (max-width: 768px) {
+  .public-shell .ranking-row {
+    grid-template-columns: 36px minmax(0, 1fr) 72px;
+    gap: 0 10px;
+  }
+  .public-shell .benchmark-modal-header { padding: 20px 20px 16px; }
+  .public-shell .benchmark-modal-body { padding: 20px; }
+  .public-shell .benchmark-modal-title-group h3 { font-size: 16px; line-height: 24px; }
+}
 
 .public-shell .rank-panel-body {
   display: flex;
@@ -2277,110 +2195,13 @@
   .public-shell .about-endpoints { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
-/* ---------- Footer ---------- */
-
-.public-shell .site-footer {
-  padding-block: 54px 30px;
-  border-top: 1px solid var(--home-panel-line);
-  background: var(--home-panel);
-  color: var(--home-panel-ink);
-}
-
-.public-shell .footer-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.5fr) repeat(3, minmax(0, 0.6fr));
-  gap: 40px;
-}
-
-.public-shell .site-footer .brand { color: var(--home-panel-ink); }
-.public-shell .site-footer .brand-name { font-size: 16px; line-height: 24px; }
-
-.public-shell .footer-tag {
-  max-width: 36ch;
-  margin: 14px 0 0;
-  color: var(--home-panel-muted);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.public-shell .footer-col h2 {
-  margin: 0 0 12px;
-  color: var(--home-panel-muted);
-  font-family: var(--font-public-mono);
-  font-size: 12px;
-  line-height: 18px;
-  font-weight: 500;
-  letter-spacing: 0.03em;
-}
-
-.public-shell .footer-col ul {
-  display: grid;
-  gap: 9px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.public-shell .footer-col a {
-  color: var(--home-panel-ink);
-  font-size: 13px;
-  line-height: 20px;
-  text-decoration: none;
-  opacity: 0.82;
-}
-.public-shell .footer-col a:hover { opacity: 1; text-decoration: underline; text-underline-offset: 3px; }
-
-.public-shell .footer-operator {
-  display: grid;
-  gap: 9px;
-  font-size: 13px;
-  line-height: 20px;
-  line-height: 1.6;
-}
-.public-shell .footer-operator a { color: var(--home-panel-ink); opacity: 0.82; text-decoration: none; }
-.public-shell .footer-operator a:hover { opacity: 1; text-decoration: underline; text-underline-offset: 3px; }
-.public-shell .footer-operator p { margin: 0; }
-
-.public-shell .site-footer .home-lang select {
-  color: var(--home-panel-ink);
-  border-color: var(--home-panel-line);
-}
-.public-shell .site-footer .home-lang select:hover { border-color: var(--home-panel-muted); }
-
-.public-shell .footer-bottom p { margin: 0; }
-.public-shell .footer-bottom a { color: inherit; }
-
-.public-shell .footer-bottom {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 10px;
-  margin-top: 46px;
-  padding-top: 20px;
-  border-top: 1px solid var(--home-panel-line);
-  color: var(--home-panel-muted);
-  font-family: var(--font-public-mono);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-/* Visible keyboard focus on every public control (the new shell does not use
-   the app's Tailwind focus utilities). */
-.public-shell .brand:focus-visible,
-.public-shell .nav-link:focus-visible,
-.public-shell .sign-in:focus-visible,
-.public-shell .menu-btn:focus-visible,
-.public-shell .avatar-btn:focus-visible,
-.public-shell .avatar-menu a:focus-visible,
-.public-shell .avatar-menu button:focus-visible,
+/* Visible keyboard focus on every page-level public control (the header and
+   footer ship their own, inside the shared shell package). */
 .public-shell .icon-btn:focus-visible,
 .public-shell .stats-link:focus-visible,
 .public-shell .copy-btn:focus-visible,
 .public-shell .term-tab:focus-visible,
-.public-shell .term-copy:focus-visible,
-.public-shell .footer-col a:focus-visible,
-.public-shell .footer-bottom a:focus-visible,
-.public-shell .footer-operator a:focus-visible {
+.public-shell .term-copy:focus-visible {
   outline: 2px solid var(--home-signal);
   outline-offset: 2px;
 }
@@ -2395,18 +2216,9 @@
   .public-shell .section-head { grid-template-columns: minmax(0, 1fr); gap: 10px; }
   .public-shell .section-head .note { justify-self: start; }
   .public-shell .start-grid { grid-template-columns: minmax(0, 1fr); gap: 40px; }
-  .public-shell .footer-grid { grid-template-columns: minmax(0, 1fr) repeat(2, minmax(0, 0.6fr)); }
 }
 
 @media (max-width: 1023px) {
-  .public-shell .nav,
-  .public-shell .header-tools .home-lang,
-  .public-shell .header-tools .sign-in,
-  .public-shell .header-tools .btn { display: none; }
-  .public-shell .header-tools .home-lang-compact { display: inline-flex; }
-  .public-shell .menu-btn { display: inline-flex; }
-  .public-shell .header-row { gap: 14px; }
-  .public-shell .header-tools { gap: 8px; }
   .public-shell .caps-grid { grid-template-columns: minmax(0, 1fr); }
   .public-shell .caps-grid .cap:nth-child(even) { padding-left: 0; border-left: 0; }
   .public-shell .stats-link { margin-left: 0; }
@@ -2436,7 +2248,6 @@
   .public-shell .start { padding-block: 56px 64px; }
   .public-shell .terminal pre { padding: 16px 16px 18px; }
   .public-shell .term-foot { padding: 9px 16px; }
-  .public-shell .footer-grid { grid-template-columns: minmax(0, 1fr); gap: 30px; }
   .public-shell .footer-bottom { flex-direction: column; }
   .public-shell .ledger-table-wrap { display: none; }
   .public-shell .ledger-cards { display: grid; }

@@ -141,7 +141,8 @@ services:
       HOLIDAY_SYNC_URL_TEMPLATE: "${HOLIDAY_SYNC_URL_TEMPLATE:-https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/%d.json}"
       # 模型性能定时实测（spec 2026-10-27）：只在 worker 执行。默认按北京时间
       # 每天 00:00 / 12:00 对全部公开对话模型各测 3 轮，全局并发 2 个模型。
-      # 只给 worker：gateway 解析默认值即可，管理面展示以 worker 为准。
+      # 只给 worker：gateway 侧不消费这些值。管理面任务卡展示的周期是固定
+      # 12h 的展示值，不会反映这里的配置。
       PERF_SCHEDULE_ENABLED: "${PERF_SCHEDULE_ENABLED:-true}"
       PERF_SCHEDULE_TIMES: "${PERF_SCHEDULE_TIMES:-00:00,12:00}"
       PERF_SCHEDULE_TIMEZONE: "${PERF_SCHEDULE_TIMEZONE:-Asia/Shanghai}"

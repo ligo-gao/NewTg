@@ -64,8 +64,8 @@ function statusFixture(overrides: Record<string, unknown> = {}) {
 /**
  * The live week snapshot the demo was built from: two models, 191,412,351
  * tokens / 2,928 requests, one provider (`Unknown` — the channel profile is
- * empty), one real trend bucket. 176,585,172 / 191,412,351 = 92.3%, and
- * 2,595 / 2,928 = 88.6%.
+ * empty). 176,585,172 / 191,412,351 = 92.3%, 2,595 / 2,928 = 88.6%, and
+ * 176,585,172 / 2,595 = 68,048 tokens per request.
  */
 function rankingsFixture(period: RankingsPeriod): RankingsResponse {
   return {
@@ -158,7 +158,7 @@ function Harness({ initial = 'week' as RankingsPeriod }) {
 }
 
 describe('rankings page (F-09-29 ~ F-09-33)', () => {
-  it('renders the summary, one ladder row per model and the token share', async () => {
+  it('renders the five-cell summary, the usage ladder and the provider share', async () => {
     installBaseHandlers((request) => {
       const url = new URL(request.url)
       const period = (url.searchParams.get('period') ?? 'week') as RankingsPeriod
@@ -167,19 +167,25 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
       })
     })
 
-    const { findByText, getByTestId, getByText, getByRole, container } =
+    const { findByText, getByTestId, getByText, container } =
       await renderWithProviders(<Harness />, ['public'])
 
     await findByText('Total tokens')
     expect(getByText('Listed models')).toBeTruthy()
+    expect(getByText('Total requests')).toBeTruthy()
+    expect(getByText('Providers')).toBeTruthy()
     expect(container.textContent).toContain('191,412,351')
+    // 第五格：总 token ÷ 总请求，读数与单位都在同一格里。
+    const efficiency = getByTestId('rank-efficiency')
+    expect(efficiency.textContent).toContain('65,373')
+    expect(efficiency.textContent).toContain('tokens/request')
 
     const ladder = getByTestId('rank-ladder')
     const rows = within(ladder).getAllByRole('listitem')
     expect(rows).toHaveLength(2)
     expect(rows[0]?.textContent).toContain('deepseek-flash')
     expect(rows[0]?.textContent).toContain('92.3%')
-    expect(rows[0]?.textContent).toContain('176,585,172 tokens · 2,595 requests')
+    expect(rows[0]?.textContent).toContain('2,595 requests · 68,048 t/r')
     expect(rows[1]?.textContent).toContain('7.7%')
 
     // One provider, shown exactly as the API labels it.
@@ -187,18 +193,18 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
     expect(within(providers).getAllByRole('listitem')).toHaveLength(1)
     expect(providers.textContent).toContain('Unknown')
     expect(providers.textContent).toContain('100.0%')
+    expect(getByTestId('share-bar')).toBeTruthy()
 
     // Empty momentum is the real state of the first complete period.
     expect(getByTestId('rank-movers').textContent).toContain(
-      'first complete period',
+      'first full period',
     )
 
-    // The trend panel renders the single real bucket and never a sample tag.
-    expect(getByTestId('trend-chart')).toBeTruthy()
-    expect(
-      getByRole('img', { name: 'Token trend, stacked by time bucket' }),
-    ).toBeTruthy()
-    expect(container.textContent).not.toMatch(/sample data/i)
+    // 实际调用榜来自接口，绝不带示例数据标记；标记只属于右侧测评榜。
+    expect(ladder.textContent).not.toMatch(/sample data/i)
+    expect(getByTestId('benchmark-ladder').closest('section')?.textContent).toContain(
+      'Sample data',
+    )
   })
 
   it('switches the same rows to the request share and the per-request average', async () => {
@@ -216,15 +222,13 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
     expect(ladder.textContent).toContain('92.3%')
     expect(ladder.textContent).toContain('2,595 requests')
 
-    fireEvent.click(getByRole('button', { name: 'By requests' }))
+    fireEvent.click(getByRole('button', { name: 'Requests' }))
 
     const rows = within(ladder).getAllByRole('listitem')
     expect(rows).toHaveLength(2)
     expect(rows[0]?.getAttribute('data-model')).toBe('deepseek-flash')
     expect(rows[0]?.textContent).toContain('88.6%')
-    expect(rows[0]?.textContent).toContain(
-      '2,595 requests · 68,048 tokens per request',
-    )
+    expect(rows[0]?.textContent).toContain('2,595 requests · 68,048 t/r')
     expect(rows[1]?.textContent).toContain('11.4%')
   })
 
@@ -285,9 +289,9 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
     await findByText('Total tokens')
 
     const movers = getByTestId('rank-movers')
-    expect(movers.textContent).toContain('Rising')
+    expect(movers.textContent).toContain('Top gainers')
     expect(movers.textContent).toContain('18.4%')
-    expect(movers.textContent).toContain('Falling')
+    expect(movers.textContent).toContain('Top decliners')
     expect(movers.textContent).toContain('-9.7%')
   })
 
@@ -313,8 +317,8 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
     await findByText('Total tokens')
 
     const movers = getByTestId('rank-movers')
-    expect(movers.textContent).toContain('Rising')
-    expect(queryByText('Falling')).toBeNull()
+    expect(movers.textContent).toContain('Top gainers')
+    expect(queryByText('Top decliners')).toBeNull()
     // 只有一侧有数据时不该留下一个空的 <ul>。
     expect(movers.querySelectorAll('ul')).toHaveLength(1)
   })
@@ -334,16 +338,6 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
         prev_rank: null,
       },
     ]
-    fixture.providers = [
-      {
-        rank: 1,
-        author: 'Unknown',
-        total_tokens: 176_585_172,
-        share_pct: 100,
-        slot: 1,
-      },
-    ]
-    fixture.trend = { granularity: 'day', buckets: [], series: [] }
     installBaseHandlers(() =>
       HttpResponse.json(fixture, { headers: { ETag: '"week-zero"' } }),
     )
@@ -357,9 +351,87 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
     const rows = within(getByTestId('rank-ladder')).getAllByRole('listitem')
     expect(rows).toHaveLength(1)
     expect(rows[0]?.textContent).toContain('100.0%')
-    // 0 requests → 0 / 0 must never leak a NaN into any readout.
+    // 0 requests → 0 / 0 must never leak a NaN into any readout, and the row
+    // drops the per-request average instead of printing Infinity.
     expect(container.textContent).not.toContain('NaN')
+    expect(rows[0]?.textContent).not.toContain('t/r')
     expect(within(getByTestId('rank-efficiency')).getByText('—')).toBeTruthy()
+  })
+
+  it('renders the statistics panel from the response, not from copy', async () => {
+    installBaseHandlers(() =>
+      HttpResponse.json(rankingsFixture('week'), { headers: { ETag: '"week-1"' } }),
+    )
+
+    const { findByText, getByTestId } = await renderWithProviders(<Harness />, [
+      'public',
+    ])
+    await findByText('Total tokens')
+
+    const facts = getByTestId('rank-facts')
+    expect(facts.textContent).toContain('Statistics')
+    expect(facts.textContent).toContain('Samples')
+    expect(facts.textContent).toContain('2,928')
+    expect(facts.textContent).toContain('Live')
+    expect(facts.textContent).toContain('All')
+    // 冻结的刷新间隔：周榜每 30 分钟。
+    expect(facts.textContent).toContain('Every 30 min')
+  })
+
+  it('lists eight global benchmark rows and opens a detail dialog from a row', async () => {
+    installBaseHandlers(() =>
+      HttpResponse.json(rankingsFixture('week'), { headers: { ETag: '"week-1"' } }),
+    )
+
+    const { findByText, findByRole, getByTestId, queryByRole } =
+      await renderWithProviders(<Harness />, ['public'])
+    await findByText('Total tokens')
+
+    const ladder = getByTestId('benchmark-ladder')
+    const rows = within(ladder).getAllByRole('button')
+    expect(rows).toHaveLength(8)
+    expect(rows[0]?.textContent).toContain('Claude Opus 5')
+    expect(rows[0]?.textContent).toContain('MMLU 89.2')
+    expect(rows[0]?.textContent).toContain('HumanEval 92.0')
+    // The third badge depends on the row: Arena Elo or C-Eval.
+    expect(rows[0]?.textContent).toContain('1,284')
+    expect(rows[4]?.textContent).toContain('C-Eval 91.6')
+    expect(rows[0]?.getAttribute('aria-haspopup')).toBe('dialog')
+
+    fireEvent.click(rows[0] as HTMLElement)
+
+    const dialog = await findByRole('dialog')
+    expect(within(dialog).getByText('Claude Opus 5')).toBeTruthy()
+    expect(dialog.textContent).toContain('Benchmark details')
+    expect(dialog.textContent).toContain('General capability')
+    expect(dialog.textContent).toContain('Model information')
+    expect(dialog.textContent).toMatch(/sample data/i)
+    expect(document.body.style.overflow).toBe('hidden')
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(queryByRole('dialog')).toBeNull())
+    expect(document.body.style.overflow).toBe('')
+    // 焦点还给触发行，键盘用户不会掉回页面顶部。
+    expect(document.activeElement).toBe(rows[0])
+  })
+
+  it('opens the dialog from the keyboard and closes it on Escape', async () => {
+    installBaseHandlers(() =>
+      HttpResponse.json(rankingsFixture('week'), { headers: { ETag: '"week-1"' } }),
+    )
+
+    const { findByText, findByRole, getByTestId, queryByRole } =
+      await renderWithProviders(<Harness />, ['public'])
+    await findByText('Total tokens')
+
+    const row = within(getByTestId('benchmark-ladder')).getAllByRole(
+      'button',
+    )[1] as HTMLElement
+    fireEvent.keyDown(row, { key: 'Enter' })
+    expect((await findByRole('dialog')).textContent).toContain('GPT-4.5 Turbo')
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(queryByRole('dialog')).toBeNull())
   })
 
   it('caches each period after the first load', async () => {
@@ -386,15 +458,15 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
     await waitFor(() =>
       expect(requests.some((entry) => entry.period === 'today')).toBe(true),
     )
-    fireEvent.click(getByRole('tab', { name: 'This Month' }))
+    fireEvent.click(getByRole('tab', { name: 'This month' }))
     await waitFor(() =>
       expect(requests.some((entry) => entry.period === 'month')).toBe(true),
     )
-    fireEvent.click(getByRole('tab', { name: 'This Year' }))
+    fireEvent.click(getByRole('tab', { name: 'This year' }))
     await waitFor(() =>
       expect(requests.some((entry) => entry.period === 'year')).toBe(true),
     )
-    fireEvent.click(getByRole('tab', { name: 'This Week' }))
+    fireEvent.click(getByRole('tab', { name: 'This week' }))
     await findByText('Total tokens')
     fireEvent.click(getByRole('tab', { name: 'Today' }))
     await findByText('Total tokens')
@@ -450,7 +522,7 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
       <Harness />,
       ['public'],
     )
-    expect(await findByText(/Too many requests\. Please retry in 1s/)).toBeTruthy()
+    expect(await findByText(/Too many requests\. Retry in 1s/)).toBeTruthy()
     await waitFor(() => expect(calls).toBe(2), { timeout: 4000 })
     expect((await findAllByText('deepseek-flash')).length).toBeGreaterThan(0)
     expect(await findByText('Total tokens')).toBeTruthy()
@@ -464,23 +536,26 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
     const { findByTestId, getByRole, getAllByText, queryByTestId } =
       await renderWithProviders(<Harness />, ['public'])
     const guide = await findByTestId('rankings-cold-start')
-    expect(within(guide).getByText('The leaderboard is gathering data')).toBeTruthy()
+    expect(
+      within(guide).getByText('The leaderboard is gathering data'),
+    ).toBeTruthy()
     expect(guide.textContent).toContain('100')
-    expect(within(guide).getByRole('link', { name: 'View Pricing' }).getAttribute('href')).toBe('/pricing')
-    expect(within(guide).getByRole('link', { name: 'Quick Start' }).getAttribute('href')).toBe(
+    expect(within(guide).getByRole('link', { name: 'View pricing' }).getAttribute('href')).toBe('/pricing')
+    expect(within(guide).getByRole('link', { name: 'Quick start' }).getAttribute('href')).toBe(
       'https://docs.example.com',
     )
-    expect(within(guide).getByRole('link', { name: 'Sign Up Free' }).getAttribute('href')).toBe(
+    expect(within(guide).getByRole('link', { name: 'Sign up free' }).getAttribute('href')).toBe(
       '/sign-up',
     )
-    // 四区块以「待累积」占位，不留空白；冷启动没有梯子。
-    expect(getAllByText('Waiting for data')).toHaveLength(4)
+    // 四区块以「待累积」占位，不留空白；冷启动没有梯子或测评榜。
+    expect(getAllByText('Accumulating')).toHaveLength(4)
     // 引导卡与四个占位在同一个 .rank-cold 容器里（40px 节奏由 CSS 提供）。
     const cold = guide.parentElement
     expect(cold?.className).toContain('rank-cold')
     expect(cold?.querySelectorAll('section')).toHaveLength(4)
     expect(queryByTestId('rank-ladder')).toBeNull()
-    expect(getByRole('tab', { name: 'This Week' })).toBeTruthy()
+    expect(queryByTestId('benchmark-ladder')).toBeNull()
+    expect(getByRole('tab', { name: 'This week' })).toBeTruthy()
   })
 
   it('shows a retryable error for a 503', async () => {
@@ -524,14 +599,14 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
       <Harness />,
       ['public'],
     )
-    expect(await findByText(/Please retry in 1s/)).toBeTruthy()
+    expect(await findByText(/Retry in 1s/)).toBeTruthy()
     // 第一次倒计时归零自动重试；第二个 429 必须回到可手动重试的错误态，
     // 而不是永久停在「0 秒」。
     expect(
       await findByRole('button', { name: 'Retry' }, { timeout: 4000 }),
     ).toBeTruthy()
     expect(calls).toBe(2)
-    expect(queryByText(/Please retry in 0s/)).toBeNull()
+    expect(queryByText(/Retry in 0s/)).toBeNull()
   })
 
   it('warns when the snapshot is stale', async () => {
@@ -542,7 +617,9 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
       ),
     )
     const { findByText } = await renderWithProviders(<Harness />, ['public'])
-    expect(await findByText('Data may be delayed')).toBeTruthy()
+    expect(
+      await findByText('Leaderboard data is delayed; figures are for reference'),
+    ).toBeTruthy()
   })
 
   it('recomputes freshness on a 304 using computed_at and local now', async () => {
@@ -561,15 +638,16 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
         { headers: { ETag: etag } },
       )
     })
+    const delayed = 'Leaderboard data is delayed; figures are for reference'
     const { findByText, queryByText, getByRole } = await renderWithProviders(
       <Harness />,
       ['public'],
     )
     await findByText('Total tokens')
     // 初始响应自报 0s（fresh），刷新命中 304 后按 computed_at 重算成 stale。
-    expect(queryByText('Data may be delayed')).toBeNull()
+    expect(queryByText(delayed)).toBeNull()
     fireEvent.click(getByRole('button', { name: 'Refresh' }))
-    expect(await findByText('Data may be delayed')).toBeTruthy()
+    expect(await findByText(delayed)).toBeTruthy()
   })
 
   it('does not send If-None-Match after a cold-start response without ETag', async () => {
@@ -590,37 +668,6 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
     fireEvent.click(getByRole('button', { name: 'Refresh' }))
     await waitFor(() => expect(requests).toHaveLength(2))
     expect(requests[1]?.ifNoneMatch).toBeNull()
-  })
-
-  it('keeps the per-bucket trend values in the DOM for assistive tech', async () => {
-    // ≥621 时 CSS 把列表视觉隐藏（sr-only）而不是 display:none，桌面端每个桶
-    // 的读数仍在无障碍树里；jsdom 没有层叠布局，只能断言节点及其文本存在。
-    const fixture = rankingsFixture('week')
-    fixture.trend = {
-      granularity: 'day',
-      buckets: ['2026-10-23T00:00:00+08:00', '2026-10-24T00:00:00+08:00'],
-      series: [
-        { model: 'deepseek-flash', slot: 1, tokens: [100_000, 150_000] },
-        { model: 'kimi-for-coding', slot: 2, tokens: [50_000, 20_000] },
-      ],
-    }
-    installBaseHandlers(() =>
-      HttpResponse.json(fixture, { headers: { ETag: '"week-two-buckets"' } }),
-    )
-
-    const { findByText, container } = await renderWithProviders(<Harness />, [
-      'public',
-    ])
-    await findByText('Total tokens')
-
-    const list = container.querySelector('.rank-trend-list')
-    expect(list).not.toBeNull()
-    const items = within(list as HTMLElement).getAllByRole('listitem')
-    expect(items).toHaveLength(2)
-    expect(items[0]?.textContent).toContain('10-23')
-    expect(items[0]?.textContent).toContain('150K')
-    expect(items[1]?.textContent).toContain('10-24')
-    expect(items[1]?.textContent).toContain('170K')
   })
 
   it('adds times to a same-day window and keeps weekly endpoints date-only', async () => {
@@ -649,12 +696,8 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
     expect(windowValue()).toMatch(
       /Oct 25, 2026, \d{1,2}:\d{2}\s?[AP]M – Oct 25, 2026, \d{1,2}:\d{2}\s?[AP]M/,
     )
-    // 事实栏用同一个 helper，打印同一段窗口。
-    expect(container.querySelector('.rank-facts dd')?.textContent).toBe(
-      windowValue(),
-    )
 
-    fireEvent.click(getByRole('tab', { name: 'This Week' }))
+    fireEvent.click(getByRole('tab', { name: 'This week' }))
     await waitFor(() =>
       expect(windowValue()).toBe('Oct 19, 2026 – Oct 25, 2026'),
     )
@@ -672,7 +715,7 @@ describe('rankings page (F-09-29 ~ F-09-33)', () => {
       ['public'],
     )
     expect(
-      await findByRole('heading', { name: 'Where these numbers come from' }),
+      await findByRole('heading', { name: 'Statistics' }),
     ).toBeTruthy()
     // 站点时区非法时回退浏览器时区，窗口日期仍可读且不崩页。
     expect(container.textContent).toContain('2026')

@@ -88,9 +88,13 @@ type Config struct {
 	// 默认值是 jsDelivr 缓存的 NateScarlet/holiday-cn（MIT，见 THIRD_PARTY_NOTICES）。
 	HolidaySyncURLTemplate string // HOLIDAY_SYNC_URL_TEMPLATE
 
-	// 模型性能探测调度（spec §5.6）。五项变量在 gateway 与 worker 进程里都会
-	// 被解析，保证管理面展示的配置与 worker 行为一致；但**只有 worker 角色
-	// 会真正启动调度循环**，gateway 解析后不会发起任何探测。
+	// 模型性能探测调度（spec §5.6）。五个变量在 gateway 与 worker 进程里都会
+	// 解析并校验（配置错误必须在启动期暴露），但**只有 worker 角色会真正启动
+	// 调度循环**，gateway 解析后不会发起任何探测。
+	//
+	// 注意：compose 只把变量注入 worker 容器，所以 `.env` 里的覆盖值不会到达
+	// gateway——gateway 侧读到的始终是默认值。任何依赖 gateway 展示这些设置的
+	// 功能都必须先解决这一点（改为双角色注入，或由 worker 持久化实际生效值）。
 	//
 	// PerfScheduleEnabled 是总开关；关闭后 worker 跳过全部定时探测。
 	PerfScheduleEnabled bool // PERF_SCHEDULE_ENABLED

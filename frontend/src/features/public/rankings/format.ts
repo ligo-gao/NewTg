@@ -18,6 +18,14 @@ export function formatCompact(value: number, locale: string): string {
   }).format(value)
 }
 
+/** 测评分数：固定一位小数（MMLU 92 → `92.0`），与公开榜单的写法一致。 */
+export function formatScore(value: number, locale: string): string {
+  return new Intl.NumberFormat(locale, {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  }).format(value)
+}
+
 export function formatPercent(
   value: number,
   locale: string,
