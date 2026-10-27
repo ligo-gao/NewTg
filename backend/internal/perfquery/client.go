@@ -84,9 +84,10 @@ func (c *Client) Available() bool {
 
 // QueryRange 执行一条白名单查询，返回按时间升序的全部样本。
 //
-// end 先截到 CacheTTL 桶边界再参与请求与缓存键：页面 15 秒轮询时，
-// 同一窗口内的重复刷新共享一次上游查询；缓存键由 name|start|end|step
-// 组成，不同窗口/步长不会串味。
+// start 与 end 都先截到 CacheTTL 桶边界再参与请求与缓存键（两者口径一致）：
+// 页面按 now 现算窗口时 start 每刷新一次就前移，只截 end 会让缓存永不命中；
+// 两端都截后，同一 15 秒桶内的重复刷新（含多管理员各自刷新）共享一次上游查询。
+// 代价是窗口 start 最多提前不到一个 TTL（≤15s），对概览曲线无感。
 func (c *Client) QueryRange(ctx context.Context, name string, start, end time.Time, step time.Duration) ([]Sample, error) {
 	promQL, _, ok := Lookup(name)
 	if !ok {
@@ -96,6 +97,7 @@ func (c *Client) QueryRange(ctx context.Context, name string, start, end time.Ti
 		return nil, fmt.Errorf("%w: %s", ErrUnavailable, name)
 	}
 
+	start = start.Truncate(c.ttl)
 	end = end.Truncate(c.ttl)
 	key := cacheKey(name, start, end, step)
 	if samples, ok := c.cache.get(key); ok {

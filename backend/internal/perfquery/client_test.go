@@ -226,6 +226,33 @@ func TestQueryRangeCacheKeyTruncatesEnd(t *testing.T) {
 	}
 }
 
+// TestQueryRangeCacheKeyTruncatesStart 钉住真实访问模式：调用方按 now 现算
+// start，两次刷新相差 3 秒，但落在同一 TTL 桶内，应复用同一次上游请求，
+// 且发给 Prometheus 的 start 是截断值而不是原始值。
+func TestQueryRangeCacheKeyTruncatesStart(t *testing.T) {
+	rec := &recordingProm{}
+	srv := httptest.NewServer(rec.handler(http.StatusOK, matrixBody))
+	defer srv.Close()
+
+	c := New(Config{BaseURL: srv.URL, Now: fixedNow(time.Unix(1761000200, 0))})
+	end := time.Unix(1761000180, 0)
+
+	for _, start := range []time.Time{
+		time.Unix(1761000001, 0),
+		time.Unix(1761000004, 0),
+	} {
+		if _, err := c.QueryRange(context.Background(), NameGatewayRPS, start, end, time.Minute); err != nil {
+			t.Fatalf("start=%d: %v", start.Unix(), err)
+		}
+	}
+	if rec.count() != 1 {
+		t.Fatalf("同一 TTL 桶内相隔 3s 的 start 收到 %d 个请求, want 1（缓存未命中）", rec.count())
+	}
+	if got := rec.snapshot()[0].get("start"); got != "1761000000" {
+		t.Fatalf("请求 start = %q, want \"1761000000\"（截断值，非原始 start）", got)
+	}
+}
+
 func TestUnavailableClient(t *testing.T) {
 	c := New(Config{})
 	if c == nil {

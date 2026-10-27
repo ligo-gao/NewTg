@@ -31,8 +31,8 @@ func newTTLCache(ttl time.Duration, now func() time.Time) *ttlCache {
 	}
 }
 
-// cacheKey 的 end 必须是调用方已截到 CacheTTL 桶边界的值。键里带 start/step：
-// 同一查询名在不同时间窗或步长下结果不同，只有完全同参才可复用。
+// cacheKey 的 start/end 必须是调用方已截到 CacheTTL 桶边界的值。键里带
+// start/end/step：同一查询名在不同时间窗或步长下结果不同，只有完全同参才可复用。
 func cacheKey(name string, start, end time.Time, step time.Duration) string {
 	return fmt.Sprintf("%s|%d|%d|%s", name, start.Unix(), end.Unix(), step)
 }
