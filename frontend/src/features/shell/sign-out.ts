@@ -1,6 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query'
 
 import { apiClient } from '@/api/client'
+import { clearLanguageChoice } from '@/lib/language-preference'
 
 /**
  * Revokes the current server session, then drops every cached identity so the
@@ -21,6 +22,9 @@ export async function performSignOut(
   } catch {
     return false
   }
+  // 会话已经结束：这次登录期间的显式选择/待同步标记属于该账号，不能
+  // 跟着下一个匿名访客继续存在。语言本身保留，匿名页面仍显示用户选过的值。
+  clearLanguageChoice()
   client.clear()
   navigate('/')
   return true

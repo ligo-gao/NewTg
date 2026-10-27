@@ -10,7 +10,10 @@ const ORIGIN = 'http://localhost:3000'
 const server = setupServer()
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
-afterEach(() => server.resetHandlers())
+afterEach(() => {
+  server.resetHandlers()
+  globalThis.localStorage?.clear()
+})
 afterAll(() => server.close())
 
 function clientWithIdentity(): QueryClient {
@@ -54,5 +57,44 @@ describe('performSignOut', () => {
 
     expect(client.getQueryData(['me'])).toEqual({ username: 'alice' })
     expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('clears the pending and explicit language markers after a successful sign-out', async () => {
+    server.use(
+      http.post(`${ORIGIN}/api/logout`, () => new HttpResponse(null, { status: 204 })),
+    )
+    const client = clientWithIdentity()
+    const navigate = vi.fn()
+    globalThis.localStorage.setItem('newtg.language', 'ja')
+    globalThis.localStorage.setItem('newtg.language.pending', '1')
+    globalThis.localStorage.setItem('newtg.language.explicit', '1')
+
+    await performSignOut(client, navigate)
+
+    expect(globalThis.localStorage.getItem('newtg.language.pending')).toBeNull()
+    expect(globalThis.localStorage.getItem('newtg.language.explicit')).toBeNull()
+    // 语言本身保留：匿名页面继续用用户选过的语言。
+    expect(globalThis.localStorage.getItem('newtg.language')).toBe('ja')
+  })
+
+  it('keeps the markers when the revoke fails', async () => {
+    server.use(
+      http.post(`${ORIGIN}/api/logout`, () =>
+        HttpResponse.json(
+          { title: 'Service Unavailable', status: 500 },
+          { status: 500 },
+        ),
+      ),
+    )
+    const client = clientWithIdentity()
+    const navigate = vi.fn()
+    globalThis.localStorage.setItem('newtg.language', 'ja')
+    globalThis.localStorage.setItem('newtg.language.pending', '1')
+    globalThis.localStorage.setItem('newtg.language.explicit', '1')
+
+    await expect(performSignOut(client, navigate)).resolves.toBe(false)
+
+    expect(globalThis.localStorage.getItem('newtg.language.pending')).toBe('1')
+    expect(globalThis.localStorage.getItem('newtg.language.explicit')).toBe('1')
   })
 })
