@@ -43,9 +43,10 @@ export function LocalePreferenceRoute() {
       if (hasPendingSync()) {
         const local = readStoredLocale();
         if (local === null) return;
+        // 即使当前 URL 已是本地选择也要补写一次：此刻没有跳转，上下文还活着，
+        // 探测 + PUT 能真正完成并清掉 pending。只有语言不同才需要导航。
+        void syncLanguageToAccount(local);
         if (local !== current) {
-          // keepalive 让回写活过紧随其后的整页导航。
-          void syncLanguageToAccount(local);
           window.location.assign(localizePath(pathname, local));
         }
         return;

@@ -20,6 +20,21 @@ const CSRF_HEADER = "X-CSRF-Token";
 const CSRF_REFRESH_PATH = "/api/me";
 const DEFAULT_TIMEOUT_MS = 1500;
 
+/**
+ * 最近一次 `GET /api/self` 拿到的乐观锁令牌。
+ *
+ * 为什么缓存：营销站切语言的顺序是「发同步 → location.assign」，而 PUT 必须先
+ * 拿到 `updated_at`。若令牌要靠一次网络往返现取，导航提交后 JS 上下文已被销毁，
+ * 续体永远不会执行——PUT 从未发出，只剩 pending。缓存由守卫的挂载探测自然预热，
+ * 切换时就能在第一个 await 之前把 keepalive 的 PUT 发出去。
+ */
+let cachedUpdatedAt: string | undefined;
+
+/** 测试与显式登出用：清空模块级令牌缓存（401 也会自动清）。 */
+export function resetAccountLocaleCache(): void {
+  cachedUpdatedAt = undefined;
+}
+
 export type AccountLocaleResult =
   | { status: "ok"; language: Locale; updated_at: string }
   | { status: "anonymous" }
@@ -57,7 +72,10 @@ export async function fetchAccountLocale(
       headers: { Accept: "application/json" },
       signal: controller.signal,
     });
-    if (response.status === 401) return { status: "anonymous" };
+    if (response.status === 401) {
+      cachedUpdatedAt = undefined;
+      return { status: "anonymous" };
+    }
     if (!response.ok) return { status: "failed" };
 
     const body = (await response.json()) as { language?: unknown; updated_at?: unknown };
@@ -66,6 +84,7 @@ export async function fetchAccountLocale(
     if (typeof language !== "string" || !isLocale(language) || typeof updatedAt !== "string") {
       return { status: "failed" };
     }
+    cachedUpdatedAt = updatedAt;
     return { status: "ok", language, updated_at: updatedAt };
   } catch {
     return { status: "failed" };
@@ -78,32 +97,92 @@ export async function fetchAccountLocale(
 /**
  * 把一次显式选择写回账号。成功清掉 pending；匿名或失败都保留 pending，
  * 由控制台或下一次营销站加载补写。`keepalive` 让请求活过紧接着的导航。
+ *
+ * 快路径：缓存里有 `updated_at` 且 CSRF Cookie 可读时，本函数在第一次 await
+ * 之前就发出 PUT——调用方随后 `location.assign` 也不会掐掉已发出的请求。
+ * 没有缓存令牌时才回退到「先探测、再回写」。
  */
 export async function syncLanguageToAccount(
   locale: Locale,
   options: { signal?: AbortSignal } = {},
 ): Promise<SyncResult> {
   try {
-    const account = await fetchAccountLocale(
-      options.signal ? { signal: options.signal } : undefined,
-    );
+    const signal = options.signal;
+    const cached = cachedUpdatedAt;
+    if (cached !== undefined && readCsrfCookie() !== undefined) {
+      return await putWithRetry(locale, cached, signal);
+    }
+
+    const account = await fetchAccountLocale(signal ? { signal } : undefined);
     if (account.status === "anonymous") return "anonymous";
     if (account.status === "failed") return "failed";
 
-    const body = JSON.stringify({ language: locale, updated_at: account.updated_at });
-
-    let response = await putLanguage(body, await readCsrfToken(), options.signal);
-    if (await isCsrfFailure(response)) {
-      // CSRF Cookie 被轮换：先让服务端重发，再按冻结规则重试一次。
-      await refreshCsrfCookie();
-      response = await putLanguage(body, await readCsrfToken(), options.signal);
-    }
-    if (!response.ok) return "failed";
-
-    clearPendingSync();
-    return "saved";
+    return await putWithRetry(locale, account.updated_at, signal);
   } catch {
     return "failed";
+  }
+}
+
+/**
+ * PUT → 409（乐观锁令牌过期，见 `handlePutSelfSetting`）时重探一次、
+ * 重试一次；无论结果如何都不再循环。成功即清 pending。
+ */
+async function putWithRetry(
+  locale: Locale,
+  updatedAt: string,
+  signal: AbortSignal | undefined,
+): Promise<SyncResult> {
+  let response = await sendPut(locale, updatedAt, signal);
+
+  if (response.status === 409) {
+    const account = await fetchAccountLocale(signal ? { signal } : undefined);
+    if (account.status === "anonymous") return "anonymous";
+    if (account.status === "failed") return "failed";
+    response = await sendPut(locale, account.updated_at, signal);
+  }
+
+  if (!response.ok) return "failed";
+  clearPendingSync();
+  // 成功后服务端换了新的 updated_at；不阻塞结果。
+  void rememberUpdatedAt(response);
+  return "saved";
+}
+
+/**
+ * 发出一次写请求。CSRF Cookie 可读时 fetch 在同步段调用（见上）；缺失时先
+ * `GET /api/me` 让服务端重发，再写。403 `csrf_failed` 冻结重试一次。
+ */
+async function sendPut(
+  locale: Locale,
+  updatedAt: string,
+  signal: AbortSignal | undefined,
+): Promise<Response> {
+  const body = JSON.stringify({ language: locale, updated_at: updatedAt });
+
+  let response: Response;
+  const token = readCsrfCookie();
+  if (token !== undefined) {
+    response = await putLanguage(body, token, signal);
+  } else {
+    await refreshCsrfCookie();
+    response = await putLanguage(body, readCsrfCookie(), signal);
+  }
+
+  if (await isCsrfFailure(response)) {
+    // CSRF Cookie 被轮换：先让服务端重发，再按冻结规则重试一次。
+    await refreshCsrfCookie();
+    response = await putLanguage(body, readCsrfCookie(), signal);
+  }
+  return response;
+}
+
+/** 用 PUT 响应里的新令牌更新缓存；解析失败不影响调用方。 */
+async function rememberUpdatedAt(response: Response): Promise<void> {
+  try {
+    const body = (await response.clone().json()) as { updated_at?: unknown };
+    if (typeof body.updated_at === "string") cachedUpdatedAt = body.updated_at;
+  } catch {
+    // Response body is advisory here; the next probe refreshes it anyway.
   }
 }
 
@@ -122,14 +201,6 @@ function putLanguage(
     body,
     signal,
   });
-}
-
-/** Reads the non-HttpOnly CSRF cookie; refreshes via `/api/me` when missing. */
-async function readCsrfToken(): Promise<string | undefined> {
-  const existing = readCsrfCookie();
-  if (existing !== undefined) return existing;
-  await refreshCsrfCookie();
-  return readCsrfCookie();
 }
 
 function readCsrfCookie(): string | undefined {

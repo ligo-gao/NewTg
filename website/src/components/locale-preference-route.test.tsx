@@ -29,6 +29,7 @@ describe("LocalePreferenceRoute", () => {
     router.pathname = "/";
     localStorage.clear();
     document.documentElement.lang = "";
+    document.cookie = "__Host-nkt_csrf=; Max-Age=0; Secure; Path=/";
     mockAssign.mockClear();
   });
 
@@ -40,6 +41,7 @@ describe("LocalePreferenceRoute", () => {
     });
     vi.unstubAllGlobals();
     vi.useRealTimers();
+    document.cookie = "__Host-nkt_csrf=; Max-Age=0; Secure; Path=/";
   });
 
   it("redirects a signed-in visitor to the account locale", async () => {
@@ -91,17 +93,54 @@ describe("LocalePreferenceRoute", () => {
     await waitFor(() => expect(mockAssign).toHaveBeenCalledWith("/ja/"));
   });
 
+  it("retries a pending write even when the URL already matches the local choice", async () => {
+    router.pathname = "/ja/";
+    localStorage.setItem("newtg.language", "ja");
+    localStorage.setItem("newtg.language.pending", "1");
+    document.cookie = "__Host-nkt_csrf=tok; Secure; Path=/";
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        String(input) === "/api/self"
+          ? jsonResponse({ language: "ja", updated_at: "t1" })
+          : jsonResponse({ language: "ja", updated_at: "t2" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LocalePreferenceRoute />);
+
+    // 不跳转（URL 已一致），但必须补写一次，pending 才能在营销站内收敛。
+    await waitFor(() => expect(localStorage.getItem("newtg.language.pending")).toBeNull());
+    expect(mockAssign).not.toHaveBeenCalled();
+  });
+
   it("stays put when the probe times out", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     router.pathname = "/";
-    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    const signals: AbortSignal[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.signal) signals.push(init.signal);
+        return new Promise<Response>(() => {});
+      }),
+    );
 
     render(<LocalePreferenceRoute />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(signals).toHaveLength(1);
+    expect(signals[0].aborted).toBe(false);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1500);
     });
+
+    // 超时必须真的 abort 掉探测，而不是永远挂起。
+    expect(signals[0].aborted).toBe(true);
     expect(mockAssign).not.toHaveBeenCalled();
+    expect(window.location.pathname).toBe("/");
+    expect(document.documentElement.lang).toBe("zh-CN");
   });
 
   it("ignores non-marketing paths", async () => {
