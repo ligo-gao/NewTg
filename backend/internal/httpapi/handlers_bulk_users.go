@@ -518,7 +518,7 @@ func (h *BulkUserHandlers) handleBulkImport(w http.ResponseWriter, r *http.Reque
 	_, insertedIDs, err := h.bulkCreate(r.Context(), storeRows,
 		store.BulkCreateOptions{MustChangePassword: mustChange})
 	if err != nil {
-		h.cleanupMarkers(r.Context(), insertedIDs, mustChange)
+		h.cleanupMarkersAfterFailure(r.Context(), err, insertedIDs, mustChange)
 		h.writeBulkRepoError(w, err)
 		return
 	}
@@ -607,7 +607,7 @@ func (h *BulkUserHandlers) handleBulkGenerate(w http.ResponseWriter, r *http.Req
 		AssignSequential:   true,
 	})
 	if err != nil {
-		h.cleanupMarkers(r.Context(), insertedIDs, true)
+		h.cleanupMarkersAfterFailure(r.Context(), err, insertedIDs, true)
 		h.writeBulkRepoError(w, err)
 		return
 	}
@@ -675,6 +675,19 @@ func (h *BulkUserHandlers) setTempPasswordMarkers(ctx context.Context, ids []int
 	}
 	_, err := pipe.Exec(ctx)
 	return err
+}
+
+// cleanupMarkersAfterFailure 在批量创建失败后清理临时口令标记，但**跳过**
+// ErrBulkCommitFailed：COMMIT 失败是模棱两可的，服务端可能已经提交。此时
+// 删除标记若事务实际已提交，会造出 must_change_password=true 却没有标记的
+// 账号，登录直接 401 temp_password_expired（spec §11.16）。保留标记在两种
+// 结局下都安全：未提交时它只是孤立键，身份 id 永不复用，不会附着到以后的
+// 账号；已提交时它正是账号能登录所必需的。
+func (h *BulkUserHandlers) cleanupMarkersAfterFailure(ctx context.Context, err error, ids []int64, mustChange bool) {
+	if errors.Is(err, store.ErrBulkCommitFailed) {
+		return
+	}
+	h.cleanupMarkers(ctx, ids, mustChange)
 }
 
 // cleanupMarkers 在事务未提交时删除已写入的标记，避免留下「没有对应账号」

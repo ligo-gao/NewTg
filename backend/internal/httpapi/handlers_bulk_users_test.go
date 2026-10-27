@@ -513,14 +513,18 @@ func TestBulkImportWritesMarkersBeforeCommit(t *testing.T) {
 	}
 }
 
-func TestBulkImportRemovesMarkersWhenCommitFails(t *testing.T) {
+// TestBulkImportRemovesMarkersWhenInsertFails 钉住非提交失败的清理分支：
+// 插入/afterInsert 失败意味着事务确定回滚、用户一定没有落库，此时 afterInsert
+// 可能已写入的标记是纯孤立键，必须删除（与 F1 的提交流程相反）。
+func TestBulkImportRemovesMarkersWhenInsertFails(t *testing.T) {
 	repo := newFakeBulkUserRepo()
 	env := newBulkTestEnv(t, repo)
 	repo.afterInsertFun = func(_ []store.BulkUserRow, afterInsert func(tx *sql.Tx, ids []int64) error) ([]store.BulkUserRow, error) {
 		if err := afterInsert(nil, []int64{41, 42}); err != nil {
 			t.Fatalf("afterInsert: %v", err)
 		}
-		return nil, errors.New("commit failed")
+		// 非 ErrBulkCommitFailed 的错误：事务确定回滚。
+		return nil, errors.New("insert failed")
 	}
 	body := "username,password,customer_type,group\nalice,longpassword123,general,default\n"
 	rr := env.importRequest(limitedAdmin(rbac.PermUsersCreate), body, "users.csv", true)
@@ -528,7 +532,37 @@ func TestBulkImportRemovesMarkersWhenCommitFails(t *testing.T) {
 		t.Fatalf("状态 = %d，期望 500（body=%q）", rr.Code, rr.Body.String())
 	}
 	if keys := env.mr.Keys(); len(keys) != 0 {
-		t.Fatalf("提交失败后残留 Redis 标记：%v", keys)
+		t.Fatalf("确定回滚后残留 Redis 标记：%v", keys)
+	}
+}
+
+// TestBulkImportKeepsMarkersWhenCommitAmbiguous 钉住 F1：COMMIT 失败是模棱两可的
+// （连接在 COMMIT 期间断开时服务端可能已提交）。删除 afterInsert 写入的标记，
+// 若事务实际已提交，就会造出 must_change_password=true 却没有标记的账号——它们
+// 登录时拿到 401 temp_password_expired，只能靠管理员手动重置恢复（spec §11.16）。
+// 保留孤立标记则无害：身份 id 永不复用，不会附着到以后的账号。
+func TestBulkImportKeepsMarkersWhenCommitAmbiguous(t *testing.T) {
+	repo := newFakeBulkUserRepo()
+	env := newBulkTestEnv(t, repo)
+	repo.afterInsertFun = func(_ []store.BulkUserRow, afterInsert func(tx *sql.Tx, ids []int64) error) ([]store.BulkUserRow, error) {
+		if err := afterInsert(nil, []int64{41, 42}); err != nil {
+			t.Fatalf("afterInsert: %v", err)
+		}
+		return nil, fmt.Errorf("%w: %v", store.ErrBulkCommitFailed, errors.New("connection reset during commit"))
+	}
+	body := "username,password,customer_type,group\nalice,longpassword123,general,default\n"
+	rr := env.importRequest(limitedAdmin(rbac.PermUsersCreate), body, "users.csv", true)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("状态 = %d，期望 500（body=%q）", rr.Code, rr.Body.String())
+	}
+	for _, id := range []int64{41, 42} {
+		key := tempPasswordKeyPrefix + fmt.Sprint(id)
+		if !env.mr.Exists(key) {
+			t.Fatalf("提交结果不确定时删除了标记 %s：若事务实际已提交，账号将永久 401", key)
+		}
+		if ttl := env.mr.TTL(key); ttl != 0 {
+			t.Fatalf("标记 %s TTL = %v，期望 0（无过期）", key, ttl)
+		}
 	}
 }
 
@@ -628,6 +662,30 @@ func TestBulkGenerateMismatchKeepsMarkers(t *testing.T) {
 		}
 		if ttl := env.mr.TTL(key); ttl != 0 {
 			t.Fatalf("标记 %s TTL = %v，期望 0（无过期）", key, ttl)
+		}
+	}
+}
+
+// TestBulkGenerateKeepsMarkersWhenCommitAmbiguous 是 F1 在生成端点的对应用例：
+// 生成端点始终 MustChangePassword=true，提交结果不确定时必须保留标记。
+func TestBulkGenerateKeepsMarkersWhenCommitAmbiguous(t *testing.T) {
+	repo := newFakeBulkUserRepo()
+	env := newBulkTestEnv(t, repo)
+	repo.afterInsertFun = func(_ []store.BulkUserRow, afterInsert func(tx *sql.Tx, ids []int64) error) ([]store.BulkUserRow, error) {
+		if err := afterInsert(nil, []int64{41, 42}); err != nil {
+			t.Fatalf("afterInsert: %v", err)
+		}
+		return nil, fmt.Errorf("%w: %v", store.ErrBulkCommitFailed, errors.New("connection reset during commit"))
+	}
+	rr := env.request(limitedAdmin(rbac.PermUsersCreate), http.MethodPost, "/api/users/bulk/generate",
+		"application/json", strings.NewReader(`{"count":2,"customer_type":"general","group":"default"}`))
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("状态 = %d，期望 500（body=%q）", rr.Code, rr.Body.String())
+	}
+	for _, id := range []int64{41, 42} {
+		key := tempPasswordKeyPrefix + fmt.Sprint(id)
+		if !env.mr.Exists(key) {
+			t.Fatalf("提交结果不确定时删除了标记 %s：若事务实际已提交，账号将永久 401", key)
 		}
 	}
 }

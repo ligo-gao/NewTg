@@ -37,6 +37,13 @@ var (
 	ErrBulkInvalidGroup = errors.New("store: bulk user group does not exist")
 	// ErrBulkSequenceExhausted：NewTG_user 序号已接近 9 位上限，无法再分配。
 	ErrBulkSequenceExhausted = errors.New("store: bulk user sequence exhausted")
+	// ErrBulkCommitFailed：事务 COMMIT 失败。提交是**模棱两可**的——连接在
+	// COMMIT 期间断开时，服务端可能已经提交了。调用方不得据此删除 afterInsert
+	// 写入的临时口令标记：保留标记在「已提交」与「未提交」两种结局下都安全
+	// （未提交的标记只是孤立键；身份 id 永不复用，绝不会附着到以后的账号），
+	// 而删除标记一旦实际已提交，就会造出永远 401 temp_password_expired 的账号
+	// （spec §11.16）。
+	ErrBulkCommitFailed = errors.New("store: bulk user commit failed")
 )
 
 // BulkUserRow 是一行待插入的批量用户。PasswordHash 已是 argon2id PHC 串；
@@ -119,8 +126,10 @@ func (r *BulkUserRepo) ExistingGroups(ctx context.Context, names []string) (map[
 // BulkCreateUsers 在一个事务内插入全部行（全有或全无）。
 //
 // afterInsert 在 INSERT 之后、Commit 之前调用，用于写临时口令的 Redis 标记；
-// 它返回错误时事务回滚，调用方负责清理可能已写入的标记。Commit 失败时同样
-// 回滚，调用方也应按 afterInsert 记录的 ids 做 best-effort 清理。
+// 它返回错误时事务确定回滚，调用方负责清理可能已写入的标记。Commit 失败时
+// 返回包装了 ErrBulkCommitFailed 的错误：提交结果不确定，调用方**不得**按
+// afterInsert 记录的 ids 删除标记（保留是两种结局下都安全的选择，见
+// ErrBulkCommitFailed 的注释）。
 //
 // 返回的是重写后的 rows（AssignSequential 只改 Username，不改顺序），生成
 // 端点据此把明文口令与用户名按输入顺序配对。
@@ -190,7 +199,7 @@ func (r *BulkUserRepo) BulkCreateUsers(
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("store: commit bulk user tx: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrBulkCommitFailed, err)
 	}
 	return rows, nil
 }
