@@ -27,7 +27,7 @@ export const zhCN: Copy = {
       { label: "定价", href: "/pricing" },
       { label: "排行", href: "/rankings" },
       { label: "关于", href: "/about" },
-      { label: "文档", href: "/docs" },
+      { label: "接口文档", href: "/docs" },
     ],
     login: "登录",
     cta: "免费开始使用",

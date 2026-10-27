@@ -27,7 +27,7 @@ export const ja: Copy = {
       { label: "料金", href: "/pricing" },
       { label: "ランキング", href: "/rankings" },
       { label: "概要", href: "/about" },
-      { label: "ドキュメント", href: "/docs" },
+      { label: "API ドキュメント", href: "/docs" },
     ],
     login: "サインイン",
     cta: "無料で始める",

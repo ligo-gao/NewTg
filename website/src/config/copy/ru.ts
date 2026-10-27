@@ -27,7 +27,7 @@ export const ru: Copy = {
       { label: "Тарифы", href: "/pricing" },
       { label: "Рейтинги", href: "/rankings" },
       { label: "О проекте", href: "/about" },
-      { label: "Документация", href: "/docs" },
+      { label: "Документация API", href: "/docs" },
     ],
     login: "Войти",
     cta: "Начать бесплатно",

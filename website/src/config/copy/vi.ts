@@ -27,7 +27,7 @@ export const vi: Copy = {
       { label: "Bảng giá", href: "/pricing" },
       { label: "Xếp hạng", href: "/rankings" },
       { label: "Giới thiệu", href: "/about" },
-      { label: "Tài liệu", href: "/docs" },
+      { label: "Tài liệu API", href: "/docs" },
     ],
     login: "Đăng nhập",
     cta: "Bắt đầu miễn phí",

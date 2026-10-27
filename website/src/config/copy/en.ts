@@ -27,7 +27,7 @@ export const en: Copy = {
       { label: "Pricing", href: "/pricing" },
       { label: "Rankings", href: "/rankings" },
       { label: "About", href: "/about" },
-      { label: "Docs", href: "/docs" },
+      { label: "API Docs", href: "/docs" },
     ],
     login: "Sign in",
     cta: "Get started free",
