@@ -11,6 +11,12 @@ import (
 var wantNames = []string{
 	"db.pool",
 	"db.wait",
+	"gateway.by_instance.error_rate",
+	"gateway.by_instance.goroutines",
+	"gateway.by_instance.heap_mb",
+	"gateway.by_instance.inflight",
+	"gateway.by_instance.p95",
+	"gateway.by_instance.rps",
 	"gateway.error_rate",
 	"gateway.inflight",
 	"gateway.p95",
@@ -55,8 +61,8 @@ func TestNamesReturnsCopy(t *testing.T) {
 // fmt 占位（不得出现 %）、单位非空且无首尾空白。具体 PromQL 文本由
 // catalog.go 与计划表格逐条人工核对，避免测试与实现互相抄写后一起漂移。
 func TestCatalogEntriesUsable(t *testing.T) {
-	if len(wantNames) != 21 {
-		t.Fatalf("冻结白名单应为 21 条，实际 %d", len(wantNames))
+	if len(wantNames) != 27 {
+		t.Fatalf("冻结白名单应为 27 条，实际 %d", len(wantNames))
 	}
 	for _, name := range wantNames {
 		promQL, unit, ok := Lookup(name)
@@ -75,6 +81,40 @@ func TestCatalogEntriesUsable(t *testing.T) {
 		}
 		if unit != strings.TrimSpace(unit) {
 			t.Errorf("%s: 单位含首尾空白: %q", name, unit)
+		}
+	}
+}
+
+// TestByInstanceCatalogGrouped 钉住逐副本查询的分类：六条 by_instance 查询
+// 必须按 instance 聚合（调用方走 QueryRangeLabeled），而 gateway 的四条全局
+// 查询不得带 instance 维度（它们走 QueryRange，会把多条序列摊平）。
+func TestByInstanceCatalogGrouped(t *testing.T) {
+	byInstance := []string{
+		NameGatewayByInstanceRPS,
+		NameGatewayByInstanceP95,
+		NameGatewayByInstanceInflight,
+		NameGatewayByInstanceGoroutines,
+		NameGatewayByInstanceHeapMB,
+		NameGatewayByInstanceErrorRate,
+	}
+	for _, name := range byInstance {
+		promQL, _, ok := Lookup(name)
+		if !ok {
+			t.Errorf("Lookup(%q) 未登记", name)
+			continue
+		}
+		if !strings.Contains(promQL, "by (instance") {
+			t.Errorf("%s: PromQL 未按 instance 聚合: %q", name, promQL)
+		}
+	}
+	for _, name := range []string{NameGatewayRPS, NameGatewayP95, NameGatewayInflight, NameGatewayErrorRate} {
+		promQL, _, ok := Lookup(name)
+		if !ok {
+			t.Errorf("Lookup(%q) 未登记", name)
+			continue
+		}
+		if strings.Contains(promQL, "by (instance") {
+			t.Errorf("%s: 全局查询不应带 instance 维度: %q", name, promQL)
 		}
 	}
 }
@@ -113,6 +153,13 @@ func TestNameConstants(t *testing.T) {
 		NamePGTPS:            "pg.tps",
 		NamePGSize:           "pg.size",
 		NameTargetUp:         "target.up",
+
+		NameGatewayByInstanceRPS:        "gateway.by_instance.rps",
+		NameGatewayByInstanceP95:        "gateway.by_instance.p95",
+		NameGatewayByInstanceInflight:   "gateway.by_instance.inflight",
+		NameGatewayByInstanceGoroutines: "gateway.by_instance.goroutines",
+		NameGatewayByInstanceHeapMB:     "gateway.by_instance.heap_mb",
+		NameGatewayByInstanceErrorRate:  "gateway.by_instance.error_rate",
 	}
 	if len(constants) != len(wantNames) {
 		t.Fatalf("常量数 %d，白名单 %d", len(constants), len(wantNames))

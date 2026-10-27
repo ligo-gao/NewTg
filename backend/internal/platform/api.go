@@ -32,6 +32,7 @@ import (
 	"newtg/gateway/internal/httpapi"
 	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/perfmetrics"
+	"newtg/gateway/internal/perfquery"
 	"newtg/gateway/internal/ratelimit"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
@@ -615,14 +616,27 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	reconcileSettings := NewReconcileSettingsReader(center, log)
 
 	router, err := httpapi.BuildGatewayRouter(httpapi.GatewayDeps{
-		DB:                      db,
-		LogDB:                   logsDB,
-		Redis:                   rdb,
-		Sessions:                auth.NewSessionManager(rdb, []byte(cfg.SessionSecret)),
-		Config:                  demoConfig,
-		Sealer:                  cipher,
-		Audit:                   auditor,
-		Authz:                   authz,
+		DB:       db,
+		LogDB:    logsDB,
+		Redis:    rdb,
+		Sessions: auth.NewSessionManager(rdb, []byte(cfg.SessionSecret)),
+		Config:   demoConfig,
+		Sealer:   cipher,
+		Audit:    auditor,
+		Authz:    authz,
+		// 性能页 overview 的 Prometheus 查询客户端。空 PROMETHEUS_URL 时
+		// New 返回不可用实现（永不 nil），端点按「未接入」降级。
+		//
+		// **不走 egress.Guard**：PROMETHEUS_URL 是部署内地址
+		// （http://prometheus:9090），basic/strict 策略默认拒绝私网地址，
+		// 接进来会让监控随安全设置收紧而整体失效（spec §7.1）。安全性由
+		// 「URL 只来自部署配置 + 查询名白名单」保证。
+		Prom: perfquery.New(perfquery.Config{
+			BaseURL:  cfg.PrometheusURL,
+			Timeout:  cfg.PrometheusTimeout,
+			CacheTTL: cfg.PrometheusCacheTTL,
+		}),
+		PromURL:                 cfg.PrometheusURL,
 		SignupWebhook:           webhookEvents,
 		TokenService:            tokens,
 		SessionSecret:           []byte(cfg.SessionSecret),

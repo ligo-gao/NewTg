@@ -44,6 +44,7 @@ import (
 	"newtg/gateway/internal/mj"
 	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/perfmetrics"
+	"newtg/gateway/internal/perfquery"
 	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/pricingstrategy"
 	"newtg/gateway/internal/rbac"
@@ -72,6 +73,10 @@ type GatewayDeps struct {
 	// 用同一个 Redis 客户端构造一次；nil 时不限流（单测装配没有 Redis，
 	// 不能把「未装配」变成「每个请求 500」）。
 	RateLimiter RelayRateLimiter
+	// Prom / PromURL 是性能页 overview 的 Prometheus 查询客户端与展示地址。
+	// nil / 空 = 未接入监控（端点降级），装配方不需要为「没有监控栈」做分支。
+	Prom    *perfquery.Client
+	PromURL string
 	// Sealer 解封配置中心的密钥类键（auth.turnstile.secret_key）。生产为
 	// CREDENTIAL_ENCRYPTION_KEY 派生的 auth.SecretCipher。
 	Sealer       configcenter.SecretSealer
@@ -556,6 +561,9 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		SignupGrantAlert:    deps.SignupGrantAlert,
 		SignupWebhook:       deps.SignupWebhook,
 		Logger:              deps.Logger,
+		// 性能页 overview：查询客户端与展示地址同源注入（nil/空 = 降级）。
+		Prom:    deps.Prom,
+		PromURL: deps.PromURL,
 		// 订阅购买与充值共用同一个支付服务实例。
 		SubscriptionPurchase: deps.SubscriptionPurchase,
 		NotifyService:        notifyService,

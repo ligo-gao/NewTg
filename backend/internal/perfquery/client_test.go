@@ -327,3 +327,118 @@ func TestNewTrimsTrailingSlash(t *testing.T) {
 		t.Fatalf("baseURL = %q", c.baseURL)
 	}
 }
+
+// labeledMatrixBody 是两条带 instance 的序列（乱序返回）+ 一条无 instance
+// 的序列：后者必须被丢弃，前者各自按时间升序。
+const labeledMatrixBody = `{"status":"success","data":{"resultType":"matrix","result":[` +
+	`{"metric":{"instance":"gw-b"},"values":[[1761000120,"6.5"],[1761000000,"4.5"]]},` +
+	`{"metric":{"instance":"gw-a"},"values":[[1761000000,"1.5"],[1761000060,"2.5"]]},` +
+	`{"metric":{},"values":[[1761000000,"99"]]}]}}`
+
+func TestQueryRangeLabeledGroupsByInstance(t *testing.T) {
+	rec := &recordingProm{}
+	srv := httptest.NewServer(rec.handler(http.StatusOK, labeledMatrixBody))
+	defer srv.Close()
+
+	c := New(Config{BaseURL: srv.URL, Now: fixedNow(time.Unix(1761000200, 0))})
+	got, err := c.QueryRangeLabeled(context.Background(), NameGatewayByInstanceGoroutines,
+		time.Unix(1761000000, 0), time.Unix(1761000180, 0), time.Minute)
+	if err != nil {
+		t.Fatalf("QueryRangeLabeled: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("分组数 = %d, want 2（无 instance 的序列应被跳过）: %v", len(got), got)
+	}
+	want := map[string][]struct {
+		at    int64
+		value float64
+	}{
+		"gw-a": {{1761000000, 1.5}, {1761000060, 2.5}},
+		"gw-b": {{1761000000, 4.5}, {1761000120, 6.5}},
+	}
+	for instance, samples := range want {
+		series := got[instance]
+		if len(series) != len(samples) {
+			t.Fatalf("%s 样本数 = %d, want %d", instance, len(series), len(samples))
+		}
+		for i := range samples {
+			if series[i].At.Unix() != samples[i].at || series[i].Value != samples[i].value {
+				t.Errorf("%s 样本 %d = (%d,%v), want (%d,%v)",
+					instance, i, series[i].At.Unix(), series[i].Value, samples[i].at, samples[i].value)
+			}
+		}
+	}
+	if _, ok := got[""]; ok {
+		t.Fatal("空 instance 键不应出现在结果里")
+	}
+}
+
+func TestQueryRangeLabeledCachesAndReturnsCopy(t *testing.T) {
+	rec := &recordingProm{}
+	srv := httptest.NewServer(rec.handler(http.StatusOK, labeledMatrixBody))
+	defer srv.Close()
+
+	c := New(Config{BaseURL: srv.URL, Now: fixedNow(time.Unix(1761000200, 0))})
+	start := time.Unix(1761000000, 0)
+	end := time.Unix(1761000180, 0)
+
+	first, err := c.QueryRangeLabeled(context.Background(), NameGatewayByInstanceGoroutines, start, end, time.Minute)
+	if err != nil {
+		t.Fatalf("第一次查询: %v", err)
+	}
+	second, err := c.QueryRangeLabeled(context.Background(), NameGatewayByInstanceGoroutines, start, end, time.Minute)
+	if err != nil {
+		t.Fatalf("第二次查询: %v", err)
+	}
+	if rec.count() != 1 {
+		t.Fatalf("假服务器收到 %d 个请求, want 1（第二次应命中缓存）", rec.count())
+	}
+
+	// 调用方改 map 与切片都不应污染缓存。
+	first["gw-a"][0].Value = 99
+	delete(first, "gw-b")
+	first["gw-new"] = []Sample{{At: time.Unix(1, 0), Value: 1}}
+
+	third, err := c.QueryRangeLabeled(context.Background(), NameGatewayByInstanceGoroutines, start, end, time.Minute)
+	if err != nil {
+		t.Fatalf("第三次查询: %v", err)
+	}
+	if third["gw-a"][0].Value != 1.5 {
+		t.Fatalf("缓存被调用方改写: %v", third["gw-a"][0].Value)
+	}
+	if len(third["gw-b"]) != 2 {
+		t.Fatalf("缓存被调用方删除: gw-b = %v", third["gw-b"])
+	}
+	if _, ok := third["gw-new"]; ok {
+		t.Fatal("调用方新增的键污染了缓存")
+	}
+	if len(second) != len(third) {
+		t.Fatalf("两次缓存命中结果不同: %d vs %d", len(second), len(third))
+	}
+}
+
+func TestQueryRangeLabeledRejectsUnknownName(t *testing.T) {
+	rec := &recordingProm{}
+	srv := httptest.NewServer(rec.handler(http.StatusOK, labeledMatrixBody))
+	defer srv.Close()
+
+	c := New(Config{BaseURL: srv.URL})
+	_, err := c.QueryRangeLabeled(context.Background(), "gateway.by_instance.nope",
+		time.Unix(1761000000, 0), time.Unix(1761000180, 0), time.Minute)
+	if !errors.Is(err, ErrUnknownQuery) {
+		t.Fatalf("err = %v, want ErrUnknownQuery", err)
+	}
+	if rec.count() != 0 {
+		t.Fatalf("未知查询名发出了 %d 个请求", rec.count())
+	}
+}
+
+func TestQueryRangeLabeledUnavailableClient(t *testing.T) {
+	c := New(Config{})
+	_, err := c.QueryRangeLabeled(context.Background(), NameGatewayByInstanceGoroutines,
+		time.Unix(1761000000, 0), time.Unix(1761000180, 0), time.Minute)
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("err = %v, want ErrUnavailable", err)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -69,6 +70,18 @@ type Config struct {
 	// 日志库或主库。
 	PerfMetricsDSN string // PERF_METRICS_DSN
 	TLSDMinVersion string // TLS_MIN_VERSION（仅 edge 消费）
+
+	// Prometheus 查询（性能页 overview 的数据源，spec §7.1）。
+	//
+	// PrometheusURL 为空是**合法**的降级态：监控栈未接入时性能页显示
+	// 「未接入」而不是让进程启动失败，也不会发出任何查询请求。
+	// 该地址只来自部署配置，不得由请求参数拼接（overview 只接受命名查询）。
+	PrometheusURL string // PROMETHEUS_URL
+	// PrometheusTimeout 是单次查询超时。
+	PrometheusTimeout time.Duration // PROMETHEUS_TIMEOUT
+	// PrometheusCacheTTL 是查询结果缓存；同一 (name, window) 在该窗口内
+	// 复用一次上游查询，避免多管理员刷新把 Prometheus 打满。
+	PrometheusCacheTTL time.Duration // PROMETHEUS_CACHE_TTL
 
 	// DemoEnabled 是演示模式的**部署侧覆盖**（NEWTG_DEMO_ENABLED）。
 	//
@@ -133,6 +146,10 @@ var defaults = map[string]string{
 	"PERF_METRICS_FLUSH_INTERVAL": "5m",
 	"PERF_METRICS_RETENTION_DAYS": "400",
 	"TLS_MIN_VERSION":             "1.2",
+	// Prometheus 查询（性能页 overview）。空 URL = 未接入监控（合法降级态）。
+	"PROMETHEUS_URL":       "",
+	"PROMETHEUS_TIMEOUT":   "5s",
+	"PROMETHEUS_CACHE_TTL": "15s",
 	// 中国法定节假日同步（holiday_sync）。默认开启、默认数据源对公网可达；
 	// 离线部署把 HOLIDAY_SYNC_ENABLED 置 false 即可不发任何出站请求。
 	"HOLIDAY_SYNC_ENABLED":      "true",
@@ -245,6 +262,19 @@ func Load() (*Config, error) {
 	c.PerfMetricsFlushInterval, err = time.ParseDuration(flush)
 	if err != nil {
 		return nil, fmt.Errorf("config: invalid PERF_METRICS_FLUSH_INTERVAL %q: %w", flush, err)
+	}
+
+	// Prometheus 查询：URL 为空是未接入监控的合法状态，不做必填校验。
+	c.PrometheusURL = strings.TrimSpace(lookup("PROMETHEUS_URL"))
+	promTimeout := lookup("PROMETHEUS_TIMEOUT")
+	c.PrometheusTimeout, err = time.ParseDuration(promTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("config: invalid PROMETHEUS_TIMEOUT %q: %w", promTimeout, err)
+	}
+	promCacheTTL := lookup("PROMETHEUS_CACHE_TTL")
+	c.PrometheusCacheTTL, err = time.ParseDuration(promCacheTTL)
+	if err != nil {
+		return nil, fmt.Errorf("config: invalid PROMETHEUS_CACHE_TTL %q: %w", promCacheTTL, err)
 	}
 
 	if c.PerfScheduleEnabled, err = parseBool("PERF_SCHEDULE_ENABLED", lookup("PERF_SCHEDULE_ENABLED")); err != nil {
@@ -420,6 +450,28 @@ func (c *Config) Validate() error {
 	}
 	if c.PerfMetricsRetentionDays < 30 || c.PerfMetricsRetentionDays > 400 {
 		return fmt.Errorf("config: PERF_METRICS_RETENTION_DAYS %d out of range [30, 400]", c.PerfMetricsRetentionDays)
+	}
+	// Prometheus 查询（性能页 overview）。空 URL 合法：监控未接入时页面整体
+	// 降级，绝不能因为它让网关启动失败。非空时必须是 http/https 且带 host：
+	// 该地址会被 Client 原样拼成请求 URL，其它 scheme（file://、gopher://）
+	// 既没有意义，也会把部署配置错误的后果放大。
+	if c.PrometheusURL != "" {
+		parsed, err := url.Parse(c.PrometheusURL)
+		if err != nil {
+			return fmt.Errorf("config: invalid PROMETHEUS_URL %q: %w", c.PrometheusURL, err)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return fmt.Errorf("config: invalid PROMETHEUS_URL %q: scheme must be http or https", c.PrometheusURL)
+		}
+		if parsed.Host == "" {
+			return fmt.Errorf("config: invalid PROMETHEUS_URL %q: missing host", c.PrometheusURL)
+		}
+	}
+	if c.PrometheusTimeout <= 0 || c.PrometheusTimeout > 60*time.Second {
+		return fmt.Errorf("config: PROMETHEUS_TIMEOUT %v out of range (0s, 60s]", c.PrometheusTimeout)
+	}
+	if c.PrometheusCacheTTL < 0 || c.PrometheusCacheTTL > 5*time.Minute {
+		return fmt.Errorf("config: PROMETHEUS_CACHE_TTL %v out of range [0s, 5m]", c.PrometheusCacheTTL)
 	}
 	// holiday_sync 的 URL 模板必须恰好有一个 %d：拼错的模板会让任务每天
 	// 拉同一个年份或一个带 `%!d(MISSING)` 的地址。启动期失败比运行期

@@ -38,6 +38,17 @@ const (
 	NamePGSize        = "pg.size"
 
 	NameTargetUp = "target.up"
+
+	// 按 instance 标签分组的逐副本查询（overview 的 gateways 区）。
+	// 与上面的全局查询分开登记：它们的 PromQL 带 `by (instance)`，返回多条
+	// 序列，调用方必须走 QueryRangeLabeled 而不是 QueryRange（后者会把多条
+	// 序列摊平成一条，时间点交错）。
+	NameGatewayByInstanceRPS        = "gateway.by_instance.rps"
+	NameGatewayByInstanceP95        = "gateway.by_instance.p95"
+	NameGatewayByInstanceInflight   = "gateway.by_instance.inflight"
+	NameGatewayByInstanceGoroutines = "gateway.by_instance.goroutines"
+	NameGatewayByInstanceHeapMB     = "gateway.by_instance.heap_mb"
+	NameGatewayByInstanceErrorRate  = "gateway.by_instance.error_rate"
 )
 
 // entry 是一条命名查询：PromQL 与展示单位。
@@ -132,6 +143,32 @@ var catalog = map[string]entry{
 	NameTargetUp: {
 		promQL: `up{job=~"newtg-.*"}`,
 		unit:   "bool",
+	},
+	NameGatewayByInstanceRPS: {
+		promQL: `sum by (instance) (rate(newtg_http_requests_total{service="gateway"}[1m]))`,
+		unit:   "req/s",
+	},
+	NameGatewayByInstanceP95: {
+		promQL: `histogram_quantile(0.95, sum by (instance, le) (rate(newtg_http_request_duration_seconds_bucket{service="gateway"}[5m])))`,
+		unit:   "s",
+	},
+	NameGatewayByInstanceInflight: {
+		promQL: `sum by (instance) (newtg_http_in_flight_requests{service="gateway"})`,
+		unit:   "conn",
+	},
+	NameGatewayByInstanceGoroutines: {
+		// 不加 service 过滤：go_* 由每个进程的 /metrics 直接暴露，同一
+		// instance 标签在所有 job 上一致（§7.0 的常量标签方案）。
+		promQL: `max by (instance) (go_goroutines)`,
+		unit:   "goroutines",
+	},
+	NameGatewayByInstanceHeapMB: {
+		promQL: `max by (instance) (go_memstats_heap_alloc_bytes) / 1048576`,
+		unit:   "MB",
+	},
+	NameGatewayByInstanceErrorRate: {
+		promQL: `sum by (instance) (rate(newtg_http_requests_total{service="gateway",status_class=~"4xx|5xx"}[5m])) / clamp_min(sum by (instance) (rate(newtg_http_requests_total{service="gateway"}[5m])), 1e-9)`,
+		unit:   "ratio",
 	},
 }
 

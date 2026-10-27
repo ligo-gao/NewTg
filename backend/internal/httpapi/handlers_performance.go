@@ -1,6 +1,7 @@
 // 性能管理端点（modules-08 §3.19 / F-08-48～F-08-50）。
 //
 //	GET    /api/performance/stats               settings:manage（只读）
+//	GET    /api/performance/overview            settings:manage（只读，Prometheus 代理）
 //	DELETE /api/performance/disk-cache          settings:manage + X-Confirm-Action
 //	POST   /api/performance/gc                  settings:manage + X-Confirm-Action
 //	GET    /api/performance/logs                settings:manage（只读）
@@ -19,6 +20,7 @@
 package httpapi
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -38,6 +40,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"newtg/gateway/internal/audit"
+	"newtg/gateway/internal/perfquery"
 	"newtg/gateway/internal/rbac"
 )
 
@@ -69,6 +72,12 @@ const (
 	// 乘法留在安全区间。by_count 同样套用该上限：万级文件数的保留集没有
 	// 实际意义，统一上限让 query 参数的契约只有一条边界。
 	performanceMaxCleanupValue = 36500
+
+	// perfProbeTimeout 是测速单次上限（spec §9 C 类，30s：覆盖「建连 + 整段
+	// 生成」）。真正的执行侧常量是 platform.perfProbeTimeout；platform 依赖
+	// 本包，反向导入会成环，因此这里保留一份**展示用**副本供
+	// PerfEnvSnapshot 输出（Task 10 的 fixed[] 会展示它）。改一处必须同步另一处。
+	perfProbeTimeout = 30 * time.Second
 )
 
 // performanceProblemType* 是 §3.19.2 错误码的 RFC 7807 type。detail 同时以
@@ -115,6 +124,16 @@ type PerformanceHandlerConfig struct {
 	// 全局的 MemStats.NumGC 会被循环自身分配触发的自动 GC 推进，用它做断言
 	// 会随机 flake（D3a 复核 F1）。注入 stub 计数才是确定性的观测。
 	RuntimeGC func()
+
+	// Prom 是 Prometheus 查询客户端（性能页 overview）。nil 时按「未接入」
+	// 降级：overview 返回 200，与 PROMETHEUS_URL 为空时的形状一致。
+	Prom *perfquery.Client
+	// PromURL 是 PROMETHEUS_URL 的展示值，只用于判断数据源是否配置
+	//（空 = 未接入）。查询本身始终由 Prom 执行，二者在生产装配里同源。
+	PromURL string
+	// Instances 是实例心跳读取接缝；nil 时走 ListInstanceHeartbeats(ctx, Redis)。
+	// 测试注入闭包，避免为了测 overview 引入 miniredis。
+	Instances func(ctx context.Context) ([]InstanceRecord, error)
 }
 
 // PerformanceHandlers 持有性能端点依赖，可并发使用。
@@ -129,6 +148,11 @@ type PerformanceHandlers struct {
 	host  func() (string, error)
 	rm    func(string) error
 	gc    func()
+	// prom 永不为 nil：未配置时是 perfquery 的不可用实现（Available()=false），
+	// 调用方只看 Available()，不判空。
+	prom      *perfquery.Client
+	promURL   string
+	instances func(ctx context.Context) ([]InstanceRecord, error)
 	// lastClearedAt 是本进程最近一次磁盘缓存清理的完成时间（UnixNano）。
 	// 0 = 从未清理。它是进程本地观测值：重启后归零，与三个对象本身一样
 	// 不跨副本、不落库（§3.19 Q4）。
@@ -173,9 +197,23 @@ func NewPerformanceHandlers(cfg PerformanceHandlerConfig) *PerformanceHandlers {
 	if runGC == nil {
 		runGC = runtime.GC
 	}
+	// nil 时用不可用实现而不是留 nil：overview 只按 Available() 分流，
+	// 现有装配（单测）没有 Prometheus 也不会 nil 指针 panic。
+	prom := cfg.Prom
+	if prom == nil {
+		prom = perfquery.New(perfquery.Config{})
+	}
+	instances := cfg.Instances
+	if instances == nil {
+		rdb := cfg.Redis
+		instances = func(ctx context.Context) ([]InstanceRecord, error) {
+			return ListInstanceHeartbeats(ctx, rdb)
+		}
+	}
 	return &PerformanceHandlers{
 		logDB: cfg.LogDB, audit: cfg.Audit, log: log, rdb: cfg.Redis,
 		authz: authz, now: now, geten: getenv, host: hostname, rm: remove, gc: runGC,
+		prom: prom, promURL: strings.TrimSpace(cfg.PromURL), instances: instances,
 	}
 }
 
@@ -188,12 +226,80 @@ func (h *PerformanceHandlers) Register(mux *http.ServeMux) {
 		h.authz.Handler(rbac.PermSettingsManage, performanceReadAction)(http.HandlerFunc(h.handleLogs)))
 	mux.Handle("GET /api/performance/recent-operations",
 		h.authz.Handler(rbac.PermSettingsManage, performanceReadAction)(http.HandlerFunc(h.handleRecentOperations)))
+	mux.Handle("GET /api/performance/overview",
+		h.authz.Handler(rbac.PermSettingsManage, performanceReadAction)(http.HandlerFunc(h.handleOverview)))
 	mux.Handle("DELETE /api/performance/disk-cache",
 		h.authz.Handler(rbac.PermSettingsManage, performanceDiskClearAction)(http.HandlerFunc(h.handleDiskCacheClear)))
 	mux.Handle("POST /api/performance/gc",
 		h.authz.Handler(rbac.PermSettingsManage, performanceGCAction)(http.HandlerFunc(h.handleGC)))
 	mux.Handle("DELETE /api/performance/logs",
 		h.authz.Handler(rbac.PermSettingsManage, performanceLogCleanupAction)(http.HandlerFunc(h.handleLogCleanup)))
+}
+
+// PerfEnvSnapshot 是性能页「运行参数」区要展示的环境变量**一次读取**结果
+// （spec §9 B 类）。Task 10 的 config 端点复用它；h.config() 也复用其中
+// 重叠的 DISK_CACHE_* / LOG_DIR，避免同一请求把同一变量读两遍。
+//
+// 默认值与 config.Load 保持同源（DB_MAX_OPEN_CONNS=25 等）：页面展示的必须
+// 是「实际生效值」，而不是「变量是否被显式设置」。秘钥类变量只暴露
+// 「已设置」布尔（MetricsTokenSet / PerfMetricsDSNSet），绝不回显原值。
+type PerfEnvSnapshot struct {
+	DBMaxOpenConns           int
+	RedisPoolSize            int
+	ShutdownGraceSeconds     int
+	MetricsAddr              string
+	MetricsTokenSet          bool
+	PerfMetricsEnabled       bool
+	PerfMetricsDSNSet        bool
+	PerfMetricsFlushInterval time.Duration
+	PerfMetricsRetentionDays int
+	PrometheusURL            string
+	// PrometheusTimeout 保留原始字符串（如 "5s"）：Task 10 原样展示部署值，
+	// 而不是把它渲染成纳秒或 Go duration 的另一种拼写。
+	PrometheusTimeout    string
+	PerfScheduleTimezone string
+	// ProbeTimeout 是代码内置的测速单次上限（C 类），同样供 Task 10 展示。
+	ProbeTimeout         time.Duration
+	DiskCacheEnabled     bool
+	DiskCachePath        string
+	LogDir               string
+	DiskCacheMaxMB       int
+	DiskCacheThresholdMB int
+}
+
+// envSnapshot 读取一次性能页涉及的 B 类环境变量。每次请求重读，使部署侧
+// 变更无需重启（与 settings 不同，这些值不在配置中心，没有广播通道）。
+func (h *PerformanceHandlers) envSnapshot() PerfEnvSnapshot {
+	snapshot := PerfEnvSnapshot{
+		DBMaxOpenConns:           parseEnvIntOrDefault(h.geten("DB_MAX_OPEN_CONNS"), 25),
+		RedisPoolSize:            parseEnvIntOrDefault(h.geten("REDIS_POOL_SIZE"), 10),
+		ShutdownGraceSeconds:     parseEnvIntOrDefault(h.geten("SHUTDOWN_GRACE_SECONDS"), 30),
+		MetricsAddr:              strings.TrimSpace(h.geten("METRICS_ADDR")),
+		MetricsTokenSet:          strings.TrimSpace(h.geten("METRICS_TOKEN")) != "",
+		PerfMetricsEnabled:       parseEnvBoolOrDefault(h.geten("PERF_METRICS_ENABLED"), true),
+		PerfMetricsDSNSet:        strings.TrimSpace(h.geten("PERF_METRICS_DSN")) != "",
+		PerfMetricsFlushInterval: parseEnvDurationOrDefault(h.geten("PERF_METRICS_FLUSH_INTERVAL"), 5*time.Minute),
+		PerfMetricsRetentionDays: parseEnvIntOrDefault(h.geten("PERF_METRICS_RETENTION_DAYS"), 400),
+		PrometheusURL:            strings.TrimSpace(h.geten("PROMETHEUS_URL")),
+		PrometheusTimeout:        strings.TrimSpace(h.geten("PROMETHEUS_TIMEOUT")),
+		PerfScheduleTimezone:     strings.TrimSpace(h.geten("PERF_SCHEDULE_TIMEZONE")),
+		ProbeTimeout:             perfProbeTimeout,
+		DiskCacheEnabled:         parseEnvBool(h.geten("DISK_CACHE_ENABLED")),
+		DiskCachePath:            strings.TrimSpace(h.geten("DISK_CACHE_PATH")),
+		LogDir:                   strings.TrimSpace(h.geten("LOG_DIR")),
+		DiskCacheMaxMB:           parseEnvIntOrDefault(h.geten("DISK_CACHE_MAX_MB"), 0),
+		DiskCacheThresholdMB:     parseEnvIntOrDefault(h.geten("DISK_CACHE_THRESHOLD_MB"), 0),
+	}
+	if snapshot.MetricsAddr == "" {
+		snapshot.MetricsAddr = ":8006"
+	}
+	if snapshot.PrometheusTimeout == "" {
+		snapshot.PrometheusTimeout = "5s"
+	}
+	if snapshot.PerfScheduleTimezone == "" {
+		snapshot.PerfScheduleTimezone = "Asia/Shanghai"
+	}
+	return snapshot
 }
 
 // performanceConfig 是一次请求的环境变量快照。
@@ -207,15 +313,17 @@ type performanceConfig struct {
 	instanceID       string
 }
 
-// config 读取 D3-01 冻结的环境变量。每次请求重读，使部署侧变更无需重启
-// （与 settings 不同，这些值不在配置中心，没有广播通道）。
+// config 读取 D3-01 冻结的环境变量。取值走 envSnapshot()，与 Task 10 的
+// 运行参数视图共享同一次读取；LOG_FILE_PATTERN 与 INSTANCE_ID 不在 B 类
+// 清单里，单独读取。
 func (h *PerformanceHandlers) config() performanceConfig {
+	snapshot := h.envSnapshot()
 	cfg := performanceConfig{
-		diskCacheEnabled: parseEnvBool(h.geten("DISK_CACHE_ENABLED")),
-		diskCachePath:    strings.TrimSpace(h.geten("DISK_CACHE_PATH")),
-		diskCacheMaxMB:   parseEnvInt64(h.geten("DISK_CACHE_MAX_MB")),
-		diskCacheThresh:  parseEnvInt64(h.geten("DISK_CACHE_THRESHOLD_MB")),
-		logDir:           strings.TrimSpace(h.geten("LOG_DIR")),
+		diskCacheEnabled: snapshot.DiskCacheEnabled,
+		diskCachePath:    snapshot.DiskCachePath,
+		diskCacheMaxMB:   int64(snapshot.DiskCacheMaxMB),
+		diskCacheThresh:  int64(snapshot.DiskCacheThresholdMB),
+		logDir:           snapshot.LogDir,
 		logFilePattern:   strings.TrimSpace(h.geten("LOG_FILE_PATTERN")),
 		// 与逐副本心跳共用同一解析（INSTANCE_ID → hostname → "unknown"），
 		// 避免性能页与实例表对「当前实例」给出不同答案。
@@ -232,10 +340,43 @@ func parseEnvBool(raw string) bool {
 	return err == nil && value
 }
 
-func parseEnvInt64(raw string) int64 {
-	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+// parseEnvBoolOrDefault 用于有默认值的开关：变量为空/非法时回落默认值
+// （与 config.Load 的 defaults 表同口径）。
+func parseEnvBoolOrDefault(raw string, fallback bool) bool {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return fallback
+	}
+	value, err := strconv.ParseBool(trimmed)
+	if err != nil {
+		return fallback
+	}
+	return value
+}
+
+// parseEnvIntOrDefault 解析正整数环境变量；空/非法/负数一律回落默认值
+// （与 config.Load 的 defaults 表同口径，负数不是合法的连接数/字节数）。
+func parseEnvIntOrDefault(raw string, fallback int) int {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(trimmed)
 	if err != nil || value < 0 {
-		return 0
+		return fallback
+	}
+	return value
+}
+
+// parseEnvDurationOrDefault 解析 Go duration 字符串；空/非法时回落默认值。
+func parseEnvDurationOrDefault(raw string, fallback time.Duration) time.Duration {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return fallback
+	}
+	value, err := time.ParseDuration(trimmed)
+	if err != nil || value <= 0 {
+		return fallback
 	}
 	return value
 }

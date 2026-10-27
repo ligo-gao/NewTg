@@ -52,6 +52,7 @@ type Client struct {
 	ttl     time.Duration
 	http    *http.Client
 	cache   *ttlCache
+	labels  *labelCache
 }
 
 // New 构造客户端。空 BaseURL 合法（未接入监控）；永不返回 nil。
@@ -73,6 +74,7 @@ func New(cfg Config) *Client {
 		ttl:     ttl,
 		http:    &http.Client{Timeout: timeout},
 		cache:   newTTLCache(ttl, now),
+		labels:  newLabelCache(ttl, now),
 	}
 }
 
@@ -112,45 +114,95 @@ func (c *Client) QueryRange(ctx context.Context, name string, start, end time.Ti
 	return samples, nil
 }
 
+// QueryRangeLabeled 执行一条按 instance 标签分组的白名单查询，返回
+// instance → 按时间升序的样本。没有 instance 标签的序列被跳过：调用方
+// （overview 的 gateways 区）只能把指标与心跳按 instance 对齐，无法对齐的
+// 序列若摊平进来，会让「某副本的数字」变成所有副本之和。
+//
+// 缓存口径与 QueryRange 完全一致：两端 start/end 先截到 CacheTTL 桶边界，
+// 同一个 key 函数（名字 + start + end + step）。两条查询共用同一 TTL 是
+// 有意的——同一页面刷新同时读两类查询，缓存窗口错开没有收益。
+func (c *Client) QueryRangeLabeled(ctx context.Context, name string, start, end time.Time, step time.Duration) (map[string][]Sample, error) {
+	promQL, _, ok := Lookup(name)
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", ErrUnknownQuery, name)
+	}
+	if !c.Available() {
+		return nil, fmt.Errorf("%w: %s", ErrUnavailable, name)
+	}
+
+	start = start.Truncate(c.ttl)
+	end = end.Truncate(c.ttl)
+	key := cacheKey(name, start, end, step)
+	if series, ok := c.labels.get(key); ok {
+		return series, nil
+	}
+
+	series, err := c.fetchLabeled(ctx, name, promQL, start, end, step)
+	if err != nil {
+		return nil, err
+	}
+	c.labels.put(key, series)
+	return series, nil
+}
+
 // fetch 发一次 GET /api/v1/query_range 并解析矩阵。
 func (c *Client) fetch(ctx context.Context, name, promQL string, start, end time.Time, step time.Duration) ([]Sample, error) {
+	api, err := c.fetchResult(ctx, name, promQL, start, end, step)
+	if err != nil {
+		return nil, err
+	}
+	return api.samples(name)
+}
+
+// fetchLabeled 与 fetch 共用同一次 HTTP 调用与响应外壳，只是按 instance 分组。
+func (c *Client) fetchLabeled(ctx context.Context, name, promQL string, start, end time.Time, step time.Duration) (map[string][]Sample, error) {
+	api, err := c.fetchResult(ctx, name, promQL, start, end, step)
+	if err != nil {
+		return nil, err
+	}
+	return api.labeled(name)
+}
+
+// fetchResult 发一次 GET /api/v1/query_range 并返回解析后的响应外壳。
+func (c *Client) fetchResult(ctx context.Context, name, promQL string, start, end time.Time, step time.Duration) (apiResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+queryRangePath+"?"+queryValues(promQL, start, end, step).Encode(), nil)
 	if err != nil {
-		return nil, fmt.Errorf("perfquery: %s: %w", name, err)
+		return apiResponse{}, fmt.Errorf("perfquery: %s: %w", name, err)
 	}
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("perfquery: %s: %w", name, err)
+		return apiResponse{}, fmt.Errorf("perfquery: %s: %w", name, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return nil, fmt.Errorf("perfquery: %s: %w", name, err)
+		return apiResponse{}, fmt.Errorf("perfquery: %s: %w", name, err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		var api apiResponse
 		if json.Unmarshal(body, &api) == nil && api.Error != "" {
-			return nil, fmt.Errorf("perfquery: %s: %s", name, api.Error)
+			return apiResponse{}, fmt.Errorf("perfquery: %s: %s", name, api.Error)
 		}
-		return nil, fmt.Errorf("perfquery: %s: http %d: %s", name, resp.StatusCode, truncate(strings.TrimSpace(string(body)), 200))
+		return apiResponse{}, fmt.Errorf("perfquery: %s: http %d: %s", name, resp.StatusCode, truncate(strings.TrimSpace(string(body)), 200))
 	}
 
 	var api apiResponse
 	if err := json.Unmarshal(body, &api); err != nil {
-		return nil, fmt.Errorf("perfquery: %s: decode response: %w", name, err)
+		return apiResponse{}, fmt.Errorf("perfquery: %s: decode response: %w", name, err)
 	}
 	if api.Status != "success" {
 		msg := api.Error
 		if msg == "" {
 			msg = fmt.Sprintf("status %q", api.Status)
 		}
-		return nil, fmt.Errorf("perfquery: %s: %s", name, msg)
+		return apiResponse{}, fmt.Errorf("perfquery: %s: %s", name, msg)
 	}
-	return api.samples(name)
+	return api, nil
 }
 
 // queryValues 组装 query_range 参数。start/end 用 Unix 秒，step 用秒
@@ -202,6 +254,35 @@ func (r apiResponse) samples(name string) ([]Sample, error) {
 		return samples[i].At.Before(samples[j].At)
 	})
 	return samples, nil
+}
+
+// labeled 按 series.Metric["instance"] 分组。没有 instance 标签的序列被
+// 跳过（无法与副本心跳对齐）；同一 instance 的点按时间升序。
+func (r apiResponse) labeled(name string) (map[string][]Sample, error) {
+	labeled := make(map[string][]Sample)
+	for _, series := range r.Data.Result {
+		instance := strings.TrimSpace(series.Metric["instance"])
+		if instance == "" {
+			continue
+		}
+		for _, pair := range series.Values {
+			at, err := parseTimestamp(pair[0])
+			if err != nil {
+				return nil, fmt.Errorf("perfquery: %s: bad timestamp %s: %w", name, pair[0], err)
+			}
+			value, err := parseValue(pair[1])
+			if err != nil {
+				return nil, fmt.Errorf("perfquery: %s: bad value %s: %w", name, pair[1], err)
+			}
+			labeled[instance] = append(labeled[instance], Sample{At: at, Value: value})
+		}
+	}
+	for _, samples := range labeled {
+		sort.SliceStable(samples, func(i, j int) bool {
+			return samples[i].At.Before(samples[j].At)
+		})
+	}
+	return labeled, nil
 }
 
 func parseTimestamp(raw json.RawMessage) (time.Time, error) {

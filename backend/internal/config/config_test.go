@@ -23,6 +23,8 @@ func setRequired(t *testing.T) {
 	t.Setenv("DB_LOGS_DSN", "postgres://app:secret@db:5432/newtg_logs?sslmode=disable")
 	// 可选指标库 DSN：默认用例显式清空，避免宿主环境变量影响断言。
 	t.Setenv("PERF_METRICS_DSN", "")
+	// Prometheus 地址默认空，显式清空避免宿主环境影响默认值断言。
+	t.Setenv("PROMETHEUS_URL", "")
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -118,6 +120,16 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if c.TLSDMinVersion != "1.2" {
 		t.Errorf("TLSDMinVersion = %q, want 1.2", c.TLSDMinVersion)
+	}
+	// 空 PROMETHEUS_URL 是合法降级态，默认值就是空。
+	if c.PrometheusURL != "" {
+		t.Errorf("PrometheusURL = %q, want empty", c.PrometheusURL)
+	}
+	if c.PrometheusTimeout != 5*time.Second {
+		t.Errorf("PrometheusTimeout = %v, want 5s", c.PrometheusTimeout)
+	}
+	if c.PrometheusCacheTTL != 15*time.Second {
+		t.Errorf("PrometheusCacheTTL = %v, want 15s", c.PrometheusCacheTTL)
 	}
 	if !c.PerfScheduleEnabled || c.PerfScheduleTimes != "00:00,12:00" ||
 		c.PerfScheduleTimezone != "Asia/Shanghai" ||
@@ -291,6 +303,8 @@ func TestValidateStandalone(t *testing.T) {
 		OpenAPIValidate:          "warn",
 		PerfMetricsFlushInterval: 5 * time.Minute,
 		PerfMetricsRetentionDays: 400,
+		PrometheusTimeout:        5 * time.Second,
+		PrometheusCacheTTL:       15 * time.Second,
 		TLSDMinVersion:           "1.2",
 		PerfScheduleTimes:        "00:00,12:00",
 		PerfScheduleTimezone:     "Asia/Shanghai",
@@ -321,6 +335,52 @@ func TestValidateStandalone(t *testing.T) {
 	bad.OpenAPIValidate = "banana"
 	if err := bad.Validate(); err == nil {
 		t.Errorf("Validate() with OpenAPIValidate=banana: expected error, got nil")
+	}
+}
+
+// TestPrometheusConfig 覆盖三个新变量：空 URL 合法（降级态），非空必须是
+// http/https 且带 host；超时与缓存窗口按范围校验。
+func TestPrometheusConfig(t *testing.T) {
+	setRequired(t)
+
+	t.Setenv("PROMETHEUS_URL", "http://prometheus:9090")
+	t.Setenv("PROMETHEUS_TIMEOUT", "3s")
+	t.Setenv("PROMETHEUS_CACHE_TTL", "30s")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load() unexpected error: %v", err)
+	}
+	if c.PrometheusURL != "http://prometheus:9090" {
+		t.Errorf("PrometheusURL = %q", c.PrometheusURL)
+	}
+	if c.PrometheusTimeout != 3*time.Second {
+		t.Errorf("PrometheusTimeout = %v, want 3s", c.PrometheusTimeout)
+	}
+	if c.PrometheusCacheTTL != 30*time.Second {
+		t.Errorf("PrometheusCacheTTL = %v, want 30s", c.PrometheusCacheTTL)
+	}
+
+	cases := []struct {
+		name string
+		key  string
+		val  string
+	}{
+		{"非 http scheme", "PROMETHEUS_URL", "ftp://prometheus:9090"},
+		{"缺 host", "PROMETHEUS_URL", "http://"},
+		{"非数字超时", "PROMETHEUS_TIMEOUT", "soon"},
+		{"超时为零", "PROMETHEUS_TIMEOUT", "0s"},
+		{"超时超过 60s", "PROMETHEUS_TIMEOUT", "61s"},
+		{"缓存窗口为负", "PROMETHEUS_CACHE_TTL", "-1s"},
+		{"缓存窗口超过 5m", "PROMETHEUS_CACHE_TTL", "6m"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv(tc.key, tc.val)
+			if _, err := Load(); err == nil {
+				t.Fatalf("%s=%q 应返回错误", tc.key, tc.val)
+			}
+		})
 	}
 }
 

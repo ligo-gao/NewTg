@@ -18,6 +18,7 @@ import (
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/perfmetrics"
+	"newtg/gateway/internal/perfquery"
 	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
@@ -34,6 +35,12 @@ type RouterConfig struct {
 	LogDB    *sql.DB
 	Redis    *redis.Client
 	Sessions *auth.SessionManager
+
+	// Prom 是性能页 overview 的 Prometheus 查询客户端；PromURL 是
+	// PROMETHEUS_URL 的展示值（空 = 未接入监控，端点整体降级）。生产由
+	// platform 注入，nil/空在单元测试与纯内存装配里是合法的。
+	Prom    *perfquery.Client
+	PromURL string
 
 	// Repo 是 users 表的认证读取面；nil 时由 DB 构造 SQLAuthRepo。
 	Repo AuthRepo
@@ -468,11 +475,13 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 	// 进程本地的，不依赖主库；日志库只用于「最近操作」的审计查询，缺省时
 	// 该端点返回空列表而不是拒绝挂载。六个端点统一要求 settings:manage。
 	NewPerformanceHandlers(PerformanceHandlerConfig{
-		LogDB:  cfg.LogDB,
-		Audit:  cfg.Audit,
-		Logger: cfg.Logger,
-		Redis:  cfg.Redis,
-		Authz:  cfg.Authz,
+		LogDB:   cfg.LogDB,
+		Audit:   cfg.Audit,
+		Logger:  cfg.Logger,
+		Redis:   cfg.Redis,
+		Authz:   cfg.Authz,
+		Prom:    cfg.Prom,
+		PromURL: cfg.PromURL,
 	}).Register(rt.protected)
 
 	// M6 只读日志/统计/审计端点：日志库是数据源、主库提供用户名与权限
