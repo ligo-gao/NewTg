@@ -2,14 +2,17 @@
 
 import { useHomeData } from "@/components/landing/home-data";
 import type { Copy } from "@/config/copy";
-import { formatTTFT, formatTPS, isLowSample } from "@/lib/pricing-format";
+import { formatTTFT, formatTPS } from "@/lib/pricing-format";
+
+/** 只认最近一次实测；超过 36 小时视为无数据（容许漏掉一个时段再加余量）。 */
+const PERF_FRESH_MS = 36 * 60 * 60 * 1000;
 
 function SkeletonValue() {
   return <span className="inline-block h-3 w-16 animate-pulse rounded bg-line-2/50" />;
 }
 
 export function PerformanceSection({ copy }: { copy: Copy }) {
-  const { catalogStatus, metricsStatus, featured, metrics, retry } = useHomeData();
+  const { catalogStatus, metricsStatus, perfFeatured, metrics, retry } = useHomeData();
   const loadingCatalog = catalogStatus === "loading";
   const loadingMetrics = metricsStatus === "loading";
 
@@ -24,7 +27,7 @@ export function PerformanceSection({ copy }: { copy: Copy }) {
           <div>
             <h2
               id="performance-title"
-              className="text-[clamp(1.7rem,3vw,2.4rem)] font-semibold leading-tight tracking-[-0.03em]"
+              className="text-[clamp(1.75rem,3vw,2.4rem)] font-semibold leading-tight tracking-[-0.03em]"
             >
               {copy.performance.title}
             </h2>
@@ -48,7 +51,7 @@ export function PerformanceSection({ copy }: { copy: Copy }) {
               {copy.performance.retry}
             </button>
           </div>
-        ) : !loadingCatalog && featured.length === 0 ? (
+        ) : !loadingCatalog && perfFeatured.length === 0 ? (
           <div className="rounded-[10px] border border-dashed border-line-2 px-6 py-14 text-center text-sm text-muted">
             {copy.performance.empty}
           </div>
@@ -116,41 +119,27 @@ export function PerformanceSection({ copy }: { copy: Copy }) {
                           </td>
                         </tr>
                       ))
-                    : featured.map((model) => {
+                    : perfFeatured.map((model) => {
                         const entry = metrics[model.model_id];
-                        const summary = entry?.summary;
                         const latest = entry?.latest_test ?? null;
-                        // Prefer the real-call corpus; fall back to the latest
-                        // admin probe when a value is missing from usage_logs.
-                        const ttft = summary?.avg_ttft_ms ?? latest?.ttft_ms_p50 ?? null;
-                        const tps = summary?.tps ?? latest?.tps ?? null;
-                        const sampleSize =
-                          summary?.sample_size || latest?.sample_size || 0;
-                        const ttftFromProbe =
-                          summary?.avg_ttft_ms == null && latest?.ttft_ms_p50 != null;
-                        const tpsFromProbe = summary?.tps == null && latest?.tps != null;
-                        const showProbe = ttftFromProbe || tpsFromProbe;
+                        // 只认最近一次实测：超过 36h 视为无数据（容许漏掉一个时段再加余量），
+                        // 未来时间戳（时钟偏移）仍按新鲜处理。
+                        const testedAt = latest?.tested_at
+                          ? Date.parse(latest.tested_at)
+                          : Number.NaN;
+                        const fresh =
+                          Number.isFinite(testedAt) && Date.now() - testedAt <= PERF_FRESH_MS;
+                        const ttft = fresh ? (latest?.ttft_ms_p50 ?? null) : null;
+                        const tps = fresh ? (latest?.tps ?? null) : null;
                         return (
                           <tr
                             key={model.model_id}
                             className="transition-colors hover:bg-[var(--hover-tint)]"
                           >
                             <td className="border-b border-line px-5 py-3.5">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="font-mono text-[12.5px] text-ink">
-                                  {model.display_name || model.model_id}
-                                </span>
-                                {isLowSample(sampleSize) ? (
-                                  <span className="rounded-[4px] border border-amber/35 px-1.5 py-px font-mono text-[10px] text-amber">
-                                    {copy.performance.lowSample}
-                                  </span>
-                                ) : null}
-                                {showProbe ? (
-                                  <span className="rounded-[4px] border border-cyan/35 px-1.5 py-px font-mono text-[10px] text-cyan">
-                                    {copy.performance.probe}
-                                  </span>
-                                ) : null}
-                              </div>
+                              <span className="font-mono text-[12.5px] text-ink">
+                                {model.display_name || model.model_id}
+                              </span>
                             </td>
                             <td className="border-b border-line px-5 py-3.5 text-muted">
                               {model.vendor}
