@@ -1550,7 +1550,7 @@
       "redis": "Redis",
       "host": "Host",
       "model": "Models",
-      "sub_gateway": "Inlet P95 {p95} · 5xx {errors}",
+      "sub_gateway": "Ingress P95 {p95} · 5xx {errors}",
       "sub_postgres": "{tps} tx/s · {backends} / {max_backends} connections",
       "sub_redis": "{ops} ops/s · {clients} clients",
       "sub_host": "CPU {cpu} · memory {mem} · disk {disk}",

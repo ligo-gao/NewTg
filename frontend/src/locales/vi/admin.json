@@ -1607,9 +1607,9 @@
       "open_logs": "Xem hồ sơ sự cố"
     },
     "gateways": {
-      "title": "Các phiên bản cổng",
+      "title": "Các thực thể cổng",
       "rail_sub": "{count} bản sao trực tuyến",
-      "col_id": "Instance",
+      "col_id": "Thực thể",
       "col_role": "Vai trò",
       "col_version": "Phiên bản",
       "col_last_seen": "Nhịp tim cuối",

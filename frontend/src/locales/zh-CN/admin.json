@@ -1552,7 +1552,7 @@
       "model": "模型",
       "sub_gateway": "入口 P95 {p95} · 5xx {errors}",
       "sub_postgres": "{tps} 事务/s · {backends} / {max_backends} 连接",
-      "sub_redis": "{ops} ops/s · {clients} 连接",
+      "sub_redis": "{ops} ops/s · {clients} 客户端",
       "sub_host": "CPU {cpu} · 内存 {mem} · 磁盘 {disk}",
       "sub_model": "{model} · {time} 起",
       "unknown": "监控采集未接入",
