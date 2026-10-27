@@ -467,7 +467,7 @@ func buildPublicCatalogModels(rows []store.PublicModelPricing,
 			// 能力会在 facet 里显示 2、筛选结果却只有 1 个模型。
 			model.capabilities = dedupeFoldPreserveFirst(decodeStringArray(attached.Capabilities))
 			model.contextBucket = publicContextBucket(attached.ContextLength)
-			model.endpointTypes = deriveEndpointTypes(attached.Endpoints)
+			model.endpointTypes = store.DeriveEndpointTypes(attached.Endpoints)
 		}
 		models = append(models, model)
 	}
@@ -542,43 +542,6 @@ func publicContextBucket(length *int64) string {
 // publicContextBuckets 是分档的展示顺序（固定，避免字符串序把 128K 排在
 // 32K 前）。
 var publicContextBuckets = []string{publicContext8K, publicContext32K, publicContext128K, publicContext200K}
-
-// publicEndpointMapping 是 D1-19 冻结的「档案端点路径 → 公开端点枚举」。
-// 未知路径忽略：公开面只暴露契约里存在的协议族，不把管理员的私有路径
-// 透传成 facet 值。
-var publicEndpointMapping = []struct {
-	Path  string
-	Value string
-}{
-	{"/v1/chat/completions", "chat.completions"},
-	{"/v1/messages", "messages"},
-	{"/v1/embeddings", "embeddings"},
-	{"/v1/images/generations", "images.generations"},
-	{"/v1/audio/speech", "audio.speech"},
-	{"/v1/audio/transcriptions", "audio.transcriptions"},
-	{"/v1/rerank", "rerank"},
-	{"/v1beta/models/{model}:generateContent", "generateContent"},
-}
-
-// deriveEndpointTypes 把 endpoints 对象（`{"/path":["METHOD"]}`）映射为
-// 去重、按 publicEndpointMapping 固定顺序排列的枚举。对象存在即算命中：
-// 方法属于路由实现细节，公开筛选维度只有协议端点。
-func deriveEndpointTypes(raw []byte) []string {
-	out := make([]string, 0, len(publicEndpointMapping))
-	if len(raw) == 0 {
-		return out
-	}
-	var paths map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &paths); err != nil {
-		return out
-	}
-	for _, entry := range publicEndpointMapping {
-		if _, ok := paths[entry.Path]; ok {
-			out = append(out, entry.Value)
-		}
-	}
-	return out
-}
 
 // decodeStringArray 把 jsonb 字符串数组解成 []string；恒返回非 nil（降级
 // 契约要求空数组而不是 null）。
@@ -796,8 +759,8 @@ func (idx publicCatalogIndex) knownContexts(values []string) []string {
 }
 
 func (idx publicCatalogIndex) knownEndpoints(values []string) []string {
-	known := make(map[string]struct{}, len(publicEndpointMapping))
-	for _, entry := range publicEndpointMapping {
+	known := make(map[string]struct{}, len(store.PublicEndpointMapping))
+	for _, entry := range store.PublicEndpointMapping {
 		known[strings.ToLower(entry.Value)] = struct{}{}
 	}
 	return filterKnown(values, known)
@@ -910,9 +873,9 @@ func (idx publicCatalogIndex) endpointFacets(query publicPricingQuery) []PublicF
 			counts[endpoint]++
 		}
 	}
-	// 固定枚举顺序（publicEndpointMapping），只输出有命中的端点。
-	out := make([]PublicFacetOption, 0, len(publicEndpointMapping))
-	for _, entry := range publicEndpointMapping {
+	// 固定枚举顺序（store.PublicEndpointMapping），只输出有命中的端点。
+	out := make([]PublicFacetOption, 0, len(store.PublicEndpointMapping))
+	for _, entry := range store.PublicEndpointMapping {
 		if count := counts[entry.Value]; count > 0 {
 			out = append(out, PublicFacetOption{
 				Value: strings.ToLower(entry.Value), Label: entry.Value, Count: count,
@@ -1087,7 +1050,7 @@ func (h *PublicPricingHandlers) newPublicModelCard(model publicCatalogModel, gro
 		card.Capabilities = model.capabilities
 		card.ContextLength = meta.ContextLength
 		card.MaxOutput = meta.MaxOutput
-		card.Endpoints = deriveEndpointTypes(meta.Endpoints)
+		card.Endpoints = store.DeriveEndpointTypes(meta.Endpoints)
 		card.Tags = decodeStringArray(meta.Tags)
 		if meta.Description != nil {
 			card.Description = *meta.Description

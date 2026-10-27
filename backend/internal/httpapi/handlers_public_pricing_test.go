@@ -903,24 +903,6 @@ func TestPublicContextBucketBoundaries(t *testing.T) {
 	}
 }
 
-func TestPublicEndpointDerivation(t *testing.T) {
-	raw := publicJSON(map[string][]string{
-		"/v1/chat/completions":                         {"POST"},
-		"/v1/embeddings":                               {"POST"},
-		"/v1/audio/transcriptions":                     {"POST"},
-		"/v1beta/models/{model}:generateContent":       {"POST"},
-		"/v1beta/models/{model}:streamGenerateContent": {"POST"}, // 未知，忽略
-		"/custom/private":                              {"POST"}, // 未知，忽略
-	})
-	want := []string{"chat.completions", "embeddings", "audio.transcriptions", "generateContent"}
-	if got := deriveEndpointTypes(raw); !equalStrings(got, want) {
-		t.Fatalf("endpoint 派生 = %v，期望 %v", got, want)
-	}
-	if got := deriveEndpointTypes(nil); got == nil || len(got) != 0 {
-		t.Fatalf("无端点必须是空数组，得到 %v", got)
-	}
-}
-
 func TestPublicPricingNameRuleResolution(t *testing.T) {
 	models := []store.PublicModelPricing{}
 	add := func(name string) {

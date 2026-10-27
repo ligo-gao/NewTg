@@ -1,6 +1,6 @@
-package httpapi
+package store
 
-// 公开端点枚举的三方一致性：后端 `publicEndpointMapping`（档案路径 →
+// 公开端点枚举的三方一致性：后端 `PublicEndpointMapping`（档案路径 →
 // 公开枚举）、前端 `ENDPOINT_PATHS`（枚举 → 档案路径，见
 // frontend/src/features/admin/channels/model-profile-wizard-logic.ts）与
 // OpenAPI 契约里 `ChannelFetchModelEntry.endpoints` 的 enum。
@@ -41,7 +41,7 @@ func loadPublicEndpointFixture(t *testing.T) map[string]string {
 // readEndpointEnumFromAdminSchema 从手写的 admin.yaml 里读出
 // `ChannelFetchModelEntry.endpoints` 的 enum。
 //
-// 这里刻意用文本扫描而不是 YAML 解析：httpapi 模块不直接依赖 YAML 库，而
+// 这里刻意用文本扫描而不是 YAML 解析：store 包不直接依赖 YAML 库，而
 // 该 enum 在源文件里是单行 flow 序列（布局脚本也钉住了这个文件），扫描
 // `ChannelFetchModelEntry:` 块内第一条 `enum: [` 既准确又不会引入新依赖。
 func readEndpointEnumFromAdminSchema(t *testing.T, path string) []string {
@@ -89,10 +89,10 @@ func TestPublicEndpointMappingMatchesSharedContract(t *testing.T) {
 
 	// 后端是路径 → 枚举；fixture / 前端是枚举 → 路径。逐条反向后必须完全
 	// 相等（键集、值、条数）。
-	byEnum := make(map[string]string, len(publicEndpointMapping))
-	for _, entry := range publicEndpointMapping {
+	byEnum := make(map[string]string, len(PublicEndpointMapping))
+	for _, entry := range PublicEndpointMapping {
 		if _, exists := byEnum[entry.Value]; exists {
-			t.Fatalf("publicEndpointMapping 重复的枚举值 %q", entry.Value)
+			t.Fatalf("PublicEndpointMapping 重复的枚举值 %q", entry.Value)
 		}
 		byEnum[entry.Value] = entry.Path
 	}
@@ -100,7 +100,7 @@ func TestPublicEndpointMappingMatchesSharedContract(t *testing.T) {
 		t.Fatalf("条数不一致：后端 %d，fixture %d", len(byEnum), len(fixture))
 	}
 	if !reflect.DeepEqual(byEnum, fixture) {
-		t.Fatalf("fixture 与 publicEndpointMapping 反向不一致：\n后端 %v\nfixture %v", byEnum, fixture)
+		t.Fatalf("fixture 与 PublicEndpointMapping 反向不一致：\n后端 %v\nfixture %v", byEnum, fixture)
 	}
 
 	// fixture 的键集必须与 OpenAPI spec 的 enum 完全一致（不比较顺序：enum
