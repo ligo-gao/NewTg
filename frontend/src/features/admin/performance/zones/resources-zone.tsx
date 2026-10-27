@@ -21,8 +21,6 @@ type Resources = PerfOverview['resources']
 interface ResourceRow {
   label: string
   value: string
-  /** 值缺失时用弱色，避免 `—` 看起来像读数。 */
-  muted?: boolean
 }
 
 function ResourceCard({
@@ -52,12 +50,7 @@ function ResourceCard({
         {rows.map((row) => (
           <div key={row.label} className="min-w-0">
             <dt className="text-ink-3">{row.label}</dt>
-            <dd
-              className={[
-                'mt-0.5 font-mono tabular-nums',
-                row.muted === true ? 'text-ink-3' : 'text-ink-2',
-              ].join(' ')}
-            >
+            <dd className="mt-0.5 font-mono tabular-nums text-ink-2">
               {row.value}
             </dd>
           </div>

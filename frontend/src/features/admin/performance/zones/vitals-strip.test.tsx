@@ -43,6 +43,10 @@ const VITALS: Vital[] = [
       { key: 'backends', value: 11, unit: 'count' },
       { key: 'max_backends', value: 25, unit: 'count' },
     ],
+    series: [
+      [1_000, 10],
+      [1_001, 11],
+    ],
   }),
   vital({
     key: 'redis.hit_rate',
@@ -51,6 +55,10 @@ const VITALS: Vital[] = [
     details: [
       { key: 'ops', value: 1204, unit: 'count' },
       { key: 'clients', value: 186, unit: 'count' },
+    ],
+    series: [
+      [1_000, 0.95],
+      [1_001, 0.962],
     ],
   }),
   vital({
@@ -61,6 +69,10 @@ const VITALS: Vital[] = [
       { key: 'cpu', value: 0.38, unit: 'ratio' },
       { key: 'mem', value: 0.62, unit: 'ratio' },
       { key: 'disk', value: 0.71, unit: 'ratio' },
+    ],
+    series: [
+      [1_000, 0.68],
+      [1_001, 0.71],
     ],
   }),
 ]
@@ -108,7 +120,7 @@ describe('VitalsStrip', () => {
     expect(within(gateway).getByTestId('vital-figure').textContent).toBe('21.4')
     expect(within(gateway).getByText('req/s')).toBeTruthy()
     expect(
-      within(gateway).getByText('Ingress P95 1.84s · 5xx 0.0%'),
+      within(gateway).getByText('Ingress P95 1.84s · 5xx 0.02%'),
     ).toBeTruthy()
     expect(within(gateway).getByText('OK')).toBeTruthy()
 
@@ -122,7 +134,7 @@ describe('VitalsStrip', () => {
     const redis = cell(container, 'redis.hit_rate')
     expect(within(redis).getByTestId('vital-figure').textContent).toBe('96.2')
     expect(within(redis).getByText('% hit')).toBeTruthy()
-    expect(within(redis).getByText('1204 ops/s · 186 clients')).toBeTruthy()
+    expect(within(redis).getByText('1,204 ops/s · 186 clients')).toBeTruthy()
 
     const host = cell(container, 'host.disk')
     expect(within(host).getByTestId('vital-figure').textContent).toBe('71.0')
@@ -149,10 +161,21 @@ describe('VitalsStrip', () => {
   it('replaces the four Prometheus readings when the source is down but keeps the model cell', async () => {
     const { container } = await renderStrip({ sourceDown: true })
 
-    for (const key of ['gateway.rps', 'db.pool', 'redis.hit_rate', 'host.disk']) {
+    const units: Record<string, string> = {
+      'gateway.rps': 'req/s',
+      'db.pool': '/ 25 connections',
+      'redis.hit_rate': '% hit',
+      'host.disk': '% disk',
+    }
+    for (const [key, unit] of Object.entries(units)) {
       const element = cell(container, key)
       expect(within(element).getByTestId('vital-figure').textContent).toBe('—')
       expect(within(element).getByText('No data')).toBeTruthy()
+      // 断线时连单位一起消失：`— req/s` 会被读成「速率是 0」。
+      expect(within(element).queryByText(unit)).toBeNull()
+      expect(
+        within(element).getByText('Monitoring not connected'),
+      ).toBeTruthy()
       expect(within(element).queryByTestId('vital-spark')).toBeNull()
     }
     expect(screen.queryAllByTestId('vital-spark')).toHaveLength(0)
@@ -195,6 +218,63 @@ describe('VitalsStrip', () => {
     })
 
     expect(container.textContent).not.toContain('Ingress P95')
+  })
+
+  it('degrades the connection unit to — when max_backends is missing', async () => {
+    const { container } = await renderStrip({
+      vitals: [
+        vital({
+          key: 'db.pool',
+          value: 11,
+          details: [
+            { key: 'tps', value: 342, unit: 'count' },
+            { key: 'backends', value: 11, unit: 'count' },
+          ],
+        }),
+      ],
+    })
+
+    expect(within(cell(container, 'db.pool')).getByText('/ — connections')).toBeTruthy()
+  })
+
+  it('draws a sparkline only for known statuses with real series data', async () => {
+    const { container } = await renderStrip({
+      vitals: [
+        vital({
+          key: 'gateway.rps',
+          value: 10,
+          status: 'ok',
+          series: [
+            [1, 1],
+            [2, 2],
+          ],
+        }),
+        // unknown 不等于异常，但也没有可信趋势：有序列也不画线。
+        vital({
+          key: 'db.pool',
+          value: 5,
+          status: 'unknown',
+          series: [
+            [1, 1],
+            [2, 2],
+          ],
+        }),
+        // 已知状态但没有序列：不画空 svg。
+        vital({ key: 'redis.hit_rate', value: 0.9, status: 'ok', series: [] }),
+      ],
+    })
+
+    expect(
+      within(cell(container, 'gateway.rps'))
+        .getByTestId('vital-spark')
+        .querySelector('path'),
+    ).not.toBeNull()
+    expect(
+      within(cell(container, 'db.pool')).queryByTestId('vital-spark'),
+    ).toBeNull()
+    expect(
+      within(cell(container, 'redis.hit_rate')).queryByTestId('vital-spark'),
+    ).toBeNull()
   })
 
   it('skips unknown vitals and keeps the model cell last', async () => {

@@ -4,7 +4,7 @@ import { StatusBadge } from '@/shared/ui/status-badge'
 
 import type { PerfModels, PerfOverview } from '../api'
 import { Sparkline, type SparklineTone } from '../charts/sparkline'
-import { formatPercent, vitalTone } from '../utils'
+import { formatCount, formatPercent, vitalTone } from '../utils'
 
 /**
  * 五格体检条：四格来自 Prometheus（网关 / 数据库 / Redis / 主机），第五格由
@@ -101,6 +101,7 @@ function subtitleFor(
   key: PrometheusVitalKey,
   details: Map<string, number>,
   t: TranslateFn,
+  locale: string,
 ): string | null {
   switch (key) {
     case 'gateway.rps': {
@@ -109,7 +110,8 @@ function subtitleFor(
       if (p95 === undefined || errors === undefined) return null
       return t('admin.performance.vitals.sub_gateway', {
         p95: `${p95.toFixed(2)}s`,
-        errors: formatPercent(errors),
+        // 5xx 比例通常远小于 1%，两位小数才看得见（demo 的 0.02%）。
+        errors: formatPercent(errors, 2),
       })
     }
     case 'db.pool': {
@@ -130,8 +132,8 @@ function subtitleFor(
       const clients = finiteDetail(details, 'clients')
       if (ops === undefined || clients === undefined) return null
       return t('admin.performance.vitals.sub_redis', {
-        ops: String(Math.round(ops)),
-        clients: String(Math.round(clients)),
+        ops: formatCount(ops, locale),
+        clients: formatCount(clients, locale),
       })
     }
     case 'host.disk': {
@@ -276,7 +278,7 @@ export function VitalsStrip({
   sourceDown,
   modelProbe,
 }: VitalsStripProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
 
   const cells = vitals
     .filter((vital) => isPrometheusVitalKey(vital.key))
@@ -287,18 +289,28 @@ export function VitalsStrip({
       // 渲染，监控断线时它仍然有值（adjudications §2）。
       const status = sourceDown ? 'unknown' : normalizedStatus(vital.status)
       const figure = sourceDown ? '—' : figureFor(key, vital.value)
-      const subtitle = sourceDown ? null : subtitleFor(key, details, t)
+      // 断线时数字、单位与趋势一起消失，只留一句「监控采集未接入」；
+      // 显示 `— / 25 connections` 会让人以为连接池读数是 0。
+      const subtitle = sourceDown
+        ? t('admin.performance.vitals.unknown')
+        : subtitleFor(key, details, t, locale)
+      const values = sparkValues(vital)
+      // unknown 不代表异常，但也没有可信趋势：没有序列或状态未知时不画线。
+      const showSpark =
+        !sourceDown &&
+        status !== 'unknown' &&
+        values.some((value) => value !== null && Number.isFinite(value))
 
       return {
         key,
         name: t(NAME_KEYS[key]),
         figure,
-        unit: unitFor(key, details, t),
+        unit: sourceDown ? '' : unitFor(key, details, t),
         status,
         subtitle,
-        spark: sourceDown
-          ? undefined
-          : { values: sparkValues(vital), tone: sparkTone(status) },
+        spark: showSpark
+          ? { values, tone: sparkTone(status) }
+          : undefined,
       }
     })
 

@@ -87,7 +87,7 @@ describe('GatewayZone', () => {
 
     const row = screen.getAllByTestId('gateway-row')[0] as HTMLElement
     expect(row.textContent).toContain(
-      'Ingress P95 1.9s · 5xx rate 0.0% · In-flight 14 · Goroutines 842 · Heap 186.0 MB',
+      'Ingress P95 1.9s · 5xx rate 0.02% · In-flight 14 · Goroutines 842 · Heap 186.0 MB',
     )
   })
 

@@ -53,7 +53,10 @@ function metricsText(
 
   return [
     `${t('admin.performance.gateways.metric_p95')} ${formatMs(metrics.p95_ms)}`,
-    `${t('admin.performance.gateways.metric_5xx')} ${formatPercent(metrics.error_rate)}`,
+    `${t('admin.performance.gateways.metric_5xx')} ${formatPercent(
+      metrics.error_rate,
+      2,
+    )}`,
     `${t('admin.performance.gateways.metric_inflight')} ${integerOrDash(
       metrics.inflight,
       locale,
