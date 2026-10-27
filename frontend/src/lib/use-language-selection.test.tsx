@@ -1,16 +1,15 @@
-import { createElement } from 'react'
-
 import { waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { useI18n } from '@/shared/lib/i18n-context'
 import { LanguageSwitch } from '@/shared/ui/language-switch'
+import { ToastViewport, useToastStore } from '@/shared/ui/toast'
 import { renderWithProviders } from '@/test-support/providers'
 
-import { useLanguagePreference } from './use-language-preference'
+import { useLanguageSelection } from './use-language-selection'
 
 const ORIGIN = 'http://localhost:3000'
 
@@ -20,6 +19,7 @@ beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 afterEach(() => {
   server.resetHandlers()
   globalThis.localStorage?.clear()
+  useToastStore.setState({ toasts: [] })
 })
 afterAll(() => server.close())
 
@@ -35,21 +35,25 @@ function selfSettings(language: string) {
 /** Mirrors how `AppTopbar` wires the hook into `LanguageSwitch`. */
 function LanguageHarness({ signedIn }: { signedIn: boolean }) {
   const { t } = useI18n()
-  const { onChange } = useLanguagePreference(signedIn)
-  return createElement(LanguageSwitch, {
-    label: t('common.language.label'),
-    onChange,
-  })
-}
-
-function renderHarness(signedIn: boolean) {
-  return renderWithProviders(
-    createElement(LanguageHarness, { signedIn }),
-    ['common'],
+  const { onChange } = useLanguageSelection(signedIn)
+  return (
+    <>
+      <LanguageSwitch
+        label={t('common.language.label')}
+        onChange={onChange}
+      />
+      <ToastViewport />
+    </>
   )
 }
 
-describe('useLanguagePreference', () => {
+function renderHarness(signedIn: boolean) {
+  return renderWithProviders(<LanguageHarness signedIn={signedIn} />, [
+    'common',
+  ])
+}
+
+describe('useLanguageSelection', () => {
   it('persists the chosen language to the profile for a signed-in user', async () => {
     let putBody: unknown
     server.use(
@@ -77,7 +81,7 @@ describe('useLanguagePreference', () => {
     })
   })
 
-  it('restores the previous language when the server rejects the save', async () => {
+  it('keeps the chosen language and pending flag when the server rejects the save', async () => {
     server.use(
       http.get(`${ORIGIN}/api/self`, () => HttpResponse.json(selfSettings('en'))),
       http.put(`${ORIGIN}/api/self/setting`, () =>
@@ -88,18 +92,18 @@ describe('useLanguagePreference', () => {
       ),
     )
 
-    const { getByLabelText } = await renderHarness(true)
+    const { getByLabelText, findByTestId } = await renderHarness(true)
     const select = getByLabelText('Interface language') as HTMLSelectElement
     const user = userEvent.setup()
 
     await user.selectOptions(select, 'ja')
 
     await waitFor(() => {
-      expect(document.documentElement.lang).toBe('en')
-      expect(
-        (getByLabelText('Interface language') as HTMLSelectElement).value,
-      ).toBe('en')
+      expect(document.documentElement.lang).toBe('ja')
     })
+    expect(globalThis.localStorage.getItem('newtg.language.pending')).toBe('1')
+    const viewport = await findByTestId('toast-viewport')
+    expect(viewport.textContent).toContain('Language saved on this device')
   })
 
   it('keeps the switch local for a guest and never calls the profile API', async () => {
@@ -140,5 +144,26 @@ describe('useLanguagePreference', () => {
     await user.selectOptions(select, 'fr')
 
     expect(document.documentElement.lang).toBe('fr')
+  })
+
+  it('keeps the switch working when storage is blocked (Review Focus 1)', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/self`, () => HttpResponse.json(selfSettings('en'))),
+      http.put(`${ORIGIN}/api/self/setting`, () =>
+        HttpResponse.json(selfSettings('fr')),
+      ),
+    )
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('blocked')
+    })
+
+    const { getByLabelText } = await renderHarness(true)
+    const select = getByLabelText('Interface language') as HTMLSelectElement
+    const user = userEvent.setup()
+
+    await user.selectOptions(select, 'fr')
+
+    expect(document.documentElement.lang).toBe('fr')
+    spy.mockRestore()
   })
 })

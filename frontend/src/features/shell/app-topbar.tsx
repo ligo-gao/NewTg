@@ -4,13 +4,13 @@ import { useEffect, useRef, useState } from 'react'
 import { useTheme, type ThemeMode } from '@/app/providers/theme'
 import { NotificationBell } from '@/features/notifications/notification-bell'
 import type { Me } from '@/lib/session'
+import { useLanguageSelection } from '@/lib/use-language-selection'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { LanguageSwitch } from '@/shared/ui/language-switch'
 import { useToastStore } from '@/shared/ui/toast'
 
 import { NavIcon } from './nav-icon'
 import { performSignOut } from './sign-out'
-import { useLanguagePreference } from './use-language-preference'
 
 export interface AppTopbarProps {
   title: string
@@ -53,7 +53,7 @@ export function AppTopbar({
   const queryClient = useQueryClient()
   const push = useToastStore((state) => state.push)
   const signedIn = me !== null && me !== undefined
-  const language = useLanguagePreference(signedIn)
+  const language = useLanguageSelection(signedIn)
   const shortcut = isApplePlatform()
     ? t('common.command.shortcut_mac')
     : t('common.command.shortcut_other')
