@@ -674,9 +674,11 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		// 性能页 models 端：复用渠道管理端点的同一渠道仓储与测速仓储。
 		PerfProbes:   modelPerformanceStore,
 		PerfChannels: channelRepo,
-		// 性能页 config 端：生效节奏与 A 类设置当前值。节奏读取器必须走真实
+		// 性能页 config 端：生效节奏与 A 类设置当前值。节奏读取器走真实
 		// 配置中心（center），不能用 demoConfig 包装——后者只为演示模式覆盖
-		// 计费/守卫的读取面，测速节奏不参与该覆盖。
+		// 计费/守卫的读取面，测速节奏不参与该覆盖。构造与 worker 调度器
+		// 共用 newPerfSettingsReader 和同一份配置中心快照；worker 进程另有
+		// 一个实例。
 		PerfSchedule: newPerfSettingsReader(cfg, center, log),
 		PerfSettingGet: func(key string) ([]byte, bool) {
 			raw, ok := center.Get(key)

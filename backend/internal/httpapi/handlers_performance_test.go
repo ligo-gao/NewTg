@@ -804,8 +804,8 @@ func auditDetail(t *testing.T, call []any) map[string]any {
 }
 
 // TestPerfEnvSnapshotRedactsPrometheusURL：快照会进 Task 10 的「运行参数」
-// 区（浏览器可见），PROMETHEUS_URL 里的 userinfo 必须先脱敏；无法解析的
-// 值按空串展示（Validate 会拒绝它，页面显示「未接入」）。
+// 区（浏览器可见），PROMETHEUS_URL 的 userinfo、query 与 fragment 都必须
+// 先脱敏；无法解析的值按空串展示（Validate 会拒绝它，页面显示「未接入」）。
 func TestPerfEnvSnapshotRedactsPrometheusURL(t *testing.T) {
 	env := map[string]string{"PROMETHEUS_URL": "http://user:pass@prom:9090"}
 	handlers := NewPerformanceHandlers(PerformanceHandlerConfig{
@@ -814,6 +814,12 @@ func TestPerfEnvSnapshotRedactsPrometheusURL(t *testing.T) {
 
 	if got := handlers.envSnapshot().PrometheusURL; got != "http://user:xxxxx@prom:9090" {
 		t.Fatalf("PrometheusURL = %q, want 口令已脱敏", got)
+	}
+
+	// query / fragment 也可能带 token：内容整段打码，只留分隔符。
+	env["PROMETHEUS_URL"] = "http://prom:9090/metrics?token=s3cr3t#section"
+	if got := handlers.envSnapshot().PrometheusURL; got != "http://prom:9090/metrics?…#…" {
+		t.Fatalf("PrometheusURL = %q, want query/fragment 内容已打码", got)
 	}
 
 	env["PROMETHEUS_URL"] = "://bad"

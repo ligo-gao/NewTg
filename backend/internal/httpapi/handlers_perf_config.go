@@ -3,10 +3,11 @@
 //	GET /api/performance/config   settings:manage（只读）
 //
 // 返回四块内容，全部是「实际生效值」而不是前端硬编码：
-//   - schedule：测速四项的生效值。解释逻辑与 worker 的调度器是同一个
-//     *perfsettings.Reader（装配时共用同一实例），next_run_at 也由它在服务端
-//     算出——浏览器时区与 PERF_SCHEDULE_TIMEZONE 可能不同，客户端重算会给出
-//     一个与真实运行不一致的时间（spec §7.6 / Review Focus 4）。
+//   - schedule：测速四项的生效值。解释逻辑与 worker 的调度器共用同一构造
+//     函数 newPerfSettingsReader 和同一份配置中心快照（worker 在另一进程另有
+//     实例，但两边读的是同一张设置表）。next_run_at 由它在服务端算出——浏览器
+//     时区与 PERF_SCHEDULE_TIMEZONE 可能不同，客户端重算会给出一个与真实运行
+//     不一致的时间（spec §7.6 / Review Focus 4）。
 //   - env：部署环境变量快照（B 类）。秘钥类只给「已设置」布尔，DSN 整行不
 //     出现；口令值绝不回显。
 //   - fixed：代码内置、改部署配置也不生效的参数（C 类）。
@@ -25,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -78,10 +80,16 @@ type perfConfigSchedule struct {
 //
 // Value 用指针：秘钥类行（METRICS_TOKEN）只给 configured，JSON 里不出现
 // value 键；普通行的 value 恒存在（未配置时是空串，前端显示「未配置」）。
+//
+// configured 与 set 是两个不同的问题：
+//   - configured：渲染出来的生效值是否非空（有默认值的变量恒为 true）；
+//   - set：部署者是否真的设置了该环境变量（原文非空），用于区分
+//     「按默认值跑」与「显式配置」。
 type perfConfigEnvRow struct {
 	Key        string  `json:"key"`
 	Value      *string `json:"value,omitempty"`
 	Configured bool    `json:"configured"`
+	Set        bool    `json:"set"`
 	Effect     string  `json:"effect"`
 }
 
@@ -168,10 +176,13 @@ var perfConfigGroupSpecs = []perfConfigGroupSpec{
 // handleConfig 实现 GET /api/performance/config。
 func (h *PerformanceHandlers) handleConfig(w http.ResponseWriter, r *http.Request) {
 	now := h.now()
+	// 环境快照只读一次：env[] 与 fixed[] 的 probe_timeout 必须来自同一份
+	// 观测，避免两次 os.Getenv 之间被外部改动造成同一响应内的自相矛盾。
+	snapshot := h.perfEnvSnapshot()
 	resp := perfConfigResponse{
 		GeneratedAt:    now,
-		Env:            perfConfigEnvRows(h.perfEnvSnapshot()),
-		Fixed:          perfConfigFixedRows(),
+		Env:            h.perfConfigEnvRows(snapshot),
+		Fixed:          perfConfigFixedRows(snapshot),
 		SettingsGroups: h.perfConfigSettingsGroups(),
 	}
 	if h.schedule != nil {
@@ -192,7 +203,10 @@ func (h *PerformanceHandlers) perfEnvSnapshot() PerfEnvSnapshot {
 // perfConfigSchedule 把 perfsettings.Settings 原样映射成响应，
 // next_run_at 只在启用时计算（停用没有「下次运行」）。
 func (h *PerformanceHandlers) perfConfigSchedule(now time.Time) *perfConfigSchedule {
-	effective := h.schedule.Settings(now)
+	// Schedule 一次调用同时返回时刻表与生效设置：Settings 只读一遍配置中心
+	// 快照，响应内的 enabled/runs 与 next_run_at 因此出自同一次快照，不会
+	// 因为两次读取之间的广播刷新而互相矛盾。
+	upcoming, effective := h.schedule.Schedule(now)
 	schedule := &perfConfigSchedule{
 		Enabled:       effective.Enabled,
 		IntervalHours: effective.IntervalHours,
@@ -205,30 +219,30 @@ func (h *PerformanceHandlers) perfConfigSchedule(now time.Time) *perfConfigSched
 	if !effective.Enabled {
 		return schedule
 	}
-	// NextRun 可能返回零时间（时刻表为空/间隔非法）：此时给 null，而不是
+	// Next 可能返回零时间（时刻表为空/间隔非法）：此时给 null，而不是
 	// 0001-01-01 这种会让页面显示荒谬日期的时间戳。
-	if next := h.schedule.NextRun(now); !next.IsZero() {
+	if next := upcoming.Next(now); !next.IsZero() {
 		schedule.NextRunAt = &next
 	}
 	return schedule
 }
 
-// perfConfigEnvRows 把一次环境快照摊平成行。每个字段恰好一行，唯一例外是
-// PerfMetricsDSNSet：DSN 里可能带口令，整行不渲染（采集管道是否接入由
-// PERF_METRICS_ENABLED 表达）。MetricsTokenSet 只给「已设置」布尔。
+// perfConfigEnvRows 把一次环境快照摊平成行。除 PerfMetricsDSNSet 外每个
+// 字段恰好一行：DSN 里可能带口令，整行不渲染（采集管道是否接入由
+// PERF_METRICS_ENABLED 表达）；MetricsTokenSet 只给「已设置」布尔。
 //
 // ProbeTimeout 是 C 类代码常量（不是环境变量），只在 fixed[] 出现，
 // 因此不在这里占用一行。
-func perfConfigEnvRows(snapshot PerfEnvSnapshot) []perfConfigEnvRow {
+func (h *PerformanceHandlers) perfConfigEnvRows(snapshot PerfEnvSnapshot) []perfConfigEnvRow {
 	rows := make([]perfConfigEnvRow, 0, 16)
 	addString := func(key, value string) {
-		row := perfConfigEnvRow{
+		rows = append(rows, perfConfigEnvRow{
 			Key:        key,
 			Value:      &value,
 			Configured: value != "",
+			Set:        h.geten(key) != "",
 			Effect:     perfConfigEffectRestart,
-		}
-		rows = append(rows, row)
+		})
 	}
 	addInt := func(key string, value int) { addString(key, strconv.Itoa(value)) }
 	addBool := func(key string, value bool) { addString(key, strconv.FormatBool(value)) }
@@ -242,6 +256,7 @@ func perfConfigEnvRows(snapshot PerfEnvSnapshot) []perfConfigEnvRow {
 	rows = append(rows, perfConfigEnvRow{
 		Key:        "METRICS_TOKEN",
 		Configured: snapshot.MetricsTokenSet,
+		Set:        h.geten("METRICS_TOKEN") != "",
 		Effect:     perfConfigEffectRestart,
 	})
 	addBool("PERF_METRICS_ENABLED", snapshot.PerfMetricsEnabled)
@@ -259,10 +274,12 @@ func perfConfigEnvRows(snapshot PerfEnvSnapshot) []perfConfigEnvRow {
 }
 
 // perfConfigFixedRows 是四条代码内置参数（brief Step 2 冻结）。value 尽量
-// 从真正的常量派生，避免页面展示值与实际行为漂移。
-func perfConfigFixedRows() []perfConfigFixedRow {
+// 从真正的常量/快照派生，避免页面展示值与实际行为漂移。
+func perfConfigFixedRows(snapshot PerfEnvSnapshot) []perfConfigFixedRow {
 	return []perfConfigFixedRow{
-		{Key: "probe_timeout", Value: perfProbeTimeout.String(), Unit: "duration", Effect: perfConfigEffectCode},
+		// probe_timeout 取快照字段（Task 8 已在快照里预留了它），而不是直接
+		// 读包级常量：注入的自定义快照（测试/未来可配置化）才能真正生效。
+		{Key: "probe_timeout", Value: snapshot.ProbeTimeout.String(), Unit: "duration", Effect: perfConfigEffectCode},
 		{Key: "write_rate_limit", Value: strconv.Itoa(performanceWriteRateLimit) + "/min", Unit: "rate", Effect: perfConfigEffectCode},
 		{Key: "disk_cache_idle", Value: strconv.Itoa(int(diskCacheInactiveWindow/time.Minute)) + "m", Unit: "duration", Effect: perfConfigEffectCode},
 		// 用量日志分区保留期（billing.DefaultPartitionRetentionDays，
@@ -309,23 +326,83 @@ func (h *PerformanceHandlers) perfConfigSettingsGroups() []perfConfigSettingsGro
 
 // perfConfigSettingValue 返回一个 A 类键的当前值与来源。
 //
-// 有效设置值优先；未落库、JSON null、类型不符或越界脏值一律回落注册表
-// 默认。脏值必须告警（否则页面会安静地展示一个与设置页不同的值），但绝不
-// 让端点失败。
+// 有效设置值优先；未落库、JSON null、类型不符、越界或键级校验失败一律
+// 回落注册表默认。脏值必须告警（否则页面会安静地展示一个与设置页不同的
+// 值），但绝不让端点失败。
 func (h *PerformanceHandlers) perfConfigSettingValue(setting settings.Setting) (any, string) {
 	if h.settingGet != nil {
 		if raw, ok := h.settingGet(setting.Key); ok {
 			value, err := decodePerfConfigSettingValue(setting.Type, raw)
-			if err == nil {
-				return value, perfConfigSourceSettings
-			}
-			if !isPerfConfigJSONNull(raw) {
-				h.log.Warn("performance: setting value is invalid; using registry default",
-					"key", setting.Key, "raw", string(raw), "err", err)
+			switch {
+			case err == nil:
+				rangeErr := validatePerfConfigSettingValue(setting, value)
+				if rangeErr == nil {
+					return value, perfConfigSourceSettings
+				}
+				h.warnPerfConfigSetting(setting, raw,
+					"performance: setting value is out of range; using registry default", rangeErr)
+			case errors.Is(err, errPerfConfigNullValue):
+				// null 是「显式清空」，仍然值得告警：写路径不会产生 null，
+				// 出现它说明有别的写入者/历史脏行（与 settingread 的口径一致）。
+				h.warnPerfConfigSetting(setting, raw,
+					"performance: setting is null; using registry default", nil)
+			default:
+				h.warnPerfConfigSetting(setting, raw,
+					"performance: setting value is invalid; using registry default", err)
 			}
 		}
 	}
 	return settings.DefaultValue(setting), perfConfigSourceDefault
+}
+
+// warnPerfConfigSetting 记录一条 A 类脏值告警。密钥类键（当前清单里没有，
+// 但注册表支持）不回显原始值，避免将来把令牌类键加进分组表后明文入日志。
+func (h *PerformanceHandlers) warnPerfConfigSetting(setting settings.Setting, raw []byte, msg string, err error) {
+	attrs := []any{"key", setting.Key}
+	if setting.Secret {
+		attrs = append(attrs, "raw", "<redacted>")
+	} else {
+		attrs = append(attrs, "raw", string(raw))
+	}
+	if err != nil {
+		attrs = append(attrs, "err", err)
+	}
+	h.log.Warn(msg, attrs...)
+}
+
+// validatePerfConfigSettingValue 复用注册表声明的范围与键级校验。
+//
+// 只做类型解析是不够的：消费方（channelhealth.LoadWorkerSettings、
+// platform/retention.go 等）对越界值会 clamp/回落到默认，页面若把它标成
+// source:"settings" 就违背了「看到什么就是跑什么」。number 类型额外排除
+// NaN/±Inf——JSON 本身不产生它们，但显式校验让将来换用其它解码路径时不会
+// 静默把不可编码的值写进响应。
+func validatePerfConfigSettingValue(setting settings.Setting, value any) error {
+	switch typed := value.(type) {
+	case int64:
+		if setting.MinInt != nil && typed < *setting.MinInt {
+			return fmt.Errorf("value %d is below min %d", typed, *setting.MinInt)
+		}
+		if setting.MaxInt != nil && typed > *setting.MaxInt {
+			return fmt.Errorf("value %d is above max %d", typed, *setting.MaxInt)
+		}
+	case float64:
+		if math.IsNaN(typed) || math.IsInf(typed, 0) {
+			return fmt.Errorf("value %v is not finite", typed)
+		}
+		if setting.MinFloat != nil && typed < *setting.MinFloat {
+			return fmt.Errorf("value %v is below min %v", typed, *setting.MinFloat)
+		}
+		if setting.MaxFloat != nil && typed > *setting.MaxFloat {
+			return fmt.Errorf("value %v is above max %v", typed, *setting.MaxFloat)
+		}
+	}
+	if setting.Validate != nil {
+		if err := setting.Validate(value); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // errPerfConfigUnsupportedType 表示注册表类型不在本函数的解析范围内。
@@ -391,10 +468,4 @@ func errOrNil(err error) error {
 		return err
 	}
 	return errPerfConfigNullValue
-}
-
-// isPerfConfigJSONNull 报告原始值是否是 JSON null（null 是「显式清空」，
-// 不算脏值，不告警）。
-func isPerfConfigJSONNull(raw []byte) bool {
-	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }

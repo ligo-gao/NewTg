@@ -223,7 +223,9 @@ type GatewayDeps struct {
 	PerfProbes   store.ModelPerformanceStore
 	PerfChannels ChannelModelCatalog
 	// PerfSchedule 是性能页 config 端的测速生效值读取器；生产由 platform
-	// 与 worker 调度器共用同一实例构造，nil 时 schedule 为 null（端点仍 200）。
+	// 用 newPerfSettingsReader 构造，与 worker 调度器共用同一构造函数和同一
+	// 份配置中心快照（worker 在另一进程另有实例），nil 时 schedule 为 null
+	// （端点仍 200）。
 	PerfSchedule *perfsettings.Reader
 	// PerfSettingGet 是 A 类设置当前值读取接缝（configcenter.Get 的适配）；
 	// nil 时全部按注册表默认值。

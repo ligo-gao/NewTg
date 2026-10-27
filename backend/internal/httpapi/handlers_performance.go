@@ -151,11 +151,12 @@ type PerformanceHandlerConfig struct {
 	// nil 时 channels 列与模型集合退化为其余数据源。
 	Channels ChannelModelCatalog
 
-	// Schedule 是测速四项生效值的读取器（config 端点）。必须与 worker 的
-	// 调度器共用同一个 *perfsettings.Reader，页面展示的「生效值 / 来源」才能
-	// 与真实节奏一致。nil 时响应里 schedule 为 null，端点仍 200。
+	// Schedule 是测速四项生效值的读取器（config 端点）。生产与 worker 的
+	// 调度器共用同一构造函数 newPerfSettingsReader 和同一份配置中心快照
+	// （worker 在另一进程另有实例），页面展示的「生效值 / 来源」才能与
+	// 真实节奏一致。nil 时响应里 schedule 为 null，端点仍 200。
 	Schedule *perfsettings.Reader
-	// Env 是一次免读的环境快照接缝（测试/自定义部署）；nil 时每次请求按
+	// Env 是一次预读的环境快照接缝（测试/自定义部署）；nil 时每次请求按
 	// 当前环境读取（envSnapshot）。
 	Env *PerfEnvSnapshot
 	// SettingGet 是 A 类设置的读取接缝（生产为 configcenter.Center.Get）。
@@ -345,10 +346,13 @@ func (h *PerformanceHandlers) envSnapshot() PerfEnvSnapshot {
 	return snapshot
 }
 
-// redactedEnvURL 去掉 URL 里的口令再交给页面：PROMETHEUS_URL 可能带
-// http://user:pass@host（反向代理的 basic auth），而 Task 10 会把快照原样
-// 展示在「运行参数」区。解析失败时返回空串——那本来就是 Validate 会拒绝的
-// 配置，页面按「未接入」展示比回显一段无法解析的原文安全。
+// redactedEnvURL 去掉 URL 里的凭据再交给页面：PROMETHEUS_URL 可能带
+// http://user:pass@host（反向代理的 basic auth），也可能带 ?token=… 或
+// #fragment 形式的凭据，而 Task 10 会把快照原样展示在「运行参数」区。
+// userinfo 由 url.URL.Redacted 处理；query 与 fragment 的**内容**整段替换
+// 成 "…"（只保留「有参数 / 有片段」这一事实，绝不回显）。解析失败时返回
+// 空串——那本来就是 Validate 会拒绝的配置，页面按「未接入」展示比回显
+// 一段无法解析的原文安全。
 func redactedEnvURL(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -358,7 +362,20 @@ func redactedEnvURL(raw string) string {
 	if err != nil {
 		return ""
 	}
-	return parsed.Redacted()
+	redacted := parsed.Redacted()
+	// Redacted 之后 userinfo/path 里的 '?'、'#' 都已被百分号编码，因此这里
+	// 找到的第一个 '?' / '#' 一定是 query / fragment 的分隔符。
+	queryIndex := strings.IndexByte(redacted, '?')
+	fragmentIndex := strings.IndexByte(redacted, '#')
+	switch {
+	case queryIndex >= 0 && fragmentIndex > queryIndex:
+		return redacted[:queryIndex] + "?…#…"
+	case queryIndex >= 0:
+		return redacted[:queryIndex] + "?…"
+	case fragmentIndex >= 0:
+		return redacted[:fragmentIndex] + "#…"
+	}
+	return redacted
 }
 
 // performanceConfig 是一次请求的环境变量快照。
