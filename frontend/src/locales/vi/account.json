@@ -159,7 +159,6 @@
     "description": "Chọn ngôn ngữ dùng trong bảng điều khiển.",
     "label": "Ngôn ngữ giao diện",
     "updated": "Đã cập nhật ngôn ngữ",
-    "update_error": "Không thể cập nhật ngôn ngữ. Vui lòng thử lại.",
     "name_en": "English",
     "name_zh_cn": "简体中文",
     "name_zh_tw": "繁體中文",

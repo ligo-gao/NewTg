@@ -22,6 +22,7 @@ afterEach(() => {
   server.resetHandlers()
   globalThis.localStorage?.clear()
   useToastStore.setState({ toasts: [] })
+  vi.restoreAllMocks()
 })
 afterAll(() => server.close())
 
@@ -211,13 +212,16 @@ describe('useLanguageSelection', () => {
       throw new Error('blocked')
     })
 
-    const { getByLabelText } = await renderHarness(true)
-    const select = getByLabelText('Interface language') as HTMLSelectElement
-    const user = userEvent.setup()
+    try {
+      const { getByLabelText } = await renderHarness(true)
+      const select = getByLabelText('Interface language') as HTMLSelectElement
+      const user = userEvent.setup()
 
-    await user.selectOptions(select, 'fr')
+      await user.selectOptions(select, 'fr')
 
-    expect(document.documentElement.lang).toBe('fr')
-    spy.mockRestore()
+      expect(document.documentElement.lang).toBe('fr')
+    } finally {
+      spy.mockRestore()
+    }
   })
 })

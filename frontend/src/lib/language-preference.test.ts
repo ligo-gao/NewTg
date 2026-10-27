@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   clearLanguageChoice,
@@ -12,6 +12,7 @@ import {
 } from './language-preference'
 
 beforeEach(() => globalThis.localStorage.clear())
+afterEach(() => vi.restoreAllMocks())
 
 describe('language preference store', () => {
   it('reads back a written locale and ignores unknown values', () => {
@@ -57,9 +58,12 @@ describe('language preference store', () => {
       .mockImplementation(() => {
         throw new Error('blocked')
       })
-    expect(readStoredLocale()).toBeNull()
-    expect(hasPendingSync()).toBe(false)
-    expect(() => markLanguageChosen('en')).not.toThrow()
-    spy.mockRestore()
+    try {
+      expect(readStoredLocale()).toBeNull()
+      expect(hasPendingSync()).toBe(false)
+      expect(() => markLanguageChosen('en')).not.toThrow()
+    } finally {
+      spy.mockRestore()
+    }
   })
 })

@@ -5,6 +5,7 @@ import { screen, waitFor } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 import { ProfilePage } from './ProfilePage'
+import { ToastViewport } from '@/shared/ui/toast'
 import { renderWithProviders } from '@/test-support/providers'
 
 const ORIGIN = 'http://localhost:3000'
@@ -12,7 +13,10 @@ const ORIGIN = 'http://localhost:3000'
 const server = setupServer()
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
-afterEach(() => server.resetHandlers())
+afterEach(() => {
+  server.resetHandlers()
+  globalThis.localStorage.clear()
+})
 afterAll(() => server.close())
 
 const ME = {
@@ -120,5 +124,76 @@ describe('ProfilePage account center', () => {
     await waitFor(() => {
       expect(patched).toEqual({ display_name: 'Alice Cooper' })
     })
+  })
+
+  it('saves the language preference and clears the pending marker', async () => {
+    let putBody: unknown
+    baseHandlers(() => ME)
+    server.use(
+      http.put(`${ORIGIN}/api/self/setting`, async ({ request }) => {
+        putBody = await request.json()
+        return HttpResponse.json({ ...SELF, language: 'ja' })
+      }),
+    )
+    await renderWithProviders(
+      <>
+        <ProfilePage />
+        <ToastViewport />
+      </>,
+      ['common', 'account'],
+    )
+    const user = userEvent.setup()
+    const select = (await screen.findByLabelText('Interface language')) as HTMLSelectElement
+
+    await user.selectOptions(select, 'ja')
+
+    await waitFor(() => {
+      expect(putBody).toMatchObject({
+        language: 'ja',
+        updated_at: '2026-10-23T10:00:00Z',
+      })
+    })
+    // 保存成功后必须清掉待同步标记，否则每次启动都会重复补写。
+    await waitFor(() => {
+      expect(globalThis.localStorage.getItem('newtg.language.pending')).toBeNull()
+    })
+    expect(globalThis.localStorage.getItem('newtg.language')).toBe('ja')
+    expect(document.documentElement.lang).toBe('ja')
+  })
+
+  it('keeps the chosen language when the save fails instead of rolling back', async () => {
+    baseHandlers(() => ME)
+    server.use(
+      http.put(`${ORIGIN}/api/self/setting`, () =>
+        HttpResponse.json(
+          { type: 'conflict', title: 'Conflict' },
+          { status: 409 },
+        ),
+      ),
+    )
+    await renderWithProviders(
+      <>
+        <ProfilePage />
+        <ToastViewport />
+      </>,
+      ['common', 'account'],
+    )
+    const user = userEvent.setup()
+    const select = (await screen.findByLabelText('Interface language')) as HTMLSelectElement
+
+    await user.selectOptions(select, 'ja')
+
+    // 写入失败不回滚：界面、控件与本地记忆都保持用户刚选的语言。
+    await waitFor(() => {
+      expect(document.documentElement.lang).toBe('ja')
+      expect(select.value).toBe('ja')
+    })
+    expect(globalThis.localStorage.getItem('newtg.language')).toBe('ja')
+    // 回滚会为「用户没选过的语言」写 explicit/pending，这正是要杜绝的。
+    expect(globalThis.localStorage.getItem('newtg.language.explicit')).toBe('1')
+    expect(globalThis.localStorage.getItem('newtg.language.pending')).toBe('1')
+    const viewport = await screen.findByTestId('toast-viewport')
+    expect(viewport.textContent).toContain('Language saved on this device')
+    expect(viewport.textContent).not.toContain('Could not update the language')
   })
 })

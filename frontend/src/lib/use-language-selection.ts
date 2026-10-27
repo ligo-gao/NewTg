@@ -47,8 +47,13 @@ export function useLanguageSelection(signedIn: boolean): LanguageSelection {
   async function save(next: Locale): Promise<void> {
     // Always refetch: the endpoint's optimistic lock rejects a stale
     // `updated_at`, and the cache may be empty or invalidated by a previous
-    // failed save.
-    const current = (await selfQuery.refetch()).data
+    // failed save. A rejected refetch must not escape as an unhandled
+    // rejection (call sites fire the save without awaiting), so it degrades to
+    // "no known server settings" and takes the local-only branch below.
+    const current = await selfQuery
+      .refetch()
+      .then((result) => result.data)
+      .catch(() => undefined)
     const updated = await persistLanguagePreference(next, current)
     if (updated === null) {
       push({ tone: 'info', message: t('common.language.saved_locally') })

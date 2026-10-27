@@ -9,7 +9,6 @@
   "action.refresh": "重新整理",
   "language.label": "介面語言",
   "language.saved_locally": "語言已儲存在本裝置。",
-  "language.update_error": "語言偏好儲存失敗，已還原原語言。",
   "language.updated": "語言已更新",
   "theme.label": "主題",
   "theme.light": "淺色",

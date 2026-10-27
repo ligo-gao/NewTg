@@ -159,7 +159,6 @@
     "description": "コンソールで使用する言語を選択してください。",
     "label": "インターフェース言語",
     "updated": "言語を更新しました",
-    "update_error": "言語を更新できませんでした。再試行してください。",
     "name_en": "English",
     "name_zh_cn": "简体中文",
     "name_zh_tw": "繁體中文",

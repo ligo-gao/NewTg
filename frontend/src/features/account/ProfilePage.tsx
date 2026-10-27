@@ -11,8 +11,8 @@ import { publicStatusQueryOptions } from '@/lib/public-status'
 import {
   SELF_SETTINGS_QUERY_KEY,
   selfSettingsQueryOptions,
-  updateLanguagePreference,
 } from '@/lib/self-settings'
+import { useLanguageSelection } from '@/lib/use-language-selection'
 import { useI18n, type Locale } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
 import { FormAlert } from '@/shared/ui/form'
@@ -97,6 +97,11 @@ export function ProfilePage() {
   const { t, locale, setLocale } = useI18n()
   const queryClient = useQueryClient()
   const push = useToastStore((state) => state.push)
+  // 与公开页的 LanguageSwitch 共用同一条持久化路径：服务端写入失败时保留
+  // 本地语言并给出「仅保存在本机」提示，绝不回滚（回滚会伪造用户没做过的
+  // 手势，写入 explicit/pending 标记）。
+  const { onChange: persistLanguage } = useLanguageSelection(true)
+  const [languagePending, setLanguagePending] = useState(false)
 
   const meQuery = useQuery({
     queryKey: ME_KEY,
@@ -243,19 +248,15 @@ export function ProfilePage() {
     updateName.mutate(nameDraft)
   }
 
-  function changeLanguage(next: Locale): void {
-    const previous = locale
+  async function changeLanguage(next: Locale): Promise<void> {
+    // 先切换运行时（用户手势），再交给共享 hook 持久化；失败不回滚。
     setLocale?.(next)
-    updateLanguagePreference(next, settings?.updated_at ?? '')
-      .then((updated) => {
-        queryClient.setQueryData(SELF_SETTINGS_QUERY_KEY, updated)
-        push({ tone: 'success', message: t('account.language.updated') })
-      })
-      .catch(async () => {
-        setLocale?.(previous)
-        push({ tone: 'error', message: t('account.language.update_error') })
-        await queryClient.invalidateQueries({ queryKey: SELF_SETTINGS_QUERY_KEY })
-      })
+    setLanguagePending(true)
+    try {
+      await persistLanguage?.(next)
+    } finally {
+      setLanguagePending(false)
+    }
   }
 
   function toggleChannel(channel: NotificationChannel, enabled: boolean): void {
@@ -369,7 +370,7 @@ export function ProfilePage() {
             <div className="flex flex-col gap-0.5">
               <dt className="text-badge text-ink-3">{t('account.language.label')}</dt>
               <dd className="text-ink-1">
-                {t(`account.language.name_${(settings?.language ?? locale).toLowerCase().replace(/-/g, '_')}`)}
+                {t(`account.language.name_${locale.toLowerCase().replace(/-/g, '_')}`)}
               </dd>
             </div>
           </dl>
@@ -501,9 +502,9 @@ export function ProfilePage() {
             <Row label={t('account.language.label')} hint={t('account.profile.language_help')}>
               <select
                 className={selectClass}
-                value={settings?.language ?? locale}
-                onChange={(event) => changeLanguage(event.target.value as Locale)}
-                disabled={settings === undefined}
+                value={locale}
+                onChange={(event) => void changeLanguage(event.target.value as Locale)}
+                disabled={settings === undefined || languagePending}
                 aria-label={t('account.language.label')}
               >
                 {(['zh-CN', 'en', 'zh-TW', 'fr', 'ru', 'ja', 'vi'] as const).map((code) => (

@@ -159,7 +159,6 @@
     "description": "Choisissez la langue utilisée dans la console.",
     "label": "Langue de l'interface",
     "updated": "Langue mise à jour",
-    "update_error": "Impossible de mettre à jour la langue. Veuillez réessayer.",
     "name_en": "English",
     "name_zh_cn": "简体中文",
     "name_zh_tw": "繁體中文",

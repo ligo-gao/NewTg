@@ -3,11 +3,13 @@ import { fireEvent, render, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
+import { useState } from 'react'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 import { ME_QUERY_KEY, type Me } from '@/lib/session'
 import { SELF_SETTINGS_QUERY_KEY } from '@/lib/self-settings'
-import { LanguageCard } from '@/features/account/LanguageCard'
+import { useLanguageSelection } from '@/lib/use-language-selection'
+import type { Locale } from '@/shared/lib/i18n-context'
 import { ToastViewport, useToastStore } from '@/shared/ui/toast'
 
 import { I18nProvider, useI18n } from './i18n'
@@ -62,6 +64,46 @@ function Probe() {
         switch-ja
       </button>
     </div>
+  )
+}
+
+const PICKER_LOCALES: readonly Locale[] = ['en', 'fr', 'ja']
+
+/**
+ * Stand-in for the shipping account picker (`ProfilePage` / `LanguageSwitch`).
+ * These cases assert provider/hook semantics — pending priority, backfill and
+ * retry — so they use a minimal control instead of a real page's markup.
+ */
+function LanguagePicker() {
+  const { t, locale, setLocale } = useI18n()
+  const { onChange } = useLanguageSelection(true)
+  const [saving, setSaving] = useState(false)
+
+  async function change(next: Locale): Promise<void> {
+    setLocale?.(next)
+    setSaving(true)
+    try {
+      await onChange?.(next)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <select
+      aria-label={t('common.language.label')}
+      value={locale}
+      disabled={saving}
+      onChange={(event) => {
+        void change(event.target.value as Locale)
+      }}
+    >
+      {PICKER_LOCALES.map((code) => (
+        <option key={code} value={code}>
+          {code}
+        </option>
+      ))}
+    </select>
   )
 }
 
@@ -296,7 +338,7 @@ describe('LocalePreferenceSync', () => {
     const { getByTestId, getByLabelText, client } = renderSync(
       <>
         <Probe />
-        <LanguageCard />
+        <LanguagePicker />
       </>,
     )
     const user = userEvent.setup()
@@ -340,7 +382,7 @@ describe('LocalePreferenceSync', () => {
     const { getByTestId, getByLabelText, findByTestId } = renderSync(
       <>
         <Probe />
-        <LanguageCard />
+        <LanguagePicker />
         <ToastViewport />
       </>,
     )
@@ -397,11 +439,11 @@ describe('LocalePreferenceSync', () => {
     const { getByTestId, getByRole } = renderSync(
       <>
         <Probe />
-        <LanguageCard />
+        <LanguagePicker />
       </>,
     )
     const user = userEvent.setup()
-    // 切换后卡片文案随界面语言变化，所以用控件角色而不是本地化标签定位。
+    // 切换后控件标签随界面语言变化，所以用控件角色而不是本地化标签定位。
     const select = getByRole('combobox') as HTMLSelectElement
 
     await waitFor(() => {
@@ -414,6 +456,12 @@ describe('LocalePreferenceSync', () => {
       expect(getByTestId('locale').textContent).toBe('ja')
     })
     expect(globalThis.localStorage.getItem('newtg.language.pending')).toBe('1')
+
+    // 控件在保存期间被禁用；等它解除禁用再重试，避免重试抢在 409 落地前
+    // 发出、再次携带旧令牌。
+    await waitFor(() => {
+      expect(select.disabled).toBe(false)
+    })
 
     // 再次选择（值未变，用 change 事件重试）：使用刷新后的 updated_at 并成功。
     fireEvent.change(select, {

@@ -9,7 +9,6 @@
   "action.refresh": "Refresh",
   "language.label": "Interface language",
   "language.saved_locally": "Language saved on this device.",
-  "language.update_error": "Could not save the language preference. The previous language is restored.",
   "language.updated": "Language updated",
   "theme.label": "Theme",
   "theme.light": "Light",

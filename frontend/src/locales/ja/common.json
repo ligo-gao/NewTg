@@ -9,7 +9,6 @@
   "action.refresh": "更新",
   "language.label": "表示言語",
   "language.saved_locally": "言語はこの端末に保存されました。",
-  "language.update_error": "言語設定を保存できませんでした。元の言語に戻しました。",
   "language.updated": "言語を更新しました",
   "theme.label": "テーマ",
   "theme.light": "ライト",
