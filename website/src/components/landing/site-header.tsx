@@ -89,9 +89,6 @@ export function SiteHeader({ copy, locale }: { copy: Copy; locale: Locale }) {
           >
             {copy.nav.login}
           </a>
-          <a href={site.startHref} className="btn btn-primary btn-sm">
-            {copy.nav.cta}
-          </a>
         </div>
 
         <div className="ml-auto flex items-center gap-2 nav:hidden">
@@ -154,13 +151,6 @@ export function SiteHeader({ copy, locale }: { copy: Copy; locale: Locale }) {
               <span className="text-[15px] text-ink-2">{copy.language.label}</span>
               <LanguageSwitcher locale={locale} label={copy.language.label} />
             </div>
-            <a
-              href={site.startHref}
-              onClick={closeMenu}
-              className="btn btn-primary mt-3 w-full"
-            >
-              {copy.nav.cta}
-            </a>
           </div>
         </nav>
       )}

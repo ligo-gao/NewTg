@@ -46,6 +46,12 @@ export interface LanguageSwitchProps {
    * local switch; the console persists the choice to the user's profile.
    */
   onChange?: (locale: Locale) => void
+  /**
+   * Draw the globe glyph the marketing header uses, so the public header's
+   * language pill matches the home page picker. Off by default: the console
+   * top bar keeps its compact select.
+   */
+  globe?: boolean
 }
 
 /**
@@ -62,6 +68,7 @@ export function LanguageSwitch({
   className,
   variant = 'header',
   onChange,
+  globe = false,
 }: LanguageSwitchProps) {
   const { locale, setLocale, availableLocales } = useI18n()
   const id = useId()
@@ -73,6 +80,20 @@ export function LanguageSwitch({
         <label htmlFor={id} className="sr-only">
           {label}
         </label>
+      ) : null}
+      {globe ? (
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.7"
+          strokeLinecap="round"
+          aria-hidden="true"
+          className="size-3.5 flex-none"
+        >
+          <circle cx="12" cy="12" r="9" />
+          <path d="M3 12h18M12 3c2.5 2.4 4 5.6 4 9s-1.5 6.6-4 9c-2.5-2.4-4-5.6-4-9s1.5-6.6 4-9Z" />
+        </svg>
       ) : null}
       <select
         id={id}

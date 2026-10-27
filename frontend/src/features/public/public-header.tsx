@@ -36,18 +36,25 @@ export interface SiteBrandProps {
 }
 
 /**
- * F-09-34 brand mark. Three upstream lanes converge on one output node; the
- * signal-coloured node is the gateway's only piece of ornament, and it is also
- * the mark used in the footer. Operator logos still win when configured.
+ * F-09-34 brand mark. Same wave glyph, geometry and stroke weight as the
+ * marketing header (website SiteHeader), so moving between `/` and the SPA
+ * pages does not swap the logo. Coloured by `.brand-mark` with the shared
+ * signal token; the mark is `aria-hidden` because the adjacent title already
+ * names the link.
  */
 function RelayMark() {
   return (
-    <svg className="brand-mark" viewBox="0 0 28 28" fill="none" aria-hidden="true">
-      <path d="M2 5h5l5 9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M2 14h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-      <path d="M2 23h5l5-9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M12 14h8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-      <circle className="mark-dot" cx="22" cy="14" r="2.2" />
+    <svg
+      className="brand-mark"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <path d="M3 6h3.5c2 0 3.5 1.2 4.5 3l2 6c1 1.8 2.5 3 4.5 3H21" />
+      <path d="M3 18h3.5c2 0 3.5-1.2 4.5-3l2-6c1-1.8 2.5-3 4.5-3H21" />
     </svg>
   )
 }
@@ -237,9 +244,9 @@ interface AuthClusterProps {
 
 /**
  * Session-aware right cluster (F-09-34/35): guests get the Sign in hand-off,
- * signed-in visitors get the avatar menu with Console as the first item. The
- * primary "Get started free" call to action is rendered by the header itself,
- * mirroring the marketing header's Sign in + CTA pair.
+ * signed-in visitors get the avatar menu with Console as the first item.
+ * The marketing header carries the same Sign in entry; neither header renders
+ * a sign-up call to action (业主裁定：顶栏只保留 导航 / 语言 / 明暗 / 登录).
  */
 function AuthCluster({ isLoggedIn, signInTarget, activePath }: AuthClusterProps) {
   const { t } = useI18n()
@@ -352,7 +359,6 @@ export function PublicHeader({ activePath }: PublicHeaderProps) {
     ? []
     : visibleNavItems(status.data?.nav, isLoggedIn, site?.docs_url)
   const labels = navLabels(t)
-  const signupEnabled = status.data?.auth.signup_enabled !== false
 
   return (
     <header className="site-header">
@@ -371,6 +377,7 @@ export function PublicHeader({ activePath }: PublicHeaderProps) {
           <LanguageSwitch
             className="home-lang"
             label={t('public.language.label')}
+            globe
           />
           <CompactLanguage label={t('public.language.label')} />
           <ThemeButton />
@@ -379,11 +386,6 @@ export function PublicHeader({ activePath }: PublicHeaderProps) {
             signInTarget={signInTarget}
             activePath={path}
           />
-          {signupEnabled && !isLoggedIn ? (
-            <a href="/sign-up" className="btn btn-primary header-cta">
-              {t('public.nav.cta')}
-            </a>
-          ) : null}
           <button
             type="button"
             aria-label={
@@ -406,7 +408,6 @@ export function PublicHeader({ activePath }: PublicHeaderProps) {
         labels={labels}
         isLoggedIn={isLoggedIn}
         signInTarget={signInTarget}
-        signupEnabled={signupEnabled}
       />
     </header>
   )

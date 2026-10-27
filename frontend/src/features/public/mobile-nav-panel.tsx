@@ -14,8 +14,6 @@ export interface MobileNavPanelProps {
   isLoggedIn: boolean
   /** `/sign-in?redirect=…` computed by the header for the current path. */
   signInTarget: string
-  /** The primary call to action is part of the panel on narrow screens. */
-  signupEnabled: boolean
 }
 
 /**
@@ -43,7 +41,6 @@ export function MobileNavPanel({
   labels,
   isLoggedIn,
   signInTarget,
-  signupEnabled,
 }: MobileNavPanelProps) {
   const { t } = useI18n()
 
@@ -96,11 +93,6 @@ export function MobileNavPanel({
         {!isLoggedIn ? (
           <a href={signInTarget} onClick={close} className="mobile-nav-link">
             {t('public.nav.sign_in')}
-          </a>
-        ) : null}
-        {signupEnabled && !isLoggedIn ? (
-          <a href="/sign-up" onClick={close} className="btn btn-primary mobile-nav-cta">
-            {t('public.nav.cta')}
           </a>
         ) : null}
       </div>

@@ -74,7 +74,7 @@ describe("SiteHeader", () => {
     mockStatus({ docsEnabled: true });
     render(<SiteHeader copy={copy} locale="zh-CN" />);
 
-    const docsLink = screen.getByRole("link", { name: "文档" });
+    const docsLink = screen.getByRole("link", { name: "接口文档" });
     expect(docsLink).toHaveAttribute("href", "/docs");
   });
 
@@ -82,7 +82,7 @@ describe("SiteHeader", () => {
     mockStatus({ docsEnabled: false });
     render(<SiteHeader copy={copy} locale="zh-CN" />);
 
-    expect(screen.queryByRole("link", { name: "文档" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "接口文档" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "定价" })).toBeInTheDocument();
   });
 
@@ -96,7 +96,7 @@ describe("SiteHeader", () => {
     const menu = document.getElementById("mobile-menu");
     expect(menu).not.toBeNull();
     if (!menu) throw new Error("the mobile menu did not render");
-    expect(within(menu).queryByRole("link", { name: "文档" })).not.toBeInTheDocument();
+    expect(within(menu).queryByRole("link", { name: "接口文档" })).not.toBeInTheDocument();
     expect(within(menu).getByRole("link", { name: "模型库" })).toBeInTheDocument();
   });
 
@@ -108,6 +108,6 @@ describe("SiteHeader", () => {
     });
     render(<SiteHeader copy={copy} locale="zh-CN" />);
 
-    expect(screen.queryByRole("link", { name: "文档" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "接口文档" })).not.toBeInTheDocument();
   });
 });

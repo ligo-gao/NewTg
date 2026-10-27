@@ -111,7 +111,7 @@ describe('PublicHeader (F-09-34)', () => {
       'Pricing',
       'Rankings',
       'About',
-      'Docs',
+      'API Docs',
     ])
   })
 
@@ -134,10 +134,10 @@ describe('PublicHeader (F-09-34)', () => {
       'Pricing',
       'Rankings',
       'About',
-      'Docs',
+      'API Docs',
     ])
     expect(links.at(-1)?.getAttribute('href')).toBe('https://docs.example.com')
-    // Signed-in visitors keep the avatar menu instead of a sign-up CTA.
+    // No sign-up CTA in the header for any session state.
     expect(queryByRole('link', { name: 'Get started free' })).toBeNull()
   })
 
@@ -182,10 +182,10 @@ describe('PublicHeader (F-09-34)', () => {
     expect(globalThis.localStorage?.getItem(THEME_STORAGE_KEY)).toBe('dark')
   })
 
-  it('renders the sign-in and sign-up calls to action for a guest', async () => {
+  it('renders the sign-in hand-off for a guest and no sign-up CTA', async () => {
     guest()
 
-    const { findByRole } = await renderWithProviders(
+    const { findByRole, queryByRole } = await renderWithProviders(
       <PublicHeader activePath="/about" />,
       ['public'],
     )
@@ -193,8 +193,8 @@ describe('PublicHeader (F-09-34)', () => {
     const signIn = await findByRole('link', { name: 'Sign in' })
     expect(signIn.getAttribute('href')).toBe('/sign-in?redirect=%2Fabout')
 
-    const cta = await findByRole('link', { name: 'Get started free' })
-    expect(cta.getAttribute('href')).toBe('/sign-up')
+    // 顶栏只保留 导航 / 语言 / 明暗 / 登录；注册入口由登录页承担。
+    expect(queryByRole('link', { name: 'Get started free' })).toBeNull()
   })
 
   it('opens the mobile panel and closes it on Escape or a link click', async () => {
@@ -240,16 +240,8 @@ describe('PublicHeader (F-09-34)', () => {
     expect(document.activeElement).toBe(trigger)
   })
 
-  it('keeps the panel sign-in entry when signup is disabled', async () => {
-    server.use(
-      http.get(`${ORIGIN}/api/status`, () =>
-        HttpResponse.json({
-          ...PUBLIC_STATUS,
-          auth: { ...PUBLIC_STATUS.auth, signup_enabled: false },
-        }),
-      ),
-      http.get(`${ORIGIN}/api/me`, () => HttpResponse.json({}, { status: 401 })),
-    )
+  it('keeps the panel sign-in entry and no sign-up CTA', async () => {
+    guest()
     installMatchMedia((query) => query === '(max-width: 1023px)')
 
     const { findByRole } = await renderWithProviders(

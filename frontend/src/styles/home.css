@@ -146,9 +146,15 @@
   text-decoration: none;
 }
 
-.public-shell .brand-mark { width: 22px; height: 22px; flex: none; }
-.public-shell .brand-mark .mark-dot { fill: var(--home-signal); }
-.public-shell .site-footer .brand-mark .mark-dot { fill: var(--home-signal-bright); }
+/* Same wave mark as the marketing header, in the header's signal colour; the
+   footer keeps the surrounding text colour (as the marketing footer does). */
+.public-shell .brand-mark {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  color: var(--home-signal);
+}
+.public-shell .site-footer .brand-mark { color: inherit; }
 
 .public-shell .nav-skeleton {
   height: 14px;
@@ -233,7 +239,7 @@
   align-items: center;
   justify-content: center;
   height: 36px;
-  min-width: 46px;
+  min-width: 52px;
   padding: 0 8px;
   border: 1px solid var(--home-rule-strong);
   border-radius: 6px;
@@ -336,27 +342,17 @@
 
 .public-shell .btn-sm { height: 34px; padding: 0 13px; font-size: 13px; line-height: 20px; }
 
-/* Header CTA matches the demo's 36px compact button. `.btn-sm` is shared with
-   the home onboarding step, so the size is scoped here instead of resizing
-   every compact button on the public pages. */
-.public-shell .header-cta {
-  height: 36px;
-  padding-inline: 15px;
-  font-size: 13px;
-  line-height: 20px;
-}
-
+/* Sign-in entry mirrors the marketing header's plain text link (same size,
+   colour and hover); the header carries no sign-up CTA on any public page. */
 .public-shell .sign-in {
   display: inline-flex;
   align-items: center;
-  height: 34px;
-  padding: 0 10px;
-  border-radius: 6px;
   color: var(--home-muted);
   font-size: 14px;
   line-height: 22px;
-  font-weight: 500;
+  font-weight: 400;
   text-decoration: none;
+  transition: color 150ms ease;
 }
 .public-shell .sign-in:hover { color: var(--home-ink); }
 
@@ -449,11 +445,6 @@
 
 .public-shell .mobile-nav-link:hover { color: var(--home-ink); }
 .public-shell .mobile-nav-link[aria-current='page'] { color: var(--home-ink); }
-
-.public-shell .mobile-nav-cta {
-  width: 100%;
-  margin-top: 14px;
-}
 
 @media (min-width: 1024px) {
   .public-shell .mobile-nav-panel { display: none; }
