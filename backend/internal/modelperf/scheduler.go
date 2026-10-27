@@ -276,3 +276,74 @@ dispatch:
 	stats.Duration = s.now().Sub(start)
 	return stats, nil
 }
+
+// slotKey 返回一个时段在 Redis 中的锁键，形如
+// "model_perf_schedule:2026-10-27T12:00"。
+//
+// 时段一律按 schedule.Location() 格式化再入键：同一瞬间在不同时区的副本
+// 必须落到同一个字符串上，所以既不能用 slot 自身的时区，也不能固定用 UTC
+// ——只有时刻表的时区是跨副本一致的语义锚点。
+func (s *Scheduler) slotKey(slot time.Time) string {
+	return "model_perf_schedule:" + slot.In(s.schedule.Location()).Format("2006-01-02T15:04")
+}
+
+// step 处理一个 tick：到点才取锁，取到锁才跑一轮。
+//
+// step 至多阻塞一次 RunOnce（锁与探测都受 ctx 控制），因此 ticker 的后续
+// tick 最多延后一轮，不会堆积执行。测试直接调用它以绕开真实时钟。
+func (s *Scheduler) step(ctx context.Context) {
+	now := s.now()
+	if now.Before(s.nextDue) {
+		return
+	}
+	slot := s.nextDue
+	key := s.slotKey(slot)
+
+	// release 故意丢弃：时段锁靠 TTL 自然过期。本轮执行期间，TTL 内的重复
+	// tick 及其它副本必须对同一时段继续 no-op；提前释放会让它们重新拿到锁
+	// 并重复探测，锁就形同虚设。
+	_, acquired, err := s.locker.TryLock(ctx, key, s.slotTTL)
+	switch {
+	case err != nil:
+		s.logger.Warn("modelperf: acquire slot lock failed; will retry",
+			"slot", slot.Format(time.RFC3339), "error", err)
+		// 仍在当前时段内：保持 nextDue，下个 tick 重试。若已越过下一个时段
+		// （错过整整一个周期，例如 Redis 长时间不可用），直接跳到未来时段，
+		// 避免恢复后连续补跑多个时段。
+		if next := s.schedule.Next(slot); !now.Before(next) {
+			s.nextDue = s.schedule.Next(now)
+		}
+	case !acquired:
+		s.logger.Info("modelperf: scheduled round skipped",
+			"slot", slot.Format(time.RFC3339), "skipped_locked", true)
+		s.nextDue = s.schedule.Next(now)
+	default:
+		if stats, runErr := s.RunOnce(ctx); runErr != nil {
+			s.logger.Warn("modelperf: scheduled round failed",
+				"slot", slot.Format(time.RFC3339), "error", runErr)
+		} else {
+			s.logger.Info("modelperf: scheduled round complete",
+				"slot", slot.Format(time.RFC3339), "models", stats.Models,
+				"tested", stats.Tested, "skipped_no_channel", stats.SkippedNoChannel,
+				"persist_failed", stats.PersistFailed, "duration", stats.Duration)
+		}
+		// 以轮次结束时刻（而非触发时刻）计算下一个时段：一轮跑得久时，
+		// 已过去的时段直接跳过，不会排队补跑。
+		s.nextDue = s.schedule.Next(s.now())
+	}
+}
+
+// RunLoop 按 tickInterval 轮询 step，直到 ctx 取消；取消是正常退出，返回 nil。
+func (s *Scheduler) RunLoop(ctx context.Context) error {
+	s.logger.Info("modelperf: scheduler started", "next_due", s.nextDue.Format(time.RFC3339))
+	ticker := time.NewTicker(s.tickInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			s.step(ctx)
+		}
+	}
+}

@@ -1,11 +1,13 @@
 package modelperf
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -619,5 +621,287 @@ func TestNewSchedulerClampsAndDefaults(t *testing.T) {
 	}
 	if s.tickInterval != time.Second || s.slotTTL != time.Hour {
 		t.Fatalf("explicit intervals not kept: tick %v, ttl %v", s.tickInterval, s.slotTTL)
+	}
+}
+
+// fakeLocker 让测试直接决定时段锁的结局，并记录每次尝试的 key 与 TTL。
+// step 用例都是同步调用，但仍加锁记录：这样将来若从别的 goroutine 驱动
+// step，读取记录切片也不会出现数据竞争。
+type fakeLocker struct {
+	mu       sync.Mutex
+	acquired bool
+	err      error
+	keys     []string
+	ttls     []time.Duration
+}
+
+func (f *fakeLocker) TryLock(_ context.Context, key string, ttl time.Duration) (func(), bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.keys = append(f.keys, key)
+	f.ttls = append(f.ttls, ttl)
+	return func() {}, f.acquired, f.err
+}
+
+func (f *fakeLocker) snapshot() (keys []string, ttls []time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.keys...), append([]time.Duration(nil), f.ttls...)
+}
+
+// newStepScheduler 返回一个时钟停在 2026-10-27T11:59+08:00 的调度器，因此
+// nextDue 是当天 12:00。返回的 *time.Time 是该用例时钟的唯一来源：测试改写
+// 它来推进时间，step 之间不存在任何真实等待。
+func newStepScheduler(t *testing.T, locker Locker) (*Scheduler, *time.Time, *atomic.Int64, *fakeTests) {
+	t.Helper()
+	return newStepSchedulerWith(t, locker, nil, 0)
+}
+
+func newStepSchedulerWithLogger(t *testing.T, locker Locker,
+	logger *slog.Logger) (*Scheduler, *time.Time, *atomic.Int64, *fakeTests) {
+	t.Helper()
+	return newStepSchedulerWith(t, locker, logger, 0)
+}
+
+func newStepSchedulerWith(t *testing.T, locker Locker, logger *slog.Logger,
+	tick time.Duration) (*Scheduler, *time.Time, *atomic.Int64, *fakeTests) {
+	t.Helper()
+	start := time.Date(2026, 10, 27, 11, 59, 0, 0, shanghai(t))
+	at := &start
+	calls := &atomic.Int64{}
+	tests := &fakeTests{}
+	s := mustScheduler(t, SchedulerConfig{
+		Models:   &fakeModels{names: []string{"gpt-4o"}},
+		Channels: &fakePicker{channel: &store.Channel{ID: 7}, ok: true},
+		Performer: func(context.Context, *store.Channel, string, int) []channelhealth.PerfRunResult {
+			calls.Add(1)
+			return []channelhealth.PerfRunResult{{Success: true}}
+		},
+		Tests:        tests,
+		Runs:         1,
+		Concurrency:  1,
+		Schedule:     newTestSchedule(t),
+		Locker:       locker,
+		Logger:       logger,
+		TickInterval: tick,
+		Now:          func() time.Time { return *at },
+	})
+	return s, at, calls, tests
+}
+
+func TestStepRunsOnlyWhenDue(t *testing.T) {
+	locker := &fakeLocker{acquired: true}
+	s, at, calls, tests := newStepScheduler(t, locker)
+	loc := s.schedule.Location()
+	due := time.Date(2026, 10, 27, 12, 0, 0, 0, loc)
+	if !s.nextDue.Equal(due) {
+		t.Fatalf("nextDue = %v, want %v", s.nextDue, due)
+	}
+
+	// 11:59 还不到点：不碰锁，也不探测。
+	s.step(context.Background())
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("performer called %d times before the slot", got)
+	}
+	if !s.nextDue.Equal(due) {
+		t.Fatalf("nextDue moved to %v before the slot", s.nextDue)
+	}
+	if keys, _ := locker.snapshot(); len(keys) != 0 {
+		t.Fatalf("lock attempted before the slot: %v", keys)
+	}
+
+	// 到点：取锁 → 跑一轮 → nextDue 推进到次日 00:00。
+	*at = due
+	s.step(context.Background())
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("performer called %d times at the slot, want 1", got)
+	}
+	if got := len(tests.snapshot()); got != 1 {
+		t.Fatalf("persisted %d tests at the slot, want 1", got)
+	}
+	wantNext := time.Date(2026, 10, 28, 0, 0, 0, 0, loc)
+	if !s.nextDue.Equal(wantNext) {
+		t.Fatalf("nextDue = %v after the round, want %v", s.nextDue, wantNext)
+	}
+	keys, ttls := locker.snapshot()
+	if len(keys) != 1 || keys[0] != "model_perf_schedule:2026-10-27T12:00" {
+		t.Fatalf("lock keys = %v, want the 2026-10-27T12:00 slot", keys)
+	}
+	if len(ttls) != 1 || ttls[0] != 24*time.Hour {
+		t.Fatalf("lock ttls = %v, want the default 24h", ttls)
+	}
+
+	// 同一时刻的重复 tick 不得重复探测：nextDue 已推进。
+	s.step(context.Background())
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("performer called %d times after the round, want 1", got)
+	}
+}
+
+func TestStepSkipsWhenLockHeld(t *testing.T) {
+	locker := &fakeLocker{acquired: false}
+	s, at, calls, tests := newStepScheduler(t, locker)
+	loc := s.schedule.Location()
+	*at = time.Date(2026, 10, 27, 12, 0, 0, 0, loc)
+
+	s.step(context.Background())
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("performer called %d times although another replica holds the slot", got)
+	}
+	if got := len(tests.snapshot()); got != 0 {
+		t.Fatalf("persisted %d tests although another replica holds the slot", got)
+	}
+	// 别的副本已经在跑这一轮：本副本照样把 nextDue 推进到下一个时段。
+	wantNext := time.Date(2026, 10, 28, 0, 0, 0, 0, loc)
+	if !s.nextDue.Equal(wantNext) {
+		t.Fatalf("nextDue = %v, want %v", s.nextDue, wantNext)
+	}
+	keys, _ := locker.snapshot()
+	if len(keys) != 1 || keys[0] != "model_perf_schedule:2026-10-27T12:00" {
+		t.Fatalf("lock keys = %v, want the 2026-10-27T12:00 slot", keys)
+	}
+}
+
+func TestStepRetriesOnLockErrorAndSkipsMissedSlot(t *testing.T) {
+	locker := &fakeLocker{acquired: true, err: errors.New("redis unavailable")}
+	s, at, calls, tests := newStepScheduler(t, locker)
+	loc := s.schedule.Location()
+	missedSlot := time.Date(2026, 10, 27, 12, 0, 0, 0, loc)
+	*at = missedSlot
+
+	// 1) 仍在 12:00 与次日 00:00 之间：锁报错则原地重试，不推进 nextDue。
+	s.step(context.Background())
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("performer called %d times after a lock error", got)
+	}
+	if !s.nextDue.Equal(missedSlot) {
+		t.Fatalf("nextDue = %v after a lock error, want it to stay at %v", s.nextDue, missedSlot)
+	}
+	// 第二个 tick 仍在同一时段内：应当再次尝试同一把锁。
+	s.step(context.Background())
+	if keys, _ := locker.snapshot(); len(keys) != 2 {
+		t.Fatalf("lock attempted %d times, want 2 retries in the same slot", len(keys))
+	}
+	if !s.nextDue.Equal(missedSlot) {
+		t.Fatalf("nextDue = %v on retry, want %v", s.nextDue, missedSlot)
+	}
+	if got := len(tests.snapshot()); got != 0 {
+		t.Fatalf("persisted %d tests while the lock kept failing", got)
+	}
+
+	// 2) 时钟越过下一个时段（次日 00:00）才恢复：直接跳到未来时段，
+	//    既不补跑错过的 12:00，也不执行 00:00。
+	*at = time.Date(2026, 10, 28, 0, 1, 0, 0, loc)
+	s.step(context.Background())
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("performer called %d times after missing a whole cycle, want 0", got)
+	}
+	wantNext := time.Date(2026, 10, 28, 12, 0, 0, 0, loc)
+	if !s.nextDue.Equal(wantNext) {
+		t.Fatalf("nextDue = %v after missing a whole cycle, want %v", s.nextDue, wantNext)
+	}
+	if got := len(tests.snapshot()); got != 0 {
+		t.Fatalf("persisted %d tests after missing a whole cycle, want 0", got)
+	}
+}
+
+func TestSlotKeyUsesScheduleTimezone(t *testing.T) {
+	s, _, _, _ := newStepScheduler(t, &fakeLocker{acquired: true})
+	loc := s.schedule.Location()
+	slot := time.Date(2026, 10, 27, 0, 0, 0, 0, loc)
+
+	const want = "model_perf_schedule:2026-10-27T00:00"
+	if got := s.slotKey(slot); got != want {
+		t.Fatalf("slotKey = %q, want %q", got, want)
+	}
+	// 同一瞬间换成 UTC 表示，key 必须不变：所有副本都按时刻表时区成键。
+	if got := s.slotKey(slot.UTC()); got != want {
+		t.Fatalf("slotKey(UTC instant) = %q, want %q", got, want)
+	}
+	// 防呆：这个瞬间在 UTC 下确实是另一天，用例才能区分两种格式化。
+	if utc := "model_perf_schedule:" + slot.UTC().Format("2006-01-02T15:04"); utc == want {
+		t.Fatalf("test slot does not distinguish schedule timezone from UTC: %q", utc)
+	}
+}
+
+func TestRunLoopLogsStartAndReturnsNilOnCancel(t *testing.T) {
+	var buf bytes.Buffer
+	locker := &fakeLocker{acquired: true}
+	s, _, calls, tests := newStepSchedulerWithLogger(t, locker,
+		slog.New(slog.NewTextHandler(&buf, nil)))
+
+	// 已取消的 ctx + 30s 的默认 tick：RunLoop 必须立刻返回，且不跑任何一轮。
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := s.RunLoop(ctx); err != nil {
+		t.Fatalf("RunLoop = %v, want nil on cancellation", err)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("performer called %d times on an already-cancelled context", got)
+	}
+	if got := len(tests.snapshot()); got != 0 {
+		t.Fatalf("persisted %d tests on an already-cancelled context", got)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "modelperf: scheduler started") {
+		t.Fatalf("startup log missing from %q", out)
+	}
+	if !strings.Contains(out, "next_due=2026-10-27T12:00:00+08:00") {
+		t.Fatalf("startup log next_due missing from %q", out)
+	}
+}
+
+func TestRunLoopRunsScheduledRoundOnTick(t *testing.T) {
+	loc := shanghai(t)
+	at := time.Date(2026, 10, 27, 11, 59, 0, 0, loc)
+	performed := make(chan struct{}, 1)
+	tests := &fakeTests{}
+	s := mustScheduler(t, SchedulerConfig{
+		Models:   &fakeModels{names: []string{"gpt-4o"}},
+		Channels: &fakePicker{channel: &store.Channel{ID: 7}, ok: true},
+		Performer: func(context.Context, *store.Channel, string, int) []channelhealth.PerfRunResult {
+			select {
+			case performed <- struct{}{}:
+			default:
+			}
+			return []channelhealth.PerfRunResult{{Success: true}}
+		},
+		Tests:        tests,
+		Runs:         1,
+		Concurrency:  1,
+		Schedule:     newTestSchedule(t),
+		Locker:       &fakeLocker{acquired: true},
+		TickInterval: time.Millisecond,
+		Now:          func() time.Time { return at },
+	})
+	// 构造时 nextDue 由 11:59 算出 12:00；启动循环前把时钟拨到点上。
+	at = time.Date(2026, 10, 27, 12, 0, 0, 0, loc)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.RunLoop(ctx) }()
+
+	// performer 的信号到达即证明 tick 路径跑完了一轮，无需 sleep 轮询。
+	select {
+	case <-performed:
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("RunLoop did not run the due round within 5s")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunLoop = %v, want nil after cancellation", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunLoop did not return after cancellation")
+	}
+
+	if got := len(tests.snapshot()); got != 1 {
+		t.Fatalf("persisted %d tests, want 1", got)
+	}
+	if want := time.Date(2026, 10, 28, 0, 0, 0, 0, loc); !s.nextDue.Equal(want) {
+		t.Fatalf("nextDue = %v, want %v", s.nextDue, want)
 	}
 }
