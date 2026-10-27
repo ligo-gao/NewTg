@@ -5,7 +5,10 @@ const container = "mx-auto w-full max-w-[1520px] px-4 min-[621px]:px-6 wide:px-1
 
 export function ClosingCta({ copy }: { copy: Copy }) {
   return (
-    <section id="start" className="scroll-mt-20 border-t border-line py-20 sm:py-22">
+    <section
+      id="start"
+      className="scroll-mt-20 border-t border-line pt-10 pb-11 min-[621px]:pt-11 min-[621px]:pb-12"
+    >
       <div className={container}>
         <div className="max-w-[780px]">
           <h2 className="text-[clamp(2.1rem,3.8vw,3.2rem)] leading-[1.12] font-bold tracking-[-0.035em] text-balance">

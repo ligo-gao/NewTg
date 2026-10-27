@@ -4,6 +4,7 @@ import { useId, useMemo, useRef, useState, type MouseEvent } from "react";
 import { ModelCard } from "@/components/landing/model-card";
 import { useHomeData } from "@/components/landing/home-data";
 import type { Copy } from "@/config/copy";
+import { site } from "@/config/site";
 import { filterPricingModels } from "@/lib/pricing-filter";
 import { formatPrice, formatTokenCount } from "@/lib/pricing-format";
 import type { PricingModel } from "@/lib/pricing-api";
@@ -58,13 +59,19 @@ export function ModelExplorer({ copy }: { copy: Copy }) {
   const truncated = !isDefaultView && filtered.length > MAX_RESULTS;
 
   const vendorOptions = useMemo(() => {
-    if (vendors.length > 0) {
-      return vendors.map((item) => ({ value: item.value, label: item.label || item.value }));
+    // 后台未填写 vendor 时接口会返回空串；不能把它当成一个筛选项（会渲染成空白
+    // 按钮，且点选后「筛了等于没筛」）。
+    const named = vendors
+      .filter((item) => item.value.trim() !== "")
+      .map((item) => ({ value: item.value, label: item.label?.trim() || item.value }));
+    if (named.length > 0) {
+      return named;
     }
     const unique = new Map<string, string>();
     models.forEach((model) => {
-      if (!unique.has(model.vendor)) {
-        unique.set(model.vendor, model.vendor);
+      const value = model.vendor?.trim() ?? "";
+      if (value !== "" && !unique.has(value)) {
+        unique.set(value, value);
       }
     });
     return Array.from(unique, ([value, label]) => ({ value, label }));
@@ -143,14 +150,17 @@ export function ModelExplorer({ copy }: { copy: Copy }) {
   }
 
   return (
-    <section id="models" className="scroll-mt-20 border-t border-line py-16">
+    <section
+      id="models"
+      className="scroll-mt-20 border-t border-line py-8 min-[621px]:py-10"
+    >
       <div className="mx-auto w-full max-w-[1520px] px-4 min-[621px]:px-6 wide:px-10">
-        <div className="mb-7 flex flex-wrap items-start justify-between gap-x-8 gap-y-5">
+        <div className="mb-[18px] flex flex-wrap items-start justify-between gap-x-8 gap-y-5">
           <div>
             <h2 className="text-[clamp(1.75rem,3vw,2.4rem)] font-semibold leading-tight tracking-[-0.03em]">
               {copy.models.title}
             </h2>
-            <p className="mt-3 max-w-[34em] text-[15px] leading-[1.8] text-ink-2">{copy.models.subtitle}</p>
+            <p className="mt-2 max-w-[34em] text-[15px] leading-[1.8] text-ink-2">{copy.models.subtitle}</p>
           </div>
 
           <div className="relative w-full min-[1081px]:w-[340px] min-[1081px]:flex-none">
@@ -181,40 +191,62 @@ export function ModelExplorer({ copy }: { copy: Copy }) {
           </div>
         </div>
 
-        <div className="mb-[22px] flex flex-wrap items-center justify-between gap-4">
-          <div
-            role="group"
-            aria-label={copy.models.vendorFilterLabel}
-            className="flex flex-wrap gap-2"
-          >
-            <button
-              type="button"
-              aria-pressed={vendor === "all"}
-              onClick={() => setVendor("all")}
-              className={chipClass(vendor === "all")}
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
+          {vendorOptions.length > 0 ? (
+            <div
+              role="group"
+              aria-label={copy.models.vendorFilterLabel}
+              className="flex flex-wrap gap-2"
             >
-              {copy.models.allVendors}
-            </button>
-            {vendorOptions.map((item) => (
               <button
-                key={item.value}
                 type="button"
-                aria-pressed={vendor === item.value}
-                onClick={() => setVendor(item.value)}
-                className={chipClass(vendor === item.value)}
+                aria-pressed={vendor === "all"}
+                onClick={() => setVendor("all")}
+                className={chipClass(vendor === "all")}
               >
-                {item.label}
+                {copy.models.allVendors}
               </button>
-            ))}
-          </div>
-          <p aria-live="polite" className="font-mono text-xs text-faint">
-            <b className="font-medium text-ink-2">{shown.length}</b> {copy.models.countUnit}
-          </p>
+              {vendorOptions.map((item) => (
+                <button
+                  key={item.value}
+                  type="button"
+                  aria-pressed={vendor === item.value}
+                  onClick={() => setVendor(item.value)}
+                  className={chipClass(vendor === item.value)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {isDefaultView ? (
+            <a
+              href={site.modelsHref}
+              className="ml-auto inline-flex items-center gap-1 text-[13px] text-cyan transition-colors hover:text-cyan-soft"
+            >
+              {copy.models.moreModels}
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                aria-hidden="true"
+              >
+                <path d="m9 18 6-6-6-6" />
+              </svg>
+            </a>
+          ) : (
+            <p aria-live="polite" className="ml-auto font-mono text-xs text-faint">
+              <b className="font-medium text-ink-2">{shown.length}</b> {copy.models.countUnit}
+            </p>
+          )}
         </div>
 
         {catalogStatus === "loading" ? (
-          <div className="grid grid-cols-1 gap-3 min-[621px]:grid-cols-2 min-[1081px]:grid-cols-3 xwide:grid-cols-4">
-            {Array.from({ length: 6 }).map((_, index) => (
+          <div className="grid grid-cols-1 gap-3 min-[621px]:grid-cols-2 min-[1081px]:grid-cols-3 wide:grid-cols-4">
+            {Array.from({ length: 8 }).map((_, index) => (
               <SkeletonCard key={index} />
             ))}
           </div>
@@ -245,7 +277,7 @@ export function ModelExplorer({ copy }: { copy: Copy }) {
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-3 min-[621px]:grid-cols-2 min-[1081px]:grid-cols-3 xwide:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 min-[621px]:grid-cols-2 min-[1081px]:grid-cols-3 wide:grid-cols-4">
             {shown.map((model) => (
               <ModelCard
                 key={model.model_id}
@@ -268,7 +300,6 @@ export function ModelExplorer({ copy }: { copy: Copy }) {
           </p>
         ) : null}
 
-        <p className="mt-[18px] text-[11.5px] text-faint">{copy.models.footnote}</p>
       </div>
 
       {selected.size >= 2 ? (

@@ -26,15 +26,7 @@ export const vi: Copy = {
     copyFailedLabel: "Sao chép thất bại",
     copySuccessAnnouncement: "Đã sao chép mã vào bảng nhớ tạm",
     copyFailureAnnouncement: "Sao chép thất bại; hãy chọn mã thủ công",
-    code: `curl https://api.newtg.ai/v1/chat/completions \\
-  -H "Authorization: Bearer $NEWTG_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model": "gpt-4o",
-    "messages": [
-      { "role": "user", "content": "Xin chào, hãy giới thiệu về bạn" }
-    ]
-  }'`,
+    prompt: "Xin chào, hãy giới thiệu về bạn",
     requestLabel: "Yêu cầu gần nhất",
     okLabel: "200 OK",
     trace: [
@@ -52,7 +44,6 @@ export const vi: Copy = {
       { value: "Định tuyến", label: "Kiểm tra và dự phòng" },
       { value: "7 ngôn ngữ", label: "Dùng ngay" },
     ],
-    note: "Tính năng và dữ liệu theo triển khai thực tế.",
   },
 
   models: {
@@ -63,6 +54,7 @@ export const vi: Copy = {
     vendorFilterLabel: "Lọc theo nhà cung cấp",
     allVendors: "Tất cả",
     countUnit: "mô hình",
+    moreModels: "Xem thêm mô hình",
     compare: "So sánh",
     call: "Dùng",
     callHref: "/dashboard",
@@ -73,8 +65,6 @@ export const vi: Copy = {
     retry: "Thử lại",
     truncatedNote: "Đang hiển thị 24 kết quả đầu tiên.",
     pricingLink: "Xem toàn bộ bảng giá",
-    footnote:
-      "Mô hình, ngữ cảnh và giá lấy từ backend và đồng bộ trực tiếp; giá hiển thị trên 1M token.",
     badgeFree: "Miễn phí",
     badgePerRequest: "Theo yêu cầu",
     stats: {
@@ -133,20 +123,20 @@ export const vi: Copy = {
 
   performance: {
     title: "Hiệu năng gọi thực tế",
-    subtitle:
-      "Kiểm thử streaming thực tế theo lịch cho mọi mô hình hội thoại đã niêm yết, hiển thị kết quả gần nhất",
     windowLabel: "Kiểm thử theo lịch",
     columns: {
       model: "Mô hình",
       vendor: "Nhà cung cấp",
-      ttft: "Độ trễ token đầu tiên",
-      tps: "Tốc độ đầu ra",
+      ttftGroup: "Độ trễ token đầu (ms)",
+      latencyGroup: "Tổng độ trễ (ms)",
+      tps: "Tốc độ đầu ra (tok/s)",
+      successRate: "Tỷ lệ thành công",
+      sampleSize: "Số mẫu",
+      testedAt: "Lần kiểm thử gần nhất",
     },
     unavailable: "Dữ liệu hiệu năng tạm thời không khả dụng",
     retry: "Thử lại",
     empty: "Chưa có mô hình để hiển thị.",
-    footnote:
-      "Độ trễ là thời gian đến token đầu tiên (TTFT) của cuộc gọi streaming; tốc độ đầu ra là số token đầu ra do upstream trả về chia cho tổng thời gian. Lần kiểm thử thất bại, chưa được thực hiện hoặc cũ hơn 36 giờ sẽ hiển thị —.",
   },
 
   closing: {

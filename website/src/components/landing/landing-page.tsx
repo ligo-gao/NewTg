@@ -37,7 +37,7 @@ export function LandingPage({ locale, copy }: { locale: Locale; copy: Copy }) {
         <HomeDataProvider>
           <ModelExplorer copy={copy} />
           <FeatureGrid copy={copy} />
-          <PerformanceSection copy={copy} />
+          <PerformanceSection copy={copy} locale={locale} />
         </HomeDataProvider>
         <ClosingCta copy={copy} />
       </main>

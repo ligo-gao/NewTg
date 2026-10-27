@@ -106,13 +106,14 @@ function stubFetch(
   options: {
     failAllMetrics?: boolean;
     metrics?: Record<string, ModelMetrics>;
+    catalogBody?: PricingCatalog;
   } = {},
 ) {
-  const { failAllMetrics = false, metrics = {} } = options;
+  const { failAllMetrics = false, metrics = {}, catalogBody = catalog } = options;
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.startsWith("/api/pricing?")) {
-      return Promise.resolve(jsonResponse(catalog));
+      return Promise.resolve(jsonResponse(catalogBody));
     }
     if (url.includes("/metrics")) {
       if (failAllMetrics) {
@@ -176,11 +177,17 @@ describe("PerformanceSection", () => {
 
     const row = await findRow("GPT-4o");
     await waitFor(() => {
-      expect(within(row).getByText("210 ms")).toBeInTheDocument();
+      expect(within(row).getByText("210")).toBeInTheDocument();
     });
-    expect(within(row).getByText("42.5 tokens/s")).toBeInTheDocument();
-    expect(within(row).queryByText("999 ms")).toBeNull();
-    expect(within(row).queryByText("1.5 tokens/s")).toBeNull();
+    expect(within(row).getByText("480")).toBeInTheDocument();
+    expect(within(row).getByText("900")).toBeInTheDocument();
+    expect(within(row).getByText("1,800")).toBeInTheDocument();
+    expect(within(row).getByText("42.5")).toBeInTheDocument();
+    expect(within(row).getByText("99.0%")).toBeInTheDocument();
+    expect(within(row).getByText("60")).toBeInTheDocument();
+    expect(within(row).getByText(/此刻|现在/)).toBeInTheDocument();
+    expect(within(row).queryByText("999")).toBeNull();
+    expect(within(row).queryByText("1.5")).toBeNull();
   });
 
   it("does not fall back to the usage summary", async () => {
@@ -193,10 +200,35 @@ describe("PerformanceSection", () => {
 
     const row = await findRow("GPT-4o");
     await waitFor(() => {
-      expect(within(row).getAllByText("—")).toHaveLength(2);
+      // 四列时延 + 速度 + 成功率 + 样本数 + 最近探测
+      expect(within(row).getAllByText("—")).toHaveLength(8);
     });
-    expect(within(row).queryByText("210 ms")).toBeNull();
-    expect(within(row).queryByText("42.5 tokens/s")).toBeNull();
+    expect(within(row).queryByText("210")).toBeNull();
+    expect(within(row).queryByText("42.5")).toBeNull();
+  });
+
+  it("drops the vendor column when no model reports a vendor", async () => {
+    // 后台没填 vendor 时整列都是空白；空表头 + 空单元格比省掉这列更难读。
+    stubFetch({
+      catalogBody: {
+        ...catalog,
+        items: [model("openai/gpt-4o", "GPT-4o", "")],
+        total: "1",
+      },
+      metrics: {
+        "openai/gpt-4o": metricsWith(1543, 42.5, {
+          latestTest: latestTest({ ttft_ms_p50: 210, tps: 42.5 }),
+        }),
+      },
+    });
+    renderSection();
+
+    const row = await findRow("GPT-4o");
+    await waitFor(() => {
+      expect(within(row).getByText("210")).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("columnheader", { name: copy.performance.columns.vendor })).toBeNull();
+    expect(row.cells).toHaveLength(9);
   });
 
   it("keeps probes from just under 36 hours", async () => {
@@ -216,9 +248,9 @@ describe("PerformanceSection", () => {
 
     const row = await findRow("GPT-4o");
     await waitFor(() => {
-      expect(within(row).getByText("210 ms")).toBeInTheDocument();
+      expect(within(row).getByText("210")).toBeInTheDocument();
     });
-    expect(within(row).getByText("42.5 tokens/s")).toBeInTheDocument();
+    expect(within(row).getByText("42.5")).toBeInTheDocument();
   });
 
   it("renders a dash for a fresh probe field that is missing", async () => {
@@ -233,7 +265,7 @@ describe("PerformanceSection", () => {
 
     const row = await findRow("GPT-4o");
     await waitFor(() => {
-      expect(within(row).getByText("42.5 tokens/s")).toBeInTheDocument();
+      expect(within(row).getByText("42.5")).toBeInTheDocument();
     });
     // 缺失的单列显示 —，不能出现 "null" 或崩溃。
     expect(within(row).getByText("—")).toBeInTheDocument();
@@ -256,10 +288,10 @@ describe("PerformanceSection", () => {
 
     const row = await findRow("GPT-4o");
     await waitFor(() => {
-      expect(within(row).getAllByText("—")).toHaveLength(2);
+      expect(within(row).getAllByText("—")).toHaveLength(8);
     });
-    expect(within(row).queryByText("210 ms")).toBeNull();
-    expect(within(row).queryByText("42.5 tokens/s")).toBeNull();
+    expect(within(row).queryByText("210")).toBeNull();
+    expect(within(row).queryByText("42.5")).toBeNull();
   });
 
   it("keeps probes with a future timestamp", async () => {
@@ -279,10 +311,10 @@ describe("PerformanceSection", () => {
 
     const row = await findRow("GPT-4o");
     await waitFor(() => {
-      expect(within(row).getByText("210 ms")).toBeInTheDocument();
+      expect(within(row).getByText("210")).toBeInTheDocument();
     });
-    expect(within(row).getByText("42.5 tokens/s")).toBeInTheDocument();
-    expect(within(row).queryByText("999 ms")).toBeNull();
+    expect(within(row).getByText("42.5")).toBeInTheDocument();
+    expect(within(row).queryByText("999")).toBeNull();
   });
 
   it("degrades to dashes and a retry notice when the metrics endpoint is unavailable", async () => {
@@ -311,7 +343,7 @@ describe("PerformanceSection", () => {
 
     const row = await findRow("GPT-4o");
     await waitFor(() => {
-      expect(within(row).getByText("210 ms")).toBeInTheDocument();
+      expect(within(row).getByText("210")).toBeInTheDocument();
     });
 
     expect(screen.queryByText("text-embedding-3-large")).toBeNull();

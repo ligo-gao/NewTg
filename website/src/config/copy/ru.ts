@@ -26,15 +26,7 @@ export const ru: Copy = {
     copyFailedLabel: "Не удалось скопировать",
     copySuccessAnnouncement: "Код скопирован в буфер обмена",
     copyFailureAnnouncement: "Не удалось скопировать; выделите код вручную",
-    code: `curl https://api.newtg.ai/v1/chat/completions \\
-  -H "Authorization: Bearer $NEWTG_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model": "gpt-4o",
-    "messages": [
-      { "role": "user", "content": "Здравствуйте, расскажите о себе" }
-    ]
-  }'`,
+    prompt: "Здравствуйте, расскажите о себе",
     requestLabel: "Последний запрос",
     okLabel: "200 OK",
     trace: [
@@ -52,7 +44,6 @@ export const ru: Copy = {
       { value: "Роутинг", label: "Проверки и отказоустойчивость" },
       { value: "7 языков", label: "Готово к работе" },
     ],
-    note: "Функции и данные соответствуют реальному развёртыванию.",
   },
 
   models: {
@@ -63,6 +54,7 @@ export const ru: Copy = {
     vendorFilterLabel: "Фильтр по провайдеру",
     allVendors: "Все",
     countUnit: "моделей",
+    moreModels: "Больше моделей",
     compare: "Сравнить",
     call: "Использовать",
     callHref: "/dashboard",
@@ -73,8 +65,6 @@ export const ru: Copy = {
     retry: "Повторить",
     truncatedNote: "Показаны первые 24 результата.",
     pricingLink: "Полные тарифы",
-    footnote:
-      "Модели, контекст и цены берутся из бэкенда и синхронизируются в реальном времени; цены указаны за 1M токенов.",
     badgeFree: "Бесплатно",
     badgePerRequest: "За запрос",
     stats: {
@@ -133,20 +123,20 @@ export const ru: Copy = {
 
   performance: {
     title: "Реальная производительность",
-    subtitle:
-      "Плановые реальные потоковые проверки для каждой опубликованной диалоговой модели с показом последнего результата",
     windowLabel: "Плановые проверки",
     columns: {
       model: "Модель",
       vendor: "Провайдер",
-      ttft: "Задержка первого токена",
-      tps: "Скорость вывода",
+      ttftGroup: "Задержка первого токена (мс)",
+      latencyGroup: "Общая задержка (мс)",
+      tps: "Скорость вывода (ток/с)",
+      successRate: "Успешность",
+      sampleSize: "Выборка",
+      testedAt: "Последняя проверка",
     },
     unavailable: "Данные о производительности временно недоступны",
     retry: "Повторить",
     empty: "Пока нет моделей для отображения.",
-    footnote:
-      "Задержка — время до первого токена (TTFT) при потоковых вызовах; скорость вывода — выходные токены, полученные от провайдера, делённые на общее время. Неудачная, отсутствующая или устаревшая (старше 36 часов) проверка отображается как —.",
   },
 
   closing: {

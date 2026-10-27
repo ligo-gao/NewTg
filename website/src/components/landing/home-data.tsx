@@ -71,8 +71,8 @@ export function HomeDataProvider({ children }: { children: ReactNode }) {
         if (!active) {
           return;
         }
-        const picked = pickRandom(catalog.items, 6);
-        const perfPicked = pickRandom(catalog.items.filter(isChatCapable), 6);
+        const picked = pickRandom(catalog.items, 8);
+        const perfPicked = pickRandom(catalog.items.filter(isChatCapable), 8);
         setModels(catalog.items);
         setFeatured(picked);
         setPerfFeatured(perfPicked);

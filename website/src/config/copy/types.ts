@@ -5,7 +5,6 @@ export interface CopyStat {
   value: string;
 }
 
-
 export interface PricingPageCopy {
   meta: { title: string; description: string; ogAlt: string };
   title: string;
@@ -167,7 +166,7 @@ export interface Copy {
     copyFailedLabel: string;
     copySuccessAnnouncement: string;
     copyFailureAnnouncement: string;
-    code: string;
+    prompt: string;
     requestLabel: string;
     okLabel: string;
     trace: CopyStat[];
@@ -175,7 +174,6 @@ export interface Copy {
   trust: {
     ariaLabel: string;
     items: CopyStat[];
-    note: string;
   };
   models: {
     title: string;
@@ -185,6 +183,7 @@ export interface Copy {
     vendorFilterLabel: string;
     allVendors: string;
     countUnit: string;
+    moreModels: string;
     compare: string;
     call: string;
     callHref: string;
@@ -195,7 +194,6 @@ export interface Copy {
     retry: string;
     truncatedNote: string;
     pricingLink: string;
-    footnote: string;
     badgeFree: string;
     badgePerRequest: string;
     stats: {
@@ -235,18 +233,22 @@ export interface Copy {
   };
   performance: {
     title: string;
-    subtitle: string;
     windowLabel: string;
     columns: {
       model: string;
       vendor: string;
-      ttft: string;
+      /** Two-level header: first-token latency, split into P50/P95 below. */
+      ttftGroup: string;
+      /** Two-level header: total latency, split into P50/P95 below. */
+      latencyGroup: string;
       tps: string;
+      successRate: string;
+      sampleSize: string;
+      testedAt: string;
     };
     unavailable: string;
     retry: string;
     empty: string;
-    footnote: string;
   };
   closing: {
     title: string;

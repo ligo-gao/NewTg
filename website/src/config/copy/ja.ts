@@ -26,15 +26,7 @@ export const ja: Copy = {
     copyFailedLabel: "コピーに失敗しました",
     copySuccessAnnouncement: "コードをクリップボードにコピーしました",
     copyFailureAnnouncement: "コピーに失敗しました。コードを手動で選択してください",
-    code: `curl https://api.newtg.ai/v1/chat/completions \\
-  -H "Authorization: Bearer $NEWTG_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model": "gpt-4o",
-    "messages": [
-      { "role": "user", "content": "こんにちは、自己紹介してください" }
-    ]
-  }'`,
+    prompt: "こんにちは、自己紹介してください",
     requestLabel: "最新のリクエスト",
     okLabel: "200 OK",
     trace: [
@@ -52,7 +44,6 @@ export const ja: Copy = {
       { value: "ルーティング", label: "健全性と自動切替" },
       { value: "7言語", label: "すぐに使える" },
     ],
-    note: "機能とデータは実際の運用に準じます。",
   },
 
   models: {
@@ -63,6 +54,7 @@ export const ja: Copy = {
     vendorFilterLabel: "プロバイダーで絞り込む",
     allVendors: "すべて",
     countUnit: "モデル",
+    moreModels: "モデルをもっと見る",
     compare: "比較",
     call: "使用",
     callHref: "/dashboard",
@@ -73,8 +65,6 @@ export const ja: Copy = {
     retry: "再試行",
     truncatedNote: "最初の 24 件を表示しています。",
     pricingLink: "料金の全体を見る",
-    footnote:
-      "モデル、コンテキスト、価格はバックエンドから取得しリアルタイムに同期されます。価格は 1M トークンあたりです。",
     badgeFree: "無料",
     badgePerRequest: "リクエストごと",
     stats: {
@@ -133,20 +123,20 @@ export const ja: Copy = {
 
   performance: {
     title: "実際の呼び出し性能",
-    subtitle:
-      "掲載中の全対話モデルに定期的に実際のストリーミングプローブを実行し、最新の結果を表示します",
     windowLabel: "定期プローブ",
     columns: {
       model: "モデル",
       vendor: "プロバイダー",
-      ttft: "初回トークン遅延",
-      tps: "出力速度",
+      ttftGroup: "初回トークン遅延（ms）",
+      latencyGroup: "総遅延（ms）",
+      tps: "出力速度（tok/s）",
+      successRate: "成功率",
+      sampleSize: "サンプル数",
+      testedAt: "最終プローブ",
     },
     unavailable: "性能データは一時的に利用できません",
     retry: "再試行",
     empty: "表示できるモデルがありません。",
-    footnote:
-      "遅延はストリーミング呼び出しの初回トークン時間（TTFT）、出力速度は上流が返す出力トークン数を総時間で割った値です。プローブが失敗した場合、未実施の場合、または結果が 36 時間より古い場合は — と表示します。",
   },
 
   closing: {

@@ -2,8 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { PricingMeta, PricingModel } from "@/lib/pricing-api";
 import {
   formatPrice,
-  formatTTFT,
-  formatTPS,
   formatTokenCount,
   isChatCapable,
 } from "@/lib/pricing-format";
@@ -48,28 +46,6 @@ describe("formatPrice", () => {
 
   it("falls back to 100 credits per unit when meta is malformed", () => {
     expect(formatPrice("250", { ...meta, quota_per_unit: 0 }, "per_token")).toBe("¥2.50 / 1M");
-  });
-});
-
-describe("formatTTFT", () => {
-  it("shows milliseconds below one second and seconds above", () => {
-    expect(formatTTFT(412)).toBe("412 ms");
-    expect(formatTTFT(1250)).toBe("1.3 s");
-  });
-
-  it("shows a dash when there are no streaming samples", () => {
-    expect(formatTTFT(null)).toBe("—");
-  });
-});
-
-describe("formatTPS", () => {
-  it("formats tokens per second", () => {
-    expect(formatTPS(42.55)).toBe("42.5 tokens/s");
-    expect(formatTPS(120.4)).toBe("120 tokens/s");
-  });
-
-  it("shows a dash without samples", () => {
-    expect(formatTPS(null)).toBe("—");
   });
 });
 

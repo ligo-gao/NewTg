@@ -42,27 +42,6 @@ export function formatPrice(
   return `${meta.credit_symbol}${formatted} ${unit}`;
 }
 
-export function formatTTFT(milliseconds: number | null): string {
-  if (milliseconds === null || milliseconds < 0) {
-    return PLACEHOLDER;
-  }
-  if (milliseconds >= 1000) {
-    return `${(milliseconds / 1000).toFixed(1)} s`;
-  }
-  return `${Math.round(milliseconds)} ms`;
-}
-
-export function formatTPS(tokensPerSecond: number | null): string {
-  if (tokensPerSecond === null || tokensPerSecond < 0) {
-    return PLACEHOLDER;
-  }
-  const rounded =
-    tokensPerSecond >= 100
-      ? String(Math.round(tokensPerSecond))
-      : tokensPerSecond.toFixed(1);
-  return `${rounded} tokens/s`;
-}
-
 /** 公开端点里能用流式 chat 请求探测的协议族。 */
 export const CHAT_ENDPOINTS = ["chat.completions", "messages", "generateContent"] as const;
 

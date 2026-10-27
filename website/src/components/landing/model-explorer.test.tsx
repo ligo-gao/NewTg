@@ -109,13 +109,13 @@ function jsonResponse(body: unknown): Response {
   } as Response;
 }
 
-function stubFetch(failMetricsFor?: string) {
+function stubFetch(failMetricsFor?: string, catalogBody: PricingCatalog = catalog) {
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
       if (url.startsWith("/api/pricing?")) {
-        return Promise.resolve(jsonResponse(catalog));
+        return Promise.resolve(jsonResponse(catalogBody));
       }
       if (url.includes("/metrics")) {
         const encoded = url.split("/api/pricing/")[1].split("/metrics")[0];
@@ -155,7 +155,11 @@ describe("ModelExplorer live data", () => {
     });
     expect(screen.getByRole("heading", { name: "GPT-4o" })).toBeInTheDocument();
     expect(screen.getAllByText("¥2.50 / 1M").length).toBeGreaterThan(0);
-    expect(document.querySelector("#models [aria-live]")?.textContent).toContain("6");
+    expect(screen.getByRole("link", { name: copy.models.moreModels })).toHaveAttribute(
+      "href",
+      "/models",
+    );
+    expect(document.querySelector("#models [aria-live]")).toBeNull();
   });
 
   it("shows the peak/off-peak badge only for models with a published schedule", async () => {
@@ -178,7 +182,8 @@ describe("ModelExplorer live data", () => {
     expect(within(flatCard).queryByTestId("schedule-badge")).not.toBeInTheDocument();
   });
 
-  it("searches the full catalog, not just the six featured models", async () => {    const user = userEvent.setup();
+  it("searches the full catalog, not just the six featured models", async () => {
+    const user = userEvent.setup();
     renderExplorer();
     await screen.findByRole("heading", { name: "GPT-4o" });
 
@@ -210,6 +215,30 @@ describe("ModelExplorer live data", () => {
       expect(screen.getAllByRole("article")).toHaveLength(6);
     });
     expect(screen.getByRole("button", { name: "全部" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("hides the vendor filter when the backend reports no vendors", async () => {
+    // 线上后台没填 vendor 时：facets.vendors 为空、每个 model.vendor 也是空串。
+    // 此时不能渲染出一个空白筛选项，整组筛选按钮应当隐藏，计数照常显示。
+    stubFetch(undefined, {
+      ...catalog,
+      items: [model("openai/gpt-4o", "GPT-4o", ""), model("deepseek/deepseek-chat", "DeepSeek-V3.2", "")],
+      total: "2",
+      facets: { ...catalog.facets, vendors: [] },
+    });
+    renderExplorer();
+    await screen.findByRole("heading", { name: "GPT-4o" });
+
+    expect(
+      screen.queryByRole("group", { name: copy.models.vendorFilterLabel }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: copy.models.allVendors }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: copy.models.moreModels })).toHaveAttribute(
+      "href",
+      "/models",
+    );
   });
 
   it("compares two live models and clears the selection", async () => {

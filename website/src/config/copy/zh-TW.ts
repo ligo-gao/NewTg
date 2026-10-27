@@ -26,15 +26,7 @@ export const zhTW: Copy = {
     copyFailedLabel: "複製失敗",
     copySuccessAnnouncement: "程式碼已複製到剪貼簿",
     copyFailureAnnouncement: "複製失敗，請手動選取程式碼",
-    code: `curl https://api.newtg.ai/v1/chat/completions \\
-  -H "Authorization: Bearer $NEWTG_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model": "gpt-4o",
-    "messages": [
-      { "role": "user", "content": "你好，介紹一下你自己" }
-    ]
-  }'`,
+    prompt: "你好，介紹一下你自己",
     requestLabel: "最近一次請求",
     okLabel: "200 OK",
     trace: [
@@ -52,7 +44,6 @@ export const zhTW: Copy = {
       { value: "智慧路由", label: "健康檢查與自動降級" },
       { value: "7 語言", label: "介面開箱即用" },
     ],
-    note: "功能與資料以實際接入為準。",
   },
 
   models: {
@@ -63,6 +54,7 @@ export const zhTW: Copy = {
     vendorFilterLabel: "依廠商篩選",
     allVendors: "全部",
     countUnit: "個模型",
+    moreModels: "更多模型",
     compare: "比較",
     call: "呼叫",
     callHref: "/dashboard",
@@ -73,7 +65,6 @@ export const zhTW: Copy = {
     retry: "重試",
     truncatedNote: "僅顯示前 24 個符合結果。",
     pricingLink: "查看完整定價",
-    footnote: "模型、上下文與價格來自後台設定，即時同步；價格以每 1M tokens 顯示。",
     badgeFree: "免費",
     badgePerRequest: "按次",
     stats: {
@@ -132,19 +123,20 @@ export const zhTW: Copy = {
 
   performance: {
     title: "真實呼叫效能",
-    subtitle: "每日定時對全部上架對話模型發起真實串流探測，展示最近一次結果",
     windowLabel: "定時實測",
     columns: {
       model: "模型",
       vendor: "供應商",
-      ttft: "連線時延",
-      tps: "token 輸出速度",
+      ttftGroup: "首字時延（ms）",
+      latencyGroup: "總時延（ms）",
+      tps: "輸出速度（tok/s）",
+      successRate: "成功率",
+      sampleSize: "樣本數",
+      testedAt: "最近探測",
     },
     unavailable: "效能資料暫時無法使用",
     retry: "重試",
     empty: "暫無可顯示的模型。",
-    footnote:
-      "連線時延為首字時間（TTFT）；輸出速度為上游回傳的輸出 token ÷ 總耗時；最近一次探測失敗、尚未探測或結果超過 36 小時顯示 —。",
   },
 
   closing: {

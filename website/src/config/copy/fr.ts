@@ -26,15 +26,7 @@ export const fr: Copy = {
     copyFailedLabel: "Échec de la copie",
     copySuccessAnnouncement: "Code copié dans le presse-papiers",
     copyFailureAnnouncement: "Échec de la copie ; sélectionnez le code manuellement",
-    code: `curl https://api.newtg.ai/v1/chat/completions \\
-  -H "Authorization: Bearer $NEWTG_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model": "gpt-4o",
-    "messages": [
-      { "role": "user", "content": "Bonjour, présentez-vous" }
-    ]
-  }'`,
+    prompt: "Bonjour, présentez-vous",
     requestLabel: "Dernière requête",
     okLabel: "200 OK",
     trace: [
@@ -52,7 +44,6 @@ export const fr: Copy = {
       { value: "Routage", label: "Santé et bascule" },
       { value: "7 langues", label: "Prêt à l'emploi" },
     ],
-    note: "Les fonctionnalités et les données suivent le déploiement réel.",
   },
 
   models: {
@@ -63,6 +54,7 @@ export const fr: Copy = {
     vendorFilterLabel: "Filtrer par fournisseur",
     allVendors: "Tous",
     countUnit: "modèles",
+    moreModels: "Plus de modèles",
     compare: "Comparer",
     call: "Utiliser",
     callHref: "/dashboard",
@@ -73,8 +65,6 @@ export const fr: Copy = {
     retry: "Réessayer",
     truncatedNote: "Affichage des 24 premiers résultats.",
     pricingLink: "Voir tous les tarifs",
-    footnote:
-      "Les modèles, le contexte et les prix proviennent du backend et se synchronisent en direct ; les prix sont affichés par million de tokens.",
     badgeFree: "Gratuit",
     badgePerRequest: "Par requête",
     stats: {
@@ -133,20 +123,20 @@ export const fr: Copy = {
 
   performance: {
     title: "Performances réelles",
-    subtitle:
-      "Sondes réelles en streaming planifiées pour chaque modèle de dialogue répertorié, affichant le résultat le plus récent",
     windowLabel: "Sondes planifiées",
     columns: {
       model: "Modèle",
       vendor: "Fournisseur",
-      ttft: "Latence du premier token",
-      tps: "Vitesse de sortie",
+      ttftGroup: "Latence du premier token (ms)",
+      latencyGroup: "Latence totale (ms)",
+      tps: "Vitesse de sortie (tok/s)",
+      successRate: "Taux de réussite",
+      sampleSize: "Échantillons",
+      testedAt: "Dernière sonde",
     },
     unavailable: "Données de performance temporairement indisponibles",
     retry: "Réessayer",
     empty: "Aucun modèle à afficher.",
-    footnote:
-      "La latence est le temps jusqu'au premier token (TTFT) des appels en streaming ; la vitesse de sortie correspond aux tokens de sortie renvoyés par l'amont divisés par la latence totale. Une sonde échouée, absente ou vieille de plus de 36 heures s'affiche comme —.",
   },
 
   closing: {

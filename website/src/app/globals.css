@@ -247,6 +247,40 @@
     box-shadow: var(--code-shadow);
   }
 
+  /* The hero ranks one snippet per card and slides between them. The clipping
+     wrapper carries the shadow so overflowing slides are cut off cleanly. */
+  .code-carousel {
+    overflow: hidden;
+    border-radius: 10px;
+    box-shadow: var(--code-shadow);
+  }
+
+  .code-carousel .code-card {
+    box-shadow: none;
+  }
+
+  .code-track {
+    display: flex;
+    gap: 16px;
+    transition: transform 0.62s cubic-bezier(0.22, 0.7, 0.25, 1);
+    will-change: transform;
+  }
+
+  .code-track[data-animate="false"] {
+    transition: none;
+  }
+
+  .code-track > .code-card {
+    flex: 0 0 100%;
+    min-width: 0;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .code-track {
+      transition: none;
+    }
+  }
+
   .code-card-head {
     background: var(--code-head);
   }

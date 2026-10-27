@@ -115,19 +115,16 @@ src/
     pricing-api.ts      # /api/pricing 与 metrics 的类型和请求
     pricing-filter.ts   # 搜索 + 厂商筛选
     pricing-format.ts   # 上下文/价格/TTFT/TPS 格式化
-    pick-random.ts      # Fisher–Yates 随机 6 个
+    pick-random.ts      # Fisher–Yates 随机抽样
     highlight.ts        # shiki
 ```
 
 ## 实时数据
 
-- 模型目录来自 `GET /api/pricing`（匿名，`page_size=100`）。默认从后台可见模型中随机取 6 个；搜索与厂商筛选作用于完整目录（最多渲染前 24 个结果）。
+- 模型目录来自 `GET /api/pricing`（匿名，`page_size=100`）。默认从后台可见模型中随机取 8 个；搜索与厂商筛选作用于完整目录（最多渲染前 24 个结果）。
 - 卡片字段全部来自接口：上下文、最大输出、输入/输出价。价格由积分数按 `meta.quota_per_unit` 换算成 `meta.credit_symbol` 货币，按每 1M tokens（或按次）展示；`null` 显示 —，`0` 显示免费。
-- 性能表调用 `GET /api/pricing/{model_id}/metrics?range=7d`，后端从日志库 `usage_logs` 聚合近 7 天真实调用：
-  - 连接时延 = `AVG(first_token_ms)`，仅统计流式调用；无样本为 `null`。
-  - 输出速度 = `SUM(completion_tokens) / (SUM(latency_ms) / 1000)`，为近似值。
-  - 样本少于 20 次标注「样本不足」；无数据显示 —，不显示 0。
-- 性能表与模型卡片使用同一批随机 6 个模型，由 `HomeDataProvider` 统一加载。
+- 性能表调用 `GET /api/pricing/{model_id}/metrics?range=7d`，展示最近一次定时探测的 `latest_test`：首字时延与总时延的 P50/P95、输出速度、成功率、样本数与探测时间。超过 36 小时的探测整行显示 —，不回退到 7 天汇总值。
+- 性能表随机取 8 个可对话模型，与模型卡片一样由 `HomeDataProvider` 统一加载。
 - 后端实现：`backend/internal/httpapi/handlers_public_pricing.go` 与 `backend/internal/store/public_model_metrics_repo.go`；OpenAPI 已同步。
 - 当前部署的 `model_pricing` 与 `usage_logs` 均为空，所以首页显示空态；在后台添加模型并产生调用后会自动出现真实数据。
 

@@ -4,16 +4,16 @@ const container = "mx-auto w-full max-w-[1520px] px-4 min-[621px]:px-6 wide:px-1
 
 function cellClasses(index: number): string {
   if (index === 0) {
-    return "min-w-0 py-5 pr-6 pl-0";
+    return "min-w-0 py-3.5 pr-6 pl-0";
   }
   if (index === 1) {
-    return "min-w-0 border-l border-line px-6 py-5";
+    return "min-w-0 border-l border-line px-6 py-3.5";
   }
   if (index === 2) {
     // Second row below nav: add a rule between rows; at 4 columns it becomes a left rule instead.
-    return "min-w-0 border-t border-line py-5 pr-6 pl-0 nav:border-t-0 nav:border-l nav:border-line nav:pl-6";
+    return "min-w-0 border-t border-line py-3.5 pr-6 pl-0 nav:border-t-0 nav:border-l nav:border-line nav:pl-6";
   }
-  return "min-w-0 border-t border-l border-line px-6 py-5 nav:border-t-0";
+  return "min-w-0 border-t border-l border-line px-6 py-3.5 nav:border-t-0";
 }
 
 export function TrustBand({ copy }: { copy: Copy }) {
@@ -38,7 +38,6 @@ export function TrustBand({ copy }: { copy: Copy }) {
             </div>
           ))}
         </dl>
-        <p className="pb-2.5 text-right text-[11px] text-faint">{copy.trust.note}</p>
       </div>
     </section>
   );

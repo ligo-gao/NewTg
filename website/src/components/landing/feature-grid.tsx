@@ -73,9 +73,12 @@ const icons: Record<FeatureIconKey, ReactNode> = {
 
 export function FeatureGrid({ copy }: { copy: Copy }) {
   return (
-    <section id="features" className="scroll-mt-20 border-t border-line py-16">
+    <section
+      id="features"
+      className="scroll-mt-20 border-t border-line py-8 min-[621px]:py-10"
+    >
       <div className={container}>
-        <div className="mb-7">
+        <div className="mb-[18px]">
           <h2 className="text-[clamp(1.75rem,3vw,2.4rem)] leading-tight font-semibold tracking-[-0.03em]">
             {copy.features.title}
           </h2>

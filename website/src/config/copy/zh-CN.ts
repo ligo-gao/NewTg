@@ -26,15 +26,7 @@ export const zhCN: Copy = {
     copyFailedLabel: "复制失败",
     copySuccessAnnouncement: "代码已复制到剪贴板",
     copyFailureAnnouncement: "复制失败，请手动选择代码",
-    code: `curl https://api.newtg.ai/v1/chat/completions \\
-  -H "Authorization: Bearer $NEWTG_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model": "gpt-4o",
-    "messages": [
-      { "role": "user", "content": "你好，介绍一下你自己" }
-    ]
-  }'`,
+    prompt: "你好，介绍一下你自己",
     requestLabel: "最近一次请求",
     okLabel: "200 OK",
     trace: [
@@ -52,7 +44,6 @@ export const zhCN: Copy = {
       { value: "智能路由", label: "健康检查与自动降级" },
       { value: "7 语言", label: "界面开箱即用" },
     ],
-    note: "功能与数据以实际接入为准。",
   },
 
   models: {
@@ -63,6 +54,7 @@ export const zhCN: Copy = {
     vendorFilterLabel: "按厂商筛选",
     allVendors: "全部",
     countUnit: "个模型",
+    moreModels: "更多模型",
     compare: "对比",
     call: "调用",
     callHref: "/dashboard",
@@ -73,7 +65,6 @@ export const zhCN: Copy = {
     retry: "重试",
     truncatedNote: "仅显示前 24 个匹配结果。",
     pricingLink: "查看完整定价",
-    footnote: "模型、上下文与价格来自后台配置，实时同步；价格按每 1M tokens 展示。",
     badgeFree: "免费",
     badgePerRequest: "按次",
     stats: {
@@ -132,19 +123,20 @@ export const zhCN: Copy = {
 
   performance: {
     title: "真实调用性能",
-    subtitle: "每日定时对全部上架对话模型发起真实流式探测，展示最近一次结果",
     windowLabel: "定时实测",
     columns: {
       model: "模型",
       vendor: "提供商",
-      ttft: "连接时延",
-      tps: "token 输出速度",
+      ttftGroup: "首字时延（ms）",
+      latencyGroup: "总时延（ms）",
+      tps: "输出速度（tok/s）",
+      successRate: "成功率",
+      sampleSize: "样本数",
+      testedAt: "最近探测",
     },
     unavailable: "性能数据暂不可用",
     retry: "重试",
     empty: "暂无可展示的模型。",
-    footnote:
-      "连接时延为首字时间（TTFT）；输出速度为上游返回的输出 token ÷ 总耗时；最近一次探测失败、尚未探测或结果超过 36 小时显示 —。",
   },
 
   closing: {

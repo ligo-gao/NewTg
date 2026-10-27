@@ -1,15 +1,24 @@
 import { Fragment } from "react";
-import { CodeCard } from "@/components/landing/code-card";
+import { CodeCard, type CodeCardSample } from "@/components/landing/code-card";
 import { HeroDocsCta } from "@/components/landing/hero-docs-cta";
+import { codeSamples } from "@/config/code-samples";
 import type { Copy } from "@/config/copy";
 import { site } from "@/config/site";
-import { highlightCurl } from "@/lib/highlight";
+import { highlightCode } from "@/lib/highlight";
 
 export async function Hero({ copy }: { copy: Copy }) {
-  const html = await highlightCurl(copy.hero.code);
+  const samples: CodeCardSample[] = await Promise.all(
+    codeSamples(copy.hero.prompt).map(async (sample) => ({
+      ...sample,
+      html: await highlightCode(sample.code, sample.lang),
+    })),
+  );
 
   return (
-    <section id="top" className="pt-28 pb-14 min-[1081px]:pt-[136px] min-[1081px]:pb-13">
+    <section
+      id="top"
+      className="pt-[104px] pb-7 min-[621px]:pt-28 min-[621px]:pb-8 min-[1081px]:pt-[120px]"
+    >
       <div className="mx-auto grid w-full max-w-[1520px] items-center gap-14 px-4 min-[621px]:px-6 min-[1081px]:grid-cols-[1.02fr_0.98fr] wide:px-10">
         <div className="min-w-0">
           <h1 className="rise text-[clamp(2.5rem,4.6vw,4rem)] leading-[1.08] font-bold tracking-[-0.035em] text-balance">
@@ -48,7 +57,7 @@ export async function Hero({ copy }: { copy: Copy }) {
         </div>
 
         <figure className="rise rise-2 m-0 min-w-0">
-          <CodeCard copy={copy} html={html} code={copy.hero.code} />
+          <CodeCard copy={copy} samples={samples} />
         </figure>
       </div>
     </section>

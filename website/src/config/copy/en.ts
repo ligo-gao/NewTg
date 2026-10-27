@@ -26,15 +26,7 @@ export const en: Copy = {
     copyFailedLabel: "Copy failed",
     copySuccessAnnouncement: "Code copied to clipboard",
     copyFailureAnnouncement: "Copy failed; select the code manually",
-    code: `curl https://api.newtg.ai/v1/chat/completions \\
-  -H "Authorization: Bearer $NEWTG_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model": "gpt-4o",
-    "messages": [
-      { "role": "user", "content": "Hello, introduce yourself" }
-    ]
-  }'`,
+    prompt: "Hello, introduce yourself",
     requestLabel: "Last request",
     okLabel: "200 OK",
     trace: [
@@ -52,7 +44,6 @@ export const en: Copy = {
       { value: "Routing", label: "Health checks and failover" },
       { value: "7 languages", label: "Ready out of the box" },
     ],
-    note: "Features and data follow the live deployment.",
   },
 
   models: {
@@ -63,6 +54,7 @@ export const en: Copy = {
     vendorFilterLabel: "Filter by provider",
     allVendors: "All",
     countUnit: "models",
+    moreModels: "More models",
     compare: "Compare",
     call: "Use",
     callHref: "/dashboard",
@@ -73,8 +65,6 @@ export const en: Copy = {
     retry: "Retry",
     truncatedNote: "Showing the first 24 matches.",
     pricingLink: "View full pricing",
-    footnote:
-      "Models, context and prices come from the backend and sync live; prices are shown per 1M tokens.",
     badgeFree: "Free",
     badgePerRequest: "Per request",
     stats: {
@@ -133,19 +123,20 @@ export const en: Copy = {
 
   performance: {
     title: "Real call performance",
-    subtitle: "Scheduled real streaming probes for every listed chat model, showing the most recent result",
     windowLabel: "Scheduled probes",
     columns: {
       model: "Model",
       vendor: "Provider",
-      ttft: "First-token latency",
-      tps: "Output speed",
+      ttftGroup: "First-token latency (ms)",
+      latencyGroup: "Total latency (ms)",
+      tps: "Output speed (tok/s)",
+      successRate: "Success rate",
+      sampleSize: "Samples",
+      testedAt: "Last probe",
     },
     unavailable: "Performance data is temporarily unavailable",
     retry: "Retry",
     empty: "No models to show yet.",
-    footnote:
-      "Latency is time to first token (TTFT) for streaming calls; output speed is upstream output tokens divided by total latency. A probe that failed, is missing, or is older than 36 hours is shown as —.",
   },
 
   closing: {

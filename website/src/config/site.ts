@@ -5,5 +5,6 @@ export const site = {
   loginHref: "/sign-in",
   startHref: "/sign-up",
   docsHref: "/docs",
+  modelsHref: "/models",
   consoleHref: "/dashboard",
 } as const;

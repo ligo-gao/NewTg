@@ -2,39 +2,71 @@
 
 import { useHomeData } from "@/components/landing/home-data";
 import type { Copy } from "@/config/copy";
-import { formatTTFT, formatTPS } from "@/lib/pricing-format";
+import type { Locale } from "@/config/locales";
+import {
+  formatLatencyMs,
+  formatSampleSize,
+  formatSuccessRate,
+  formatTestedAt,
+  formatTps,
+  successTone,
+  type SuccessTone,
+} from "@/lib/perf-format";
 
 /** 只认最近一次实测；超过 36 小时视为无数据（容许漏掉一个时段再加余量）。 */
 const PERF_FRESH_MS = 36 * 60 * 60 * 1000;
 
+const PLACEHOLDER = "—";
+
+const headCell =
+  "border-b border-line px-4 py-3 text-[11.5px] font-medium whitespace-nowrap text-faint";
+const groupCell =
+  "border-l border-line px-4 pt-3 pb-1 text-center text-[11.5px] font-medium whitespace-nowrap text-faint";
+const subCell =
+  "border-b border-line px-4 pt-0 pb-2 text-right text-[11px] font-medium whitespace-nowrap text-faint";
+const bodyCell = "border-b border-line px-4 py-3.5";
+const numCell = `${bodyCell} text-right font-mono text-[12.5px] tabular-nums text-ink-2 whitespace-nowrap`;
+
+const successToneClass: Record<SuccessTone, string> = {
+  good: "text-green",
+  plain: "text-ink-2",
+  warn: "text-amber",
+  missing: "text-ink-2",
+};
+
 function SkeletonValue() {
-  return <span className="inline-block h-3 w-16 animate-pulse rounded bg-line-2/50" />;
+  return <span className="inline-block h-3 w-14 animate-pulse rounded bg-line-2/50" />;
 }
 
-export function PerformanceSection({ copy }: { copy: Copy }) {
+export function PerformanceSection({
+  copy,
+  locale = "zh-CN",
+}: {
+  copy: Copy;
+  locale?: Locale;
+}) {
   const { catalogStatus, metricsStatus, perfFeatured, metrics, retry } = useHomeData();
   const loadingCatalog = catalogStatus === "loading";
   const loadingMetrics = metricsStatus === "loading";
+  const columns = copy.performance.columns;
+  // 后台没填 vendor 时整列都会是空白，留一个空表头比直接省掉这列更难看。
+  const showVendor = perfFeatured.some((model) => model.vendor.trim() !== "");
+  const columnCount = showVendor ? 10 : 9;
 
   return (
     <section
       id="performance"
-      className="scroll-mt-20 border-t border-line py-16"
+      className="scroll-mt-20 border-t border-line py-8 min-[621px]:py-10"
       aria-labelledby="performance-title"
     >
       <div className="mx-auto w-full max-w-[1520px] px-4 min-[621px]:px-6 wide:px-10">
-        <div className="mb-7 flex flex-wrap items-end justify-between gap-x-8 gap-y-4">
-          <div>
-            <h2
-              id="performance-title"
-              className="text-[clamp(1.75rem,3vw,2.4rem)] font-semibold leading-tight tracking-[-0.03em]"
-            >
-              {copy.performance.title}
-            </h2>
-            <p className="mt-2.5 max-w-[38em] text-[14.5px] text-muted">
-              {copy.performance.subtitle}
-            </p>
-          </div>
+        <div className="mb-[18px] flex flex-wrap items-end justify-between gap-x-8 gap-y-4">
+          <h2
+            id="performance-title"
+            className="text-[clamp(1.75rem,3vw,2.4rem)] font-semibold leading-tight tracking-[-0.03em]"
+          >
+            {copy.performance.title}
+          </h2>
           <span className="rounded-full border border-line px-[13px] py-1 font-mono text-[11.5px] text-muted">
             {copy.performance.windowLabel}
           </span>
@@ -71,52 +103,61 @@ export function PerformanceSection({ copy }: { copy: Copy }) {
             ) : null}
 
             <div className="overflow-x-auto rounded-[10px] border border-line bg-bg-2">
-              <table className="w-full min-w-[640px] border-collapse text-[13.5px]">
-                <caption className="sr-only">{copy.performance.subtitle}</caption>
+              <table className="w-full min-w-[1080px] border-collapse text-[13.5px]">
+                <caption className="sr-only">{copy.performance.title}</caption>
                 <thead>
                   <tr>
-                    <th
-                      scope="col"
-                      className="border-b border-line px-5 py-3 text-left text-[11.5px] font-medium whitespace-nowrap text-faint"
-                    >
-                      {copy.performance.columns.model}
+                    <th scope="col" rowSpan={2} className={`${headCell} text-left`}>
+                      {columns.model}
                     </th>
-                    <th
-                      scope="col"
-                      className="border-b border-line px-5 py-3 text-left text-[11.5px] font-medium whitespace-nowrap text-faint"
-                    >
-                      {copy.performance.columns.vendor}
+                    {showVendor ? (
+                      <th scope="col" rowSpan={2} className={`${headCell} text-left`}>
+                        {columns.vendor}
+                      </th>
+                    ) : null}
+                    <th scope="colgroup" colSpan={2} className={groupCell}>
+                      {columns.ttftGroup}
                     </th>
-                    <th
-                      scope="col"
-                      className="border-b border-line px-5 py-3 text-left text-[11.5px] font-medium whitespace-nowrap text-faint"
-                    >
-                      {copy.performance.columns.ttft}
+                    <th scope="colgroup" colSpan={2} className={groupCell}>
+                      {columns.latencyGroup}
                     </th>
-                    <th
-                      scope="col"
-                      className="border-b border-line px-5 py-3 text-left text-[11.5px] font-medium whitespace-nowrap text-faint"
-                    >
-                      {copy.performance.columns.tps}
+                    <th scope="col" rowSpan={2} className={`${headCell} text-right`}>
+                      {columns.tps}
+                    </th>
+                    <th scope="col" rowSpan={2} className={`${headCell} text-right`}>
+                      {columns.successRate}
+                    </th>
+                    <th scope="col" rowSpan={2} className={`${headCell} text-right`}>
+                      {columns.sampleSize}
+                    </th>
+                    <th scope="col" rowSpan={2} className={`${headCell} text-right`}>
+                      {columns.testedAt}
+                    </th>
+                  </tr>
+                  <tr>
+                    <th scope="col" className={subCell}>
+                      P50
+                    </th>
+                    <th scope="col" className={subCell}>
+                      P95
+                    </th>
+                    <th scope="col" className={subCell}>
+                      P50
+                    </th>
+                    <th scope="col" className={subCell}>
+                      P95
                     </th>
                   </tr>
                 </thead>
                 <tbody>
                   {loadingCatalog
-                    ? Array.from({ length: 6 }).map((_, index) => (
+                    ? Array.from({ length: 8 }).map((_, index) => (
                         <tr key={index}>
-                          <td className="border-b border-line px-5 py-3.5">
-                            <SkeletonValue />
-                          </td>
-                          <td className="border-b border-line px-5 py-3.5">
-                            <SkeletonValue />
-                          </td>
-                          <td className="border-b border-line px-5 py-3.5">
-                            <SkeletonValue />
-                          </td>
-                          <td className="border-b border-line px-5 py-3.5">
-                            <SkeletonValue />
-                          </td>
+                          {Array.from({ length: columnCount }).map((__, cellIndex) => (
+                            <td key={cellIndex} className={bodyCell}>
+                              {cellIndex > (showVendor ? 1 : 0) ? <SkeletonValue /> : null}
+                            </td>
+                          ))}
                         </tr>
                       ))
                     : perfFeatured.map((model) => {
@@ -129,33 +170,70 @@ export function PerformanceSection({ copy }: { copy: Copy }) {
                           : Number.NaN;
                         const fresh =
                           Number.isFinite(testedAt) && Date.now() - testedAt <= PERF_FRESH_MS;
-                        const ttft = fresh ? (latest?.ttft_ms_p50 ?? null) : null;
-                        const tps = fresh ? (latest?.tps ?? null) : null;
+                        const rate = fresh ? (latest?.success_rate ?? null) : null;
+                        const rateTone = successToneClass[successTone(rate)];
+                        const pending = loadingMetrics && !entry;
+
                         return (
                           <tr
                             key={model.model_id}
                             className="transition-colors hover:bg-[var(--hover-tint)]"
                           >
-                            <td className="border-b border-line px-5 py-3.5">
+                            <td className={bodyCell}>
                               <span className="font-mono text-[12.5px] text-ink">
                                 {model.display_name || model.model_id}
                               </span>
                             </td>
-                            <td className="border-b border-line px-5 py-3.5 text-muted">
-                              {model.vendor}
-                            </td>
-                            <td className="border-b border-line px-5 py-3.5 font-mono text-[12.5px] tabular-nums text-ink-2">
-                              {loadingMetrics && !entry ? (
+                            {showVendor ? (
+                              <td className={`${bodyCell} text-muted`}>{model.vendor}</td>
+                            ) : null}
+                            {[
+                              latest?.ttft_ms_p50,
+                              latest?.ttft_ms_p95,
+                              latest?.latency_ms_p50,
+                              latest?.latency_ms_p95,
+                            ].map((value, index) => (
+                              <td key={index} className={numCell}>
+                                {pending ? (
+                                  <SkeletonValue />
+                                ) : (
+                                  formatLatencyMs(fresh ? (value ?? null) : null, locale)
+                                )}
+                              </td>
+                            ))}
+                            <td className={numCell}>
+                              {pending ? (
                                 <SkeletonValue />
                               ) : (
-                                formatTTFT(ttft)
+                                formatTps(fresh ? (latest?.tps ?? null) : null, locale)
                               )}
                             </td>
-                            <td className="border-b border-line px-5 py-3.5 font-mono text-[12.5px] tabular-nums text-ink-2">
-                              {loadingMetrics && !entry ? (
+                            <td className={`${numCell} ${rateTone}`}>
+                              {pending ? (
                                 <SkeletonValue />
                               ) : (
-                                formatTPS(tps)
+                                formatSuccessRate(rate, locale)
+                              )}
+                            </td>
+                            <td className={numCell}>
+                              {pending ? (
+                                <SkeletonValue />
+                              ) : (
+                                formatSampleSize(
+                                  fresh ? (latest?.sample_size ?? null) : null,
+                                  locale,
+                                )
+                              )}
+                            </td>
+                            <td className={`${numCell} text-muted`}>
+                              {pending ? (
+                                <SkeletonValue />
+                              ) : fresh && latest?.tested_at ? (
+                                <time dateTime={latest.tested_at}>
+                                  {formatTestedAt(latest.tested_at, locale)}
+                                </time>
+                              ) : (
+                                PLACEHOLDER
                               )}
                             </td>
                           </tr>
@@ -166,8 +244,6 @@ export function PerformanceSection({ copy }: { copy: Copy }) {
             </div>
           </>
         )}
-
-        <p className="mt-3.5 text-[11.5px] text-faint">{copy.performance.footnote}</p>
       </div>
     </section>
   );
