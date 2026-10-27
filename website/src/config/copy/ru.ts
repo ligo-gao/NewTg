@@ -22,12 +22,12 @@ export const ru: Copy = {
 
   nav: {
     links: [
+      { label: "Консоль", href: "/dashboard" },
       { label: "Модели", href: "/models" },
       { label: "Тарифы", href: "/pricing" },
       { label: "Рейтинги", href: "/rankings" },
       { label: "О проекте", href: "/about" },
       { label: "Документация", href: "/docs" },
-      { label: "Консоль", href: "/dashboard" },
     ],
     login: "Войти",
     cta: "Начать бесплатно",

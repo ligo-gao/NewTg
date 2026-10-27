@@ -22,12 +22,12 @@ export const ja: Copy = {
 
   nav: {
     links: [
+      { label: "コンソール", href: "/dashboard" },
       { label: "モデル", href: "/models" },
       { label: "料金", href: "/pricing" },
       { label: "ランキング", href: "/rankings" },
       { label: "概要", href: "/about" },
       { label: "ドキュメント", href: "/docs" },
-      { label: "コンソール", href: "/dashboard" },
     ],
     login: "サインイン",
     cta: "無料で始める",

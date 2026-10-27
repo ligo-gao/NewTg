@@ -62,7 +62,7 @@ describe('nav visibility matrix (TC-F-09-34-01)', () => {
   it('pins the documented nav order and drops a disabled entry in place', () => {
     expect(
       visibleNavItems(FULL_NAV, true, 'https://docs.example.com').map((item) => item.key),
-    ).toEqual(['models', 'pricing', 'rankings', 'about', 'docs', 'console'])
+    ).toEqual(['console', 'models', 'pricing', 'rankings', 'about', 'docs'])
 
     const withoutPricing = {
       ...FULL_NAV,
@@ -72,7 +72,7 @@ describe('nav visibility matrix (TC-F-09-34-01)', () => {
       visibleNavItems(withoutPricing, true, 'https://docs.example.com').map(
         (item) => item.key,
       ),
-    ).toEqual(['models', 'rankings', 'about', 'docs', 'console'])
+    ).toEqual(['console', 'models', 'rankings', 'about', 'docs'])
   })
 
   it('keeps render order and marks absolute docs targets external', () => {
@@ -82,11 +82,11 @@ describe('nav visibility matrix (TC-F-09-34-01)', () => {
       'https://docs.example.com',
     )
     expect(items.map((item) => item.key)).toEqual([
+      'console',
       'models',
       'pricing',
       'about',
       'docs',
-      'console',
     ])
     expect(items.find((item) => item.key === 'docs')?.external).toBe(true)
 

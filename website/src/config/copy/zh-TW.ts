@@ -22,12 +22,12 @@ export const zhTW: Copy = {
 
   nav: {
     links: [
+      { label: "控制台", href: "/dashboard" },
       { label: "模型庫", href: "/models" },
       { label: "定價", href: "/pricing" },
       { label: "排行", href: "/rankings" },
       { label: "關於", href: "/about" },
       { label: "文件", href: "/docs" },
-      { label: "控制台", href: "/dashboard" },
     ],
     login: "登入",
     cta: "免費開始使用",

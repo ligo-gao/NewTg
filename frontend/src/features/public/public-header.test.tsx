@@ -129,14 +129,14 @@ describe('PublicHeader (F-09-34)', () => {
     const nav = within(await findByRole('navigation', { name: 'Public pages' }))
     const links = nav.queryAllByRole('link')
     expect(links.map((link) => link.textContent)).toEqual([
+      'Console',
       'Models',
       'Pricing',
       'Rankings',
       'About',
       'Docs',
-      'Console',
     ])
-    expect(links.at(-1)?.getAttribute('href')).toBe('/dashboard')
+    expect(links.at(-1)?.getAttribute('href')).toBe('https://docs.example.com')
     // Signed-in visitors keep the avatar menu instead of a sign-up CTA.
     expect(queryByRole('link', { name: 'Get started free' })).toBeNull()
   })

@@ -31,13 +31,15 @@ export interface PublicNavItem {
 }
 
 // 品牌标就是首页入口；头部不再单列 home。
+// 排序：控制台在首位，其后是模型库、定价、排行、关于；文档未参与本次排序，
+// 保持它在原顺序中的相对位置，落在最后。
 export const PUBLIC_NAV_ORDER: readonly PublicNavKey[] = [
+  'console',
   'models',
   'pricing',
   'rankings',
   'about',
   'docs',
-  'console',
 ]
 
 export const PUBLIC_NAV_HREFS: Record<PublicNavKey, string> = {

@@ -22,12 +22,12 @@ export const en: Copy = {
 
   nav: {
     links: [
+      { label: "Console", href: "/dashboard" },
       { label: "Models", href: "/models" },
       { label: "Pricing", href: "/pricing" },
       { label: "Rankings", href: "/rankings" },
       { label: "About", href: "/about" },
       { label: "Docs", href: "/docs" },
-      { label: "Console", href: "/dashboard" },
     ],
     login: "Sign in",
     cta: "Get started free",

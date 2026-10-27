@@ -22,12 +22,12 @@ export const vi: Copy = {
 
   nav: {
     links: [
+      { label: "Bảng điều khiển", href: "/dashboard" },
       { label: "Mô hình", href: "/models" },
       { label: "Bảng giá", href: "/pricing" },
       { label: "Xếp hạng", href: "/rankings" },
       { label: "Giới thiệu", href: "/about" },
       { label: "Tài liệu", href: "/docs" },
-      { label: "Bảng điều khiển", href: "/dashboard" },
     ],
     login: "Đăng nhập",
     cta: "Bắt đầu miễn phí",
