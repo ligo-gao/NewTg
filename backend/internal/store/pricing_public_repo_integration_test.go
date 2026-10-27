@@ -321,3 +321,63 @@ func TestPublicPricingRepoMetadataSnapshot(t *testing.T) {
 		t.Fatal("model_meta 编辑后版本号未改变（D1-22）")
 	}
 }
+
+// TestListPublicChatModelsIntegration 冻结计划 Task 3 的探测集合口径：
+// 可见集合（status=1 且无表达式）∩ 对话能力。
+//   - 有 chat 端点 ⇒ 收入；
+//   - 无档案 ⇒ 保守收入（Review Focus 4：不得静默丢弃）；
+//   - 只有 embeddings 端点 ⇒ 剔除；
+//   - 停用档案 exact 命中 ⇒ 剔除（D1-13 与公开目录同规则）。
+func TestListPublicChatModelsIntegration(t *testing.T) {
+	db := openPublicPricingTestDB(t)
+	repo := NewPublicPricingRepo(db)
+	ctx := context.Background()
+
+	suffix := time.Now().UnixNano()
+	chat := fmt.Sprintf("t7-chat-%d", suffix)
+	embedding := fmt.Sprintf("t7-embed-%d", suffix)
+	noMeta := fmt.Sprintf("t7-nometa-%d", suffix)
+	hidden := fmt.Sprintf("t7-hidden-%d", suffix)
+
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM model_meta WHERE model_name IN ($1, $2, $3)`, chat, embedding, hidden)
+		_, _ = db.Exec(`DELETE FROM model_pricing WHERE model IN ($1, $2, $3, $4)`,
+			chat, embedding, noMeta, hidden)
+	})
+
+	for _, model := range []string{chat, embedding, noMeta, hidden} {
+		if _, err := db.Exec(`INSERT INTO model_pricing (model, mode, prompt_price, author, status)
+			VALUES ($1, 0, 100, 't7', 1)`, model); err != nil {
+			t.Fatalf("insert model_pricing(%s): %v", model, err)
+		}
+	}
+	for _, row := range []struct {
+		name      string
+		endpoints string
+		status    int16
+	}{
+		{chat, `{"/v1/chat/completions":["POST"]}`, 1},
+		{embedding, `{"/v1/embeddings":["POST"]}`, 1},
+		{hidden, `{"/v1/chat/completions":["POST"]}`, 2},
+	} {
+		if _, err := db.Exec(`INSERT INTO model_meta (model_name, endpoints, status, name_rule)
+			VALUES ($1, $2::jsonb, $3, 0)`, row.name, row.endpoints, row.status); err != nil {
+			t.Fatalf("insert model_meta(%s): %v", row.name, err)
+		}
+	}
+
+	got, err := repo.ListPublicChatModels(ctx)
+	if err != nil {
+		t.Fatalf("ListPublicChatModels: %v", err)
+	}
+	set := make(map[string]bool, len(got))
+	for _, name := range got {
+		set[name] = true
+	}
+	if !set[chat] || !set[noMeta] {
+		t.Fatalf("chat models must include %s and %s: %v", chat, noMeta, got)
+	}
+	if set[embedding] || set[hidden] {
+		t.Fatalf("non-chat / disabled-profile models leaked in: %v", got)
+	}
+}

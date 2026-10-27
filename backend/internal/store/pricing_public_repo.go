@@ -28,6 +28,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -395,4 +396,88 @@ func (r *SQLPublicPricingRepo) LoadPublicCounts(ctx context.Context) (PublicCoun
 		return PublicCounts{}, fmt.Errorf("store: commit public counts snapshot: %w", err)
 	}
 	return counts, nil
+}
+
+// ListPublicChatModels 返回公开目录可见、且具备对话/流式端点的模型名（已排序）。
+//
+// 计划 Task 3：定时性能探测（后续任务）只需要「公开面真实在售、且能对话」的
+// 模型集合。可见集合必须与 HTTP 层完全一致：visibleModelWhere 先筛定价行，
+// 再用 ResolveModelMeta 剔除「解析到停用档案」的模型（D1-13）；任何一处漏掉
+// 都会让探测结果出现在首页性能表里，而对应的模型在目录中并不存在。
+//
+// 【为什么端点为空也保留】没有档案或档案没有 endpoints 元数据时，无法证明它
+// 不是对话模型；静默丢弃会让这类模型永远得不到实测数据（Review Focus 4）。
+// 只有「明确列出了端点、且其中没有对话端点」才剔除。
+//
+// 与 LoadPublicPricingCatalog 一样在 REPEATABLE READ 只读事务内读取：定价行与
+// 档案必须来自同一快照，否则可能出现「模型刚停用、旧档案仍说它是 chat」的
+// 混合集合。这里不计算版本号，探测方按自己的调度周期取用即可。
+func (r *SQLPublicPricingRepo) ListPublicChatModels(ctx context.Context) ([]string, error) {
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{
+		Isolation: sql.LevelRepeatableRead,
+		ReadOnly:  true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: begin public chat models snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	models, err := loadPublicModels(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	meta, err := loadPublicModelMeta(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: commit public chat models snapshot: %w", err)
+	}
+
+	names := make([]string, 0, len(models))
+	for _, rec := range models {
+		names = append(names, rec.Model)
+	}
+	return publicChatModelNames(names, meta), nil
+}
+
+// publicChatModelNames 从公开可见的模型名集合中挑出对话模型（已排序）。
+//
+// 纯函数：命中规则与 HTTP 层共用 ResolveModelMeta，端点判定共用
+// DeriveEndpointTypes，避免探测侧与展示侧各写一份枚举而漂移。
+func publicChatModelNames(names []string, meta []ModelMeta) []string {
+	resolved := ResolveModelMeta(meta, names)
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		record, ok := resolved[name]
+		// 命中停用档案 ⇒ 公开面同样剔除（D1-13）。
+		if ok && record.Status != 1 {
+			continue
+		}
+		// 只有「明确列出端点、且没有对话端点」才剔除；无端点/无档案保守保留。
+		if ok {
+			types := DeriveEndpointTypes(record.Endpoints)
+			if len(types) > 0 && !hasChatEndpoint(types) {
+				continue
+			}
+		}
+		out = append(out, name)
+	}
+	// 排序让探测任务与测试都有确定顺序；DB 虽已按 model 升序返回，纯函数不依赖它。
+	sort.Strings(out)
+	return out
+}
+
+// hasChatEndpoint 判断公开端点枚举里是否存在对话/流式协议族。
+//
+// 三个值对应 OpenAI chat、Anthropic messages 与 Gemini generateContent：
+// 它们都是可被性能探测直接调用的对话入口。
+func hasChatEndpoint(types []string) bool {
+	for _, value := range types {
+		switch value {
+		case "chat.completions", "messages", "generateContent":
+			return true
+		}
+	}
+	return false
 }
