@@ -1,0 +1,539 @@
+/* ==========================================================================
+   Public shell — one header and one footer for every public page.
+   ==========================================================================
+   Both apps (`frontend/` SPA and `website/` marketing) render these classes,
+   so a visual change is made here once. The only host requirement is the
+   `data-theme` attribute on <html> (both apps set it before first paint).
+
+   Tokens are self-contained `--ps-*` values; the shell never reaches into a
+   host app's token layer. Light values are byte-identical to the marketing
+   palette (`--bg`, `--line`, `--ink`, …), which the SPA's `--home-*` tokens
+   already mirrored — so this file is the single source for both.
+
+   Type scale: 12/18 labels · 13/22 footer links and controls · 14/22 nav ·
+   16/24 brand. Sizes below 12px are not allowed.
+   ========================================================================== */
+
+.ps-shell {
+  --ps-paper: #f3f6f9;
+  --ps-paper-2: #edf2f7;
+  --ps-card: #ffffff;
+  --ps-ink: #0d1a24;
+  --ps-muted: #33465a;
+  --ps-faint: #5a6b7c;
+  --ps-rule: #dbe4ec;
+  --ps-rule-strong: #c2cedb;
+  --ps-signal: #077486;
+  --ps-nav-bg: rgba(250, 252, 255, 0.78);
+  --ps-shadow: 0 20px 50px -24px rgb(22 50 70 / 0.25);
+
+  color: var(--ps-ink);
+  font-family: var(--ps-font, inherit);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+/* Hosts that nest the shell under a themed root (both apps do) and hosts that
+   theme the shell element itself (embedded previews) both land here. */
+:root[data-theme='dark'] .ps-shell,
+.ps-shell[data-theme='dark'] {
+  --ps-paper: #070b12;
+  --ps-paper-2: #0a1019;
+  --ps-card: #0d141f;
+  --ps-ink: #e8eef5;
+  --ps-muted: #b6c2d1;
+  --ps-faint: #8797aa;
+  --ps-rule: #1a2534;
+  --ps-rule-strong: #263447;
+  --ps-signal: #4cd7e8;
+  --ps-nav-bg: rgba(7, 11, 18, 0.74);
+  --ps-shadow: 0 20px 50px -20px rgb(0 0 0 / 0.9);
+}
+
+.ps-shell *,
+.ps-shell *::before,
+.ps-shell *::after { box-sizing: border-box; }
+
+.ps-shell a { text-decoration: none; }
+
+.ps-shell .ps-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.ps-shell .ps-wrap {
+  width: 100%;
+  max-width: 1520px;
+  margin-inline: auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+
+/* Content gutter ladder: 16px, 24px from 621, 40px from 1280. */
+@media (min-width: 621px) {
+  .ps-shell .ps-wrap { padding-inline: 24px; }
+}
+
+@media (min-width: 1280px) {
+  .ps-shell .ps-wrap { padding-inline: 40px; }
+}
+
+/* ---------- Header ---------- */
+
+.ps-shell.ps-header {
+  position: fixed;
+  inset-inline: 0;
+  top: 0;
+  z-index: 50;
+  border-bottom: 1px solid var(--ps-rule);
+  background: var(--ps-nav-bg);
+  backdrop-filter: blur(14px);
+}
+
+.ps-shell .ps-header-row {
+  display: flex;
+  align-items: center;
+  gap: 36px;
+  height: 64px;
+}
+
+.ps-shell .ps-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  flex: none;
+  color: var(--ps-ink);
+}
+
+.ps-shell .ps-brand-mark {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  color: var(--ps-signal);
+}
+
+.ps-shell .ps-brand-logo {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.ps-shell .ps-brand-name {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+}
+
+/* The footer keeps the surrounding ink for the mark, as the marketing footer
+   always has. */
+.ps-shell.ps-footer .ps-brand-mark { color: inherit; }
+
+.ps-shell .ps-nav {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+}
+
+.ps-shell .ps-nav-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--ps-muted);
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 400;
+  transition: color 150ms ease;
+}
+
+.ps-shell .ps-nav-link:hover,
+.ps-shell .ps-nav-link[aria-current='page'] { color: var(--ps-ink); }
+
+.ps-shell .ps-external-glyph {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.ps-shell .ps-nav-skeleton {
+  display: block;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--ps-rule);
+}
+.ps-shell .ps-nav-skeleton-sm { width: 52px; }
+.ps-shell .ps-nav-skeleton-md { width: 64px; }
+
+.ps-shell .ps-header-tools {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+/* ---------- Language control ---------- */
+
+.ps-shell .ps-lang {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ps-shell .ps-lang-globe {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.ps-shell .ps-lang-select {
+  height: 36px;
+  max-width: 150px;
+  padding: 0 8px;
+  border: 1px solid var(--ps-rule-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ps-muted);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.ps-shell .ps-lang-select:hover {
+  color: var(--ps-ink);
+  border-color: var(--ps-ink);
+}
+
+/* Compact pill for the collapsed row: the visible code is the selected
+   locale; the native select sits on top for keyboard and screen readers. */
+.ps-shell .ps-lang-compact {
+  position: relative;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
+  min-width: 52px;
+  padding: 0 8px;
+  border: 1px solid var(--ps-rule-strong);
+  border-radius: 6px;
+  color: var(--ps-muted);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ps-shell .ps-lang-compact:hover {
+  color: var(--ps-ink);
+  border-color: var(--ps-ink);
+}
+
+.ps-shell .ps-lang-compact select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.ps-shell .ps-lang-compact:focus-within {
+  outline: 2px solid var(--ps-signal);
+  outline-offset: 2px;
+}
+
+.ps-shell .ps-lang select:focus-visible {
+  outline: 2px solid var(--ps-signal);
+  outline-offset: 2px;
+}
+
+/* ---------- Theme control ---------- */
+
+.ps-shell .ps-theme-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--ps-rule-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ps-muted);
+  cursor: pointer;
+  transition: color 150ms ease, border-color 150ms ease;
+}
+
+.ps-shell .ps-theme-btn:hover {
+  color: var(--ps-ink);
+  border-color: var(--ps-ink);
+}
+
+/* ---------- Session cluster ---------- */
+
+.ps-shell .ps-sign-in {
+  display: inline-flex;
+  align-items: center;
+  color: var(--ps-muted);
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 400;
+  white-space: nowrap;
+  transition: color 150ms ease;
+}
+
+.ps-shell .ps-sign-in:hover { color: var(--ps-ink); }
+
+.ps-shell .ps-account { position: relative; }
+
+.ps-shell .ps-avatar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--ps-rule-strong);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ps-ink);
+  cursor: pointer;
+}
+
+.ps-shell .ps-avatar-btn:hover { border-color: var(--ps-ink); }
+
+.ps-shell .ps-avatar-menu {
+  position: absolute;
+  right: 0;
+  top: 42px;
+  z-index: 50;
+  width: 200px;
+  padding: 4px;
+  border: 1px solid var(--ps-rule);
+  border-radius: 8px;
+  background: var(--ps-card);
+  box-shadow: var(--ps-shadow);
+}
+
+.ps-shell .ps-avatar-menu a,
+.ps-shell .ps-avatar-menu button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ps-ink);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ps-shell .ps-avatar-menu a:hover,
+.ps-shell .ps-avatar-menu button:hover { background: var(--ps-paper-2); }
+
+.ps-shell .ps-avatar-rule {
+  margin: 4px 0;
+  border-top: 1px solid var(--ps-rule);
+}
+
+.ps-shell .ps-menu-btn {
+  display: none;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--ps-rule-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ps-ink);
+  cursor: pointer;
+}
+
+.ps-shell .ps-menu-btn:hover { border-color: var(--ps-ink); }
+
+/* ---------- Collapsed navigation panel ---------- */
+
+.ps-shell .ps-mobile-nav {
+  border-top: 1px solid var(--ps-rule);
+  background: var(--ps-card);
+  max-height: calc(100dvh - 64px);
+  overflow-y: auto;
+}
+
+.ps-shell .ps-mobile-nav-inner {
+  display: flex;
+  flex-direction: column;
+  padding-block: 8px 18px;
+}
+
+.ps-shell .ps-mobile-nav-link {
+  display: block;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--ps-rule);
+  color: var(--ps-muted);
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.ps-shell .ps-mobile-nav-link:hover,
+.ps-shell .ps-mobile-nav-link[aria-current='page'] { color: var(--ps-ink); }
+
+/* ---------- Footer ---------- */
+
+.ps-shell.ps-footer {
+  padding-block: 44px 32px;
+  border-top: 1px solid var(--ps-rule);
+  color: var(--ps-ink);
+  font-size: 13px;
+  line-height: 22px;
+}
+
+.ps-shell.ps-footer .ps-brand-name { font-size: 16px; line-height: 24px; }
+
+.ps-shell .ps-footer-grid {
+  display: grid;
+  grid-template-columns: var(
+    --ps-footer-grid,
+    minmax(0, 1.6fr) repeat(3, minmax(0, 1fr))
+  );
+  gap: 40px;
+}
+
+.ps-shell .ps-footer-tag {
+  max-width: 26em;
+  margin: 12px 0 0;
+  color: var(--ps-faint);
+  font-size: 13px;
+  line-height: 22px;
+}
+
+.ps-shell .ps-footer-col h2 {
+  margin: 0 0 14px;
+  color: var(--ps-faint);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+}
+
+.ps-shell .ps-footer-col ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ps-shell .ps-footer-col a {
+  display: block;
+  padding-block: 5px;
+  color: var(--ps-muted);
+  font-size: 13px;
+  line-height: 22px;
+  transition: color 150ms ease;
+}
+
+.ps-shell .ps-footer-col a:hover { color: var(--ps-ink); }
+
+/* Live status links carry a dot, as the marketing footer always has. */
+.ps-shell .ps-footer-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ps-shell .ps-footer-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: #147a52;
+}
+
+:root[data-theme='dark'] .ps-shell .ps-footer-dot,
+.ps-shell[data-theme='dark'] .ps-footer-dot { background: #42d392; }
+
+/* Operator-supplied link HTML (`site.footer_html`), already sanitized by the
+   host before it reaches the shell. */
+.ps-shell .ps-footer-operator {
+  font-size: 13px;
+  line-height: 22px;
+}
+
+.ps-shell .ps-footer-operator p { margin: 0; }
+
+.ps-shell .ps-footer-operator a { color: var(--ps-muted); transition: color 150ms ease; }
+
+.ps-shell .ps-footer-operator a:hover { color: var(--ps-ink); }
+
+.ps-shell .ps-footer-bottom {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 32px;
+  padding-top: 20px;
+  border-top: 1px solid var(--ps-rule);
+  color: var(--ps-faint);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.ps-shell .ps-footer-bottom p { margin: 0; }
+
+.ps-shell .ps-footer-bottom a { color: inherit; }
+
+/* ---------- Focus ---------- */
+
+.ps-shell .ps-brand:focus-visible,
+.ps-shell .ps-nav-link:focus-visible,
+.ps-shell .ps-sign-in:focus-visible,
+.ps-shell .ps-theme-btn:focus-visible,
+.ps-shell .ps-menu-btn:focus-visible,
+.ps-shell .ps-avatar-btn:focus-visible,
+.ps-shell .ps-avatar-menu a:focus-visible,
+.ps-shell .ps-avatar-menu button:focus-visible,
+.ps-shell .ps-mobile-nav-link:focus-visible,
+.ps-shell .ps-footer-col a:focus-visible,
+.ps-shell .ps-footer-bottom a:focus-visible,
+.ps-shell .ps-footer-operator a:focus-visible {
+  outline: 2px solid var(--ps-signal);
+  outline-offset: 2px;
+}
+
+/* ---------- Responsive ---------- */
+
+/* One breakpoint for both apps (the SPA carries the wider tool cluster). */
+@media (max-width: 1023px) {
+  .ps-shell .ps-nav,
+  .ps-shell .ps-header-tools .ps-lang,
+  .ps-shell .ps-header-tools .ps-sign-in { display: none; }
+  .ps-shell .ps-header-tools .ps-lang-compact { display: inline-flex; }
+  .ps-shell .ps-menu-btn { display: inline-flex; }
+  .ps-shell .ps-header-row { gap: 14px; }
+  .ps-shell .ps-header-tools { gap: 8px; }
+}
+
+@media (min-width: 1024px) {
+  .ps-shell .ps-mobile-nav { display: none; }
+}
+
+/* Brand across the top, link columns two-up. */
+@media (max-width: 859px) {
+  .ps-shell .ps-footer-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 32px;
+  }
+  .ps-shell .ps-footer-grid > :first-child { grid-column: 1 / -1; }
+}

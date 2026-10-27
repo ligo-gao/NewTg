@@ -1,0 +1,15 @@
+{
+  "name": "@newtg/public-shell",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.tsx",
+  "types": "./src/index.tsx",
+  "exports": {
+    ".": "./src/index.tsx",
+    "./styles.css": "./src/shell.css"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0"
+  }
+}
