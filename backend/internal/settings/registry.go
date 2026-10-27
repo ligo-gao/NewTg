@@ -122,6 +122,11 @@ var sectionOrder = []string{
 	// W8/MJ-a2：绘图任务族（relay-05 §1）。整族 8 键进注册表，
 	// 键名/默认值与 system-config-mapping §4.7 #25–#30、#70–#71 逐字一致。
 	"mj",
+	// 管理面测速参数（docs/superpowers/specs/2026-10-28-admin-performance-redesign-design.md
+	// §7.4；逐键登记见 docs/system-config-mapping.md §4.7 #78–#81）。
+	// 独立 section：只服务测速 worker 与管理面，不进入 /api/status 公开下发，
+	// 与 reconcile/log/audit 同待遇。
+	"perf",
 }
 
 var (
@@ -799,6 +804,18 @@ func buildRegistry() []Setting {
 		// 替换/清除都必须二次确认（direction=any）。
 		def("deploy.ionet.enabled", "deploy", TypeBool, false, dangerousOff()),
 		def("deploy.ionet.api_key", "deploy", TypeString, "", secret(), dangerousAny()),
+
+		// ==== perf（性能页改版设计 §7.4，管理面测速四项）====
+		//
+		// 只服务测速 worker 与管理面的读写，不进公开下发全集。未落库时读取侧
+		// 回落 PERF_SCHEDULE_* 环境变量，这里的默认值与之一致（§7.4 / §7.5）。
+		def("perf.schedule.enabled", "perf", TypeBool, true),
+		def("perf.schedule.interval_hours", "perf", TypeInt, int64(12),
+			minInt(1), maxInt(168)),
+		def("perf.schedule.runs", "perf", TypeInt, int64(3),
+			minInt(1), maxInt(5)),
+		def("perf.schedule.concurrency", "perf", TypeInt, int64(2),
+			minInt(1), maxInt(8)),
 	}
 }
 
