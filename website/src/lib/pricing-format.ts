@@ -71,7 +71,8 @@ export function isLowSample(sampleSize: number): boolean {
 export const CHAT_ENDPOINTS = ["chat.completions", "messages", "generateContent"] as const;
 
 /**
- * 与后端 `store.ListPublicChatModels` 同口径：没有端点元数据时保守保留
+ * 与后端 `store.ListPublicChatModels` 同口径（真正的规则在
+ * `publicChatModelNames` / `hasChatEndpoint`）：没有端点元数据时保守保留
  * （无法证明它不是对话模型），有元数据时只保留含对话端点的模型。
  */
 export function isChatCapable(model: PricingModel): boolean {

@@ -88,12 +88,16 @@ describe("isChatCapable", () => {
   it("keeps models without endpoint metadata (conservative)", () => {
     expect(isChatCapable({ ...base, endpoints: [] })).toBe(true);
     expect(isChatCapable({ ...base, endpoints: null })).toBe(true);
+    // Go 侧恒初始化为空切片，字段缺失只是防御路径；保守保留与后端一致。
+    expect(isChatCapable({ ...base, endpoints: undefined } as unknown as PricingModel)).toBe(true);
   });
 
   it("keeps chat-capable models", () => {
     expect(isChatCapable({ ...base, endpoints: ["chat.completions"] })).toBe(true);
     expect(isChatCapable({ ...base, endpoints: ["messages"] })).toBe(true);
     expect(isChatCapable({ ...base, endpoints: ["generateContent"] })).toBe(true);
+    // 混合端点里只要有一个对话端点就算：挡住「只看第一个端点」或 every 的漂移。
+    expect(isChatCapable({ ...base, endpoints: ["embeddings", "chat.completions"] })).toBe(true);
   });
 
   it("drops models that only expose non-chat endpoints", () => {
