@@ -822,6 +822,13 @@ func TestPerfEnvSnapshotRedactsPrometheusURL(t *testing.T) {
 		t.Fatalf("PrometheusURL = %q, want query/fragment 内容已打码", got)
 	}
 
+	// fragment 内容里可以合法地含 '?'：不能把它当成 query 分隔符，否则
+	// '#' 之后的片段前缀会被原样回显。
+	env["PROMETHEUS_URL"] = "http://prom:9090/metrics#access_token=s3cr3t?a=b"
+	if got := handlers.envSnapshot().PrometheusURL; got != "http://prom:9090/metrics#…" {
+		t.Fatalf("PrometheusURL = %q, want 含 '?' 的 fragment 内容也整段打码", got)
+	}
+
 	env["PROMETHEUS_URL"] = "://bad"
 	if got := handlers.envSnapshot().PrometheusURL; got != "" {
 		t.Fatalf("无法解析的 URL 应展示为空串，got %q", got)

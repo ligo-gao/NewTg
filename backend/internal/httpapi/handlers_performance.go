@@ -365,17 +365,24 @@ func redactedEnvURL(raw string) string {
 	redacted := parsed.Redacted()
 	// Redacted 之后 userinfo/path 里的 '?'、'#' 都已被百分号编码，因此这里
 	// 找到的第一个 '?' / '#' 一定是 query / fragment 的分隔符。
+	// 切点取**先出现**的那个：fragment 内容里可以合法地含有 '?'，若只看
+	// queryIndex 就会把 fragment 前缀（如 #access_token=…）回显出去。
 	queryIndex := strings.IndexByte(redacted, '?')
 	fragmentIndex := strings.IndexByte(redacted, '#')
-	switch {
-	case queryIndex >= 0 && fragmentIndex > queryIndex:
-		return redacted[:queryIndex] + "?…#…"
-	case queryIndex >= 0:
-		return redacted[:queryIndex] + "?…"
-	case fragmentIndex >= 0:
-		return redacted[:fragmentIndex] + "#…"
+	cut, hasQuery := queryIndex, true
+	if fragmentIndex >= 0 && (queryIndex < 0 || fragmentIndex < queryIndex) {
+		cut, hasQuery = fragmentIndex, false
 	}
-	return redacted
+	switch {
+	case cut < 0:
+		return redacted
+	case hasQuery && fragmentIndex >= 0:
+		return redacted[:cut] + "?…#…"
+	case hasQuery:
+		return redacted[:cut] + "?…"
+	default:
+		return redacted[:cut] + "#…"
+	}
 }
 
 // performanceConfig 是一次请求的环境变量快照。
