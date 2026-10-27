@@ -10,6 +10,7 @@
   "language.label": "Langue de l'interface",
   "language.saved_locally": "Langue enregistrée sur cet appareil.",
   "language.update_error": "Impossible d'enregistrer la préférence de langue. La langue précédente est restaurée.",
+  "language.updated": "Langue mise à jour",
   "theme.label": "Thème",
   "theme.light": "Clair",
   "theme.dark": "Sombre",

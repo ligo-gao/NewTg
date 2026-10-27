@@ -10,6 +10,7 @@
   "language.label": "界面语言",
   "language.saved_locally": "语言已保存在本设备。",
   "language.update_error": "语言偏好保存失败，已恢复原语言。",
+  "language.updated": "语言已更新",
   "theme.label": "主题",
   "theme.light": "浅色",
   "theme.dark": "深色",

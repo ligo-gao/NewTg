@@ -10,6 +10,7 @@
   "language.label": "Язык интерфейса",
   "language.saved_locally": "Язык сохранён на этом устройстве.",
   "language.update_error": "Не удалось сохранить языковую настройку. Предыдущий язык восстановлен.",
+  "language.updated": "Язык обновлён",
   "theme.label": "Тема",
   "theme.light": "Светлая",
   "theme.dark": "Тёмная",

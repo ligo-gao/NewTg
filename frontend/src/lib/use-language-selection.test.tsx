@@ -1,10 +1,12 @@
-import { waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { render, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
-import { useI18n } from '@/shared/lib/i18n-context'
+import { I18nProvider, loadDictionary } from '@/app/providers/i18n'
+import { useI18n, type Locale } from '@/shared/lib/i18n-context'
 import { LanguageSwitch } from '@/shared/ui/language-switch'
 import { ToastViewport, useToastStore } from '@/shared/ui/toast'
 import { renderWithProviders } from '@/test-support/providers'
@@ -53,6 +55,38 @@ function renderHarness(signedIn: boolean) {
   ])
 }
 
+/**
+ * Saves without touching the picker, so the locale stays put while the toast is
+ * produced. That keeps the expected copy unambiguous: the hook translates with
+ * the locale active when the gesture started (the `LanguageSwitch` handler runs
+ * before React re-renders for the new locale).
+ */
+function SaveProbe() {
+  const { onChange } = useLanguageSelection(true)
+  return (
+    <>
+      <button type="button" onClick={() => void onChange?.('ja')}>
+        save-language
+      </button>
+      <ToastViewport />
+    </>
+  )
+}
+
+async function renderSaveProbe(locale: Locale) {
+  await loadDictionary(locale, 'common')
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  return render(
+    <QueryClientProvider client={client}>
+      <I18nProvider locale={locale} modules={['common']}>
+        <SaveProbe />
+      </I18nProvider>
+    </QueryClientProvider>,
+  )
+}
+
 describe('useLanguageSelection', () => {
   it('persists the chosen language to the profile for a signed-in user', async () => {
     let putBody: unknown
@@ -79,6 +113,26 @@ describe('useLanguageSelection', () => {
     await waitFor(() => {
       expect(document.documentElement.lang).toBe('fr')
     })
+  })
+
+  it('shows the localized success toast instead of the raw key', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/self`, () => HttpResponse.json(selfSettings('en'))),
+      http.put(`${ORIGIN}/api/self/setting`, () =>
+        HttpResponse.json(selfSettings('ja')),
+      ),
+    )
+
+    const { getByText, findByTestId } = await renderSaveProbe('fr')
+    const user = userEvent.setup()
+
+    await user.click(getByText('save-language'))
+
+    const viewport = await findByTestId('toast-viewport')
+    // `common.language.updated` must exist in every bundle: a missing key makes
+    // `translate` return the key itself, which would leak into the UI.
+    expect(viewport.textContent).toContain('Langue mise à jour')
+    expect(viewport.textContent).not.toContain('common.language.updated')
   })
 
   it('keeps the chosen language and pending flag when the server rejects the save', async () => {
