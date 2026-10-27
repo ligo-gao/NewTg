@@ -27,6 +27,7 @@ import (
 	deploybilling "newtg/gateway/internal/deploy/billing"
 	"newtg/gateway/internal/httpapi"
 	"newtg/gateway/internal/metrics"
+	"newtg/gateway/internal/modelperf"
 	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/rankings"
 	"newtg/gateway/internal/store"
@@ -946,22 +947,37 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 		return fmt.Errorf("worker: start instance heartbeat: %w", err)
 	}
 
+	// 模型性能定时实测（spec 2026-10-27）：先构造拿到 RunOnce 供系统任务
+	// 手动触发，再在任务框架之后启动循环。装配失败只记录——测速不是交易路径。
+	perfScheduler, perfErr := newModelPerfScheduler(cfg, sqlDB, rr.client, log)
+	var perfRun func(context.Context) (modelperf.Stats, error)
+	if perfErr != nil {
+		log.Error("worker: model performance scheduler disabled", "error", perfErr)
+	} else {
+		perfRun = perfScheduler.RunOnce
+	}
+
 	// W17-2 worker 任务框架：静态注册表 + 租约调度 + 运行记录。既有循环的
 	// 调度语义不变（Scheduled=false, Run=nil），这里只增加目录可见性与
 	// 白名单任务的手动触发。装配失败只记录：管理面不可用时计费/轮询仍需运行。
 	stopWorkerTasks, err := startWorkerTaskFramework(ctx, workerTaskDeps{
-		Cfg:      cfg,
-		DB:       sqlDB,
-		LogsDB:   sqlLogs,
-		Redis:    rr.client,
-		Center:   center,
-		Settings: retentionSettings,
-		Logger:   log,
+		Cfg:          cfg,
+		DB:           sqlDB,
+		LogsDB:       sqlLogs,
+		Redis:        rr.client,
+		Center:       center,
+		Settings:     retentionSettings,
+		Logger:       log,
+		ModelPerfRun: perfRun,
 	})
 	if err != nil {
 		log.Error("worker: task framework disabled", "error", err)
 		stopWorkerTasks = nil
 	}
+
+	// 定时探测循环与任务框架相互独立：即使管理面不可用，周期实测仍按
+	// PERF_SCHEDULE_TIMES 执行；关闭开关或装配失败时返回 no-op。
+	stopModelPerf := startModelPerfLoop(ctx, perfScheduler, cfg.PerfScheduleEnabled, log)
 
 	// W10-N4/N9/N10/N11：兑换码回收、任务保留、过期日志分区删除与审计
 	// 保留（N10/N11 使用独立 DB_RETENTION_DSN）。设置键在启动时解析一次快照
@@ -1013,6 +1029,9 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	})
 	// 先停后台循环（过期扫描 + 任务轮询 + 排行榜 + 订阅维护）再关连接池：
 	// 否则下一次 DB 调用会拿到「连接已关闭」错误，把正常停机噪声打进告警。
+	// 定时性能探测先于任务框架停止：它是唯一会在停止后仍可能触库的长任务，
+	// cancel+Wait 保证不会把「连接已关闭」写进落库错误。
+	stopModelPerf()
 	if stopWorkerTasks != nil {
 		stopWorkerTasks()
 	}

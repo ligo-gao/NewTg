@@ -347,5 +347,17 @@ func DefaultRegistry() (*Registry, error) {
 			// 管理员可补跑：每次执行生成新 run，幂等且不改写历史判定。
 			ManualTriggerAllowed: true,
 		},
+		// ---- E 类：模型性能定时实测（spec 2026-10-27 §5.5） ----
+		Task{
+			Name:        "model_perf_test",
+			Description: "Scheduled model performance probes for all public chat models",
+			// 仅用于管理面展示节奏；真实时刻由 PERF_SCHEDULE_TIMES 决定，
+			// 周期由 modelperf.RunLoop 自己持有，因此 Scheduled=false。
+			Interval: 12 * time.Hour,
+			// 一轮要覆盖全部公开对话模型（每个 3 次探测），远超 10 分钟默认
+			// 上限；手动触发由框架按租约执行，超时过短会把长轮次截断。
+			Timeout:              3 * time.Hour,
+			ManualTriggerAllowed: true,
+		},
 	)
 }

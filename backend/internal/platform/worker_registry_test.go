@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"newtg/gateway/internal/holiday"
+	"newtg/gateway/internal/modelperf"
 	"newtg/gateway/internal/worker"
 )
 
@@ -43,6 +44,8 @@ func TestDefaultRegistryManualWhitelistIsFrozen(t *testing.T) {
 		"holiday_sync": true,
 		// 上游对账补跑：每次生成新 run，历史 run 不可变，幂等。
 		"upstream_usage_reconcile": true,
+		// spec 2026-10-27 §5.5：定时性能实测需在管理面可见且可手动触发一轮。
+		"model_perf_test": true,
 	}
 	got := make(map[string]bool)
 	for _, task := range registry.Tasks() {
@@ -127,6 +130,68 @@ func TestHolidaySyncDisabledWithoutConfig(t *testing.T) {
 	// 装配缺配置时按关闭处理：不得在没有开关值的情况下发出站请求。
 	if task.Enabled == nil || task.Enabled() {
 		t.Fatal("无配置时 holiday_sync 应视为关闭")
+	}
+}
+
+// TestModelPerfTaskUnavailableWithoutRun 锁定装配降级：没有 RunOnce 时任务
+// 仍出现在目录里，但谓词为假（管理面显示不可用、手动触发 409），并且不绑定
+// 执行体——否则会留下一条永远不会成功的 pending 行。
+func TestModelPerfTaskUnavailableWithoutRun(t *testing.T) {
+	registry, err := worker.DefaultRegistry()
+	if err != nil {
+		t.Fatalf("DefaultRegistry: %v", err)
+	}
+	if err := bindWorkerTaskRuns(registry, workerTaskDeps{}); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	task, ok := registry.Get("model_perf_test")
+	if !ok {
+		t.Fatal("model_perf_test 未注册")
+	}
+	if task.Run != nil {
+		t.Fatal("没有 RunOnce 时不应绑定执行体")
+	}
+	if task.Enabled == nil || task.Enabled() {
+		t.Fatal("没有 RunOnce 时 model_perf_test 应视为不可用")
+	}
+	if task.BlockedCode != "model_perf_test_unavailable" {
+		t.Fatalf("BlockedCode = %q，期望 model_perf_test_unavailable", task.BlockedCode)
+	}
+}
+
+// TestModelPerfTaskBindsRoundStats 锁定手动触发的运行结果只暴露四个计数键
+// （运行历史不得写入模型名或上游响应体）。
+func TestModelPerfTaskBindsRoundStats(t *testing.T) {
+	registry, err := worker.DefaultRegistry()
+	if err != nil {
+		t.Fatalf("DefaultRegistry: %v", err)
+	}
+	deps := workerTaskDeps{
+		ModelPerfRun: func(context.Context) (modelperf.Stats, error) {
+			return modelperf.Stats{Models: 7, Tested: 5, SkippedNoChannel: 1, PersistFailed: 1}, nil
+		},
+	}
+	if err := bindWorkerTaskRuns(registry, deps); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	task, _ := registry.Get("model_perf_test")
+	if task.Enabled == nil || !task.Enabled() {
+		t.Fatal("绑定 RunOnce 后 model_perf_test 应为可用")
+	}
+	result, err := task.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	want := map[string]int{
+		"models": 7, "tested": 5, "skipped_no_channel": 1, "persist_failed": 1,
+	}
+	if len(result) != len(want) {
+		t.Fatalf("运行结果键集 = %v，期望恰好 %d 个计数", result, len(want))
+	}
+	for key, value := range want {
+		if result[key] != value {
+			t.Fatalf("result[%q] = %v，期望 %d", key, result[key], value)
+		}
 	}
 }
 

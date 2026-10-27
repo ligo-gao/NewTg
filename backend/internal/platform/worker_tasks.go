@@ -29,6 +29,7 @@ import (
 	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/holiday"
 	"newtg/gateway/internal/httpapi"
+	"newtg/gateway/internal/modelperf"
 	"newtg/gateway/internal/pricingstrategy"
 	"newtg/gateway/internal/rankings"
 	"newtg/gateway/internal/reconcile"
@@ -49,6 +50,10 @@ type workerTaskDeps struct {
 	Center   *configcenter.Center
 	Settings logRetentionSettings
 	Logger   *slog.Logger
+	// ModelPerfRun 是模型性能实测的一轮执行体（modelperf.Scheduler.RunOnce）。
+	// nil 表示装配失败或当前角色不提供（gateway）：任务在管理面可见但显示为
+	// 不可用，手动触发返回 409 model_perf_test_unavailable。
+	ModelPerfRun func(context.Context) (modelperf.Stats, error)
 }
 
 // startWorkerTaskFramework 装配并启动调度器，返回停止函数。
@@ -231,6 +236,32 @@ func bindWorkerTaskRuns(registry *worker.Registry, deps workerTaskDeps) error {
 		if err := registry.BindRun(name, run); err != nil {
 			return fmt.Errorf("worker task bind %q: %w", name, err)
 		}
+	}
+	// 模型性能定时实测（spec 2026-10-27 §5.5）：周期由 modelperf.RunLoop 自持，
+	// 这里只绑定「一轮执行」供管理员手动触发。RunOnce 不取时段锁，与调度循环
+	// 的手动补跑语义一致；deps.ModelPerfRun 为 nil（装配失败或非 worker 角色）
+	// 时不绑定，由下方谓词把任务标成不可用。
+	if deps.ModelPerfRun != nil {
+		if err := registry.BindRun("model_perf_test", func(ctx context.Context) (worker.Result, error) {
+			stats, err := deps.ModelPerfRun(ctx)
+			if err != nil {
+				return nil, err
+			}
+			// 只写计数：运行历史保留 30 天，不得写入模型名或上游响应体。
+			return worker.Result{
+				"models":             stats.Models,
+				"tested":             stats.Tested,
+				"skipped_no_channel": stats.SkippedNoChannel,
+				"persist_failed":     stats.PersistFailed,
+			}, nil
+		}); err != nil {
+			return fmt.Errorf("worker task bind %q: %w", "model_perf_test", err)
+		}
+	}
+	if err := registry.SetEnabled("model_perf_test",
+		func() bool { return deps.ModelPerfRun != nil },
+		"model_perf_test_unavailable"); err != nil {
+		return fmt.Errorf("worker task enable predicate: %w", err)
 	}
 	// 手动 log_cleanup 不能绕过 log.partition_drop_enabled（控制端裁决）：
 	// 谓词为假时触发 409 log_partition_drop_disabled，且 Scheduler 的 pass
