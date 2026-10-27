@@ -21,9 +21,9 @@ type Reader interface {
 	Get(key string) (json.RawMessage, bool)
 }
 
-// Present 报告 key 是否在配置中心里落过库。值是否可用由 Bool/Int 判断：
-// JSON null 也算「存在」，这样 Settings 的 Source 能区分「从未保存」与
-// 「保存了脏值」。
+// Present 报告 key 是否在配置中心里落过库（JSON null 也算「存在」）。
+// 注意：它只回答「有没有」，不回答「值能不能用」——要判断某个值是否真正
+// 生效自设置，用 BoolOK / Int 返回的 ok。
 func Present(reader Reader, key string) bool {
 	if reader == nil {
 		return false

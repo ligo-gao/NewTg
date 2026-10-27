@@ -36,7 +36,7 @@ var perfSettingKeys = [...]string{
 	settingPerfConcurrency,
 }
 
-// Source 的取值：四键全部落库 / 全部未落库 / 部分落库。
+// Source 的取值：四键的值全部可用 / 全部不可用（未落库或脏值回落）/ 部分可用。
 const (
 	SourceSettings = "settings"
 	SourceEnv      = "env"
@@ -66,7 +66,8 @@ type Settings struct {
 	// Source ∈ SourceSettings | SourceEnv | SourceMixed：只统计「值真正可用、
 	// 因而生效自 settings」的键；脏值按回落 env 计。
 	Source string
-	// Timezone / LegacyTimes 只来自 Defaults：它们不是本次可配项。
+	// Timezone 只来自 Defaults；LegacyTimes 同样来自 Defaults，但在间隔模式下
+	// （IntervalHours > 0）会被置空——那时旧时刻表不再参与调度。
 	Timezone    string
 	LegacyTimes string
 }
