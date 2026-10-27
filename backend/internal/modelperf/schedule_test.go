@@ -16,7 +16,7 @@ func shanghai(t *testing.T) *time.Location {
 
 func TestParseTimesRejectsBadInput(t *testing.T) {
 	loc := shanghai(t)
-	for _, raw := range []string{"", "24:00", "12:60", "1200", "12:00,", "aa:bb"} {
+	for _, raw := range []string{"", "24:00", "12:60", "1200", "12:00,", "aa:bb", "12:0", "+12:00", "-0:30"} {
 		if _, err := ParseTimes(raw, loc); err == nil {
 			t.Fatalf("ParseTimes(%q) accepted invalid input", raw)
 		}
@@ -47,6 +47,40 @@ func TestNextIsStrictAndCrossesDays(t *testing.T) {
 	utc := time.Date(2026, 10, 27, 5, 0, 0, 0, time.UTC)
 	if got := sched.Next(utc); !got.Equal(time.Date(2026, 10, 28, 0, 0, 0, 0, loc)) {
 		t.Fatalf("Next(05:00Z) = %v, want 2026-10-28T00:00+08:00", got)
+	}
+}
+
+func TestNextSameDayNilLocationAndDuplicates(t *testing.T) {
+	loc := shanghai(t)
+	sched, err := ParseTimes("00:00,12:00", loc)
+	if err != nil {
+		t.Fatalf("ParseTimes: %v", err)
+	}
+
+	// 未到当天最后一个时刻 → 返回当天的下一个时刻。
+	after := time.Date(2026, 10, 27, 10, 0, 0, 0, loc)
+	if got := sched.Next(after); !got.Equal(time.Date(2026, 10, 27, 12, 0, 0, 0, loc)) {
+		t.Fatalf("Next(10:00) = %v, want 2026-10-27T12:00+08:00", got)
+	}
+
+	// loc 为 nil 时按 UTC 解释。
+	utcSched, err := ParseTimes("09:30", nil)
+	if err != nil {
+		t.Fatalf("ParseTimes(nil loc): %v", err)
+	}
+	if got := utcSched.Next(time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC)); !got.Equal(
+		time.Date(2026, 10, 27, 9, 30, 0, 0, time.UTC)) {
+		t.Fatalf("Next(nil loc) = %v, want 2026-10-27T09:30Z", got)
+	}
+
+	// 重复时刻不影响严格晚于语义。
+	dup, err := ParseTimes("12:00,12:00", loc)
+	if err != nil {
+		t.Fatalf("ParseTimes(duplicate): %v", err)
+	}
+	if got := dup.Next(time.Date(2026, 10, 27, 12, 0, 0, 0, loc)); !got.Equal(
+		time.Date(2026, 10, 28, 12, 0, 0, 0, loc)) {
+		t.Fatalf("Next(duplicate slots) = %v, want next day 12:00", got)
 	}
 }
 

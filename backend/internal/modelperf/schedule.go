@@ -33,7 +33,7 @@ func ParseTimes(raw string, loc *time.Location) (Schedule, error) {
 			return Schedule{}, fmt.Errorf("schedule %q contains an empty time", raw)
 		}
 		parts := strings.Split(item, ":")
-		if len(parts) != 2 {
+		if len(parts) != 2 || !isDigits(parts[0]) || !isDigits(parts[1]) {
 			return Schedule{}, fmt.Errorf("invalid time %q: want HH:MM", item)
 		}
 		hour, err := strconv.Atoi(parts[0])
@@ -51,6 +51,21 @@ func ParseTimes(raw string, loc *time.Location) (Schedule, error) {
 	return Schedule{dayTimes: dayTimes, loc: loc}, nil
 }
 
+// isDigits 报告 s 是否恰好是两个 ASCII 数字：HH / MM 固定两位宽，
+// 这样 "12:0"、"+12:00"、"-0:30" 这类写法一律当配置错误，而不是被
+// Atoi 宽松解析成看上去合法的时刻。
+func isDigits(s string) bool {
+	if len(s) != 2 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // Location 返回时刻表使用的时区。
 func (s Schedule) Location() *time.Location {
 	return s.loc
@@ -61,6 +76,9 @@ func (s Schedule) Location() *time.Location {
 // 不假设时区是固定偏移，也不使用 Add(24h)：逐日逐时刻都用 time.Date 构造，
 // 由 Go 根据时区数据库处理夏令时（DST）。dayOffset 上限为 2——时刻都在
 // 一天之内，跨一天必然命中，多留一天覆盖 DST 跳变当天的边界情况。
+//
+// 零值 Schedule（没有时刻）返回零时间，调用方应先确认 ParseTimes 成功；
+// 把零时间交给 time.Until 会得到一个极大的负时长。
 func (s Schedule) Next(after time.Time) time.Time {
 	loc := s.loc
 	if loc == nil {
