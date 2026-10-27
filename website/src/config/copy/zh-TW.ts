@@ -132,21 +132,19 @@ export const zhTW: Copy = {
 
   performance: {
     title: "真實呼叫效能",
-    subtitle: "依據近 7 天真實呼叫，按模型統計首字延遲與輸出速度",
-    windowLabel: "近 7 天",
+    subtitle: "每日定時對全部上架對話模型發起真實串流探測，展示最近一次結果",
+    windowLabel: "定時實測",
     columns: {
       model: "模型",
       vendor: "供應商",
       ttft: "連線延遲",
       tps: "token 輸出速度",
     },
-    lowSample: "樣本不足",
-    probe: "主動測試",
     unavailable: "效能資料暫時無法使用",
     retry: "重試",
     empty: "暫無可顯示的模型。",
     footnote:
-      "資料為近 7 天真實呼叫的平均值；連線延遲取串流呼叫的首字時間（TTFT），輸出速度為總輸出 token 與總耗時的估算值。樣本少於 20 次的模型標示「樣本不足」，無資料顯示 —。",
+      "連線時延為首字時間（TTFT）；輸出速度為上游回傳的輸出 token ÷ 總耗時；最近一次探測失敗、尚未探測或結果超過 36 小時顯示 —。",
   },
 
   closing: {

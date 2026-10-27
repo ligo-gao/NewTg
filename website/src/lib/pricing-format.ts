@@ -63,10 +63,6 @@ export function formatTPS(tokensPerSecond: number | null): string {
   return `${rounded} tokens/s`;
 }
 
-export function isLowSample(sampleSize: number): boolean {
-  return sampleSize > 0 && sampleSize < 20;
-}
-
 /** 公开端点里能用流式 chat 请求探测的协议族。 */
 export const CHAT_ENDPOINTS = ["chat.completions", "messages", "generateContent"] as const;
 

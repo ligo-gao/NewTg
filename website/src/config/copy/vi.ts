@@ -134,21 +134,19 @@ export const vi: Copy = {
   performance: {
     title: "Hiệu năng gọi thực tế",
     subtitle:
-      "Độ trễ token đầu tiên và tốc độ đầu ra theo mô hình, từ 7 ngày gọi thực tế gần nhất",
-    windowLabel: "7 ngày gần nhất",
+      "Kiểm thử streaming thực tế theo lịch cho mọi mô hình hội thoại đã niêm yết, hiển thị kết quả gần nhất",
+    windowLabel: "Kiểm thử theo lịch",
     columns: {
       model: "Mô hình",
       vendor: "Nhà cung cấp",
       ttft: "Độ trễ token đầu tiên",
       tps: "Tốc độ đầu ra",
     },
-    lowSample: "Mẫu ít",
-    probe: "Kiểm thử",
     unavailable: "Dữ liệu hiệu năng tạm thời không khả dụng",
     retry: "Thử lại",
     empty: "Chưa có mô hình để hiển thị.",
     footnote:
-      "Giá trị trung bình từ các cuộc gọi thực tế trong 7 ngày. Độ trễ là thời gian đến token đầu tiên (TTFT) với cuộc gọi streaming; tốc độ đầu ra được ước tính từ tổng token đầu ra trên tổng thời gian. Mô hình có dưới 20 mẫu được đánh dấu mẫu ít. Dữ liệu thiếu hiển thị —.",
+      "Độ trễ là thời gian đến token đầu tiên (TTFT) của cuộc gọi streaming; tốc độ đầu ra là số token đầu ra do upstream trả về chia cho tổng thời gian. Lần kiểm thử thất bại, chưa có hoặc cũ hơn 36 giờ sẽ hiển thị —.",
   },
 
   closing: {

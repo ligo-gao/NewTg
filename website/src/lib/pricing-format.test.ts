@@ -6,7 +6,6 @@ import {
   formatTPS,
   formatTokenCount,
   isChatCapable,
-  isLowSample,
 } from "@/lib/pricing-format";
 
 const meta: PricingMeta = {
@@ -71,14 +70,6 @@ describe("formatTPS", () => {
 
   it("shows a dash without samples", () => {
     expect(formatTPS(null)).toBe("—");
-  });
-});
-
-describe("isLowSample", () => {
-  it("flags samples below 20 but not zero", () => {
-    expect(isLowSample(19)).toBe(true);
-    expect(isLowSample(20)).toBe(false);
-    expect(isLowSample(0)).toBe(false);
   });
 });
 

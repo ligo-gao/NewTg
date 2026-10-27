@@ -243,8 +243,6 @@ export interface Copy {
       ttft: string;
       tps: string;
     };
-    lowSample: string;
-    probe: string;
     unavailable: string;
     retry: string;
     empty: string;

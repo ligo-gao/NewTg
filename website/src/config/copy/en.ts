@@ -133,21 +133,19 @@ export const en: Copy = {
 
   performance: {
     title: "Real call performance",
-    subtitle: "Per-model first-token latency and output speed from the last 7 days of real calls",
-    windowLabel: "Last 7 days",
+    subtitle: "Scheduled real streaming probes for every listed chat model, showing the most recent result",
+    windowLabel: "Scheduled probes",
     columns: {
       model: "Model",
       vendor: "Provider",
       ttft: "First-token latency",
       tps: "Output speed",
     },
-    lowSample: "Low sample",
-    probe: "Probe",
     unavailable: "Performance data is temporarily unavailable",
     retry: "Retry",
     empty: "No models to show yet.",
     footnote:
-      "Averages from real calls over the last 7 days. Latency is time to first token (TTFT) for streaming calls; output speed is estimated from total output tokens over total latency. Models with fewer than 20 samples are marked low sample. Missing data is shown as —.",
+      "Latency is time to first token (TTFT) for streaming calls; output speed is upstream output tokens divided by total latency. A failed, missing, or more-than-36-hour-old probe is shown as —.",
   },
 
   closing: {

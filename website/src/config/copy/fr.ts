@@ -134,21 +134,19 @@ export const fr: Copy = {
   performance: {
     title: "Performances réelles",
     subtitle:
-      "Latence du premier token et vitesse de sortie par modèle, sur les 7 derniers jours d'appels réels",
-    windowLabel: "7 derniers jours",
+      "Sondes réelles en streaming planifiées pour chaque modèle de dialogue répertorié, affichant le résultat le plus récent",
+    windowLabel: "Sondes planifiées",
     columns: {
       model: "Modèle",
       vendor: "Fournisseur",
       ttft: "Latence du premier token",
       tps: "Vitesse de sortie",
     },
-    lowSample: "Échantillon faible",
-    probe: "Sonde",
     unavailable: "Données de performance temporairement indisponibles",
     retry: "Réessayer",
     empty: "Aucun modèle à afficher.",
     footnote:
-      "Moyennes issues d'appels réels sur 7 jours. La latence est le temps jusqu'au premier token (TTFT) pour les appels en streaming ; la vitesse de sortie est estimée à partir des tokens de sortie totaux sur la latence totale. Les modèles avec moins de 20 échantillons sont signalés. Les données manquantes sont affichées —.",
+      "La latence est le temps jusqu'au premier token (TTFT) des appels en streaming ; la vitesse de sortie correspond aux tokens de sortie renvoyés par l'amont divisés par la latence totale. Une sonde échouée, absente ou vieille de plus de 36 heures s'affiche —.",
   },
 
   closing: {

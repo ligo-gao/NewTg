@@ -132,21 +132,19 @@ export const zhCN: Copy = {
 
   performance: {
     title: "真实调用性能",
-    subtitle: "基于近 7 天真实调用，按模型统计首字延迟与输出速度",
-    windowLabel: "近 7 天",
+    subtitle: "每日定时对全部上架对话模型发起真实流式探测，展示最近一次结果",
+    windowLabel: "定时实测",
     columns: {
       model: "模型",
       vendor: "提供商",
       ttft: "连接时延",
       tps: "token 输出速度",
     },
-    lowSample: "样本不足",
-    probe: "主动测试",
     unavailable: "性能数据暂不可用",
     retry: "重试",
     empty: "暂无可展示的模型。",
     footnote:
-      "数据为近 7 天真实调用的平均值；连接时延取流式调用的首字时间（TTFT），输出速度为总输出 token 与总耗时的估算值。样本少于 20 次的模型标注「样本不足」，无数据显示 —。",
+      "连接时延为首字时间（TTFT）；输出速度为上游返回的输出 token ÷ 总耗时；最近一次探测失败、尚未探测或结果超过 36 小时显示 —。",
   },
 
   closing: {
