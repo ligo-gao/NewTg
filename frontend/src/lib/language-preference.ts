@@ -31,7 +31,7 @@ export const LANGUAGE_SCHEMA_VERSION = '2'
  * 而不是从 `app/providers/i18n` 导入：后者的 `isLocale` 反过来依赖本模块，
  * 静态导入会形成环。
  */
-const BUNDLED_LOCALES: readonly Locale[] = [
+export const BUNDLED_LOCALES: readonly Locale[] = [
   'en',
   'zh-CN',
   'zh-TW',

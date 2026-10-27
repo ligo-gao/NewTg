@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  BUNDLED_LOCALES,
   LANGUAGE_EXPLICIT_KEY,
   LANGUAGE_PENDING_KEY,
   LANGUAGE_SCHEMA_KEY,
@@ -91,10 +92,21 @@ describe('cross-app storage contract', () => {
   })
 
   it('accepts exactly the seven bundled locales', () => {
-    for (const locale of ['en', 'zh-CN', 'zh-TW', 'fr', 'ru', 'ja', 'vi']) {
+    // 与 website/ 的 ACCEPTED_LOCALES 逐字对齐：多一个或少一个都必须在这里失败，
+    // 否则两端语言集合漂移会静默通过。
+    expect([...BUNDLED_LOCALES]).toEqual([
+      'en',
+      'zh-CN',
+      'zh-TW',
+      'fr',
+      'ru',
+      'ja',
+      'vi',
+    ])
+    for (const locale of BUNDLED_LOCALES) {
       expect(isLocale(locale)).toBe(true)
     }
-    for (const other of ['de', 'en-US', 'zh-cn', '']) {
+    for (const other of ['de', 'en-US', 'zh-cn', 'ko', '']) {
       expect(isLocale(other)).toBe(false)
     }
   })
