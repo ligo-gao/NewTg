@@ -1613,10 +1613,16 @@
       "col_role": "Vai trò",
       "col_version": "Phiên bản",
       "col_last_seen": "Nhịp tim cuối",
+      "col_metrics": "Chỉ số",
       "heartbeat_stale": "Nhịp tim quá hạn",
       "local_title": "Tiến trình cục bộ (chỉ bản sao này)",
       "local_note": "Chỉ bản sao này · từ {code}; tốc độ yêu cầu và P95 phụ thuộc vào giám sát.",
-      "metrics_missing": "Chỉ số không khả dụng"
+      "metrics_missing": "Chỉ số không khả dụng",
+      "metric_5xx": "Tỷ lệ 5xx",
+      "metric_goroutines": "Goroutine",
+      "metric_heap": "Bộ nhớ heap",
+      "metric_inflight": "Đang xử lý",
+      "metric_p95": "P95 đầu vào"
     },
     "resources": {
       "title": "Tài nguyên máy chủ",

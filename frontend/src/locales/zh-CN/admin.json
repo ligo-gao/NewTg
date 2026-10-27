@@ -1613,10 +1613,16 @@
       "col_role": "角色",
       "col_version": "版本",
       "col_last_seen": "最近心跳",
+      "col_metrics": "指标",
       "heartbeat_stale": "心跳过期",
       "local_title": "本机（当前网关进程）",
       "local_note": "仅本副本 · 来自 {code}；请求速率与 P95 依赖监控采集。",
-      "metrics_missing": "指标不可用"
+      "metrics_missing": "指标不可用",
+      "metric_5xx": "5xx 率",
+      "metric_goroutines": "Goroutine",
+      "metric_heap": "堆占用",
+      "metric_inflight": "在途请求",
+      "metric_p95": "入口 P95"
     },
     "resources": {
       "title": "服务器资源",

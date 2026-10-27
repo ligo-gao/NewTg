@@ -1613,10 +1613,16 @@
       "col_role": "Роль",
       "col_version": "Версия",
       "col_last_seen": "Последний пульс",
+      "col_metrics": "Метрики",
       "heartbeat_stale": "Пульс устарел",
       "local_title": "Локальный процесс (только эта реплика)",
       "local_note": "Только эта реплика · из {code}; частота запросов и P95 зависят от мониторинга.",
-      "metrics_missing": "Метрики недоступны"
+      "metrics_missing": "Метрики недоступны",
+      "metric_5xx": "Доля 5xx",
+      "metric_goroutines": "Горутины",
+      "metric_heap": "Куча",
+      "metric_inflight": "В обработке",
+      "metric_p95": "P95 входа"
     },
     "resources": {
       "title": "Ресурсы сервера",

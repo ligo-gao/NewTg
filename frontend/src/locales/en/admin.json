@@ -1613,10 +1613,16 @@
       "col_role": "Role",
       "col_version": "Version",
       "col_last_seen": "Last heartbeat",
+      "col_metrics": "Metrics",
       "heartbeat_stale": "Heartbeat stale",
       "local_title": "Local process (this replica only)",
       "local_note": "This replica only · from {code}; request rate and P95 depend on monitoring.",
-      "metrics_missing": "Metrics unavailable"
+      "metrics_missing": "Metrics unavailable",
+      "metric_5xx": "5xx rate",
+      "metric_goroutines": "Goroutines",
+      "metric_heap": "Heap",
+      "metric_inflight": "In-flight",
+      "metric_p95": "Ingress P95"
     },
     "resources": {
       "title": "Server resources",

@@ -1613,10 +1613,16 @@
       "col_role": "Rôle",
       "col_version": "Version",
       "col_last_seen": "Dernier signal",
+      "col_metrics": "Métriques",
       "heartbeat_stale": "Battement expiré",
       "local_title": "Processus local (cette réplique uniquement)",
       "local_note": "Cette réplique uniquement · depuis {code} ; le débit de requêtes et le P95 dépendent de la supervision.",
-      "metrics_missing": "Métriques indisponibles"
+      "metrics_missing": "Métriques indisponibles",
+      "metric_5xx": "Taux 5xx",
+      "metric_goroutines": "Goroutines",
+      "metric_heap": "Tas",
+      "metric_inflight": "En cours",
+      "metric_p95": "P95 d'entrée"
     },
     "resources": {
       "title": "Ressources serveur",

@@ -1613,10 +1613,16 @@
       "col_role": "ロール",
       "col_version": "バージョン",
       "col_last_seen": "最終ハートビート",
+      "col_metrics": "指標",
       "heartbeat_stale": "ハートビート切れ",
       "local_title": "ローカルプロセス（このレプリカのみ）",
       "local_note": "このレプリカのみ · {code} から取得。リクエストレートと P95 は監視収集に依存します。",
-      "metrics_missing": "指標を取得できません"
+      "metrics_missing": "指標を取得できません",
+      "metric_5xx": "5xx 率",
+      "metric_goroutines": "Goroutine",
+      "metric_heap": "ヒープ",
+      "metric_inflight": "処理中",
+      "metric_p95": "イングレス P95"
     },
     "resources": {
       "title": "サーバーリソース",
