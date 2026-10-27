@@ -293,9 +293,16 @@ func TestChannelRepoPluginBindingRuntime(t *testing.T) {
 	}
 }
 
-// TestPickTopPrefersPriorityAndSkipsDisabled 覆盖 PickTop 的选取口径：
-// 只在启用渠道中按 priority DESC, id ASC 取第一条，并在 Get 之后复核状态
-// （Get 自身不过滤 status，禁用一条后应自动落到下一个候选）。
+// TestPickTopPrefersPriorityAndSkipsDisabled 覆盖 PickTop 的选取口径：只在
+// 启用渠道中按 priority DESC, id ASC 取第一条，并返回 Get 加载的完整行
+// （而不只是 id）。
+//
+// 三个启用候选的插入顺序即 id 顺序：low(优先级 1) < high(9) < tie(9)。
+// 高优先级同分时 id ASC 应选 high；若排序被改成 id DESC 就会选 tie，改成
+// id ASC 或 priority ASC 则会选 low，因此 ch.ID == high 能把排序钉死。
+// 「禁用后落到下一个候选」由每次调用重新走 Candidates 的 SQL status = 1
+// 过滤达成；Get 之后的 Status 复核只负责返回 ok=false（不补位），本测试
+// 不覆盖该竞态。
 func TestPickTopPrefersPriorityAndSkipsDisabled(t *testing.T) {
 	db := openChannelRuntimeTestDB(t)
 	repo := NewChannelRepo(db)
@@ -303,11 +310,18 @@ func TestPickTopPrefersPriorityAndSkipsDisabled(t *testing.T) {
 	model := fmt.Sprintf("t7/picktop-%d", suffix)
 	supported := fmt.Sprintf(`["%s"]`, model)
 
-	low := insertRuntimeChannel(t, db, fmt.Sprintf("t7-pick-low-%d", suffix), 1, supported, `{}`, "")
-	high := insertRuntimeChannel(t, db, fmt.Sprintf("t7-pick-high-%d", suffix), 1, supported, `{}`, "")
+	lowName := fmt.Sprintf("t7-pick-low-%d", suffix)
+	highName := fmt.Sprintf("t7-pick-high-%d", suffix)
+	tieName := fmt.Sprintf("t7-pick-tie-%d", suffix)
+
+	low := insertRuntimeChannel(t, db, lowName, 1, supported, `{}`, "")
+	high := insertRuntimeChannel(t, db, highName, 1, supported, `{}`, "")
+	tie := insertRuntimeChannel(t, db, tieName, 1, supported, `{}`, "")
 	disabled := insertRuntimeChannel(t, db, fmt.Sprintf("t7-pick-off-%d", suffix), 2, supported, `{}`, "")
 
-	for id, priority := range map[int64]int16{low: 1, high: 9, disabled: 99} {
+	// tie 与 high 同优先级：id 顺序 low < high < tie，只有
+	// priority DESC, id ASC 才会选中 high。
+	for id, priority := range map[int64]int16{low: 1, high: 9, tie: 9, disabled: 99} {
 		if _, err := db.Exec(`UPDATE channels SET priority = $2 WHERE id = $1`, id, priority); err != nil {
 			t.Fatalf("set priority for %d: %v", id, err)
 		}
@@ -318,18 +332,28 @@ func TestPickTopPrefersPriorityAndSkipsDisabled(t *testing.T) {
 		t.Fatalf("PickTop = %v, %v", ok, err)
 	}
 	if ch.ID != high {
-		t.Fatalf("picked channel %d, want priority winner %d (low=%d)", ch.ID, high, low)
+		t.Fatalf("picked channel %d, want priority winner %d (low=%d tie=%d)", ch.ID, high, low, tie)
+	}
+	// 必须返回完整行（下游测速要用凭据/model_mapping/type），而不是骨架行。
+	if ch.Name != highName {
+		t.Fatalf("picked channel name %q, want %q", ch.Name, highName)
 	}
 
-	if _, err := db.Exec(`UPDATE channels SET status = 2 WHERE id = $1`, high); err != nil {
-		t.Fatalf("disable winner: %v", err)
+	// 同时禁用 high 与 tie，让下一个候选只能是最低优先级的 low。这一步验证的是
+	// 「每次调用重新执行 Candidates」里的 SQL status = 1 过滤（禁用行不再进入候选
+	// 列表）；不是 Get 之后的那次 Status 复核——后者只会返回 ok=false、不会补位，
+	// 且不在本测试覆盖范围内。
+	if _, err := db.Exec(`UPDATE channels SET status = 2 WHERE id IN ($1, $2)`, high, tie); err != nil {
+		t.Fatalf("disable winner and tie: %v", err)
 	}
 	ch, ok, err = repo.PickTop(context.Background(), model)
 	if err != nil || !ok || ch.ID != low {
-		t.Fatalf("after disabling winner got %v/%v/%v, want %d", ch, ok, err, low)
+		t.Fatalf("after disabling high+tie got %v/%v/%v, want %d", ch, ok, err, low)
 	}
 
-	if _, ok, _ := repo.PickTop(context.Background(), fmt.Sprintf("t7/none-%d", suffix)); ok {
+	if _, ok, err := repo.PickTop(context.Background(), fmt.Sprintf("t7/none-%d", suffix)); err != nil {
+		t.Fatalf("PickTop(no channel model): %v", err)
+	} else if ok {
 		t.Fatal("model without channels must return ok=false")
 	}
 }
