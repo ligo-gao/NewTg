@@ -12,6 +12,13 @@
 import { apiClient } from '@/api/client'
 import { requireData } from '@/api/result'
 import type { components } from '@/api/schema'
+import {
+  createIdempotencyKey,
+  fetchSettingsSection,
+  saveSettingsSection,
+  type SettingsSectionResponse,
+  type SettingsValuesResponse,
+} from '@/features/admin/settings/api'
 
 export type PerformanceStats = components['schemas']['PerformanceStats']
 export type PerformanceDiskCacheClearResult =
@@ -26,6 +33,19 @@ export type PerformanceRecentOperations =
 export type PerformanceRecentOperation =
   components['schemas']['PerformanceRecentOperation']
 export type CleanupMode = 'by_count' | 'by_days'
+
+/**
+ * 三个观测端点（Task 8–10 后端 / Task 11 契约）的生成类型别名。
+ *
+ * 页面只引用别名，不再逐个写 `components['schemas'][…]`；形状以
+ * `api/schema.d.ts` 为唯一来源，后端加字段时类型自动跟上。
+ */
+export type PerfOverview = components['schemas']['PerformanceOverview']
+export type PerfModels = components['schemas']['PerformanceModels']
+export type PerfConfig = components['schemas']['PerformanceConfig']
+
+/** 总览的时间窗；与契约的 `range` 枚举逐字一致（大小写敏感）。 */
+export type OverviewRange = '15m' | '1h' | '6h' | '24h'
 
 /** 三个写操作共用的服务端强制确认头。 */
 const CONFIRM_HEADER = { 'X-Confirm-Action': 'true' as const }
@@ -104,5 +124,63 @@ export async function cleanupLogs(
         header: CONFIRM_HEADER,
       },
     }),
+  )
+}
+
+/** 总览：range 是页面时间窗，缺省由服务端取 `1h`。 */
+export async function fetchPerfOverview(
+  range: OverviewRange,
+  signal?: AbortSignal,
+): Promise<PerfOverview> {
+  return requireData(
+    await apiClient.GET('/api/performance/overview', {
+      params: { query: { range } },
+      signal,
+    }),
+  )
+}
+
+/**
+ * 模型汇总。表格窗口固定 24h（契约只接受空或 `24h`），调用方没有窗口参数，
+ * 所以这里不传 query：让服务端使用默认值，避免把「默认」在客户端再写一遍。
+ */
+export async function fetchPerfModels(
+  signal?: AbortSignal,
+): Promise<PerfModels> {
+  return requireData(
+    await apiClient.GET('/api/performance/models', { signal }),
+  )
+}
+
+export async function fetchPerfConfig(
+  signal?: AbortSignal,
+): Promise<PerfConfig> {
+  return requireData(
+    await apiClient.GET('/api/performance/config', { signal }),
+  )
+}
+
+/**
+ * 测速四项（G 键）走既有 `/api/settings?section=perf`，不新增读写端点；
+ * 这里只是把 section 名收敛到一处，返回既有的 `SettingsSectionResponse`。
+ */
+export async function fetchPerfSettings(
+  signal?: AbortSignal,
+): Promise<SettingsSectionResponse> {
+  return fetchSettingsSection('perf', signal)
+}
+
+/**
+ * 保存测速参数。`expectUpdatedAt` 是上次 GET 的 `updated_at`；服务端 409 表示
+ * 他人先改，调用方应重拉而不是覆盖。`saveSettingsSection` 自己带 CSRF，
+ * 本函数只负责 mint 幂等键（一次保存意图一个键，重试不会重复写）。
+ */
+export async function savePerfSettings(
+  values: Record<string, unknown>,
+  expectUpdatedAt: string | null,
+): Promise<SettingsValuesResponse> {
+  return saveSettingsSection(
+    { section: 'perf', values, expect_updated_at: expectUpdatedAt },
+    createIdempotencyKey(),
   )
 }

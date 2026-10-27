@@ -2,18 +2,27 @@ import { describe, expect, it } from 'vitest'
 
 import { ApiError } from '@/api/errors'
 
-import type { PerformanceLogFile } from './api'
+import type { PerfConfig, PerformanceLogFile } from './api'
 import {
   KNOWN_PROBLEM_CODES,
+  PERF_STATUSES,
   diskUsagePercent,
   formatBytes,
   formatClock,
   formatDateTime,
+  formatLatencyMs,
   formatMilliseconds,
+  formatMs,
+  formatPercent,
+  formatRatio,
+  perfStatusKey,
+  perfStatusTone,
   previewLogCleanup,
   problemCode,
+  sparkPath,
   usageTone,
   validateCleanupValue,
+  vitalTone,
 } from './utils'
 
 function file(name: string, size: number, modTime: string): PerformanceLogFile {
@@ -156,3 +165,104 @@ describe('problem code extraction', () => {
     expect(problemCode(fromType)).toBe('instance_mismatch')
   })
 })
+
+describe('performance readouts', () => {
+  it('formats 0–1 ratios as percentage with one decimal', () => {
+    expect(formatPercent(0.962)).toBe('96.2%')
+    expect(formatPercent(1)).toBe('100.0%')
+    expect(formatPercent(null)).toBe('—')
+    expect(formatPercent(Number.NaN)).toBe('—')
+  })
+
+  it('formats an unlabelled ratio with the requested digits', () => {
+    expect(formatRatio(0.213, 2)).toBe('0.21')
+    expect(formatRatio(0.213, 0)).toBe('0')
+    expect(formatRatio(null, 2)).toBe('—')
+  })
+
+  it('formats milliseconds and keeps the no-sample placeholder', () => {
+    expect(formatMs(null)).toBe('—')
+    expect(formatMs(Number.NaN)).toBe('—')
+    expect(formatMs(420)).toBe('420ms')
+    expect(formatMs(1_840)).toBe('1.8s')
+  })
+
+  it('never formats an over-30s bound as a finite latency', () => {
+    // +Inf 桶：值与布尔同时存在时，布尔优先—值只是下界，不是可展示的读数。
+    expect(formatLatencyMs(30_000, true)).toBe('>30s')
+    expect(formatLatencyMs(null, true)).toBe('>30s')
+    expect(formatLatencyMs(2_400, false)).toBe('2.4s')
+    expect(formatLatencyMs(null, false)).toBe('—')
+  })
+})
+
+describe('status mapping', () => {
+  it('maps every model status to its badge tone', () => {
+    expect(perfStatusTone('incident')).toBe('danger')
+    expect(perfStatusTone('degraded')).toBe('warning')
+    expect(perfStatusTone('no_sample')).toBe('neutral')
+    expect(perfStatusTone('normal')).toBe('success')
+  })
+
+  it('falls back to neutral for a status outside the contract', () => {
+    expect(perfStatusTone('paused')).toBe('neutral')
+    expect(perfStatusTone('')).toBe('neutral')
+  })
+
+  it('keeps the four contract statuses and their i18n keys', () => {
+    expect(PERF_STATUSES).toEqual([
+      'normal',
+      'degraded',
+      'incident',
+      'no_sample',
+    ])
+    expect(perfStatusKey('no_sample')).toBe(
+      'admin.performance.models.status_no_sample',
+    )
+  })
+
+  it('maps vital statuses, with unknown and unlisted values as neutral', () => {
+    expect(vitalTone('ok')).toBe('success')
+    expect(vitalTone('warn')).toBe('warning')
+    expect(vitalTone('crit')).toBe('danger')
+    expect(vitalTone('unknown')).toBe('neutral')
+    expect(vitalTone('melted')).toBe('neutral')
+  })
+
+  it('keeps schedule.source three-valued through the generated type', () => {
+    const sources: NonNullable<PerfConfig['schedule']>['source'][] = [
+      'settings',
+      'env',
+      'mixed',
+    ]
+    expect(sources).toHaveLength(3)
+  })
+})
+
+describe('sparkPath', () => {
+  it('starts with M and never emits NaN for degenerate inputs', () => {
+    expect(sparkPath([], 100, 24)).toBe('')
+    expect(sparkPath([3], 100, 24)).toMatch(/^M/)
+    expect(sparkPath([3], 100, 24)).not.toContain('NaN')
+    expect(sparkPath([null, null], 100, 24)).toBe('')
+    expect(sparkPath([1, null, 2], 100, 24)).not.toContain('NaN')
+  })
+
+  it('breaks the line at null points instead of connecting across the hole', () => {
+    const path = sparkPath([1, null, 2], 100, 24)
+    // 两个非 null 段各起一条子路径，中间没有 L 跨过 null 的位置。
+    expect(path.match(/M/g)).toHaveLength(2)
+    expect(path).not.toContain('L')
+  })
+
+  it('draws a horizontal line when every value is equal', () => {
+    const path = sparkPath([1, 1, 1], 100, 24)
+    const ys = path
+      .split(' ')
+      .map((command) => Number(command.split(',')[1]))
+    expect(ys).toHaveLength(3)
+    expect(new Set(ys).size).toBe(1)
+    expect(ys.every((y) => Number.isFinite(y))).toBe(true)
+  })
+})
+
