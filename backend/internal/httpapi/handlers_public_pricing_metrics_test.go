@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -401,6 +402,105 @@ func TestPublicMetricsETagChangesWithLatestTest(t *testing.T) {
 	if third.Code != http.StatusNotModified {
 		t.Fatalf("status = %d, want 304", third.Code)
 	}
+}
+
+// 用量日志库故障不能让整张性能表变成「暂不可用」：首页只消费 latest_test，
+// 因此 summary 降级为零样本、latest_test 照常返回，响应仍是 200。
+func TestPublicPricingMetricsFailsOpenWhenLogsDBIsDown(t *testing.T) {
+	metrics := &fakePublicModelMetrics{err: errors.New("logs db down")}
+	perf := &fakePublicPerfStore{
+		ok: true,
+		test: store.ModelPerformanceTest{
+			ID: 9, Model: "openai/gpt-5", Runs: 3, SuccessCount: 3, SuccessRate: 1,
+			TTFTMSP50: publicIntPtr(210), TPSAvg: publicFloatPtr(42.5),
+			CreatedAt: time.Date(2026, 10, 27, 11, 0, 0, 0, time.UTC),
+		},
+	}
+	handlers := newMetricsTestHandlerWithPerf(t, metrics, perf)
+
+	rr := requestMetrics(t, handlers, "openai/gpt-5", "?range=7d", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s（summary 必须 fail-open）", rr.Code, rr.Body.String())
+	}
+	var body PublicModelMetricsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Summary.SampleSize != 0 || body.Summary.AvgTTFTMs != nil || body.Summary.TPS != nil {
+		t.Fatalf("degraded summary must be zero-sample: %+v", body.Summary)
+	}
+	if len(body.PerGroup) != 0 {
+		t.Fatalf("degraded per_group must be empty: %+v", body.PerGroup)
+	}
+	if body.LatestTest == nil || body.LatestTest.TTFTMSP50 == nil || *body.LatestTest.TTFTMSP50 != 210 {
+		t.Fatalf("latest_test must survive the degraded summary: %+v", body.LatestTest)
+	}
+	if !metrics.called {
+		t.Fatalf("metrics source was not called")
+	}
+}
+
+// 目录读取失败仍是 500：可见性判断依赖目录，不能与日志库故障一样降级。
+func TestPublicMetricsCatalogFailureStays500(t *testing.T) {
+	metrics := &fakePublicModelMetrics{}
+	handlers, err := NewPublicPricingHandlers(PublicPricingHandlerConfig{
+		Repo:    &fakePublicPricingRepo{catalogErr: errors.New("catalog db down")},
+		Metrics: metrics,
+	})
+	if err != nil {
+		t.Fatalf("NewPublicPricingHandlers: %v", err)
+	}
+
+	rr := requestMetrics(t, handlers, "openai/gpt-5", "?range=7d", nil)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%s", rr.Code, rr.Body.String())
+	}
+	if metrics.called {
+		t.Fatalf("usage summary must not be read when the catalog fails")
+	}
+}
+
+// 降级响应与正常的零样本响应内容几乎相同（summary 全空），缓存键必须区分二者：
+// 否则日志库恢复后，共享缓存还会把降级结果回放 60 秒。哈希段必须不同，
+// 不能只靠分钟桶滚动「碰巧」不同。
+func TestPublicMetricsDegradedETagDiffersFromZeroSample(t *testing.T) {
+	degradedHandlers := newMetricsTestHandler(t,
+		&fakePublicModelMetrics{err: errors.New("logs db down")})
+	normalHandlers := newMetricsTestHandler(t, &fakePublicModelMetrics{})
+
+	degraded := requestMetrics(t, degradedHandlers, "openai/gpt-5", "?range=7d", nil)
+	normal := requestMetrics(t, normalHandlers, "openai/gpt-5", "?range=7d", nil)
+	if degraded.Code != http.StatusOK || normal.Code != http.StatusOK {
+		t.Fatalf("status degraded=%d normal=%d", degraded.Code, normal.Code)
+	}
+
+	degradedETag := degraded.Header().Get("ETag")
+	normalETag := normal.Header().Get("ETag")
+	if degradedETag == "" || normalETag == "" {
+		t.Fatalf("missing ETag: degraded=%q normal=%q", degradedETag, normalETag)
+	}
+	if degradedETag == normalETag {
+		t.Fatalf("degraded ETag must differ from zero-sample ETag: %q", degradedETag)
+	}
+	if metricsETagHash(t, degradedETag) == metricsETagHash(t, normalETag) {
+		t.Fatalf("degraded ETag hash segment must differ: degraded=%q normal=%q",
+			degradedETag, normalETag)
+	}
+}
+
+// metricsETagHash 取出 `"metrics-v1-<hash>-<minute>"` 中的哈希段，用于忽略
+// 分钟桶滚动带来的干扰。
+func metricsETagHash(t *testing.T, etag string) string {
+	t.Helper()
+	const prefix = `"metrics-v1-`
+	if !strings.HasPrefix(etag, prefix) {
+		t.Fatalf("unexpected ETag format: %q", etag)
+	}
+	hash, _, ok := strings.Cut(strings.TrimPrefix(etag, prefix), "-")
+	if !ok || hash == "" {
+		t.Fatalf("unexpected ETag format: %q", etag)
+	}
+	return hash
 }
 
 func publicFloatPtr(v float64) *float64 { return &v }

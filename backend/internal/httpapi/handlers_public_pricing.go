@@ -1476,10 +1476,14 @@ func (h *PublicPricingHandlers) handlePublicPricingMetrics(w http.ResponseWriter
 	end := time.Now().UTC()
 	start := end.Add(-window)
 	data, err := h.metrics.LoadPublicModelMetrics(r.Context(), modelID, start, end)
+	degraded := false
 	if err != nil {
-		h.log.Error("public pricing metrics: load metrics failed", "model", modelID, "error", err)
-		writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
-		return
+		// 首页只消费 latest_test；日志库故障不应把整张表变成「暂不可用」。
+		// summary 降级为零样本（各列为 null），latest_test 照常返回。
+		h.log.Warn("public pricing metrics: load usage summary failed; degrading summary",
+			"model", modelID, "error", err)
+		data = store.PublicModelMetrics{}
+		degraded = true
 	}
 
 	summary := publicMetricsSummary(data)
@@ -1512,6 +1516,12 @@ func (h *PublicPricingHandlers) handlePublicPricingMetrics(w http.ResponseWriter
 		latestTest = publicLatestTestView(test)
 		testIdentity = strconv.FormatInt(test.ID, 10) + "@" +
 			test.CreatedAt.UTC().Format(time.RFC3339Nano)
+	}
+
+	// 降级结果的 summary 与正常零样本几乎相同，必须让缓存键可区分：否则
+	// 日志库恢复后，共享缓存仍会把降级响应回放 60 秒。
+	if degraded {
+		testIdentity += "|degraded"
 	}
 
 	response := PublicModelMetricsResponse{
