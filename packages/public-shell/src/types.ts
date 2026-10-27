@@ -43,6 +43,12 @@ export interface ShellThemeControl {
 export interface ShellAccountControl {
   signedIn: boolean
   signInHref: string
+  /**
+   * Display name shown next to the avatar (`display_name`, else `username`).
+   * Omitted means the host has no name yet: the button then shows the avatar
+   * alone instead of an empty label.
+   */
+  name?: string
   menu?: readonly ShellNavItem[]
   onSignOut?: () => void
 }

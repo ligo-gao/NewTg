@@ -259,6 +259,24 @@ describe('PublicHeader (F-09-34)', () => {
     ).toBeNull()
   })
 
+  it('shows the signed-in account name instead of the sign-in link', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(PUBLIC_STATUS)),
+      http.get(`${ORIGIN}/api/me`, () =>
+        HttpResponse.json({ id: 1, username: 'ada', display_name: 'Ada Lovelace' }),
+      ),
+    )
+
+    const { findByRole, findByText, queryByRole } = await renderWithProviders(
+      <PublicHeader activePath="/models" />,
+      ['public'],
+    )
+
+    expect(await findByText('Ada Lovelace')).toBeTruthy()
+    expect(await findByRole('button', { name: 'Account menu: Ada Lovelace' })).toBeTruthy()
+    expect(queryByRole('link', { name: 'Sign in' })).toBeNull()
+  })
+
   it('persists a language pick on a public page for a signed-in visitor', async () => {
     let putBody: unknown
     server.use(
@@ -290,13 +308,11 @@ describe('PublicHeader (F-09-34)', () => {
       ['public'],
     )
     // 登录态就绪后 hook 才提供 onChange。
-    await findByRole('button', { name: 'Account menu' })
-    const select = document.querySelector(
-      '.ps-lang select',
-    ) as HTMLSelectElement
+    await findByRole('button', { name: /Account menu/ })
     const user = userEvent.setup()
 
-    await user.selectOptions(select, 'fr')
+    await user.click(await findByRole('button', { name: /^Language/ }))
+    await user.click(await findByRole('menuitemradio', { name: 'Français' }))
 
     await waitFor(() => {
       expect(putBody).toMatchObject({
@@ -329,12 +345,10 @@ describe('PublicHeader (F-09-34)', () => {
       ['public'],
     )
     await findByRole('link', { name: 'Sign in' })
-    const select = document.querySelector(
-      '.ps-lang select',
-    ) as HTMLSelectElement
     const user = userEvent.setup()
 
-    await user.selectOptions(select, 'fr')
+    await user.click(await findByRole('button', { name: /^Language/ }))
+    await user.click(await findByRole('menuitemradio', { name: 'Français' }))
 
     expect(document.documentElement.lang).toBe('fr')
     expect(profileCalls).toBe(0)

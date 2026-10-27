@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   ShellHeader,
   getShellCopy,
+  type ShellAccountControl,
   type ShellCopyKey,
   type ShellLocaleOption,
   type ShellNavItem,
@@ -19,6 +20,7 @@ import {
 import { localizePath } from "@/lib/locale-path";
 import { syncLanguageToAccount } from "@/lib/language-sync";
 import { usePublicStatus } from "@/lib/public-status";
+import { fetchHeaderSession, signOut, type HeaderSession } from "@/lib/session";
 import { applyTheme, readStoredTheme, storeTheme } from "@/lib/theme";
 
 /**
@@ -79,10 +81,30 @@ function useThemeControl(): { value: "light" | "dark"; onToggle: () => void } {
   return { value, onToggle };
 }
 
+/**
+ * Session state for the header. Mirrors the console: `/api/me` is the only
+ * probe, a 401 is the guest answer, and any other failure also degrades to
+ * guest — the marketing page never shows a session error in the chrome.
+ */
+function useHeaderSession(): HeaderSession {
+  const [session, setSession] = useState<HeaderSession>({ signedIn: false });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetchHeaderSession(controller.signal).then((next) => {
+      if (!controller.signal.aborted) setSession(next);
+    });
+    return () => controller.abort();
+  }, []);
+
+  return session;
+}
+
 export function SiteHeader({ copy, locale }: { copy: Copy; locale: Locale }) {
   const { docsEnabled } = usePublicStatus();
   const pathname = usePathname() ?? "/";
   const theme = useThemeControl();
+  const session = useHeaderSession();
   const shell = getShellCopy(locale);
 
   const homePath = localePath(locale);
@@ -117,6 +139,21 @@ export function SiteHeader({ copy, locale }: { copy: Copy; locale: Locale }) {
     window.location.assign(localizePath(window.location.pathname, value));
   }
 
+  // Signed-in visitors see who they are instead of a sign-in link; the menu
+  // hands them back to the console, which owns the account pages.
+  const account: ShellAccountControl = session.signedIn
+    ? {
+        signedIn: true,
+        signInHref: site.loginHref,
+        name: session.name,
+        menu: [
+          { key: "console", label: shell["nav.console"], href: "/dashboard" },
+          { key: "profile", label: shell["nav.profile"], href: "/profile" },
+        ],
+        onSignOut: () => void signOut(homePath),
+      }
+    : { signedIn: false, signInHref: site.loginHref };
+
   return (
     <ShellHeader
       copy={shell}
@@ -128,7 +165,7 @@ export function SiteHeader({ copy, locale }: { copy: Copy; locale: Locale }) {
       items={items}
       locale={{ value: locale, options: LOCALE_OPTIONS, onChange: changeLocale }}
       theme={theme}
-      account={{ signedIn: false, signInHref: site.loginHref }}
+      account={account}
     />
   );
 }

@@ -1,6 +1,6 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { copy } from "@/config/copy";
 import { usePublicStatus, type PublicStatusState } from "@/lib/public-status";
 import { SiteHeader } from "./site-header";
@@ -19,9 +19,31 @@ function mockStatus(overrides: Partial<PublicStatusState> = {}) {
   });
 }
 
+/** `/api/me` is the only session probe the marketing header makes. */
+function mockAccount(body: unknown, status = 200) {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/me") {
+      return new Response(JSON.stringify(body), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return new Response(null, { status: 401 });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
 beforeEach(() => {
   usePublicStatusMock.mockReset();
   mockStatus();
+  mockAccount({}, 401);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  localStorage.clear();
 });
 
 describe("SiteHeader", () => {
@@ -109,5 +131,74 @@ describe("SiteHeader", () => {
     render(<SiteHeader copy={copy} locale="zh-CN" />);
 
     expect(screen.queryByRole("link", { name: "接口文档" })).not.toBeInTheDocument();
+  });
+
+  it("shows the display name instead of the sign-in link when a session exists", async () => {
+    mockAccount({ username: "ada", display_name: "Ada Lovelace" });
+    render(<SiteHeader copy={copy} locale="zh-CN" />);
+
+    expect(await screen.findByText("Ada Lovelace")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "登录" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /账户菜单/ })).toBeInTheDocument();
+  });
+
+  it("falls back to the username when display_name is empty", async () => {
+    mockAccount({ username: "ada", display_name: null });
+    render(<SiteHeader copy={copy} locale="zh-CN" />);
+
+    expect(await screen.findByText("ada")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "登录" })).not.toBeInTheDocument();
+  });
+
+  it("stays a guest when the session probe answers 401", async () => {
+    const fetchMock = mockAccount({}, 401);
+    render(<SiteHeader copy={copy} locale="zh-CN" />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(screen.getByRole("link", { name: "登录" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /账户菜单/ })).not.toBeInTheDocument();
+  });
+
+  it("opens the language menu from the globe instead of a select", async () => {
+    mockAccount({}, 401);
+    const originalLocation = window.location;
+    const assign = vi.fn();
+    Object.defineProperty(window, "location", {
+      writable: true,
+      value: { ...originalLocation, assign, pathname: "/" },
+    });
+
+    try {
+      const user = userEvent.setup();
+      render(<SiteHeader copy={copy} locale="zh-CN" />);
+
+      expect(document.querySelector(".ps-lang select")).toBeNull();
+
+      const globe = screen.getByRole("button", { name: /语言/ });
+      await user.click(globe);
+
+      const menu = screen.getByRole("menu", { name: "语言" });
+      await user.click(within(menu).getByRole("menuitemradio", { name: "English" }));
+
+      expect(assign).toHaveBeenCalledWith("/en/");
+      expect(localStorage.getItem("newtg.language")).toBe("en");
+    } finally {
+      Object.defineProperty(window, "location", { writable: true, value: originalLocation });
+    }
+  });
+
+  it("closes the language menu on Escape and returns focus to the globe", async () => {
+    mockAccount({}, 401);
+    const user = userEvent.setup();
+    render(<SiteHeader copy={copy} locale="zh-CN" />);
+
+    const globe = screen.getByRole("button", { name: /语言/ });
+    await user.click(globe);
+    expect(screen.getByRole("menu", { name: "语言" })).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+
+    expect(screen.queryByRole("menu", { name: "语言" })).not.toBeInTheDocument();
+    expect(globe).toHaveFocus();
   });
 });

@@ -133,6 +133,22 @@
   letter-spacing: 0.09em;
 }
 
+/* The header wordmark runs 1.5× the footer's: at 24px it reads as the page
+   title from across the row. The footer and standalone brand stay at 16px. */
+.ps-shell.ps-header .ps-brand { gap: 11px; }
+
+.ps-shell.ps-header .ps-brand-name {
+  font-size: 24px;
+  line-height: 36px;
+  letter-spacing: 0.05em;
+}
+
+.ps-shell.ps-header .ps-brand-mark,
+.ps-shell.ps-header .ps-brand-logo {
+  width: 26px;
+  height: 26px;
+}
+
 /* The footer keeps the surrounding ink for the mark, as the marketing footer
    always has. */
 .ps-shell.ps-footer .ps-brand-mark { color: inherit; }
@@ -182,17 +198,95 @@
 /* ---------- Language control ---------- */
 
 .ps-shell .ps-lang {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
 .ps-shell .ps-lang-globe {
-  width: 14px;
-  height: 14px;
+  width: 17px;
+  height: 17px;
   flex: none;
 }
 
+.ps-shell .ps-lang-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--ps-rule-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ps-muted);
+  cursor: pointer;
+  transition: color 150ms ease, border-color 150ms ease;
+}
+
+.ps-shell .ps-lang-btn:hover,
+.ps-shell .ps-lang-btn[aria-expanded='true'] {
+  color: var(--ps-ink);
+  border-color: var(--ps-ink);
+}
+
+.ps-shell .ps-lang-menu {
+  position: absolute;
+  right: 0;
+  top: 42px;
+  z-index: 55;
+  width: 188px;
+  padding: 5px;
+  border: 1px solid var(--ps-rule);
+  border-radius: 8px;
+  background: var(--ps-card);
+  box-shadow: var(--ps-shadow);
+  animation: ps-lang-in 140ms ease-out;
+}
+
+@keyframes ps-lang-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ps-shell .ps-lang-menu { animation: none; }
+}
+
+.ps-shell .ps-lang-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ps-ink);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ps-shell .ps-lang-item:hover { background: var(--ps-paper-2); }
+
+.ps-shell .ps-lang-check {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--ps-signal);
+  visibility: hidden;
+}
+
+.ps-shell .ps-lang-item[aria-checked='true'] .ps-lang-check { visibility: visible; }
+
+/* Footer column: a plain select, named by its column heading. */
 .ps-shell .ps-lang-select {
   height: 36px;
   max-width: 150px;
@@ -210,49 +304,6 @@
 .ps-shell .ps-lang-select:hover {
   color: var(--ps-ink);
   border-color: var(--ps-ink);
-}
-
-/* Compact pill for the collapsed row: the visible code is the selected
-   locale; the native select sits on top for keyboard and screen readers. */
-.ps-shell .ps-lang-compact {
-  position: relative;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  height: 36px;
-  min-width: 52px;
-  padding: 0 8px;
-  border: 1px solid var(--ps-rule-strong);
-  border-radius: 6px;
-  color: var(--ps-muted);
-  font-size: 13px;
-  line-height: 20px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.ps-shell .ps-lang-compact:hover {
-  color: var(--ps-ink);
-  border-color: var(--ps-ink);
-}
-
-.ps-shell .ps-lang-compact select {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  opacity: 0;
-  cursor: pointer;
-}
-
-.ps-shell .ps-lang-compact:focus-within {
-  outline: 2px solid var(--ps-signal);
-  outline-offset: 2px;
-}
-
-.ps-shell .ps-lang select:focus-visible {
-  outline: 2px solid var(--ps-signal);
-  outline-offset: 2px;
 }
 
 /* ---------- Theme control ---------- */
@@ -294,27 +345,66 @@
 
 .ps-shell .ps-account { position: relative; }
 
-.ps-shell .ps-avatar-btn {
+/* Signed-in cluster: initial avatar + name + chevron, capped so a long name
+   ellipsizes instead of pushing the tools row. */
+.ps-shell .ps-account-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 190px;
+  height: 36px;
+  padding: 0 10px 0 6px;
+  border: 1px solid var(--ps-rule-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ps-ink);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+  transition: border-color 150ms ease;
+}
+
+.ps-shell .ps-account-btn:hover,
+.ps-shell .ps-account-btn[aria-expanded='true'] { border-color: var(--ps-ink); }
+
+.ps-shell .ps-account-avatar {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
-  border: 1px solid var(--ps-rule-strong);
+  flex: none;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
-  background: transparent;
-  color: var(--ps-ink);
-  cursor: pointer;
+  background: color-mix(in srgb, var(--ps-signal) 16%, transparent);
+  color: var(--ps-signal);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
 }
 
-.ps-shell .ps-avatar-btn:hover { border-color: var(--ps-ink); }
+.ps-shell .ps-account-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
 
-.ps-shell .ps-avatar-menu {
+.ps-shell .ps-account-chevron {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  color: var(--ps-faint);
+}
+
+.ps-shell .ps-account-menu {
   position: absolute;
   right: 0;
   top: 42px;
   z-index: 50;
-  width: 200px;
+  width: 176px;
   padding: 4px;
   border: 1px solid var(--ps-rule);
   border-radius: 8px;
@@ -322,8 +412,8 @@
   box-shadow: var(--ps-shadow);
 }
 
-.ps-shell .ps-avatar-menu a,
-.ps-shell .ps-avatar-menu button {
+.ps-shell .ps-account-menu a,
+.ps-shell .ps-account-menu button {
   display: flex;
   align-items: center;
   width: 100%;
@@ -340,10 +430,10 @@
   cursor: pointer;
 }
 
-.ps-shell .ps-avatar-menu a:hover,
-.ps-shell .ps-avatar-menu button:hover { background: var(--ps-paper-2); }
+.ps-shell .ps-account-menu a:hover,
+.ps-shell .ps-account-menu button:hover { background: var(--ps-paper-2); }
 
-.ps-shell .ps-avatar-rule {
+.ps-shell .ps-account-rule {
   margin: 4px 0;
   border-top: 1px solid var(--ps-rule);
 }
@@ -400,8 +490,6 @@
   font-size: 13px;
   line-height: 22px;
 }
-
-.ps-shell.ps-footer .ps-brand-name { font-size: 16px; line-height: 24px; }
 
 .ps-shell .ps-footer-grid {
   display: grid;
@@ -501,9 +589,12 @@
 .ps-shell .ps-sign-in:focus-visible,
 .ps-shell .ps-theme-btn:focus-visible,
 .ps-shell .ps-menu-btn:focus-visible,
-.ps-shell .ps-avatar-btn:focus-visible,
-.ps-shell .ps-avatar-menu a:focus-visible,
-.ps-shell .ps-avatar-menu button:focus-visible,
+.ps-shell .ps-lang-btn:focus-visible,
+.ps-shell .ps-lang-item:focus-visible,
+.ps-shell .ps-lang-select:focus-visible,
+.ps-shell .ps-account-btn:focus-visible,
+.ps-shell .ps-account-menu a:focus-visible,
+.ps-shell .ps-account-menu button:focus-visible,
 .ps-shell .ps-mobile-nav-link:focus-visible,
 .ps-shell .ps-footer-col a:focus-visible,
 .ps-shell .ps-footer-bottom a:focus-visible,
@@ -517,12 +608,16 @@
 /* One breakpoint for both apps (the SPA carries the wider tool cluster). */
 @media (max-width: 1023px) {
   .ps-shell .ps-nav,
-  .ps-shell .ps-header-tools .ps-lang,
   .ps-shell .ps-header-tools .ps-sign-in { display: none; }
-  .ps-shell .ps-header-tools .ps-lang-compact { display: inline-flex; }
   .ps-shell .ps-menu-btn { display: inline-flex; }
   .ps-shell .ps-header-row { gap: 14px; }
   .ps-shell .ps-header-tools { gap: 8px; }
+  /* The collapsed row keeps the name (it is the only session cue) and drops
+     the avatar; the chevron still marks the menu. */
+  .ps-shell .ps-account-btn { max-width: 112px; padding-left: 10px; }
+  .ps-shell .ps-account-avatar { display: none; }
+  .ps-shell .ps-account-name { max-width: 64px; }
+  .ps-shell .ps-account-menu { width: 168px; }
 }
 
 @media (min-width: 1024px) {

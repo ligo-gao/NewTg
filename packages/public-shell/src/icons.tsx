@@ -78,9 +78,27 @@ export function ChevronGlyph() {
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
-      className="ps-lang-chevron"
+      className="ps-account-chevron"
     >
       <path d="m6 9 6 6 6-6" />
+    </svg>
+  )
+}
+
+/** Marks the chosen language inside the globe menu. */
+export function CheckGlyph() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className="ps-lang-check"
+    >
+      <path d="m3.5 8.5 3 3 6-7" />
     </svg>
   )
 }

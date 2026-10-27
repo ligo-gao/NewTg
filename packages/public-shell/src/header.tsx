@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { ShellBrandMark } from './brand'
 import type { ShellCopy } from './copy'
-import { AvatarGlyph, CloseGlyph, ExternalGlyph, MenuGlyph } from './icons'
+import { AvatarGlyph, ChevronGlyph, CloseGlyph, ExternalGlyph, MenuGlyph } from './icons'
 import { ShellLanguageControl } from './language-control'
 import { ShellThemeButton } from './theme-control'
 import type { ShellHeaderProps, ShellNavItem } from './types'
@@ -79,21 +79,32 @@ function AccountCluster({
   }
 
   const menu = account.menu ?? []
+  const name = account.name?.trim() ?? ''
 
   return (
     <div ref={menuRef} className="ps-account">
       <button
         type="button"
-        aria-label={copy['nav.account']}
+        aria-label={name ? `${copy['nav.account']}: ${name}` : copy['nav.account']}
         aria-haspopup="menu"
         aria-expanded={menuOpen}
         onClick={() => setMenuOpen((open) => !open)}
-        className="ps-avatar-btn"
+        className="ps-account-btn"
       >
-        <AvatarGlyph />
+        {name ? (
+          <>
+            <span aria-hidden="true" className="ps-account-avatar">
+              {Array.from(name)[0]}
+            </span>
+            <span className="ps-account-name">{name}</span>
+            <ChevronGlyph />
+          </>
+        ) : (
+          <AvatarGlyph />
+        )}
       </button>
       {menuOpen ? (
-        <div role="menu" className="ps-avatar-menu">
+        <div role="menu" className="ps-account-menu" aria-label={copy['nav.account']}>
           {menu.map((item) => (
             <a
               key={item.key}
@@ -107,8 +118,15 @@ function AccountCluster({
           ))}
           {account.onSignOut ? (
             <>
-              <div className="ps-avatar-rule" />
-              <button type="button" role="menuitem" onClick={account.onSignOut}>
+              <div className="ps-account-rule" />
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false)
+                  account.onSignOut?.()
+                }}
+              >
                 {copy['nav.sign_out']}
               </button>
             </>
@@ -220,7 +238,6 @@ export function ShellHeader({
         )}
         <div className="ps-header-tools">
           <ShellLanguageControl control={locale} copy={copy} variant="pill" />
-          <ShellLanguageControl control={locale} copy={copy} variant="compact" />
           <ShellThemeButton control={theme} copy={copy} />
           {account ? <AccountCluster account={account} copy={copy} /> : null}
           <button

@@ -130,6 +130,7 @@ export function PublicHeader({ activePath }: PublicHeaderProps) {
       account={{
         signedIn: me.isSuccess,
         signInHref: signInHref(path, currentSearch()),
+        name: me.data?.display_name?.trim() || me.data?.username,
         menu: [
           {
             key: 'console',
