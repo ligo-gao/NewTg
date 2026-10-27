@@ -1,0 +1,155 @@
+// Package perfquery 把「命名查询白名单」翻译成 Prometheus HTTP 调用，
+// 并负责超时、15 秒缓存与未接入时的降级。调用方（性能页 overview 端点）
+// 只传查询名，PromQL 永远来自本文件的冻结目录，从不拼接用户输入。
+//
+// 为什么不用 Prometheus 客户端 SDK：它的查询部分是薄封装，本包只需要
+// GET /api/v1/query_range + encoding/json 两件事，多一个依赖面不划算
+// （计划 Global Constraints：不新增 Go 依赖）。
+package perfquery
+
+import "sort"
+
+// 查询名常量。它们是 API 的稳定键（前端只传这些字符串），不得改名；
+// 改名等于破坏 /api/performance/overview 契约。
+const (
+	NameGatewayRPS       = "gateway.rps"
+	NameGatewayP95       = "gateway.p95"
+	NameGatewayErrorRate = "gateway.error_rate"
+	NameGatewayInflight  = "gateway.inflight"
+
+	NameDBPool = "db.pool"
+	NameDBWait = "db.wait"
+
+	NameRedisUp      = "redis.up"
+	NameRedisHitRate = "redis.hit_rate"
+	NameRedisClients = "redis.clients"
+	NameRedisMem     = "redis.mem"
+	NameRedisCmdRate = "redis.cmd_rate"
+
+	NameHostCPU    = "host.cpu"
+	NameHostMem    = "host.mem"
+	NameHostDisk   = "host.disk"
+	NameHostNetIn  = "host.net_in"
+	NameHostNetOut = "host.net_out"
+
+	NamePGBackends    = "pg.backends"
+	NamePGMaxBackends = "pg.max_backends"
+	NamePGTPS         = "pg.tps"
+	NamePGSize        = "pg.size"
+
+	NameTargetUp = "target.up"
+)
+
+// entry 是一条命名查询：PromQL 与展示单位。
+type entry struct {
+	promQL string
+	unit   string
+}
+
+// catalog 是冻结白名单。值里的正则竖线是 PromQL 语法（如 `4xx|5xx`），
+// 不是 Markdown 表格的转义。
+var catalog = map[string]entry{
+	NameGatewayRPS: {
+		promQL: `sum(rate(newtg_http_requests_total{service="gateway"}[1m]))`,
+		unit:   "req/s",
+	},
+	NameGatewayP95: {
+		promQL: `histogram_quantile(0.95, sum by (le) (rate(newtg_http_request_duration_seconds_bucket{service="gateway"}[5m])))`,
+		unit:   "s",
+	},
+	NameGatewayErrorRate: {
+		promQL: `sum(rate(newtg_http_requests_total{service="gateway",status_class=~"4xx|5xx"}[5m])) / clamp_min(sum(rate(newtg_http_requests_total{service="gateway"}[5m])), 1e-9)`,
+		unit:   "ratio",
+	},
+	NameGatewayInflight: {
+		promQL: `sum(newtg_http_in_flight_requests{service="gateway"})`,
+		unit:   "conn",
+	},
+	NameDBPool: {
+		promQL: `sum(newtg_db_pool_connections{db="main",state="in_use"})`,
+		unit:   "conn",
+	},
+	NameDBWait: {
+		promQL: `sum(rate(newtg_db_pool_wait_total{db="main"}[5m]))`,
+		unit:   "wait/s",
+	},
+	NameRedisUp: {
+		promQL: `min(newtg_redis_up)`,
+		unit:   "bool",
+	},
+	NameRedisHitRate: {
+		promQL: `sum(rate(redis_keyspace_hits_total[5m])) / clamp_min(sum(rate(redis_keyspace_hits_total[5m])) + sum(rate(redis_keyspace_misses_total[5m])), 1e-9)`,
+		unit:   "ratio",
+	},
+	NameRedisClients: {
+		promQL: `redis_connected_clients`,
+		unit:   "conn",
+	},
+	NameRedisMem: {
+		promQL: `redis_memory_used_bytes / clamp_min(redis_memory_max_bytes, 1)`,
+		unit:   "ratio",
+	},
+	NameRedisCmdRate: {
+		promQL: `sum(rate(redis_commands_processed_total[5m]))`,
+		unit:   "ops/s",
+	},
+	NameHostCPU: {
+		promQL: `1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))`,
+		unit:   "ratio",
+	},
+	NameHostMem: {
+		promQL: `1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes`,
+		unit:   "ratio",
+	},
+	NameHostDisk: {
+		promQL: `1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay",mountpoint="/"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay",mountpoint="/"}`,
+		unit:   "ratio",
+	},
+	NameHostNetIn: {
+		promQL: `sum(rate(node_network_receive_bytes_total{device!="lo"}[5m]))`,
+		unit:   "B/s",
+	},
+	NameHostNetOut: {
+		promQL: `sum(rate(node_network_transmit_bytes_total{device!="lo"}[5m]))`,
+		unit:   "B/s",
+	},
+	NamePGBackends: {
+		promQL: `sum(pg_stat_database_numbackends)`,
+		unit:   "conn",
+	},
+	NamePGMaxBackends: {
+		promQL: `pg_settings_max_connections`,
+		unit:   "conn",
+	},
+	NamePGTPS: {
+		promQL: `sum(rate(pg_stat_database_xact_commit[5m])) + sum(rate(pg_stat_database_xact_rollback[5m]))`,
+		unit:   "tx/s",
+	},
+	NamePGSize: {
+		promQL: `sum(pg_database_size_bytes)`,
+		unit:   "B",
+	},
+	NameTargetUp: {
+		promQL: `up{job=~"newtg-.*"}`,
+		unit:   "bool",
+	},
+}
+
+// Names 返回白名单查询名的字母序副本。副本保证调用方无法改写目录。
+func Names() []string {
+	names := make([]string, 0, len(catalog))
+	for name := range catalog {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// Lookup 按查询名取 PromQL 与单位；未登记的名字返回 ok=false。
+func Lookup(name string) (promQL, unit string, ok bool) {
+	e, ok := catalog[name]
+	if !ok {
+		return "", "", false
+	}
+	return e.promQL, e.unit, true
+}
