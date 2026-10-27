@@ -2,6 +2,11 @@
 
 import type { ChangeEvent } from "react";
 import { LOCALES, localeInfo, localePath, type Locale } from "@/config/locales";
+import {
+  ensureLanguageSchema,
+  markLanguageChosen,
+} from "@/lib/language-preference";
+import { syncLanguageToAccount } from "@/lib/language-sync";
 
 interface LanguageSwitcherProps {
   locale: Locale;
@@ -15,6 +20,12 @@ interface LanguageSwitcherProps {
  * Native <select> keeps the control keyboard/screen-reader accessible and
  * matches the console's language picker. Changing it navigates to the
  * locale's static route (/en/, /fr/, …); '/' is Simplified Chinese.
+ *
+ * A pick is a user gesture: it writes the console's shared preference keys
+ * (language + explicit + pending) and starts a `keepalive` write to
+ * `PUT /api/self/setting` in the background, so the choice survives the
+ * navigation and reaches the account. A failed sync keeps `pending` for the
+ * console (or the next marketing page load) to retry; it never blocks.
  */
 export function LanguageSwitcher({
   locale,
@@ -24,17 +35,39 @@ export function LanguageSwitcher({
 }: LanguageSwitcherProps) {
   function handleChange(event: ChangeEvent<HTMLSelectElement>) {
     const next = event.target.value as Locale;
-    try {
-      localStorage.setItem("newtg-locale", next);
-    } catch {
-      // Storage can be unavailable; navigation still works.
+    ensureLanguageSchema();
+    markLanguageChosen(next);
+    // 后台回写账号偏好；keepalive 让请求活过下面的整页导航。
+    void syncLanguageToAccount(next);
+
+    const currentPath = window.location.pathname;
+    const currentLocale = localeInfo(locale);
+    const nextBase = localePath(next);
+
+    // 移除当前语言前缀，获取页面路径
+    let pagePath = currentPath;
+    if (currentLocale.path !== "/") {
+      // 移除当前语言路径前缀（例如 /en/, /fr/）
+      pagePath = currentPath.replace(new RegExp(`^${currentLocale.path.replace(/\/$/, '')}`), '');
     }
-    const path = window.location.pathname;
-    const isPricing = /(^|\/)pricing\/?$/.test(path);
-    const base = localePath(next);
-    const destination = isPricing
-      ? `${base === "/" ? "/" : base}pricing/`
-      : base;
+
+    // 确保路径以 / 开头
+    if (!pagePath.startsWith('/')) {
+      pagePath = '/' + pagePath;
+    }
+
+    // 构建目标路径：新语言前缀 + 页面路径
+    let destination: string;
+    if (nextBase === "/") {
+      // 简体中文（默认语言）直接使用页面路径
+      destination = pagePath === "/" ? "/" : pagePath;
+    } else {
+      // 其他语言：语言前缀 + 页面路径
+      destination = pagePath === "/"
+        ? nextBase
+        : `${nextBase.replace(/\/$/, '')}${pagePath}`;
+    }
+
     window.location.assign(destination);
   }
 
