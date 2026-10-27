@@ -111,6 +111,83 @@ describe('LocalePreferenceSync', () => {
       expect(getByTestId('locale').textContent).toBe('fr')
     })
     expect(globalThis.localStorage.getItem('newtg.language')).toBe('fr')
+    // 服务端偏好落地不是用户手势：不得伪造 explicit/pending 标记。
+    expect(globalThis.localStorage.getItem('newtg.language.explicit')).toBeNull()
+    expect(globalThis.localStorage.getItem('newtg.language.pending')).toBeNull()
+  })
+
+  it('a user gesture marks the choice explicit and pending', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () =>
+        HttpResponse.json(status(['en', 'ja'])),
+      ),
+      http.get(`${ORIGIN}/api/self`, () => HttpResponse.json(self('en'))),
+    )
+    const { getByTestId, getByText } = renderSync()
+    const user = userEvent.setup()
+    await waitFor(() => expect(getByTestId('locale').textContent).toBe('en'))
+    await user.click(getByText('switch-ja'))
+    expect(globalThis.localStorage.getItem('newtg.language.explicit')).toBe('1')
+    expect(globalThis.localStorage.getItem('newtg.language.pending')).toBe('1')
+  })
+
+  it('keeps the pending local locale and backfills it once', async () => {
+    let putBody: unknown
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () =>
+        HttpResponse.json(status(['en', 'ja'])),
+      ),
+      http.get(`${ORIGIN}/api/self`, () => HttpResponse.json(self('en'))),
+      http.put(`${ORIGIN}/api/self/setting`, async ({ request }) => {
+        putBody = await request.json()
+        return HttpResponse.json(self('ja', '2026-10-19T11:00:00Z'))
+      }),
+    )
+    globalThis.localStorage.setItem('newtg.language', 'ja')
+    globalThis.localStorage.setItem('newtg.language.pending', '1')
+    const { getByTestId } = renderSync()
+    await waitFor(() =>
+      expect(putBody).toMatchObject({
+        language: 'ja',
+        updated_at: '2026-10-19T10:00:00Z',
+      }),
+    )
+    expect(getByTestId('locale').textContent).toBe('ja')
+    expect(globalThis.localStorage.getItem('newtg.language.pending')).toBeNull()
+  })
+
+  it('ignores pending when the local locale is not on sale (Review Focus 4)', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () =>
+        HttpResponse.json(status(['en', 'fr'])),
+      ),
+      http.get(`${ORIGIN}/api/self`, () => HttpResponse.json(self('en'))),
+    )
+    globalThis.localStorage.setItem('newtg.language', 'ja')
+    globalThis.localStorage.setItem('newtg.language.pending', '1')
+    const { getByTestId } = renderSync()
+    // ja 不在服务端语言集合里：不能被 pending 钉住，必须归一化到集合内。
+    await waitFor(() => expect(getByTestId('locale').textContent).toBe('en'))
+  })
+
+  it('keeps pending when the backfill fails', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () =>
+        HttpResponse.json(status(['en', 'ja'])),
+      ),
+      http.get(`${ORIGIN}/api/self`, () => HttpResponse.json(self('en'))),
+      http.put(`${ORIGIN}/api/self/setting`, () =>
+        HttpResponse.json(
+          { type: 'conflict', title: 'Conflict' },
+          { status: 409 },
+        ),
+      ),
+    )
+    globalThis.localStorage.setItem('newtg.language', 'ja')
+    globalThis.localStorage.setItem('newtg.language.pending', '1')
+    const { getByTestId } = renderSync()
+    await waitFor(() => expect(getByTestId('locale').textContent).toBe('ja'))
+    expect(globalThis.localStorage.getItem('newtg.language.pending')).toBe('1')
   })
 
   it('never applies the initial preference over a user gesture (F1)', async () => {

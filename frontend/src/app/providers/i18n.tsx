@@ -6,10 +6,15 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import {
+  clearPendingSync,
+  ensureLanguageSchema,
+  hasPendingSync,
   isLocale,
+  markLanguageChosen,
+  persistLanguagePreference,
   readStoredLocale,
   writeStoredLocale,
 } from '@/lib/language-preference'
@@ -18,6 +23,7 @@ import { publicStatusQueryOptions } from '@/lib/public-status'
 import {
   selfSettingsQueryOptions,
   SELF_SETTINGS_QUERY_KEY,
+  type SelfSettings,
 } from '@/lib/self-settings'
 import {
   I18nContextProvider,
@@ -351,6 +357,12 @@ export function translate(
  */
 const DEFAULT_MODULES: readonly DictionaryModule[] = ['common']
 
+/**
+ * 服务端偏好被应用后的结果：`pending` 表示本地还有一次尚未写回的手势选择，
+ * 调用方需要触发补写；`skipped` 表示用户手势已抢先，服务端值不得覆盖。
+ */
+type ServerLocaleOutcome = 'applied' | 'skipped' | 'pending'
+
 export interface I18nProviderProps {
   children: ReactNode
   locale?: Locale
@@ -403,6 +415,9 @@ export function I18nProvider({
   const setLocale = useCallback(
     (next: Locale) => {
       userGestureRef.current = true
+      // 手势是唯一写 explicit/pending 的入口：先记账，再切界面。两者同步
+      // 完成，刷新或失败重试时都还能看出「这次选择尚未写回服务端」。
+      markLanguageChosen(next)
       commitLocale(next)
     },
     [commitLocale],
@@ -430,19 +445,40 @@ export function I18nProvider({
     [commitLocale],
   )
 
-  /** 服务端偏好入口：仅在用户尚未做显式切换时生效（§7.3 优先级 + F1）。 */
+  /**
+   * 服务端偏好入口：仅在用户尚未做显式切换时生效（§7.3 优先级 + F1）。
+   *
+   * 若本地存在未同步的显式选择、且该语言仍在售，则本次服务端值不覆盖它，
+   * 返回 `pending` 让同步器补写。注意 `availableLocalesRef` 尚未拿到 status
+   * 时是随包 7 语：这只会让「本地选择在售」的判断更宽松，随后的 F5 归一化
+   * 仍会把界面落到服务端集合内（Review Focus 4）。
+   */
   const applyServerLocale = useCallback(
-    (next: Locale) => {
-      if (userGestureRef.current) return
+    (next: Locale): ServerLocaleOutcome => {
+      if (userGestureRef.current) return 'skipped'
+      const local = readStoredLocale()
+      if (
+        hasPendingSync() &&
+        local !== null &&
+        availableLocalesRef.current.includes(local)
+      ) {
+        return 'pending'
+      }
       const available = availableLocalesRef.current
       if (!available.includes(next)) {
         applyAvailableLocales(available)
-        return
+        return 'applied'
       }
       commitLocale(next)
+      return 'applied'
     },
     [applyAvailableLocales, commitLocale],
   )
+
+  // 存量浏览器的一次性迁移：只补 schema 标记，不回填 explicit（见模块注释）。
+  useEffect(() => {
+    ensureLanguageSchema()
+  }, [])
 
   useEffect(() => {
     document.documentElement.lang = locale
@@ -515,7 +551,7 @@ export function I18nProvider({
 }
 
 interface LocalePreferenceSyncProps {
-  onServerLocale: (locale: Locale) => void
+  onServerLocale: (locale: Locale) => ServerLocaleOutcome
   onAvailableLocales: (locales: readonly Locale[]) => void
 }
 
@@ -537,6 +573,11 @@ function LocalePreferenceSync({
   onServerLocale,
   onAvailableLocales,
 }: LocalePreferenceSyncProps) {
+  const queryClient = useQueryClient()
+  // 一次挂载最多补写一次：self 数据的引用在写回后会变化，effect 可能重跑，
+  // 但用 ref 保证不会因为「pending 仍在」而反复 PUT（失败时等下次启动）。
+  const backfillRef = useRef(false)
+
   // status 由公网页/守卫共享；这里给 5 分钟 staleTime，避免 i18n 观察者
   // 挂载时对同一份 no-store 响应再发一次请求（评审 F9）。语言清单变化
   // 频率远低于站点开关，下一次导航/刷新仍会重新校验。
@@ -551,6 +592,23 @@ function LocalePreferenceSync({
     queryKey: SELF_SETTINGS_QUERY_KEY,
   })
 
+  const backfill = useCallback(
+    async (settings: SelfSettings) => {
+      const local = readStoredLocale()
+      if (local === null) {
+        // 本地记忆已被清掉：没有可补写的选择，标记也不该继续挂着。
+        clearPendingSync()
+        return
+      }
+      const updated = await persistLanguagePreference(local, settings)
+      // 失败时保留 pending 且**不**改界面：本地选择仍然生效，下次重试。
+      if (updated !== null) {
+        queryClient.setQueryData(SELF_SETTINGS_QUERY_KEY, updated)
+      }
+    },
+    [queryClient],
+  )
+
   useEffect(() => {
     if (status.data !== undefined) {
       onAvailableLocales(resolveAvailableLocales(status.data.languages))
@@ -558,10 +616,12 @@ function LocalePreferenceSync({
   }, [status.data, onAvailableLocales])
 
   useEffect(() => {
-    if (self.data !== undefined) {
-      onServerLocale(self.data.language)
-    }
-  }, [self.data, onServerLocale])
+    if (self.data === undefined) return
+    const outcome = onServerLocale(self.data.language)
+    if (outcome !== 'pending' || backfillRef.current) return
+    backfillRef.current = true
+    void backfill(self.data)
+  }, [self.data, onServerLocale, backfill])
 
   return null
 }
