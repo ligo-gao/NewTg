@@ -119,6 +119,11 @@ func TestLoadDefaults(t *testing.T) {
 	if c.TLSDMinVersion != "1.2" {
 		t.Errorf("TLSDMinVersion = %q, want 1.2", c.TLSDMinVersion)
 	}
+	if !c.PerfScheduleEnabled || c.PerfScheduleTimes != "00:00,12:00" ||
+		c.PerfScheduleTimezone != "Asia/Shanghai" ||
+		c.PerfScheduleRuns != 3 || c.PerfScheduleConcurrency != 2 {
+		t.Fatalf("perf schedule defaults wrong: %+v", c)
+	}
 }
 
 func TestLoadPerfMetricsDSN(t *testing.T) {
@@ -204,6 +209,9 @@ func TestLoadInvalidValues(t *testing.T) {
 		{"RUN_MODE 非法", "RUN_MODE", "banana"},
 		{"DB_MAX_OPEN_CONNS 非整数", "DB_MAX_OPEN_CONNS", "lots"},
 		{"TLS_MIN_VERSION 非法", "TLS_MIN_VERSION", "1.1"},
+		{"PERF_SCHEDULE_TIMES 非法", "PERF_SCHEDULE_TIMES", "25:00"},
+		{"PERF_SCHEDULE_TIMEZONE 非法", "PERF_SCHEDULE_TIMEZONE", "Mars/Base"},
+		{"PERF_SCHEDULE_RUNS 非整数", "PERF_SCHEDULE_RUNS", "many"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -218,6 +226,19 @@ func TestLoadInvalidValues(t *testing.T) {
 				t.Errorf("Load() error = %q, want it to contain %q", err.Error(), tc.env)
 			}
 		})
+	}
+}
+
+func TestPerfScheduleClamps(t *testing.T) {
+	setRequired(t)
+	t.Setenv("PERF_SCHEDULE_RUNS", "99")
+	t.Setenv("PERF_SCHEDULE_CONCURRENCY", "0")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.PerfScheduleRuns != 5 || c.PerfScheduleConcurrency != 1 {
+		t.Fatalf("clamp = %d/%d, want 5/1", c.PerfScheduleRuns, c.PerfScheduleConcurrency)
 	}
 }
 
@@ -243,6 +264,8 @@ func TestValidateStandalone(t *testing.T) {
 		PerfMetricsFlushInterval: 5 * time.Minute,
 		PerfMetricsRetentionDays: 400,
 		TLSDMinVersion:           "1.2",
+		PerfScheduleTimes:        "00:00,12:00",
+		PerfScheduleTimezone:     "Asia/Shanghai",
 	}
 	if err := valid.Validate(); err != nil {
 		t.Errorf("Validate() on valid config: unexpected error: %v", err)

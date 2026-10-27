@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"newtg/gateway/internal/modelperf"
 )
 
 // DemoEnabledKey 是演示模式设置键（settings 注册表同名）。
@@ -85,6 +87,21 @@ type Config struct {
 	// HolidaySyncURLTemplate 是年度 JSON 的地址模板，%d 会被替换成年份。
 	// 默认值是 jsDelivr 缓存的 NateScarlet/holiday-cn（MIT，见 THIRD_PARTY_NOTICES）。
 	HolidaySyncURLTemplate string // HOLIDAY_SYNC_URL_TEMPLATE
+
+	// 模型性能探测调度（spec §5.6）。五项变量在 gateway 与 worker 进程里都会
+	// 被解析，保证管理面展示的配置与 worker 行为一致；但**只有 worker 角色
+	// 会真正启动调度循环**，gateway 解析后不会发起任何探测。
+	//
+	// PerfScheduleEnabled 是总开关；关闭后 worker 跳过全部定时探测。
+	PerfScheduleEnabled bool // PERF_SCHEDULE_ENABLED
+	// PerfScheduleTimes 是每日探测时刻表，逗号分隔的 HH:MM 列表（如 "00:00,12:00"）。
+	PerfScheduleTimes string // PERF_SCHEDULE_TIMES
+	// PerfScheduleTimezone 是解释时刻表所用的 IANA 时区名。
+	PerfScheduleTimezone string // PERF_SCHEDULE_TIMEZONE
+	// PerfScheduleRuns 是每个时刻的重复轮数，加载时钳制到 1..5。
+	PerfScheduleRuns int // PERF_SCHEDULE_RUNS
+	// PerfScheduleConcurrency 是单个时刻内的并发探测数，加载时钳制到 1..8。
+	PerfScheduleConcurrency int // PERF_SCHEDULE_CONCURRENCY
 }
 
 // defaults 包级默认值表，与 platform-03 §3.1 的「默认」列一一对应。
@@ -114,6 +131,13 @@ var defaults = map[string]string{
 	// 离线部署把 HOLIDAY_SYNC_ENABLED 置 false 即可不发任何出站请求。
 	"HOLIDAY_SYNC_ENABLED":      "true",
 	"HOLIDAY_SYNC_URL_TEMPLATE": "https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/%d.json",
+	// 模型性能探测调度（spec §5.6）。默认每天午夜与正午各跑一次，
+	// 时区取国内部署最常用的 Asia/Shanghai。
+	"PERF_SCHEDULE_ENABLED":     "true",
+	"PERF_SCHEDULE_TIMES":       "00:00,12:00",
+	"PERF_SCHEDULE_TIMEZONE":    "Asia/Shanghai",
+	"PERF_SCHEDULE_RUNS":        "3",
+	"PERF_SCHEDULE_CONCURRENCY": "2",
 }
 
 // lookup 集中读取环境变量：非空值优先，否则回落 defaults[key]。
@@ -216,6 +240,23 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: invalid PERF_METRICS_FLUSH_INTERVAL %q: %w", flush, err)
 	}
+
+	if c.PerfScheduleEnabled, err = parseBool("PERF_SCHEDULE_ENABLED", lookup("PERF_SCHEDULE_ENABLED")); err != nil {
+		return nil, err
+	}
+	c.PerfScheduleTimes = lookup("PERF_SCHEDULE_TIMES")
+	c.PerfScheduleTimezone = lookup("PERF_SCHEDULE_TIMEZONE")
+	if c.PerfScheduleRuns, err = parseInt("PERF_SCHEDULE_RUNS", lookup("PERF_SCHEDULE_RUNS")); err != nil {
+		return nil, err
+	}
+	if c.PerfScheduleConcurrency, err = parseInt("PERF_SCHEDULE_CONCURRENCY", lookup("PERF_SCHEDULE_CONCURRENCY")); err != nil {
+		return nil, err
+	}
+	// 数值越界按 spec §5.6 钳制而不是报错：部署者写 99 轮/0 并发是想表达
+	// “尽量多/不要并发”，收敛到区间比让整站启动失败更符合预期。非数字
+	// 仍由 parseInt 报错——那是无法猜测的拼写错误。
+	c.PerfScheduleRuns = min(max(c.PerfScheduleRuns, 1), 5)
+	c.PerfScheduleConcurrency = min(max(c.PerfScheduleConcurrency, 1), 8)
 
 	if err := c.Validate(); err != nil {
 		return nil, err
@@ -380,6 +421,16 @@ func (c *Config) Validate() error {
 	// 手工构造的 Config 不写该字段时不应被这条规则拦下）。
 	if c.HolidaySyncURLTemplate != "" && strings.Count(c.HolidaySyncURLTemplate, "%d") != 1 {
 		return fmt.Errorf("config: HOLIDAY_SYNC_URL_TEMPLATE %q must contain exactly one %%d", c.HolidaySyncURLTemplate)
+	}
+	// 性能探测调度：即使 PERF_SCHEDULE_ENABLED=false 也照常校验，这样把开关
+	// 重新打开之前就能暴露写错的时区/时刻表，而不是等到 worker 静默不跑。
+	// Load 总会填入默认值，因此空值只会出现在手工构造的 Config 上。
+	loc, err := time.LoadLocation(c.PerfScheduleTimezone)
+	if err != nil {
+		return fmt.Errorf("config: invalid PERF_SCHEDULE_TIMEZONE %q: %w", c.PerfScheduleTimezone, err)
+	}
+	if _, err := modelperf.ParseTimes(c.PerfScheduleTimes, loc); err != nil {
+		return fmt.Errorf("config: invalid PERF_SCHEDULE_TIMES %q: %w", c.PerfScheduleTimes, err)
 	}
 	return nil
 }
