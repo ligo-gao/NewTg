@@ -10,6 +10,7 @@
  */
 
 import type { components } from '@/api/schema'
+import { downloadBlob } from '@/shared/lib/download'
 
 type CreateResponse = components['schemas']['RedemptionCodeCreateResponse']
 
@@ -134,7 +135,7 @@ export function downloadRedemptionListMetadata(
   rows: readonly RedemptionCode[],
   format: RedemptionExportFormat,
   options: RedemptionListExportOptions = {},
-  save: SaveFile = saveBlob,
+  save: SaveFile = downloadBlob,
   now: Date = new Date(),
 ): string {
   const file = buildRedemptionListExportFile(rows, format, options, now)
@@ -238,30 +239,12 @@ export function buildRedemptionExportFile(
   }
 }
 
-/**
- * 触发一次浏览器下载。Object URL 延迟释放：部分浏览器在 click 同步返回
- * 后才真正读取 Blob，立即 revoke 会得到空文件。
- */
-export function saveBlob(blob: Blob, filename: string): void {
-  const objectUrl = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = objectUrl
-  anchor.download = filename
-  anchor.rel = 'noopener'
-  document.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
-  setTimeout(() => {
-    URL.revokeObjectURL(objectUrl)
-  }, 0)
-}
-
 /** 返回实际使用的文件名（Toast / 测试播报使用）。 */
 export function downloadRedemptionCodes(
   result: CreateResponse,
   format: RedemptionExportFormat,
   options: RedemptionExportOptions = {},
-  save: SaveFile = saveBlob,
+  save: SaveFile = downloadBlob,
   now: Date = new Date(),
 ): string {
   const file = buildRedemptionExportFile(result, format, options, now)

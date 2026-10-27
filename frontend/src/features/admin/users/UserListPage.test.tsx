@@ -1,7 +1,7 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
-import { waitFor, screen } from '@testing-library/react'
+import { waitFor, screen, within } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
@@ -16,7 +16,11 @@ beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 afterEach(() => server.resetHandlers())
 afterAll(() => server.close())
 
-function adminUser(id: number, username: string) {
+function adminUser(
+  id: number,
+  username: string,
+  overrides: Record<string, unknown> = {},
+) {
   return {
     id,
     username,
@@ -33,11 +37,24 @@ function adminUser(id: number, username: string) {
     token_count: 0,
     created_at: '2026-10-01T10:00:00Z',
     updated_at: '2026-10-01T10:00:00Z',
+    ...overrides,
   }
 }
 
 function installHandlers(record: (params: URLSearchParams) => void) {
   server.use(
+    // The i18n provider observes the console guard's cached `GET /api/me`;
+    // without a handler MSW reports every render as an unhandled request.
+    http.get(`${ORIGIN}/api/me`, () =>
+      HttpResponse.json({
+        username: 'root',
+        role: 'admin',
+        status: 'enabled',
+        email_verified: true,
+        created_at: '2026-10-01T10:00:00Z',
+        permissions: ['*'],
+      }),
+    ),
     http.get(`${ORIGIN}/api/groups`, () =>
       HttpResponse.json({
         items: [
@@ -122,6 +139,68 @@ describe('UserListPage', () => {
       expect(applied?.get('keyword')).toBe('zhang')
       expect(applied?.get('p')).toBe('1')
     })
+  })
+
+  it('filters by customer type', async () => {
+    const recorded: URLSearchParams[] = []
+    installHandlers((params) => {
+      recorded.push(new URLSearchParams(params))
+    })
+
+    const { getByLabelText, getByRole, findByText } = await renderWithProviders(
+      <UserListPage />,
+      ['common', 'admin'],
+    )
+    const user = userEvent.setup()
+
+    expect(await findByText('@alice')).toBeTruthy()
+
+    await user.selectOptions(getByLabelText('Customer type'), 'enterprise')
+    await user.click(getByRole('button', { name: 'Search' }))
+
+    await waitFor(() => {
+      expect(recorded.at(-1)?.get('customer_type')).toBe('enterprise')
+    })
+  })
+
+  it('renders the customer type column', async () => {
+    installHandlers(() => undefined)
+    server.use(
+      http.get(`${ORIGIN}/api/users`, () =>
+        HttpResponse.json({
+          items: [adminUser(1, 'acme', { customer_type: 'enterprise' })],
+          total: 1,
+          page: 1,
+          page_size: 20,
+        }),
+      ),
+    )
+
+    const { findByText, getByRole } = await renderWithProviders(<UserListPage />, [
+      'common',
+      'admin',
+    ])
+
+    expect(await findByText('@acme')).toBeTruthy()
+    expect(getByRole('columnheader', { name: 'Customer type' })).toBeTruthy()
+    // Scoped to the table: the filter select also carries this copy.
+    expect(within(screen.getByRole('table')).getByText('Enterprise customer')).toBeTruthy()
+  })
+
+  it('opens the bulk dialog from the toolbar', async () => {
+    installHandlers(() => undefined)
+
+    const { getByRole } = await renderWithProviders(<UserListPage />, [
+      'common',
+      'admin',
+    ])
+    const user = userEvent.setup()
+
+    await user.click(getByRole('button', { name: 'Bulk create' }))
+
+    expect(
+      await screen.findByRole('dialog', { name: 'Bulk create users' }),
+    ).toBeTruthy()
   })
 
   it('opens the read-only subscriptions dialog from the row action (billing-08 §16.4)', async () => {

@@ -1,6 +1,7 @@
 import { toApiError } from '@/api/client'
 import { parseProblem } from '@/api/errors'
 import type { operations } from '@/api/schema'
+import { downloadBlob } from '@/shared/lib/download'
 
 import type { UsageLogSearch } from './search'
 
@@ -161,21 +162,6 @@ function fallbackFilename(scope: ExportScope, format: ExportFormat): string {
   return `usage-logs-${scope}-${stamp}.${format === 'markdown' ? 'md' : 'txt'}`
 }
 
-function triggerDownload(blob: Blob, filename: string): void {
-  const objectUrl = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = objectUrl
-  anchor.download = filename
-  anchor.rel = 'noopener'
-  document.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
-  // 延迟释放：部分浏览器在 click 同步返回后才真正读取 Blob。
-  setTimeout(() => {
-    URL.revokeObjectURL(objectUrl)
-  }, 0)
-}
-
 function isAbortError(error: unknown): boolean {
   return (
     error instanceof DOMException && error.name === 'AbortError'
@@ -244,6 +230,6 @@ export async function downloadUsageLogs(
     ) ?? fallbackFilename(request.scope, request.format)
 
   const blob = await response.blob()
-  triggerDownload(blob, filename)
+  downloadBlob(blob, filename)
   return { filename }
 }

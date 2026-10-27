@@ -16,21 +16,30 @@ import { useToastStore } from '@/shared/ui/toast'
 
 import { AccountRecoveryDialogs } from './AccountRecoveryDialogs'
 import { AdjustQuotaDialog } from './AdjustQuotaDialog'
+import { BulkCreateDialog } from './BulkCreateDialog'
 import { UserMutateSheet } from './UserMutateSheet'
 import { UserSubscriptionsDialog } from '../subscriptions/user-subscriptions-dialog'
 
 type AdminUser = components['schemas']['AdminUser']
 type UserStatus = components['schemas']['UserStatus']
 type UserRole = components['schemas']['UserRole']
+type CustomerType = AdminUser['customer_type']
 
 interface Filters {
   keyword: string
   status: '' | UserStatus
   role: '' | UserRole
   group: string
+  customerType: '' | CustomerType
 }
 
-const EMPTY_FILTERS: Filters = { keyword: '', status: '', role: '', group: '' }
+const EMPTY_FILTERS: Filters = {
+  keyword: '',
+  status: '',
+  role: '',
+  group: '',
+  customerType: '',
+}
 const PAGE_SIZES = [10, 20, 50] as const
 
 interface EditTarget {
@@ -53,6 +62,7 @@ export function UserListPage() {
   const [subscriptionsUser, setSubscriptionsUser] = useState<AdminUser | null>(null)
   const [recoveryUser, setRecoveryUser] = useState<AdminUser | null>(null)
   const [disableUser, setDisableUser] = useState<AdminUser | null>(null)
+  const [bulkOpen, setBulkOpen] = useState(false)
 
   const usersQuery = useQuery({
     queryKey: ['admin-users', applied, page, pageSize],
@@ -65,6 +75,7 @@ export function UserListPage() {
       if (applied.status !== '') query.status = applied.status
       if (applied.role !== '') query.role = applied.role
       if (applied.group !== '') query.group = applied.group
+      if (applied.customerType !== '') query.customer_type = applied.customerType
       return requireData(await apiClient.GET('/api/users', { params: { query } }))
     },
   })
@@ -120,7 +131,7 @@ export function UserListPage() {
     <div className="mx-auto flex max-w-[1520px] flex-col gap-3">
       <h1 className="text-page-title font-semibold text-ink-1">{t('admin.users.title')}</h1>
       <section className="rounded-xl border border-border-hairline bg-surface-subtle p-4">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
           <TextField
             label={t('admin.users.keyword')}
             value={draft.keyword}
@@ -189,6 +200,26 @@ export function UserListPage() {
               ))}
             </select>
           </div>
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="filter-customer-type" className="text-meta font-medium text-ink-1">
+              {t('admin.users.customer_type')}
+            </label>
+            <select
+              id="filter-customer-type"
+              className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              value={draft.customerType}
+              onChange={(event) => {
+                setDraft((current) => ({
+                  ...current,
+                  customerType: event.target.value as Filters['customerType'],
+                }))
+              }}
+            >
+              <option value="">{t('admin.users.all')}</option>
+              <option value="general">{t('admin.users.customer_type_general')}</option>
+              <option value="enterprise">{t('admin.users.customer_type_enterprise')}</option>
+            </select>
+          </div>
         </div>
         <div className="mt-3 flex justify-end gap-2">
           <Button variant="secondary" onClick={resetFilters}>
@@ -200,9 +231,14 @@ export function UserListPage() {
 
       <section className="rounded-xl border border-border-hairline bg-surface-card">
         <div className="flex items-center justify-between border-b border-border-hairline px-5 py-3">
-          <Button onClick={() => setEditTarget({ mode: 'create' })}>
-            {t('admin.users.add')}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button onClick={() => setEditTarget({ mode: 'create' })}>
+              {t('admin.users.add')}
+            </Button>
+            <Button variant="secondary" onClick={() => setBulkOpen(true)}>
+              {t('admin.users.bulk_create')}
+            </Button>
+          </div>
           <span className="text-meta text-ink-2">
             {t('admin.users.total', { count: total })}
           </span>
@@ -237,6 +273,9 @@ export function UserListPage() {
                     {t('admin.users.column_balance')}
                   </th>
                   <th scope="col" className="px-4 py-2 font-medium">{t('admin.users.column_group')}</th>
+                  <th scope="col" className="w-28 px-4 py-2 font-medium">
+                    {t('admin.users.customer_type')}
+                  </th>
                   <th scope="col" className="px-4 py-2 font-medium">{t('admin.users.column_role')}</th>
                   <th scope="col" className="px-4 py-2 font-medium">{t('admin.users.column_created')}</th>
                   <th scope="col" className="px-4 py-2 text-right font-medium">
@@ -274,6 +313,13 @@ export function UserListPage() {
                     </td>
                     <td className="px-4 py-3">
                       <Tag>{user.group}</Tag>
+                    </td>
+                    <td className="px-4 py-3">
+                      <Tag>
+                        {user.customer_type === 'enterprise'
+                          ? t('admin.users.customer_type_enterprise')
+                          : t('admin.users.customer_type_general')}
+                      </Tag>
                     </td>
                     <td className="px-4 py-3">
                       <Tag variant={user.role === 'admin' ? 'admin' : 'neutral'}>
@@ -386,6 +432,15 @@ export function UserListPage() {
           </Button>
         </div>
       </section>
+
+      <BulkCreateDialog
+        open={bulkOpen}
+        onOpenChange={setBulkOpen}
+        onCreated={() => {
+          void queryClient.invalidateQueries({ queryKey: ['admin-users'] })
+          void queryClient.invalidateQueries({ queryKey: ['admin-groups'] })
+        }}
+      />
 
       <UserMutateSheet
         open={editTarget !== null}
