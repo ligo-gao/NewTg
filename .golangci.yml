@@ -58,3 +58,13 @@ linters:
           deny:
             - pkg: newtg/gateway/internal/relay
               desc: "计费不得反向依赖中继实现（platform-02 §6.3）"
+        # internal/store：持久化层不得依赖 HTTP 面。
+        # 一旦 store 引入 httpapi，就会形成 store → httpapi → store 的回边：
+        # 包级初始化顺序变得不可推理，且持久化层被迫跟着 HTTP DTO 一起改。
+        # 共享值（如端点映射）应下沉到双方都能依赖的叶子包，而不是让 store 反向引用。
+        store-boundary:
+          files:
+            - "**/internal/store/**"
+          deny:
+            - pkg: newtg/gateway/internal/httpapi
+              desc: "持久化层不得依赖 HTTP 面（避免 store → httpapi → store 回边）"
