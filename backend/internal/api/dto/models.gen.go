@@ -8605,8 +8605,9 @@ type PerformanceConfigSchedule struct {
 	// LegacyTimes 旧时刻表（每日 HH:MM 列表）；只在旧时刻表模式下非空。
 	LegacyTimes string `json:"legacy_times"`
 
-	// NextRunAt `enabled=false` 时为 null；与 `enabled` 出自同一次设置快照，服务端
-	// 按 `timezone` 计算（客户端不得自行重算）。
+	// NextRunAt `enabled=false`，或 `enabled=true` 但调度器算不出下一次运行（Next 返回
+	// 零值，如时刻表为空/间隔非法）时为 null；与 `enabled` 出自同一次设置
+	// 快照，服务端按 `timezone` 计算（客户端不得自行重算）。
 	NextRunAt *time.Time `json:"next_run_at"`
 	Runs      int        `json:"runs"`
 
@@ -8873,9 +8874,10 @@ type PerformanceOverview struct {
 	Sources   []PerformanceSource        `json:"sources"`
 	Vitals    []PerformanceOverviewVital `json:"vitals"`
 
-	// Windows 服务端实际使用的查询窗。`start`/`end` 已截断到查询缓存 TTL 桶边界，同一
-	// TTL 内重复请求返回同一 `windows`；`points` 是每条查询的采样点数（15m 为
-	// 15，其余 24），`step_seconds` = span / points。
+	// Windows 本次请求的查询窗：`end` 是请求时刻，`start = end - range`，未对齐查询缓存
+	// TTL。返回样本来自上游查询，同一 TTL 窗口内可能复用缓存——请求前移时
+	// `windows` 继续前进，样本可以不变。`step_seconds` 是请求的采样步长，
+	// `points` 是每条查询的采样点数（15m 为 15，其余 24）。
 	Windows PerformanceOverviewWindow `json:"windows"`
 }
 
@@ -8920,8 +8922,9 @@ type PerformanceOverviewGatewayMetrics struct {
 	P95Ms *float64 `json:"p95_ms"`
 }
 
-// PerformanceOverviewVital 一个体检格。`status` ∈ {ok, warn, crit, unknown}；unknown 表示数据源缺失
-// 或无样本，不等于异常。`series` 的元素是 [unix 秒, 值]，NaN/±Inf 已剔除。
+// PerformanceOverviewVital 一个体检格。`status` ∈ {ok, warn, crit, unknown}；unknown 表示数据源缺失、
+// 无样本，或任一构成查询（p95、错误率、pg.max_backends 等）失败而主值仍存在，
+// 不等于异常。`series` 的元素是 [unix 秒, 值]，NaN/±Inf 已剔除。
 type PerformanceOverviewVital struct {
 	// Key 查询名（perfquery 目录，如 gateway.rps / db.pool）。
 	Key string `json:"key"`
@@ -8941,15 +8944,19 @@ type PerformanceOverviewVital struct {
 // PerformanceOverviewVitalStatus defines model for PerformanceOverviewVital.Status.
 type PerformanceOverviewVitalStatus string
 
-// PerformanceOverviewWindow 服务端实际使用的查询窗。`start`/`end` 已截断到查询缓存 TTL 桶边界，同一
-// TTL 内重复请求返回同一 `windows`；`points` 是每条查询的采样点数（15m 为
-// 15，其余 24），`step_seconds` = span / points。
+// PerformanceOverviewWindow 本次请求的查询窗：`end` 是请求时刻，`start = end - range`，未对齐查询缓存
+// TTL。返回样本来自上游查询，同一 TTL 窗口内可能复用缓存——请求前移时
+// `windows` 继续前进，样本可以不变。`step_seconds` 是请求的采样步长，
+// `points` 是每条查询的采样点数（15m 为 15，其余 24）。
 type PerformanceOverviewWindow struct {
-	End         time.Time                      `json:"end"`
-	Points      int                            `json:"points"`
-	Range       PerformanceOverviewWindowRange `json:"range"`
-	Start       time.Time                      `json:"start"`
-	StepSeconds int64                          `json:"step_seconds"`
+	// End 本次请求时刻。
+	End    time.Time                      `json:"end"`
+	Points int                            `json:"points"`
+	Range  PerformanceOverviewWindowRange `json:"range"`
+
+	// Start end - range。
+	Start       time.Time `json:"start"`
+	StepSeconds int64     `json:"step_seconds"`
 }
 
 // PerformanceOverviewWindowRange defines model for PerformanceOverviewWindow.Range.

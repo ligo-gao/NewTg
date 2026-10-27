@@ -2785,12 +2785,15 @@ export interface paths {
         /**
          * 性能总览（vitals / 数据源 / 副本 / 资源）
          * @description `range` 只接受 `15m|1h|6h|24h`（缺省 `1h`，大小写敏感），其它值返回
-         *     400 `invalid_range`。`windows` 回显服务端实际使用的查询窗：`start`/`end`
-         *     已截断到查询缓存 TTL 桶边界，同一 TTL 内重复请求返回同一 `windows`；
-         *     `points` 是每条查询的采样点数（15m 为 15，其余 24）。
+         *     400 `invalid_range`。`windows.start`/`end` 是本次请求的查询窗（`end` 为
+         *     请求时刻，`start = end - range`），**未**对齐查询缓存 TTL；返回的样本
+         *     来自上游查询，同一 TTL 窗口内可能复用缓存，因此请求前移时 `windows` 会
+         *     前进而样本保持不变。`step_seconds` 是请求的采样步长，`points` 是每条查询
+         *     的采样点数（15m 为 15，其余 24）。
          *     `sources[].status` 只有 `ok|unavailable|error`，`name` 固定为
          *     `prometheus|heartbeat`。`vitals[].status` 只有 `ok|warn|crit|unknown`——
-         *     未知不等于异常：数据源缺失或无样本时为 `unknown`。`gateways[]` 只列
+         *     未知不等于异常：数据源缺失、无样本，或任一构成查询（p95、错误率、
+         *     pg.max_backends 等）失败而主值仍存在时都是 `unknown`。`gateways[]` 只列
          *     网关副本（按 service 过滤），不含 exporter / Prometheus 自身；
          *     `gateways[].metrics_status` 只有 `ok|unknown`。
          *     可空指标（vitals[].value、gateways[].metrics 及其子字段）在 NaN/±Inf
@@ -2851,8 +2854,9 @@ export interface paths {
          * 运行参数（生效节奏 + 部署参数 + A 类设置值）
          * @description 返回实际生效值而不是前端硬编码。`schedule` 可为 null（部署未装配调度器）；
          *     `schedule.source` 三值 `settings|env|mixed`；`schedule.next_run_at` 在
-         *     `enabled=false` 时为 null，且与 `enabled` 出自同一次读取快照；`legacy_times`
-         *     只在旧时刻表模式下非空。
+         *     `enabled=false`、或 `enabled=true` 但调度器算不出下一次运行（零值）时为
+         *     null，且与 `enabled` 出自同一次读取快照；`legacy_times` 只在旧时刻表模式
+         *     下非空。
          *     `env[].configured` = 渲染后有非空值（环境变量或内置默认），`env[].set` =
          *     环境变量被显式设置，两者独立；`env[].effect` 固定 `restart`。
          *     `METRICS_TOKEN` 只报是否已配置，永不回显值（该行没有 `value` 键）；
@@ -9736,16 +9740,23 @@ export interface components {
             items: components["schemas"]["PerformanceRecentOperation"][];
         };
         /**
-         * @description 服务端实际使用的查询窗。`start`/`end` 已截断到查询缓存 TTL 桶边界，同一
-         *     TTL 内重复请求返回同一 `windows`；`points` 是每条查询的采样点数（15m 为
-         *     15，其余 24），`step_seconds` = span / points。
+         * @description 本次请求的查询窗：`end` 是请求时刻，`start = end - range`，未对齐查询缓存
+         *     TTL。返回样本来自上游查询，同一 TTL 窗口内可能复用缓存——请求前移时
+         *     `windows` 继续前进，样本可以不变。`step_seconds` 是请求的采样步长，
+         *     `points` 是每条查询的采样点数（15m 为 15，其余 24）。
          */
         PerformanceOverviewWindow: {
             /** @enum {string} */
             range: "15m" | "1h" | "6h" | "24h";
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description end - range。
+             */
             start: string;
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description 本次请求时刻。
+             */
             end: string;
             /** Format: int64 */
             step_seconds: number;
@@ -9762,8 +9773,9 @@ export interface components {
             status: "ok" | "unavailable" | "error";
         };
         /**
-         * @description 一个体检格。`status` ∈ {ok, warn, crit, unknown}；unknown 表示数据源缺失
-         *     或无样本，不等于异常。`series` 的元素是 [unix 秒, 值]，NaN/±Inf 已剔除。
+         * @description 一个体检格。`status` ∈ {ok, warn, crit, unknown}；unknown 表示数据源缺失、
+         *     无样本，或任一构成查询（p95、错误率、pg.max_backends 等）失败而主值仍存在，
+         *     不等于异常。`series` 的元素是 [unix 秒, 值]，NaN/±Inf 已剔除。
          */
         PerformanceOverviewVital: {
             /** @description 查询名（perfquery 目录，如 gateway.rps / db.pool）。 */
@@ -10035,8 +10047,9 @@ export interface components {
             timezone: string;
             /**
              * Format: date-time
-             * @description `enabled=false` 时为 null；与 `enabled` 出自同一次设置快照，服务端
-             *     按 `timezone` 计算（客户端不得自行重算）。
+             * @description `enabled=false`，或 `enabled=true` 但调度器算不出下一次运行（Next 返回
+             *     零值，如时刻表为空/间隔非法）时为 null；与 `enabled` 出自同一次设置
+             *     快照，服务端按 `timezone` 计算（客户端不得自行重算）。
              */
             next_run_at: string | null;
             /** @description 旧时刻表（每日 HH:MM 列表）；只在旧时刻表模式下非空。 */
