@@ -33,6 +33,7 @@ export const zhTW: Copy = {
     cta: "免費開始使用",
     openMenu: "開啟導覽選單",
     closeMenu: "關閉導覽選單",
+    ariaLabel: "主導覽",
   },
 
   hero: {
@@ -181,6 +182,7 @@ export const zhTW: Copy = {
 
   footer: {
     tagline: "一個 API，呼叫所有主流模型。統一接入、智慧路由、自動降級與統一計費。",
+    homeAria: "NEWTG 首頁",
     columns: [
       {
         title: "產品",

@@ -56,7 +56,7 @@ export function SiteFooter({ copy, locale }: { copy: Copy; locale: Locale }) {
           <div className="col-span-2 nav:col-span-1">
             <a
               href="#top"
-              aria-label="NEWTG 首页"
+              aria-label={copy.footer.homeAria}
               className="inline-flex items-center gap-[9px] text-ink"
             >
               <RoutingLogo />

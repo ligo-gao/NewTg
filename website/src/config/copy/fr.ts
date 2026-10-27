@@ -33,6 +33,7 @@ export const fr: Copy = {
     cta: "Commencer gratuitement",
     openMenu: "Ouvrir le menu de navigation",
     closeMenu: "Fermer le menu de navigation",
+    ariaLabel: "Navigation principale",
   },
 
   hero: {
@@ -184,6 +185,7 @@ export const fr: Copy = {
   footer: {
     tagline:
       "Une API pour tous les grands modèles. Accès unifié, routage intelligent, bascule automatique et facturation.",
+    homeAria: "Accueil NEWTG",
     columns: [
       {
         title: "Produit",

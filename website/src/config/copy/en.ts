@@ -33,6 +33,7 @@ export const en: Copy = {
     cta: "Get started free",
     openMenu: "Open navigation menu",
     closeMenu: "Close navigation menu",
+    ariaLabel: "Main navigation",
   },
 
   hero: {
@@ -183,6 +184,7 @@ export const en: Copy = {
   footer: {
     tagline:
       "One API for every major model. Unified access, smart routing, automatic failover and billing.",
+    homeAria: "NEWTG home",
     columns: [
       {
         title: "Product",

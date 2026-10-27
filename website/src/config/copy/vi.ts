@@ -33,6 +33,7 @@ export const vi: Copy = {
     cta: "Bắt đầu miễn phí",
     openMenu: "Mở menu điều hướng",
     closeMenu: "Đóng menu điều hướng",
+    ariaLabel: "Điều hướng chính",
   },
 
   hero: {
@@ -184,6 +185,7 @@ export const vi: Copy = {
   footer: {
     tagline:
       "Một API cho mọi mô hình lớn. Truy cập hợp nhất, định tuyến thông minh, tự động dự phòng và thanh toán hợp nhất.",
+    homeAria: "Trang chủ NEWTG",
     columns: [
       {
         title: "Sản phẩm",

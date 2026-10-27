@@ -171,6 +171,8 @@ export interface Copy {
     cta: string;
     openMenu: string;
     closeMenu: string;
+    /** Accessible name for the primary and mobile navigation landmarks. */
+    ariaLabel: string;
   };
   hero: {
     titleLines: string[];
@@ -277,6 +279,8 @@ export interface Copy {
   pricingPage: PricingPageCopy;
   footer: {
     tagline: string;
+    /** Accessible name for the footer logo link back to the home page. */
+    homeAria: string;
     columns: Array<{
       title: string;
       links: CopyLink[];

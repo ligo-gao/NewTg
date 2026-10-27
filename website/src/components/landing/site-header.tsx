@@ -67,7 +67,7 @@ export function SiteHeader({ copy, locale }: { copy: Copy; locale: Locale }) {
           <span className="text-base font-bold tracking-[0.09em]">{copy.brand}</span>
         </a>
 
-        <nav aria-label="主导航" className="mr-auto hidden items-center gap-7 nav:flex">
+        <nav aria-label={copy.nav.ariaLabel} className="mr-auto hidden items-center gap-7 nav:flex">
           {navLinks.map((link) => (
             <a
               key={link.href}
@@ -125,7 +125,7 @@ export function SiteHeader({ copy, locale }: { copy: Copy; locale: Locale }) {
       {open && (
         <nav
           id="mobile-menu"
-          aria-label="主导航"
+          aria-label={copy.nav.ariaLabel}
           className="border-t border-line menu-surface nav:hidden"
         >
           <div className="mx-auto w-full max-w-[1520px] px-4 pt-2.5 pb-[18px] min-[621px]:px-6 wide:px-10">

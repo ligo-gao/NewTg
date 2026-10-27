@@ -33,6 +33,7 @@ export const zhCN: Copy = {
     cta: "免费开始使用",
     openMenu: "打开导航菜单",
     closeMenu: "关闭导航菜单",
+    ariaLabel: "主导航",
   },
 
   hero: {
@@ -181,6 +182,7 @@ export const zhCN: Copy = {
 
   footer: {
     tagline: "一个 API，调用所有主流模型。统一接入、智能路由、自动降级与统一计费。",
+    homeAria: "NEWTG 首页",
     columns: [
       {
         title: "产品",

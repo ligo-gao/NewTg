@@ -33,6 +33,7 @@ export const ja: Copy = {
     cta: "無料で始める",
     openMenu: "ナビゲーションメニューを開く",
     closeMenu: "ナビゲーションメニューを閉じる",
+    ariaLabel: "メインナビゲーション",
   },
 
   hero: {
@@ -184,6 +185,7 @@ export const ja: Copy = {
   footer: {
     tagline:
       "すべての主要モデルをひとつの API で。統一接続、スマートルーティング、自動フェイルオーバー、統一課金。",
+    homeAria: "NEWTG ホーム",
     columns: [
       {
         title: "製品",
