@@ -122,7 +122,9 @@ func TestLoadDefaults(t *testing.T) {
 	if !c.PerfScheduleEnabled || c.PerfScheduleTimes != "00:00,12:00" ||
 		c.PerfScheduleTimezone != "Asia/Shanghai" ||
 		c.PerfScheduleRuns != 3 || c.PerfScheduleConcurrency != 2 {
-		t.Fatalf("perf schedule defaults wrong: %+v", c)
+		t.Fatalf("perf schedule defaults wrong: enabled=%v times=%q tz=%q runs=%d concurrency=%d",
+			c.PerfScheduleEnabled, c.PerfScheduleTimes, c.PerfScheduleTimezone,
+			c.PerfScheduleRuns, c.PerfScheduleConcurrency)
 	}
 }
 
@@ -230,15 +232,41 @@ func TestLoadInvalidValues(t *testing.T) {
 }
 
 func TestPerfScheduleClamps(t *testing.T) {
-	setRequired(t)
-	t.Setenv("PERF_SCHEDULE_RUNS", "99")
-	t.Setenv("PERF_SCHEDULE_CONCURRENCY", "0")
-	c, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
+	cases := []struct {
+		name        string
+		runs        string
+		concurrency string
+		wantRuns    int
+		wantConc    int
+	}{
+		{"runs 高于上限", "99", "0", 5, 1},
+		{"runs 低于下限", "0", "99", 1, 8},
+		{"负值钳到下限", "-3", "-1", 1, 1},
 	}
-	if c.PerfScheduleRuns != 5 || c.PerfScheduleConcurrency != 1 {
-		t.Fatalf("clamp = %d/%d, want 5/1", c.PerfScheduleRuns, c.PerfScheduleConcurrency)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("PERF_SCHEDULE_RUNS", tc.runs)
+			t.Setenv("PERF_SCHEDULE_CONCURRENCY", tc.concurrency)
+			c, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if c.PerfScheduleRuns != tc.wantRuns || c.PerfScheduleConcurrency != tc.wantConc {
+				t.Fatalf("clamp = %d/%d, want %d/%d",
+					c.PerfScheduleRuns, c.PerfScheduleConcurrency, tc.wantRuns, tc.wantConc)
+			}
+		})
+	}
+}
+
+func TestPerfScheduleValidatedEvenWhenDisabled(t *testing.T) {
+	// 关闭定时循环只影响 worker 是否启动；部署配置错误仍须在启动期暴露。
+	setRequired(t)
+	t.Setenv("PERF_SCHEDULE_ENABLED", "false")
+	t.Setenv("PERF_SCHEDULE_TIMEZONE", "Mars/Base")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "PERF_SCHEDULE_TIMEZONE") {
+		t.Fatalf("Load with disabled scheduler = %v, want PERF_SCHEDULE_TIMEZONE error", err)
 	}
 }
 
