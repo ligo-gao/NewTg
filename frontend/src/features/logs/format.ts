@@ -30,6 +30,35 @@ export function discountFold(rate: number): string {
   return String(Number((rate * 10).toFixed(2)))
 }
 
+/**
+ * The unit the discount editor's live hint speaks in: the "折"/"割" fold number
+ * for the CJK locales that use it, the charged percentage everywhere else.
+ *
+ * Returning a `kind` rather than an i18n key keeps this module free of
+ * translation keys (the caller picks the key) while still making the unit
+ * choice testable without a renderer.
+ */
+export type DiscountRateHint =
+  | { kind: 'fold'; value: string }
+  | { kind: 'percent'; value: string }
+
+/**
+ * Rate editor hint for the current locale. Japanese shares the fold concept
+ * (written 割, not 折), so it stays on the fold branch; all other locales read
+ * the charged percentage (`describeDiscount`) instead of a Chinese character.
+ */
+export function discountRateHint(
+  ratePercent: number,
+  locale: string,
+): DiscountRateHint {
+  if (locale.startsWith('zh') || locale === 'ja') {
+    return { kind: 'fold', value: discountFold(ratePercent / 100) }
+  }
+  const display = describeDiscount(ratePercent / 100)
+  if (display.kind === 'none') return { kind: 'percent', value: '—' }
+  return { kind: 'percent', value: display.value }
+}
+
 /** How the bill renders the applied discount: nothing known, or a charged percentage. */
 export type DiscountDisplay =
   | { kind: 'none' }

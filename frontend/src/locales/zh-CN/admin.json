@@ -130,6 +130,7 @@
     "discount_rate_free": "全免",
     "discount_rate_full": "原价（无实际优惠）",
     "discount_rate_fold": "{value}折",
+    "discount_rate_percent": "原价的 {value}%",
     "discount_rate_invalid": "请输入 0 到 100 的整数。",
     "discount_valid_from": "生效起点",
     "discount_valid_until": "生效终点",

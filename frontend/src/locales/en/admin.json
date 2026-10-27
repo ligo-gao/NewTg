@@ -128,6 +128,7 @@
     "discount_rate_free": "Free",
     "discount_rate_full": "Full price (no actual discount)",
     "discount_rate_fold": "{value}折",
+    "discount_rate_percent": "{value}% of list price",
     "discount_rate_invalid": "Enter a whole number from 0 to 100.",
     "discount_valid_from": "Valid from",
     "discount_valid_until": "Valid until",

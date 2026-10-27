@@ -130,6 +130,7 @@
     "discount_rate_free": "全免",
     "discount_rate_full": "原價（無實際優惠）",
     "discount_rate_fold": "{value}折",
+    "discount_rate_percent": "原價的 {value}%",
     "discount_rate_invalid": "請輸入 0 到 100 的整數。",
     "discount_valid_from": "生效起點",
     "discount_valid_until": "生效終點",

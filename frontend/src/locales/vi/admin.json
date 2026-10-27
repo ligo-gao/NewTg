@@ -130,6 +130,7 @@
     "discount_rate_free": "Miễn phí",
     "discount_rate_full": "Giá gốc (không giảm thực tế)",
     "discount_rate_fold": "{value}折",
+    "discount_rate_percent": "{value}% so với giá niêm yết",
     "discount_rate_invalid": "Nhập số nguyên từ 0 đến 100.",
     "discount_valid_from": "Hiệu lực từ",
     "discount_valid_until": "Hiệu lực đến",

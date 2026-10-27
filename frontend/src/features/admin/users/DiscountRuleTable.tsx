@@ -5,7 +5,7 @@ import { apiClient } from '@/api/client'
 import { ApiError } from '@/api/errors'
 import { requireData } from '@/api/result'
 import type { components } from '@/api/schema'
-import { discountFold } from '@/features/logs/format'
+import { discountRateHint } from '@/features/logs/format'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
 import { Dialog } from '@/shared/ui/base/dialog'
@@ -119,7 +119,7 @@ function formatRuleDate(value: string | null): string {
  * difference is the endpoint prefix derived from `targetType`.
  */
 export function DiscountRuleTable({ targetType, targetID }: DiscountRuleTableProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const queryClient = useQueryClient()
   const push = useToastStore((state) => state.push)
   const modelListId = useId()
@@ -254,14 +254,15 @@ export function DiscountRuleTable({ targetType, targetID }: DiscountRuleTablePro
     setFormOpen(true)
   }
 
-  /** `0 → Free`, `100 → full price`, otherwise the fold number for the UI. */
+  /** `0 → Free`, `100 → full price`, otherwise the locale's rate hint. */
   function rateLabel(value: number): string | undefined {
     if (!Number.isInteger(value) || value < 0 || value > 100) return undefined
     if (value === 0) return t('admin.user_form.discount_rate_free')
     if (value === 100) return t('admin.user_form.discount_rate_full')
-    return t('admin.user_form.discount_rate_fold', {
-      value: discountFold(value / 100),
-    })
+    const hint = discountRateHint(value, locale)
+    return hint.kind === 'fold'
+      ? t('admin.user_form.discount_rate_fold', { value: hint.value })
+      : t('admin.user_form.discount_rate_percent', { value: hint.value })
   }
 
   async function submitRule(): Promise<void> {

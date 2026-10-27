@@ -130,6 +130,7 @@
     "discount_rate_free": "Бесплатно",
     "discount_rate_full": "Полная цена (без реальной скидки)",
     "discount_rate_fold": "{value}折",
+    "discount_rate_percent": "{value}% от прайс-листа",
     "discount_rate_invalid": "Введите целое число от 0 до 100.",
     "discount_valid_from": "Действует с",
     "discount_valid_until": "Действует до",
