@@ -147,10 +147,10 @@ export function ModelExplorer({ copy }: { copy: Copy }) {
       <div className="mx-auto w-full max-w-[1520px] px-4 min-[621px]:px-6 wide:px-10">
         <div className="mb-7 flex flex-wrap items-start justify-between gap-x-8 gap-y-5">
           <div>
-            <h2 className="text-[clamp(1.7rem,3vw,2.4rem)] font-semibold leading-tight tracking-[-0.03em]">
+            <h2 className="text-[clamp(1.75rem,3vw,2.4rem)] font-semibold leading-tight tracking-[-0.03em]">
               {copy.models.title}
             </h2>
-            <p className="mt-2.5 max-w-[34em] text-[14.5px] text-muted">{copy.models.subtitle}</p>
+            <p className="mt-3 max-w-[34em] text-[15px] leading-[1.8] text-ink-2">{copy.models.subtitle}</p>
           </div>
 
           <div className="relative w-full min-[1081px]:w-[340px] min-[1081px]:flex-none">

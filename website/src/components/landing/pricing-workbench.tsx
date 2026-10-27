@@ -666,10 +666,10 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
     <div data-locale={locale}>
       <section className="pb-[30px] pt-14">
         <div className={CONTAINER}>
-          <h1 className="text-[clamp(2.1rem,3.6vw,3rem)] font-bold leading-[1.12] tracking-[-0.035em]">
+          <h1 className="text-[clamp(2.1rem,3.8vw,3.2rem)] font-bold leading-[1.12] tracking-[-0.035em]">
             {pageCopy.title}
           </h1>
-          <p className="mt-3 max-w-[46em] text-[15px] leading-[1.8] text-ink-2">
+          <p className="mt-3.5 max-w-[46em] text-[15px] leading-[1.8] text-ink-2">
             {pageCopy.subtitle}
           </p>
 

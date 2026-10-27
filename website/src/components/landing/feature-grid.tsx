@@ -76,7 +76,7 @@ export function FeatureGrid({ copy }: { copy: Copy }) {
     <section id="features" className="scroll-mt-20 border-t border-line py-16">
       <div className={container}>
         <div className="mb-7">
-          <h2 className="text-[clamp(1.7rem,3vw,2.4rem)] leading-[1.25] font-semibold tracking-[-0.03em]">
+          <h2 className="text-[clamp(1.75rem,3vw,2.4rem)] leading-tight font-semibold tracking-[-0.03em]">
             {copy.features.title}
           </h2>
           <p className="mt-2.5 max-w-[34em] text-[14.5px] text-muted">
