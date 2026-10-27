@@ -15,9 +15,33 @@ const ORIGIN = 'http://localhost:3000'
 
 const server = setupServer()
 
-beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
+/**
+ * The timezone tests must fail on the old `slice(0, 16)` implementation even
+ * on a UTC CI runner, where local time and UTC coincide. Pin a non-UTC zone so
+ * the round-trip assertion is a real guard regardless of the host.
+ */
+const HOST_TZ = process.env.TZ
+
+beforeAll(() => {
+  process.env.TZ = 'Asia/Shanghai'
+  server.listen({ onUnhandledRequest: 'error' })
+})
 afterEach(() => server.resetHandlers())
-afterAll(() => server.close())
+afterAll(() => {
+  server.close()
+  if (HOST_TZ === undefined) {
+    delete process.env.TZ
+  } else {
+    process.env.TZ = HOST_TZ
+  }
+})
+
+/** `YYYY-MM-DD` in the runtime's local calendar, matching the table's display. */
+function localDate(iso: string): string {
+  const date = new Date(iso)
+  const pad = (part: number): string => String(part).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
 
 function rule(overrides: Partial<DiscountRule> = {}): DiscountRule {
   return {
@@ -63,7 +87,9 @@ describe('DiscountRuleTable', () => {
 
     expect(await findByText('gpt-4o')).toBeTruthy()
     expect(getByText('9折')).toBeTruthy()
-    expect(getByText('2026-11-01 ~ —')).toBeTruthy()
+    // Derive the day locally: the table renders in the viewer's calendar, so a
+    // hardcoded UTC day would fail on negative-offset machines.
+    expect(getByText(`${localDate('2026-11-01T00:00:00Z')} ~ —`)).toBeTruthy()
   })
 
   it('shows the empty state', async () => {
@@ -248,5 +274,40 @@ describe('DiscountRuleTable', () => {
     await user.click(getByRole('button', { name: 'Add rule' }))
 
     expect(queryByText('Free')).toBeNull()
+  })
+
+  it('does not save the rule from Enter in the model picker or the checkbox', async () => {
+    let created = 0
+    installDefaults()
+    server.use(
+      http.post(`${ORIGIN}/api/users/7/discounts`, () => {
+        created += 1
+        return HttpResponse.json(rule(), { status: 201 })
+      }),
+    )
+
+    const { findByText, getByLabelText, getByRole, user } = await renderTable()
+
+    await findByText('gpt-4o')
+    await user.click(getByRole('button', { name: 'Add rule' }))
+    await user.type(getByLabelText('Model'), 'gpt-4o')
+    await user.type(getByLabelText('Effective rate (%)'), '90')
+
+    // The model input backs a datalist: Enter belongs to the picker, not to
+    // the rule form. The checkbox keeps its native keyboard semantics too.
+    const modelInput = getByLabelText('Model')
+    modelInput.focus()
+    await user.keyboard('{Enter}')
+    const enabledCheckbox = getByLabelText('Enabled') as HTMLInputElement
+    enabledCheckbox.focus()
+    await user.keyboard('{Enter}')
+
+    expect(created).toBe(0)
+
+    // The explicit button still saves normally.
+    await user.click(getByRole('button', { name: 'Save rule' }))
+    await waitFor(() => {
+      expect(created).toBe(1)
+    })
   })
 })

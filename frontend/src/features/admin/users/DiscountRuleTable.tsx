@@ -91,6 +91,7 @@ export function toDatetimeLocal(value: string | null): string {
   // Local components, never `slice()`: the picker interprets its value as local
   // time, so formatting the local clock makes this the exact inverse of
   // `new Date(localValue)` and keeps edits round-trip safe in every timezone.
+  // Minute precision only — the picker has no seconds field.
   return [
     `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
     `${pad(date.getHours())}:${pad(date.getMinutes())}`,
@@ -332,17 +333,24 @@ export function DiscountRuleTable({ targetType, targetID }: DiscountRuleTablePro
     }
   }
 
-  // This editor lives inside the sheet's own <form>; Enter in a free-text
-  // control must save the rule instead of implicitly submitting the user form.
-  // Buttons, textareas and the enabled checkbox keep their native behaviour.
+  // This editor lives inside the sheet's own <form>, so Enter on any input
+  // must never fall through to the user form's implicit submission. Plain
+  // free-text fields (rate / dates) also save the rule; the datalist-backed
+  // model picker leaves Enter to the suggestion list, and the enabled checkbox
+  // does not save anything — both are only stopped from bubbling into the
+  // outer form.
   function handleFormKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
     if (event.key !== 'Enter') return
     const target = event.target as HTMLElement
     if (target.tagName !== 'INPUT') return
-    const type = (target as HTMLInputElement).type
-    if (type !== 'text' && type !== 'number' && type !== 'datetime-local') return
+    const input = target as HTMLInputElement
+    const savesRule =
+      (input.type === 'text' ||
+        input.type === 'number' ||
+        input.type === 'datetime-local') &&
+      !input.hasAttribute('list')
     event.preventDefault()
-    void submitRule()
+    if (savesRule) void submitRule()
   }
 
   return (
