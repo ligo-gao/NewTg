@@ -159,6 +159,7 @@ function requestedURLs(fetchMock: ReturnType<typeof stubFetch>): string[] {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("PerformanceSection", () => {
@@ -196,6 +197,47 @@ describe("PerformanceSection", () => {
     });
     expect(within(row).queryByText("210 ms")).toBeNull();
     expect(within(row).queryByText("42.5 tokens/s")).toBeNull();
+  });
+
+  it("keeps probes from just under 36 hours", async () => {
+    // 钉住阈值本身：只有 37h 与 0h 两个用例时，任何 (0h, 37h] 的常量都能通过。
+    stubFetch({
+      metrics: {
+        "openai/gpt-4o": metricsWith(1543, 42.5, {
+          latestTest: latestTest({
+            ttft_ms_p50: 210,
+            tps: 42.5,
+            tested_at: new Date(Date.now() - 35 * 3600_000).toISOString(),
+          }),
+        }),
+      },
+    });
+    renderSection();
+
+    const row = await findRow("GPT-4o");
+    await waitFor(() => {
+      expect(within(row).getByText("210 ms")).toBeInTheDocument();
+    });
+    expect(within(row).getByText("42.5 tokens/s")).toBeInTheDocument();
+  });
+
+  it("renders a dash for a fresh probe field that is missing", async () => {
+    stubFetch({
+      metrics: {
+        "openai/gpt-4o": metricsWith(1543, 42.5, {
+          latestTest: latestTest({ ttft_ms_p50: null, tps: 42.5 }),
+        }),
+      },
+    });
+    renderSection();
+
+    const row = await findRow("GPT-4o");
+    await waitFor(() => {
+      expect(within(row).getByText("42.5 tokens/s")).toBeInTheDocument();
+    });
+    // 缺失的单列显示 —，不能出现 "null" 或崩溃。
+    expect(within(row).getByText("—")).toBeInTheDocument();
+    expect(within(row).queryByText("null")).toBeNull();
   });
 
   it("hides probes older than 36 hours", async () => {
@@ -255,6 +297,9 @@ describe("PerformanceSection", () => {
   });
 
   it("excludes non-chat models from the performance table", async () => {
+    // 固定采样：否则回退到 featured（7 个模型取 6 个）时，嵌入模型只有 6/7
+    // 的概率被抽中，回退能逃过断言。
+    vi.spyOn(Math, "random").mockReturnValue(0);
     const fetchMock = stubFetch({
       metrics: {
         "openai/gpt-4o": metricsWith(1543, 1.5, {
