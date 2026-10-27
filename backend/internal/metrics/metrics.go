@@ -267,14 +267,23 @@ func (s *Set) collectors() []prometheus.Collector {
 //
 // 同时注册 go_* / process_* 标准采集器（platform-05 §3.1）：这些是客户端库
 // 自带能力，不重复造，但 /metrics 必须能看到它们。
-func NewRegistry() (*prometheus.Registry, *Set) {
+//
+// instanceID 非空时，所有序列（含标准采集器与新注册的 newtg_*）都带上常量
+// instance 标签，取值与 /api/instances 心跳 id 同源，便于在 Prometheus 侧
+// 按实例 join。不传或传空串时保持原有指标形状（无 instance 标签）。
+func NewRegistry(instanceID ...string) (*prometheus.Registry, *Set) {
 	set := newSet()
 	reg := prometheus.NewRegistry()
-	reg.MustRegister(
+	var registerer prometheus.Registerer = reg
+	if len(instanceID) > 0 && instanceID[0] != "" {
+		registerer = prometheus.WrapRegistererWith(
+			prometheus.Labels{"instance": instanceID[0]}, reg)
+	}
+	registerer.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
-	reg.MustRegister(set.collectors()...)
+	registerer.MustRegister(set.collectors()...)
 	return reg, set
 }
 
@@ -282,11 +291,29 @@ var (
 	defaultOnce     sync.Once
 	defaultRegistry *prometheus.Registry
 	defaultSet      *Set
+
+	instanceMu sync.RWMutex
+	instanceID string
 )
+
+// SetInstanceID 设置注入到全部 newtg_*（及 go_*/process_*）序列上的常量
+// instance 标签值。必须在第一次使用本包之前调用（各角色的 run* 装配开头）：
+// Default 是懒初始化的，初始化后再调用不会重建 registry，tag 不会生效。
+func SetInstanceID(id string) {
+	instanceMu.Lock()
+	instanceID = id
+	instanceMu.Unlock()
+}
+
+func processInstanceID() string {
+	instanceMu.RLock()
+	defer instanceMu.RUnlock()
+	return instanceID
+}
 
 // Default 返回进程级默认指标集合（懒初始化，并发安全）。
 func Default() *Set {
-	defaultOnce.Do(func() { defaultRegistry, defaultSet = NewRegistry() })
+	defaultOnce.Do(func() { defaultRegistry, defaultSet = NewRegistry(processInstanceID()) })
 	return defaultSet
 }
 

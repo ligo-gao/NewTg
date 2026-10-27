@@ -471,6 +471,95 @@ func findMetric(t *testing.T, families map[string]*dto.MetricFamily, name string
 	return nil
 }
 
+// instanceLabelOf 取样本上的 instance 标签值；不存在时返回空串与 false。
+func instanceLabelOf(m *dto.Metric) (string, bool) {
+	for _, pair := range m.GetLabel() {
+		if pair.GetName() == "instance" {
+			return pair.GetValue(), true
+		}
+	}
+	return "", false
+}
+
+// TestNewRegistryInstanceLabel：显式传入 instance 时，所有产出样本的 family
+// （含 go_* / process_* 标准采集器与 newtg_build_info）都必须带常量
+// instance 标签，让 Prometheus 序列能与 /api/instances 的心跳 id 对齐。
+func TestNewRegistryInstanceLabel(t *testing.T) {
+	const want = "gw-7f9c"
+	reg, set := NewRegistry(want)
+	set.ObserveHTTP("gateway", "GET", "GET /api/status", 200, time.Millisecond, 1)
+
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	var sawBuildInfo, sawGo, sawProcess, sawHTTP bool
+	for _, mf := range families {
+		samples := mf.GetMetric()
+		if len(samples) == 0 {
+			continue
+		}
+		switch name := mf.GetName(); {
+		case name == "newtg_build_info":
+			sawBuildInfo = true
+		case name == "newtg_http_requests_total":
+			sawHTTP = true
+		case strings.HasPrefix(name, "go_"):
+			sawGo = true
+		case strings.HasPrefix(name, "process_"):
+			sawProcess = true
+		}
+		for i, m := range samples {
+			got, ok := instanceLabelOf(m)
+			if !ok || got != want {
+				t.Errorf("%s[%d] instance label = %q (present=%v), want %q",
+					mf.GetName(), i, got, ok, want)
+			}
+		}
+	}
+	if !sawBuildInfo || !sawHTTP || !sawGo || !sawProcess {
+		t.Errorf("expected families missing: build_info=%v http_requests=%v go_*=%v process_*=%v",
+			sawBuildInfo, sawHTTP, sawGo, sawProcess)
+	}
+}
+
+// TestNewRegistryWithoutInstanceKeepsTodayShape：不传 instance 时保持现状——
+// 不注入任何 instance 标签，newtg_build_info 的标签集仍是构建信息五元组。
+func TestNewRegistryWithoutInstanceKeepsTodayShape(t *testing.T) {
+	reg, _ := NewRegistry()
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	var buildInfo *dto.MetricFamily
+	for _, mf := range families {
+		if mf.GetName() == "newtg_build_info" {
+			buildInfo = mf
+		}
+		for i, m := range mf.GetMetric() {
+			if got, ok := instanceLabelOf(m); ok {
+				t.Errorf("%s[%d] unexpectedly has instance=%q", mf.GetName(), i, got)
+			}
+		}
+	}
+	if buildInfo == nil || len(buildInfo.GetMetric()) == 0 {
+		t.Fatal("newtg_build_info family missing or empty")
+	}
+	// 标签顺序按字典序由 client_golang 输出，这里比较标签集合。
+	want := map[string]bool{
+		"version": true, "commit": true, "goversion": true, "goos": true, "goarch": true,
+	}
+	labels := buildInfo.GetMetric()[0].GetLabel()
+	if len(labels) != len(want) {
+		t.Fatalf("newtg_build_info labels = %v, want keys %v", labels, want)
+	}
+	for _, pair := range labels {
+		if !want[pair.GetName()] {
+			t.Errorf("unexpected newtg_build_info label %q", pair.GetName())
+		}
+	}
+}
+
 // ---- 连接池 collector 的测试替身：不发起任何真实连接 ----
 
 type stubConnector struct{}

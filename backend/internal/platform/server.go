@@ -47,6 +47,9 @@ func RunGateway(ctx context.Context, cfg *config.Config) error {
 
 func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error {
 	log := NewLogger(cfg)
+	// 指标序列的常量 instance 标签与 /api/instances 心跳 id 同源。必须在
+	// 任何 metrics.* 首次使用之前注入：Default() 懒初始化后不再读取该值。
+	metrics.SetInstanceID(httpapi.ResolveProcessInstanceID())
 	log.Info("gateway starting",
 		"version", version.Version,
 		"commit", version.Commit,
@@ -445,6 +448,8 @@ func RunWorker(ctx context.Context, cfg *config.Config) error {
 
 func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	log := NewLogger(cfg)
+	// 与 gateway 同口径：instance 标签必须早于任何 metrics.* 首次使用。
+	metrics.SetInstanceID(httpapi.ResolveProcessInstanceID())
 	log.Info("worker starting",
 		"version", version.Version,
 		"commit", version.Commit,
