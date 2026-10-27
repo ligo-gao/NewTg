@@ -1,11 +1,12 @@
 "use client";
 
 import type { ChangeEvent } from "react";
-import { LOCALES, localeInfo, localePath, type Locale } from "@/config/locales";
+import { LOCALES, localeInfo, type Locale } from "@/config/locales";
 import {
   ensureLanguageSchema,
   markLanguageChosen,
 } from "@/lib/language-preference";
+import { localizePath } from "@/lib/locale-path";
 import { syncLanguageToAccount } from "@/lib/language-sync";
 
 interface LanguageSwitcherProps {
@@ -40,35 +41,8 @@ export function LanguageSwitcher({
     // 后台回写账号偏好；keepalive 让请求活过下面的整页导航。
     void syncLanguageToAccount(next);
 
-    const currentPath = window.location.pathname;
-    const currentLocale = localeInfo(locale);
-    const nextBase = localePath(next);
-
-    // 移除当前语言前缀，获取页面路径
-    let pagePath = currentPath;
-    if (currentLocale.path !== "/") {
-      // 移除当前语言路径前缀（例如 /en/, /fr/）
-      pagePath = currentPath.replace(new RegExp(`^${currentLocale.path.replace(/\/$/, '')}`), '');
-    }
-
-    // 确保路径以 / 开头
-    if (!pagePath.startsWith('/')) {
-      pagePath = '/' + pagePath;
-    }
-
-    // 构建目标路径：新语言前缀 + 页面路径
-    let destination: string;
-    if (nextBase === "/") {
-      // 简体中文（默认语言）直接使用页面路径
-      destination = pagePath === "/" ? "/" : pagePath;
-    } else {
-      // 其他语言：语言前缀 + 页面路径
-      destination = pagePath === "/"
-        ? nextBase
-        : `${nextBase.replace(/\/$/, '')}${pagePath}`;
-    }
-
-    window.location.assign(destination);
+    // 保留当前页面路径，只替换语言前缀（'/' 是简体中文）。
+    window.location.assign(localizePath(window.location.pathname, next));
   }
 
   const current = localeInfo(locale);

@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import { Archivo, JetBrains_Mono, Noto_Sans_SC } from "next/font/google";
+import { LocalePreferenceRoute } from "@/components/locale-preference-route";
 import { site } from "@/config/site";
 import { THEME_INIT_SCRIPT } from "@/lib/theme";
 import "./globals.css";
@@ -81,7 +82,10 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
-      <body>{children}</body>
+      <body>
+        <LocalePreferenceRoute />
+        {children}
+      </body>
     </html>
   );
 }
