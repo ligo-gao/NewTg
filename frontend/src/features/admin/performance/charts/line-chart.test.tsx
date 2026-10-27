@@ -267,6 +267,31 @@ describe('LineChart', () => {
     expect(cells).toEqual(['42', '—', '7'])
   })
 
+  it('breaks the path into separate subpaths at null points', () => {
+    const { container } = renderChart([
+      {
+        key: 'p95',
+        label: 'TTFT p95',
+        color: 'var(--chart-cat-3)',
+        points: [
+          [T0, 300],
+          [T0 + HOUR, null],
+          [T0 + 2 * HOUR, 420],
+        ],
+      },
+    ])
+
+    const path = container.querySelector('path[data-series-key="p95"]')
+    const d = path?.getAttribute('d') ?? ''
+    // null 处断线：两个有限点各起一条 M 子路径，不跨空洞连线。
+    expect((d.match(/M/g) ?? []).length).toBe(2)
+
+    // 数据表仍保留该 x，值为 —。
+    const rows = [...container.querySelectorAll('table tbody tr')]
+    expect(rows).toHaveLength(3)
+    expect(rows[1]?.querySelectorAll('td')[0]?.textContent).toBe('—')
+  })
+
   it('renders no animation or transition classes', () => {
     const { container } = renderChart()
     const animated = [...container.querySelectorAll<HTMLElement>('*')].filter(

@@ -190,6 +190,8 @@ export function ModelPerfZone({ models, onRunNow }: ModelPerfZoneProps) {
               const dash = noSample ? '—' : null
               const tone = sparkTone(row.status)
               const subtitle = modelSubtitle(row, t)
+              // 编码后放进 id：模型名可能含 `/`、`&`、`=` 等字符。
+              const detailId = `model-detail-${encodeURIComponent(row.model)}`
 
               return (
                 <Fragment key={row.model}>
@@ -197,6 +199,7 @@ export function ModelPerfZone({ models, onRunNow }: ModelPerfZoneProps) {
                     data-testid="model-row"
                     data-model={row.model}
                     aria-expanded={open}
+                    aria-controls={detailId}
                     tabIndex={0}
                     onClick={() => toggle(row.model)}
                     onKeyDown={(event) => handleKeyDown(event, row.model)}
@@ -236,7 +239,7 @@ export function ModelPerfZone({ models, onRunNow }: ModelPerfZoneProps) {
                       {dash ?? formatPercent(row.success_rate)}
                     </td>
                     <td className="px-4 py-2.5 text-right font-mono tabular-nums text-ink-1">
-                      {dash ?? formatPercent(row.uptime)}
+                      {dash ?? formatPercent(row.uptime, 2)}
                     </td>
                     <td className="px-4 py-2.5 text-right font-mono tabular-nums text-ink-1">
                       {dash ?? tpsText(row.tps, locale)}
@@ -260,7 +263,7 @@ export function ModelPerfZone({ models, onRunNow }: ModelPerfZoneProps) {
                     </td>
                   </tr>
                   {open ? (
-                    <tr data-testid="model-detail-row">
+                    <tr data-testid="model-detail-row" id={detailId}>
                       <td colSpan={10} className="px-4 py-4">
                         <ModelDetail model={row.model} />
                       </td>

@@ -48,8 +48,12 @@ export interface LineChartSeries {
   color: string
   /** 数据表表头文案（例如 `detail.table_p50`）；缺省时用 `label`。 */
   tableLabel?: string
-  /** `[x, value]`；x 是 epoch 毫秒，组件按数值定位而不是分桶。 */
-  points: [number, number][]
+  /**
+   * `[x, value]`；x 是 epoch 毫秒，组件按数值定位而不是分桶。value 为
+   * `null` 表示该点没有有限值（例如越过 30s 的分位）：折线在 null 处断开，
+   * 数据表显示 `—`，tooltip/刻度与 y 域都忽略它。
+   */
+  points: readonly [number, number | null][]
   /** 与 `points` 按索引对齐的样本数；提供时才渲染样本列。 */
   samples?: (number | null)[]
 }
@@ -155,18 +159,21 @@ export function LineChart({
   ].sort((a, b) => a - b)
 
   const valueMaps = new Map(
-    series.map((item) => [
-      item.key,
-      new Map(
-        item.points.filter(
-          ([x, y]) => Number.isFinite(x) && Number.isFinite(y),
-        ),
-      ),
-    ]),
+    series.map((item) => {
+      const map = new Map<number, number>()
+      for (const [x, y] of item.points) {
+        if (Number.isFinite(x) && typeof y === 'number' && Number.isFinite(y)) {
+          map.set(x, y)
+        }
+      }
+      return [item.key, map] as const
+    }),
   )
 
   const allValues = series.flatMap((item) =>
-    item.points.map(([, y]) => y).filter((value) => Number.isFinite(value)),
+    item.points.flatMap(([, y]) =>
+      typeof y === 'number' && Number.isFinite(y) ? [y] : [],
+    ),
   )
   const rawMax = allValues.length > 0 ? Math.max(...allValues) : 0
   const yMax = niceMax(rawMax > 0 ? rawMax : 1)
@@ -399,18 +406,29 @@ export function LineChart({
           </g>
 
           {series.map((item) => {
-            const ordered = item.points
-              .filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y))
-              .slice()
-              .sort((a, b) => a[0] - b[0])
-            const d = ordered
-              .map(
-                ([x, y], index) =>
-                  `${index === 0 ? 'M' : 'L'}${xFor(x).toFixed(1)},${yFor(y).toFixed(1)}`,
+            // x 升序后逐点铺路径；null 或非法值结束当前子路径，下一个有限
+            // 点重新起一条 `M`——折线在空洞处真正断开，而不是跨洞连线。
+            const ordered = [...item.points].sort((a, b) => a[0] - b[0])
+            const commands: string[] = []
+            let drawing = false
+            let last: [number, number] | null = null
+            for (const [x, y] of ordered) {
+              if (
+                !Number.isFinite(x) ||
+                typeof y !== 'number' ||
+                !Number.isFinite(y)
+              ) {
+                drawing = false
+                continue
+              }
+              commands.push(
+                `${drawing ? 'L' : 'M'}${xFor(x).toFixed(1)},${yFor(y).toFixed(1)}`,
               )
-              .join(' ')
-            if (d === '') return null
-            const last = ordered[ordered.length - 1]
+              drawing = true
+              last = [x, y]
+            }
+            const d = commands.join(' ')
+            if (d === '' || last === null) return null
             return (
               <g key={item.key}>
                 <path
@@ -423,17 +441,15 @@ export function LineChart({
                   strokeLinejoin="round"
                   vectorEffect="non-scaling-stroke"
                 />
-                {last === undefined ? null : (
-                  <circle
-                    cx={xFor(last[0])}
-                    cy={yFor(last[1])}
-                    r={3.5}
-                    fill={item.color}
-                    stroke="var(--surface-card)"
-                    strokeWidth={2}
-                    vectorEffect="non-scaling-stroke"
-                  />
-                )}
+                <circle
+                  cx={xFor(last[0])}
+                  cy={yFor(last[1])}
+                  r={3.5}
+                  fill={item.color}
+                  stroke="var(--surface-card)"
+                  strokeWidth={2}
+                  vectorEffect="non-scaling-stroke"
+                />
               </g>
             )
           })}

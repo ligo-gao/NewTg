@@ -10,6 +10,7 @@
  * 函数只接受「已确认」的调用，不提供默认值或可选头。
  */
 import { apiClient, toApiError } from '@/api/client'
+import { parseProblem } from '@/api/errors'
 import { requireData } from '@/api/result'
 import type { components } from '@/api/schema'
 import {
@@ -230,8 +231,10 @@ function absoluteUrl(path: string): string {
 }
 
 /**
- * 单模型下钻序列。端点不在契约里，所以绕过 `apiClient` 直接 `fetch`；错误
- * 仍走同一个 `toApiError`，页面拿到的是统一的 `ApiError`。
+ * 单模型下钻序列。端点不在契约里，所以绕过 `apiClient` 直接 `fetch`（与
+ * `features/admin/channels/api.ts` 的 `dispatch` 同一写法）；错误仍归一成
+ * 统一形状：非 2xx 走 `toApiError`，传输层失败 throw
+ * `parseProblem({status: 0})`（`kind: 'offline'`），AbortError 原样抛出。
  *
  * `range=24h` 是这一屏的固定口径（与模型表 24h 窗口、demo 副标题一致），
  * 调用方不接受窗口参数。响应只保留 `buckets` 与 `pipeline`：管道缺失时
@@ -241,21 +244,32 @@ export async function fetchModelPerfSeries(
   model: string,
   signal?: AbortSignal,
 ): Promise<ModelPerfSeries> {
-  const response = await fetch(
-    absoluteUrl(
-      `/api/model-perf?range=24h&model=${encodeURIComponent(model)}`,
-    ),
-    {
+  const url = absoluteUrl(
+    `/api/model-perf?range=24h&model=${encodeURIComponent(model)}`,
+  )
+  let response: Response
+  try {
+    response = await fetch(url, {
       credentials: 'same-origin',
       headers: { Accept: 'application/json' },
       signal,
-    },
-  )
+    })
+  } catch (error) {
+    // 调用方取消不是传输失败：让 abort 语义原样向上传递。
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw parseProblem({ status: 0 })
+  }
   if (!response.ok) throw await toApiError(response)
 
   const body = (await response.json()) as ModelPerfSeriesBody
   return {
-    buckets: Array.isArray(body.buckets) ? body.buckets : [],
+    // 响应来自无契约端点：非对象项直接丢弃，避免坏数据把渲染器打崩。
+    buckets: Array.isArray(body.buckets)
+      ? body.buckets.filter(
+          (bucket): bucket is ModelPerfBucket =>
+            typeof bucket === 'object' && bucket !== null,
+        )
+      : [],
     pipeline: body.pipeline ?? { enabled: false, stale: true },
   }
 }

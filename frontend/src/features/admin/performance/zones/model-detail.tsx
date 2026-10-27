@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 
 import { useI18n } from '@/shared/lib/i18n-context'
+import { Button } from '@/shared/ui/button'
 
 import { fetchModelPerfSeries, type ModelPerfBucket } from '../api'
 import { LineChart, type LineChartSeries } from '../charts/line-chart'
@@ -14,8 +15,8 @@ import { formatMs } from '../utils'
  *
  * x 轴必须是 `Date.parse(bucket.start)` 的 epoch 毫秒：LineChart 的 x 是数值
  * 时间戳，传桶序号会把 1970 年当日期渲染。越过 30s 的桶没有有限值，点位
- * 写成 null——LineChart 用 `Number.isFinite` 过滤 y，折线不经过该点，数据表
- * 该格显示 `—`（与后端 spark 的既有口径一致，不插值、不补 30000）。
+ * 写成 null——LineChart 在 null 处断开子路径，数据表该格显示 `—`（与后端
+ * spark 的既有口径一致，不插值、不补 30000）。
  */
 
 export interface ModelDetailProps {
@@ -26,19 +27,19 @@ type NumericField = 'ttft_p50_ms' | 'ttft_p95_ms'
 type OverField = 'ttft_p50_over_30s' | 'ttft_p95_over_30s'
 
 /**
- * 桶 → `[epoch 毫秒, 值]`。`over_30s` 的点写成 null：LineChart 的序列类型
- * 声明为 `[number, number][]`，但运行时按 `Number.isFinite` 丢弃 y，所以
- * 这里对 null 做一次有意的断言，换取「该点无有限值」而不是伪造 30000。
+ * 桶 → `[epoch 毫秒, 值]`。`over_30s` 的点直接写 null：LineChart 现在按
+ * null 断线（独立子路径）、数据表显示 `—`，tooltip 跳过该点——不伪造
+ * 30000，也不跨空洞连线。
  */
 function pointsFor(
   buckets: readonly ModelPerfBucket[],
   valueField: NumericField,
   overField: OverField,
-): [number, number][] {
-  return buckets.map((bucket) => {
-    const value = bucket[overField] ? null : bucket[valueField]
-    return [Date.parse(bucket.start), value as number]
-  })
+): [number, number | null][] {
+  return buckets.map((bucket) => [
+    Date.parse(bucket.start),
+    bucket[overField] ? null : bucket[valueField],
+  ])
 }
 
 export function ModelDetail({ model }: ModelDetailProps) {
@@ -47,18 +48,50 @@ export function ModelDetail({ model }: ModelDetailProps) {
   const query = useQuery({
     queryKey: ['perf-model-series', model],
     queryFn: ({ signal }) => fetchModelPerfSeries(model, signal),
-    // 管理观测页不自动重试：失败就在展开区显示空态，刷新由页面负责。
+    // 管理观测页不自动重试：失败就在展开区显示可重试的错误态。
     retry: false,
   })
 
-  // 首次请求中不渲染「无样本」：那会把加载态误报成空数据。
-  if (query.isPending) return null
+  // 请求中：给展开格一个稳定的占位，避免手风琴高度先塌后跳。骨架对辅助
+  // 技术隐藏，外层 `role="status"` 只播报 busy 状态。
+  if (query.isPending) {
+    return (
+      <div role="status" aria-busy="true" data-testid="model-detail-loading">
+        <div
+          aria-hidden="true"
+          className="h-[220px] rounded-lg border border-border-hairline bg-surface-subtle"
+        />
+      </div>
+    )
+  }
+
+  // 请求失败不能显示「无样本」：那是两种不同的结论。这里保留可重试的错误态，
+  // 文案复用既有的性能错误键，不新增语言键。
+  if (query.isError) {
+    return (
+      <div
+        role="alert"
+        data-testid="model-detail-error"
+        className="rounded-lg border border-danger-line bg-danger-bg px-4 py-3.5"
+      >
+        <p className="text-meta font-semibold text-ink-1">
+          {t('common.dashboard.performance.error')}
+        </p>
+        <Button
+          variant="secondary"
+          className="mt-2"
+          onClick={() => void query.refetch()}
+        >
+          {t('common.action.retry')}
+        </Button>
+      </div>
+    )
+  }
 
   const buckets = query.data?.buckets ?? []
   const pipeline = query.data?.pipeline
 
   // 闸门（adjudications §2）：采集管道未启用或该模型没有任何桶时不画图。
-  // 查询失败同样落在这里——没有数据就显示空态，不伪造成一条平线。
   if (pipeline === undefined || !pipeline.enabled || buckets.length === 0) {
     return (
       <div

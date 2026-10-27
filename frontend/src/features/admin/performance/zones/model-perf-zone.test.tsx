@@ -44,7 +44,7 @@ function modelRow(overrides: Partial<ModelRow> = {}): ModelRow {
     tps: 48.2,
     samples: 1284,
     success_rate: 0.994,
-    uptime: 0.9994,
+    uptime: 0.9998,
     probe: null,
     status: 'normal',
     spark: sparkPoints(),
@@ -167,8 +167,9 @@ describe('ModelPerfZone', () => {
     expect(row.textContent).toContain('420ms')
     expect(row.textContent).toContain('910ms')
     expect(row.textContent).toContain('3.2s')
+    // 成功率 1 位小数，可用率 2 位小数：0.9998 若退回 1 位会变成 100.0%。
     expect(row.textContent).toContain('99.4%')
-    expect(row.textContent).toContain('99.9%')
+    expect(row.textContent).toContain('99.98%')
     expect(row.textContent).toContain('48.2')
     expect(row.textContent).toContain('1,284')
     expect(within(row).getByText('4 channels')).toBeTruthy()
@@ -193,6 +194,9 @@ describe('ModelPerfZone', () => {
     expect(row.textContent).toContain('1.2s')
     expect(row.textContent).toContain('>30s')
     expect(row.textContent).toContain('8.1s')
+    // 成功率保持 1 位小数；可用率 2 位（0.994 → 99.40%）。
+    expect(row.textContent).toContain('97.8%')
+    expect(row.textContent).toContain('99.40%')
     expect(within(row).getByTestId('status-badge').getAttribute('data-variant')).toBe(
       'warning',
     )
@@ -214,6 +218,15 @@ describe('ModelPerfZone', () => {
     const status = within(row).getByTestId('status-badge')
     expect(status.textContent).toBe('Awaiting sample')
     expect(status.getAttribute('data-variant')).toBe('neutral')
+  })
+
+  it('omits the channel sub-line when the channel count is unknown', async () => {
+    await renderZone({ rows: [modelRow({ channels: null })] })
+
+    const row = rowFor('gpt-4o')
+    expect(row.textContent).not.toContain('channels')
+    // 数字列照常渲染，只有副标题缺席。
+    expect(row.textContent).toContain('420ms')
   })
 
   it('does not request the drill-down series until a row is expanded', async () => {
@@ -238,6 +251,11 @@ describe('ModelPerfZone', () => {
     await screen.findByTestId('model-detail')
     expect(rowFor('gpt-4o').getAttribute('aria-expanded')).toBe('true')
     expect(rowFor('gemini-2.5-pro').getAttribute('aria-expanded')).toBe('false')
+
+    // 触发器与展开行通过 aria-controls / id 关联。
+    const control = rowFor('gpt-4o').getAttribute('aria-controls')
+    expect(control).toBeTruthy()
+    expect(screen.getByTestId('model-detail-row').id).toBe(control)
   })
 
   it('keeps at most one row open and closes it on a second activation', async () => {
