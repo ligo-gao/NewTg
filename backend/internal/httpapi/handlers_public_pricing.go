@@ -1425,13 +1425,17 @@ func publicLatestTestView(test store.ModelPerformanceTest) *PublicModelLatestTes
 	}
 }
 
-// publicMetricsETag 由模型、窗口、分钟桶与最近一次主动测速的身份派生。
+// publicMetricsETag 由模型、窗口、分钟桶与缓存身份派生。
 //
-// 主动测速不进入 usage_logs 聚合，因此必须把测试 ID/时间折进缓存键：否则
-// 管理员刚跑完一次测试，共享缓存仍会在 60 秒内回放旧值。无测试时 identity
-// 为空，行为与旧版一致。
-func publicMetricsETag(modelID, window string, at time.Time, testIdentity string) string {
-	sum := sha256.Sum256([]byte(modelID + "|" + window + "|" + testIdentity))
+// 身份（cacheIdentity）有两类来源，都会改变响应实体，必须折进缓存键：
+//   - 最近一次主动测速的 ID/时间：主动测速不进入 usage_logs 聚合，否则
+//     管理员刚跑完一次测试，共享缓存仍会回放旧值；
+//   - 降级标记（"|degraded"）：日志库故障时 summary 与真实零样本几乎相同，
+//     没有标记就会让同一缓存实体在恢复后继续被 304 复用。
+//
+// 无测速且未降级时身份为空，行为与旧版一致。
+func publicMetricsETag(modelID, window string, at time.Time, cacheIdentity string) string {
+	sum := sha256.Sum256([]byte(modelID + "|" + window + "|" + cacheIdentity))
 	return `"metrics-v1-` + hex.EncodeToString(sum[:])[:16] + `-` +
 		strconv.FormatInt(at.Unix()/60, 10) + `"`
 }
@@ -1518,8 +1522,9 @@ func (h *PublicPricingHandlers) handlePublicPricingMetrics(w http.ResponseWriter
 			test.CreatedAt.UTC().Format(time.RFC3339Nano)
 	}
 
-	// 降级结果的 summary 与正常零样本几乎相同，必须让缓存键可区分：否则
-	// 日志库恢复后，共享缓存仍会把降级响应回放 60 秒。
+	// 降级结果的 summary 与正常零样本几乎相同，必须让缓存键可区分，避免
+	// 同一缓存实体被跨状态复用（例如日志库恢复后仍以 304 命中降级表示）。
+	// 注意 Cache-Control 仍是 max-age=60：已有副本的最长存活时间不变。
 	if degraded {
 		testIdentity += "|degraded"
 	}

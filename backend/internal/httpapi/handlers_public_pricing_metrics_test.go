@@ -407,7 +407,18 @@ func TestPublicMetricsETagChangesWithLatestTest(t *testing.T) {
 // 用量日志库故障不能让整张性能表变成「暂不可用」：首页只消费 latest_test，
 // 因此 summary 降级为零样本、latest_test 照常返回，响应仍是 200。
 func TestPublicPricingMetricsFailsOpenWhenLogsDBIsDown(t *testing.T) {
-	metrics := &fakePublicModelMetrics{err: errors.New("logs db down")}
+	// 故意给一份非零数据：真实的 SQL 实现出错时才返回零值，只有这样才能
+	// 钉住 handler 显式清零（否则删掉 `data = store.PublicModelMetrics{}`
+	// 测试仍然全绿）。
+	metrics := &fakePublicModelMetrics{
+		data: store.PublicModelMetrics{
+			SampleSize:   7,
+			SuccessCount: 7,
+			AvgTTFTMs:    publicFloatPtr(99),
+			Groups:       []store.PublicGroupMetrics{{Group: "default", SampleSize: 7, SuccessCount: 7}},
+		},
+		err: errors.New("logs db down"),
+	}
 	perf := &fakePublicPerfStore{
 		ok: true,
 		test: store.ModelPerformanceTest{
