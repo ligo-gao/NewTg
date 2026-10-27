@@ -23,7 +23,7 @@ const RESOURCES: Resources = {
     max: 25,
     tps: 342,
     size_bytes: 12.4 * 1024 * MB,
-    lock_wait: 0,
+    lock_wait: 2.5,
   },
   redis: {
     up: 1,
@@ -73,11 +73,34 @@ describe('ResourcesZone', () => {
     expect(postgres.textContent).toContain('11 / 25')
     expect(postgres.textContent).toContain('342')
     expect(postgres.textContent).toContain('12.4 GB')
+    expect(postgres.textContent).toContain('Lock waits')
+    expect(postgres.textContent).toContain('2.5')
 
     const redis = card('redis')
     expect(redis.textContent).toContain('38')
     expect(redis.textContent).toContain('96.2%')
     expect(redis.textContent).toContain('1,204')
+  })
+
+  it('renders a zero or missing lock-wait value instead of hiding the row', async () => {
+    const zero = await renderZone({
+      resources: {
+        ...RESOURCES,
+        postgres: { ...RESOURCES.postgres, lock_wait: 0 },
+      },
+    })
+    expect(card('postgres').textContent).toContain('Lock waits')
+    expect(card('postgres').textContent).toContain('0.0')
+    zero.unmount()
+
+    await renderZone({
+      resources: {
+        ...RESOURCES,
+        postgres: { ...RESOURCES.postgres, lock_wait: Number.NaN },
+      },
+    })
+    expect(card('postgres').textContent).toContain('Lock waits')
+    expect(card('postgres').textContent).toContain('—')
   })
 
   it('marks Redis up with a success badge that carries both colour and text', async () => {

@@ -1634,6 +1634,7 @@
       "backends": "连接",
       "tps": "事务/s",
       "size": "数据库大小",
+      "lock_wait": "锁等待",
       "clients": "客户端",
       "hit_rate": "命中率",
       "cmd_rate": "命令速率",

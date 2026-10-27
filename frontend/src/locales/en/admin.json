@@ -1634,6 +1634,7 @@
       "backends": "Connections",
       "tps": "Transactions/s",
       "size": "Database size",
+      "lock_wait": "Lock waits",
       "clients": "Clients",
       "hit_rate": "Hit rate",
       "cmd_rate": "Commands/s",

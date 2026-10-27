@@ -1634,6 +1634,7 @@
       "backends": "連線",
       "tps": "交易/s",
       "size": "資料庫大小",
+      "lock_wait": "鎖等待",
       "clients": "用戶端",
       "hit_rate": "命中率",
       "cmd_rate": "命令速率",

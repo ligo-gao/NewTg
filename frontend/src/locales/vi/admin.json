@@ -1634,6 +1634,7 @@
       "backends": "Kết nối",
       "tps": "Giao dịch/giây",
       "size": "Kích thước cơ sở dữ liệu",
+      "lock_wait": "Chờ khóa",
       "clients": "Máy khách",
       "hit_rate": "Tỷ lệ trúng",
       "cmd_rate": "Lệnh/giây",

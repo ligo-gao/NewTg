@@ -5,6 +5,7 @@ import type { PerfOverview } from '../api'
 import {
   formatBytes,
   formatCount,
+  formatDecimal,
   formatPercent,
 } from '../utils'
 import { codePhrase } from './degraded-banner'
@@ -130,6 +131,10 @@ export function ResourcesZone({ resources, sourceDown }: ResourcesZoneProps) {
     {
       label: t('admin.performance.resources.size'),
       value: formatBytes(postgres.size_bytes, locale),
+    },
+    {
+      label: t('admin.performance.resources.lock_wait'),
+      value: formatDecimal(postgres.lock_wait, locale),
     },
   ]
 

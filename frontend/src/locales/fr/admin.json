@@ -1634,6 +1634,7 @@
       "backends": "Connexions",
       "tps": "Transactions/s",
       "size": "Taille de la base",
+      "lock_wait": "Attentes de verrou",
       "clients": "Clients",
       "hit_rate": "Taux de hits",
       "cmd_rate": "Commandes/s",
