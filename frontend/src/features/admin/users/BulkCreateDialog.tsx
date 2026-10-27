@@ -56,6 +56,26 @@ async function readRowErrors(response: Response): Promise<BulkRowError[] | undef
   return undefined
 }
 
+/**
+ * Reads the RFC 7807 `fields` array from a 422 problem body. The generate
+ * endpoint answers "that group does not exist" with `fields:["group"]`;
+ * collapsing that into the generic retry message would ask the operator to
+ * retry an input that can never succeed.
+ */
+async function readValidationFields(response: Response): Promise<string[] | undefined> {
+  if (response.status !== 422) return undefined
+  try {
+    const body = (await response.json()) as { fields?: unknown }
+    const fields = body.fields
+    if (Array.isArray(fields) && fields.length > 0) {
+      return fields.filter((field): field is string => typeof field === 'string')
+    }
+  } catch {
+    // Non-JSON error body: fall through to the generic message.
+  }
+  return undefined
+}
+
 function fallbackGenerateFilename(): string {
   const now = new Date()
   const pad = (value: number): string => String(value).padStart(2, '0')
@@ -99,6 +119,9 @@ export function BulkCreateDialog({ open, onOpenChange, onCreated }: BulkCreateDi
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState<string | undefined>(undefined)
   const [generatedCount, setGeneratedCount] = useState<number | null>(null)
+  // The "save the file now" notice is literally false once the save failed, so
+  // the two must never be on screen together.
+  const [downloadFailed, setDownloadFailed] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -117,6 +140,7 @@ export function BulkCreateDialog({ open, onOpenChange, onCreated }: BulkCreateDi
     setGenerating(false)
     setGenerateError(undefined)
     setGeneratedCount(null)
+    setDownloadFailed(false)
   }, [open])
 
   // Same cache entry the user list's filter uses, so both selectors agree.
@@ -216,12 +240,15 @@ export function BulkCreateDialog({ open, onOpenChange, onCreated }: BulkCreateDi
   async function submitGenerate(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
     const parsed = Number(count)
+    // Trim once: the server trims too, so a whitespace-only name must fail
+    // here as an empty field instead of becoming a 422 the UI cannot place.
+    const trimmedGroup = group.trim()
     const errors: Record<string, string> = {}
     if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_COUNT) {
       errors.count = t('admin.bulk.count_invalid')
     }
     if (customerType === '') errors.customerType = t('admin.bulk.customer_type_required')
-    if (group === '') errors.group = t('admin.bulk.group_required')
+    if (trimmedGroup === '') errors.group = t('admin.bulk.group_required')
     setFieldErrors(errors)
     if (Object.keys(errors).length > 0) return
 
@@ -234,10 +261,29 @@ export function BulkCreateDialog({ open, onOpenChange, onCreated }: BulkCreateDi
         body: JSON.stringify({
           count: parsed,
           customer_type: customerType,
-          group,
+          group: trimmedGroup,
         }),
       })
       if (!response.ok) {
+        // A typed group the server does not know is a field-level error, not a
+        // transient failure: say so on the field and keep the dialog open.
+        const fields = await readValidationFields(response)
+        if (fields !== undefined) {
+          const fieldLevel: Record<string, string> = {}
+          if (fields.includes('group')) {
+            fieldLevel.group = t('admin.bulk.errors_group_not_found')
+          }
+          if (fields.includes('count')) {
+            fieldLevel.count = t('admin.bulk.count_invalid')
+          }
+          if (fields.includes('customer_type')) {
+            fieldLevel.customerType = t('admin.bulk.customer_type_required')
+          }
+          if (Object.keys(fieldLevel).length > 0) {
+            setFieldErrors(fieldLevel)
+            return
+          }
+        }
         setGenerateError(t('admin.bulk.generate_error'))
         return
       }
@@ -250,13 +296,16 @@ export function BulkCreateDialog({ open, onOpenChange, onCreated }: BulkCreateDi
       // while the first batch's passwords are gone for good.
       setGeneratedCount(parsed)
       onCreated()
-      push({
-        tone: 'success',
-        message: t('admin.bulk.generated', { count: parsed }),
-      })
       try {
         downloadBlob(await response.blob(), filename)
+        push({
+          tone: 'success',
+          message: t('admin.bulk.generated', { count: parsed }),
+        })
       } catch {
+        // No success toast on this path: it says "save the file now", which is
+        // exactly what just failed. The dedicated alert is the whole message.
+        setDownloadFailed(true)
         setGenerateError(t('admin.bulk.generated_download_failed'))
       }
     } catch {
@@ -267,7 +316,7 @@ export function BulkCreateDialog({ open, onOpenChange, onCreated }: BulkCreateDi
   }
 
   const generateDisabled =
-    generating || count.trim() === '' || customerType === '' || group === ''
+    generating || count.trim() === '' || customerType === '' || group.trim() === ''
 
   return (
     <Dialog
@@ -390,12 +439,18 @@ export function BulkCreateDialog({ open, onOpenChange, onCreated }: BulkCreateDi
           aria-labelledby="bulk-tab-generate"
           className="flex flex-col gap-3 pt-3"
         >
-          <FormAlert tone="info">{t('admin.bulk.credentials_notice')}</FormAlert>
+          {downloadFailed ? null : (
+            <FormAlert tone="info">{t('admin.bulk.credentials_notice')}</FormAlert>
+          )}
           {generatedCount !== null ? (
             <>
-              <FormAlert tone="success">
-                {t('admin.bulk.generated', { count: generatedCount })}
-              </FormAlert>
+              {/* The success line ends with "save the file now"; on a failed
+                  download the failure alert below is the only truthful text. */}
+              {downloadFailed ? null : (
+                <FormAlert tone="success">
+                  {t('admin.bulk.generated', { count: generatedCount })}
+                </FormAlert>
+              )}
               {generateError !== undefined ? <FormAlert>{generateError}</FormAlert> : null}
             </>
           ) : (

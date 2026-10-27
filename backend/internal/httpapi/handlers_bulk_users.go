@@ -644,8 +644,9 @@ func (h *BulkUserHandlers) handleBulkGenerate(w http.ResponseWriter, r *http.Req
 }
 
 // bulkCreate 执行仓储插入，并在 afterInsert 中（提交前）写入临时口令标记。
-// 同时返回 afterInsert 记录的 ids 与仓储重写后的 rows；前者供提交失败后的
-// best-effort 清理，后者供生成端点按输入顺序配对明文口令。
+// 同时返回 afterInsert 记录的 ids 与仓储重写后的 rows：前者只供**确定回滚**
+// 后清理标记（COMMIT 二义时由 cleanupMarkersAfterFailure 保留，见其注释），
+// 后者供生成端点按输入顺序配对明文口令。
 func (h *BulkUserHandlers) bulkCreate(
 	ctx context.Context, rows []store.BulkUserRow, opts store.BulkCreateOptions,
 ) (created []store.BulkUserRow, insertedIDs []int64, err error) {

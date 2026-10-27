@@ -198,8 +198,29 @@ func (r *BulkUserRepo) BulkCreateUsers(
 			return nil, err
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrBulkCommitFailed, err)
+	if err := commitBulkTx(tx); err != nil {
+		return nil, err
 	}
 	return rows, nil
+}
+
+// bulkTxCommitter 是 *sql.Tx 的最小提交接口。抽成接口只有一个目的：让单测
+// 能不连 PostgreSQL 就钉住 ErrBulkCommitFailed 的包装方式（见
+// bulk_user_repo_test.go）——COMMIT 失败本身的路径无法在真实数据库上可靠触发。
+type bulkTxCommitter interface {
+	Commit() error
+}
+
+// commitBulkTx 把 COMMIT 失败包装为 ErrBulkCommitFailed。
+//
+// 必须用 %w：调用方（httpapi 的 cleanupMarkersAfterFailure）靠 errors.Is
+// 区分「确定回滚」与「提交二义」。改成 %v 会让二义路径被当成确定失败，
+// 进而删掉 already-committed 账号的临时口令标记，造出永远 401
+// temp_password_expired 的账号（spec §11.16）。底层错误走 %v，因此它不会
+// 被 errors.Is 误命中。
+func commitBulkTx(tx bulkTxCommitter) error {
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%w: %v", ErrBulkCommitFailed, err)
+	}
+	return nil
 }

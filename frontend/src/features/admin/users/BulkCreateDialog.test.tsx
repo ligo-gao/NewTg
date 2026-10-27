@@ -432,5 +432,60 @@ describe('BulkCreateDialog', () => {
     // The generate form is gone: there is no path to a second batch.
     expect(screen.queryByRole('button', { name: 'Generate' })).toBeNull()
     expect(screen.queryByLabelText('Number of users')).toBeNull()
+    // Nothing on screen may still instruct the operator to save the file that
+    // failed to save: neither the info notice nor the success line.
+    expect(screen.queryByText(/only copy/i)).toBeNull()
+    expect(screen.queryByText(/Save the downloaded file now/i)).toBeNull()
+    // A throwing click() must not leave the anchor behind.
+    expect(document.querySelectorAll('a[download]').length).toBe(0)
+  })
+
+  // M1: a typed group the server does not know comes back as a 422 problem
+  // with `fields:["group"]`. It must land on the field, not on "try again".
+  it('shows an unknown group as a field error instead of a generic retry', async () => {
+    server.use(
+      groupsHandler(),
+      http.post(`${ORIGIN}/api/users/bulk/generate`, () =>
+        HttpResponse.json(
+          {
+            type: 'https://newtg.dev/problems/validation-failed',
+            title: 'Validation failed',
+            status: 422,
+            fields: ['group'],
+          },
+          { status: 422, headers: { 'Content-Type': 'application/problem+json' } },
+        ),
+      ),
+    )
+
+    const { user, onCreated } = await renderDialog()
+    await user.click(screen.getByRole('tab', { name: 'Generate' }))
+    await user.type(screen.getByLabelText('Number of users'), '2')
+    await user.selectOptions(screen.getByLabelText('Customer type'), 'general')
+    await user.type(screen.getByLabelText('Group'), 'ghost')
+
+    await user.click(screen.getByRole('button', { name: 'Generate' }))
+
+    expect(await screen.findByText('Group not found')).toBeTruthy()
+    expect(screen.queryByText(/Please try again/)).toBeNull()
+    expect(onCreated).not.toHaveBeenCalled()
+    // The form stays usable so the name can be corrected.
+    expect(screen.getByLabelText('Group')).toBeTruthy()
+  })
+
+  // M5: the server trims the name, so whitespace is an empty group, not one
+  // that will be rejected after a round trip.
+  it('keeps generate submit disabled for a whitespace-only group', async () => {
+    server.use(groupsHandler())
+
+    const { user } = await renderDialog()
+    await user.click(screen.getByRole('tab', { name: 'Generate' }))
+    await user.type(screen.getByLabelText('Number of users'), '2')
+    await user.selectOptions(screen.getByLabelText('Customer type'), 'general')
+    await user.type(screen.getByLabelText('Group'), '   ')
+
+    expect(
+      (screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled,
+    ).toBe(true)
   })
 })

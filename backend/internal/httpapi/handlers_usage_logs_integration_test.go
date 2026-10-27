@@ -1917,6 +1917,69 @@ func TestUsageLogDiscountFieldsEndToEnd(t *testing.T) {
 	}
 }
 
+// TestUsageLogDiscountFieldsTolerateDirtyValues：`other` 是通用 jsonb 侧信道，
+// 任何写入方塞进非数值的 original_cost / applied_discount 都不能让整页 500。
+// 正则守卫把脏值退化成 NULL（与缺键同义），同一页的合法行照常返回。
+func TestUsageLogDiscountFieldsTolerateDirtyValues(t *testing.T) {
+	env := newUsageTestEnv(t)
+	userID, _ := ensureUsageTestUser(t, env, "dirty")
+	p := userPrincipal(userID)
+
+	dirtyID := env.seed(t, usageSeed{
+		UserID: userID, Model: "gpt-dirty", Status: usageStatusSuccess,
+		Other: `{"original_cost":"oops","applied_discount":{},"discount_target":"user:7"}`,
+	})
+	// 同页的合法行必须不受影响：失败被限制在列级，而不是整行或整页。
+	cleanID := env.seed(t, usageSeed{
+		UserID: userID, Model: "gpt-clean", Status: usageStatusSuccess,
+		Cost: 90, Other: `{"original_cost":100,"applied_discount":0,"discount_target":"group:vip"}`,
+	})
+
+	rec := env.do(t, http.MethodGet, "/api/usage-logs", p)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	list := decodeUsageJSON[struct {
+		Items []discountFieldsItem `json:"items"`
+	}](t, rec)
+	byID := make(map[int64]discountFieldsItem, len(list.Items))
+	for _, item := range list.Items {
+		byID[item.ID] = item
+	}
+	dirty, found := byID[dirtyID]
+	if !found {
+		t.Fatalf("dirty row missing from list: %s", rec.Body.String())
+	}
+	if dirty.OriginalCost != nil || dirty.AppliedDiscount != nil {
+		t.Fatalf("dirty discount fields = %v/%v, want both null",
+			dirty.OriginalCost, dirty.AppliedDiscount)
+	}
+	if dirty.DiscountTarget == nil || *dirty.DiscountTarget != "user:7" {
+		t.Fatalf("dirty discount_target = %v, want user:7", dirty.DiscountTarget)
+	}
+	clean, found := byID[cleanID]
+	if !found {
+		t.Fatalf("clean row missing from list: %s", rec.Body.String())
+	}
+	if clean.OriginalCost == nil || *clean.OriginalCost != 100 {
+		t.Fatalf("clean original_cost = %v, want 100", clean.OriginalCost)
+	}
+	if clean.AppliedDiscount == nil || *clean.AppliedDiscount != 0 {
+		// 0 是「全免」，守卫不能把它当成缺键。
+		t.Fatalf("clean applied_discount = %v, want non-nil 0", clean.AppliedDiscount)
+	}
+
+	// 详情与导出共用同一条列清单，必须一起存活。
+	rec = env.do(t, http.MethodGet, fmt.Sprintf("/api/usage-logs/%d", dirtyID), p)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = env.do(t, http.MethodGet, "/api/usage-logs/export?scope=filtered&format=txt&range=24h", p)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 // 日志库句柄缺失必须是 503（可重试），绝不能塌缩成 500。
 func TestIntegrationRequestTriageLogDBUnavailable(t *testing.T) {
 	h := &UsageLogHandlers{log: slog.New(slog.NewTextHandler(io.Discard, nil)), now: time.Now}

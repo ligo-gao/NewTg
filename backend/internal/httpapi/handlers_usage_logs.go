@@ -526,14 +526,22 @@ type usageLogRow struct {
 
 // 末尾三列是账单折扣事实（写入见 billing/saturate.go 的 usage_logs.other）。
 // 必须经 ::numeric 中转：->> 对 JSON 数字 100.0 返回 '100.0'，直接 ::bigint
-// 会在运行时报 invalid input syntax；nullif 挡掉空串，缺键/JSON null 由 ->>
-// 返回 SQL NULL（扫描为 sql.Null*，绝不能回填成 0）。
+// 会在运行时报 invalid input syntax；缺键/JSON null 由 ->> 返回 SQL NULL
+// （扫描为 sql.Null*，绝不能回填成 0）。
+//
+// 两条数值列额外用正则守卫：`other` 是通用 jsonb 侧信道，任何写入方塞进
+// 非数值的 original_cost 都会让 ::numeric 在**整个查询**上报错——一条脏行
+// 就能让所有人的账单列表/详情/导出一起 500。守卫让脏值退化成「该列未知」
+// （NULL，与缺键同义），而不是整页失败。位数上限同时挡住 numeric→bigint
+// 的溢出；全免行的 applied_discount=0 仍然成立（'0' 匹配守卫）。
 const usageListColumns = `id, request_id, user_id, token_id, token_name, channel_id,
 	upstream, model, "group", prompt_tokens, completion_tokens, cache_read_tokens,
 	cache_write_tokens, pre_deducted, cost, refunded, latency_ms, first_token_ms,
 	stream, status, error_class, error_message, retry_chain, created_at,
-	nullif(other->>'original_cost','')::numeric::bigint,
-	nullif(other->>'applied_discount','')::numeric::double precision,
+	CASE WHEN other->>'original_cost' ~ '^-?[0-9]{1,18}(\.[0-9]{1,9})?$'
+		THEN (other->>'original_cost')::numeric::bigint END,
+	CASE WHEN other->>'applied_discount' ~ '^-?[0-9]{1,12}(\.[0-9]{1,9})?$'
+		THEN (other->>'applied_discount')::numeric::double precision END,
 	nullif(other->>'discount_target','')`
 
 type usageRowScanner interface {

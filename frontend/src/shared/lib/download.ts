@@ -18,13 +18,18 @@
 export function downloadBlob(blob: Blob, filename: string): void {
   const objectUrl = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
-  anchor.href = objectUrl
-  anchor.download = filename
-  anchor.rel = 'noopener'
-  document.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
-  setTimeout(() => {
-    URL.revokeObjectURL(objectUrl)
-  }, 0)
+  try {
+    anchor.href = objectUrl
+    anchor.download = filename
+    anchor.rel = 'noopener'
+    document.body.appendChild(anchor)
+    anchor.click()
+  } finally {
+    // `click()` can throw (a browser blocking the download, a test double).
+    // The anchor and the object URL must not outlive the attempt either way.
+    anchor.remove()
+    setTimeout(() => {
+      URL.revokeObjectURL(objectUrl)
+    }, 0)
+  }
 }
