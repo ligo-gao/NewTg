@@ -8,6 +8,11 @@ import {
 } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
+import {
+  isLocale,
+  readStoredLocale,
+  writeStoredLocale,
+} from '@/lib/language-preference'
 import { ME_QUERY_KEY, meQueryOptions } from '@/lib/session'
 import { publicStatusQueryOptions } from '@/lib/public-status'
 import {
@@ -157,30 +162,7 @@ const FALLBACK_LOCALE: Locale = 'en'
 /** 兼容旧引用：M0 的 SUPPORTED_LOCALES 语义即「随包语言」。 */
 export const SUPPORTED_LOCALES = BUNDLED_LOCALES
 
-const LOCALE_STORAGE_KEY = 'newtg.language'
 const MISSING_KEY_WARNING = import.meta.env.DEV
-
-function isLocale(value: string): value is Locale {
-  return (BUNDLED_LOCALES as readonly string[]).includes(value)
-}
-
-/** 读取本地记忆。隐私模式/禁用存储时静默失败（§7.3 也允许无 localStorage）。 */
-function readStoredLocale(): Locale | null {
-  try {
-    const value = globalThis.localStorage?.getItem(LOCALE_STORAGE_KEY)
-    return value !== undefined && value !== null && isLocale(value) ? value : null
-  } catch {
-    return null
-  }
-}
-
-function writeStoredLocale(locale: Locale): void {
-  try {
-    globalThis.localStorage?.setItem(LOCALE_STORAGE_KEY, locale)
-  } catch {
-    // 本地记忆不可用不影响当前会话：语言已在内存状态中生效。
-  }
-}
 
 /**
  * 初始语言决定顺序的前半段（§7.3）：本地记忆 → `zh-CN`。
