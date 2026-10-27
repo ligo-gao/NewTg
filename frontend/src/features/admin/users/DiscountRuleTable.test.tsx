@@ -1,11 +1,15 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
-import { fireEvent, waitFor } from '@testing-library/react'
+import { fireEvent, render, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
+import { I18nProvider, loadDictionary } from '@/app/providers/i18n'
 import type { components } from '@/api/schema'
 import enAdmin from '@/locales/en/admin.json'
+import jaAdmin from '@/locales/ja/admin.json'
+import zhCNAdmin from '@/locales/zh-CN/admin.json'
 import { renderWithProviders } from '@/test-support/providers'
 
 import { DiscountRuleTable, toDatetimeLocal } from './DiscountRuleTable'
@@ -80,6 +84,33 @@ async function renderTable() {
   return { ...result, user: userEvent.setup() }
 }
 
+/**
+ * `renderWithProviders` pins the suite to `en`, so the fold (折/割) branch
+ * would never render in these tests. Mount the table in the CJK locales
+ * directly: same providers, explicitly chosen locale, dictionaries preloaded so
+ * the first render already carries final copy.
+ */
+async function renderTableInLocale(locale: 'zh-CN' | 'ja') {
+  await Promise.all([
+    loadDictionary(locale, 'common'),
+    loadDictionary(locale, 'admin'),
+  ])
+  const client = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, refetchOnWindowFocus: false, staleTime: 0 },
+      mutations: { retry: 0 },
+    },
+  })
+  const result = render(
+    <QueryClientProvider client={client}>
+      <I18nProvider locale={locale} modules={['common', 'admin']}>
+        <DiscountRuleTable targetType="user" targetID="7" />
+      </I18nProvider>
+    </QueryClientProvider>,
+  )
+  return { ...result, user: userEvent.setup() }
+}
+
 describe('DiscountRuleTable', () => {
   it('renders rules with rate and window', async () => {
     installDefaults()
@@ -97,6 +128,39 @@ describe('DiscountRuleTable', () => {
     // Derive the day locally: the table renders in the viewer's calendar, so a
     // hardcoded UTC day would fail on negative-offset machines.
     expect(getByText(`${localDate('2026-11-01T00:00:00Z')} ~ —`)).toBeTruthy()
+  })
+
+  it('renders the fold hint for Chinese and Japanese admins', async () => {
+    installDefaults()
+
+    const chinese = await renderTableInLocale('zh-CN')
+    await chinese.findByText('gpt-4o')
+    expect(
+      chinese.getByText(
+        zhCNAdmin.user_form.discount_rate_fold.replace('{value}', '9'),
+      ),
+    ).toBeTruthy()
+    // Discriminating: the percent copy must not be what a Chinese admin sees.
+    expect(
+      chinese.queryByText(
+        zhCNAdmin.user_form.discount_rate_percent.replace('{value}', '90'),
+      ),
+    ).toBeNull()
+    chinese.unmount()
+
+    const japanese = await renderTableInLocale('ja')
+    await japanese.findByText('gpt-4o')
+    // Japanese writes the fold with 割, not 折.
+    expect(
+      japanese.getByText(
+        jaAdmin.user_form.discount_rate_fold.replace('{value}', '9'),
+      ),
+    ).toBeTruthy()
+    expect(
+      japanese.queryByText(
+        jaAdmin.user_form.discount_rate_percent.replace('{value}', '90'),
+      ),
+    ).toBeNull()
   })
 
   it('shows the empty state', async () => {
