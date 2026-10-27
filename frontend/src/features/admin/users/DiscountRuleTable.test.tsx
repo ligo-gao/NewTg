@@ -5,6 +5,7 @@ import { fireEvent, waitFor } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 import type { components } from '@/api/schema'
+import zhCNAdmin from '@/locales/zh-CN/admin.json'
 import { renderWithProviders } from '@/test-support/providers'
 
 import { DiscountRuleTable, toDatetimeLocal } from './DiscountRuleTable'
@@ -86,7 +87,7 @@ describe('DiscountRuleTable', () => {
     const { findByText, getByText } = await renderTable()
 
     expect(await findByText('gpt-4o')).toBeTruthy()
-    expect(getByText('9折')).toBeTruthy()
+    expect(getByText(zhCNAdmin.user_form.discount_rate_fold.replace('{value}', '9'))).toBeTruthy()
     // Derive the day locally: the table renders in the viewer's calendar, so a
     // hardcoded UTC day would fail on negative-offset machines.
     expect(getByText(`${localDate('2026-11-01T00:00:00Z')} ~ —`)).toBeTruthy()
