@@ -105,8 +105,10 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-      - name: Go 单元测试
-        run: cd backend && go test ./...
+      - name: Go 单元测试（含数据竞争检测）
+        # -race 只在 ubuntu runner 上成本可控（自带 gcc）；本地镜像没有 C 编译器，
+        # 这一项是调度器、worker 租约与信号量并发路径的唯一自动兜底。
+        run: cd backend && go test -race ./...
       - uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
         with:
           bun-version: 1.4.3

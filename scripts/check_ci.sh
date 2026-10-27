@@ -135,6 +135,8 @@ grep -q '^concurrency:' "$CI"            && ok "ci.yml 声明 concurrency"  || b
 grep -qE '^permissions:' "$CI"           && ok "ci.yml 声明 permissions"  || bad "ci.yml 缺少 permissions"
 grep -qE '^[[:space:]]+contents: read' "$CI" && ok "ci.yml contents: read" || bad "ci.yml 缺少 contents: read"
 grep -q 'go test -tags=integration ./...' "$CI" && ok "ci.yml 运行集成测试" || bad "ci.yml 未运行 go test -tags=integration ./..."
+# 单测必须带 -race：本地镜像无 C 编译器，CI 是并发路径的唯一自动检测点。
+grep -q 'go test -race ./...' "$CI" && ok "ci.yml 单测启用 -race" || bad "ci.yml 未运行 go test -race ./..."
 grep -q 'check_bundle_size.sh' "$CI"     && ok "ci.yml 引用体积门禁脚本"  || bad "ci.yml 未引用 scripts/check_bundle_size.sh"
 grep -q 'check_locale_parity.sh' "$CI"   && ok "ci.yml 引用语种奇偶校验"  || bad "ci.yml 未引用 scripts/check_locale_parity.sh"
 grep -q 'oasdiff' "$CI"                  && ok "ci.yml 运行 oasdiff"      || bad "ci.yml 缺少 oasdiff 破坏性变更门禁"
