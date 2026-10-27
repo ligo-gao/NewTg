@@ -1060,6 +1060,70 @@ func TestStepCallsOnRoundOnceAfterRound(t *testing.T) {
 	}
 }
 
+// TestStepStartedAtIsRoundStartNotEnd 钉住 startedAt 的取钟时机：必须在 RunOnce
+// 之前读时钟，取的是轮次开始时刻而不是结束时刻，也不是时刻表上的时段。
+//
+// 为什么需要「可推进的时钟」：既有时钟是冻结的，startedAt/轮次结束/nextDue
+// 三者恰好相等，于是把 s.now() 挪到 RunOnce 之后、或改成读 s.nextDue，断言
+// 仍然全绿。这里让 performer 执行期间把时间推到未来，三种取值才真正可分。
+func TestStepStartedAtIsRoundStartNotEnd(t *testing.T) {
+	loc := shanghai(t)
+	due := time.Date(2026, 10, 27, 12, 0, 0, 0, loc)
+
+	// runRound 构造一个 nextDue=12:00 的调度器，在 startAt 触发一次 step，
+	// 并在 performer 执行期间把时钟推进到 advanceTo；返回 OnRound 收到的
+	// startedAt。构造时先停在前一个时段，确保 nextDue 由时刻表算出。
+	runRound := func(t *testing.T, startAt, advanceTo time.Time) time.Time {
+		t.Helper()
+		clock := &atomicClock{at: time.Date(2026, 10, 27, 11, 59, 0, 0, loc)}
+		s := mustScheduler(t, SchedulerConfig{
+			Models:   &fakeModels{names: []string{"gpt-4o"}},
+			Channels: &fakePicker{channel: &store.Channel{ID: 7}, ok: true},
+			Performer: func(context.Context, *store.Channel, string, int) []channelhealth.PerfRunResult {
+				// 一轮探测耗时 7 分钟：结束时刻与开始时刻必须能在记录里区分。
+				clock.set(advanceTo)
+				return []channelhealth.PerfRunResult{{Success: true}}
+			},
+			Tests:       &fakeTests{},
+			Runs:        1,
+			Concurrency: 1,
+			Schedule:    newTestSchedule(t),
+			Locker:      &fakeLocker{acquired: true},
+			Now:         clock.now,
+		})
+		clock.set(startAt)
+
+		var got []time.Time
+		s.SetOnRound(func(_ context.Context, startedAt time.Time, _ Stats, _ error) {
+			// step 同步调用 OnRound，与断言同 goroutine，无需加锁。
+			got = append(got, startedAt)
+		})
+		s.step(context.Background())
+		if len(got) != 1 {
+			t.Fatalf("OnRound called %d times, want exactly 1", len(got))
+		}
+		return got[0]
+	}
+
+	t.Run("clock advanced during the round", func(t *testing.T) {
+		// startedAt 必须在 RunOnce 之前取：否则运行历史会把一轮 7 分钟的探测
+		// 记成「从结束时刻开始」，worker_tasks.last_run_at 也随之被推后。
+		if got := runRound(t, due, due.Add(7*time.Minute)); !got.Equal(due) {
+			t.Fatalf("OnRound startedAt = %v, want the round start %v (clock read after RunOnce records the end time)", got, due)
+		}
+	})
+
+	t.Run("late tick uses execution time not slot", func(t *testing.T) {
+		// 迟到的 tick：真实起点是 12:02，时段是 12:00。若 startedAt 改读
+		// s.nextDue，记录会把这段等待时间从轮次耗时里抹掉（甚至出现负耗时）。
+		late := due.Add(2 * time.Minute)
+		if got := runRound(t, late, late.Add(7*time.Minute)); !got.Equal(late) {
+			t.Fatalf("OnRound startedAt = %v, want the tick execution time %v (not the slot %v or the end %v)",
+				got, late, due, late.Add(7*time.Minute))
+		}
+	})
+}
+
 func TestStepCallsOnRoundOnRoundError(t *testing.T) {
 	loc := shanghai(t)
 	at := time.Date(2026, 10, 27, 11, 59, 0, 0, loc)

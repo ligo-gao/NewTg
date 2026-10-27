@@ -83,7 +83,8 @@ const catalog: PricingCatalog = {
 };
 
 function metricsFor(modelID: string): ModelMetrics {
-  const lowSample = modelID === "deepseek/deepseek-reasoner";
+  // 仅用于构造不同的样本量：低样本徽标特性已删除，这里只描述 fixture 数据本身。
+  const sampleSize = modelID === "deepseek/deepseek-reasoner" ? 5 : 1543;
   return {
     range: "7d",
     window: { start: "2026-10-16T00:00:00Z", end: "2026-10-23T00:00:00Z" },
@@ -93,7 +94,7 @@ function metricsFor(modelID: string): ModelMetrics {
       success_rate: 0.99,
       tps: 42.5,
       failed_24h: 1,
-      sample_size: lowSample ? 5 : 1543,
+      sample_size: sampleSize,
     },
     per_group: [],
     latest_test: null,
