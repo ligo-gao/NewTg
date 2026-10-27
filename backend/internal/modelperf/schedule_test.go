@@ -84,6 +84,113 @@ func TestNextSameDayNilLocationAndDuplicates(t *testing.T) {
 	}
 }
 
+func TestIntervalScheduleAnchorsAtLocalMidnight(t *testing.T) {
+	loc := shanghai(t)
+	sched := IntervalSchedule{Hours: 12, Loc: loc}
+	after := time.Date(2026, 3, 1, 13, 0, 0, 0, loc)
+	want := time.Date(2026, 3, 2, 0, 0, 0, 0, loc)
+	if got := sched.Next(after); !got.Equal(want) {
+		t.Fatalf("Next(%v) = %v, want %v", after, got, want)
+	}
+}
+
+func TestIntervalScheduleNotDivisibleBy24(t *testing.T) {
+	loc := shanghai(t)
+	sched := IntervalSchedule{Hours: 5, Loc: loc}
+
+	// 22:00 已过当天最后一格 20:00，下一格回落到次日本地零点（短格）。
+	first := sched.Next(time.Date(2026, 3, 1, 22, 0, 0, 0, loc))
+	wantFirst := time.Date(2026, 3, 2, 0, 0, 0, 0, loc)
+	if !first.Equal(wantFirst) {
+		t.Fatalf("Next(2026-03-01T22:00+08:00) = %v, want %v", first, wantFirst)
+	}
+
+	// 短格之后恢复 5 小时间隔。
+	wantSecond := time.Date(2026, 3, 2, 5, 0, 0, 0, loc)
+	if second := sched.Next(first); !second.Equal(wantSecond) {
+		t.Fatalf("Next(%v) = %v, want %v", first, second, wantSecond)
+	}
+}
+
+func TestIntervalScheduleStrictlyAfter(t *testing.T) {
+	loc := shanghai(t)
+	cases := []struct {
+		name  string
+		hours int
+		after time.Time
+		want  time.Time
+	}{
+		{"5h on slot", 5, time.Date(2026, 3, 1, 5, 0, 0, 0, loc), time.Date(2026, 3, 1, 10, 0, 0, 0, loc)},
+		{"5h between slots", 5, time.Date(2026, 3, 1, 7, 30, 0, 0, loc), time.Date(2026, 3, 1, 10, 0, 0, 0, loc)},
+		{"12h at midnight", 12, time.Date(2026, 3, 1, 0, 0, 0, 0, loc), time.Date(2026, 3, 1, 12, 0, 0, 0, loc)},
+		{"12h at noon", 12, time.Date(2026, 3, 1, 12, 0, 0, 0, loc), time.Date(2026, 3, 2, 0, 0, 0, 0, loc)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sched := IntervalSchedule{Hours: tc.hours, Loc: loc}
+			got := sched.Next(tc.after)
+			if !got.Equal(tc.want) {
+				t.Fatalf("Next(%v) = %v, want %v", tc.after, got, tc.want)
+			}
+			if !got.After(tc.after) {
+				t.Fatalf("Next(%v) = %v, want strictly after", tc.after, got)
+			}
+		})
+	}
+}
+
+func TestIntervalScheduleUsesLocation(t *testing.T) {
+	loc := shanghai(t)
+	sched := IntervalSchedule{Hours: 12, Loc: loc}
+	if got := sched.Location(); got != loc {
+		t.Fatalf("Location() = %v, want %v", got, loc)
+	}
+
+	// 2026-03-01T18:00Z = 次日 02:00+08:00；按本地日零点锚定，下一格是
+	// 次日 12:00+08:00 = 2026-03-02T04:00Z。
+	after := time.Date(2026, 3, 1, 18, 0, 0, 0, time.UTC)
+	want := time.Date(2026, 3, 2, 4, 0, 0, 0, time.UTC)
+	if got := sched.Next(after); !got.Equal(want) {
+		t.Fatalf("Next(%v) = %v, want %v", after, got, want)
+	}
+
+	// 反例：若按 UTC 日零点锚定会得到 2026-03-02T00:00Z。
+	if got := sched.Next(after); got.Equal(time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("Next(%v) = %v, anchored on the UTC day instead of Asia/Shanghai", after, got)
+	}
+
+	// Loc 为 nil 时按 UTC 锚定。
+	utcSched := IntervalSchedule{Hours: 12}
+	utcAfter := time.Date(2026, 3, 1, 13, 0, 0, 0, time.UTC)
+	if got, wantUTC := utcSched.Next(utcAfter), time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC); !got.Equal(wantUTC) {
+		t.Fatalf("Next(nil Loc, %v) = %v, want %v", utcAfter, got, wantUTC)
+	}
+}
+
+func TestIntervalScheduleDegenerateHours(t *testing.T) {
+	loc := shanghai(t)
+	after := time.Date(2026, 3, 1, 13, 0, 0, 0, loc)
+	cases := []struct {
+		name  string
+		sched IntervalSchedule
+	}{
+		{"zero hours", IntervalSchedule{Hours: 0, Loc: loc}},
+		{"negative hours", IntervalSchedule{Hours: -5, Loc: loc}},
+		{"zero hours nil loc", IntervalSchedule{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.sched.Next(after)
+			if !got.IsZero() {
+				t.Fatalf("Next(%v) = %v, want zero time", after, got)
+			}
+			if got.Equal(after) {
+				t.Fatalf("Next(%v) returned after", after)
+			}
+		})
+	}
+}
+
 func TestNextFollowsDST(t *testing.T) {
 	loc, err := time.LoadLocation("America/New_York")
 	if err != nil {

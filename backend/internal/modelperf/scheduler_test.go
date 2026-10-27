@@ -85,7 +85,7 @@ func (openLocker) TryLock(context.Context, string, time.Duration) (func(), bool,
 	return func() {}, true, nil
 }
 
-func newTestSchedule(t *testing.T) Schedule {
+func newTestSchedule(t *testing.T) DailyTimes {
 	t.Helper()
 	sched, err := ParseTimes("00:00,12:00", shanghai(t))
 	if err != nil {
@@ -560,7 +560,7 @@ func TestNewSchedulerRejectsMissingDependencies(t *testing.T) {
 		{"performer", func(c *SchedulerConfig) { c.Performer = nil }},
 		{"tests", func(c *SchedulerConfig) { c.Tests = nil }},
 		{"locker", func(c *SchedulerConfig) { c.Locker = nil }},
-		{"schedule", func(c *SchedulerConfig) { c.Schedule = Schedule{} }},
+		{"schedule", func(c *SchedulerConfig) { c.Schedule = DailyTimes{} }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

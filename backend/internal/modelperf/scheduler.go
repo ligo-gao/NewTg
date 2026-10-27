@@ -98,7 +98,7 @@ type SchedulerConfig struct {
 	Tests     TestStore
 	Locker    Locker
 	// Schedule 必填（至少一个时刻）：零值会让循环永远不到点。
-	Schedule Schedule
+	Schedule DailyTimes
 	// Runs/Concurrency 超界时钳制（见 minRuns..maxRuns / minConcurrency..maxConcurrency）。
 	Runs        int
 	Concurrency int
@@ -124,7 +124,7 @@ type Scheduler struct {
 	channels     ChannelPicker
 	performer    Performer
 	tests        TestStore
-	schedule     Schedule
+	schedule     DailyTimes
 	runs         int
 	concurrency  int
 	locker       Locker
