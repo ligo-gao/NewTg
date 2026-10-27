@@ -58,13 +58,24 @@ func TestPublicPricingRepoVisibleSetAndVersion(t *testing.T) {
 	disabled := fmt.Sprintf("t7-pub-disabled-%d", suffix)
 	expression := fmt.Sprintf("t7-pub-expr-%d", suffix)
 	group := fmt.Sprintf("t7g%d", suffix%1_000_000_000)
+	channelName := fmt.Sprintf("t7-pub-ch-%d", suffix)
 
 	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM channels WHERE name = $1`, channelName)
 		_, _ = db.Exec(`DELETE FROM group_pricing WHERE model IN ($1, $2)`, visible, disabled)
 		_, _ = db.Exec(`DELETE FROM model_pricing WHERE model IN ($1, $2, $3)`,
 			visible, disabled, expression)
 		_, _ = db.Exec(`DELETE FROM user_groups WHERE name = $1`, group)
 	})
+
+	// 公示集合现在要求「至少一个 status=1 的渠道支持该模型」，因此可见模型
+	// 必须配一个启用渠道；否则它会被渠道可用性谓词过滤掉。
+	if _, err := db.Exec(`INSERT INTO channels
+		(name, type, credentials, supported_models, status)
+		VALUES ($1, 'openai', $2, jsonb_build_array($3::text), 1)`,
+		channelName, []byte{0}, visible); err != nil {
+		t.Fatalf("insert channels: %v", err)
+	}
 
 	// 分组必须先于覆盖价（FK），模型覆盖价引用逻辑模型名。
 	if _, err := db.Exec(`INSERT INTO user_groups (name, ratio, user_selectable, status)
@@ -173,11 +184,22 @@ func TestPublicPricingRepoStrategyFieldAndVersion(t *testing.T) {
 	ctx := context.Background()
 
 	model := fmt.Sprintf("t6-pub-strategy-%d", time.Now().UnixNano())
-	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM model_pricing WHERE model = $1`, model) })
+	channelName := fmt.Sprintf("t6-pub-strategy-ch-%d", time.Now().UnixNano())
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM channels WHERE name = $1`, channelName)
+		_, _ = db.Exec(`DELETE FROM model_pricing WHERE model = $1`, model)
+	})
 
 	if _, err := db.Exec(`INSERT INTO model_pricing (model, mode, prompt_price, author, status)
 		VALUES ($1, 0, 250, 't6', 1)`, model); err != nil {
 		t.Fatalf("insert model_pricing: %v", err)
+	}
+	// 公开目录要求模型仍有可用渠道，否则快照里看不到它（F-4）。
+	if _, err := db.Exec(`INSERT INTO channels
+		(name, type, credentials, supported_models, status)
+		VALUES ($1, 'openai', $2, jsonb_build_array($3::text), 1)`,
+		channelName, []byte{0}, model); err != nil {
+		t.Fatalf("insert channel: %v", err)
 	}
 	baseline, err := repo.LoadPublicPricingCatalog(ctx)
 	if err != nil {
@@ -232,8 +254,10 @@ func TestPublicPricingRepoMetadataSnapshot(t *testing.T) {
 	model := fmt.Sprintf("t7-meta-model-%d", suffix)
 	vendorName := fmt.Sprintf("t7-meta-vendor-%d", suffix)
 	vendorValue := fmt.Sprintf("t7-meta-priced-vendor-%d", suffix)
+	channelName := fmt.Sprintf("t7-meta-ch-%d", suffix)
 
 	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM channels WHERE name = $1`, channelName)
 		_, _ = db.Exec(`DELETE FROM model_meta WHERE model_name = $1`, model)
 		_, _ = db.Exec(`DELETE FROM vendors WHERE name = $1`, vendorName)
 		_, _ = db.Exec(`DELETE FROM model_pricing WHERE model = $1`, model)
@@ -242,6 +266,13 @@ func TestPublicPricingRepoMetadataSnapshot(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO model_pricing (model, mode, prompt_price, vendor, author, status)
 		VALUES ($1, 0, 100, $2, 't7', 1)`, model, vendorValue); err != nil {
 		t.Fatalf("insert model_pricing: %v", err)
+	}
+	// 有可用渠道才会进入公开快照（F-4），否则 Models 断言会落空。
+	if _, err := db.Exec(`INSERT INTO channels
+		(name, type, credentials, supported_models, status)
+		VALUES ($1, 'openai', $2, jsonb_build_array($3::text), 1)`,
+		channelName, []byte{0}, model); err != nil {
+		t.Fatalf("insert channel: %v", err)
 	}
 	baseline, err := repo.LoadPublicPricingCatalog(ctx)
 	if err != nil {
@@ -338,8 +369,10 @@ func TestListPublicChatModelsIntegration(t *testing.T) {
 	embedding := fmt.Sprintf("t7-embed-%d", suffix)
 	noMeta := fmt.Sprintf("t7-nometa-%d", suffix)
 	hidden := fmt.Sprintf("t7-hidden-%d", suffix)
+	channelName := fmt.Sprintf("t7-chat-ch-%d", suffix)
 
 	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM channels WHERE name = $1`, channelName)
 		_, _ = db.Exec(`DELETE FROM model_meta WHERE model_name IN ($1, $2, $3)`, chat, embedding, hidden)
 		_, _ = db.Exec(`DELETE FROM model_pricing WHERE model IN ($1, $2, $3, $4)`,
 			chat, embedding, noMeta, hidden)
@@ -350,6 +383,15 @@ func TestListPublicChatModelsIntegration(t *testing.T) {
 			VALUES ($1, 0, 100, 't7', 1)`, model); err != nil {
 			t.Fatalf("insert model_pricing(%s): %v", model, err)
 		}
+	}
+	// 四个模型都给可用渠道：本用例验证的是「端点/档案」过滤，渠道可用性必须
+	// 保持全真，否则剔除原因会被渠道条件掩盖（F-4）。
+	if _, err := db.Exec(`INSERT INTO channels
+		(name, type, credentials, supported_models, status)
+		VALUES ($1, 'openai', $2,
+			jsonb_build_array($3::text, $4::text, $5::text, $6::text), 1)`,
+		channelName, []byte{0}, chat, embedding, noMeta, hidden); err != nil {
+		t.Fatalf("insert channel: %v", err)
 	}
 	for _, row := range []struct {
 		name      string
@@ -379,5 +421,140 @@ func TestListPublicChatModelsIntegration(t *testing.T) {
 	}
 	if set[embedding] || set[hidden] {
 		t.Fatalf("non-chat / disabled-profile models leaked in: %v", got)
+	}
+}
+
+// TestPublicPricingRepoChannelAvailability 冻结 F-4 的目录可见性口径：
+//   - 目录与计数只包含「至少一个 status=1 渠道能服务」的模型，命中路径覆盖
+//     supported_models 与 model_mapping 两支（与路由 candidatesQuery 同源）；
+//   - 手动禁用（2）与自动禁用（3）都会隐藏模型，重新启用即恢复；
+//   - 渠道状态变化必须改变 publicPricingVersion，否则客户端会拿旧 ETag 命中
+//     304，继续展示已被隐藏的模型。
+func TestPublicPricingRepoChannelAvailability(t *testing.T) {
+	db := openPublicPricingTestDB(t)
+	repo := NewPublicPricingRepo(db)
+	ctx := context.Background()
+
+	suffix := time.Now().UnixNano()
+	supported := fmt.Sprintf("t7-avail-supported-%d", suffix)
+	mapped := fmt.Sprintf("t7-avail-mapped-%d", suffix)
+	channelName := fmt.Sprintf("t7-avail-ch-%d", suffix)
+
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM channels WHERE name = $1`, channelName)
+		_, _ = db.Exec(`DELETE FROM model_pricing WHERE model IN ($1, $2)`, supported, mapped)
+	})
+
+	for _, model := range []string{supported, mapped} {
+		if _, err := db.Exec(`INSERT INTO model_pricing (model, mode, prompt_price, author, status)
+			VALUES ($1, 0, 100, 't7', 1)`, model); err != nil {
+			t.Fatalf("insert model_pricing(%s): %v", model, err)
+		}
+	}
+	// supported_models 命中 supported；model_mapping 的同名键命中 mapped。
+	if _, err := db.Exec(`INSERT INTO channels
+		(name, type, credentials, supported_models, model_mapping, status)
+		VALUES ($1, 'openai', $2, jsonb_build_array($3::text), $4::jsonb, 1)`,
+		channelName, []byte{0}, supported,
+		fmt.Sprintf(`{"%s":"upstream-real"}`, mapped)); err != nil {
+		t.Fatalf("insert channel: %v", err)
+	}
+
+	visibleSet := func(catalog PublicPricingCatalog) map[string]bool {
+		set := make(map[string]bool, len(catalog.Models))
+		for _, rec := range catalog.Models {
+			set[rec.Model] = true
+		}
+		return set
+	}
+
+	before, err := repo.LoadPublicPricingCatalog(ctx)
+	if err != nil {
+		t.Fatalf("LoadPublicPricingCatalog(before): %v", err)
+	}
+	beforeCounts, err := repo.LoadPublicCounts(ctx)
+	if err != nil {
+		t.Fatalf("LoadPublicCounts(before): %v", err)
+	}
+	set := visibleSet(before)
+	if !set[supported] || !set[mapped] {
+		t.Fatalf("supported_models 与 model_mapping 两条命中路径都应可见: supported=%v mapped=%v",
+			set[supported], set[mapped])
+	}
+	if beforeCounts.Models != int64(len(before.Models)) {
+		t.Fatalf("计数与目录不同口径: counts=%d items=%d", beforeCounts.Models, len(before.Models))
+	}
+	for _, model := range []string{supported, mapped} {
+		ok, err := repo.HasRoutableChannel(ctx, model)
+		if err != nil || !ok {
+			t.Fatalf("HasRoutableChannel(%s) = %v, %v；期望 true", model, ok, err)
+		}
+	}
+	if ok, err := repo.HasRoutableChannel(ctx, fmt.Sprintf("t7-avail-absent-%d", suffix)); err != nil || ok {
+		t.Fatalf("没有任何渠道的模型不应可路由: ok=%v err=%v", ok, err)
+	}
+
+	// 手动禁用：目录与计数同步收缩，版本必须变化（否则 304 会继续回放旧目录）。
+	if _, err := db.Exec(`UPDATE channels SET status = 2 WHERE name = $1`, channelName); err != nil {
+		t.Fatalf("disable channel: %v", err)
+	}
+	disabled, err := repo.LoadPublicPricingCatalog(ctx)
+	if err != nil {
+		t.Fatalf("LoadPublicPricingCatalog(disabled): %v", err)
+	}
+	disabledCounts, err := repo.LoadPublicCounts(ctx)
+	if err != nil {
+		t.Fatalf("LoadPublicCounts(disabled): %v", err)
+	}
+	set = visibleSet(disabled)
+	if set[supported] || set[mapped] {
+		t.Fatalf("渠道禁用后模型仍出现在目录: supported=%v mapped=%v", set[supported], set[mapped])
+	}
+	if disabled.Version == before.Version {
+		t.Fatal("渠道禁用后 publicPricingVersion 未改变")
+	}
+	if disabledCounts.Models != beforeCounts.Models-2 {
+		t.Fatalf("渠道禁用后模型计数 = %d，期望 %d", disabledCounts.Models, beforeCounts.Models-2)
+	}
+	if ok, err := repo.HasRoutableChannel(ctx, supported); err != nil || ok {
+		t.Fatalf("禁用后 HasRoutableChannel = %v, %v；期望 false", ok, err)
+	}
+
+	// 自动禁用（status=3）同样不可用：三态里只有 1 是可调度。
+	if _, err := db.Exec(`UPDATE channels SET status = 3 WHERE name = $1`, channelName); err != nil {
+		t.Fatalf("auto-disable channel: %v", err)
+	}
+	autoDisabled, err := repo.LoadPublicPricingCatalog(ctx)
+	if err != nil {
+		t.Fatalf("LoadPublicPricingCatalog(auto-disabled): %v", err)
+	}
+	if visibleSet(autoDisabled)[supported] {
+		t.Fatal("自动禁用后模型仍出现在目录")
+	}
+	if autoDisabled.Version == disabled.Version {
+		t.Fatal("自动禁用后 publicPricingVersion 未改变")
+	}
+
+	// 重新启用：目录、计数与版本都恢复可见性。
+	if _, err := db.Exec(`UPDATE channels SET status = 1 WHERE name = $1`, channelName); err != nil {
+		t.Fatalf("re-enable channel: %v", err)
+	}
+	restored, err := repo.LoadPublicPricingCatalog(ctx)
+	if err != nil {
+		t.Fatalf("LoadPublicPricingCatalog(restored): %v", err)
+	}
+	restoredCounts, err := repo.LoadPublicCounts(ctx)
+	if err != nil {
+		t.Fatalf("LoadPublicCounts(restored): %v", err)
+	}
+	set = visibleSet(restored)
+	if !set[supported] || !set[mapped] {
+		t.Fatalf("重新启用后模型未恢复: supported=%v mapped=%v", set[supported], set[mapped])
+	}
+	if restoredCounts.Models != beforeCounts.Models {
+		t.Fatalf("重新启用后模型计数 = %d，期望 %d", restoredCounts.Models, beforeCounts.Models)
+	}
+	if restored.Version == autoDisabled.Version {
+		t.Fatal("重新启用后 publicPricingVersion 未改变")
 	}
 }

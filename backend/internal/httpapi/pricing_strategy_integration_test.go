@@ -92,6 +92,9 @@ func TestPricingStrategyIntegrationPeakOffPeakAndPublicVisibility(t *testing.T) 
 	ctx = context.Background()
 
 	model := fmt.Sprintf("it-strategy-%d", time.Now().UnixNano())
+	// 公开目录现在只公示「仍有可用渠道」的模型（F-4）；没有渠道的话，下面
+	// 的公开可见性断言会因渠道条件而不是时段策略失败。
+	channelName := fmt.Sprintf("it-strategy-ch-%d", time.Now().UnixNano())
 
 	// 1) 定价行：基础价 200/800/4/250，加时段策略。
 	if _, err := db.Exec(`INSERT INTO model_pricing
@@ -100,7 +103,16 @@ func TestPricingStrategyIntegrationPeakOffPeakAndPublicVisibility(t *testing.T) 
 		model, pricingStrategyIntegrationJSON); err != nil {
 		t.Fatalf("insert model_pricing: %v", err)
 	}
+	if _, err := db.Exec(`INSERT INTO channels
+		(name, type, credentials, supported_models, status)
+		VALUES ($1, 'openai', $2, jsonb_build_array($3::text), 1)`,
+		channelName, []byte{0}, model); err != nil {
+		t.Fatalf("insert channel: %v", err)
+	}
 	t.Cleanup(func() {
+		if _, err := db.Exec(`DELETE FROM channels WHERE name = $1`, channelName); err != nil {
+			t.Errorf("cleanup channels(%s): %v", channelName, err)
+		}
 		if _, err := db.Exec(`DELETE FROM model_pricing WHERE model = $1`, model); err != nil {
 			t.Errorf("cleanup model_pricing(%s): %v", model, err)
 		}

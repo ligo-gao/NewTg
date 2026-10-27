@@ -57,6 +57,7 @@ func TestPublicPricingIntegrationVisibleSetAndSoftAuth(t *testing.T) {
 	expression := fmt.Sprintf("t7-api-expr-%d", suffix)
 	group := fmt.Sprintf("t7ag%d", suffix%1_000_000_000)
 	username := fmt.Sprintf("t7user%d", suffix%1_000_000_000)
+	channelName := fmt.Sprintf("t7-api-ch-%d", suffix)
 
 	if _, err := db.Exec(`INSERT INTO user_groups (name, ratio, user_selectable, status)
 		VALUES ($1, 150, true, 1)`, group); err != nil {
@@ -87,7 +88,16 @@ func TestPublicPricingIntegrationVisibleSetAndSoftAuth(t *testing.T) {
 		VALUES ($1, 0, '{"mode":"tiered_expr"}', 't7', 1)`, expression); err != nil {
 		t.Fatalf("insert expression model: %v", err)
 	}
+	// 公开目录只公示「仍有可用渠道」的模型（F-4）：visible 必须配一个启用
+	// 渠道；disabled/expression 即使没有渠道也不会出现，剔除原因不受干扰。
+	if _, err := db.Exec(`INSERT INTO channels
+		(name, type, credentials, supported_models, status)
+		VALUES ($1, 'openai', $2, jsonb_build_array($3::text), 1)`,
+		channelName, []byte{0}, visible); err != nil {
+		t.Fatalf("insert channel: %v", err)
+	}
 	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM channels WHERE name = $1`, channelName)
 		_, _ = db.Exec(`DELETE FROM group_pricing WHERE model IN ($1, $2)`, visible, disabled)
 		_, _ = db.Exec(`DELETE FROM model_pricing WHERE model IN ($1, $2, $3)`, visible, disabled, expression)
 		_, _ = db.Exec(`DELETE FROM users WHERE id = $1`, userID)

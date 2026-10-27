@@ -114,8 +114,20 @@ func newMetricsTestHandlerWithPerf(
 	perf store.ModelPerformanceStore,
 ) *PublicPricingHandlers {
 	t.Helper()
+	return newMetricsTestHandlerWithRepo(t, &fakePublicPricingRepo{catalog: fixtureCatalog()}, metrics, perf)
+}
+
+// newMetricsTestHandlerWithRepo 保留仓储引用：渠道可用性用例需要在两次请求
+// 之间翻转 noRoutable / routableErr。
+func newMetricsTestHandlerWithRepo(
+	t *testing.T,
+	repo *fakePublicPricingRepo,
+	metrics store.PublicModelMetricsSource,
+	perf store.ModelPerformanceStore,
+) *PublicPricingHandlers {
+	t.Helper()
 	handlers, err := NewPublicPricingHandlers(PublicPricingHandlerConfig{
-		Repo:    &fakePublicPricingRepo{catalog: fixtureCatalog()},
+		Repo:    repo,
 		Metrics: metrics,
 		Perf:    perf,
 	})
@@ -512,6 +524,98 @@ func metricsETagHash(t *testing.T, etag string) string {
 		t.Fatalf("unexpected ETag format: %q", etag)
 	}
 	return hash
+}
+
+// 模型失去全部可用渠道时，性能接口不得再公示旧读数：latest_test 置 null
+// （前端显示 —），且 ETag 的测速身份归空——旧 ETag 必须失效，否则客户端会
+// 用 304 继续回放「渠道还在时」的读数。
+func TestPublicMetricsOmitsLatestTestWithoutRoutableChannel(t *testing.T) {
+	perf := &fakePublicPerfStore{ok: true, test: store.ModelPerformanceTest{
+		ID:           11,
+		Model:        "openai/gpt-5",
+		Runs:         5,
+		SuccessCount: 5,
+		SuccessRate:  1,
+		TTFTMSP50:    publicIntPtr(120),
+		TPSAvg:       publicFloatPtr(60.5),
+		CreatedAt:    time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC),
+	}}
+	repo := &fakePublicPricingRepo{catalog: fixtureCatalog()}
+	handlers := newMetricsTestHandlerWithRepo(t, repo, &fakePublicModelMetrics{}, perf)
+
+	available := requestMetrics(t, handlers, "openai/gpt-5", "?range=7d", nil)
+	if available.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", available.Code, available.Body.String())
+	}
+	var body PublicModelMetricsResponse
+	if err := json.Unmarshal(available.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.LatestTest == nil || body.LatestTest.TTFTMSP50 == nil {
+		t.Fatalf("latest_test 应在渠道可用时下发: %s", available.Body.String())
+	}
+	if repo.routableCalls == 0 || repo.routableModel != "openai/gpt-5" {
+		t.Fatalf("必须按模型名查询渠道可用性: calls=%d model=%q",
+			repo.routableCalls, repo.routableModel)
+	}
+	availableETag := available.Header().Get("ETag")
+
+	// 最后一个渠道被禁用：目录仍可能被缓存，但读数必须立即消失。
+	repo.noRoutable = true
+	perf.called = false
+	gone := requestMetrics(t, handlers, "openai/gpt-5", "?range=7d",
+		map[string]string{"If-None-Match": availableETag})
+	if gone.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（旧 ETag 不得命中 304）; body=%s",
+			gone.Code, gone.Body.String())
+	}
+	body = PublicModelMetricsResponse{}
+	if err := json.Unmarshal(gone.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.LatestTest != nil {
+		t.Fatalf("不可调度模型的 latest_test 必须为 null: %+v", body.LatestTest)
+	}
+	if perf.called {
+		t.Fatal("不可调度时不应再查询测速历史")
+	}
+
+	goneETag := gone.Header().Get("ETag")
+	if goneETag == "" || goneETag == availableETag {
+		t.Fatalf("ETag 未因渠道不可用而改变: available=%q gone=%q", availableETag, goneETag)
+	}
+	if metricsETagHash(t, goneETag) == metricsETagHash(t, availableETag) {
+		t.Fatalf("ETag 哈希段必须不同（测速身份归空）: available=%q gone=%q",
+			availableETag, goneETag)
+	}
+}
+
+// 渠道可用性查询失败必须 fail-open：保留 latest_test、响应仍是 200。一次辅助
+// 查询不能把整张性能表打成 503（与 perf 存储故障的降级风格一致）。
+func TestPublicMetricsRoutableChannelErrorFailsOpen(t *testing.T) {
+	perf := &fakePublicPerfStore{ok: true, test: store.ModelPerformanceTest{
+		ID: 12, Model: "openai/gpt-5", Runs: 2, SuccessCount: 2, SuccessRate: 1,
+		TTFTMSP50: publicIntPtr(210), TPSAvg: publicFloatPtr(42.5),
+		CreatedAt: time.Date(2026, 10, 27, 11, 0, 0, 0, time.UTC),
+	}}
+	repo := &fakePublicPricingRepo{
+		catalog:     fixtureCatalog(),
+		routableErr: errors.New("channels db is down"),
+	}
+	handlers := newMetricsTestHandlerWithRepo(t, repo, &fakePublicModelMetrics{}, perf)
+
+	rr := requestMetrics(t, handlers, "openai/gpt-5", "?range=7d", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（fail-open）; body=%s", rr.Code, rr.Body.String())
+	}
+	var body PublicModelMetricsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.LatestTest == nil || body.LatestTest.TTFTMSP50 == nil ||
+		*body.LatestTest.TTFTMSP50 != 210 {
+		t.Fatalf("渠道查询失败时必须保留 latest_test: %+v", body.LatestTest)
+	}
 }
 
 func publicFloatPtr(v float64) *float64 { return &v }

@@ -81,10 +81,11 @@ type PublicGroupPricing struct {
 
 // PublicPricingCatalog 是一次快照读取的结果。
 //
-// Version 由五张表的 (max(updated_at), count(*), max(id)) 派生（F-09-14 的
-// ETag 口径 + D1-22：元数据/供应商编辑也必须使版本变化，否则 304 会让
-// 缓存继续返回旧名称与旧 facet）；它只反映「定价域有没有变化」，不随请求
-// 参数变化，因此同一版本下不同筛选条件的条件请求可以命中 304。
+// Version 由五张定价/元数据表的 (max(updated_at), count(*), max(id)) 加
+// channels 的 (id, status) 指纹派生（F-09-14 的 ETag 口径 + D1-22：元数据/
+// 供应商编辑也必须使版本变化，否则 304 会让缓存继续返回旧名称与旧 facet；
+// 渠道状态决定「模型是否可见」，同样必须折进版本）；它只反映「定价域有没有
+// 变化」，不随请求参数变化，因此同一版本下不同筛选条件的条件请求可以命中 304。
 type PublicPricingCatalog struct {
 	Models    []PublicModelPricing
 	Groups    []PublicGroup
@@ -114,6 +115,13 @@ type PublicCounts struct {
 type PublicPricingRepo interface {
 	LoadPublicPricingCatalog(ctx context.Context) (PublicPricingCatalog, error)
 	LoadPublicCounts(ctx context.Context) (PublicCounts, error)
+	// HasRoutableChannel 判断模型是否仍有至少一个可调度渠道（status = 1，
+	// supported_models 命中或 model_mapping 有同名键）。
+	//
+	// 它服务于公开性能接口的读取端兜底：目录查询已过滤不可路由模型，但公开
+	// 响应仍可能在客户端/共享缓存里存活一个窗口（目录 max-age=30、指标
+	// max-age=60）；渠道刚被禁用的窗口内，旧目录副本仍会请求指标端点。
+	HasRoutableChannel(ctx context.Context, model string) (bool, error)
 }
 
 // SQLPublicPricingRepo 是 PublicPricingRepo 的 PostgreSQL 实现。
@@ -131,7 +139,38 @@ func NewPublicPricingRepo(db *sql.DB) *SQLPublicPricingRepo {
 //
 // 【为什么冻结成常量】facets、计数与 items 三条路径必须完全一致；任何一处
 // 漏掉 billing_expr IS NULL 都会让表达式模型出现在目录里而没有整数价。
-const visibleModelWhere = `status = 1 AND billing_expr IS NULL`
+//
+// 列名带 `mp.` 前缀：使用本常量的查询都把 model_pricing 起别名 `mp`，这样
+// 渠道可用性谓词（见 routableChannelExists）可以无歧义地引用 `mp.model`。
+const visibleModelWhere = `mp.status = 1 AND mp.billing_expr IS NULL`
+
+// routableChannelExists 返回「该模型仍有至少一个可调度渠道」的 EXISTS 谓词。
+//
+// 【为什么必须与路由同源】判定口径照抄 channel_repo.go 的 candidatesQuery：
+// status = 1（手动/自动禁用都不算）且（supported_models 含该模型 OR
+// model_mapping 有同名键）。目录比路由宽会出现「公开可售、点进去必然调用
+// 失败」；比路由窄则会把实际可售的模型藏起来，两种漂移都直接面向访客。
+// 分组条件（group_tags）刻意不加：公开目录是分组无关的展示面，一个模型只要
+// 对任意分组可调度就仍应向访客公示。
+//
+// modelExpr 是模型名的 SQL 表达式：目录/计数查询传相关列 `mp.model`，单模型
+// 探测传参数占位 `$1::text`。两处共用一个函数而不是各写一份常量，避免谓词
+// 在后续修改中漂移。
+//
+// 【索引与代价】supported_models 分支可命中 channels_supported_models_gin
+// （jsonb_path_ops 支持 @>）；model_mapping 分支的 jsonb_exists（`?` 的函数
+// 形式）在该索引类型下无法走索引，OR 两侧谓词形式不同，规划器通常退化为
+// 顺序扫描 channels。M2 规模下渠道是「个位数～百级」，正确性优先；量级上来
+// 后应补 `USING gin (model_mapping jsonb_ops)` 再做优化。
+//
+// 【后果】自动禁用（status=3）与手动禁用（status=2）都会让模型立即从公开
+// 目录与首页统计里消失，这是预期语义：没有任何渠道能服务的模型不该被公示。
+func routableChannelExists(modelExpr string) string {
+	return `EXISTS (SELECT 1 FROM channels c
+		WHERE c.status = 1
+			AND (c.supported_models @> jsonb_build_array(` + modelExpr + `)
+				OR jsonb_exists(c.model_mapping, ` + modelExpr + `)))`
+}
 
 // LoadPublicPricingCatalog 在同一 REPEATABLE READ 只读事务内读取三张表。
 //
@@ -188,11 +227,12 @@ func (r *SQLPublicPricingRepo) LoadPublicPricingCatalog(ctx context.Context) (Pu
 
 func loadPublicModels(ctx context.Context, tx *sql.Tx) ([]PublicModelPricing, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT model, mode, prompt_price, completion_price, cache_read_price, cache_write_price, vendor,
-		       strategy
-		FROM model_pricing
+		SELECT mp.model, mp.mode, mp.prompt_price, mp.completion_price,
+		       mp.cache_read_price, mp.cache_write_price, mp.vendor, mp.strategy
+		FROM model_pricing mp
 		WHERE `+visibleModelWhere+`
-		ORDER BY model ASC`)
+		  AND `+routableChannelExists("mp.model")+`
+		ORDER BY mp.model ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list public model_pricing: %w", err)
 	}
@@ -328,6 +368,13 @@ func loadPublicOverrides(ctx context.Context, tx *sql.Tx) ([]PublicGroupPricing,
 // 展示名都来自这两张表，若版本不含它们，管理员改完档案后公开页仍会因
 // If-None-Match 命中 304 而继续展示旧内容（最长一个缓存周期）。
 //
+// 另外还要纳入 channels 的 (id, status) 指纹：目录与首页计数现在只在「存在
+// 可用渠道」时才公示模型（routableChannelExists），渠道被禁用/启用会改变
+// 可见集合，却不触碰上表任何一列的时间戳。若不把渠道状态折进版本，管理员
+// 禁用某模型的最后一个渠道后，客户端仍会用旧 ETag 命中 304，继续展示已被
+// 隐藏的模型。指纹只取 id 与 status 两列：只有它们决定「是否存在可用渠道」，
+// 把 name/credentials 之类无关内容卷进 ETag 只会让缓存无谓失效。
+//
 // 只用 count 不够：同一行改价并重新启用时 count 不变；只用 max(updated_at)
 // 不够：删除最新一行会让 max 回退，而删除同样必须改变版本。max(id) 覆盖
 // 「删除后又插入同内容行」的情形，三者组合在常规管理操作下不会产生版本回退。
@@ -348,6 +395,14 @@ func publicPricingVersion(ctx context.Context, tx *sql.Tx) (string, error) {
 		}
 		builder = fmt.Appendf(builder, "%s|%d|%d|%d;", table, updated.UTC().UnixNano(), count, maxID)
 	}
+	// 渠道可用性指纹：见函数头注释。只取影响可见性的 id/status。
+	var channelFingerprint string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(md5(string_agg(id::text || ':' || status::text, '|' ORDER BY id)), '')
+		FROM channels`).Scan(&channelFingerprint); err != nil {
+		return "", fmt.Errorf("store: read channels version: %w", err)
+	}
+	builder = fmt.Appendf(builder, "channels|%s;", channelFingerprint)
 	// 策略内容指纹（spec §5.4 / 计划 Task 6）：strategy 决定公开面的
 	// pricing_schedule。虽然管理面改策略会推进 updated_at，但迁移回填或直接
 	// SQL 可能只改内容不改时间戳；把内容本身纳入版本，保证「策略变了 ⇒ 版本
@@ -382,8 +437,12 @@ func (r *SQLPublicPricingRepo) LoadPublicCounts(ctx context.Context) (PublicCoun
 	defer func() { _ = tx.Rollback() }()
 
 	var counts PublicCounts
+	// 模型计数必须与目录 items 同口径：仅 count model_pricing 会把「没有任何
+	// 可用渠道」的模型也算进首页统计条，与列表里看不到它们自相矛盾。
 	if err := tx.QueryRowContext(ctx,
-		`SELECT count(*) FROM model_pricing WHERE `+visibleModelWhere).Scan(&counts.Models); err != nil {
+		`SELECT count(*) FROM model_pricing mp
+		 WHERE `+visibleModelWhere+`
+		   AND `+routableChannelExists("mp.model")).Scan(&counts.Models); err != nil {
 		return PublicCounts{}, fmt.Errorf("store: count public models: %w", err)
 	}
 	// channels.status 三态（1=enabled / 2=manual_disabled / 3=auto_disabled），
@@ -396,6 +455,23 @@ func (r *SQLPublicPricingRepo) LoadPublicCounts(ctx context.Context) (PublicCoun
 		return PublicCounts{}, fmt.Errorf("store: commit public counts snapshot: %w", err)
 	}
 	return counts, nil
+}
+
+// HasRoutableChannel 判断单个模型是否仍有至少一个可调度渠道（status = 1）。
+//
+// 供公开性能接口做「目录缓存窗口内」的一致性兜底：正常情况下目录过滤已经
+// 保证不可路由的模型不在公开集合里，请求走不到这一步；只有旧目录副本还在
+// 缓存中（或渠道刚刚被禁用）时才会命中。此时不返回 latest_test，避免把已
+// 不可调度模型的旧测速读数继续当作「真实调用性能」公示。
+//
+// 谓词与目录过滤共用 routableChannelExists，口径与路由 candidatesQuery 同源。
+func (r *SQLPublicPricingRepo) HasRoutableChannel(ctx context.Context, model string) (bool, error) {
+	var exists bool
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT `+routableChannelExists("$1::text"), model).Scan(&exists); err != nil {
+		return false, fmt.Errorf("store: check routable channel: %w", err)
+	}
+	return exists, nil
 }
 
 // ListPublicChatModels 返回公开目录可见、且具备对话/流式端点的模型名（已排序）。

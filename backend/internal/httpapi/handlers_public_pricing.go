@@ -1506,20 +1506,40 @@ func (h *PublicPricingHandlers) handlePublicPricingMetrics(w http.ResponseWriter
 		groups = append(groups, view)
 	}
 
+	// 目录过滤（store 层）已经排除没有任何可调度渠道的模型；这里在读取测速
+	// 读数之前再问一次，是「目录缓存窗口内」的一致性兜底：公开目录响应最长
+	// 会被缓存 30 秒，渠道刚被禁用时旧副本仍可能把访客带到本端点。
+	//
+	// 不可调度时不下发 latest_test（前端显示 —），测速身份同时归空——与「从未
+	// 测过」走同一 ETag，避免客户端拿旧 ETag 命中 304 继续回放旧读数。
+	routable := true
+	if ok, channelErr := h.repo.HasRoutableChannel(r.Context(), modelID); channelErr != nil {
+		// fail-open：渠道可用性查询失败不应把公开指标端点打成 503。保留
+		// latest_test，与 perf 存储故障的降级风格一致（宁可多展示一次读数，
+		// 也不能让一次辅助查询拖垮整张性能表）。
+		h.log.Warn("public pricing metrics: routable channel check failed; failing open",
+			"model", modelID, "error", channelErr)
+	} else {
+		routable = ok
+	}
+
 	// 主动测速是独立事实源（主库），失败不影响真实调用聚合：日志告警后
-	// latest_test 留空，响应仍是 200（fail-open）。
+	// latest_test 留空，响应仍是 200（fail-open）。不可调度时整段跳过：
+	// 读数不会下发，也不必再查一次主库。
 	testIdentity := ""
 	var latestTest *PublicModelLatestTest
-	if h.perf == nil {
-		h.log.Warn("public pricing metrics: performance store not configured; latest_test omitted",
-			"model", modelID)
-	} else if test, found, perfErr := h.perf.LatestByModel(r.Context(), modelID); perfErr != nil {
-		h.log.Warn("public pricing metrics: latest performance test unavailable; failing open",
-			"model", modelID, "error", perfErr)
-	} else if found {
-		latestTest = publicLatestTestView(test)
-		testIdentity = strconv.FormatInt(test.ID, 10) + "@" +
-			test.CreatedAt.UTC().Format(time.RFC3339Nano)
+	if routable {
+		if h.perf == nil {
+			h.log.Warn("public pricing metrics: performance store not configured; latest_test omitted",
+				"model", modelID)
+		} else if test, found, perfErr := h.perf.LatestByModel(r.Context(), modelID); perfErr != nil {
+			h.log.Warn("public pricing metrics: latest performance test unavailable; failing open",
+				"model", modelID, "error", perfErr)
+		} else if found {
+			latestTest = publicLatestTestView(test)
+			testIdentity = strconv.FormatInt(test.ID, 10) + "@" +
+				test.CreatedAt.UTC().Format(time.RFC3339Nano)
+		}
 	}
 
 	// 降级结果的 summary 与正常零样本几乎相同，必须让缓存键可区分，避免

@@ -31,6 +31,13 @@ type fakePublicPricingRepo struct {
 	// 错误注入（首页统计需要验证 DB 故障不得返回 200 空对象）。
 	catalogErr error
 	countsErr  error
+	// 渠道可用性接缝默认返回 true：绝大多数公开面用例关心的是目录/指标视图，
+	// 而不是渠道状态。需要模拟「失去全部可用渠道」时置 noRoutable；需要模拟
+	// 查询故障（handler 必须 fail-open）时置 routableErr。
+	noRoutable    bool
+	routableErr   error
+	routableCalls int
+	routableModel string
 
 	catalogCalls atomic.Int32
 	countsCalls  atomic.Int32
@@ -50,6 +57,15 @@ func (f *fakePublicPricingRepo) LoadPublicCounts(context.Context) (store.PublicC
 		return store.PublicCounts{}, f.countsErr
 	}
 	return f.counts, nil
+}
+
+func (f *fakePublicPricingRepo) HasRoutableChannel(_ context.Context, model string) (bool, error) {
+	f.routableCalls++
+	f.routableModel = model
+	if f.routableErr != nil {
+		return false, f.routableErr
+	}
+	return !f.noRoutable, nil
 }
 
 // fakePublicGroups 是软鉴权的用户分组接缝。
