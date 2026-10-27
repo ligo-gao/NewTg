@@ -139,6 +139,14 @@ services:
       # 网络拉取 holiday-cn 年度 JSON；离线部署置 false 即可零出站。
       HOLIDAY_SYNC_ENABLED: "${HOLIDAY_SYNC_ENABLED:-true}"
       HOLIDAY_SYNC_URL_TEMPLATE: "${HOLIDAY_SYNC_URL_TEMPLATE:-https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/%d.json}"
+      # 模型性能定时实测（spec 2026-10-27）：只在 worker 执行。默认按北京时间
+      # 每天 00:00 / 12:00 对全部公开对话模型各测 3 轮，全局并发 2 个模型。
+      # 只给 worker：gateway 解析默认值即可，管理面展示以 worker 为准。
+      PERF_SCHEDULE_ENABLED: "${PERF_SCHEDULE_ENABLED:-true}"
+      PERF_SCHEDULE_TIMES: "${PERF_SCHEDULE_TIMES:-00:00,12:00}"
+      PERF_SCHEDULE_TIMEZONE: "${PERF_SCHEDULE_TIMEZONE:-Asia/Shanghai}"
+      PERF_SCHEDULE_RUNS: "${PERF_SCHEDULE_RUNS:-3}"
+      PERF_SCHEDULE_CONCURRENCY: "${PERF_SCHEDULE_CONCURRENCY:-2}"
       METRICS_ADDR: ":8006"
       METRICS_TOKEN: "${METRICS_TOKEN:-}"
     depends_on:
