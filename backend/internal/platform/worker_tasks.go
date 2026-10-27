@@ -51,8 +51,9 @@ type workerTaskDeps struct {
 	Settings logRetentionSettings
 	Logger   *slog.Logger
 	// ModelPerfRun 是模型性能实测的一轮执行体（modelperf.Scheduler.RunOnce）。
-	// nil 表示装配失败或当前角色不提供（gateway）：任务在管理面可见但显示为
-	// 不可用，手动触发返回 409 model_perf_test_unavailable。
+	// nil 表示装配失败或当前角色不提供（gateway 侧不绑定 Run，只登记目录项）：
+	// 管理面仍把任务列为可触发，直到触发时才返回 409
+	// model_perf_test_unavailable——目录摘要不读取 Enabled 谓词。
 	ModelPerfRun func(context.Context) (modelperf.Stats, error)
 }
 
