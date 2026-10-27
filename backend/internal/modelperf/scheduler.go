@@ -128,7 +128,9 @@ type Scheduler struct {
 	now          func() time.Time
 	tickInterval time.Duration
 	slotTTL      time.Duration
-	nextDue      time.Time
+	// nextDue 只由 RunLoop 所在 goroutine 的 step 读写；RunOnce（含手动触发）
+	// 不得触碰，否则会与调度循环产生数据竞争并打乱时段推进。
+	nextDue time.Time
 }
 
 // NewScheduler 校验依赖、钳制参数并计算第一个触发时刻。

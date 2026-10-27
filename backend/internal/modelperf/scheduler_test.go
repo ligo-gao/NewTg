@@ -689,6 +689,32 @@ func newStepSchedulerWith(t *testing.T, locker Locker, logger *slog.Logger,
 	return s, at, calls, tests
 }
 
+// atomicClock 是可并发读写的时钟：Performer 在 RunOnce 的 worker goroutine 里
+// 推进它，而 step/RunOnce 在测试 goroutine 里读取，因此必须加锁。
+type atomicClock struct {
+	mu sync.Mutex
+	at time.Time
+}
+
+func (c *atomicClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at
+}
+
+func (c *atomicClock) set(at time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.at = at
+}
+
+// bufferLogger 返回同步写入内存 buffer 的 logger，用于断言日志契约。
+// 只在日志写完后读取：step 用例是同步的，RunLoop 用例会先等待循环返回。
+func bufferLogger() (*slog.Logger, *bytes.Buffer) {
+	var buf bytes.Buffer
+	return slog.New(slog.NewTextHandler(&buf, nil)), &buf
+}
+
 func TestStepRunsOnlyWhenDue(t *testing.T) {
 	locker := &fakeLocker{acquired: true}
 	s, at, calls, tests := newStepScheduler(t, locker)
@@ -739,8 +765,9 @@ func TestStepRunsOnlyWhenDue(t *testing.T) {
 }
 
 func TestStepSkipsWhenLockHeld(t *testing.T) {
+	logger, buf := bufferLogger()
 	locker := &fakeLocker{acquired: false}
-	s, at, calls, tests := newStepScheduler(t, locker)
+	s, at, calls, tests := newStepSchedulerWithLogger(t, locker, logger)
 	loc := s.schedule.Location()
 	*at = time.Date(2026, 10, 27, 12, 0, 0, 0, loc)
 
@@ -760,11 +787,20 @@ func TestStepSkipsWhenLockHeld(t *testing.T) {
 	if len(keys) != 1 || keys[0] != "model_perf_schedule:2026-10-27T12:00" {
 		t.Fatalf("lock keys = %v, want the 2026-10-27T12:00 slot", keys)
 	}
+	// 日志契约：跳过必须记为 INFO 且带 skipped_locked=true，否则运维无法区分
+	// 「被别的副本抢先」和「没到点」。
+	out := buf.String()
+	if !strings.Contains(out, "modelperf: scheduled round skipped") ||
+		!strings.Contains(out, "skipped_locked=true") ||
+		!strings.Contains(out, "slot=2026-10-27T12:00:00+08:00") {
+		t.Fatalf("skip log missing contract fields: %q", out)
+	}
 }
 
 func TestStepRetriesOnLockErrorAndSkipsMissedSlot(t *testing.T) {
+	logger, buf := bufferLogger()
 	locker := &fakeLocker{acquired: true, err: errors.New("redis unavailable")}
-	s, at, calls, tests := newStepScheduler(t, locker)
+	s, at, calls, tests := newStepSchedulerWithLogger(t, locker, logger)
 	loc := s.schedule.Location()
 	missedSlot := time.Date(2026, 10, 27, 12, 0, 0, 0, loc)
 	*at = missedSlot
@@ -776,6 +812,13 @@ func TestStepRetriesOnLockErrorAndSkipsMissedSlot(t *testing.T) {
 	}
 	if !s.nextDue.Equal(missedSlot) {
 		t.Fatalf("nextDue = %v after a lock error, want it to stay at %v", s.nextDue, missedSlot)
+	}
+	// 锁报错必须以 WARN 暴露并带上时段，否则 Redis 故障会完全静默。
+	out := buf.String()
+	if !strings.Contains(out, "level=WARN") ||
+		!strings.Contains(out, "modelperf: acquire slot lock failed; will retry") ||
+		!strings.Contains(out, "slot=2026-10-27T12:00:00+08:00") {
+		t.Fatalf("lock-error WARN missing from %q", out)
 	}
 	// 第二个 tick 仍在同一时段内：应当再次尝试同一把锁。
 	s.step(context.Background())
@@ -802,6 +845,72 @@ func TestStepRetriesOnLockErrorAndSkipsMissedSlot(t *testing.T) {
 	}
 	if got := len(tests.snapshot()); got != 0 {
 		t.Fatalf("persisted %d tests after missing a whole cycle, want 0", got)
+	}
+}
+
+func TestStepLockErrorAtFollowingSlotBoundaryJumps(t *testing.T) {
+	locker := &fakeLocker{acquired: true, err: errors.New("redis unavailable")}
+	s, at, calls, tests := newStepScheduler(t, locker)
+	loc := s.schedule.Location()
+	// 时钟恰好在下一个时段（次日 00:00 整）上：边界属于「已错过」，
+	// 必须跳到未来时段，而不是再等一个 tick 去补跑 00:00。
+	*at = time.Date(2026, 10, 28, 0, 0, 0, 0, loc)
+
+	s.step(context.Background())
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("performer called %d times at the following slot boundary", got)
+	}
+	if got := len(tests.snapshot()); got != 0 {
+		t.Fatalf("persisted %d tests at the following slot boundary", got)
+	}
+	wantNext := time.Date(2026, 10, 28, 12, 0, 0, 0, loc)
+	if !s.nextDue.Equal(wantNext) {
+		t.Fatalf("nextDue = %v at the following slot boundary, want %v", s.nextDue, wantNext)
+	}
+}
+
+func TestStepAdvancesFromCompletionTime(t *testing.T) {
+	loc := shanghai(t)
+	clock := &atomicClock{at: time.Date(2026, 10, 27, 11, 59, 0, 0, loc)}
+	completion := time.Date(2026, 10, 28, 0, 0, 30, 0, loc)
+	var calls atomic.Int64
+	tests := &fakeTests{}
+	s := mustScheduler(t, SchedulerConfig{
+		Models:   &fakeModels{names: []string{"gpt-4o"}},
+		Channels: &fakePicker{channel: &store.Channel{ID: 7}, ok: true},
+		Performer: func(context.Context, *store.Channel, string, int) []channelhealth.PerfRunResult {
+			calls.Add(1)
+			// 一轮探测耗时跨过了下一个时段（次日 00:00）。
+			clock.set(completion)
+			return []channelhealth.PerfRunResult{{Success: true}}
+		},
+		Tests:       tests,
+		Runs:        1,
+		Concurrency: 1,
+		Schedule:    newTestSchedule(t),
+		Locker:      &fakeLocker{acquired: true},
+		Now:         clock.now,
+	})
+	// 构造时 nextDue 由 11:59 算出 12:00；把时钟拨到点上再 step。
+	clock.set(time.Date(2026, 10, 27, 12, 0, 0, 0, loc))
+
+	s.step(context.Background())
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("performer called %d times, want 1", got)
+	}
+	if got := len(tests.snapshot()); got != 1 {
+		t.Fatalf("persisted %d tests, want 1", got)
+	}
+	// 下一时段必须从「轮次结束时刻」算：12:00 的下一时段是次日 00:00，
+	// 但一轮跑到 00:00:30 才结束，所以该跳到次日 12:00。
+	wantNext := time.Date(2026, 10, 28, 12, 0, 0, 0, loc)
+	if !s.nextDue.Equal(wantNext) {
+		t.Fatalf("nextDue = %v after a round that crossed 00:00, want %v", s.nextDue, wantNext)
+	}
+	// 反向防呆：若按触发时刻（slot=12:00）推进，结果会是次日 00:00，
+	// 与本用例的期望不同——这正是要钉住的行为差异。
+	if stale := s.schedule.Next(time.Date(2026, 10, 27, 12, 0, 0, 0, loc)); stale.Equal(wantNext) {
+		t.Fatalf("test slot cannot distinguish completion-time advance from slot-time advance")
 	}
 }
 
