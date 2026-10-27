@@ -507,12 +507,18 @@ func TestRunOnceStopsDispatchingAfterCancel(t *testing.T) {
 }
 
 func TestRunOnceRecoversFromPerformerPanic(t *testing.T) {
+	// 两个模型 + 并发 1：panic 的那个若泄漏信号量或漏掉 wg.Done，
+	// 第二个模型就永远不会被测试，比单模型用例更能钉住 defer 顺序。
 	tests := &fakeTests{}
 	s := mustScheduler(t, SchedulerConfig{
-		Models:   &fakeModels{names: []string{"panic-model"}},
-		Channels: &fakePicker{channel: &store.Channel{ID: 5}, ok: true},
-		Performer: func(context.Context, *store.Channel, string, int) []channelhealth.PerfRunResult {
-			panic("boom")
+		Models:      &fakeModels{names: []string{"panic-model", "ok-model"}},
+		Channels:    &fakePicker{channel: &store.Channel{ID: 5}, ok: true},
+		Concurrency: 1,
+		Performer: func(_ context.Context, _ *store.Channel, model string, _ int) []channelhealth.PerfRunResult {
+			if model == "panic-model" {
+				panic("boom")
+			}
+			return []channelhealth.PerfRunResult{{Success: true}}
 		},
 		Tests:    tests,
 		Schedule: newTestSchedule(t),
@@ -523,11 +529,12 @@ func TestRunOnceRecoversFromPerformerPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
-	if stats.Models != 1 || stats.Tested != 0 || stats.PersistFailed != 0 {
-		t.Fatalf("stats = %+v, want models=1 tested=0 (a panic is logged, not counted)", stats)
+	if stats.Models != 2 || stats.Tested != 1 || stats.PersistFailed != 0 {
+		t.Fatalf("stats = %+v, want models=2 tested=1 (a panic is logged, not counted)", stats)
 	}
-	if got := tests.snapshot(); len(got) != 0 {
-		t.Fatalf("persisted %d tests from a panicking performer", len(got))
+	got := tests.snapshot()
+	if len(got) != 1 || got[0].Model != "ok-model" {
+		t.Fatalf("persisted = %+v, want only ok-model", got)
 	}
 }
 
