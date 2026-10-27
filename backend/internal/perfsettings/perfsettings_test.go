@@ -71,9 +71,35 @@ func TestSettingsUsesPersistedValues(t *testing.T) {
 	if got.Enabled || got.IntervalHours != 6 || got.Runs != 5 || got.Concurrency != 4 {
 		t.Fatalf("unexpected persisted values: %+v", got)
 	}
-	// 时区/时刻表仍是环境变量面，只由 Defaults 提供。
-	if got.Timezone != "Asia/Shanghai" || got.LegacyTimes != "00:00,12:00" {
-		t.Fatalf("timezone/legacy times not from defaults: %+v", got)
+	// 间隔模式下不再有「历史时刻表」：页面保存间隔后该字段应消失。
+	if got.LegacyTimes != "" {
+		t.Fatalf("LegacyTimes = %q, want empty in interval mode", got.LegacyTimes)
+	}
+	// 时区仍由 Defaults 提供（不是本次可配项）。
+	if got.Timezone != "Asia/Shanghai" {
+		t.Fatalf("timezone not from defaults: %+v", got)
+	}
+}
+
+func TestSettingsLegacyTimesEmptyInIntervalMode(t *testing.T) {
+	// interval>0 → LegacyTimes 清空；interval 缺失/为 0 → 保留 env 时刻表。
+	interval := newWithReader(
+		fakeReader{"perf.schedule.interval_hours": json.RawMessage("5")},
+		testDefaults(), discardLogger())
+	if got := interval.Settings(time.Now()); got.LegacyTimes != "" {
+		t.Fatalf("LegacyTimes = %q, want empty when interval is persisted", got.LegacyTimes)
+	}
+
+	legacy := New(nil, testDefaults(), discardLogger())
+	if got := legacy.Settings(time.Now()); got.LegacyTimes != "00:00,12:00" {
+		t.Fatalf("LegacyTimes = %q, want env times in legacy mode", got.LegacyTimes)
+	}
+
+	explicitZero := newWithReader(
+		fakeReader{"perf.schedule.interval_hours": json.RawMessage("0")},
+		testDefaults(), discardLogger())
+	if got := explicitZero.Settings(time.Now()); got.LegacyTimes != "00:00,12:00" {
+		t.Fatalf("LegacyTimes = %q, want env times when interval is 0", got.LegacyTimes)
 	}
 }
 
@@ -91,6 +117,9 @@ func TestSettingsMixedSource(t *testing.T) {
 	if got.Runs != 3 || got.Concurrency != 2 || !got.Enabled {
 		t.Fatalf("absent keys must use env defaults: %+v", got)
 	}
+	if got.LegacyTimes != "" {
+		t.Fatalf("LegacyTimes = %q, want empty in interval mode", got.LegacyTimes)
+	}
 }
 
 func TestSettingsDirtyValueFallsBack(t *testing.T) {
@@ -100,9 +129,9 @@ func TestSettingsDirtyValueFallsBack(t *testing.T) {
 			r := newWithReader(reader, testDefaults(), discardLogger())
 			got := r.Settings(time.Now())
 
-			// 键存在（Source 仍记为 mixed），但值不可用 → 按未落库处理，走环境变量时刻表。
-			if got.Source != "mixed" {
-				t.Fatalf("Source = %q, want mixed (key is present, value dirty)", got.Source)
+			// 键虽然在库里，但值不可用 → 生效值来自 env，Source 不能声称 settings。
+			if got.Source != "env" {
+				t.Fatalf("Source = %q, want env (only dirty key would come from settings)", got.Source)
 			}
 			if got.IntervalHours != 0 {
 				t.Fatalf("IntervalHours = %d, want 0 for dirty %s", got.IntervalHours, raw)
@@ -110,12 +139,57 @@ func TestSettingsDirtyValueFallsBack(t *testing.T) {
 			if got.Runs != 3 || got.Concurrency != 2 || !got.Enabled {
 				t.Fatalf("dirty interval must not disturb other keys: %+v", got)
 			}
+			if got.LegacyTimes != "00:00,12:00" {
+				t.Fatalf("LegacyTimes = %q, want env times after dirty interval", got.LegacyTimes)
+			}
 
 			schedule, _ := r.Schedule(time.Now())
 			if _, ok := schedule.(modelperf.DailyTimes); !ok {
 				t.Fatalf("Schedule() = %T, want modelperf.DailyTimes for dirty %s", schedule, raw)
 			}
 		})
+	}
+}
+
+func TestSettingsAllDirtyKeysUseEnv(t *testing.T) {
+	reader := fakeReader{
+		"perf.schedule.enabled":        json.RawMessage(`"yes"`),
+		"perf.schedule.interval_hours": json.RawMessage("null"),
+		"perf.schedule.runs":           json.RawMessage("-1"),
+		"perf.schedule.concurrency":    json.RawMessage(`"many"`),
+	}
+	r := newWithReader(reader, testDefaults(), discardLogger())
+	got := r.Settings(time.Now())
+
+	if got.Source != "env" {
+		t.Fatalf("Source = %q, want env when all four values are unusable", got.Source)
+	}
+	if !got.Enabled || got.IntervalHours != 0 || got.Runs != 3 || got.Concurrency != 2 {
+		t.Fatalf("all-dirty keys must fall back to env defaults: %+v", got)
+	}
+	if got.LegacyTimes != "00:00,12:00" {
+		t.Fatalf("LegacyTimes = %q, want env times", got.LegacyTimes)
+	}
+}
+
+func TestSettingsDirtyIntervalWithGoodKeysIsMixed(t *testing.T) {
+	reader := fakeReader{
+		"perf.schedule.enabled":        json.RawMessage("false"),
+		"perf.schedule.interval_hours": json.RawMessage(`"abc"`),
+		"perf.schedule.runs":           json.RawMessage("5"),
+	}
+	r := newWithReader(reader, testDefaults(), discardLogger())
+	got := r.Settings(time.Now())
+
+	// enabled/runs 真正生效、interval 回落 env、concurrency 缺失走 env → mixed 是诚实的。
+	if got.Source != "mixed" {
+		t.Fatalf("Source = %q, want mixed", got.Source)
+	}
+	if got.Enabled || got.Runs != 5 || got.IntervalHours != 0 || got.Concurrency != 2 {
+		t.Fatalf("unexpected mixed values: %+v", got)
+	}
+	if got.LegacyTimes != "00:00,12:00" {
+		t.Fatalf("LegacyTimes = %q, want env times", got.LegacyTimes)
 	}
 }
 

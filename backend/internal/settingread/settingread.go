@@ -33,25 +33,32 @@ func Present(reader Reader, key string) bool {
 }
 
 // Bool 读取布尔设置；缺省/非布尔/JSON null 一律回落 fallback。
+// 需要区分「值来自设置」与「回落」时用 BoolOK。
+func Bool(reader Reader, key string, fallback bool, log *slog.Logger) bool {
+	value, _ := BoolOK(reader, key, fallback, log)
+	return value
+}
+
+// BoolOK 是 Bool 的带来源变体：ok 报告键是否持有可用的布尔值。
 //
 // 与 Int 的指针对齐：null 解到 bool 会得到 false 且无错误，若不显式区分，
 // 脏行会把「默认关」的键读成关闭、也可能把默认开的键误关；所以这里显式
 // warn，便于发现脏数据。
-func Bool(reader Reader, key string, fallback bool, log *slog.Logger) bool {
+func BoolOK(reader Reader, key string, fallback bool, log *slog.Logger) (bool, bool) {
 	if reader == nil {
-		return fallback
+		return fallback, false
 	}
 	raw, ok := reader.Get(key)
 	if !ok {
-		return fallback
+		return fallback, false
 	}
 	var value *bool
 	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
 		log.Warn("worker: setting is not a valid boolean; falling back to the fail-safe default",
 			"key", key, "raw", string(raw), "fallback", fallback)
-		return fallback
+		return fallback, false
 	}
-	return *value
+	return *value, true
 }
 
 // Int 读取一个非负整数设置。

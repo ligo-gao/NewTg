@@ -27,7 +27,8 @@ const (
 	settingPerfConcurrency   = "perf.schedule.concurrency"
 )
 
-// perfSettingKeys 是参与 Source 判定的四个键。
+// perfSettingKeys 是参与 Source 判定的四个键：只有四键的值都可用，
+// Source 才是 SourceSettings。
 var perfSettingKeys = [...]string{
 	settingPerfEnabled,
 	settingPerfIntervalHours,
@@ -62,7 +63,8 @@ type Settings struct {
 	IntervalHours int
 	Runs          int
 	Concurrency   int
-	// Source ∈ SourceSettings | SourceEnv | SourceMixed，按四键是否落库判定。
+	// Source ∈ SourceSettings | SourceEnv | SourceMixed：只统计「值真正可用、
+	// 因而生效自 settings」的键；脏值按回落 env 计。
 	Source string
 	// Timezone / LegacyTimes 只来自 Defaults：它们不是本次可配项。
 	Timezone    string
@@ -99,39 +101,50 @@ func newWithReader(reader settingread.Reader, defaults Defaults, log *slog.Logge
 
 // Settings 返回当前生效值。now 预留给调用方对齐读取时刻，本实现不依赖它。
 func (r *Reader) Settings(_ time.Time) Settings {
+	log := r.logger()
 	settings := Settings{
-		Enabled:       settingread.Bool(r.reader, settingPerfEnabled, r.defaults.Enabled, r.log),
-		Runs:          r.defaults.Runs,
-		Concurrency:   r.defaults.Concurrency,
-		Timezone:      r.defaults.Timezone,
-		LegacyTimes:   r.defaults.Times,
-		Source:        SourceEnv,
-		IntervalHours: 0,
+		Enabled:     r.defaults.Enabled,
+		Runs:        r.defaults.Runs,
+		Concurrency: r.defaults.Concurrency,
+		Timezone:    r.defaults.Timezone,
+		LegacyTimes: r.defaults.Times,
 	}
 
-	if interval, ok := settingread.Int(r.reader, settingPerfIntervalHours, r.log); ok {
+	// usable 只统计「值真正来自 system_settings」的键：脏值虽然在库里，
+	// 生效值其实来自 env，Source 不能声称 settings（控制台据此显示
+	// 「已按页面设置运行，PERF_SCHEDULE_TIMES 不再生效」，说错就是误导）。
+	usable := 0
+
+	if enabled, ok := settingread.BoolOK(r.reader, settingPerfEnabled, r.defaults.Enabled, log); ok {
+		settings.Enabled = enabled
+		usable++
+	}
+	if interval, ok := settingread.Int(r.reader, settingPerfIntervalHours, log); ok {
 		settings.IntervalHours = int(interval)
+		usable++
 	}
-	if runs, ok := settingread.Int(r.reader, settingPerfRuns, r.log); ok {
+	if runs, ok := settingread.Int(r.reader, settingPerfRuns, log); ok {
 		settings.Runs = int(runs)
+		usable++
 	}
-	if concurrency, ok := settingread.Int(r.reader, settingPerfConcurrency, r.log); ok {
+	if concurrency, ok := settingread.Int(r.reader, settingPerfConcurrency, log); ok {
 		settings.Concurrency = int(concurrency)
+		usable++
 	}
 
-	present := 0
-	for _, key := range perfSettingKeys {
-		if settingread.Present(r.reader, key) {
-			present++
-		}
-	}
-	switch present {
+	switch usable {
 	case 0:
 		settings.Source = SourceEnv
 	case len(perfSettingKeys):
 		settings.Source = SourceSettings
 	default:
 		settings.Source = SourceMixed
+	}
+
+	// 间隔模式没有「历史时刻表」：页面保存间隔后该字段应消失，调度器也不会
+	// 再读它（见 Schedule）。
+	if settings.IntervalHours > 0 {
+		settings.LegacyTimes = ""
 	}
 
 	return settings
@@ -152,7 +165,7 @@ func (r *Reader) Schedule(now time.Time) (modelperf.Schedule, Settings) {
 
 	schedule, err := modelperf.ParseTimes(settings.LegacyTimes, loc)
 	if err != nil {
-		r.log.Warn("worker: perf schedule times are invalid; falling back to 00:00/12:00",
+		r.logger().Warn("worker: perf schedule times are invalid; falling back to 00:00/12:00",
 			"times", settings.LegacyTimes, "error", err)
 		// legacyTimes 是常量且必然可解析；忽略错误是安全的。
 		schedule, _ = modelperf.ParseTimes(legacyTimes, loc)
@@ -166,17 +179,26 @@ func (r *Reader) NextRun(now time.Time) time.Time {
 	return schedule.Next(now)
 }
 
+// logger 返回可用的 logger：零值 Reader（未经 New 构造，字段全空）也能安全
+// 走到告警路径，而不是解引用 nil 指针。
+func (r *Reader) logger() *slog.Logger {
+	if r.log == nil {
+		return slog.Default()
+	}
+	return r.log
+}
+
 // location 把 IANA 时区名解析成 *time.Location；空值/未知时区回落 UTC。
 // nil 时区会让 ParseTimes/IntervalSchedule 内部再兜一次底，但这里显式回落
 // 并告警，运维才能发现时区名拼错了。
 func (r *Reader) location(name string) *time.Location {
 	if name == "" {
-		r.log.Warn("worker: perf schedule timezone is empty; falling back to UTC")
+		r.logger().Warn("worker: perf schedule timezone is empty; falling back to UTC")
 		return time.UTC
 	}
 	loc, err := time.LoadLocation(name)
 	if err != nil || loc == nil {
-		r.log.Warn("worker: perf schedule timezone is invalid; falling back to UTC",
+		r.logger().Warn("worker: perf schedule timezone is invalid; falling back to UTC",
 			"timezone", name, "error", err)
 		return time.UTC
 	}

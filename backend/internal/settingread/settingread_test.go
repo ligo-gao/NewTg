@@ -145,6 +145,55 @@ func TestBoolFallsBack(t *testing.T) {
 	}
 }
 
+func TestBoolOKReportsUsability(t *testing.T) {
+	cases := []struct {
+		name     string
+		reader   Reader
+		fallback bool
+		want     bool
+		wantOK   bool
+	}{
+		{name: "nil reader", reader: nil, fallback: true, want: true},
+		{name: "missing key", reader: fakeReader{}, fallback: true, want: true},
+		{
+			name:     "json null",
+			reader:   fakeReader{"perf.schedule.enabled": json.RawMessage("null")},
+			fallback: true,
+			want:     true,
+		},
+		{
+			name:     "non-bool",
+			reader:   fakeReader{"perf.schedule.enabled": json.RawMessage(`"true"`)},
+			fallback: true,
+			want:     true,
+		},
+		{
+			name:     "explicit true",
+			reader:   fakeReader{"perf.schedule.enabled": json.RawMessage("true")},
+			fallback: false,
+			want:     true,
+			wantOK:   true,
+		},
+		{
+			name:     "explicit false",
+			reader:   fakeReader{"perf.schedule.enabled": json.RawMessage("false")},
+			fallback: true,
+			want:     false,
+			wantOK:   true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			log, _ := captureLog()
+			got, ok := BoolOK(tc.reader, "perf.schedule.enabled", tc.fallback, log)
+			if got != tc.want || ok != tc.wantOK {
+				t.Fatalf("BoolOK() = (%v, %v), want (%v, %v)", got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}
+
 func TestPresent(t *testing.T) {
 	if Present(nil, "perf.schedule.runs") {
 		t.Fatal("Present(nil) = true, want false")
