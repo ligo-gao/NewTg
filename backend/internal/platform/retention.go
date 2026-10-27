@@ -15,6 +15,7 @@ import (
 	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/config"
 	"newtg/gateway/internal/configcenter"
+	"newtg/gateway/internal/settingread"
 	"newtg/gateway/internal/tasks"
 )
 
@@ -112,25 +113,9 @@ func clampSetting(value, max int, key string, log *slog.Logger) int {
 }
 
 // readSettingBool 读取布尔设置；缺省/非布尔/JSON null 一律回落 fallback。
-//
-// 与 readSettingInt 的指针对齐：null 解到 bool 会得到 false 且无错误，若不
-// 显式区分，脏行会把「默认关」的键读成关闭、也可能把默认开的键误关；本键
-// fallback 恒为 false，所以这里仍显式 warn，便于发现脏数据。
+// 实现见 internal/settingread.Bool（日志前缀与回落语义保持不变）。
 func readSettingBool(reader settingReader, key string, fallback bool, log *slog.Logger) bool {
-	if reader == nil {
-		return fallback
-	}
-	raw, ok := reader.Get(key)
-	if !ok {
-		return fallback
-	}
-	var value *bool
-	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
-		log.Warn("worker: setting is not a valid boolean; falling back to the fail-safe default",
-			"key", key, "raw", string(raw), "fallback", fallback)
-		return fallback
-	}
-	return *value
+	return settingread.Bool(reader, key, fallback, log)
 }
 
 // startRetentionWorkers 解析保留设置并启动后台循环，返回停止函数。

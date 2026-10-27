@@ -16,6 +16,7 @@ import (
 	"newtg/gateway/internal/httpapi"
 	"newtg/gateway/internal/mj"
 	"newtg/gateway/internal/plugin"
+	"newtg/gateway/internal/settingread"
 	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/tasks"
 	"newtg/gateway/internal/version"
@@ -45,10 +46,9 @@ const (
 )
 
 // settingReader 是配置中心读取面的最小接口（生产 *configcenter.Center）。
-// 抽出接口让三态映射可以在不依赖 PG/Redis 的单测里验证（R-W9B-08）。
-type settingReader interface {
-	Get(key string) (json.RawMessage, bool)
-}
+// 实现已抽到 internal/settingread（perfsettings 也复用同一套回落语义）；
+// 这里保留类型别名，现有装配与单测无需改动。
+type settingReader = settingread.Reader
 
 // 本文件把 `async_task_poll` 装配进 worker 角色（relay-06 §8.1/§9.6）。
 //
@@ -431,42 +431,12 @@ func pollLimits(reader settingReader, timeoutKey, failuresKey string, log *slog.
 	return timeout, maxFailures
 }
 
-// readSettingInt 读取一个非负整数设置。
+// readSettingInt 读取一个非负整数设置；实现见 internal/settingread.Int。
 //
 // 返回 ok=false 覆盖四种情况：未配置、JSON null、解析失败、负值。调用方
-// 因此只需区分「有合法值」与「回落默认」；具体的告警在这里发出，便于运维
-// 定位脏行。
-//
-// 为什么用 *int64：json.Unmarshal 把 `null` 解到 int64 时返回 nil error 且
-// 保持零值，会被误读成「显式 0 = 禁用」——这是 fail-open（静默关掉兜底）。
-// 解到指针后 null → nil 指针，明确落入「回落默认 + warn」。
+// 因此只需区分「有合法值」与「回落默认」；具体的告警在 settingread 里发出。
 func readSettingInt(reader settingReader, key string, log *slog.Logger) (int64, bool) {
-	if reader == nil {
-		return 0, false
-	}
-	raw, ok := reader.Get(key)
-	if !ok {
-		return 0, false
-	}
-	var value *int64
-	if err := json.Unmarshal(raw, &value); err != nil {
-		log.Warn("worker: setting is not a valid integer; falling back to the design default",
-			"key", key, "raw", string(raw), "error", err)
-		return 0, false
-	}
-	if value == nil {
-		log.Warn("worker: setting is null; falling back to the design default",
-			"key", key, "raw", string(raw))
-		return 0, false
-	}
-	if *value < 0 {
-		// 设计只冻结了 `<=0 禁用`：0 是唯一的禁用形式。负值是配置错误，
-		// 不是另一种禁用写法（见 taskPollLimits 的注释）。
-		log.Warn("worker: setting is negative; falling back to the design default",
-			"key", key, "value", *value)
-		return 0, false
-	}
-	return *value, true
+	return settingread.Int(reader, key, log)
 }
 
 // describePollTimeout 只服务于启动日志的可观测性：nil 显示为对应族的
