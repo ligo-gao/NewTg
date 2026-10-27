@@ -558,3 +558,117 @@ func TestPublicPricingRepoChannelAvailability(t *testing.T) {
 		t.Fatal("重新启用后 publicPricingVersion 未改变")
 	}
 }
+
+// TestPublicPricingRepoChannelModelListVersion 冻结 F-4 review 发现的内容编辑
+// 漏洞：渠道的 supported_models / model_mapping 变化同样会改变目录可见集合，
+// 必须一并折进 publicPricingVersion。否则管理员从渠道里移除某个模型后
+// （status 全程为 1，不触碰任何时间戳），客户端仍会拿旧 ETag 命中 304，无限期
+// 继续展示已被隐藏的模型。
+func TestPublicPricingRepoChannelModelListVersion(t *testing.T) {
+	db := openPublicPricingTestDB(t)
+	repo := NewPublicPricingRepo(db)
+	ctx := context.Background()
+
+	suffix := time.Now().UnixNano()
+	supported := fmt.Sprintf("t7-list-supported-%d", suffix)
+	mapped := fmt.Sprintf("t7-list-mapped-%d", suffix)
+	channelName := fmt.Sprintf("t7-list-ch-%d", suffix)
+
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM channels WHERE name = $1`, channelName)
+		_, _ = db.Exec(`DELETE FROM model_pricing WHERE model IN ($1, $2)`, supported, mapped)
+	})
+
+	for _, model := range []string{supported, mapped} {
+		if _, err := db.Exec(`INSERT INTO model_pricing (model, mode, prompt_price, author, status)
+			VALUES ($1, 0, 100, 't7', 1)`, model); err != nil {
+			t.Fatalf("insert model_pricing(%s): %v", model, err)
+		}
+	}
+	// supported 走 supported_models，mapped 走 model_mapping（与路由同源）。
+	if _, err := db.Exec(`INSERT INTO channels
+		(name, type, credentials, supported_models, model_mapping, status)
+		VALUES ($1, 'openai', $2, jsonb_build_array($3::text), $4::jsonb, 1)`,
+		channelName, []byte{0}, supported,
+		fmt.Sprintf(`{"%s":"upstream-real"}`, mapped)); err != nil {
+		t.Fatalf("insert channel: %v", err)
+	}
+
+	load := func(step string) (PublicPricingCatalog, map[string]bool) {
+		t.Helper()
+		catalog, err := repo.LoadPublicPricingCatalog(ctx)
+		if err != nil {
+			t.Fatalf("LoadPublicPricingCatalog(%s): %v", step, err)
+		}
+		set := make(map[string]bool, len(catalog.Models))
+		for _, rec := range catalog.Models {
+			set[rec.Model] = true
+		}
+		return catalog, set
+	}
+
+	baseline, set := load("baseline")
+	if !set[supported] || !set[mapped] {
+		t.Fatalf("初始目录应同时包含两个模型: supported=%v mapped=%v", set[supported], set[mapped])
+	}
+
+	// 从 supported_models 移除模型，status 保持 1。注意不能用空数组：init
+	// 迁移的 channels_supported_models_chk 要求至少一个元素。
+	unrelated := fmt.Sprintf("t7-list-unrelated-%d", suffix)
+	if _, err := db.Exec(`UPDATE channels SET supported_models = jsonb_build_array($1::text) WHERE name = $2`,
+		unrelated, channelName); err != nil {
+		t.Fatalf("remove supported model: %v", err)
+	}
+	removed, set := load("supported removed")
+	if set[supported] {
+		t.Fatal("从 supported_models 移除后模型仍出现在目录")
+	}
+	if !set[mapped] {
+		t.Fatal("仅移除 supported_models 不应影响 model_mapping 命中的模型")
+	}
+	if removed.Version == baseline.Version {
+		t.Fatal("supported_models 内容变化后 publicPricingVersion 未改变（旧 ETag 会继续回放被移除模型）")
+	}
+
+	// 加回：重新可见且版本再次变化。
+	if _, err := db.Exec(`UPDATE channels SET supported_models = jsonb_build_array($1::text) WHERE name = $2`,
+		supported, channelName); err != nil {
+		t.Fatalf("restore supported model: %v", err)
+	}
+	restored, set := load("supported restored")
+	if !set[supported] {
+		t.Fatal("supported_models 加回后模型仍未出现在目录")
+	}
+	if restored.Version == removed.Version {
+		t.Fatal("supported_models 加回后 publicPricingVersion 未改变")
+	}
+
+	// model_mapping 路径同样覆盖：删掉同名键。
+	if _, err := db.Exec(`UPDATE channels SET model_mapping = '{"upstream-other":"x"}'::jsonb WHERE name = $1`,
+		channelName); err != nil {
+		t.Fatalf("remove mapped model: %v", err)
+	}
+	mappedRemoved, set := load("mapped removed")
+	if set[mapped] {
+		t.Fatal("从 model_mapping 移除后模型仍出现在目录")
+	}
+	if !set[supported] {
+		t.Fatal("仅移除 model_mapping 键不应影响 supported_models 命中的模型")
+	}
+	if mappedRemoved.Version == restored.Version {
+		t.Fatal("model_mapping 内容变化后 publicPricingVersion 未改变")
+	}
+
+	// 加回同名键：再次可见，版本再次变化。
+	if _, err := db.Exec(`UPDATE channels SET model_mapping = jsonb_build_object($1::text, 'upstream-real') WHERE name = $2`,
+		mapped, channelName); err != nil {
+		t.Fatalf("restore mapped model: %v", err)
+	}
+	mappedRestored, set := load("mapped restored")
+	if !set[mapped] {
+		t.Fatal("model_mapping 加回后模型仍未出现在目录")
+	}
+	if mappedRestored.Version == mappedRemoved.Version {
+		t.Fatal("model_mapping 加回后 publicPricingVersion 未改变")
+	}
+}

@@ -17,7 +17,10 @@ package store
 //  3. 公开目录的分页/搜索/排序语义与 UI 强绑定，放在 HTTP 层可以完全确定性
 //     地测试；SQL 层只负责「可见集合」这一条准入规则。
 //
-// 可见集合（R-PUB-01 + B6-11）：status = 1 且 billing_expr IS NULL。
+// 可见集合（R-PUB-01 + B6-11 + F-4）：status = 1 且 billing_expr IS NULL，
+// 且至少有一个 status = 1 的渠道能服务该模型（supported_models 含该模型，或
+// model_mapping 有同名键，见 routableChannelExists）。最后一条保证公示页只展示
+// 「点进去确实能调用」的模型：定价行上架但没有可调度渠道时仍不公示。
 // 表达式计价（tiered_expr）在 MVP 不公示：表达式自包含计价，目录没有可比较的
 // 整数价；这与管理面 F-06-14「未登记模型不自动兜底」同口径——公示页只展示
 // 可调用且价格可读的模型。
@@ -82,10 +85,11 @@ type PublicGroupPricing struct {
 // PublicPricingCatalog 是一次快照读取的结果。
 //
 // Version 由五张定价/元数据表的 (max(updated_at), count(*), max(id)) 加
-// channels 的 (id, status) 指纹派生（F-09-14 的 ETag 口径 + D1-22：元数据/
+// channels 的可见性列指纹派生（F-09-14 的 ETag 口径 + D1-22：元数据/
 // 供应商编辑也必须使版本变化，否则 304 会让缓存继续返回旧名称与旧 facet；
-// 渠道状态决定「模型是否可见」，同样必须折进版本）；它只反映「定价域有没有
-// 变化」，不随请求参数变化，因此同一版本下不同筛选条件的条件请求可以命中 304。
+// 渠道的 id/status/supported_models/model_mapping 决定「模型是否可见」，
+// 同样必须折进版本）；它只反映「定价域有没有变化」，不随请求参数变化，
+// 因此同一版本下不同筛选条件的条件请求可以命中 304。
 type PublicPricingCatalog struct {
 	Models    []PublicModelPricing
 	Groups    []PublicGroup
@@ -105,7 +109,9 @@ type PublicPricingCatalog struct {
 
 // PublicCounts 是首页统计条的两个真实计数（R-PUB-08）。
 type PublicCounts struct {
-	// Models 与 /api/pricing 的可见集合同口径（status=1 且无表达式）。
+	// Models 与 /api/pricing 的可见集合同口径：status=1、无表达式，且至少
+	// 有一个 status=1 的渠道能服务该模型（supported_models 或 model_mapping
+	// 命中，见 routableChannelExists）。
 	Models int64
 	// Upstreams = COUNT(DISTINCT channels.type) WHERE status = 1。
 	Upstreams int64
@@ -368,12 +374,18 @@ func loadPublicOverrides(ctx context.Context, tx *sql.Tx) ([]PublicGroupPricing,
 // 展示名都来自这两张表，若版本不含它们，管理员改完档案后公开页仍会因
 // If-None-Match 命中 304 而继续展示旧内容（最长一个缓存周期）。
 //
-// 另外还要纳入 channels 的 (id, status) 指纹：目录与首页计数现在只在「存在
-// 可用渠道」时才公示模型（routableChannelExists），渠道被禁用/启用会改变
-// 可见集合，却不触碰上表任何一列的时间戳。若不把渠道状态折进版本，管理员
-// 禁用某模型的最后一个渠道后，客户端仍会用旧 ETag 命中 304，继续展示已被
-// 隐藏的模型。指纹只取 id 与 status 两列：只有它们决定「是否存在可用渠道」，
-// 把 name/credentials 之类无关内容卷进 ETag 只会让缓存无谓失效。
+// 另外还要纳入 channels 的可见性列指纹：目录与首页计数现在只在「存在可用
+// 渠道」时才公示模型（routableChannelExists），而一个模型是否可用由渠道的
+// status、supported_models、model_mapping 三者共同决定。禁用/启用渠道会改变
+// 可见集合；从 supported_models 或 model_mapping 里删掉/加回某个模型同样会
+// 改变可见集合，但都不会触碰上表任何一列的时间戳。若不把这些列折进版本，
+// 管理员移除模型后客户端仍会用旧 ETag 命中 304，继续展示已被隐藏的模型
+// （渠道内容编辑路径是 F-4 review 实测发现的漏洞）。
+//
+// 【为什么不用 channels.updated_at】该列会被连通性测试结果、失败计数等与
+// 可见性无关的写入推进；拿它派生 ETag 会让公开目录在可见集合毫无变化时反复
+// 失效（缓存抖动）。因此只取真正决定可见性的内容列：id、status、
+// supported_models、model_mapping——name/credentials 等无关列仍排除在外。
 //
 // 只用 count 不够：同一行改价并重新启用时 count 不变；只用 max(updated_at)
 // 不够：删除最新一行会让 max 回退，而删除同样必须改变版本。max(id) 覆盖
@@ -395,10 +407,10 @@ func publicPricingVersion(ctx context.Context, tx *sql.Tx) (string, error) {
 		}
 		builder = fmt.Appendf(builder, "%s|%d|%d|%d;", table, updated.UTC().UnixNano(), count, maxID)
 	}
-	// 渠道可用性指纹：见函数头注释。只取影响可见性的 id/status。
+	// 渠道可见性指纹：见函数头注释。只取决定模型可见性的内容列。
 	var channelFingerprint string
 	if err := tx.QueryRowContext(ctx, `
-		SELECT COALESCE(md5(string_agg(id::text || ':' || status::text, '|' ORDER BY id)), '')
+		SELECT COALESCE(md5(string_agg(id::text || ':' || status::text || ':' || supported_models::text || ':' || model_mapping::text, '|' ORDER BY id)), '')
 		FROM channels`).Scan(&channelFingerprint); err != nil {
 		return "", fmt.Errorf("store: read channels version: %w", err)
 	}
