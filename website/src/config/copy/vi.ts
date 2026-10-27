@@ -146,7 +146,7 @@ export const vi: Copy = {
     retry: "Thử lại",
     empty: "Chưa có mô hình để hiển thị.",
     footnote:
-      "Độ trễ là thời gian đến token đầu tiên (TTFT) của cuộc gọi streaming; tốc độ đầu ra là số token đầu ra do upstream trả về chia cho tổng thời gian. Lần kiểm thử thất bại, chưa có hoặc cũ hơn 36 giờ sẽ hiển thị —.",
+      "Độ trễ là thời gian đến token đầu tiên (TTFT) của cuộc gọi streaming; tốc độ đầu ra là số token đầu ra do upstream trả về chia cho tổng thời gian. Lần kiểm thử thất bại, chưa được thực hiện hoặc cũ hơn 36 giờ sẽ hiển thị —.",
   },
 
   closing: {

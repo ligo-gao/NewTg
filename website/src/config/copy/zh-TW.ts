@@ -137,7 +137,7 @@ export const zhTW: Copy = {
     columns: {
       model: "模型",
       vendor: "供應商",
-      ttft: "連線延遲",
+      ttft: "連線時延",
       tps: "token 輸出速度",
     },
     unavailable: "效能資料暫時無法使用",

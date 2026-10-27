@@ -145,7 +145,7 @@ export const en: Copy = {
     retry: "Retry",
     empty: "No models to show yet.",
     footnote:
-      "Latency is time to first token (TTFT) for streaming calls; output speed is upstream output tokens divided by total latency. A failed, missing, or more-than-36-hour-old probe is shown as —.",
+      "Latency is time to first token (TTFT) for streaming calls; output speed is upstream output tokens divided by total latency. A probe that failed, is missing, or is older than 36 hours is shown as —.",
   },
 
   closing: {

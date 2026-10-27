@@ -146,7 +146,7 @@ export const fr: Copy = {
     retry: "Réessayer",
     empty: "Aucun modèle à afficher.",
     footnote:
-      "La latence est le temps jusqu'au premier token (TTFT) des appels en streaming ; la vitesse de sortie correspond aux tokens de sortie renvoyés par l'amont divisés par la latence totale. Une sonde échouée, absente ou vieille de plus de 36 heures s'affiche —.",
+      "La latence est le temps jusqu'au premier token (TTFT) des appels en streaming ; la vitesse de sortie correspond aux tokens de sortie renvoyés par l'amont divisés par la latence totale. Une sonde échouée, absente ou vieille de plus de 36 heures s'affiche comme —.",
   },
 
   closing: {
