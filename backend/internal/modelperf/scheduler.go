@@ -234,6 +234,14 @@ dispatch:
 		go func(model string) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			// 探测实现（未来可能换成子进程/插件）里的 panic 不能把整个 worker
+			// 进程带走：只记日志并按「未测试」处理，不引入新的 Stats 计数
+			// （worker.Result 的键集合由 Task 10 固定）。
+			defer func() {
+				if r := recover(); r != nil {
+					s.logger.Error("modelperf: probe panicked", "model", model, "panic", r)
+				}
+			}()
 
 			ch, ok, pickErr := s.channels.PickTop(ctx, model)
 			if pickErr != nil {
