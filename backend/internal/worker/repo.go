@@ -53,16 +53,23 @@ type TaskState struct {
 }
 
 // Run 是 worker_task_runs 的一行。
+//
+// 【为什么每个字段都必须有 json tag】本结构体经 TaskDetail.Runs 直接序列化给
+// 管理面，前端读的是 snake_case。没有 tag 时 encoding/json 输出 Go 字段名
+// （StartedAt / TaskType），控制台的运行历史明细行会对所有任务都渲染成空值。
+// 这一点很容易漏测：把响应解回 worker.Run 时，PascalCase 恰好也能匹配 Go 字段
+// 名，断言照样通过。所以序列化形状由集成测试的原始 JSON 键名断言锁定，见
+// handlers_system_tasks_integration_test.go。
 type Run struct {
-	ID         int64
-	TaskType   string
-	Status     string
-	NodeID     string
-	StartedAt  *time.Time
-	FinishedAt *time.Time
-	Error      string
-	Result     Result
-	Trigger    string
+	ID         int64      `json:"id"`
+	TaskType   string     `json:"task_type"`
+	Status     string     `json:"status"`
+	NodeID     string     `json:"node_id,omitempty"`
+	StartedAt  *time.Time `json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at"`
+	Error      string     `json:"error,omitempty"`
+	Result     Result     `json:"result"`
+	Trigger    string     `json:"trigger"`
 }
 
 // TaskPage / RunPage 是管理面分页信封（与 OpenAPI Page<T> 同形）。

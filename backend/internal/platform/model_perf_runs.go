@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"time"
 
+	"newtg/gateway/internal/httpapi"
 	"newtg/gateway/internal/modelperf"
 	"newtg/gateway/internal/worker"
 )
@@ -44,6 +45,9 @@ const (
 // bindWorkerTaskRuns 的 model_perf_test 绑定）：
 //   - status：succeeded / failed（worker.RunSucceeded / worker.RunFailed）；
 //   - trigger：schedule（定时轮次不是手动触发）；
+//   - node_id：与调度器同源（httpapi.ResolveProcessInstanceID）。此前定时行
+//     留空，运行历史里同一条任务的手动行有节点、定时行没有，管理员无法判断
+//     这一轮是哪台 worker 跑的；补上与手动行一致后，两行才真正可比；
 //   - error 列：只放固定分类（timeout / cancelled / execution_error），原始
 //     err 文本可能带上游响应，绝不落库；
 //   - result：models / tested / skipped_no_channel / persist_failed 四个计数，
@@ -61,6 +65,10 @@ func newModelPerfRoundRecorder(db *sql.DB, log *slog.Logger,
 		log.Error("worker: model perf run recorder disabled", "error", err)
 		return nil
 	}
+	// 节点标识在构造时解析一次：任务框架装配（worker_tasks.go）也是启动时
+	// 解析一次并交给调度器，同一进程写出的所有行应带同一个值。解析不到时为空
+	// 串，CreateRun 的 NULLIF 会写成 NULL，与旧行为一致，不会产生空字符串行。
+	nodeID := httpapi.ResolveProcessInstanceID()
 	return func(ctx context.Context, startedAt time.Time, stats modelperf.Stats, roundErr error) {
 		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), modelPerfRunWriteTimeout)
 		defer cancel()
@@ -86,6 +94,7 @@ func newModelPerfRoundRecorder(db *sql.DB, log *slog.Logger,
 			TaskType:   modelPerfTaskType,
 			Status:     status,
 			Trigger:    worker.TriggerSchedule,
+			NodeID:     nodeID,
 			StartedAt:  &started,
 			FinishedAt: &finishedAt,
 			Error:      errClass,

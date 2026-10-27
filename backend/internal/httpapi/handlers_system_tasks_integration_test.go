@@ -212,6 +212,42 @@ func TestSystemTasksIntegration(t *testing.T) {
 		t.Fatalf("详情运行 = %+v", payload.Runs)
 	}
 
+	// 原始 JSON 键名断言（F-1）：这是运行历史 DTO 缺 json tag 的唯一有效防线。
+	// 把响应解回 worker.TaskDetail 是不够的——Go 的 encoding/json 在解 PascalCase
+	// 时同样能匹配字段名，旧的无 tag 结构体也能让上面那条断言通过，而前端读的是
+	// snake_case，整行渲染为空。所以这里必须检查原始键名：若 Run 又丢掉 tag，
+	// 下面的 snake_case 键会全部缺失、PascalCase 键会出现，立即失败。
+	var rawDetail struct {
+		Runs struct {
+			Items []map[string]any `json:"items"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(detail.Body.Bytes(), &rawDetail); err != nil {
+		t.Fatalf("decode raw detail: %v", err)
+	}
+	if len(rawDetail.Runs.Items) != 1 {
+		t.Fatalf("原始运行条目数 = %d，期望 1", len(rawDetail.Runs.Items))
+	}
+	rawRun := rawDetail.Runs.Items[0]
+	for _, key := range []string{
+		"id", "task_type", "status", "node_id", "started_at", "finished_at", "result", "trigger",
+	} {
+		if _, ok := rawRun[key]; !ok {
+			t.Fatalf("运行条目缺少 snake_case 键 %q（实际键：%v）", key, rawRun)
+		}
+	}
+	for _, key := range []string{
+		"ID", "TaskType", "Status", "NodeID", "StartedAt", "FinishedAt", "Error", "Result", "Trigger",
+	} {
+		if _, ok := rawRun[key]; ok {
+			t.Fatalf("运行条目出现 PascalCase 键 %q（实际键：%v）；Run 缺少 json tag", key, rawRun)
+		}
+	}
+	// node_id 来自调度器，同时证明该字段不是被 omitempty 吞掉。
+	if rawRun["node_id"] != "integration-node" {
+		t.Fatalf("运行条目 node_id = %v，期望 integration-node", rawRun["node_id"])
+	}
+
 	// 审计：每次触发（403/202/409）各一条，且 detail 不泄露节点标识。
 	var auditCount int
 	if err := logs.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs
