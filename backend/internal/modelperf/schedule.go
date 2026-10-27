@@ -120,13 +120,14 @@ func (s DailyTimes) Next(after time.Time) time.Time {
 	return time.Time{}
 }
 
-// IntervalSchedule 是按固定小时间隔触发的时刻表：每个本地日从零点起
-// 每 Hours 小时一格，越过日界时回落到次日本地零点。
+// IntervalSchedule 是按固定小时间隔触发的时刻表：以固定的本地参考日零点
+// （2000-01-01 00:00）为锚点，按民用小时序号每 Hours 小时一格。
 //
-// 为什么按日零点锚定而不是「上次触发 + Hours 小时」：重启、多副本与
-// Redis 抖动都不会改变节奏，任意副本在任意时刻算出的槽位完全一致。
-// Hours 不能整除 24 时，当天最后一格短于 Hours（Hours=5 →
-// 00/05/10/15/20/次日 00），所以对外只说「每 N 小时」，不承诺「每天整 N 次」。
+// 为什么不用「当日零点 + k×Hours」：Hours>24 时当天只有一个零点格，k 恒为 1，
+// 选 168（每周）会退化成每天跑，按天烧上游额度。固定参考锚点让 N=48 真的
+// 是每 2 天、N=168 真的是每周；N=12 仍与今天的 00:00/12:00 逐点一致。
+// 槽位只依赖日历（民用小时序号），因此重启、多副本与 Redis 抖动都不会改变
+// 节奏，任意副本在任意时刻算出的槽位完全相同。
 type IntervalSchedule struct {
 	Hours int
 	Loc   *time.Location
@@ -142,39 +143,38 @@ func (s IntervalSchedule) Location() *time.Location {
 
 // Next 返回严格晚于 after 的下一个槽位。
 //
-// 槽位一律用 time.Date 按本地日历（日期 + 小时）构造，而不是对本地零点
-// 做 Add：DST 切换当天的日界仍落在本地零点，槽位的墙上时间也不会被时差
-// 偏移。Hours<=0 属于配置错误，返回零时间（没有下次），不 panic 也不回显 after。
+// 用「固定参考锚点 + 民用小时序号」而不是时长加法：Add(N*time.Hour) 在 DST
+// 切换后会让槽位漂移到本地 01:00/13:00；这里按民用小时序号算出槽位后，再用
+// time.Date 按本地日历字段重建，槽位始终落在本地整点（N=12 仍是 00:00/12:00）。
+// Hours<=0 属于配置错误，返回零时间（没有下次），不 panic 也不回显 after。
 func (s IntervalSchedule) Next(after time.Time) time.Time {
 	if s.Hours <= 0 {
 		return time.Time{}
 	}
-	// 超过 24 小时的间隔每天最多命中一次（格子从当天零点起，第二格必然
-	// 越过日界），按 24 处理等价，同时避免大数值在秒/小时换算时溢出。
-	hours := min(s.Hours, 24)
 	loc := s.Location()
+	ref := time.Date(2000, 1, 1, 0, 0, 0, 0, loc)
 	local := after.In(loc)
-	stepSecs := int64(hours) * 3600
-	// dayOffset 上限为 2：当天或次日必然命中，多留一天覆盖 DST 跳变。
-	for dayOffset := 0; dayOffset <= 2; dayOffset++ {
-		year, month, day := local.Year(), local.Month(), local.Day()+dayOffset
-		dayEnd := time.Date(year, month, day+1, 0, 0, 0, 0, loc)
-		firstSlot := int64(0)
-		if dayOffset == 0 {
-			// 当天第一个可能晚于 after 的槽位：墙上时间按秒切格。
-			secs := int64(local.Hour())*3600 + int64(local.Minute())*60 + int64(local.Second())
-			firstSlot = secs/stepSecs + 1
+	// 民用日差：两端都按 UTC 零点重建后相减，DST 不会把日差算成 23/25 小时。
+	refDay := time.Date(ref.Year(), ref.Month(), ref.Day(), 0, 0, 0, 0, time.UTC)
+	afterDay := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.UTC)
+	days := int64(afterDay.Sub(refDay) / (24 * time.Hour))
+	idx := days*24 + int64(local.Hour())
+	// k 取「严格大于 idx 的下一格」：idx/Hours 向下取整后 +1。
+	k := idx/int64(s.Hours) + 1
+	if idx < 0 && idx%int64(s.Hours) != 0 {
+		// Go 的整数除法向零截断；参考锚点之前的时刻要再退一格才是向下取整。
+		k--
+	}
+	// 正常情况下 k 已指向下一格；最多重算 3 次覆盖 DST 重复小时里槽位
+	// 构造出来仍不晚于 after 的罕见情形。
+	for attempt := 0; attempt < 3; attempt++ {
+		slot := k * int64(s.Hours)
+		dayOff, hour := slot/24, slot%24
+		next := time.Date(ref.Year(), ref.Month(), ref.Day()+int(dayOff), int(hour), 0, 0, 0, loc)
+		if next.After(after) {
+			return next
 		}
-		for slot := firstSlot; slot*int64(hours) < 24; slot++ {
-			candidate := time.Date(year, month, day, int(slot)*hours, 0, 0, 0, loc)
-			if candidate.After(after) {
-				return candidate
-			}
-		}
-		// 当天槽位用尽：最后一格是短格，收尾在次日本地零点。
-		if dayEnd.After(after) {
-			return dayEnd
-		}
+		k++
 	}
 	return time.Time{}
 }
