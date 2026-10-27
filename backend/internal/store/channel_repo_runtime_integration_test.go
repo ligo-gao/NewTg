@@ -293,4 +293,45 @@ func TestChannelRepoPluginBindingRuntime(t *testing.T) {
 	}
 }
 
+// TestPickTopPrefersPriorityAndSkipsDisabled 覆盖 PickTop 的选取口径：
+// 只在启用渠道中按 priority DESC, id ASC 取第一条，并在 Get 之后复核状态
+// （Get 自身不过滤 status，禁用一条后应自动落到下一个候选）。
+func TestPickTopPrefersPriorityAndSkipsDisabled(t *testing.T) {
+	db := openChannelRuntimeTestDB(t)
+	repo := NewChannelRepo(db)
+	suffix := time.Now().UnixNano()
+	model := fmt.Sprintf("t7/picktop-%d", suffix)
+	supported := fmt.Sprintf(`["%s"]`, model)
+
+	low := insertRuntimeChannel(t, db, fmt.Sprintf("t7-pick-low-%d", suffix), 1, supported, `{}`, "")
+	high := insertRuntimeChannel(t, db, fmt.Sprintf("t7-pick-high-%d", suffix), 1, supported, `{}`, "")
+	disabled := insertRuntimeChannel(t, db, fmt.Sprintf("t7-pick-off-%d", suffix), 2, supported, `{}`, "")
+
+	for id, priority := range map[int64]int16{low: 1, high: 9, disabled: 99} {
+		if _, err := db.Exec(`UPDATE channels SET priority = $2 WHERE id = $1`, id, priority); err != nil {
+			t.Fatalf("set priority for %d: %v", id, err)
+		}
+	}
+
+	ch, ok, err := repo.PickTop(context.Background(), model)
+	if err != nil || !ok {
+		t.Fatalf("PickTop = %v, %v", ok, err)
+	}
+	if ch.ID != high {
+		t.Fatalf("picked channel %d, want priority winner %d (low=%d)", ch.ID, high, low)
+	}
+
+	if _, err := db.Exec(`UPDATE channels SET status = 2 WHERE id = $1`, high); err != nil {
+		t.Fatalf("disable winner: %v", err)
+	}
+	ch, ok, err = repo.PickTop(context.Background(), model)
+	if err != nil || !ok || ch.ID != low {
+		t.Fatalf("after disabling winner got %v/%v/%v, want %d", ch, ok, err, low)
+	}
+
+	if _, ok, _ := repo.PickTop(context.Background(), fmt.Sprintf("t7/none-%d", suffix)); ok {
+		t.Fatal("model without channels must return ok=false")
+	}
+}
+
 func stringPtrForTest(v string) *string { return &v }

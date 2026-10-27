@@ -831,6 +831,33 @@ func (r *ChannelRepo) Candidates(ctx context.Context, model, group string) ([]co
 	return candidates, nil
 }
 
+// PickTop 返回该模型路由优先级最高的启用渠道。
+//
+// 复用 Candidates 的准入与排序（status = 1、supported_models/model_mapping
+// 命中、priority DESC, id ASC），再用 Get 加载完整行（凭据、model_mapping、
+// type）。Get 不过滤状态，因此必须补一次 Status 复核：候选查询与 Get 之间
+// 渠道可能被禁用。不按分组过滤——测速关心的是「这个模型的最高优先级渠道」。
+func (r *ChannelRepo) PickTop(ctx context.Context, model string) (*Channel, bool, error) {
+	candidates, err := r.Candidates(ctx, model, "")
+	if err != nil {
+		return nil, false, err
+	}
+	if len(candidates) == 0 {
+		return nil, false, nil
+	}
+	ch, err := r.Get(ctx, int64(candidates[0].ChannelID))
+	if errors.Is(err, ErrChannelNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if ch.Status != 1 {
+		return nil, false, nil
+	}
+	return ch, true, nil
+}
+
 // boundChannelsQuery 按插件 key 统计「启用且绑定该 key」的渠道数。
 //
 // 一个渠道可能同时单绑与多绑同一个 key（应用层互斥，但历史/手工数据要
