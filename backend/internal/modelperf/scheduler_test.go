@@ -1636,3 +1636,97 @@ func TestNextDueUsesCurrentSchedule(t *testing.T) {
 		t.Fatalf("NextDue with a nil schedule = %v, want the stored %v", got, want)
 	}
 }
+
+// TestSchedulerRejectsScheduleWithoutNextRun 钉住启动期的 fail-fast：时刻表的
+// Next 永远返回零时间时，nextDue 会是零值，之后每个 tick 都进入到期分支并
+// 立刻跑一轮（runaway）。这类配置必须在构造期就被拒绝，而不是启动后每 30s
+// 全量探测一次。
+func TestSchedulerRejectsScheduleWithoutNextRun(t *testing.T) {
+	cases := []struct {
+		name     string
+		schedule Schedule
+	}{
+		{"empty daily times", DailyTimes{}},
+		{"zero interval hours", IntervalSchedule{Hours: 0}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := SchedulerConfig{
+				Models:      &fakeModels{},
+				Channels:    &fakePicker{},
+				Performer:   func(context.Context, *store.Channel, string, int) []channelhealth.PerfRunResult { return nil },
+				Tests:       &fakeTests{},
+				Locker:      openLocker{},
+				ScheduleFor: fixedScheduleFor(tc.schedule),
+			}
+			if _, err := NewScheduler(cfg); err == nil {
+				t.Fatalf("NewScheduler accepted a schedule whose Next always returns the zero time")
+			}
+		})
+	}
+}
+
+// TestRunOnceUsesFreshSettingsWhileDisabled 钉住手动触发路径：调度停用时
+// step 在到期分支之前就返回，不会刷新 runs/concurrency；运维此时保存新值再
+// 按「立即测速」，RunOnce 必须按当前设置跑，而不是沿用停用前的旧值。
+func TestRunOnceUsesFreshSettingsWhileDisabled(t *testing.T) {
+	loc := shanghai(t)
+	settings := &roundSettingsSource{st: RoundSettings{Enabled: false, Runs: 1, Concurrency: 1}}
+
+	var (
+		mu      sync.Mutex
+		gotRuns []int
+	)
+	snapshotRuns := func() []int {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]int(nil), gotRuns...)
+	}
+	clock := &atomicClock{at: time.Date(2026, 10, 27, 11, 59, 0, 0, loc)}
+	s := mustScheduler(t, SchedulerConfig{
+		Models:   &fakeModels{names: []string{"gpt-4o"}},
+		Channels: &fakePicker{channel: &store.Channel{ID: 7}, ok: true},
+		Performer: func(_ context.Context, _ *store.Channel, _ string, runs int) []channelhealth.PerfRunResult {
+			mu.Lock()
+			gotRuns = append(gotRuns, runs)
+			mu.Unlock()
+			return []channelhealth.PerfRunResult{{Success: true}}
+		},
+		Tests:       &fakeTests{},
+		ScheduleFor: fixedScheduleFor(IntervalSchedule{Hours: 12, Loc: loc}),
+		Settings:    settings.get,
+		// 静态值故意不同：构造期必须用 Settings 的当前值，而不是这些残留值。
+		Runs:        9,
+		Concurrency: 9,
+		Locker:      openLocker{},
+		Now:         clock.now,
+	})
+
+	// 构造期就用 Settings 初始化：首个 tick 之前的手动触发也不该按静态值跑。
+	if runs, concurrency := s.roundParams(); runs != 1 || concurrency != 1 {
+		t.Fatalf("constructed params = (%d, %d), want (1, 1) from Settings", runs, concurrency)
+	}
+
+	// 停用期间的到期 tick 什么都不做，也不刷新参数（复现「旧值残留」的前提）。
+	clock.set(time.Date(2026, 10, 27, 12, 0, 0, 0, loc))
+	s.step(context.Background())
+	if got := len(snapshotRuns()); got != 0 {
+		t.Fatalf("performer called %d times while disabled, want 0", got)
+	}
+	if runs, concurrency := s.roundParams(); runs != 1 || concurrency != 1 {
+		t.Fatalf("params after a disabled tick = (%d, %d), want the stale (1, 1)", runs, concurrency)
+	}
+
+	// 运维保存 runs=5/并发=3，然后立刻手动触发：必须按当前设置跑。
+	settings.set(RoundSettings{Enabled: false, Runs: 5, Concurrency: 3})
+	if _, err := s.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if got := snapshotRuns(); len(got) != 1 || got[0] != 5 {
+		t.Fatalf("performer runs = %v, want [5] (manual run used stale settings)", got)
+	}
+	// 刷新后的参数要留在字段里：同一次停用期间连按两次不应退回旧值。
+	if runs, concurrency := s.roundParams(); runs != 5 || concurrency != 3 {
+		t.Fatalf("params after the manual run = (%d, %d), want (5, 3)", runs, concurrency)
+	}
+}

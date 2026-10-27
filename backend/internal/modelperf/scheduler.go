@@ -228,8 +228,15 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 		// 构造期就必须有生效时刻表：nil 会让循环永远不到点，属于装配错误。
 		return nil, errors.New("modelperf: scheduler requires a schedule")
 	}
+	nextDue := schedule.Next(now)
+	if nextDue.IsZero() {
+		// 空 DailyTimes / Hours<=0 的 IntervalSchedule 永远不到点：nextDue 会
+		// 是零值，之后每个 tick 都进入到期分支并立刻跑一轮（runaway），必须
+		// 在启动期拒绝。
+		return nil, errors.New("modelperf: scheduler requires a schedule with a next run time")
+	}
 	s.schedule = schedule
-	s.nextDue = schedule.Next(now)
+	s.nextDue = nextDue
 	return s, nil
 }
 
@@ -267,11 +274,20 @@ func (s *Scheduler) roundParams() (runs, concurrency int) {
 	return s.runs, s.concurrency
 }
 
-// setRoundParams 写入下一轮生效的参数，只由 step 所在 goroutine 调用。
+// setRoundParams 在写锁下更新下一个轮次的参数；step 与手动触发的 RunOnce
+// 都经 applyRoundSettings 调用它。
 func (s *Scheduler) setRoundParams(runs, concurrency int) {
 	s.roundMu.Lock()
 	defer s.roundMu.Unlock()
 	s.runs, s.concurrency = runs, concurrency
+}
+
+// applyRoundSettings 把一组设置钳制后写入下一个轮次的参数。step 的到期分支
+// 与手动触发的 RunOnce 共用它，两条路径的钳制与覆盖语义因此一致。
+func (s *Scheduler) applyRoundSettings(settings RoundSettings) {
+	s.setRoundParams(
+		clamp(settings.Runs, minRuns, maxRuns),
+		clamp(settings.Concurrency, minConcurrency, maxConcurrency))
 }
 
 // SetOnRound 在构造后注入轮次回调。
@@ -302,11 +318,15 @@ func (s *Scheduler) NextDue(now time.Time) time.Time {
 // 模型；只有取模型列表失败才返回 error。RunOnce 不取时段锁——锁属于
 // 调度循环，手工/测试触发的单轮执行不应被锁竞争挡住。
 //
-// runs/concurrency 在入口一次性快照（读锁下）：一轮之内 Settings 再变化也不
-// 影响本轮，step 在轮次开始前写入的新值则对下一轮生效；快照也避免手动触发
-// 的 RunOnce 与调度循环并发读写这两个字段。
+// runs/concurrency 在入口刷新并一次性快照（读锁下）：一轮之内 Settings 再
+// 变化也不影响本轮。手动触发（含调度停用期间）也走这里，运维刚保存的值在
+// 按下按钮的这一轮就生效，不用等下一个到期轮次；快照同时避免手动触发的
+// RunOnce 与调度循环并发读写这两个字段。
 func (s *Scheduler) RunOnce(ctx context.Context) (Stats, error) {
 	start := s.now()
+	if s.settings != nil {
+		s.applyRoundSettings(s.settings())
+	}
 	runs, concurrency := s.roundParams()
 	var stats Stats
 
@@ -430,9 +450,7 @@ func (s *Scheduler) step(ctx context.Context) {
 		return
 	}
 	if s.settings != nil {
-		s.setRoundParams(
-			clamp(settings.Runs, minRuns, maxRuns),
-			clamp(settings.Concurrency, minConcurrency, maxConcurrency))
+		s.applyRoundSettings(settings)
 	}
 	slot := s.nextDue
 	key := s.slotKey(slot)
