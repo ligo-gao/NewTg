@@ -143,9 +143,32 @@ describe('LineChart', () => {
     expect(tip.textContent).toContain('12:00:00 PM')
     expect(tip.textContent).toContain('TTFT p50: 140 ms')
     expect(tip.textContent).toContain('TTFT p95: 400 ms')
+    // 右侧锚点会把浮层推出容器，必须向左翻转。
+    expect(tip.getAttribute('class')).toContain('-translate-x-full')
     expect(screen.getByTestId('chart-live').textContent).toContain(
       'TTFT p50: 140 ms',
     )
+  })
+
+  it('renders month/day x labels when the window crosses local midnight', () => {
+    const lateStart = new Date(2026, 9, 28, 20, 0, 0).getTime()
+    renderChart([
+      {
+        key: 'p50',
+        label: 'TTFT p50',
+        color: 'var(--chart-cat-1)',
+        points: [
+          [lateStart, 100],
+          [lateStart + 6 * HOUR, 120],
+        ],
+      },
+    ])
+
+    const svg = resolveSvg()
+    const labels = [...svg.querySelectorAll('text')].map(
+      (node) => node.textContent ?? '',
+    )
+    expect(labels.some((label) => label.includes('/'))).toBe(true)
   })
 
   it('moves the crosshair between two pointer positions', () => {

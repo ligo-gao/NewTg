@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -135,6 +136,12 @@ export function LineChart({
   const { t, locale } = useI18n()
   const [containerRef, width] = useElementWidth()
   const [selected, setSelected] = useState<number | null>(null)
+  /**
+   * tooltip 的实测尺寸，用于判断贴边翻转。没测到之前（jsdom 的
+   * offsetWidth/Height 全是 0、或浮层刚挂载）退回 120×72 的安全值。
+   */
+  const tooltipRef = useRef<HTMLDivElement | null>(null)
+  const [tooltipSize, setTooltipSize] = useState({ width: 120, height: 72 })
 
   const plotWidth = Math.max(width - PLOT_LEFT - PLOT_RIGHT, 1)
   const plotHeight = VIEW_HEIGHT - PLOT_TOP - PLOT_BOTTOM
@@ -181,8 +188,7 @@ export function LineChart({
         : { hour: '2-digit', minute: '2-digit' },
     ).format(timestamp)
 
-  const formatYTick =
-    tickFormatter ?? ((value: number) => String(Math.round(value)))
+  const formatYTick = tickFormatter ?? ((value: number) => formatValue(value, locale))
 
   const hasSamples = series.some((item) => item.samples !== undefined)
   const rowSamples = hasSamples ? xs.map((x) => sampleAt(series, x)) : []
@@ -192,7 +198,8 @@ export function LineChart({
     kind: title,
     count: series.length,
     series: seriesLabels,
-    unit,
+    // 没有单位时给一个占位符，避免无障碍名读成 “Unit: .”。
+    unit: unit === '' ? '—' : unit,
   })
 
   function xFor(value: number): number {
@@ -212,7 +219,9 @@ export function LineChart({
 
   const xTicks: number[] = []
   if (xs.length > 0) {
-    const count = Math.min(X_TICK_COUNT, xs.length)
+    // 24h 跨度的日期+时间刻度约 80px 宽；窄容器只放 3 个，避免互相压字。
+    const tickCount = width < 480 ? 3 : X_TICK_COUNT
+    const count = Math.min(tickCount, xs.length)
     for (let index = 0; index < count; index += 1) {
       const at =
         count === 1 ? 0 : Math.round((index * (xs.length - 1)) / (count - 1))
@@ -239,6 +248,21 @@ export function LineChart({
   )
   const activeTop = activeYs.length > 0 ? Math.min(...activeYs) : PLOT_TOP
   const activeXPos = activeX === null ? 0 : xFor(activeX)
+
+  // 浮层内容（时间 + 每序列一行）会改变自身高度，不能只看数据点的 y。
+  useLayoutEffect(() => {
+    const node = tooltipRef.current
+    if (node === null) return
+    const measuredWidth = node.offsetWidth
+    const measuredHeight = node.offsetHeight
+    if (measuredWidth > 0 && measuredHeight > 0) {
+      setTooltipSize((current) =>
+        current.width === measuredWidth && current.height === measuredHeight
+          ? current
+          : { width: measuredWidth, height: measuredHeight },
+      )
+    }
+  }, [activeX])
 
   const activeAnnouncement =
     activeX === null
@@ -448,12 +472,15 @@ export function LineChart({
         {activeX === null ? null : (
           <div
             data-testid="chart-tip"
+            ref={tooltipRef}
             className={[
               'pointer-events-none absolute z-10 rounded-md border border-border-hairline bg-surface-card px-2 py-1 text-badge shadow-sm',
-              activeXPos > PLOT_LEFT + plotWidth * 0.65
+              activeXPos + tooltipSize.width + 8 > plotWidth
                 ? '-translate-x-full -ml-1'
                 : 'ml-1',
-              activeTop < PLOT_TOP + 24 ? 'mt-1' : '-translate-y-full -mt-1',
+              activeTop < PLOT_TOP + tooltipSize.height + 8
+                ? 'mt-1'
+                : '-translate-y-full -mt-1',
             ].join(' ')}
             style={{
               left: `${(activeXPos / width) * 100}%`,
@@ -560,15 +587,19 @@ function sampleAt(
   series: LineChartSeries[],
   x: number,
 ): number | null | undefined {
-  let found: number | null | undefined
+  let sawMissing = false
   for (const item of series) {
     if (item.samples === undefined) continue
     const index = item.points.findIndex(([px]) => px === x)
-    const sample = index === -1 ? undefined : item.samples[index]
-    if (sample !== undefined) {
-      found = sample ?? null
-      break
+    if (index === -1) continue
+    const sample = item.samples[index]
+    if (sample === undefined) continue
+    // 该序列在这个 x 上没有样本：继续找其它序列，不能把 null 当成答案。
+    if (sample === null) {
+      sawMissing = true
+      continue
     }
+    return sample
   }
-  return found
+  return sawMissing ? null : undefined
 }
