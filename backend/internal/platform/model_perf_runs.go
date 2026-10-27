@@ -6,7 +6,7 @@ package platform
 // internal/worker 的任务框架（框架只执行 Scheduled 任务与手动触发）。结果是
 // worker_task_runs 里只有手动触发的记录、worker_tasks.last_run_at / last_status
 // 永远为空：管理面「系统任务」把 model_perf_test 显示成「从未运行」，而 worker
-// 每天按 PERF_SCHEDULE_TIMES 真实在跑。首页性能表整列变成「—」时，管理员的
+// 按 PERF_SCHEDULE_TIMES（或性能页保存的间隔）真实在跑。首页性能表整列变成「—」时，管理员的
 // 第一诊断入口给出的正是错误信息。这里把每轮结果按框架的行形状补写进去。
 //
 // 【为什么直接写终态行】框架的 scheduled 路径先建 running 行、执行后再 FinishRun。

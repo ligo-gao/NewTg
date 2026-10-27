@@ -351,9 +351,10 @@ func DefaultRegistry() (*Registry, error) {
 		Task{
 			Name: "model_perf_test",
 			// 周期真源是性能页的 perf.schedule.*（间隔小时数或每日时刻表），
-			// 不是本目录的 Interval：12h 只是出厂时的展示默认值，首次启动经
-			// EnsureTaskRows 写进 worker_task_states.interval_seconds，之后以
-			// 库值为准。改这个常量只对全新库生效，升级库会继续显示旧值，
+			// 不是本目录的 Interval：12h 只是出厂时的展示默认值。注意
+			// EnsureTaskRows 每次 worker 启动都会把本常量 UPSERT 进
+			// worker_tasks.interval_seconds（ON CONFLICT DO UPDATE），所以改这里
+			// 会在下次重启后反映到管理面；但它不会跟随页面保存实时变化，
 			// 因此文案写「以设置为准」而不是动态渲染周期。
 			Description: "Scheduled model performance probes for all public chat models; cadence follows the performance settings page",
 			// 仅用于管理面展示节奏；真实时刻由 perf.schedule.interval_hours /

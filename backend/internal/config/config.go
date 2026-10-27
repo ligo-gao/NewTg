@@ -96,7 +96,9 @@ type Config struct {
 	// gateway——gateway 侧读到的始终是默认值。任何依赖 gateway 展示这些设置的
 	// 功能都必须先解决这一点（改为双角色注入，或由 worker 持久化实际生效值）。
 	//
-	// PerfScheduleEnabled 是总开关；关闭后 worker 跳过全部定时探测。
+	// PerfScheduleEnabled 是定时探测的**默认**开关：性能页保存过
+	// perf.schedule.enabled 后以设置为准；调度循环总是启动，关闭由每个 tick
+	// 判定，因此运行期改设置不需要重启。
 	PerfScheduleEnabled bool // PERF_SCHEDULE_ENABLED
 	// PerfScheduleTimes 是每日探测时刻表，逗号分隔的 HH:MM 列表（如 "00:00,12:00"）。
 	PerfScheduleTimes string // PERF_SCHEDULE_TIMES
