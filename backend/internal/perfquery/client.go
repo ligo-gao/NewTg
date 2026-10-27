@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -53,6 +54,12 @@ type Client struct {
 	http    *http.Client
 	cache   *ttlCache
 	labels  *labelCache
+	// flights / labelFlights 把同键的并发查询合并成一次上游请求：一次页面
+	// 刷新会并发发 27 条查询，多管理员同时打开页面时同一查询会被重复请求，
+	// 命中同一个 TTL 桶也照样打到 Prometheus。缓存只能救「已经完成」的请求，
+	// in-flight 表救「正在执行」的请求。
+	flights      *inflightGroup
+	labelFlights *inflightGroup
 }
 
 // New 构造客户端。空 BaseURL 合法（未接入监控）；永不返回 nil。
@@ -72,9 +79,22 @@ func New(cfg Config) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/"),
 		ttl:     ttl,
-		http:    &http.Client{Timeout: timeout},
-		cache:   newTTLCache(ttl, now),
-		labels:  newLabelCache(ttl, now),
+		http: &http.Client{
+			Timeout: timeout,
+			// Proxy 必须为 nil：部署环境常设 HTTP(S)_PROXY，默认 Transport 会把
+			// 内网地址 http://prometheus:9090 也送进代理，导致整页指标 unknown。
+			// 连接池按「单次刷新 27 条并发查询」留余量（同 host 全部复用）。
+			Transport: &http.Transport{
+				Proxy:               nil,
+				MaxIdleConns:        64,
+				MaxIdleConnsPerHost: 32,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		},
+		cache:        newTTLCache(ttl, now),
+		labels:       newLabelCache(ttl, now),
+		flights:      newInflightGroup(),
+		labelFlights: newInflightGroup(),
 	}
 }
 
@@ -106,12 +126,27 @@ func (c *Client) QueryRange(ctx context.Context, name string, start, end time.Ti
 		return samples, nil
 	}
 
-	samples, err := c.fetch(ctx, name, promQL, start, end, step)
-	if err != nil {
-		return nil, err
+	call, leader := c.flights.join(key)
+	if !leader {
+		select {
+		case <-call.done:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("perfquery: %s: %w", name, ctx.Err())
+		}
+		if call.err != nil {
+			return nil, call.err
+		}
+		return cloneSamples(call.samples), nil
 	}
-	c.cache.put(key, samples)
-	return samples, nil
+
+	samples, err := c.fetch(ctx, name, promQL, start, end, step)
+	if err == nil {
+		c.cache.put(key, samples)
+	}
+	c.flights.finish(key, call, samples, nil, err)
+	// leader 也拿副本：call.samples 会同时被等待者克隆，若把同一底层数组
+	// 直接交给调用方，「调用方改写返回值」就会与克隆互相竞争。
+	return cloneSamples(samples), err
 }
 
 // QueryRangeLabeled 执行一条按 instance 标签分组的白名单查询，返回
@@ -138,12 +173,25 @@ func (c *Client) QueryRangeLabeled(ctx context.Context, name string, start, end 
 		return series, nil
 	}
 
-	series, err := c.fetchLabeled(ctx, name, promQL, start, end, step)
-	if err != nil {
-		return nil, err
+	call, leader := c.labelFlights.join(key)
+	if !leader {
+		select {
+		case <-call.done:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("perfquery: %s: %w", name, ctx.Err())
+		}
+		if call.err != nil {
+			return nil, call.err
+		}
+		return cloneLabeled(call.labeled), nil
 	}
-	c.labels.put(key, series)
-	return series, nil
+
+	series, err := c.fetchLabeled(ctx, name, promQL, start, end, step)
+	if err == nil {
+		c.labels.put(key, series)
+	}
+	c.labelFlights.finish(key, call, nil, series, err)
+	return cloneLabeled(series), err
 }
 
 // fetch 发一次 GET /api/v1/query_range 并解析矩阵。
@@ -312,4 +360,52 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return string(runes[:max]) + "…"
+}
+
+// inflightCall 是同一个缓存键上正在进行的一次上游查询。leader 负责执行
+// fetch，其余调用者等到 done 关闭后拿同一结果（各自深拷贝）。
+type inflightCall struct {
+	done    chan struct{}
+	samples []Sample
+	labeled map[string][]Sample
+	err     error
+	// waiters 是合并进本次调用的等待者数量，排障时可据此确认合并是否生效。
+	waiters int
+}
+
+// inflightGroup 把同键的并发查询合并成一次上游请求。与 Client 同生命周期：
+// 条目在调用结束时删除，不引入后台 goroutine，也不缓存失败结果（失败后
+// 下一个调用者会重新发请求，错误不会被放大成整段时间的失败）。
+type inflightGroup struct {
+	mu    sync.Mutex
+	calls map[string]*inflightCall
+}
+
+func newInflightGroup() *inflightGroup {
+	return &inflightGroup{calls: make(map[string]*inflightCall)}
+}
+
+// join 返回该键上的 in-flight 调用；leader=true 表示本次调用者负责执行。
+func (g *inflightGroup) join(key string) (*inflightCall, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if call, ok := g.calls[key]; ok {
+		call.waiters++
+		return call, false
+	}
+	call := &inflightCall{done: make(chan struct{})}
+	g.calls[key] = call
+	return call, true
+}
+
+// finish 记录结果、移除条目并唤醒等待者。字段写入在 close(done) 之前完成，
+// 等待者通过 channel 关闭获得 happens-before，无需再读锁。
+func (g *inflightGroup) finish(key string, call *inflightCall, samples []Sample, labeled map[string][]Sample, err error) {
+	g.mu.Lock()
+	call.samples = samples
+	call.labeled = labeled
+	call.err = err
+	delete(g.calls, key)
+	g.mu.Unlock()
+	close(call.done)
 }

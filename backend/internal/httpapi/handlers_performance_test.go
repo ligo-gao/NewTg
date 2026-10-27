@@ -802,3 +802,27 @@ func auditDetail(t *testing.T, call []any) map[string]any {
 	}
 	return detail
 }
+
+// TestPerfEnvSnapshotRedactsPrometheusURL：快照会进 Task 10 的「运行参数」
+// 区（浏览器可见），PROMETHEUS_URL 里的 userinfo 必须先脱敏；无法解析的
+// 值按空串展示（Validate 会拒绝它，页面显示「未接入」）。
+func TestPerfEnvSnapshotRedactsPrometheusURL(t *testing.T) {
+	env := map[string]string{"PROMETHEUS_URL": "http://user:pass@prom:9090"}
+	handlers := NewPerformanceHandlers(PerformanceHandlerConfig{
+		Getenv: func(key string) string { return env[key] },
+	})
+
+	if got := handlers.envSnapshot().PrometheusURL; got != "http://user:xxxxx@prom:9090" {
+		t.Fatalf("PrometheusURL = %q, want 口令已脱敏", got)
+	}
+
+	env["PROMETHEUS_URL"] = "://bad"
+	if got := handlers.envSnapshot().PrometheusURL; got != "" {
+		t.Fatalf("无法解析的 URL 应展示为空串，got %q", got)
+	}
+
+	env["PROMETHEUS_URL"] = ""
+	if got := handlers.envSnapshot().PrometheusURL; got != "" {
+		t.Fatalf("未配置时应为空串，got %q", got)
+	}
+}

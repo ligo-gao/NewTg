@@ -97,7 +97,10 @@ var catalog = map[string]entry{
 		unit:   "conn",
 	},
 	NameRedisMem: {
-		promQL: `redis_memory_used_bytes / clamp_min(redis_memory_max_bytes, 1)`,
+		// 分母为 0（compose 默认 maxmemory=0，即不限制）时，比较运算
+		// `> 0` 会过滤掉整个样本：页面显示 unknown，而不是把「已用字节数」
+		// 当成比例判成 crit。clamp_min 会把 0 变成 1，反而保证误报。
+		promQL: `redis_memory_used_bytes / (redis_memory_max_bytes > 0)`,
 		unit:   "ratio",
 	},
 	NameRedisCmdRate: {

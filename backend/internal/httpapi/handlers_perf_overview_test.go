@@ -26,21 +26,32 @@ import (
 var overviewTestNow = time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
 
 // fakeOverviewProm 是假 Prometheus：按 PromQL 反查查询名，再从 values 取
-// 固定样本值生成矩阵；fail 里的查询返回 status=error。
+// 固定样本值生成矩阵；fail 里的查询返回 status=error。instances 可以按
+// 查询名覆盖返回的 instance 列表（默认 gw-a），用来验证「哪些查询有权发现
+// 副本」。
 type fakeOverviewProm struct {
-	mu       sync.Mutex
-	requests int
-	values   map[string]string // 查询名 → 样本值
-	fail     map[string]bool   // 查询名 → 返回 status=error
-	points   int
+	mu        sync.Mutex
+	requests  int
+	values    map[string]string   // 查询名 → 样本值
+	fail      map[string]bool     // 查询名 → 返回 status=error
+	instances map[string][]string // 查询名 → 返回的 instance 列表
+	points    int
 }
 
 func newFakeOverviewProm() *fakeOverviewProm {
 	return &fakeOverviewProm{
-		values: overviewTestValues(),
-		fail:   map[string]bool{},
-		points: 24,
+		values:    overviewTestValues(),
+		fail:      map[string]bool{},
+		instances: map[string][]string{},
+		points:    24,
 	}
+}
+
+// setInstances 覆盖某条查询返回的 instance 列表（空列表表示返回空结果）。
+func (p *fakeOverviewProm) setInstances(name string, instances ...string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.instances[name] = instances
 }
 
 func (p *fakeOverviewProm) count() int {
@@ -57,6 +68,7 @@ func (p *fakeOverviewProm) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.requests++
 	value, ok := p.values[name]
 	fail := p.fail[name]
+	instances, hasInstances := p.instances[name]
 	points := p.points
 	p.mu.Unlock()
 
@@ -95,14 +107,22 @@ func (p *fakeOverviewProm) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	values.WriteByte(']')
 
-	// 逐副本查询带 instance 标签；其它查询的标签集无关紧要。
-	metric := "{}"
-	if strings.Contains(query, "by (instance") {
-		metric = `{"instance":"gw-a"}`
+	// 逐副本查询默认带 instance 标签（gw-a）；instances 覆盖时按给定列表
+	// 返回多条序列。其它查询的标签集无关紧要。
+	var result []string
+	switch {
+	case hasInstances:
+		for _, instance := range instances {
+			result = append(result, fmt.Sprintf(`{"metric":{"instance":%q},"values":%s}`, instance, values.String()))
+		}
+	case strings.Contains(query, "by (instance"):
+		result = append(result, fmt.Sprintf(`{"metric":{"instance":"gw-a"},"values":%s}`, values.String()))
+	default:
+		result = append(result, fmt.Sprintf(`{"metric":{},"values":%s}`, values.String()))
 	}
 	_, _ = fmt.Fprintf(w,
-		`{"status":"success","data":{"resultType":"matrix","result":[{"metric":%s,"values":%s}]}}`,
-		metric, values.String())
+		`{"status":"success","data":{"resultType":"matrix","result":[%s]}}`,
+		strings.Join(result, ","))
 }
 
 // nameForPromQL 反查白名单：测试通过 PromQL 精确识别查询名，从而复用它
@@ -418,6 +438,10 @@ func TestOverviewRangeValidation(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("range=7d status = %d, want 400 (body=%s)", rr.Code, rr.Body.String())
 	}
+	// 参数校验发生在任何上游查询之前：非法 range 不得触发一次请求。
+	if fake.count() != 0 {
+		t.Fatalf("range=7d 向 Prometheus 发了 %d 个请求, want 0", fake.count())
+	}
 	if got := rr.Header().Get("Content-Type"); !strings.Contains(got, "application/problem+json") {
 		t.Errorf("Content-Type = %q, want application/problem+json", got)
 	}
@@ -541,5 +565,120 @@ func TestOverviewDropsNaNValues(t *testing.T) {
 	}
 	if resp.Resources.Host.CPU != 0 {
 		t.Errorf("host.cpu = %v, want 0（+Inf 被丢弃）", resp.Resources.Host.CPU)
+	}
+}
+
+// TestOverviewIgnoresNonGatewayInstances 钉住副本发现口径：只有带
+// service="gateway" 过滤的逐副本查询可以新增 gateways 行。go_goroutines /
+// go_memstats_heap_alloc_bytes 没有 service 过滤，worker、node-exporter 与
+// Prometheus 自己都会出现——它们只能用于取值。
+func TestOverviewIgnoresNonGatewayInstances(t *testing.T) {
+	newMux := func(fake *fakeOverviewProm) *http.ServeMux {
+		srv := httptest.NewServer(fake)
+		t.Cleanup(srv.Close)
+		return overviewMux(t, srv.URL, func(context.Context) ([]InstanceRecord, error) {
+			return []InstanceRecord{
+				overviewInstance("gw-a", instanceRoleGateway, overviewTestNow.Add(-10*time.Second)),
+			}, nil
+		})
+	}
+
+	t.Run("go_* 不得发现副本", func(t *testing.T) {
+		fake := newFakeOverviewProm()
+		fake.setInstances(perfquery.NameGatewayByInstanceGoroutines, "worker-1", "node-exporter:9100")
+		fake.setInstances(perfquery.NameGatewayByInstanceHeapMB, "worker-1", "node-exporter:9100")
+		fake.setInstances(perfquery.NameGatewayByInstanceInflight, "gw-a")
+
+		resp := decodeOverview(t, getOverview(t, newMux(fake), "/api/performance/overview"))
+		if len(resp.Gateways) != 1 || resp.Gateways[0].InstanceID != "gw-a" {
+			t.Fatalf("gateways = %+v, want 只有 gw-a", resp.Gateways)
+		}
+	})
+
+	t.Run("inflight 可发现无心跳副本", func(t *testing.T) {
+		fake := newFakeOverviewProm()
+		fake.setInstances(perfquery.NameGatewayByInstanceGoroutines, "worker-1", "node-exporter:9100")
+		fake.setInstances(perfquery.NameGatewayByInstanceHeapMB, "worker-1", "node-exporter:9100")
+		fake.setInstances(perfquery.NameGatewayByInstanceInflight, "gw-a", "gw-b")
+
+		resp := decodeOverview(t, getOverview(t, newMux(fake), "/api/performance/overview"))
+		if len(resp.Gateways) != 2 || resp.Gateways[0].InstanceID != "gw-a" || resp.Gateways[1].InstanceID != "gw-b" {
+			t.Fatalf("gateways = %+v, want [gw-a gw-b]", resp.Gateways)
+		}
+		gwB := resp.Gateways[1]
+		if gwB.HeartbeatFresh {
+			t.Error("gw-b heartbeat_fresh = true, want false（没有心跳）")
+		}
+		if gwB.LastSeen != nil {
+			t.Error("gw-b last_seen 应为 null")
+		}
+		if gwB.MetricsStatus != perfStatusUnknown {
+			t.Errorf("gw-b metrics_status = %q, want unknown（只有 inflight，其余缺）", gwB.MetricsStatus)
+		}
+		if gwB.Metrics == nil || gwB.Metrics.Inflight == nil {
+			t.Errorf("gw-b metrics = %+v, want inflight 有值", gwB.Metrics)
+		}
+	})
+}
+
+// TestOverviewSparklineTrimsOldestPoint 钉住裁剪方向：上游按 query_range 的
+// 闭区间语义返回 points+1 个点时，只保留最新 points 个，丢的是最旧的点。
+func TestOverviewSparklineTrimsOldestPoint(t *testing.T) {
+	fake := newFakeOverviewProm()
+	fake.points = 25
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	mux := overviewMux(t, srv.URL, func(context.Context) ([]InstanceRecord, error) {
+		return []InstanceRecord{}, nil
+	})
+
+	resp := decodeOverview(t, getOverview(t, mux, "/api/performance/overview"))
+	rps := vitalByKey(t, resp, perfquery.NameGatewayRPS)
+	if len(rps.Series) != resp.Windows.Points {
+		t.Fatalf("series 点数 = %d, want %d", len(rps.Series), resp.Windows.Points)
+	}
+	wantFirst := resp.Windows.End.Unix() - int64(resp.Windows.Points-1)*resp.Windows.StepSeconds
+	if got := int64(rps.Series[0][0]); got != wantFirst {
+		t.Errorf("首点时间 = %d, want %d（应丢掉最旧的一点）", got, wantFirst)
+	}
+	if got := int64(rps.Series[len(rps.Series)-1][0]); got != resp.Windows.End.Unix() {
+		t.Errorf("末点时间 = %d, want %d", got, resp.Windows.End.Unix())
+	}
+}
+
+// TestOverviewPromURLGateSuppressesQueries 钉住 available 的两个条件：
+// PromURL 为空时即使注入了可用的 client，也按「未接入」处理且不发请求。
+func TestOverviewPromURLGateSuppressesQueries(t *testing.T) {
+	fake := newFakeOverviewProm()
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	handlers := NewPerformanceHandlers(PerformanceHandlerConfig{
+		Logger:   testLogger(),
+		Authz:    rbac.NewAuthzMiddleware(),
+		Now:      func() time.Time { return overviewTestNow },
+		Getenv:   func(string) string { return "" },
+		Hostname: func() (string, error) { return "test-host", nil },
+		Prom:     perfquery.New(perfquery.Config{BaseURL: srv.URL}),
+		PromURL:  "",
+		Instances: func(context.Context) ([]InstanceRecord, error) {
+			return []InstanceRecord{}, nil
+		},
+	})
+	mux := http.NewServeMux()
+	handlers.Register(mux)
+
+	resp := decodeOverview(t, getOverview(t, mux, "/api/performance/overview"))
+	if len(resp.Sources) == 0 || resp.Sources[0].Status != perfSourceUnavailable {
+		t.Fatalf("sources = %+v, want prometheus=unavailable", resp.Sources)
+	}
+	if fake.count() != 0 {
+		t.Fatalf("PromURL 为空仍发出了 %d 个请求", fake.count())
+	}
+	for _, vital := range resp.Vitals {
+		if vital.Value != nil {
+			t.Errorf("%s: value = %v, want nil", vital.Key, *vital.Value)
+		}
 	}
 }

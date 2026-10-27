@@ -455,23 +455,28 @@ func (c *Config) Validate() error {
 	// 降级，绝不能因为它让网关启动失败。非空时必须是 http/https 且带 host：
 	// 该地址会被 Client 原样拼成请求 URL，其它 scheme（file://、gopher://）
 	// 既没有意义，也会把部署配置错误的后果放大。
+	//
+	// 错误信息刻意不回显原值：URL 里可能嵌着 user:pass（反向代理的 basic
+	// auth），启动失败日志与验收输出都不该把它带出来。
 	if c.PrometheusURL != "" {
 		parsed, err := url.Parse(c.PrometheusURL)
 		if err != nil {
-			return fmt.Errorf("config: invalid PROMETHEUS_URL %q: %w", c.PrometheusURL, err)
+			return fmt.Errorf("config: invalid PROMETHEUS_URL: must be a valid absolute http(s) URL")
 		}
 		if parsed.Scheme != "http" && parsed.Scheme != "https" {
-			return fmt.Errorf("config: invalid PROMETHEUS_URL %q: scheme must be http or https", c.PrometheusURL)
+			return fmt.Errorf("config: invalid PROMETHEUS_URL: scheme must be http or https")
 		}
 		if parsed.Host == "" {
-			return fmt.Errorf("config: invalid PROMETHEUS_URL %q: missing host", c.PrometheusURL)
+			return fmt.Errorf("config: invalid PROMETHEUS_URL: missing host")
 		}
 	}
 	if c.PrometheusTimeout <= 0 || c.PrometheusTimeout > 60*time.Second {
 		return fmt.Errorf("config: PROMETHEUS_TIMEOUT %v out of range (0s, 60s]", c.PrometheusTimeout)
 	}
-	if c.PrometheusCacheTTL < 0 || c.PrometheusCacheTTL > 5*time.Minute {
-		return fmt.Errorf("config: PROMETHEUS_CACHE_TTL %v out of range [0s, 5m]", c.PrometheusCacheTTL)
+	// 0 不合法：perfquery.New 把非正 CacheTTL 当作「用默认 15s」，接受 0 会
+	// 让「关掉缓存」变成「退回 15s」，与部署文档的语义不符。
+	if c.PrometheusCacheTTL <= 0 || c.PrometheusCacheTTL > 5*time.Minute {
+		return fmt.Errorf("config: PROMETHEUS_CACHE_TTL %v out of range (0s, 5m]", c.PrometheusCacheTTL)
 	}
 	// holiday_sync 的 URL 模板必须恰好有一个 %d：拼错的模板会让任务每天
 	// 拉同一个年份或一个带 `%!d(MISSING)` 的地址。启动期失败比运行期

@@ -370,6 +370,7 @@ func TestPrometheusConfig(t *testing.T) {
 		{"非数字超时", "PROMETHEUS_TIMEOUT", "soon"},
 		{"超时为零", "PROMETHEUS_TIMEOUT", "0s"},
 		{"超时超过 60s", "PROMETHEUS_TIMEOUT", "61s"},
+		{"缓存窗口为零", "PROMETHEUS_CACHE_TTL", "0s"},
 		{"缓存窗口为负", "PROMETHEUS_CACHE_TTL", "-1s"},
 		{"缓存窗口超过 5m", "PROMETHEUS_CACHE_TTL", "6m"},
 	}
@@ -381,6 +382,25 @@ func TestPrometheusConfig(t *testing.T) {
 				t.Fatalf("%s=%q 应返回错误", tc.key, tc.val)
 			}
 		})
+	}
+}
+
+// TestPrometheusURLValidationDoesNotLeakCredentials 钉住错误信息不回显
+// userinfo：PROMETHEUS_URL 允许 http://user:pass@host 的形式（反代 basic
+// auth），启动失败日志与 CI 输出都不该出现口令。
+func TestPrometheusURLValidationDoesNotLeakCredentials(t *testing.T) {
+	setRequired(t)
+	t.Setenv("PROMETHEUS_URL", "ftp://user:secret@prometheus:9090")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("非 http(s) scheme 应返回错误")
+	}
+	if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "user") {
+		t.Fatalf("错误信息泄露了 userinfo: %v", err)
+	}
+	if !strings.Contains(err.Error(), "PROMETHEUS_URL") {
+		t.Fatalf("错误信息应指明变量名: %v", err)
 	}
 }
 

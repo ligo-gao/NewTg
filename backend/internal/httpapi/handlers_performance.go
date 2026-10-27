@@ -27,6 +27,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -280,7 +281,7 @@ func (h *PerformanceHandlers) envSnapshot() PerfEnvSnapshot {
 		PerfMetricsDSNSet:        strings.TrimSpace(h.geten("PERF_METRICS_DSN")) != "",
 		PerfMetricsFlushInterval: parseEnvDurationOrDefault(h.geten("PERF_METRICS_FLUSH_INTERVAL"), 5*time.Minute),
 		PerfMetricsRetentionDays: parseEnvIntOrDefault(h.geten("PERF_METRICS_RETENTION_DAYS"), 400),
-		PrometheusURL:            strings.TrimSpace(h.geten("PROMETHEUS_URL")),
+		PrometheusURL:            redactedEnvURL(h.geten("PROMETHEUS_URL")),
 		PrometheusTimeout:        strings.TrimSpace(h.geten("PROMETHEUS_TIMEOUT")),
 		PerfScheduleTimezone:     strings.TrimSpace(h.geten("PERF_SCHEDULE_TIMEZONE")),
 		ProbeTimeout:             perfProbeTimeout,
@@ -300,6 +301,22 @@ func (h *PerformanceHandlers) envSnapshot() PerfEnvSnapshot {
 		snapshot.PerfScheduleTimezone = "Asia/Shanghai"
 	}
 	return snapshot
+}
+
+// redactedEnvURL 去掉 URL 里的口令再交给页面：PROMETHEUS_URL 可能带
+// http://user:pass@host（反向代理的 basic auth），而 Task 10 会把快照原样
+// 展示在「运行参数」区。解析失败时返回空串——那本来就是 Validate 会拒绝的
+// 配置，页面按「未接入」展示比回显一段无法解析的原文安全。
+func redactedEnvURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return ""
+	}
+	return parsed.Redacted()
 }
 
 // performanceConfig 是一次请求的环境变量快照。

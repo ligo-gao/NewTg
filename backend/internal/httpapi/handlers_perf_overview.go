@@ -104,6 +104,21 @@ var overviewInstanceQueries = []string{
 	perfquery.NameGatewayByInstanceErrorRate,
 }
 
+// gatewayDiscoveryQueries 决定 gateways 区「有哪些副本」：只有带
+// service="gateway" 过滤的逐副本查询有资格发现副本。
+//
+// go_goroutines / go_memstats_heap_alloc_bytes 刻意**不在**这个列表里：它们
+// 没有 service 过滤，同一进程的 /metrics 都会暴露，worker、node-exporter、
+// Prometheus 自己都会出现在结果里。那两条查询只能用于**取值**，不能用于
+// 发现副本——否则性能页会混入非网关进程（且它们没有心跳，看起来像「失联
+// 副本」）。「顺手统一成 overviewInstanceQueries」会把 worker 拉回页面上。
+var gatewayDiscoveryQueries = []string{
+	perfquery.NameGatewayByInstanceRPS,
+	perfquery.NameGatewayByInstanceP95,
+	perfquery.NameGatewayByInstanceInflight,
+	perfquery.NameGatewayByInstanceErrorRate,
+}
+
 // perfVitalThreshold 是状态阈值（spec §7.2「阈值写成包内常量」）。
 // 只登记有明确阈值的指标；其余（gateway.rps、redis.hit_rate 等）只区分
 // ok / unknown。
@@ -329,10 +344,30 @@ func (h *PerformanceHandlers) queryOverview(ctx context.Context, start, end time
 	}
 	wg.Wait()
 
-	for name, err := range errs {
-		// 单条失败只影响对应 vital（spec §7.2）；source 状态由 target.up
-		// 决定，这里留一条 debug 供排障，不刷 warn 日志。
-		h.log.Debug("performance: overview query failed", "query", name, "err", err)
+	// 每请求最多一条 warn：单条失败已降级成页面上的 unknown，不需要逐条
+	// 刷日志；但整轮全静默会让「Prometheus 挂了」只能靠翻 debug 才发现。
+	// first_query / first_error 取固定查询顺序里的第一条，日志可复现。
+	if len(errs) > 0 {
+		firstQuery, firstErr := "", error(nil)
+		for _, name := range overviewQueries {
+			if err := errs[name]; err != nil {
+				firstQuery, firstErr = name, err
+				break
+			}
+		}
+		if firstErr == nil {
+			for _, name := range overviewInstanceQueries {
+				if err := errs[name]; err != nil {
+					firstQuery, firstErr = name, err
+					break
+				}
+			}
+		}
+		h.log.Warn("performance: overview queries failed",
+			"failed", len(errs),
+			"total", len(overviewQueries)+len(overviewInstanceQueries),
+			"first_query", firstQuery,
+			"first_error", firstErr)
 	}
 	return series, byInstance, errs
 }
@@ -590,13 +625,15 @@ func (h *PerformanceHandlers) buildPerfGateways(records []InstanceRecord, byInst
 	}
 
 	// 指标侧可能出现心跳里没有的 instance（Redis 抖动、心跳 key 先过期）。
-	for _, name := range overviewInstanceQueries {
+	// 只用带 service="gateway" 过滤的查询发现副本；go_* 两条没有 service
+	// 过滤（见 gatewayDiscoveryQueries 的注释），不能把 worker / exporter
+	// 拉进页面。
+	for _, name := range gatewayDiscoveryQueries {
 		for instance := range byInstance[name] {
 			if _, ok := rows[instance]; ok {
 				continue
 			}
-			// role 无法从指标推断（查询是 service="gateway"，但 go_* 不带
-			// service 过滤），留空而不是臆造。
+			// role 无法从指标推断，留空而不是臆造。
 			rows[instance] = &perfGatewayInfo{
 				InstanceID:    instance,
 				MetricsStatus: perfStatusUnknown,

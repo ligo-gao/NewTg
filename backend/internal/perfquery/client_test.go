@@ -442,3 +442,158 @@ func TestQueryRangeLabeledUnavailableClient(t *testing.T) {
 		t.Fatalf("err = %v, want ErrUnavailable", err)
 	}
 }
+
+// waitForFlightWaiters 等到 key 上的 in-flight 调用合并了 want 个等待者，
+// 让并发用例不靠 sleep 猜调度时机。
+func waitForFlightWaiters(t *testing.T, group *inflightGroup, key string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		group.mu.Lock()
+		call, ok := group.calls[key]
+		waiters := 0
+		if ok {
+			waiters = call.waiters
+		}
+		group.mu.Unlock()
+		if ok && waiters >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("等待 %d 个调用合并超时（waiters=%d, ok=%v）", want, waiters, ok)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// blockingProm 是「先挂住第一个请求、再放行」的假 Prometheus：只有让首个
+// 请求停在半路，其余调用者才会真正合并到同一次 in-flight 查询。
+func blockingProm(t *testing.T, body string) (*recordingProm, string, <-chan struct{}, chan<- struct{}) {
+	t.Helper()
+	rec := &recordingProm{}
+	arrived := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.mu.Lock()
+		rec.reqs = append(rec.reqs, recordedRequest{path: r.URL.Path, query: r.URL.Query()})
+		rec.mu.Unlock()
+		once.Do(func() { arrived <- struct{}{} })
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	return rec, srv.URL, arrived, release
+}
+
+// TestQueryRangeMergesConcurrentCalls 钉住 in-flight 合并：同名同参的 5 个
+// 并发调用只打上游 1 次，且每个调用者拿到独立副本（改写其一不污染其余与
+// 缓存）。
+func TestQueryRangeMergesConcurrentCalls(t *testing.T) {
+	rec, url, arrived, release := blockingProm(t, matrixBody)
+	client := New(Config{BaseURL: url, Now: fixedNow(time.Unix(1761000200, 0))})
+
+	start := time.Unix(1761000000, 0)
+	end := time.Unix(1761000180, 0)
+	step := time.Minute
+	key := cacheKey(NameGatewayRPS, start.Truncate(client.ttl), end.Truncate(client.ttl), step)
+
+	const callers = 5
+	results := make([][]Sample, callers)
+	errs := make([]error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = client.QueryRange(context.Background(), NameGatewayRPS, start, end, step)
+		}(i)
+	}
+
+	<-arrived
+	waitForFlightWaiters(t, client.flights, key, callers-1)
+	close(release)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("调用 %d 失败: %v", i, err)
+		}
+		if len(results[i]) != 3 {
+			t.Fatalf("调用 %d 样本数 = %d, want 3", i, len(results[i]))
+		}
+	}
+	if rec.count() != 1 {
+		t.Fatalf("上游收到 %d 个请求, want 1（并发应合并）", rec.count())
+	}
+
+	results[0][0].Value = 99
+	if results[1][0].Value != 1.5 {
+		t.Fatalf("调用结果共享了底层数组: results[1][0] = %v", results[1][0].Value)
+	}
+	third, err := client.QueryRange(context.Background(), NameGatewayRPS, start, end, step)
+	if err != nil {
+		t.Fatalf("第三次查询: %v", err)
+	}
+	if third[0].Value != 1.5 {
+		t.Fatalf("缓存被调用方改写: %v", third[0].Value)
+	}
+}
+
+// TestQueryRangeLabeledMergesConcurrentCalls 是 labeled 版本的同一口径：
+// 合并成一次上游请求，5 个调用者各自拿到可安全改写的 map。
+func TestQueryRangeLabeledMergesConcurrentCalls(t *testing.T) {
+	rec, url, arrived, release := blockingProm(t, labeledMatrixBody)
+	client := New(Config{BaseURL: url, Now: fixedNow(time.Unix(1761000200, 0))})
+
+	start := time.Unix(1761000000, 0)
+	end := time.Unix(1761000180, 0)
+	step := time.Minute
+	key := cacheKey(NameGatewayByInstanceGoroutines, start.Truncate(client.ttl), end.Truncate(client.ttl), step)
+
+	const callers = 5
+	results := make([]map[string][]Sample, callers)
+	errs := make([]error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = client.QueryRangeLabeled(context.Background(), NameGatewayByInstanceGoroutines, start, end, step)
+		}(i)
+	}
+
+	<-arrived
+	waitForFlightWaiters(t, client.labelFlights, key, callers-1)
+	close(release)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("调用 %d 失败: %v", i, err)
+		}
+		if len(results[i]) != 2 {
+			t.Fatalf("调用 %d 分组数 = %d, want 2", i, len(results[i]))
+		}
+	}
+	if rec.count() != 1 {
+		t.Fatalf("上游收到 %d 个请求, want 1（并发应合并）", rec.count())
+	}
+
+	results[0]["gw-a"][0].Value = 99
+	delete(results[0], "gw-b")
+	if results[1]["gw-a"][0].Value != 1.5 {
+		t.Fatalf("调用结果共享了底层数组: results[1][gw-a][0] = %v", results[1]["gw-a"][0].Value)
+	}
+	if len(results[1]["gw-b"]) != 2 {
+		t.Fatalf("调用结果共享了 map: results[1][gw-b] = %v", results[1]["gw-b"])
+	}
+	third, err := client.QueryRangeLabeled(context.Background(), NameGatewayByInstanceGoroutines, start, end, step)
+	if err != nil {
+		t.Fatalf("第三次查询: %v", err)
+	}
+	if third["gw-a"][0].Value != 1.5 || len(third["gw-b"]) != 2 {
+		t.Fatalf("缓存被调用方改写: %v", third)
+	}
+}
