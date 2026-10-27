@@ -359,3 +359,41 @@ func TestPickTopPrefersPriorityAndSkipsDisabled(t *testing.T) {
 }
 
 func stringPtrForTest(v string) *string { return &v }
+
+// TestChannelRepoCountRoutableChannels 验证性能页 models 表 channels 列的真实
+// SQL 语义：supported_models 与 model_mapping 的键都算模型全集，按渠道去重，
+// 禁用渠道不计入。
+func TestChannelRepoCountRoutableChannels(t *testing.T) {
+	db := openChannelRuntimeTestDB(t)
+	repo := NewChannelRepo(db)
+	ctx := context.Background()
+
+	suffix := time.Now().UnixNano()
+	shared := fmt.Sprintf("it-crc-shared-%d", suffix)
+	alias := fmt.Sprintf("it-crc-alias-%d", suffix)
+	upstream := fmt.Sprintf("it-crc-upstream-%d", suffix)
+
+	// A：启用；supported 含 shared，mapping 键 alias → upstream。
+	insertRuntimeChannel(t, db, fmt.Sprintf("it-crc-a-%d", suffix), 1,
+		fmt.Sprintf(`["%s"]`, shared), fmt.Sprintf(`{"%s":"%s"}`, alias, upstream), "")
+	// B：启用；supported 含 shared。
+	insertRuntimeChannel(t, db, fmt.Sprintf("it-crc-b-%d", suffix), 1,
+		fmt.Sprintf(`["%s"]`, shared), `{}`, "")
+	// C：禁用；不得计入任何模型。
+	insertRuntimeChannel(t, db, fmt.Sprintf("it-crc-c-%d", suffix), 2,
+		fmt.Sprintf(`["%s"]`, shared), `{}`, "")
+
+	counts, err := repo.CountRoutableChannels(ctx)
+	if err != nil {
+		t.Fatalf("CountRoutableChannels: %v", err)
+	}
+	if got := counts[shared]; got != 2 {
+		t.Errorf("counts[%s] = %d, want 2（两条启用渠道，禁用渠道不计）", shared, got)
+	}
+	if got := counts[alias]; got != 1 {
+		t.Errorf("counts[%s] = %d, want 1（映射键也是可路由模型）", alias, got)
+	}
+	if _, ok := counts[upstream]; ok {
+		t.Errorf("mapping 的值 %s 不应被当作对外模型", upstream)
+	}
+}

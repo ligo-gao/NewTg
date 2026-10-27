@@ -558,8 +558,12 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		return nil, fmt.Errorf("gateway: channel performance runner: %w", err)
 	}
 
+	// 渠道仓储与测速仓储都无状态、只读为主：在渠道管理端点与性能页 models
+	// 端点之间复用同一实例，不各建一份。
+	channelRepo := store.NewChannelRepo(db)
+	modelPerformanceStore := store.NewSQLModelPerformanceStore(db)
 	channelHandler := httpapi.NewChannelHandler(
-		store.NewChannelRepo(db),
+		channelRepo,
 		store.NewTokenRepo(db),
 		channelSealer,
 		httpapi.ChannelHandlerOptions{
@@ -579,7 +583,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 			Metrics: store.NewChannelMetricsRepo(logsDB),
 			// 测速结果保存到主库（依赖 channels/users 外键），不是日志库。
 			Performer:   perfRunner.Run,
-			Performance: store.NewSQLModelPerformanceStore(db),
+			Performance: modelPerformanceStore,
 		},
 	)
 
@@ -667,6 +671,9 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		// 周期即使禁用也传入，避免 handler 回落到与部署配置不一致的默认值。
 		PerfMetricsSource:        perfAssembly.source,
 		PerfMetricsFlushInterval: cfg.PerfMetricsFlushInterval,
+		// 性能页 models 端：复用渠道管理端点的同一渠道仓储与测速仓储。
+		PerfProbes:   modelPerformanceStore,
+		PerfChannels: channelRepo,
 		// W7/M5-b：准入限流器复用同一个 Redis 客户端（跨副本共享计数），
 		// 装配一次、由中继面与任务提交面共同持有（R-M5-04/07）。
 		RateLimiter: rateLimiter,

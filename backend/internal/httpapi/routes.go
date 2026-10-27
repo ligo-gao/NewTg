@@ -147,6 +147,12 @@ type RouterConfig struct {
 	// PerfMetricsFlushInterval 是采集刷写周期，供看板的 3× 停摆判定使用。
 	// 零值时 handler 取设计默认 5 分钟。
 	PerfMetricsFlushInterval time.Duration
+	// PerfProbes 是性能页 models 端的最新测速行读取接缝；nil 时 probe/uptime
+	// 为 null（纯单测装配没有 model_performance_tests）。
+	PerfProbes store.ModelPerformanceStore
+	// PerfChannels 是性能页 models 端的模型/渠道目录接缝；nil 时 channels
+	// 列为 null、模型集合退化为其余两源。
+	PerfChannels ChannelModelCatalog
 	// RankingsRepo 是公开排行榜（GET /api/rankings）的快照只读接缝。
 	// nil 且 DB 非 nil 时由 store.NewRankingsRepo(DB) 构造；两者都为空时
 	// 不挂载端点（纯内存装配没有 rankings_* 表）。
@@ -473,15 +479,18 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 
 	// 性能管理端点（modules-08 §3.19 / F-08-48～50；D3a）。三个对象都是
 	// 进程本地的，不依赖主库；日志库只用于「最近操作」的审计查询，缺省时
-	// 该端点返回空列表而不是拒绝挂载。六个端点统一要求 settings:manage。
+	// 该端点返回空列表而不是拒绝挂载。七个端点统一要求 settings:manage。
 	NewPerformanceHandlers(PerformanceHandlerConfig{
-		LogDB:   cfg.LogDB,
-		Audit:   cfg.Audit,
-		Logger:  cfg.Logger,
-		Redis:   cfg.Redis,
-		Authz:   cfg.Authz,
-		Prom:    cfg.Prom,
-		PromURL: cfg.PromURL,
+		LogDB:    cfg.LogDB,
+		Audit:    cfg.Audit,
+		Logger:   cfg.Logger,
+		Redis:    cfg.Redis,
+		Authz:    cfg.Authz,
+		Prom:     cfg.Prom,
+		PromURL:  cfg.PromURL,
+		Perf:     cfg.PerfMetricsSource,
+		Probes:   cfg.PerfProbes,
+		Channels: cfg.PerfChannels,
 	}).Register(rt.protected)
 
 	// M6 只读日志/统计/审计端点：日志库是数据源、主库提供用户名与权限

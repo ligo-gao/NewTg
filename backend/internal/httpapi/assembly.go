@@ -217,6 +217,10 @@ type GatewayDeps struct {
 	// PerfMetricsFlushInterval 是采集刷写周期（PERF_METRICS_FLUSH_INTERVAL），
 	// 供看板 3× 停摆判定。
 	PerfMetricsFlushInterval time.Duration
+	// PerfProbes / PerfChannels 是性能页 models 端的测速行与渠道目录接缝。
+	// 生产由 platform 注入同一份主库仓储；nil 时对应列为 null，端点照常 200。
+	PerfProbes   store.ModelPerformanceStore
+	PerfChannels ChannelModelCatalog
 }
 
 // BuildGatewayRouter 组装全部 M1 端点。返回的 Router 已包含：
@@ -570,6 +574,9 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		// F-05-08：采集管道未启用时 source 为 nil，端点走闸门。
 		PerfMetricsSource:        deps.PerfMetricsSource,
 		PerfMetricsFlushInterval: deps.PerfMetricsFlushInterval,
+		// 性能页 models 端：测速行与渠道目录（与看板共用同一主库装配）。
+		PerfProbes:   deps.PerfProbes,
+		PerfChannels: deps.PerfChannels,
 	})
 	if err != nil {
 		return nil, err

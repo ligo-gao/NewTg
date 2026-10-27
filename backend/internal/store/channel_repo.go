@@ -762,6 +762,52 @@ func (r *ChannelRepo) EnabledModels(ctx context.Context) ([]string, error) {
 	return models, nil
 }
 
+// countRoutableChannelsQuery 统计每个模型当前可路由的渠道数（性能页 models
+// 表的 channels 列）。模型全集与 enabledModelsQuery 同一口径：
+// supported_models 成员 + model_mapping 的键（客户端别名）；只算 status=1。
+//
+// count(DISTINCT c.id) 而不是 count(*)：一个模型在同一渠道里既可能出现在
+// supported_models，又同时是 model_mapping 的键，UNION 去重后的两行都属于
+// 同一个渠道，不能把一个渠道算两次。
+const countRoutableChannelsQuery = `
+	SELECT m.model, count(DISTINCT c.id)
+	FROM channels c
+	CROSS JOIN LATERAL (
+		SELECT jsonb_array_elements_text(c.supported_models) AS model
+		UNION
+		SELECT jsonb_object_keys(c.model_mapping)
+	) AS m
+	WHERE c.status = 1
+	GROUP BY m.model`
+
+// CountRoutableChannels 返回模型 → 可路由渠道数。
+//
+// 模型不在返回的 map 里表示「没有启用渠道或查询不到」，调用方必须输出
+// null 而不是 0：「0 个渠道」与「不知道」在运维页上是两种不同的结论。
+func (r *ChannelRepo) CountRoutableChannels(ctx context.Context) (map[string]int, error) {
+	rows, err := r.db.QueryContext(ctx, countRoutableChannelsQuery)
+	if err != nil {
+		return nil, fmt.Errorf("store: count routable channels: %w", err)
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int, 32)
+	for rows.Next() {
+		var (
+			model string
+			count int
+		)
+		if err := rows.Scan(&model, &count); err != nil {
+			return nil, fmt.Errorf("store: count routable channels scan: %w", err)
+		}
+		counts[model] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: count routable channels iterate: %w", err)
+	}
+	return counts, nil
+}
+
 // candidatesQuery 构造路由候选查询（relay-01 §5、relay-02 §7.1）：
 //   - 仅 status=1（自动/手动禁用均不选，modules-06 §1.2）；
 //   - supported_models 含请求模型，**或** model_mapping 有同名键（客户端别名）；

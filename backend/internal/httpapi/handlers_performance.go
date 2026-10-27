@@ -2,6 +2,7 @@
 //
 //	GET    /api/performance/stats               settings:manage（只读）
 //	GET    /api/performance/overview            settings:manage（只读，Prometheus 代理）
+//	GET    /api/performance/models              settings:manage（只读，模型汇总表）
 //	DELETE /api/performance/disk-cache          settings:manage + X-Confirm-Action
 //	POST   /api/performance/gc                  settings:manage + X-Confirm-Action
 //	GET    /api/performance/logs                settings:manage（只读）
@@ -41,8 +42,10 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"newtg/gateway/internal/audit"
+	"newtg/gateway/internal/perfmetrics"
 	"newtg/gateway/internal/perfquery"
 	"newtg/gateway/internal/rbac"
+	"newtg/gateway/internal/store"
 )
 
 const (
@@ -135,6 +138,16 @@ type PerformanceHandlerConfig struct {
 	// Instances 是实例心跳读取接缝；nil 时走 ListInstanceHeartbeats(ctx, Redis)。
 	// 测试注入闭包，避免为了测 overview 引入 miniredis。
 	Instances func(ctx context.Context) ([]InstanceRecord, error)
+
+	// Perf 是模型性能指标库的查询接缝（GET /api/performance/models 的流量
+	// 列）。nil 表示采集管道未装配：流量字段为 null，数据源行报 unavailable。
+	Perf perfmetrics.Source
+	// Probes 是最新测速行的读取接缝；nil 时 probe/uptime 为 null，
+	// 数据源行报 unavailable。
+	Probes store.ModelPerformanceStore
+	// Channels 是模型/渠道目录的只读接缝（启用模型并集 + 可路由渠道数）；
+	// nil 时 channels 列与模型集合退化为其余数据源。
+	Channels ChannelModelCatalog
 }
 
 // PerformanceHandlers 持有性能端点依赖，可并发使用。
@@ -154,6 +167,10 @@ type PerformanceHandlers struct {
 	prom      *perfquery.Client
 	promURL   string
 	instances func(ctx context.Context) ([]InstanceRecord, error)
+	// 模型性能汇总表的数据源；nil 表示未装配，对应列输出 null。
+	perf     perfmetrics.Source
+	probes   store.ModelPerformanceStore
+	channels ChannelModelCatalog
 	// lastClearedAt 是本进程最近一次磁盘缓存清理的完成时间（UnixNano）。
 	// 0 = 从未清理。它是进程本地观测值：重启后归零，与三个对象本身一样
 	// 不跨副本、不落库（§3.19 Q4）。
@@ -215,10 +232,11 @@ func NewPerformanceHandlers(cfg PerformanceHandlerConfig) *PerformanceHandlers {
 		logDB: cfg.LogDB, audit: cfg.Audit, log: log, rdb: cfg.Redis,
 		authz: authz, now: now, geten: getenv, host: hostname, rm: remove, gc: runGC,
 		prom: prom, promURL: strings.TrimSpace(cfg.PromURL), instances: instances,
+		perf: cfg.Perf, probes: cfg.Probes, channels: cfg.Channels,
 	}
 }
 
-// Register 把六个端点挂到受保护管理子树。权限一律 settings:manage
+// Register 把七个端点挂到受保护管理子树。权限一律 settings:manage
 // （§3.19 Q2：不新增 ops:*/performance:* 键）。
 func (h *PerformanceHandlers) Register(mux *http.ServeMux) {
 	mux.Handle("GET /api/performance/stats",
@@ -229,6 +247,8 @@ func (h *PerformanceHandlers) Register(mux *http.ServeMux) {
 		h.authz.Handler(rbac.PermSettingsManage, performanceReadAction)(http.HandlerFunc(h.handleRecentOperations)))
 	mux.Handle("GET /api/performance/overview",
 		h.authz.Handler(rbac.PermSettingsManage, performanceReadAction)(http.HandlerFunc(h.handleOverview)))
+	mux.Handle("GET /api/performance/models",
+		h.authz.Handler(rbac.PermSettingsManage, performanceReadAction)(http.HandlerFunc(h.handleModels)))
 	mux.Handle("DELETE /api/performance/disk-cache",
 		h.authz.Handler(rbac.PermSettingsManage, performanceDiskClearAction)(http.HandlerFunc(h.handleDiskCacheClear)))
 	mux.Handle("POST /api/performance/gc",

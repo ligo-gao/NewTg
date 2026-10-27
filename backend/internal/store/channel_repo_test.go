@@ -101,3 +101,25 @@ func TestEnabledModelsQueryIncludesModelMappingKeys(t *testing.T) {
 		t.Fatalf("模型列表查询必须只包含启用渠道: %s", enabledModelsQuery)
 	}
 }
+
+func TestCountRoutableChannelsQueryShape(t *testing.T) {
+	// 渠道数是性能页 models 表的 channels 列：模型全集必须与
+	// enabledModelsQuery 同口径（supported_models 成员 + model_mapping 键），
+	// 且按渠道去重——同一模型既在 supported_models 又是映射键时只算一个渠道。
+	for _, fragment := range []string{
+		"CROSS JOIN LATERAL",
+		"jsonb_array_elements_text(c.supported_models)",
+		"jsonb_object_keys(c.model_mapping)",
+		"count(DISTINCT c.id)",
+		"WHERE c.status = 1",
+		"GROUP BY m.model",
+	} {
+		if !strings.Contains(countRoutableChannelsQuery, fragment) {
+			t.Fatalf("渠道数查询缺少片段 %q: %s", fragment, countRoutableChannelsQuery)
+		}
+	}
+	// 映射的值（上游真实模型名）不是对外可见模型，不得进入统计。
+	if strings.Contains(countRoutableChannelsQuery, "jsonb_each_text") {
+		t.Fatalf("渠道数查询必须只用 model_mapping 的键: %s", countRoutableChannelsQuery)
+	}
+}
