@@ -79,6 +79,19 @@ async function renderDialog() {
   return { ...result, user: userEvent.setup(), onOpenChange, onCreated }
 }
 
+/**
+ * Node's File keeps the multipart body readable by undici inside MSW; the
+ * jsdom File holds a cross-realm stream that never settles when a handler
+ * reads the body. The cast bridges the two DOM typings.
+ */
+function csvFile(): File {
+  return new NodeFile(
+    ['username,password,customer_type,group\n'],
+    'users.csv',
+    { type: 'text/csv' },
+  ) as unknown as globalThis.File
+}
+
 describe('BulkCreateDialog', () => {
   it('downloads the CSV template', async () => {
     server.use(
@@ -111,15 +124,7 @@ describe('BulkCreateDialog', () => {
     )
 
     const { user, onCreated, onOpenChange } = await renderDialog()
-    await user.upload(
-      screen.getByLabelText('CSV file'),
-      // Node's File keeps the multipart body readable by undici inside MSW;
-      // the jsdom File holds a cross-realm stream that never settles. The cast
-      // bridges the two DOM typings; both behave as a file input payload.
-      new NodeFile(['username,password,customer_type,group\n'], 'users.csv', {
-        type: 'text/csv',
-      }) as unknown as globalThis.File,
-    )
+    await user.upload(screen.getByLabelText('CSV file'), csvFile())
     await user.click(screen.getByRole('button', { name: 'Import' }))
 
     await waitFor(() => {
@@ -160,12 +165,7 @@ describe('BulkCreateDialog', () => {
     )
 
     const { user, onCreated, onOpenChange } = await renderDialog()
-    await user.upload(
-      screen.getByLabelText('CSV file'),
-      new File(['username,password,customer_type,group\n'], 'users.csv', {
-        type: 'text/csv',
-      }),
-    )
+    await user.upload(screen.getByLabelText('CSV file'), csvFile())
     await user.click(screen.getByRole('button', { name: 'Import' }))
 
     expect(await screen.findByText('Line 2')).toBeTruthy()
@@ -177,6 +177,128 @@ describe('BulkCreateDialog', () => {
     expect(onOpenChange).not.toHaveBeenCalledWith(false)
     // The dialog itself is still on screen.
     expect(screen.getByRole('dialog', { name: 'Bulk create users' })).toBeTruthy()
+  })
+
+  it('lists header errors returned as 400 instead of a generic failure', async () => {
+    // handlers_bulk_users.go maps a malformed header (and a wrong field count)
+    // to 400 with the same {errors:[…]} body 422 uses.
+    server.use(
+      http.post(`${ORIGIN}/api/users/bulk/import`, () =>
+        HttpResponse.json(
+          {
+            type: 'https://newtg.dev/problems/validation_failed',
+            title: 'Validation failed',
+            status: 400,
+            errors: [{ line: 1, field: 'header', code: 'header_invalid' }],
+          },
+          { status: 400 },
+        ),
+      ),
+    )
+
+    const { user, onCreated } = await renderDialog()
+    await user.upload(screen.getByLabelText('CSV file'), csvFile())
+    await user.click(screen.getByRole('button', { name: 'Import' }))
+
+    expect(await screen.findByText('Line 1')).toBeTruthy()
+    expect(screen.getByText(/Invalid CSV header/)).toBeTruthy()
+    // Not the retryable-looking generic error.
+    expect(screen.queryByText(/The import failed/)).toBeNull()
+    expect(onCreated).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: 'Bulk create users' })).toBeTruthy()
+  })
+
+  it('shows the generic form error for a server failure', async () => {
+    server.use(
+      http.post(`${ORIGIN}/api/users/bulk/import`, () =>
+        HttpResponse.json(
+          {
+            type: 'https://newtg.dev/problems/internal',
+            title: 'Internal server error',
+            status: 500,
+          },
+          { status: 500 },
+        ),
+      ),
+    )
+
+    const { user, onCreated } = await renderDialog()
+    await user.upload(screen.getByLabelText('CSV file'), csvFile())
+    await user.click(screen.getByRole('button', { name: 'Import' }))
+
+    expect(await screen.findByText(/The import failed/)).toBeTruthy()
+    expect(onCreated).not.toHaveBeenCalled()
+    expect(screen.queryByText(/Fix these rows/)).toBeNull()
+    expect(screen.getByRole('dialog', { name: 'Bulk create users' })).toBeTruthy()
+  })
+
+  it('maps a 413 upload to the file-too-large message', async () => {
+    server.use(
+      http.post(`${ORIGIN}/api/users/bulk/import`, () =>
+        HttpResponse.json(
+          {
+            type: 'https://newtg.dev/problems/invalid_request',
+            title: 'File too large',
+            status: 413,
+          },
+          { status: 413 },
+        ),
+      ),
+    )
+
+    const { user, onCreated } = await renderDialog()
+    await user.upload(screen.getByLabelText('CSV file'), csvFile())
+    await user.click(screen.getByRole('button', { name: 'Import' }))
+
+    expect(await screen.findByText(/File exceeds 1 MiB/)).toBeTruthy()
+    expect(onCreated).not.toHaveBeenCalled()
+  })
+
+  it('shows the generic form error when the request itself fails', async () => {
+    server.use(
+      http.post(`${ORIGIN}/api/users/bulk/import`, () => HttpResponse.error()),
+    )
+
+    const { user, onCreated } = await renderDialog()
+    await user.upload(screen.getByLabelText('CSV file'), csvFile())
+    await user.click(screen.getByRole('button', { name: 'Import' }))
+
+    expect(await screen.findByText(/The import failed/)).toBeTruthy()
+    expect(onCreated).not.toHaveBeenCalled()
+    // The submit control is released again after the failure.
+    expect(
+      (screen.getByRole('button', { name: 'Import' }) as HTMLButtonElement).disabled,
+    ).toBe(false)
+  })
+
+  it('sends must_change_password=false when the checkbox is cleared', async () => {
+    let submittedBody = ''
+    server.use(
+      http.post(`${ORIGIN}/api/users/bulk/import`, async ({ request }) => {
+        const bytes = await request.arrayBuffer()
+        submittedBody = new TextDecoder().decode(bytes)
+        return HttpResponse.json({ created: 1 }, { status: 201 })
+      }),
+    )
+
+    const { user, onCreated } = await renderDialog()
+    await user.upload(screen.getByLabelText('CSV file'), csvFile())
+    await user.click(
+      screen.getByRole('checkbox', {
+        name: 'Require a password change at first sign-in',
+      }),
+    )
+    await user.click(screen.getByRole('button', { name: 'Import' }))
+
+    await waitFor(() => {
+      expect(onCreated).toHaveBeenCalledTimes(1)
+    })
+    expect(submittedBody).toContain(
+      'name="must_change_password"\r\n\r\nfalse',
+    )
+    expect(submittedBody).not.toContain(
+      'name="must_change_password"\r\n\r\ntrue',
+    )
   })
 
   it('generates users and downloads credentials only once', async () => {

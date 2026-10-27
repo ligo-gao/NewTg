@@ -37,6 +37,25 @@ function rowErrorMessage(t: TranslateFn, code: string): string {
   return message === key ? t('admin.bulk.errors_unknown') : message
 }
 
+/**
+ * Reads the per-row `errors[]` array from a failed response. The bulk import
+ * endpoint emits it for both 400 (header/no-data-row) and 422 (row validation);
+ * treating only 422 as "fix these rows" made header errors look retryable.
+ * Returns undefined when the body is not JSON or carries no errors.
+ */
+async function readRowErrors(response: Response): Promise<BulkRowError[] | undefined> {
+  try {
+    const body = (await response.json()) as { errors?: unknown }
+    const errors = body.errors
+    if (Array.isArray(errors) && errors.length > 0) {
+      return errors as BulkRowError[]
+    }
+  } catch {
+    // Non-JSON error body: fall through to the generic message.
+  }
+  return undefined
+}
+
 function fallbackGenerateFilename(): string {
   const now = new Date()
   const pad = (value: number): string => String(value).padStart(2, '0')
@@ -170,17 +189,23 @@ export function BulkCreateDialog({ open, onOpenChange, onCreated }: BulkCreateDi
         onOpenChange(false)
         return
       }
-      if (response.status === 422) {
-        // Per-row validation: keep the dialog open so the operator can fix the
-        // file and retry. Never collapse this into a single toast.
-        const problem = (await response.json()) as { errors?: BulkRowError[] }
-        const errors = problem.errors
-        if (Array.isArray(errors) && errors.length > 0) {
-          setRowErrors(errors)
-          return
-        }
+      // Header/row validation arrives as `{errors:[…]}` on 400 *and* 422
+      // (handlers_bulk_users.go maps a malformed header and a wrong field count
+      // to 400). Sniff the body instead of trusting one status: collapsing
+      // these into "try again" would ask the operator to retry a file that can
+      // never succeed. Keep the dialog open so the file can be fixed.
+      const rowErrorsFromBody = await readRowErrors(response)
+      if (rowErrorsFromBody !== undefined) {
+        setRowErrors(rowErrorsFromBody)
+        return
       }
-      setImportError(t('admin.bulk.import_error'))
+      // A body over the 1 MiB cap has no row errors to list, but it is still a
+      // deterministic input error with its own message.
+      setImportError(
+        response.status === 413
+          ? t('admin.bulk.errors_file_too_large')
+          : t('admin.bulk.import_error'),
+      )
     } catch {
       setImportError(t('admin.bulk.import_error'))
     } finally {
