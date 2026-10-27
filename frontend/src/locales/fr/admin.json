@@ -1580,7 +1580,7 @@
       "col_samples": "Échantillons",
       "col_spark": "Tendance",
       "col_status": "Statut",
-      "meta_channels": "{provider} · {count} canaux",
+      "channels_count": "{count} canaux",
       "no_sample": "Pas encore d'échantillon",
       "empty_title": "Aucun échantillon pour l'instant",
       "empty_action": "Lancer un cycle maintenant",

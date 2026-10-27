@@ -1580,7 +1580,7 @@
       "col_samples": "Выборки",
       "col_spark": "Тренд",
       "col_status": "Статус",
-      "meta_channels": "{provider} · {count} каналов",
+      "channels_count": "{count} каналов",
       "no_sample": "Пока нет выборки",
       "empty_title": "Выборок пока нет",
       "empty_action": "Запустить раунд сейчас",

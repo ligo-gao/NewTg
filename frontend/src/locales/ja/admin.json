@@ -1580,7 +1580,7 @@
       "col_samples": "サンプル",
       "col_spark": "トレンド",
       "col_status": "ステータス",
-      "meta_channels": "{provider} · {count} チャネル",
+      "channels_count": "{count} チャネル",
       "no_sample": "サンプル不足",
       "empty_title": "まだサンプルがありません",
       "empty_action": "今すぐ 1 ラウンド実行",

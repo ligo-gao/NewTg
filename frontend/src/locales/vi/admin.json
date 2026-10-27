@@ -1580,7 +1580,7 @@
       "col_samples": "Mẫu",
       "col_spark": "Xu hướng",
       "col_status": "Trạng thái",
-      "meta_channels": "{provider} · {count} kênh",
+      "channels_count": "{count} kênh",
       "no_sample": "Chưa có mẫu",
       "empty_title": "Chưa có mẫu nào",
       "empty_action": "Chạy một vòng ngay",

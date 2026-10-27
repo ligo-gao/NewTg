@@ -1580,7 +1580,7 @@
       "col_samples": "Samples",
       "col_spark": "Trend",
       "col_status": "Status",
-      "meta_channels": "{provider} · {count} channels",
+      "channels_count": "{count} channels",
       "no_sample": "No sample yet",
       "empty_title": "No samples yet",
       "empty_action": "Run a round now",

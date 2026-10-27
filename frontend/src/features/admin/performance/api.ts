@@ -9,7 +9,7 @@
  * 服务端收到的头才是授权门（缺失时 422 confirm_required）。因此这里的写
  * 函数只接受「已确认」的调用，不提供默认值或可选头。
  */
-import { apiClient } from '@/api/client'
+import { apiClient, toApiError } from '@/api/client'
 import { requireData } from '@/api/result'
 import type { components } from '@/api/schema'
 import {
@@ -183,4 +183,79 @@ export async function savePerfSettings(
     { section: 'perf', values, expect_updated_at: expectUpdatedAt },
     createIdempotencyKey(),
   )
+}
+
+/* ------------------------------------------------------------------------- *
+ * 单模型 24h 分桶序列（手写类型）
+ * ------------------------------------------------------------------------- */
+
+/**
+ * `GET /api/model-perf` **尚无 OpenAPI 契约**，所以这里不能引用
+ * `schema.d.ts` 的生成类型。字段以后端结构体为准：
+ * `backend/internal/httpapi/handlers_model_perf.go` 的 `modelPerfBucketPoint`
+ * / `modelPerfPipeline`（`modelPerfResponse` 的 `buckets` 与 `pipeline`）。
+ * 契约落地后应改为 `components['schemas'][…]`，并删掉手写定义。
+ *
+ * `start` 是桶起点的 RFC3339 时间戳；`*_over_30s` 为真时同级 `*_ms` 只是
+ * 「已知 ≥30s」的下界，不是有限延迟。
+ */
+export interface ModelPerfBucket {
+  start: string
+  model: string
+  requests: number
+  ttft_p50_ms: number | null
+  ttft_p95_ms: number | null
+  ttft_p50_over_30s: boolean
+  ttft_p95_over_30s: boolean
+}
+
+/**
+ * 下钻只需要 24h 分桶与采集管道闸门；`modelPerfResponse` 的其余字段
+ * （window / summary / incidents / models / comparison / dimensions）在此丢弃。
+ */
+export interface ModelPerfSeries {
+  buckets: ModelPerfBucket[]
+  pipeline: { enabled: boolean; stale: boolean; reason?: string }
+}
+
+interface ModelPerfSeriesBody {
+  buckets?: ModelPerfBucket[]
+  pipeline?: ModelPerfSeries['pipeline']
+}
+
+/** jsdom/Node 的 fetch 拒绝相对 URL；浏览器里与同源相对路径等价。 */
+function absoluteUrl(path: string): string {
+  if (typeof location === 'undefined') return path
+  return new URL(path, location.origin).toString()
+}
+
+/**
+ * 单模型下钻序列。端点不在契约里，所以绕过 `apiClient` 直接 `fetch`；错误
+ * 仍走同一个 `toApiError`，页面拿到的是统一的 `ApiError`。
+ *
+ * `range=24h` 是这一屏的固定口径（与模型表 24h 窗口、demo 副标题一致），
+ * 调用方不接受窗口参数。响应只保留 `buckets` 与 `pipeline`：管道缺失时
+ * 按「未启用」处理，绝不把空对象当成健康。
+ */
+export async function fetchModelPerfSeries(
+  model: string,
+  signal?: AbortSignal,
+): Promise<ModelPerfSeries> {
+  const response = await fetch(
+    absoluteUrl(
+      `/api/model-perf?range=24h&model=${encodeURIComponent(model)}`,
+    ),
+    {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' },
+      signal,
+    },
+  )
+  if (!response.ok) throw await toApiError(response)
+
+  const body = (await response.json()) as ModelPerfSeriesBody
+  return {
+    buckets: Array.isArray(body.buckets) ? body.buckets : [],
+    pipeline: body.pipeline ?? { enabled: false, stale: true },
+  }
 }

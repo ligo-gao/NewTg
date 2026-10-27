@@ -1580,7 +1580,7 @@
       "col_samples": "樣本",
       "col_spark": "趨勢",
       "col_status": "狀態",
-      "meta_channels": "{provider} · {count} 個渠道",
+      "channels_count": "{count} 個渠道",
       "no_sample": "樣本不足",
       "empty_title": "還沒有取樣資料",
       "empty_action": "立即跑一輪",
