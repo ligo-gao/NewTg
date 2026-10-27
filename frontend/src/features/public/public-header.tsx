@@ -6,6 +6,7 @@ import { useTheme } from '@/app/providers/theme'
 import type { PublicSite } from '@/lib/public-status'
 import { usePublicStatus } from '@/lib/public-status'
 import { ME_QUERY_KEY, meQueryOptions } from '@/lib/session'
+import { useLanguageSelection } from '@/lib/use-language-selection'
 import { useI18n, type Locale } from '@/shared/lib/i18n-context'
 
 import { LANGUAGE_LABELS, LanguageSwitch } from '@/shared/ui/language-switch'
@@ -168,7 +169,13 @@ const ALL_LOCALES = Object.keys(COMPACT_LANGUAGE_LABELS) as Locale[]
  * selected locale; the transparent native select keeps keyboard and screen
  * reader behaviour identical to the full `LanguageSwitch`.
  */
-function CompactLanguage({ label }: { label: string }) {
+function CompactLanguage({
+  label,
+  onChange,
+}: {
+  label: string
+  onChange?: (locale: Locale) => void
+}) {
   const { locale, setLocale, availableLocales } = useI18n()
   const locales = availableLocales ?? ALL_LOCALES
 
@@ -182,6 +189,7 @@ function CompactLanguage({ label }: { label: string }) {
           const next = event.target.value
           if (!locales.includes(next as Locale)) return
           setLocale?.(next as Locale)
+          onChange?.(next as Locale)
         }}
       >
         {locales.map((item) => (
@@ -349,6 +357,7 @@ export function PublicHeader({ activePath }: PublicHeaderProps) {
 
   const site = status.data?.site
   const isLoggedIn = me.isSuccess
+  const { onChange } = useLanguageSelection(isLoggedIn)
   const path = activePath ?? '/'
   const signInTarget = signInHref(path, currentSearch())
   // F-09-34 异常流程: with a failed status and no cached snapshot the shell must
@@ -377,9 +386,13 @@ export function PublicHeader({ activePath }: PublicHeaderProps) {
           <LanguageSwitch
             className="home-lang"
             label={t('public.language.label')}
+            onChange={onChange}
             globe
           />
-          <CompactLanguage label={t('public.language.label')} />
+          <CompactLanguage
+            label={t('public.language.label')}
+            onChange={onChange}
+          />
           <ThemeButton />
           <AuthCluster
             isLoggedIn={isLoggedIn}

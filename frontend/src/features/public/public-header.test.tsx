@@ -1,4 +1,5 @@
 import { fireEvent, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
@@ -256,5 +257,86 @@ describe('PublicHeader (F-09-34)', () => {
     expect(
       within(panel as HTMLElement).queryByRole('link', { name: 'Get started free' }),
     ).toBeNull()
+  })
+
+  it('persists a language pick on a public page for a signed-in visitor', async () => {
+    let putBody: unknown
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(PUBLIC_STATUS)),
+      http.get(`${ORIGIN}/api/me`, () =>
+        HttpResponse.json({ id: 1, username: 'ada' }),
+      ),
+      http.get(`${ORIGIN}/api/self`, () =>
+        HttpResponse.json({
+          language: 'en',
+          sidebar_modules: null,
+          record_ip_log: false,
+          updated_at: '2026-10-19T10:00:00Z',
+        }),
+      ),
+      http.put(`${ORIGIN}/api/self/setting`, async ({ request }) => {
+        putBody = await request.json()
+        return HttpResponse.json({
+          language: 'fr',
+          sidebar_modules: null,
+          record_ip_log: false,
+          updated_at: '2026-10-19T11:00:00Z',
+        })
+      }),
+    )
+
+    const { findByRole } = await renderWithProviders(
+      <PublicHeader activePath="/models" />,
+      ['public'],
+    )
+    // 登录态就绪后 hook 才提供 onChange。
+    await findByRole('button', { name: 'Account menu' })
+    const select = document.querySelector(
+      '.home-lang select',
+    ) as HTMLSelectElement
+    const user = userEvent.setup()
+
+    await user.selectOptions(select, 'fr')
+
+    await waitFor(() => {
+      expect(putBody).toMatchObject({
+        language: 'fr',
+        updated_at: '2026-10-19T10:00:00Z',
+      })
+    })
+  })
+
+  it('does not persist for an anonymous visitor', async () => {
+    let profileCalls = 0
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(PUBLIC_STATUS)),
+      http.get(`${ORIGIN}/api/me`, () =>
+        HttpResponse.json({}, { status: 401 }),
+      ),
+      http.get(`${ORIGIN}/api/self`, () => {
+        profileCalls += 1
+        return HttpResponse.json({
+          language: 'en',
+          sidebar_modules: null,
+          record_ip_log: false,
+          updated_at: '2026-10-19T10:00:00Z',
+        })
+      }),
+    )
+
+    const { findByRole } = await renderWithProviders(
+      <PublicHeader activePath="/models" />,
+      ['public'],
+    )
+    await findByRole('link', { name: 'Sign in' })
+    const select = document.querySelector(
+      '.home-lang select',
+    ) as HTMLSelectElement
+    const user = userEvent.setup()
+
+    await user.selectOptions(select, 'fr')
+
+    expect(document.documentElement.lang).toBe('fr')
+    expect(profileCalls).toBe(0)
   })
 })

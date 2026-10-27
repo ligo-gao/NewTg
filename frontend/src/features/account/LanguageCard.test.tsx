@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { waitFor } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
+import { ToastViewport, useToastStore } from '@/shared/ui/toast'
 import { renderWithProviders } from '@/test-support/providers'
 
 import { LanguageCard } from './LanguageCard'
@@ -16,6 +17,7 @@ beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 afterEach(() => {
   server.resetHandlers()
   globalThis.localStorage?.clear()
+  useToastStore.setState({ toasts: [] })
 })
 afterAll(() => server.close())
 
@@ -31,12 +33,8 @@ function selfSettings(language: string) {
 describe('LanguageCard (F-01-19)', () => {
   it('lists the advertised languages and persists a switch to the server', async () => {
     let putBody: unknown
-    let getDone = false
     server.use(
-      http.get(`${ORIGIN}/api/self`, () => {
-        getDone = true
-        return HttpResponse.json(selfSettings('en'))
-      }),
+      http.get(`${ORIGIN}/api/self`, () => HttpResponse.json(selfSettings('en'))),
       http.put(`${ORIGIN}/api/self/setting`, async ({ request }) => {
         putBody = await request.json()
         return HttpResponse.json(selfSettings('fr'))
@@ -44,14 +42,13 @@ describe('LanguageCard (F-01-19)', () => {
     )
 
     const { getByLabelText, getByText } = await renderWithProviders(
-      <LanguageCard />,
+      <>
+        <LanguageCard />
+        <ToastViewport />
+      </>,
       ['common', 'account'],
     )
     const user = userEvent.setup()
-    // 等个人设置加载完成，否则保存路径会因缺少 updated_at 而降级为仅本地。
-    await waitFor(() => {
-      expect(getDone).toBe(true)
-    })
 
     // 语言集合来自运行时（status ∩ 随包词典），下拉顺序即 canonical 顺序。
     const select = (await waitFor(() => {
@@ -82,13 +79,9 @@ describe('LanguageCard (F-01-19)', () => {
     })
   })
 
-  it('falls back to the previous language when the server rejects the save', async () => {
-    let getDone = false
+  it('keeps the chosen language when the server rejects the save', async () => {
     server.use(
-      http.get(`${ORIGIN}/api/self`, () => {
-        getDone = true
-        return HttpResponse.json(selfSettings('en'))
-      }),
+      http.get(`${ORIGIN}/api/self`, () => HttpResponse.json(selfSettings('en'))),
       http.put(`${ORIGIN}/api/self/setting`, () =>
         HttpResponse.json(
           { type: 'conflict', title: 'Conflict' },
@@ -97,26 +90,26 @@ describe('LanguageCard (F-01-19)', () => {
       ),
     )
 
-    const { getByLabelText } = await renderWithProviders(<LanguageCard />, [
-      'common',
-      'account',
-    ])
+    const { getByRole, findByTestId } = await renderWithProviders(
+      <>
+        <LanguageCard />
+        <ToastViewport />
+      </>,
+      ['common', 'account'],
+    )
     const user = userEvent.setup()
-    await waitFor(() => {
-      expect(getDone).toBe(true)
-    })
-    const select = (await waitFor(() =>
-      getByLabelText('Interface language'),
-    )) as HTMLSelectElement
+    // 切换后卡片文案随界面语言变化，所以用控件角色而不是本地化标签定位。
+    const select = (await waitFor(() => getByRole('combobox'))) as HTMLSelectElement
 
     await user.selectOptions(select, 'ja')
 
-    // 写入失败后回退原语言（modules-01 F-01-19 异常流程）。
+    // 写入失败不回滚：界面与下拉都保持 ja，pending 留给下次补写。
     await waitFor(() => {
-      expect(document.documentElement.lang).toBe('en')
-      expect(
-        (getByLabelText('Interface language') as HTMLSelectElement).value,
-      ).toBe('en')
+      expect(document.documentElement.lang).toBe('ja')
+      expect(select.value).toBe('ja')
     })
+    expect(globalThis.localStorage.getItem('newtg.language.pending')).toBe('1')
+    const viewport = await findByTestId('toast-viewport')
+    expect(viewport.textContent).toContain('Language saved on this device')
   })
 })

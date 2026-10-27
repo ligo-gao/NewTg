@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import { usePublicStatus } from '@/lib/public-status'
 import { ME_QUERY_KEY, meQueryOptions } from '@/lib/session'
+import { useLanguageSelection } from '@/lib/use-language-selection'
 import { useI18n } from '@/shared/lib/i18n-context'
 
 import { htmlToPlainText, sanitizeHtmlFragment } from './home/custom-html'
@@ -35,6 +36,7 @@ export function PublicFooter() {
   const status = usePublicStatus()
   const me = useQuery({ ...meQueryOptions(), queryKey: ME_QUERY_KEY })
   const isLoggedIn = me.isSuccess
+  const { onChange } = useLanguageSelection(isLoggedIn)
   const site = status.data?.site
   const title = site?.title?.trim() || 'NEWTG'
   const year = new Date().getFullYear()
@@ -142,6 +144,7 @@ export function PublicFooter() {
               variant="footer"
               className="home-lang"
               label={t('public.language.label')}
+              onChange={onChange}
             />
           </div>
         </div>

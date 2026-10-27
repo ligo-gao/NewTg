@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, waitFor } from '@testing-library/react'
+import { fireEvent, render, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
@@ -358,30 +358,33 @@ describe('LocalePreferenceSync', () => {
     })
     expect(globalThis.localStorage.getItem('newtg.language')).toBe('ja')
     const viewport = await findByTestId('toast-viewport')
-    expect(viewport.textContent).toContain('Language changed on this device only')
+    expect(viewport.textContent).toContain('Language saved on this device')
     expect(viewport.textContent).not.toContain('Language updated')
     // 未就绪时会补读一次，但不会发出 PUT。
     expect(selfCalls).toBeGreaterThanOrEqual(2)
   })
 
-  it('invalidates self settings after a failed save so a retry uses the fresh updated_at (F4)', async () => {
-    let selfCalls = 0
+  it('keeps the new locale after a failed save and retries with the fresh updated_at (F4)', async () => {
     const putBodies: Array<Record<string, unknown>> = []
+    let rejectedOnce = false
     server.use(
       http.get(`${ORIGIN}/api/status`, () =>
         HttpResponse.json(status(['en', 'ja'])),
       ),
-      http.get(`${ORIGIN}/api/self`, () => {
-        selfCalls += 1
-        // 第一次读取给出旧令牌；失效后的重新读取给出新令牌。
-        return HttpResponse.json(
-          self('en', selfCalls === 1 ? '2026-10-19T10:00:00Z' : '2026-10-19T12:00:00Z'),
-        )
-      }),
+      http.get(`${ORIGIN}/api/self`, () =>
+        // 第一次保存用的仍是旧令牌；409 使缓存失效后重读给出新令牌。
+        HttpResponse.json(
+          self(
+            'en',
+            rejectedOnce ? '2026-10-19T12:00:00Z' : '2026-10-19T10:00:00Z',
+          ),
+        ),
+      ),
       http.put(`${ORIGIN}/api/self/setting`, async ({ request }) => {
         const body = (await request.json()) as Record<string, unknown>
         putBodies.push(body)
         if (body.updated_at === '2026-10-19T10:00:00Z') {
+          rejectedOnce = true
           return HttpResponse.json(
             { type: 'conflict', title: 'Conflict' },
             { status: 409 },
@@ -391,37 +394,39 @@ describe('LocalePreferenceSync', () => {
       }),
     )
 
-    const { getByTestId, getByLabelText } = renderSync(
+    const { getByTestId, getByRole } = renderSync(
       <>
         <Probe />
         <LanguageCard />
       </>,
     )
     const user = userEvent.setup()
+    // 切换后卡片文案随界面语言变化，所以用控件角色而不是本地化标签定位。
+    const select = getByRole('combobox') as HTMLSelectElement
 
     await waitFor(() => {
       expect(getByTestId('locale').textContent).toBe('en')
     })
 
-    // 第一次保存撞 409：回退 en，并触发个人设置失效/重读。
-    await user.selectOptions(getByLabelText('Interface language'), 'ja')
-    await waitFor(() => {
-      expect(getByTestId('locale').textContent).toBe('en')
-      expect(selfCalls).toBeGreaterThanOrEqual(2)
-    })
-
-    // 重试必须使用刷新后的 updated_at；旧令牌会让服务端持续 409。
-    await waitFor(() => {
-      expect(
-        (getByLabelText('Interface language') as HTMLSelectElement).disabled,
-      ).toBe(false)
-    })
-    await user.selectOptions(getByLabelText('Interface language'), 'ja')
-
+    // 第一次保存撞 409：界面保留新语言、pending 保留，并触发缓存失效。
+    await user.selectOptions(select, 'ja')
     await waitFor(() => {
       expect(getByTestId('locale').textContent).toBe('ja')
     })
+    expect(globalThis.localStorage.getItem('newtg.language.pending')).toBe('1')
+
+    // 再次选择（值未变，用 change 事件重试）：使用刷新后的 updated_at 并成功。
+    fireEvent.change(select, {
+      target: { value: 'ja' },
+    })
+
+    await waitFor(() => {
+      expect(putBodies.at(-1)).toMatchObject({
+        updated_at: '2026-10-19T12:00:00Z',
+      })
+    })
     expect(putBodies).toHaveLength(2)
-    expect(putBodies[1]?.updated_at).toBe('2026-10-19T12:00:00Z')
+    expect(putBodies[1]?.language).toBe('ja')
+    expect(globalThis.localStorage.getItem('newtg.language.pending')).toBeNull()
   })
 })

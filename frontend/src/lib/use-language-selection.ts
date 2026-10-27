@@ -14,8 +14,12 @@ export interface LanguageSelection {
    * Persists the locale for a signed-in session. Anonymous visitors get
    * `undefined` so `LanguageSwitch` only changes the locale locally and never
    * calls `/api/self` (which would answer 401).
+   *
+   * Returns a promise when a save actually runs, so a form control can disable
+   * itself until the optimistic-lock round-trip finishes; other callers ignore
+   * the result.
    */
-  onChange?: (locale: Locale) => void
+  onChange?: (locale: Locale) => void | Promise<void>
 }
 
 /**
@@ -60,10 +64,6 @@ export function useLanguageSelection(signedIn: boolean): LanguageSelection {
   }
 
   return {
-    onChange: signedIn
-      ? (next: Locale) => {
-          void save(next)
-        }
-      : undefined,
+    onChange: signedIn ? save : undefined,
   }
 }
