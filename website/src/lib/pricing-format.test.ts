@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { PricingMeta } from "@/lib/pricing-api";
+import type { PricingMeta, PricingModel } from "@/lib/pricing-api";
 import {
   formatPrice,
   formatTTFT,
   formatTPS,
   formatTokenCount,
+  isChatCapable,
   isLowSample,
 } from "@/lib/pricing-format";
 
@@ -78,5 +79,25 @@ describe("isLowSample", () => {
     expect(isLowSample(19)).toBe(true);
     expect(isLowSample(20)).toBe(false);
     expect(isLowSample(0)).toBe(false);
+  });
+});
+
+describe("isChatCapable", () => {
+  const base = { endpoints: [] as string[] } as unknown as PricingModel;
+
+  it("keeps models without endpoint metadata (conservative)", () => {
+    expect(isChatCapable({ ...base, endpoints: [] })).toBe(true);
+    expect(isChatCapable({ ...base, endpoints: null })).toBe(true);
+  });
+
+  it("keeps chat-capable models", () => {
+    expect(isChatCapable({ ...base, endpoints: ["chat.completions"] })).toBe(true);
+    expect(isChatCapable({ ...base, endpoints: ["messages"] })).toBe(true);
+    expect(isChatCapable({ ...base, endpoints: ["generateContent"] })).toBe(true);
+  });
+
+  it("drops models that only expose non-chat endpoints", () => {
+    expect(isChatCapable({ ...base, endpoints: ["embeddings"] })).toBe(false);
+    expect(isChatCapable({ ...base, endpoints: ["images.generations", "rerank"] })).toBe(false);
   });
 });

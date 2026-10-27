@@ -66,3 +66,18 @@ export function formatTPS(tokensPerSecond: number | null): string {
 export function isLowSample(sampleSize: number): boolean {
   return sampleSize > 0 && sampleSize < 20;
 }
+
+/** 公开端点里能用流式 chat 请求探测的协议族。 */
+export const CHAT_ENDPOINTS = ["chat.completions", "messages", "generateContent"] as const;
+
+/**
+ * 与后端 `store.ListPublicChatModels` 同口径：没有端点元数据时保守保留
+ * （无法证明它不是对话模型），有元数据时只保留含对话端点的模型。
+ */
+export function isChatCapable(model: PricingModel): boolean {
+  const endpoints = model.endpoints ?? [];
+  if (endpoints.length === 0) {
+    return true;
+  }
+  return CHAT_ENDPOINTS.some((endpoint) => endpoints.includes(endpoint));
+}

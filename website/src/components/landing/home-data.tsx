@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { pickRandom } from "@/lib/pick-random";
+import { isChatCapable } from "@/lib/pricing-format";
 import {
   fetchModelMetrics,
   fetchPricingCatalog,
@@ -27,6 +28,7 @@ export interface HomeData {
   metricsStatus: MetricsStatus;
   models: PricingModel[];
   featured: PricingModel[];
+  perfFeatured: PricingModel[];
   meta: PricingMeta | null;
   vendors: PricingVendorFacet[];
   metrics: Record<string, ModelMetrics>;
@@ -36,16 +38,18 @@ export interface HomeData {
 const HomeDataContext = createContext<HomeData | null>(null);
 
 /**
- * Loads the public model catalog once and keeps the same random six models
- * for both the model grid and the performance table. Metrics are fetched
- * per featured model; a partial failure leaves those rows at "—" instead of
- * inventing values.
+ * Loads the public model catalog once and keeps two random samples:
+ * `featured` (any model) for the model grid, and `perfFeatured` (chat-capable
+ * only) for the performance table, since the scheduled probe only tests
+ * chat models. Metrics are fetched per `perfFeatured` model; a partial
+ * failure leaves those rows at "—" instead of inventing values.
  */
 export function HomeDataProvider({ children }: { children: ReactNode }) {
   const [catalogStatus, setCatalogStatus] = useState<LoadStatus>("loading");
   const [metricsStatus, setMetricsStatus] = useState<MetricsStatus>("idle");
   const [models, setModels] = useState<PricingModel[]>([]);
   const [featured, setFeatured] = useState<PricingModel[]>([]);
+  const [perfFeatured, setPerfFeatured] = useState<PricingModel[]>([]);
   const [meta, setMeta] = useState<PricingMeta | null>(null);
   const [vendors, setVendors] = useState<PricingVendorFacet[]>([]);
   const [metrics, setMetrics] = useState<Record<string, ModelMetrics>>({});
@@ -60,6 +64,7 @@ export function HomeDataProvider({ children }: { children: ReactNode }) {
     setMetrics({});
     setModels([]);
     setFeatured([]);
+    setPerfFeatured([]);
 
     fetchPricingCatalog(controller.signal)
       .then((catalog) => {
@@ -67,19 +72,21 @@ export function HomeDataProvider({ children }: { children: ReactNode }) {
           return;
         }
         const picked = pickRandom(catalog.items, 6);
+        const perfPicked = pickRandom(catalog.items.filter(isChatCapable), 6);
         setModels(catalog.items);
         setFeatured(picked);
+        setPerfFeatured(perfPicked);
         setMeta(catalog.meta);
         setVendors(catalog.facets?.vendors ?? []);
         setCatalogStatus("ready");
-        if (picked.length === 0) {
+        if (perfPicked.length === 0) {
           setMetricsStatus("ready");
           return;
         }
 
         setMetricsStatus("loading");
         return Promise.allSettled(
-          picked.map((model) => fetchModelMetrics(model.model_id, controller.signal)),
+          perfPicked.map((model) => fetchModelMetrics(model.model_id, controller.signal)),
         ).then((results) => {
           if (!active) {
             return;
@@ -88,13 +95,13 @@ export function HomeDataProvider({ children }: { children: ReactNode }) {
           let failures = 0;
           results.forEach((result, index) => {
             if (result.status === "fulfilled") {
-              next[picked[index].model_id] = result.value;
+              next[perfPicked[index].model_id] = result.value;
             } else {
               failures += 1;
             }
           });
           setMetrics(next);
-          setMetricsStatus(failures === picked.length ? "error" : "ready");
+          setMetricsStatus(failures === perfPicked.length ? "error" : "ready");
         });
       })
       .catch(() => {
@@ -121,12 +128,13 @@ export function HomeDataProvider({ children }: { children: ReactNode }) {
       metricsStatus,
       models,
       featured,
+      perfFeatured,
       meta,
       vendors,
       metrics,
       retry,
     }),
-    [catalogStatus, metricsStatus, models, featured, meta, vendors, metrics, retry],
+    [catalogStatus, metricsStatus, models, featured, perfFeatured, meta, vendors, metrics, retry],
   );
 
   return <HomeDataContext.Provider value={value}>{children}</HomeDataContext.Provider>;
