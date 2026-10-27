@@ -640,6 +640,8 @@ paths:
         可见模型：无数据的模型不出现在 `items` 中，空集是 200 + `items:[]`。
         `summary` 恒填；只有测速、没有调用样本的模型 `sample_size: 0`，其余
         统计列为 null（前端显示「—」，不得回退成 0）。
+        日志库未装配或读取失败时只降级 `summary`（按零样本下发），端点仍为
+        200：`latest_test` 在主库，不能因一次日志库故障连带隐藏全部测速读数。
         `latest_test` 是最近一次管理员主动测速（主库 `model_performance_tests`）
         的 P50/P95、TPS 与成功率；没有记录、测速库未装配或读取失败时为 null
         （fail-open，端点仍为 200，usage 汇总照常返回）。前端**优先**使用
@@ -683,12 +685,6 @@ paths:
           $ref: '#/components/responses/Error429'
         '500':
           $ref: '#/components/responses/Error500'
-        '503':
-          description: 性能数据源未装配（type=metrics-unavailable）
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
   /api/pricing/{model_id}:
     get:
       tags:
@@ -750,6 +746,8 @@ paths:
         SUM(completion_tokens) / (SUM(latency_ms)/1000)`（近似值）。
         无样本时对应字段为 null，前端显示「—」，不得回退成 0。
         样本少于 20 次由前端标注「样本不足」。
+        日志库未装配或读取失败时只降级 `summary`（按零样本下发），端点仍为
+        200：`latest_test` 在主库，不能因一次日志库故障连带隐藏测速读数。
         `latest_test` 是最近一次管理员主动测速（主库 `model_performance_tests`）
         的 P50/P95、TPS 与成功率；没有记录、测速库未装配或读取失败时为 null
         （fail-open，端点仍为 200）。前端**优先**使用 `latest_test` 的
@@ -803,12 +801,6 @@ paths:
           $ref: '#/components/responses/Error429'
         '500':
           $ref: '#/components/responses/Error500'
-        '503':
-          description: 性能数据源未装配（type=metrics-unavailable）
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
   /api/auth/login/encryption-key:
     get:
       tags:

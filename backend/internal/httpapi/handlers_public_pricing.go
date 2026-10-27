@@ -1363,8 +1363,6 @@ const (
 	publicMetricsCacheControl = "public, max-age=60"
 	publicMetricsRange24h     = "24h"
 	publicMetricsRange7d      = "7d"
-
-	problemTypeMetricsUnavailable = "https://newtg.dev/problems/metrics-unavailable"
 )
 
 func parsePublicMetricsRange(raw string) (time.Duration, string, bool) {
@@ -1451,11 +1449,6 @@ func (h *PublicPricingHandlers) handlePublicPricingMetrics(w http.ResponseWriter
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid range")
 		return
 	}
-	if h.metrics == nil {
-		writeProblem(w, http.StatusServiceUnavailable, problemTypeMetricsUnavailable,
-			"Performance data unavailable")
-		return
-	}
 
 	modelID := r.PathValue("model_id")
 	catalog, err := h.repo.LoadPublicPricingCatalog(r.Context())
@@ -1479,15 +1472,21 @@ func (h *PublicPricingHandlers) handlePublicPricingMetrics(w http.ResponseWriter
 
 	end := time.Now().UTC()
 	start := end.Add(-window)
-	data, err := h.metrics.LoadPublicModelMetrics(r.Context(), modelID, start, end)
+	// 日志库接缝未装配与读取失败同一口径：summary 降级为零样本，latest_test
+	// 来自主库照常返回。公开性能页的可用性不能挂在一个可选数据源上——首页
+	// 只消费 latest_test，把整张表打成 503 等于让测速读数陪葬。
+	var data store.PublicModelMetrics
 	degraded := false
-	if err != nil {
-		// 首页只消费 latest_test；日志库故障不应把整张表变成「暂不可用」。
-		// summary 降级为零样本（各列为 null），latest_test 照常返回。
-		h.log.Warn("public pricing metrics: load usage summary failed; degrading summary",
-			"model", modelID, "error", err)
-		data = store.PublicModelMetrics{}
+	if h.metrics == nil {
+		h.log.Warn("public pricing metrics: usage metrics source not configured; degrading summary",
+			"model", modelID)
 		degraded = true
+	} else if loaded, loadErr := h.metrics.LoadPublicModelMetrics(r.Context(), modelID, start, end); loadErr != nil {
+		h.log.Warn("public pricing metrics: load usage summary failed; degrading summary",
+			"model", modelID, "error", loadErr)
+		degraded = true
+	} else {
+		data = loaded
 	}
 
 	summary := publicMetricsSummary(data)
@@ -1638,11 +1637,6 @@ func (h *PublicPricingHandlers) handlePublicPricingMetricsList(w http.ResponseWr
 		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid range")
 		return
 	}
-	if h.metrics == nil {
-		writeProblem(w, http.StatusServiceUnavailable, problemTypeMetricsUnavailable,
-			"Performance data unavailable")
-		return
-	}
 
 	catalog, err := h.repo.LoadPublicPricingCatalog(r.Context())
 	if err != nil {
@@ -1661,13 +1655,18 @@ func (h *PublicPricingHandlers) handlePublicPricingMetricsList(w http.ResponseWr
 	start := end.Add(-window)
 
 	// 空目录不查日志库（批量方法本身也会短路，这里省掉一次跨库调用语义）。
+	// 接缝未装配或读取失败只降级 summary：latest_test 在主库，是模型库列表页
+	// 仍要展示的事实；整页 500 会让一次日志库故障连带隐藏全部测速读数。
 	metrics := make(map[string]store.PublicModelMetrics)
 	if len(models) > 0 {
-		metrics, err = h.metrics.LoadPublicModelMetricsBatch(r.Context(), models, start, end)
-		if err != nil {
-			h.log.Error("public pricing metrics list: load metrics failed", "error", err)
-			writeProblem(w, http.StatusInternalServerError, authProblemInternal, "Internal server error")
-			return
+		if h.metrics == nil {
+			h.log.Warn("public pricing metrics list: usage metrics source not configured; degrading summary")
+		} else if batch, batchErr := h.metrics.LoadPublicModelMetricsBatch(
+			r.Context(), models, start, end); batchErr != nil {
+			h.log.Warn("public pricing metrics list: load metrics failed; degrading summary",
+				"error", batchErr)
+		} else {
+			metrics = batch
 		}
 	}
 	tests := h.latestTestsByModels(r.Context(), models)

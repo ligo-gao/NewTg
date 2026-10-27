@@ -237,21 +237,60 @@ func TestPublicMetricsListETagAnd304(t *testing.T) {
 	}
 }
 
-func TestPublicMetricsListMetricsUnavailable(t *testing.T) {
-	handlers := newMetricsTestHandlerWithPerf(t, nil, nil)
+func TestPublicMetricsListWithoutSourceDegradesSummary(t *testing.T) {
+	// 日志库接缝未装配不再整页 503：summary 降级为零样本，主库里的测速读数
+	// 照常返回。性能表的可用性不能挂在一个可选数据源上。
+	testedAt := time.Date(2026, 10, 23, 12, 30, 0, 0, time.UTC)
+	perf := &fakePublicPerfStore{batchTests: map[string]store.ModelPerformanceTest{
+		"openai/gpt-5": {
+			ID:           11,
+			Model:        "openai/gpt-5",
+			Runs:         5,
+			SuccessCount: 5,
+			SuccessRate:  1,
+			TTFTMSP50:    publicIntPtr(120),
+			CreatedAt:    testedAt,
+		},
+	}}
+	handlers := newMetricsListHandler(t, metricsCatalog("openai/gpt-5"), nil, perf)
 
 	rr := requestMetricsList(t, handlers, "?range=7d", nil)
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (degraded), body=%s", rr.Code, rr.Body.String())
 	}
-	var problem struct {
-		Type string `json:"type"`
+	var body PublicModelMetricsList
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
 	}
-	if err := json.Unmarshal(rr.Body.Bytes(), &problem); err != nil {
-		t.Fatalf("decode problem: %v", err)
+	if len(body.Items) != 1 {
+		t.Fatalf("items = %d, want 1 (body=%s)", len(body.Items), rr.Body.String())
 	}
-	if problem.Type != "https://newtg.dev/problems/metrics-unavailable" {
-		t.Fatalf("problem type = %q", problem.Type)
+	if body.Items[0].Summary.SampleSize != 0 {
+		t.Fatalf("降级 summary sample_size = %d, want 0", body.Items[0].Summary.SampleSize)
+	}
+	if body.Items[0].LatestTest == nil {
+		t.Fatal("测速读数在主库，降级时不应丢失")
+	}
+}
+
+func TestPublicMetricsListBatchFailureDegradesSummary(t *testing.T) {
+	// 日志库故障与接缝缺失同口径：保留测速读数，summary 归零。
+	metrics := &fakePublicModelMetrics{batchErr: errors.New("logs db is down")}
+	perf := &fakePublicPerfStore{batchTests: map[string]store.ModelPerformanceTest{
+		"openai/gpt-5": {ID: 12, Model: "openai/gpt-5", Runs: 3, SuccessCount: 3, CreatedAt: time.Now().UTC()},
+	}}
+	handlers := newMetricsListHandler(t, metricsCatalog("openai/gpt-5"), metrics, perf)
+
+	rr := requestMetricsList(t, handlers, "?range=7d", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (degraded), body=%s", rr.Code, rr.Body.String())
+	}
+	var body PublicModelMetricsList
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Items) != 1 || body.Items[0].Summary.SampleSize != 0 || body.Items[0].LatestTest == nil {
+		t.Fatalf("items = %s, want one degraded item with latest_test", rr.Body.String())
 	}
 }
 

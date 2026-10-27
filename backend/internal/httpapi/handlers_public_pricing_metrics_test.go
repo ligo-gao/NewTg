@@ -253,11 +253,67 @@ func TestPublicMetricsInvalidRangeIs400(t *testing.T) {
 	}
 }
 
-func TestPublicMetricsWithoutSourceIs503(t *testing.T) {
-	handlers := newMetricsTestHandler(t, nil)
+func TestPublicMetricsWithoutSourceDegradesSummary(t *testing.T) {
+	// 日志库接缝未装配不再 503：summary 降级为零样本，latest_test 来自
+	// 主库照常返回。首页性能表只消费 latest_test，不能让它陪葬。
+	testedAt := time.Date(2026, 10, 23, 12, 30, 0, 0, time.UTC)
+	perf := &fakePublicPerfStore{ok: true, test: store.ModelPerformanceTest{
+		ID:           21,
+		Model:        "openai/gpt-5",
+		Runs:         4,
+		SuccessCount: 4,
+		SuccessRate:  1,
+		LatencyMSP50: publicIntPtr(700),
+		CreatedAt:    testedAt,
+	}}
+	handlers := newMetricsTestHandlerWithPerf(t, nil, perf)
 	rr := requestMetrics(t, handlers, "openai/gpt-5", "?range=7d", nil)
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (degraded), body=%s", rr.Code, rr.Body.String())
+	}
+	var body PublicModelMetricsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Summary.SampleSize != 0 {
+		t.Fatalf("降级 summary sample_size = %d, want 0", body.Summary.SampleSize)
+	}
+	if body.LatestTest == nil {
+		t.Fatal("测速读数在主库，降级时不应丢失")
+	}
+}
+
+func TestPublicMetricsLoadFailureDegradesSummary(t *testing.T) {
+	// 日志库故障与接缝缺失同口径。
+	metrics := &fakePublicModelMetrics{err: errors.New("logs db is down")}
+	handlers := newMetricsTestHandler(t, metrics)
+	rr := requestMetrics(t, handlers, "openai/gpt-5", "?range=7d", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (degraded), body=%s", rr.Code, rr.Body.String())
+	}
+	var body PublicModelMetricsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Summary.SampleSize != 0 || body.LatestTest != nil {
+		t.Fatalf("summary=%+v latest_test=%+v, want zero summary and null test",
+			body.Summary, body.LatestTest)
+	}
+}
+
+func TestPublicMetricsDegradedETagDiffersFromZeroSamples(t *testing.T) {
+	// 降级 summary 与真实零样本在实体上几乎相同，缓存键必须可区分：否则
+	// 日志库恢复后，共享缓存会继续以 304 回放降级表示。
+	degraded := newMetricsTestHandler(t, nil)
+	healthy := newMetricsTestHandler(t, &fakePublicModelMetrics{})
+
+	left := requestMetrics(t, degraded, "openai/gpt-5", "?range=7d", nil)
+	right := requestMetrics(t, healthy, "openai/gpt-5", "?range=7d", nil)
+	if left.Code != http.StatusOK || right.Code != http.StatusOK {
+		t.Fatalf("status = %d / %d", left.Code, right.Code)
+	}
+	if left.Header().Get("ETag") == right.Header().Get("ETag") {
+		t.Fatalf("降级与零样本 ETag 相同: %q", left.Header().Get("ETag"))
 	}
 }
 

@@ -551,16 +551,18 @@ func TestPublicPricingDetail(t *testing.T) {
 		t.Fatalf("problem.type = %v", problem["type"])
 	}
 
-	// P1 metrics：已实现真实聚合；测试装配没有日志库，必须显式 503，
-	// 不能回退成伪造的 200 空数据或误报 404。
+	// P1 metrics：已实现真实聚合；测试装配没有日志库，summary 降级为零样本，
+	// 但端点仍是 200 —— 公开性能页的可用性不能挂在一个可选数据源上。
 	metrics := env.request(http.MethodGet, "/api/pricing/"+encoded+"/metrics", nil, nil)
-	if metrics.Code != http.StatusServiceUnavailable {
-		t.Fatalf("metrics status = %d", metrics.Code)
+	if metrics.Code != http.StatusOK {
+		t.Fatalf("metrics status = %d, want 200 (degraded), body=%s", metrics.Code, metrics.Body.String())
 	}
-	var metricsProblem map[string]any
-	if err := json.Unmarshal(metrics.Body.Bytes(), &metricsProblem); err != nil ||
-		metricsProblem["type"] != problemTypeMetricsUnavailable {
-		t.Fatalf("metrics problem = %v", metricsProblem)
+	var metricsBody PublicModelMetricsResponse
+	if err := json.Unmarshal(metrics.Body.Bytes(), &metricsBody); err != nil {
+		t.Fatalf("metrics 解码失败: %v", err)
+	}
+	if metricsBody.Summary.SampleSize != 0 {
+		t.Fatalf("无日志库时 summary sample_size = %d, want 0", metricsBody.Summary.SampleSize)
 	}
 }
 
