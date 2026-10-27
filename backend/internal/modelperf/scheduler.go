@@ -109,12 +109,16 @@ type SchedulerConfig struct {
 	// TickInterval/SlotTTL 供 Task 7 的调度循环使用；<=0 取默认值。
 	TickInterval time.Duration
 	SlotTTL      time.Duration
+	// OnRound 在每个定时轮次结束后调用（仅在 RunLoop 的 step 路径触发）。
+	// 手动触发走 RunOnce，由任务框架自行写运行记录，不能再记一次。
+	// nil 表示不关心轮次结果（测试与不需要运行历史的装配）。
+	OnRound func(ctx context.Context, startedAt time.Time, stats Stats, err error)
 }
 
 // Scheduler 是定时性能探测的调度器。
 //
 // 字段名固定：Task 7 的 step 直接读写 schedule/logger/locker/slotTTL/
-// tickInterval/nextDue。构造后除 nextDue 外全部只读。
+// tickInterval/nextDue。构造后除 nextDue 与启动前注入的 onRound 外全部只读。
 type Scheduler struct {
 	models       ModelSource
 	channels     ChannelPicker
@@ -128,6 +132,9 @@ type Scheduler struct {
 	now          func() time.Time
 	tickInterval time.Duration
 	slotTTL      time.Duration
+	// onRound 由装配层在 RunLoop 启动前经 SetOnRound 注入，之后只读；
+	// 只在 step 的执行分支里调用，锁错误/被占用/未到点都不写运行记录。
+	onRound func(ctx context.Context, startedAt time.Time, stats Stats, err error)
 	// nextDue 只由 RunLoop 所在 goroutine 的 step 读写；RunOnce（含手动触发）
 	// 不得触碰，否则会与调度循环产生数据竞争并打乱时段推进。
 	nextDue time.Time
@@ -167,6 +174,7 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 		now:          cfg.Now,
 		tickInterval: cfg.TickInterval,
 		slotTTL:      cfg.SlotTTL,
+		onRound:      cfg.OnRound,
 	}
 	if s.logger == nil {
 		s.logger = slog.Default()
@@ -193,6 +201,22 @@ func clamp(v, lo, hi int) int {
 		return hi
 	}
 	return v
+}
+
+// SetOnRound 在构造后注入轮次回调。
+//
+// 为什么不在 NewScheduler 里一次配好：生产装配必须先拿到 *Scheduler 才能用
+// NextDue 构造记录器（真实的下次时刻由时刻表决定），存在构造顺序上的环。
+// 只允许在 RunLoop 启动前调用一次；启动后 step 会并发读取该字段。
+func (s *Scheduler) SetOnRound(fn func(ctx context.Context, startedAt time.Time, stats Stats, err error)) {
+	s.onRound = fn
+}
+
+// NextDue 返回 now 之后的第一个时段（按时刻表时区解释），供运行记录回填
+// next_due_at：管理面显示的周期是固定 12h，而真实的下一次可能是
+// PERF_SCHEDULE_TIMES 配出来的任意时刻。
+func (s *Scheduler) NextDue(now time.Time) time.Time {
+	return s.schedule.Next(now)
 }
 
 // RunOnce 执行一轮全量探测：所有公开对话模型各测一次（每模型 runs 次请求）。
@@ -320,7 +344,11 @@ func (s *Scheduler) step(ctx context.Context) {
 			"slot", slot.Format(time.RFC3339), "skipped_locked", true)
 		s.nextDue = s.schedule.Next(now)
 	default:
-		if stats, runErr := s.RunOnce(ctx); runErr != nil {
+		// startedAt 取 RunOnce 之前：运行记录的开始时间是轮次真实起点，而不是
+		// 钩子触发时刻；平台层还用它回填 worker_tasks.last_run_at。
+		startedAt := s.now()
+		stats, runErr := s.RunOnce(ctx)
+		if runErr != nil {
 			s.logger.Warn("modelperf: scheduled round failed",
 				"slot", slot.Format(time.RFC3339), "error", runErr)
 		} else {
@@ -329,10 +357,29 @@ func (s *Scheduler) step(ctx context.Context) {
 				"tested", stats.Tested, "skipped_no_channel", stats.SkippedNoChannel,
 				"persist_failed", stats.PersistFailed, "duration", stats.Duration)
 		}
+		// 只有定时轮次写运行记录：手动触发直接调 RunOnce，由任务框架自己写
+		// 一行，这里再记一次会让同一次执行在历史里出现两行。
+		s.notifyRound(ctx, startedAt, stats, runErr)
 		// 以轮次结束时刻（而非触发时刻）计算下一个时段：一轮跑得久时，
 		// 已过去的时段直接跳过，不会排队补跑。
 		s.nextDue = s.schedule.Next(s.now())
 	}
+}
+
+// notifyRound 调用 OnRound 钩子。钩子是外部代码（平台层的写库回调），它的
+// panic 不能把调度循环带走——与 RunOnce 里对 probe 的处理同一原则：只记日志，
+// 循环继续按时刻表推进。recover 放在本函数内，step 的时段推进逻辑因此不会被
+// 钩子实现的 panic 打断。
+func (s *Scheduler) notifyRound(ctx context.Context, startedAt time.Time, stats Stats, err error) {
+	if s.onRound == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("modelperf: round hook panicked", "panic", r)
+		}
+	}()
+	s.onRound(ctx, startedAt, stats, err)
 }
 
 // RunLoop 按 tickInterval 轮询 step，直到 ctx 取消；取消是正常退出，返回 nil。

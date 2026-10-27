@@ -950,11 +950,17 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 	// 模型性能定时实测（spec 2026-10-27）：先构造拿到 RunOnce 供系统任务
 	// 手动触发，再在任务框架之后启动循环。装配失败只记录——测速不是交易路径。
 	perfScheduler, perfErr := newModelPerfScheduler(cfg, sqlDB, rr.client, log)
-	var perfRun func(context.Context) (modelperf.Stats, error)
+	var (
+		perfRun func(context.Context) (modelperf.Stats, error)
+		// perfOnRound 把定时轮次补写进 worker_task_runs/worker_tasks：循环
+		// 绕开任务框架，不补的话管理面会一直显示「从未运行」。
+		perfOnRound func(context.Context, time.Time, modelperf.Stats, error)
+	)
 	if perfErr != nil {
 		log.Error("worker: model performance scheduler disabled", "error", perfErr)
 	} else {
 		perfRun = perfScheduler.RunOnce
+		perfOnRound = newModelPerfRoundRecorder(sqlDB, log, perfScheduler.NextDue)
 	}
 
 	// W17-2 worker 任务框架：静态注册表 + 租约调度 + 运行记录。既有循环的
@@ -977,7 +983,7 @@ func runWorker(ctx context.Context, cfg *config.Config, conn connectors) error {
 
 	// 定时探测循环与任务框架相互独立：即使管理面不可用，周期实测仍按
 	// PERF_SCHEDULE_TIMES 执行；关闭开关或装配失败时返回 no-op。
-	stopModelPerf := startModelPerfLoop(ctx, perfScheduler, cfg.PerfScheduleEnabled, log)
+	stopModelPerf := startModelPerfLoop(ctx, perfScheduler, cfg.PerfScheduleEnabled, log, perfOnRound)
 
 	// W10-N4/N9/N10/N11：兑换码回收、任务保留、过期日志分区删除与审计
 	// 保留（N10/N11 使用独立 DB_RETENTION_DSN）。设置键在启动时解析一次快照

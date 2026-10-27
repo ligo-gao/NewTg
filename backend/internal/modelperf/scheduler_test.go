@@ -1014,3 +1014,201 @@ func TestRunLoopRunsScheduledRoundOnTick(t *testing.T) {
 		t.Fatalf("nextDue = %v, want %v", s.nextDue, want)
 	}
 }
+
+// roundOutcome 是 OnRound 收到的一次调用，供同步的 step 用例断言。
+type roundOutcome struct {
+	startedAt time.Time
+	stats     Stats
+	err       error
+}
+
+func TestStepCallsOnRoundOnceAfterRound(t *testing.T) {
+	s, at, calls, _ := newStepScheduler(t, &fakeLocker{acquired: true})
+	loc := s.schedule.Location()
+	var rounds []roundOutcome
+	s.SetOnRound(func(_ context.Context, startedAt time.Time, stats Stats, err error) {
+		// step 是同步调用，钩子与断言在同一个 goroutine 上，无需加锁。
+		rounds = append(rounds, roundOutcome{startedAt: startedAt, stats: stats, err: err})
+	})
+
+	// 未到点不执行，也就不写运行记录。
+	s.step(context.Background())
+	if got := len(rounds); got != 0 {
+		t.Fatalf("OnRound called %d times before the slot", got)
+	}
+
+	due := time.Date(2026, 10, 27, 12, 0, 0, 0, loc)
+	*at = due
+	s.step(context.Background())
+
+	if got := len(rounds); got != 1 {
+		t.Fatalf("OnRound called %d times for one round, want exactly 1", got)
+	}
+	got := rounds[0]
+	if !got.startedAt.Equal(due) {
+		t.Fatalf("OnRound startedAt = %v, want the slot start %v", got.startedAt, due)
+	}
+	if got.err != nil {
+		t.Fatalf("OnRound err = %v, want nil", got.err)
+	}
+	// 计数必须就是 RunOnce 的结果，而不是调度器另算的近似值。
+	if got.stats.Tested != 1 || got.stats.Models != 1 {
+		t.Fatalf("OnRound stats = %+v, want 1 tested of 1 model", got.stats)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("performer called %d times, want 1", calls.Load())
+	}
+}
+
+func TestStepCallsOnRoundOnRoundError(t *testing.T) {
+	loc := shanghai(t)
+	at := time.Date(2026, 10, 27, 11, 59, 0, 0, loc)
+	s := mustScheduler(t, SchedulerConfig{
+		// 取模型列表失败是 RunOnce 唯一会返回 error 的路径。
+		Models:    &fakeModels{err: errors.New("model list unavailable")},
+		Channels:  &fakePicker{channel: &store.Channel{ID: 7}, ok: true},
+		Performer: func(context.Context, *store.Channel, string, int) []channelhealth.PerfRunResult { return nil },
+		Tests:     &fakeTests{},
+		Locker:    &fakeLocker{acquired: true},
+		Schedule:  newTestSchedule(t),
+		Now:       func() time.Time { return at },
+	})
+	var (
+		count    atomic.Int64
+		gotErr   error
+		gotStats Stats
+	)
+	s.SetOnRound(func(_ context.Context, _ time.Time, stats Stats, err error) {
+		count.Add(1)
+		gotErr, gotStats = err, stats
+	})
+
+	at = time.Date(2026, 10, 27, 12, 0, 0, 0, loc)
+	s.step(context.Background())
+
+	if got := count.Load(); got != 1 {
+		t.Fatalf("OnRound called %d times for a failed round, want 1", got)
+	}
+	if gotErr == nil {
+		t.Fatal("OnRound err = nil, want the RunOnce error")
+	}
+	if gotStats.Tested != 0 {
+		t.Fatalf("OnRound stats.Tested = %d for a failed round, want 0", gotStats.Tested)
+	}
+}
+
+func TestStepDoesNotCallOnRoundWithoutExecution(t *testing.T) {
+	loc := shanghai(t)
+	due := time.Date(2026, 10, 27, 12, 0, 0, 0, loc)
+
+	cases := []struct {
+		name   string
+		locker Locker
+		at     time.Time
+	}{
+		{"not due", &fakeLocker{acquired: true}, due.Add(-time.Minute)},
+		{"lock error", &fakeLocker{acquired: true, err: errors.New("redis unavailable")}, due},
+		{"lock held by another replica", &fakeLocker{acquired: false}, due},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, at, calls, _ := newStepScheduler(t, tc.locker)
+			var count atomic.Int64
+			s.SetOnRound(func(context.Context, time.Time, Stats, error) { count.Add(1) })
+
+			*at = tc.at
+			s.step(context.Background())
+
+			if got := count.Load(); got != 0 {
+				t.Fatalf("OnRound called %d times without an executed round, want 0", got)
+			}
+			if got := calls.Load(); got != 0 {
+				t.Fatalf("performer called %d times without an executed round, want 0", got)
+			}
+			if loc := s.schedule.Location(); tc.name == "lock held by another replica" &&
+				!s.nextDue.Equal(time.Date(2026, 10, 28, 0, 0, 0, 0, loc)) {
+				t.Fatalf("nextDue = %v after a skipped slot, want the following slot", s.nextDue)
+			}
+		})
+	}
+}
+
+func TestStepOnRoundPanicKeepsScheduling(t *testing.T) {
+	logger, buf := bufferLogger()
+	s, at, calls, _ := newStepSchedulerWithLogger(t, &fakeLocker{acquired: true}, logger)
+	loc := s.schedule.Location()
+	var count atomic.Int64
+	s.SetOnRound(func(context.Context, time.Time, Stats, error) {
+		count.Add(1)
+		panic("hook exploded")
+	})
+
+	slot := time.Date(2026, 10, 27, 12, 0, 0, 0, loc)
+	*at = slot
+	s.step(context.Background())
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("performer called %d times, want 1", got)
+	}
+	if !strings.Contains(buf.String(), "modelperf: round hook panicked") {
+		t.Fatalf("hook panic not logged: %q", buf.String())
+	}
+	// 钩子 panic 后 nextDue 仍必须推进，否则同一时段会被无限重跑。
+	wantNext := time.Date(2026, 10, 28, 0, 0, 0, 0, loc)
+	if !s.nextDue.Equal(wantNext) {
+		t.Fatalf("nextDue = %v after a hook panic, want %v", s.nextDue, wantNext)
+	}
+
+	// 循环还在：拨到下一个时段仍能真实执行一轮。
+	*at = wantNext
+	s.step(context.Background())
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("performer called %d times after a hook panic, want 2", got)
+	}
+	if got := count.Load(); got != 2 {
+		t.Fatalf("OnRound called %d times after a hook panic, want 2", got)
+	}
+}
+
+func TestRunOnceDoesNotCallOnRound(t *testing.T) {
+	s, _, calls, _ := newStepScheduler(t, openLocker{})
+	var count atomic.Int64
+	s.SetOnRound(func(context.Context, time.Time, Stats, error) { count.Add(1) })
+
+	if _, err := s.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	// 手动触发/测试直接调用 RunOnce，由任务框架自己写运行记录。
+	if got := count.Load(); got != 0 {
+		t.Fatalf("OnRound called %d times by a direct RunOnce, want 0", got)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("performer called %d times, want 1", calls.Load())
+	}
+}
+
+func TestNextDueMatchesScheduleNext(t *testing.T) {
+	s, _, _, _ := newStepScheduler(t, openLocker{})
+	loc := s.schedule.Location()
+	sched, err := ParseTimes("00:00,12:00", loc)
+	if err != nil {
+		t.Fatalf("ParseTimes: %v", err)
+	}
+	cases := []time.Time{
+		time.Date(2026, 10, 27, 11, 59, 0, 0, loc),
+		time.Date(2026, 10, 27, 12, 0, 0, 0, loc),
+		// 跨日：23:30 之后是次日 00:00，不是当天更早的时段。
+		time.Date(2026, 10, 27, 23, 30, 0, 0, loc),
+		// 用 UTC 表示的同一瞬间必须按时刻表时区解释：16:30Z 已是次日 00:30
+		// (+08)，下一次应为次日 12:00。
+		time.Date(2026, 10, 27, 16, 30, 0, 0, time.UTC),
+	}
+	for _, now := range cases {
+		if got, want := s.NextDue(now), sched.Next(now); !got.Equal(want) {
+			t.Fatalf("NextDue(%v) = %v, want Schedule.Next = %v", now, got, want)
+		}
+	}
+	if got, want := s.NextDue(cases[2]), time.Date(2026, 10, 28, 0, 0, 0, 0, loc); !got.Equal(want) {
+		t.Fatalf("NextDue across midnight = %v, want %v", got, want)
+	}
+}

@@ -68,10 +68,18 @@ func newModelPerfScheduler(cfg *config.Config, db *sql.DB, rdb *redis.Client,
 // enabled=false（PERF_SCHEDULE_ENABLED=false）时不启动任何 goroutine——
 // 手动触发仍可经 RunOnce 使用。scheduler 为 nil（装配失败）时同样返回
 // no-op：停机序列可以无条件调用返回值，不必再判空。
+//
+// onRound 是轮次结束后补写运行记录的回调（见 model_perf_runs.go）。它只在
+// 循环启动前注入：step 之后并发读取该字段，启动后再改写会有数据竞争。nil
+// （装配失败）表示不留运行记录，调度本身照常推进。
 func startModelPerfLoop(parent context.Context, scheduler *modelperf.Scheduler,
-	enabled bool, log *slog.Logger) func() {
+	enabled bool, log *slog.Logger,
+	onRound func(context.Context, time.Time, modelperf.Stats, error)) func() {
 	if !enabled || scheduler == nil {
 		return func() {}
+	}
+	if onRound != nil {
+		scheduler.SetOnRound(onRound)
 	}
 	if log == nil {
 		log = slog.Default()
