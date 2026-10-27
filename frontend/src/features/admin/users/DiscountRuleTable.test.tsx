@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import type { components } from '@/api/schema'
 import { renderWithProviders } from '@/test-support/providers'
 
-import { DiscountRuleTable } from './DiscountRuleTable'
+import { DiscountRuleTable, toDatetimeLocal } from './DiscountRuleTable'
 
 type DiscountRule = components['schemas']['DiscountRule']
 
@@ -161,5 +161,92 @@ describe('DiscountRuleTable', () => {
     await waitFor(() => {
       expect(deletedPath).toBe('/api/users/7/discounts/5')
     })
+  })
+
+  it('round-trips datetime-local values without a timezone shift', () => {
+    const iso = '2026-11-01T00:00:00Z'
+
+    const local = toDatetimeLocal(iso)
+
+    // The picker value is local time; feeding it back must land on the same
+    // instant, independent of the machine's TZ.
+    expect(new Date(local).toISOString()).toBe(new Date(iso).toISOString())
+    expect(toDatetimeLocal(null)).toBe('')
+  })
+
+  it('searches models through the debounced query parameter', async () => {
+    const queries: string[] = []
+    installDefaults()
+    server.use(
+      http.get(`${ORIGIN}/api/users/discount-models`, ({ request }) => {
+        const url = new URL(request.url)
+        queries.push(url.searchParams.get('q') ?? '')
+        return HttpResponse.json({ items: [{ model_name: 'gpt-4o' }] })
+      }),
+    )
+
+    const { findByText, getByLabelText, getByRole, user } = await renderTable()
+
+    await findByText('gpt-4o')
+    await user.click(getByRole('button', { name: 'Add rule' }))
+    await user.type(getByLabelText('Model'), 'gpt')
+
+    await waitFor(
+      () => {
+        expect(queries).toContain('gpt')
+      },
+      { timeout: 2000 },
+    )
+  })
+
+  it('patches edited rules without model_name and keeps the listed window', async () => {
+    let patchBody: Record<string, unknown> | undefined
+    installDefaults([
+      rule({
+        valid_from: '2026-11-01T00:00:00Z',
+        valid_until: '2026-11-05T00:00:00Z',
+      }),
+    ])
+    server.use(
+      http.patch(`${ORIGIN}/api/users/7/discounts/5`, async ({ request }) => {
+        patchBody = (await request.json()) as Record<string, unknown>
+        return HttpResponse.json(rule({ rate_percent: 80 }))
+      }),
+    )
+
+    const { findByText, getByLabelText, getByRole, user } = await renderTable()
+
+    await findByText('gpt-4o')
+    await user.click(getByRole('button', { name: 'Edit' }))
+    const rateInput = getByLabelText('Effective rate (%)')
+    await user.clear(rateInput)
+    await user.type(rateInput, '80')
+    await user.click(getByRole('button', { name: 'Save rule' }))
+
+    await waitFor(() => {
+      expect(patchBody).toBeDefined()
+    })
+    // The server answers 422 `model_immutable` when this key is present at all.
+    expect(patchBody).not.toHaveProperty('model_name')
+    expect(patchBody?.rate_percent).toBe(80)
+    expect(patchBody?.enabled).toBe(true)
+    // Editing the rate alone must not shift the validity window.
+    expect(new Date(String(patchBody?.valid_from)).toISOString()).toBe(
+      new Date('2026-11-01T00:00:00Z').toISOString(),
+    )
+    expect(new Date(String(patchBody?.valid_until)).toISOString()).toBe(
+      new Date('2026-11-05T00:00:00Z').toISOString(),
+    )
+  })
+
+  it('does not show a rate hint before a rate is entered', async () => {
+    installDefaults()
+
+    const { findByText, getByRole, queryByText, user } = await renderTable()
+
+    await findByText('gpt-4o')
+    await user.click(getByRole('button', { name: 'Add rule' }))
+
+    expect(queryByText('Free')).toBeNull()
   })
 })

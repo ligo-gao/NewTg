@@ -35,8 +35,10 @@ function rulesQueryKey(targetType: DiscountTargetType, targetID: string) {
   return ['discount-rules', targetType, targetID] as const
 }
 
-function modelsQueryKey(targetType: DiscountTargetType) {
-  return ['discount-models', targetType] as const
+function modelsQueryKey(targetType: DiscountTargetType, q: string) {
+  // `q` must be part of the key: React Query only re-runs `queryFn` when the
+  // key changes (or an observer remounts), so a closure-only query never fires.
+  return ['discount-models', targetType, q] as const
 }
 
 async function fetchRules(
@@ -81,20 +83,33 @@ async function fetchModels(
 }
 
 /** RFC3339 → the `YYYY-MM-DDTHH:mm` shape `<input type="datetime-local">` wants. */
-function toDatetimeLocal(value: string | null): string {
+export function toDatetimeLocal(value: string | null): string {
   if (value === null) return ''
-  return value.slice(0, 16)
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const pad = (part: number): string => String(part).padStart(2, '0')
+  // Local components, never `slice()`: the picker interprets its value as local
+  // time, so formatting the local clock makes this the exact inverse of
+  // `new Date(localValue)` and keeps edits round-trip safe in every timezone.
+  return [
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+    `${pad(date.getHours())}:${pad(date.getMinutes())}`,
+  ].join('T')
 }
 
-/** Server stores UTC; the picker has no timezone, so read/write as UTC. */
+/** Picker value (local time) → RFC3339 UTC, the inverse of `toDatetimeLocal`. */
 function fromDatetimeLocal(value: string): string | null {
   if (value === '') return null
   return new Date(value).toISOString()
 }
 
-/** Display date only, keeping the server's UTC day (`2026-11-01`). */
+/** Display date only, in the same local calendar the picker uses. */
 function formatRuleDate(value: string | null): string {
-  return value === null ? '—' : value.slice(0, 10)
+  if (value === null) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  const pad = (part: number): string => String(part).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 }
 
 /**
@@ -139,7 +154,7 @@ export function DiscountRuleTable({ targetType, targetID }: DiscountRuleTablePro
   })
 
   const modelsQuery = useQuery({
-    queryKey: modelsQueryKey(targetType),
+    queryKey: modelsQueryKey(targetType, modelQuery),
     queryFn: () => fetchModels(targetType, modelQuery),
   })
 
@@ -317,12 +332,15 @@ export function DiscountRuleTable({ targetType, targetID }: DiscountRuleTablePro
     }
   }
 
-  // This editor lives inside the sheet's own <form>; Enter must save the rule
-  // instead of implicitly submitting (and saving) the user form.
+  // This editor lives inside the sheet's own <form>; Enter in a free-text
+  // control must save the rule instead of implicitly submitting the user form.
+  // Buttons, textareas and the enabled checkbox keep their native behaviour.
   function handleFormKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
     if (event.key !== 'Enter') return
     const target = event.target as HTMLElement
-    if (target.tagName === 'BUTTON' || target.tagName === 'TEXTAREA') return
+    if (target.tagName !== 'INPUT') return
+    const type = (target as HTMLInputElement).type
+    if (type !== 'text' && type !== 'number' && type !== 'datetime-local') return
     event.preventDefault()
     void submitRule()
   }
@@ -378,7 +396,7 @@ export function DiscountRuleTable({ targetType, targetID }: DiscountRuleTablePro
               setFieldErrors((current) => ({ ...current, rate: undefined }))
             }}
           />
-          {rateLabel(Number(rate)) !== undefined ? (
+          {rate.trim() !== '' && rateLabel(Number(rate)) !== undefined ? (
             <p
               className={[
                 'text-meta',
