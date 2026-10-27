@@ -9,9 +9,12 @@ import { formatCredits } from '@/shared/lib/format'
 import { useI18n } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
 import { Dialog } from '@/shared/ui/base/dialog'
+import { Sheet } from '@/shared/ui/base/sheet'
 import { FormAlert, TextField } from '@/shared/ui/form'
 import { Tag } from '@/shared/ui/tag'
 import { useToastStore } from '@/shared/ui/toast'
+
+import { DiscountRuleTable } from './DiscountRuleTable'
 
 type AdminGroup = components['schemas']['AdminGroup']
 
@@ -30,6 +33,7 @@ export function GroupListPage() {
   const [editing, setEditing] = useState<AdminGroup | null>(null)
   const [creating, setCreating] = useState(false)
   const [deleting, setDeleting] = useState<AdminGroup | null>(null)
+  const [discounting, setDiscounting] = useState<AdminGroup | null>(null)
 
   const groupsQuery = useQuery({
     queryKey: [...GROUPS_KEY, page],
@@ -148,6 +152,13 @@ export function GroupListPage() {
                         </Button>
                         <Button
                           variant="ghost"
+                          className="h-8 px-2 text-meta"
+                          onClick={() => setDiscounting(group)}
+                        >
+                          {t('admin.groups.discount')}
+                        </Button>
+                        <Button
+                          variant="ghost"
                           className="h-8 px-2 text-meta text-danger hover:bg-danger-bg"
                           disabled={group.is_system || isReferenced(group)}
                           title={
@@ -204,6 +215,13 @@ export function GroupListPage() {
         }}
       />
 
+      <GroupDiscountSheet
+        group={discounting}
+        onOpenChange={(open) => {
+          if (!open) setDiscounting(null)
+        }}
+      />
+
       <Dialog
         open={deleting !== null}
         onOpenChange={(open) => {
@@ -233,6 +251,39 @@ export function GroupListPage() {
         }
       />
     </div>
+  )
+}
+
+interface GroupDiscountSheetProps {
+  group: AdminGroup | null
+  onOpenChange: (open: boolean) => void
+}
+
+/**
+ * Per-model discounts for a group. Discount rules are billing records, not
+ * fields of the group record, so `is_system` groups get this editor too (the
+ * server remains the authority on who may write them). The table owns its own
+ * queries, so it is mounted only while the sheet is open — a closed sheet
+ * issues no requests.
+ */
+function GroupDiscountSheet({ group, onOpenChange }: GroupDiscountSheetProps) {
+  const { t } = useI18n()
+  return (
+    <Sheet
+      open={group !== null}
+      onOpenChange={onOpenChange}
+      title={
+        group === null
+          ? ''
+          : t('admin.groups.discount_title', { name: group.name })
+      }
+      description={t('admin.groups.discount_description')}
+      widthClassName="max-w-[900px]"
+    >
+      {group === null ? null : (
+        <DiscountRuleTable targetType="group" targetID={group.name} />
+      )}
+    </Sheet>
   )
 }
 
