@@ -58,6 +58,15 @@ function installActorHandlers(actor: Partial<AdminUser> = {}) {
         page_size: 20,
       }),
     ),
+    // Edit mode always mounts the personal-discount editor; these two
+    // endpoints must be answered or `onUnhandledRequest: 'error'` fails every
+    // existing case. Individual tests override them via a later `server.use`.
+    http.get(`${ORIGIN}/api/users/7/discounts`, () =>
+      HttpResponse.json({ items: [] }),
+    ),
+    http.get(`${ORIGIN}/api/users/discount-models`, () =>
+      HttpResponse.json({ items: [] }),
+    ),
   )
 }
 
@@ -69,6 +78,21 @@ async function renderSheet(user: AdminUser) {
       open
       mode="edit"
       user={user}
+      onOpenChange={onOpenChange}
+      onSaved={onSaved}
+    />,
+    ['common', 'admin', 'auth'],
+  )
+  return { ...result, user: userEvent.setup(), onOpenChange, onSaved }
+}
+
+async function renderCreateSheet() {
+  const onOpenChange = vi.fn()
+  const onSaved = vi.fn()
+  const result = await renderWithProviders(
+    <UserMutateSheet
+      open
+      mode="create"
       onOpenChange={onOpenChange}
       onSaved={onSaved}
     />,
@@ -293,5 +317,103 @@ describe('UserMutateSheet partial failure (I2)', () => {
       await findByText('You cannot grant permissions beyond your own'),
     ).toBeTruthy()
     expect(userPatchCalls).toBe(0)
+  })
+})
+
+describe('UserMutateSheet customer type and personal discounts', () => {
+  it('sends customer_type on create', async () => {
+    installActorHandlers()
+    let createdBody: Record<string, unknown> | undefined
+
+    server.use(
+      http.post(`${ORIGIN}/api/users`, async ({ request }) => {
+        createdBody = (await request.json()) as Record<string, unknown>
+        return HttpResponse.json(
+          adminUser({ id: 9, username: 'bob' }),
+          { status: 201 },
+        )
+      }),
+    )
+
+    const { getByLabelText, getByRole, findByRole, user } =
+      await renderCreateSheet()
+
+    await findByRole('dialog')
+    await user.type(getByLabelText('Username'), 'bob')
+    await user.type(getByLabelText('Password'), 'correct horse')
+    await user.selectOptions(getByLabelText('Customer type'), 'enterprise')
+    await user.click(getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(createdBody).toBeDefined()
+    })
+    expect(createdBody?.customer_type).toBe('enterprise')
+  })
+
+  it('patches customer_type only when changed', async () => {
+    installActorHandlers()
+    const bodies: Record<string, unknown>[] = []
+
+    server.use(
+      http.patch(`${ORIGIN}/api/users/7`, async ({ request }) => {
+        bodies.push((await request.json()) as Record<string, unknown>)
+        return HttpResponse.json(adminUser({ remark: 'VIP' }))
+      }),
+    )
+
+    const { getByLabelText, getByRole, findByRole, user } = await renderSheet(
+      adminUser(),
+    )
+
+    await findByRole('dialog')
+    await user.type(getByLabelText('Remark'), 'VIP')
+    await user.click(getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(bodies).toHaveLength(1)
+    })
+    expect(bodies[0]).not.toHaveProperty('customer_type')
+  })
+
+  it('hides the discount section while creating', async () => {
+    installActorHandlers()
+
+    const { findByRole, getByText, queryByText } = await renderCreateSheet()
+
+    await findByRole('dialog')
+    expect(getByText('Save this user first to add personal discount rules.')).toBeTruthy()
+    expect(queryByText('Add rule')).toBeNull()
+    expect(queryByText('No discount rules yet.')).toBeNull()
+  })
+
+  it('renders existing discounts when editing', async () => {
+    installActorHandlers()
+    let discountCalls = 0
+
+    server.use(
+      http.get(`${ORIGIN}/api/users/7/discounts`, () => {
+        discountCalls += 1
+        return HttpResponse.json({
+          items: [
+            {
+              id: 5,
+              model_name: 'gpt-4o',
+              rate_percent: 90,
+              valid_from: '2026-11-01T00:00:00Z',
+              valid_until: null,
+              enabled: true,
+              created_at: '2026-10-01T10:00:00Z',
+              updated_at: '2026-10-01T10:00:00Z',
+            },
+          ],
+        })
+      }),
+    )
+
+    const { findByRole, findByText } = await renderSheet(adminUser())
+
+    await findByRole('dialog')
+    expect(await findByText('gpt-4o')).toBeTruthy()
+    expect(discountCalls).toBe(1)
   })
 })

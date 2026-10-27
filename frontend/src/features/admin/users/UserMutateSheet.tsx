@@ -14,9 +14,11 @@ import { FormAlert, PasswordField, TextField } from '@/shared/ui/form'
 import { useToastStore } from '@/shared/ui/toast'
 
 import { PermissionMatrix } from './PermissionMatrix'
+import { DiscountRuleTable } from './DiscountRuleTable'
 
 type AdminUser = components['schemas']['AdminUser']
 type UserRole = components['schemas']['UserRole']
+type CustomerType = AdminUser['customer_type']
 
 /**
  * Read-only starting grant the server applies on promotion
@@ -59,6 +61,7 @@ export function UserMutateSheet({
   const [displayName, setDisplayName] = useState('')
   const [role, setRole] = useState<UserRole>('user')
   const [group, setGroup] = useState('default')
+  const [customerType, setCustomerType] = useState<CustomerType>('general')
   const [password, setPassword] = useState('')
   const [remark, setRemark] = useState('')
   const [permissions, setPermissions] = useState<string[] | null>(null)
@@ -74,6 +77,7 @@ export function UserMutateSheet({
     setDisplayName(user?.display_name ?? '')
     setRole(user?.role ?? 'user')
     setGroup(user?.group ?? 'default')
+    setCustomerType(user?.customer_type ?? 'general')
     setPassword('')
     setRemark(user?.remark ?? '')
     setPermissions(user?.admin_permissions ?? null)
@@ -189,6 +193,7 @@ export function UserMutateSheet({
             display_name: displayName.trim() === '' ? null : displayName.trim(),
             role,
             group,
+            customer_type: customerType,
             password,
             remark: remark.trim() === '' ? null : remark.trim(),
           },
@@ -206,6 +211,8 @@ export function UserMutateSheet({
           body.display_name = nextDisplayName
         }
         if (group !== user.group) body.group = group
+        // Non-null enum in the contract: absence means "unchanged", never null.
+        if (customerType !== user.customer_type) body.customer_type = customerType
         if (nextRemark !== (user.remark ?? null)) body.remark = nextRemark
         const roleChanged = role !== user.role
         if (roleChanged) body.role = role
@@ -213,6 +220,7 @@ export function UserMutateSheet({
         const userFieldsChanged =
           body.display_name !== undefined ||
           body.group !== undefined ||
+          body.customer_type !== undefined ||
           body.remark !== undefined ||
           roleChanged
         const permissionsChanged = JSON.stringify(permissions) !== initialPermissions
@@ -362,6 +370,29 @@ export function UserMutateSheet({
             setGroup(event.target.value)
           }}
         />
+        <div className="flex flex-col gap-1.5">
+          <label
+            htmlFor="user-customer-type"
+            className="text-meta font-medium text-ink-1"
+          >
+            {t('admin.user_form.customer_type')}
+          </label>
+          <select
+            id="user-customer-type"
+            className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+            value={customerType}
+            onChange={(event) => {
+              setCustomerType(event.target.value as CustomerType)
+            }}
+          >
+            <option value="general">
+              {t('admin.user_form.customer_type_general')}
+            </option>
+            <option value="enterprise">
+              {t('admin.user_form.customer_type_enterprise')}
+            </option>
+          </select>
+        </div>
         {mode === 'create' ? (
           <PasswordField
             label={t('admin.user_form.password')}
@@ -384,6 +415,14 @@ export function UserMutateSheet({
             setRemark(event.target.value)
           }}
         />
+
+        {mode === 'edit' && user !== undefined ? (
+          <UserDiscountSection userId={String(user.id)} />
+        ) : mode === 'create' ? (
+          <p className="border-t border-border-hairline pt-4 text-meta text-ink-3">
+            {t('admin.user_form.discount_create_hint')}
+          </p>
+        ) : null}
 
         {mode === 'edit' && role === 'admin' ? (
           <section className="flex flex-col gap-2 border-t border-border-hairline pt-4">
@@ -411,5 +450,21 @@ export function UserMutateSheet({
         ) : null}
       </form>
     </Sheet>
+  )
+}
+
+/**
+ * Personal discounts only exist once the user row exists, so this section is
+ * rendered in edit mode alone. The table owns its queries and mutations.
+ */
+function UserDiscountSection({ userId }: { userId: string }) {
+  const { t } = useI18n()
+  return (
+    <section className="flex flex-col gap-2 border-t border-border-hairline pt-4">
+      <h3 className="text-body font-semibold text-ink-1">
+        {t('admin.user_form.discount_section')}
+      </h3>
+      <DiscountRuleTable targetType="user" targetID={userId} />
+    </section>
   )
 }
