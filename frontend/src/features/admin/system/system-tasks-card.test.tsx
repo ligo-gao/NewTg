@@ -8,7 +8,7 @@ import { renderWithProviders } from '@/test-support/providers'
 import { ToastViewport } from '@/shared/ui/toast'
 
 import { SystemTasksCard } from './system-tasks-card'
-import type { SystemTaskPage } from './system-tasks-api'
+import type { SystemTaskPage, SystemTaskSummary } from './system-tasks-api'
 
 const ORIGIN = 'http://localhost:3000'
 
@@ -196,6 +196,57 @@ describe('SystemTasksCard', () => {
     ).toBeTruthy()
     // 非白名单任务不受影响：它们本来就没有按钮。
     expect(screen.getAllByRole('button', { name: 'Trigger now' })).toHaveLength(1)
+  })
+
+  it('keeps the trigger enabled when the backend omits availability', async () => {
+    // dist 与二进制是独立发布物：滚动升级期间旧后端不会返回 available。
+    // 缺字段必须按「可用」处理，否则升级窗口里会把所有手动任务误判成
+    // worker 离线，用一个不存在的故障挡住本来可用的操作。
+    const legacyItem: Record<string, unknown> = { ...TASK_PAGE.items[0]! }
+    delete legacyItem.available
+    const legacyPage: SystemTaskPage = {
+      ...TASK_PAGE,
+      items: [legacyItem as unknown as SystemTaskSummary, TASK_PAGE.items[1]!],
+    }
+    server.use(
+      http.get(`${ORIGIN}/api/system/tasks`, () => HttpResponse.json(legacyPage)),
+    )
+    await renderCard()
+    await screen.findByText('worker_history_cleanup')
+
+    const trigger = screen.getByRole('button', { name: 'Trigger now' }) as HTMLButtonElement
+    expect(trigger.disabled).toBe(false)
+    expect(
+      screen.queryByText('No worker instance is online, so this task cannot be triggered.'),
+    ).toBeNull()
+  })
+
+  it('reports worker unavailability when the 409 races the poll', async () => {
+    // 列表 10s 轮询显示可用、worker 在窗口内挂掉：服务端返回 409
+    // worker_unavailable。沿用「已在运行」的文案会给出相反诊断。
+    const user = userEvent.setup()
+    server.use(
+      http.get(`${ORIGIN}/api/system/tasks`, () => HttpResponse.json(TASK_PAGE)),
+      http.post(/\/api\/system\/tasks\/worker_history_cleanup:trigger$/, () =>
+        HttpResponse.json(
+          {
+            type: 'https://newtg.dev/problems/worker_unavailable',
+            title: 'Task is blocked',
+            status: 409,
+          },
+          { status: 409 },
+        ),
+      ),
+    )
+    await renderCard()
+    await screen.findByText('worker_history_cleanup')
+
+    await user.click(screen.getByRole('button', { name: 'Trigger now' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Trigger' }))
+    expect(
+      await screen.findByText('No worker instance is online, so this task cannot be triggered.'),
+    ).toBeTruthy()
   })
 
   it('hides the whole card without settings:manage', async () => {

@@ -2850,16 +2850,19 @@ export interface paths {
         put?: never;
         /**
          * 手动触发白名单任务（只入队）
-         * @description 仅允许静态注册表标记 `manual_trigger_allowed=true` 的 5 个维护任务：
+         * @description 仅允许静态注册表标记 `manual_trigger_allowed=true` 的维护任务：
          *     `log_cleanup`、`log_partition_precreate`、`redemption_expiry`、
-         *     `rankings_snapshot`、`worker_history_cleanup`。
+         *     `rankings_snapshot`、`worker_history_cleanup`、`holiday_sync`、
+         *     `upstream_usage_reconcile`、`model_perf_test`。
          *
          *     服务端只写一条 `pending` 运行行并唤醒调度器，由调度 pass 按正常租约
          *     认领执行——**不旁路执行**。非白名单 403 `task_not_manual`；未知任务
          *     404 `task_not_found`；已在运行/已入队 409 `task_already_running`；
-         *     任务停用 409 `task_disabled`；运行时开关关闭（当前仅
-         *     `log_cleanup` 的 `log.partition_drop_enabled`）409
-         *     `log_partition_drop_disabled`，零 DROP、零入队，审计 outcome=blocked。`Idempotency-Key` 必带，24h 内同键重放
+         *     任务停用 409 `task_disabled`；没有存活的 worker 实例（执行者在另一个
+         *     进程）409 `worker_unavailable`，零入队；运行时谓词关闭时 409
+         *     `log_partition_drop_disabled` / `holiday_sync_disabled` /
+         *     `reconcile_disabled` / `model_perf_test_unavailable`，零副作用，审计
+         *     outcome=blocked。`Idempotency-Key` 必带，24h 内同键重放
          *     返回首次 202，不产生第二条运行。每次触发（含失败）写
          *     `system.task.trigger` 审计。
          */

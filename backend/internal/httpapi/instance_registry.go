@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"newtg/gateway/internal/worker"
 )
 
 const (
@@ -348,6 +350,6 @@ func WorkerPresenceProbe(rdb *redis.Client) func(context.Context) (bool, string)
 				return true, ""
 			}
 		}
-		return false, "worker_unavailable"
+		return false, worker.BlockedCodeWorkerUnavailable
 	}
 }

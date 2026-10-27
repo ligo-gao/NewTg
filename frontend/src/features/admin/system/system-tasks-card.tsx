@@ -178,7 +178,20 @@ export function SystemTasksCard() {
       setPending(null)
       if (error instanceof ApiError) {
         if (error.status === 409) {
-          push({ tone: 'error', message: t('settings.status.tasks.trigger_already_running') })
+          // 409 有多个成因：已在运行/已入队、被运营停用、worker 不在线、被运行时
+          // 开关阻断。把 worker 掉线的窗口也说成「正在运行」恰好是相反诊断——本
+          // 次改动就是为了不再让管理员点到才知道不行。
+          if (error.type.endsWith('/worker_unavailable')) {
+            push({ tone: 'error', message: t('settings.status.tasks.trigger_unavailable_worker') })
+            return
+          }
+          if (error.type.endsWith('/task_already_running')) {
+            push({ tone: 'error', message: t('settings.status.tasks.trigger_already_running') })
+            return
+          }
+          // 其它 409（task_disabled / log_partition_drop_disabled / …）交给统一
+          // 的问题展示，继续套用「已在运行」只会误导。
+          pushErrorToast(error)
           return
         }
         if (error.status === 403) {
@@ -249,6 +262,10 @@ export function SystemTasksCard() {
               <tbody>
                 {tasks.map((task) => {
                   const isExpanded = expanded === task.task_type
+                  // 只有服务端明确说不可用才禁用。字段缺失（旧后端 + 新控制台，
+                  // dist 与二进制是独立发布物）必须保持可点，否则会用一个不存在
+                  // 的「worker 不在线」故障挡住本来可用的操作。
+                  const triggerBlocked = task.manual_trigger_allowed && task.available === false
                   return (
                     <Fragment key={task.task_type}>
                       <tr
@@ -303,11 +320,11 @@ export function SystemTasksCard() {
                             {task.manual_trigger_allowed ? (
                               <Button
                                 variant="secondary"
-                                disabled={!task.available}
+                                disabled={triggerBlocked}
                                 title={
-                                  task.available
-                                    ? undefined
-                                    : t('settings.status.tasks.trigger_unavailable_worker')
+                                  triggerBlocked
+                                    ? t('settings.status.tasks.trigger_unavailable_worker')
+                                    : undefined
                                 }
                                 onClick={() => {
                                   setPending(task)
@@ -320,7 +337,7 @@ export function SystemTasksCard() {
                           </div>
                           {/* 只靠 title/禁用态不够：触屏与键盘用户看不到 title，
                               必须在行内给出可见原因。 */}
-                          {task.manual_trigger_allowed && !task.available ? (
+                          {triggerBlocked ? (
                             <p className="mt-1 text-meta text-ink-3">
                               {t('settings.status.tasks.trigger_unavailable_worker')}
                             </p>

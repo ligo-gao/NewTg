@@ -373,18 +373,20 @@ func executeTask(ctx context.Context, task Task) (result Result, err error, clas
 	}
 }
 
-// CleanupExpired 把过期租约对应的 running 运行标记为失败（§2.3.1）。
+// CleanupExpired 收敛两类悬挂运行（§2.3.1）：过期租约仍标记 running 的行，
+// 以及 24h 无人认领的 pending 行。计数是两者之和，因此日志不再把它们都
+// 说成「租约过期」。
 func (s *Scheduler) CleanupExpired(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
 	count, err := s.store.ExpireRunningRuns(ctx)
 	if err != nil {
-		s.log.Warn("worker: expire running runs failed", "error", err)
+		s.log.Warn("worker: expire stale runs failed", "error", err)
 		return
 	}
 	if count > 0 {
-		s.log.Warn("worker: marked runs failed after lease expiry", "count", count)
+		s.log.Warn("worker: marked stale runs failed (lease expired or pending unclaimed)", "count", count)
 	}
 }
 
