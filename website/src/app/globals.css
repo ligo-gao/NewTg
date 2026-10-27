@@ -146,6 +146,46 @@
 }
 
 @layer components {
+  /* Typography System - Unified heading and body text styles */
+  .heading-page {
+    font-size: clamp(2.1rem, 3.8vw, 3.2rem);
+    font-weight: 700;
+    line-height: 1.12;
+    letter-spacing: -0.035em;
+  }
+
+  .heading-section {
+    font-size: clamp(1.75rem, 3vw, 2.4rem);
+    font-weight: 600;
+    line-height: 1.2;
+    letter-spacing: -0.03em;
+  }
+
+  .heading-sub {
+    font-size: 1.375rem;
+    font-weight: 600;
+    line-height: 1.3;
+    letter-spacing: -0.02em;
+  }
+
+  .body-primary {
+    font-size: 15px;
+    line-height: 1.8;
+    color: var(--ink-2);
+  }
+
+  .body-secondary {
+    font-size: 13.5px;
+    line-height: 1.7;
+    color: var(--muted);
+  }
+
+  .body-small {
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--faint);
+  }
+
   .btn {
     display: inline-flex;
     align-items: center;

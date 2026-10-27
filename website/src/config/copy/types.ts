@@ -1,10 +1,5 @@
 export type FeatureIconKey = "router" | "failover" | "plug" | "gauge";
 
-export interface CopyLink {
-  label: string;
-  href: string;
-}
-
 export interface CopyStat {
   label: string;
   value: string;
@@ -158,22 +153,6 @@ export interface Copy {
     description: string;
     ogAlt: string;
   };
-  language: {
-    label: string;
-  };
-  theme: {
-    label: string;
-    toggle: string;
-  };
-  nav: {
-    links: CopyLink[];
-    login: string;
-    cta: string;
-    openMenu: string;
-    closeMenu: string;
-    /** Accessible name for the primary and mobile navigation landmarks. */
-    ariaLabel: string;
-  };
   hero: {
     titleLines: string[];
     subtitle: string;
@@ -277,15 +256,4 @@ export interface Copy {
     note: string;
   };
   pricingPage: PricingPageCopy;
-  footer: {
-    tagline: string;
-    /** Accessible name for the footer logo link back to the home page. */
-    homeAria: string;
-    columns: Array<{
-      title: string;
-      links: CopyLink[];
-    }>;
-    status: CopyLink;
-    copyright: string;
-  };
 }

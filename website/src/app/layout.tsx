@@ -4,6 +4,9 @@ import { Archivo, JetBrains_Mono, Noto_Sans_SC } from "next/font/google";
 import { LocalePreferenceRoute } from "@/components/locale-preference-route";
 import { site } from "@/config/site";
 import { THEME_INIT_SCRIPT } from "@/lib/theme";
+// Shared public header/footer (packages/public-shell): the same stylesheet
+// the SPA loads, so both apps render one shell.
+import "@newtg/public-shell/styles.css";
 import "./globals.css";
 
 const archivo = Archivo({

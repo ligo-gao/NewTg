@@ -11,31 +11,6 @@ export const en: Copy = {
     ogAlt: "NEWTG homepage: one API for every major model",
   },
 
-  language: {
-    label: "Language",
-  },
-
-  theme: {
-    label: "Theme",
-    toggle: "Toggle theme",
-  },
-
-  nav: {
-    links: [
-      { label: "Console", href: "/dashboard" },
-      { label: "Models", href: "/models" },
-      { label: "Pricing", href: "/pricing" },
-      { label: "Rankings", href: "/rankings" },
-      { label: "About", href: "/about" },
-      { label: "API Docs", href: "/docs" },
-    ],
-    login: "Sign in",
-    cta: "Get started free",
-    openMenu: "Open navigation menu",
-    closeMenu: "Close navigation menu",
-    ariaLabel: "Main navigation",
-  },
-
   hero: {
     titleLines: ["One API,", "every major model"],
     subtitle:
@@ -181,48 +156,6 @@ export const en: Copy = {
     note: "No credit card needed. Sign up and start.",
   },
 
-  footer: {
-    tagline:
-      "One API for every major model. Unified access, smart routing, automatic failover and billing.",
-    homeAria: "NEWTG home",
-    columns: [
-      {
-        title: "Product",
-        links: [
-          { label: "Models", href: "/models" },
-          { label: "Pricing", href: "/pricing" },
-          { label: "Console", href: "/dashboard" },
-        ],
-      },
-      {
-        title: "Docs",
-        links: [
-          { label: "Quick start", href: "/docs" },
-          { label: "API reference", href: "/docs" },
-          { label: "SDKs & examples", href: "/docs" },
-          { label: "Changelog", href: "/docs" },
-        ],
-      },
-      {
-        title: "Community",
-        links: [
-          { label: "GitHub", href: "#community" },
-          { label: "Discord", href: "#community" },
-          { label: "X", href: "#community" },
-          { label: "Contact", href: "#community" },
-        ],
-      },
-      {
-        title: "Legal",
-        links: [
-          { label: "Terms of service", href: "/legal/terms" },
-          { label: "Privacy policy", href: "/legal/privacy" },
-        ],
-      },
-    ],
-    status: { label: "Status", href: "#status" },
-    copyright: "© 2026 NEWTG",
-  },
   pricingPage: {
     meta: {
       title: "Pricing — NEWTG",

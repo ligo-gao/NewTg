@@ -1,108 +1,120 @@
 "use client";
 
+import {
+  ShellFooter,
+  formatShellCopy,
+  getShellCopy,
+  type ShellFooterColumn,
+} from "@newtg/public-shell";
 import type { Copy } from "@/config/copy";
-import { localePath, type Locale } from "@/config/locales";
+import { LOCALES, localePath, type Locale } from "@/config/locales";
+import {
+  ensureLanguageSchema,
+  markLanguageChosen,
+} from "@/lib/language-preference";
+import { localizePath } from "@/lib/locale-path";
+import { syncLanguageToAccount } from "@/lib/language-sync";
 import { usePublicStatus } from "@/lib/public-status";
 
-const DOCS_HREF = "/docs";
+const LOCALE_OPTIONS = LOCALES.map((entry) => ({
+  value: entry.code,
+  label: entry.endonym,
+  short: entry.shortLabel,
+}));
 
-function RoutingLogo() {
-  return (
-    <svg
-      width="22"
-      height="22"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      aria-hidden="true"
-    >
-      <path d="M3 6h3.5c2 0 3.5 1.2 4.5 3l2 6c1 1.8 2.5 3 4.5 3H21" />
-      <path d="M3 18h3.5c2 0 3.5-1.2 4.5-3l2-6c1-1.8 2.5-3 4.5-3H21" />
-    </svg>
-  );
-}
-
+/**
+ * Marketing footer. Structure, styling and copy come from
+ * `@newtg/public-shell`; this adapter only supplies the marketing link set —
+ * the same shared labels the SPA uses, so both footers read identically.
+ */
 export function SiteFooter({ copy, locale }: { copy: Copy; locale: Locale }) {
   const { docsEnabled } = usePublicStatus();
-  const homePath = locale === "zh-CN" ? "/" : localePath(locale);
-  const pricingPath = homePath === "/" ? "/pricing/" : `${homePath}pricing/`;
-  const hrefFor = (href: string): string => {
-    if (href === "/pricing") return pricingPath;
-    return href;
+  const shell = getShellCopy(locale);
+  const homePath = localePath(locale);
+  const hrefFor = (href: string): string =>
+    href === "/pricing"
+      ? homePath === "/"
+        ? "/pricing/"
+        : `${homePath}pricing/`
+      : href;
+
+  const statusLink = {
+    label: shell["footer.status"],
+    href: "#status",
+    dot: true,
   };
-  // The docs column is entirely docs links; drop them (and an emptied column)
-  // whenever the deployment has no live docs target.
-  const columns = docsEnabled
-    ? copy.footer.columns
-    : copy.footer.columns
-        .map((column) => ({
-          ...column,
-          links: column.links.filter((link) => link.href !== DOCS_HREF),
-        }))
-        .filter((column) => column.links.length > 0);
-  // Keeps the link columns balanced once the docs column is gone.
-  const gridClass =
-    columns.length >= 4
-      ? "nav:grid-cols-[1.6fr_repeat(4,1fr)]"
-      : columns.length === 3
-        ? "nav:grid-cols-[1.6fr_repeat(3,1fr)]"
-        : "nav:grid-cols-[1.6fr_repeat(2,1fr)]";
+
+  const columns: ShellFooterColumn[] = [
+    {
+      key: "product",
+      title: shell["footer.product"],
+      links: [
+        { label: shell["nav.models"], href: hrefFor("/models") },
+        { label: shell["nav.pricing"], href: hrefFor("/pricing") },
+        { label: shell["nav.console"], href: hrefFor("/dashboard") },
+        statusLink,
+      ],
+    },
+    {
+      key: "docs",
+      title: shell["footer.docs_column"],
+      links: [
+        { label: shell["footer.quickstart"], href: "/docs" },
+        { label: shell["footer.api_reference"], href: "/docs" },
+        { label: shell["footer.sdks"], href: "/docs" },
+        { label: shell["footer.changelog"], href: "/docs" },
+      ],
+    },
+    {
+      key: "community",
+      title: shell["footer.community"],
+      links: [
+        { label: shell["footer.github"], href: "#community" },
+        { label: shell["footer.discord"], href: "#community" },
+        { label: shell["footer.x"], href: "#community" },
+        { label: shell["footer.contact"], href: "#community" },
+      ],
+    },
+    {
+      key: "legal",
+      title: shell["footer.legal"],
+      links: [
+        { label: shell["footer.terms"], href: "/legal/terms" },
+        { label: shell["footer.privacy"], href: "/legal/privacy" },
+      ],
+    },
+  ];
+
+  // The docs column is entirely docs links; drop it whenever the deployment
+  // has no live docs target.
+  const visibleColumns = docsEnabled
+    ? columns
+    : columns.filter((column) => column.key !== "docs");
+
+  function changeLocale(next: string) {
+    const value = next as Locale;
+    ensureLanguageSchema();
+    markLanguageChosen(value);
+    void syncLanguageToAccount(value);
+    window.location.assign(localizePath(window.location.pathname, value));
+  }
+
+  const year = new Date().getFullYear();
+  const copyright = `${formatShellCopy(shell["footer.copyright"], { year, site: copy.brand })} ${shell["footer.all_rights"]}`;
+
   return (
-    <footer className="border-t border-line pt-11 pb-8 text-[13px]">
-      <div className="mx-auto w-full max-w-[1520px] px-4 min-[621px]:px-6 wide:px-10">
-        <div className={`grid grid-cols-2 gap-8 nav:gap-10 ${gridClass}`}>
-          <div className="col-span-2 nav:col-span-1">
-            <a
-              href="#top"
-              aria-label={copy.footer.homeAria}
-              className="inline-flex items-center gap-[9px] text-ink"
-            >
-              <RoutingLogo />
-              <span className="text-base font-bold tracking-[0.09em]">{copy.brand}</span>
-            </a>
-            <p className="mt-3 max-w-[26em] text-[13px] text-muted">{copy.footer.tagline}</p>
-          </div>
-
-          {columns.map((column, index) => (
-            <div key={column.title} className="min-w-0">
-              <h3 className="mb-3.5 text-xs font-medium text-faint">{column.title}</h3>
-              <ul>
-                {column.links.map((link) => (
-                  <li key={`${column.title}-${link.label}`}>
-                    <a
-                      href={hrefFor(link.href)}
-                      className="block py-[5px] text-[13px] text-ink-2 transition-colors hover:text-ink"
-                    >
-                      {link.label}
-                    </a>
-                  </li>
-                ))}
-                {index === 0 && (
-                  <li>
-                    <a
-                      href={copy.footer.status.href}
-                      className="inline-flex items-center gap-[7px] py-[5px] text-[13px] text-ink-2 transition-colors hover:text-ink"
-                    >
-                      <span
-                        aria-hidden="true"
-                        className="h-1.5 w-1.5 flex-none rounded-full bg-green"
-                      />
-                      {copy.footer.status.label}
-                    </a>
-                  </li>
-                )}
-              </ul>
-            </div>
-          ))}
-        </div>
-
-        <div className="mt-8 border-t border-line pt-5 text-xs text-faint">
-          <span>{copy.footer.copyright}</span>
-        </div>
-      </div>
-    </footer>
+    <ShellFooter
+      copy={shell}
+      brand={{ title: copy.brand, href: "#top" }}
+      tagline={shell["footer.tagline"]}
+      columns={visibleColumns}
+      locale={{
+        value: locale,
+        options: LOCALE_OPTIONS,
+        onChange: changeLocale,
+      }}
+      copyright={copyright}
+    />
   );
 }
 

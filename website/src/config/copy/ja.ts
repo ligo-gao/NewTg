@@ -11,31 +11,6 @@ export const ja: Copy = {
     ogAlt: "NEWTG ホームページ：すべての主要モデルをひとつの API で",
   },
 
-  language: {
-    label: "言語",
-  },
-
-  theme: {
-    label: "テーマ",
-    toggle: "テーマを切り替える",
-  },
-
-  nav: {
-    links: [
-      { label: "コンソール", href: "/dashboard" },
-      { label: "モデル", href: "/models" },
-      { label: "料金", href: "/pricing" },
-      { label: "ランキング", href: "/rankings" },
-      { label: "概要", href: "/about" },
-      { label: "API ドキュメント", href: "/docs" },
-    ],
-    login: "サインイン",
-    cta: "無料で始める",
-    openMenu: "ナビゲーションメニューを開く",
-    closeMenu: "ナビゲーションメニューを閉じる",
-    ariaLabel: "メインナビゲーション",
-  },
-
   hero: {
     titleLines: ["ひとつの API、", "すべての主要モデル"],
     subtitle:
@@ -182,48 +157,6 @@ export const ja: Copy = {
     note: "クレジットカード不要。登録してすぐに開始。",
   },
 
-  footer: {
-    tagline:
-      "すべての主要モデルをひとつの API で。統一接続、スマートルーティング、自動フェイルオーバー、統一課金。",
-    homeAria: "NEWTG ホーム",
-    columns: [
-      {
-        title: "製品",
-        links: [
-          { label: "モデル", href: "/models" },
-          { label: "料金", href: "/pricing" },
-          { label: "コンソール", href: "/dashboard" },
-        ],
-      },
-      {
-        title: "ドキュメント",
-        links: [
-          { label: "クイックスタート", href: "/docs" },
-          { label: "API リファレンス", href: "/docs" },
-          { label: "SDK とサンプル", href: "/docs" },
-          { label: "変更履歴", href: "/docs" },
-        ],
-      },
-      {
-        title: "コミュニティ",
-        links: [
-          { label: "GitHub", href: "#community" },
-          { label: "Discord", href: "#community" },
-          { label: "X", href: "#community" },
-          { label: "お問い合わせ", href: "#community" },
-        ],
-      },
-      {
-        title: "法務",
-        links: [
-          { label: "利用規約", href: "/legal/terms" },
-          { label: "プライバシーポリシー", href: "/legal/privacy" },
-        ],
-      },
-    ],
-    status: { label: "ステータス", href: "#status" },
-    copyright: "© 2026 NEWTG",
-  },
   pricingPage: {
     meta: {
       title: "モデル料金 — NEWTG",

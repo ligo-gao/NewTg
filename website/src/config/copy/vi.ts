@@ -11,31 +11,6 @@ export const vi: Copy = {
     ogAlt: "Trang chủ NEWTG: một API cho mọi mô hình lớn",
   },
 
-  language: {
-    label: "Ngôn ngữ",
-  },
-
-  theme: {
-    label: "Giao diện",
-    toggle: "Chuyển giao diện",
-  },
-
-  nav: {
-    links: [
-      { label: "Bảng điều khiển", href: "/dashboard" },
-      { label: "Mô hình", href: "/models" },
-      { label: "Bảng giá", href: "/pricing" },
-      { label: "Xếp hạng", href: "/rankings" },
-      { label: "Giới thiệu", href: "/about" },
-      { label: "Tài liệu API", href: "/docs" },
-    ],
-    login: "Đăng nhập",
-    cta: "Bắt đầu miễn phí",
-    openMenu: "Mở menu điều hướng",
-    closeMenu: "Đóng menu điều hướng",
-    ariaLabel: "Điều hướng chính",
-  },
-
   hero: {
     titleLines: ["Một API,", "mọi mô hình lớn"],
     subtitle:
@@ -182,48 +157,6 @@ export const vi: Copy = {
     note: "Không cần thẻ tín dụng. Đăng ký và bắt đầu.",
   },
 
-  footer: {
-    tagline:
-      "Một API cho mọi mô hình lớn. Truy cập hợp nhất, định tuyến thông minh, tự động dự phòng và thanh toán hợp nhất.",
-    homeAria: "Trang chủ NEWTG",
-    columns: [
-      {
-        title: "Sản phẩm",
-        links: [
-          { label: "Mô hình", href: "/models" },
-          { label: "Bảng giá", href: "/pricing" },
-          { label: "Bảng điều khiển", href: "/dashboard" },
-        ],
-      },
-      {
-        title: "Tài liệu",
-        links: [
-          { label: "Bắt đầu nhanh", href: "/docs" },
-          { label: "Tham chiếu API", href: "/docs" },
-          { label: "SDK và ví dụ", href: "/docs" },
-          { label: "Nhật ký thay đổi", href: "/docs" },
-        ],
-      },
-      {
-        title: "Cộng đồng",
-        links: [
-          { label: "GitHub", href: "#community" },
-          { label: "Discord", href: "#community" },
-          { label: "X", href: "#community" },
-          { label: "Liên hệ", href: "#community" },
-        ],
-      },
-      {
-        title: "Pháp lý",
-        links: [
-          { label: "Điều khoản dịch vụ", href: "/legal/terms" },
-          { label: "Chính sách bảo mật", href: "/legal/privacy" },
-        ],
-      },
-    ],
-    status: { label: "Trạng thái", href: "#status" },
-    copyright: "© 2026 NEWTG",
-  },
   pricingPage: {
     meta: {
       title: "Bảng giá — NEWTG",

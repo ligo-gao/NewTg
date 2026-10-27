@@ -11,31 +11,6 @@ export const zhTW: Copy = {
     ogAlt: "NEWTG 首頁：一個 API，呼叫所有主流模型",
   },
 
-  language: {
-    label: "語言",
-  },
-
-  theme: {
-    label: "主題",
-    toggle: "切換主題",
-  },
-
-  nav: {
-    links: [
-      { label: "控制台", href: "/dashboard" },
-      { label: "模型庫", href: "/models" },
-      { label: "定價", href: "/pricing" },
-      { label: "排行", href: "/rankings" },
-      { label: "關於", href: "/about" },
-      { label: "介面文件", href: "/docs" },
-    ],
-    login: "登入",
-    cta: "免費開始使用",
-    openMenu: "開啟導覽選單",
-    closeMenu: "關閉導覽選單",
-    ariaLabel: "主導覽",
-  },
-
   hero: {
     titleLines: ["一個 API，", "呼叫所有主流模型"],
     subtitle:
@@ -180,47 +155,6 @@ export const zhTW: Copy = {
     note: "無需信用卡，註冊即可開始",
   },
 
-  footer: {
-    tagline: "一個 API，呼叫所有主流模型。統一接入、智慧路由、自動降級與統一計費。",
-    homeAria: "NEWTG 首頁",
-    columns: [
-      {
-        title: "產品",
-        links: [
-          { label: "模型庫", href: "/models" },
-          { label: "定價", href: "/pricing" },
-          { label: "控制台", href: "/dashboard" },
-        ],
-      },
-      {
-        title: "文件",
-        links: [
-          { label: "快速開始", href: "/docs" },
-          { label: "API 參考", href: "/docs" },
-          { label: "SDK 與範例", href: "/docs" },
-          { label: "更新日誌", href: "/docs" },
-        ],
-      },
-      {
-        title: "社群",
-        links: [
-          { label: "GitHub", href: "#community" },
-          { label: "Discord", href: "#community" },
-          { label: "X", href: "#community" },
-          { label: "聯絡我們", href: "#community" },
-        ],
-      },
-      {
-        title: "法律",
-        links: [
-          { label: "服務條款", href: "/legal/terms" },
-          { label: "隱私政策", href: "/legal/privacy" },
-        ],
-      },
-    ],
-    status: { label: "狀態頁", href: "#status" },
-    copyright: "© 2026 NEWTG",
-  },
   pricingPage: {
     meta: {
       title: "模型定價 — NEWTG",

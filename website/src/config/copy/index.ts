@@ -25,4 +25,4 @@ export function getCopy(locale: Locale): Copy {
 /** Default (Simplified Chinese) copy, kept for components rendered in isolation. */
 export const copy = zhCN;
 
-export type { Copy, CopyLink, CopyStat, FeatureIconKey } from "./types";
+export type { Copy, CopyStat, FeatureIconKey } from "./types";

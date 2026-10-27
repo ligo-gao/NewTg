@@ -1,160 +1,135 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
-import { LanguageSwitcher } from "@/components/language-switcher";
-import { ThemeToggle } from "@/components/theme-toggle";
+import {
+  ShellHeader,
+  getShellCopy,
+  type ShellCopyKey,
+  type ShellLocaleOption,
+  type ShellNavItem,
+} from "@newtg/public-shell";
 import type { Copy } from "@/config/copy";
-import { localePath, type Locale } from "@/config/locales";
+import { LOCALES, localePath, type Locale } from "@/config/locales";
 import { site } from "@/config/site";
+import {
+  ensureLanguageSchema,
+  markLanguageChosen,
+} from "@/lib/language-preference";
+import { localizePath } from "@/lib/locale-path";
+import { syncLanguageToAccount } from "@/lib/language-sync";
 import { usePublicStatus } from "@/lib/public-status";
+import { applyTheme, readStoredTheme, storeTheme } from "@/lib/theme";
 
-const DOCS_HREF = "/docs";
+/**
+ * Same six entries, same order and same labels as the SPA header (both read
+ * the shared shell dictionary). The static site cannot see the operator's
+ * `nav.*` switches, so only the docs target is filtered — it is the one entry
+ * that depends on a deployed target.
+ */
+const NAV_ITEMS: readonly { key: string; labelKey: ShellCopyKey; href: string }[] = [
+  { key: "console", labelKey: "nav.console", href: "/dashboard" },
+  { key: "models", labelKey: "nav.models", href: "/models" },
+  { key: "pricing", labelKey: "nav.pricing", href: "/pricing" },
+  { key: "rankings", labelKey: "nav.rankings", href: "/rankings" },
+  { key: "about", labelKey: "nav.about", href: "/about" },
+  { key: "docs", labelKey: "nav.docs", href: "/docs" },
+];
 
-function RoutingLogo({ className }: { className?: string }) {
-  return (
-    <svg
-      width="22"
-      height="22"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      aria-hidden="true"
-      className={className}
-    >
-      <path d="M3 6h3.5c2 0 3.5 1.2 4.5 3l2 6c1 1.8 2.5 3 4.5 3H21" />
-      <path d="M3 18h3.5c2 0 3.5-1.2 4.5-3l2-6c1-1.8 2.5-3 4.5-3H21" />
-    </svg>
-  );
+const LOCALE_OPTIONS: ShellLocaleOption[] = LOCALES.map((entry) => ({
+  value: entry.code,
+  label: entry.endonym,
+  short: entry.shortLabel,
+}));
+
+/**
+ * Theme state for the shell. The pre-paint script has already set
+ * `data-theme`; this hook mirrors it into React and keeps following the OS
+ * while the visitor has made no explicit choice (the same contract the
+ * marketing toggle always had).
+ */
+function useThemeControl(): { value: "light" | "dark"; onToggle: () => void } {
+  const [value, setValue] = useState<"light" | "dark">("light");
+
+  useEffect(() => {
+    const read = (): "light" | "dark" =>
+      document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+    setValue(read());
+
+    const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+    if (!media) return;
+    const onChange = (event: MediaQueryListEvent) => {
+      // An explicit choice wins; only follow the OS when nothing is stored.
+      if (readStoredTheme() !== null) return;
+      const next = event.matches ? "dark" : "light";
+      applyTheme(next);
+      setValue(next);
+    };
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, []);
+
+  function onToggle() {
+    const next = value === "dark" ? "light" : "dark";
+    applyTheme(next);
+    storeTheme(next);
+    setValue(next);
+  }
+
+  return { value, onToggle };
 }
 
 export function SiteHeader({ copy, locale }: { copy: Copy; locale: Locale }) {
-  const [open, setOpen] = useState(false);
   const { docsEnabled } = usePublicStatus();
   const pathname = usePathname() ?? "/";
-  const homePath = locale === "zh-CN" ? "/" : localePath(locale);
-  const pricingPath = homePath === "/" ? "/pricing/" : `${homePath}pricing/`;
+  const theme = useThemeControl();
+  const shell = getShellCopy(locale);
+
+  const homePath = localePath(locale);
   const normalized = pathname.replace(/\/$/, "") || "/";
-  const homeNormalized = homePath.replace(/\/$/, "") || "/";
-  const onHome = normalized === homeNormalized;
-  const onPricing = normalized === pricingPath.replace(/\/$/, "");
+  const onHome = normalized === (homePath.replace(/\/$/, "") || "/");
 
   function hrefFor(href: string): string {
-    if (href === "/pricing") return pricingPath;
-    return href;
+    // '/pricing' is the only localized sub-route the marketing site owns.
+    return href === "/pricing"
+      ? homePath === "/"
+        ? "/pricing/"
+        : `${homePath}pricing/`
+      : href;
   }
 
-  function closeMenu() {
-    setOpen(false);
-  }
+  const items: ShellNavItem[] = NAV_ITEMS.filter(
+    (item) => item.href !== "/docs" || docsEnabled,
+  ).map((item) => ({
+    key: item.key,
+    label: shell[item.labelKey],
+    href: hrefFor(item.href),
+    current: normalized === hrefFor(item.href).replace(/\/$/, ""),
+  }));
 
-  // One filtered list feeds both menus so the docs entry stays consistent.
-  const navLinks = docsEnabled
-    ? copy.nav.links
-    : copy.nav.links.filter((link) => link.href !== DOCS_HREF);
+  function changeLocale(next: string) {
+    const value = next as Locale;
+    ensureLanguageSchema();
+    markLanguageChosen(value);
+    // Background write through keepalive so the pick survives the navigation.
+    void syncLanguageToAccount(value);
+    // Keep the current page, swapping only the locale prefix ('/' is zh-CN).
+    window.location.assign(localizePath(window.location.pathname, value));
+  }
 
   return (
-    <header className="fixed inset-x-0 top-0 z-50 border-b border-line nav-surface backdrop-blur-[14px]">
-      <div className="mx-auto flex h-16 w-full max-w-[1520px] items-center gap-9 px-4 min-[621px]:px-6 wide:px-10">
-        <a
-          href={onHome ? "#top" : homePath}
-          aria-label={copy.brand}
-          className="inline-flex flex-none items-center gap-[9px] text-ink"
-        >
-          <RoutingLogo className="text-cyan" />
-          <span className="text-base font-bold tracking-[0.09em]">{copy.brand}</span>
-        </a>
-
-        <nav aria-label={copy.nav.ariaLabel} className="mr-auto hidden items-center gap-7 nav:flex">
-          {navLinks.map((link) => (
-            <a
-              key={link.href}
-              href={hrefFor(link.href)}
-              aria-current={onPricing && link.href === "/pricing" ? "page" : undefined}
-              className="text-sm text-ink-2 transition-colors hover:text-ink aria-[current=page]:text-ink"
-            >
-              {link.label}
-            </a>
-          ))}
-        </nav>
-
-        <div className="hidden flex-none items-center gap-3.5 nav:flex">
-          <LanguageSwitcher locale={locale} label={copy.language.label} />
-          <ThemeToggle copy={copy} />
-          <a
-            href={site.loginHref}
-            className="text-sm text-ink-2 transition-colors hover:text-ink"
-          >
-            {copy.nav.login}
-          </a>
-        </div>
-
-        <div className="ml-auto flex items-center gap-2 nav:hidden">
-          <LanguageSwitcher locale={locale} label={copy.language.label} compact />
-          <ThemeToggle copy={copy} />
-          <button
-            type="button"
-            aria-expanded={open}
-            aria-controls="mobile-menu"
-            aria-label={open ? copy.nav.closeMenu : copy.nav.openMenu}
-            onClick={() => setOpen((value) => !value)}
-            className="inline-flex h-10 w-10 flex-none items-center justify-center rounded-md border border-line-2 bg-transparent text-ink"
-          >
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            aria-hidden="true"
-          >
-            {open ? (
-              <path d="M3 3l10 10M13 3L3 13" />
-            ) : (
-              <path d="M2 4h12M2 8h12M2 12h12" />
-            )}
-          </svg>
-          </button>
-        </div>
-      </div>
-
-      {open && (
-        <nav
-          id="mobile-menu"
-          aria-label={copy.nav.ariaLabel}
-          className="border-t border-line menu-surface nav:hidden"
-        >
-          <div className="mx-auto w-full max-w-[1520px] px-4 pt-2.5 pb-[18px] min-[621px]:px-6 wide:px-10">
-            {navLinks.map((link) => (
-              <a
-                key={link.href}
-                href={hrefFor(link.href)}
-                aria-current={onPricing && link.href === "/pricing" ? "page" : undefined}
-                onClick={closeMenu}
-                className="block border-b border-line py-3 text-[15px] text-ink-2"
-              >
-                {link.label}
-              </a>
-            ))}
-            <a
-              href={site.loginHref}
-              onClick={closeMenu}
-              className="block border-b border-line py-3 text-[15px] text-ink-2"
-            >
-              {copy.nav.login}
-            </a>
-            <div className="flex items-center justify-between border-b border-line py-3">
-              <span className="text-[15px] text-ink-2">{copy.language.label}</span>
-              <LanguageSwitcher locale={locale} label={copy.language.label} />
-            </div>
-          </div>
-        </nav>
-      )}
-    </header>
+    <ShellHeader
+      copy={shell}
+      brand={{
+        title: copy.brand,
+        // On the home page the wordmark returns to the top, as it always has.
+        href: onHome ? "#top" : homePath,
+      }}
+      items={items}
+      locale={{ value: locale, options: LOCALE_OPTIONS, onChange: changeLocale }}
+      theme={theme}
+      account={{ signedIn: false, signInHref: site.loginHref }}
+    />
   );
 }
 

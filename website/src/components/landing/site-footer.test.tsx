@@ -30,10 +30,10 @@ describe("SiteFooter", () => {
     expect(screen.getByRole("heading", { name: "文档" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "快速开始" })).toHaveAttribute("href", "/docs");
     expect(screen.getByRole("link", { name: "API 参考" })).toHaveAttribute("href", "/docs");
-    expect(container.querySelectorAll("h3")).toHaveLength(4);
-    expect(container.querySelector("div.grid")).toHaveClass(
-      "nav:grid-cols-[1.6fr_repeat(4,1fr)]",
-    );
+    // Four link columns plus the language column the shared footer adds.
+    expect(container.querySelectorAll("h2")).toHaveLength(5);
+    const grid = container.querySelector<HTMLElement>(".ps-footer-grid");
+    expect(grid?.style.getPropertyValue("--ps-footer-grid")).toContain("repeat(5,");
   });
 
   it("omits the docs column and settles the grid when docs are not configured", () => {
@@ -51,10 +51,9 @@ describe("SiteFooter", () => {
     expect(screen.getByRole("heading", { name: "产品" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "社区" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "法律" })).toBeInTheDocument();
-    expect(container.querySelectorAll("h3")).toHaveLength(3);
-    expect(container.querySelector("div.grid")).toHaveClass(
-      "nav:grid-cols-[1.6fr_repeat(3,1fr)]",
-    );
+    expect(container.querySelectorAll("h2")).toHaveLength(4);
+    const grid = container.querySelector<HTMLElement>(".ps-footer-grid");
+    expect(grid?.style.getPropertyValue("--ps-footer-grid")).toContain("repeat(4,");
   });
 
   it("omits the docs links when the status request fails", () => {

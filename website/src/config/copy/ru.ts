@@ -11,31 +11,6 @@ export const ru: Copy = {
     ogAlt: "Главная NEWTG: один API для всех основных моделей",
   },
 
-  language: {
-    label: "Язык",
-  },
-
-  theme: {
-    label: "Тема",
-    toggle: "Переключить тему",
-  },
-
-  nav: {
-    links: [
-      { label: "Консоль", href: "/dashboard" },
-      { label: "Модели", href: "/models" },
-      { label: "Тарифы", href: "/pricing" },
-      { label: "Рейтинги", href: "/rankings" },
-      { label: "О проекте", href: "/about" },
-      { label: "Документация API", href: "/docs" },
-    ],
-    login: "Войти",
-    cta: "Начать бесплатно",
-    openMenu: "Открыть меню навигации",
-    closeMenu: "Закрыть меню навигации",
-    ariaLabel: "Основная навигация",
-  },
-
   hero: {
     titleLines: ["Один API,", "все основные модели"],
     subtitle:
@@ -182,48 +157,6 @@ export const ru: Copy = {
     note: "Без кредитной карты. Зарегистрируйтесь и начинайте.",
   },
 
-  footer: {
-    tagline:
-      "Один API для всех основных моделей. Единый доступ, умная маршрутизация, автоматическое переключение и оплата.",
-    homeAria: "Главная страница NEWTG",
-    columns: [
-      {
-        title: "Продукт",
-        links: [
-          { label: "Модели", href: "/models" },
-          { label: "Тарифы", href: "/pricing" },
-          { label: "Консоль", href: "/dashboard" },
-        ],
-      },
-      {
-        title: "Документация",
-        links: [
-          { label: "Быстрый старт", href: "/docs" },
-          { label: "Справочник API", href: "/docs" },
-          { label: "SDK и примеры", href: "/docs" },
-          { label: "Журнал изменений", href: "/docs" },
-        ],
-      },
-      {
-        title: "Сообщество",
-        links: [
-          { label: "GitHub", href: "#community" },
-          { label: "Discord", href: "#community" },
-          { label: "X", href: "#community" },
-          { label: "Связаться", href: "#community" },
-        ],
-      },
-      {
-        title: "Правовая информация",
-        links: [
-          { label: "Условия использования", href: "/legal/terms" },
-          { label: "Политика конфиденциальности", href: "/legal/privacy" },
-        ],
-      },
-    ],
-    status: { label: "Статус", href: "#status" },
-    copyright: "© 2026 NEWTG",
-  },
   pricingPage: {
     meta: {
       title: "Тарифы — NEWTG",

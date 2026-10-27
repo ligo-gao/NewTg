@@ -11,31 +11,6 @@ export const fr: Copy = {
     ogAlt: "Page d'accueil NEWTG : une API pour tous les grands modèles",
   },
 
-  language: {
-    label: "Langue",
-  },
-
-  theme: {
-    label: "Thème",
-    toggle: "Changer de thème",
-  },
-
-  nav: {
-    links: [
-      { label: "Console", href: "/dashboard" },
-      { label: "Modèles", href: "/models" },
-      { label: "Tarification", href: "/pricing" },
-      { label: "Classements", href: "/rankings" },
-      { label: "À propos", href: "/about" },
-      { label: "Docs API", href: "/docs" },
-    ],
-    login: "Se connecter",
-    cta: "Commencer gratuitement",
-    openMenu: "Ouvrir le menu de navigation",
-    closeMenu: "Fermer le menu de navigation",
-    ariaLabel: "Navigation principale",
-  },
-
   hero: {
     titleLines: ["Une API,", "tous les grands modèles"],
     subtitle:
@@ -182,48 +157,6 @@ export const fr: Copy = {
     note: "Sans carte bancaire. Inscrivez-vous et commencez.",
   },
 
-  footer: {
-    tagline:
-      "Une API pour tous les grands modèles. Accès unifié, routage intelligent, bascule automatique et facturation.",
-    homeAria: "Accueil NEWTG",
-    columns: [
-      {
-        title: "Produit",
-        links: [
-          { label: "Modèles", href: "/models" },
-          { label: "Tarification", href: "/pricing" },
-          { label: "Console", href: "/dashboard" },
-        ],
-      },
-      {
-        title: "Documentation",
-        links: [
-          { label: "Démarrage rapide", href: "/docs" },
-          { label: "Référence API", href: "/docs" },
-          { label: "SDK et exemples", href: "/docs" },
-          { label: "Journal des modifications", href: "/docs" },
-        ],
-      },
-      {
-        title: "Communauté",
-        links: [
-          { label: "GitHub", href: "#community" },
-          { label: "Discord", href: "#community" },
-          { label: "X", href: "#community" },
-          { label: "Contact", href: "#community" },
-        ],
-      },
-      {
-        title: "Mentions légales",
-        links: [
-          { label: "Conditions d'utilisation", href: "/legal/terms" },
-          { label: "Politique de confidentialité", href: "/legal/privacy" },
-        ],
-      },
-    ],
-    status: { label: "Statut", href: "#status" },
-    copyright: "© 2026 NEWTG",
-  },
   pricingPage: {
     meta: {
       title: "Tarification — NEWTG",
