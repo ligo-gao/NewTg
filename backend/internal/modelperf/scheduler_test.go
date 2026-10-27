@@ -94,6 +94,53 @@ func newTestSchedule(t *testing.T) DailyTimes {
 	return sched
 }
 
+// fixedScheduleFor 把静态时刻表适配成 ScheduleFor：不关心动态调度的用例
+// （RunOnce、锁与时段推进）都用它保持改造前的行为。
+func fixedScheduleFor(sched Schedule) func(time.Time) Schedule {
+	return func(time.Time) Schedule { return sched }
+}
+
+// scheduleSource 是测试用的可变时刻表来源：ScheduleFor 每次调用都读取当前
+// 值，用例可在 tick 之间替换生效时刻表（包括置 nil 验证回落）。
+type scheduleSource struct {
+	mu    sync.Mutex
+	sched Schedule
+}
+
+func newScheduleSource(sched Schedule) *scheduleSource {
+	return &scheduleSource{sched: sched}
+}
+
+func (s *scheduleSource) get(time.Time) Schedule {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sched
+}
+
+func (s *scheduleSource) set(sched Schedule) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sched = sched
+}
+
+// roundSettingsSource 是测试用的可变 Settings 回调。
+type roundSettingsSource struct {
+	mu sync.Mutex
+	st RoundSettings
+}
+
+func (r *roundSettingsSource) get() RoundSettings {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.st
+}
+
+func (r *roundSettingsSource) set(st RoundSettings) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.st = st
+}
+
 // staticClock 让 nextDue 与轮次耗时断言可确定。
 func staticClock(at time.Time) func() time.Time {
 	return func() time.Time { return at }
@@ -135,10 +182,10 @@ func TestRunOnceEmptyModelListIsNoop(t *testing.T) {
 			performerCalls.Add(1)
 			return nil
 		},
-		Tests:    tests,
-		Schedule: newTestSchedule(t),
-		Locker:   openLocker{},
-		Now:      stepClock(now),
+		Tests:       tests,
+		ScheduleFor: fixedScheduleFor(newTestSchedule(t)),
+		Locker:      openLocker{},
+		Now:         stepClock(now),
 	})
 
 	stats, err := s.RunOnce(context.Background())
@@ -168,9 +215,9 @@ func TestRunOnceSkipsModelWithoutChannel(t *testing.T) {
 			performerCalls.Add(1)
 			return nil
 		},
-		Tests:    tests,
-		Schedule: newTestSchedule(t),
-		Locker:   openLocker{},
+		Tests:       tests,
+		ScheduleFor: fixedScheduleFor(newTestSchedule(t)),
+		Locker:      openLocker{},
 	})
 
 	stats, err := s.RunOnce(context.Background())
@@ -207,10 +254,10 @@ func TestRunOncePersistsAggregatedSuccess(t *testing.T) {
 				{Success: false, ErrorClass: "upstream"},
 			}
 		},
-		Tests:    tests,
-		Schedule: newTestSchedule(t),
-		Runs:     3,
-		Locker:   openLocker{},
+		Tests:       tests,
+		ScheduleFor: fixedScheduleFor(newTestSchedule(t)),
+		Runs:        3,
+		Locker:      openLocker{},
 	})
 
 	stats, err := s.RunOnce(context.Background())
@@ -261,7 +308,7 @@ func TestRunOnceContinuesAfterPersistFailure(t *testing.T) {
 			return []channelhealth.PerfRunResult{{Success: true}}
 		},
 		Tests:       tests,
-		Schedule:    newTestSchedule(t),
+		ScheduleFor: fixedScheduleFor(newTestSchedule(t)),
 		Runs:        1,
 		Concurrency: 1,
 		Locker:      openLocker{},
@@ -293,9 +340,9 @@ func TestRunOnceReturnsModelSourceError(t *testing.T) {
 			performerCalls.Add(1)
 			return nil
 		},
-		Tests:    &fakeTests{},
-		Schedule: newTestSchedule(t),
-		Locker:   openLocker{},
+		Tests:       &fakeTests{},
+		ScheduleFor: fixedScheduleFor(newTestSchedule(t)),
+		Locker:      openLocker{},
 	})
 
 	stats, err := s.RunOnce(context.Background())
@@ -327,7 +374,7 @@ func TestRunOnceSkipsModelOnPickError(t *testing.T) {
 			return []channelhealth.PerfRunResult{{Success: true}}
 		},
 		Tests:       tests,
-		Schedule:    newTestSchedule(t),
+		ScheduleFor: fixedScheduleFor(newTestSchedule(t)),
 		Runs:        1,
 		Concurrency: 1,
 		Locker:      openLocker{},
@@ -381,7 +428,7 @@ func TestRunOnceRespectsConcurrencyLimit(t *testing.T) {
 			return []channelhealth.PerfRunResult{{Success: true}}
 		},
 		Tests:       &fakeTests{},
-		Schedule:    newTestSchedule(t),
+		ScheduleFor: fixedScheduleFor(newTestSchedule(t)),
 		Runs:        1,
 		Concurrency: concurrency,
 		Locker:      openLocker{},
@@ -468,7 +515,7 @@ func TestRunOnceStopsDispatchingAfterCancel(t *testing.T) {
 			return []channelhealth.PerfRunResult{{Success: true}}
 		},
 		Tests:       &fakeTests{},
-		Schedule:    newTestSchedule(t),
+		ScheduleFor: fixedScheduleFor(newTestSchedule(t)),
 		Runs:        1,
 		Concurrency: 1,
 		Locker:      openLocker{},
@@ -522,9 +569,9 @@ func TestRunOnceRecoversFromPerformerPanic(t *testing.T) {
 			}
 			return []channelhealth.PerfRunResult{{Success: true}}
 		},
-		Tests:    tests,
-		Schedule: newTestSchedule(t),
-		Locker:   openLocker{},
+		Tests:       tests,
+		ScheduleFor: fixedScheduleFor(newTestSchedule(t)),
+		Locker:      openLocker{},
 	})
 
 	stats, err := s.RunOnce(context.Background())
@@ -543,12 +590,12 @@ func TestRunOnceRecoversFromPerformerPanic(t *testing.T) {
 func TestNewSchedulerRejectsMissingDependencies(t *testing.T) {
 	base := func(t *testing.T) SchedulerConfig {
 		return SchedulerConfig{
-			Models:    &fakeModels{},
-			Channels:  &fakePicker{},
-			Performer: func(context.Context, *store.Channel, string, int) []channelhealth.PerfRunResult { return nil },
-			Tests:     &fakeTests{},
-			Schedule:  newTestSchedule(t),
-			Locker:    openLocker{},
+			Models:      &fakeModels{},
+			Channels:    &fakePicker{},
+			Performer:   func(context.Context, *store.Channel, string, int) []channelhealth.PerfRunResult { return nil },
+			Tests:       &fakeTests{},
+			ScheduleFor: fixedScheduleFor(newTestSchedule(t)),
+			Locker:      openLocker{},
 		}
 	}
 	cases := []struct {
@@ -560,7 +607,7 @@ func TestNewSchedulerRejectsMissingDependencies(t *testing.T) {
 		{"performer", func(c *SchedulerConfig) { c.Performer = nil }},
 		{"tests", func(c *SchedulerConfig) { c.Tests = nil }},
 		{"locker", func(c *SchedulerConfig) { c.Locker = nil }},
-		{"schedule", func(c *SchedulerConfig) { c.Schedule = DailyTimes{} }},
+		{"schedule", func(c *SchedulerConfig) { c.ScheduleFor = nil }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -583,7 +630,7 @@ func TestNewSchedulerClampsAndDefaults(t *testing.T) {
 		Channels:    &fakePicker{},
 		Performer:   performer,
 		Tests:       &fakeTests{},
-		Schedule:    newTestSchedule(t),
+		ScheduleFor: fixedScheduleFor(newTestSchedule(t)),
 		Runs:        99,
 		Concurrency: 0,
 		Locker:      openLocker{},
@@ -680,7 +727,7 @@ func newStepSchedulerWith(t *testing.T, locker Locker, logger *slog.Logger,
 		Tests:        tests,
 		Runs:         1,
 		Concurrency:  1,
-		Schedule:     newTestSchedule(t),
+		ScheduleFor:  fixedScheduleFor(newTestSchedule(t)),
 		Locker:       locker,
 		Logger:       logger,
 		TickInterval: tick,
@@ -887,7 +934,7 @@ func TestStepAdvancesFromCompletionTime(t *testing.T) {
 		Tests:       tests,
 		Runs:        1,
 		Concurrency: 1,
-		Schedule:    newTestSchedule(t),
+		ScheduleFor: fixedScheduleFor(newTestSchedule(t)),
 		Locker:      &fakeLocker{acquired: true},
 		Now:         clock.now,
 	})
@@ -978,7 +1025,7 @@ func TestRunLoopRunsScheduledRoundOnTick(t *testing.T) {
 		Tests:        tests,
 		Runs:         1,
 		Concurrency:  1,
-		Schedule:     newTestSchedule(t),
+		ScheduleFor:  fixedScheduleFor(newTestSchedule(t)),
 		Locker:       &fakeLocker{acquired: true},
 		TickInterval: time.Millisecond,
 		Now:          func() time.Time { return at },
@@ -1087,7 +1134,7 @@ func TestStepStartedAtIsRoundStartNotEnd(t *testing.T) {
 			Tests:       &fakeTests{},
 			Runs:        1,
 			Concurrency: 1,
-			Schedule:    newTestSchedule(t),
+			ScheduleFor: fixedScheduleFor(newTestSchedule(t)),
 			Locker:      &fakeLocker{acquired: true},
 			Now:         clock.now,
 		})
@@ -1129,13 +1176,13 @@ func TestStepCallsOnRoundOnRoundError(t *testing.T) {
 	at := time.Date(2026, 10, 27, 11, 59, 0, 0, loc)
 	s := mustScheduler(t, SchedulerConfig{
 		// 取模型列表失败是 RunOnce 唯一会返回 error 的路径。
-		Models:    &fakeModels{err: errors.New("model list unavailable")},
-		Channels:  &fakePicker{channel: &store.Channel{ID: 7}, ok: true},
-		Performer: func(context.Context, *store.Channel, string, int) []channelhealth.PerfRunResult { return nil },
-		Tests:     &fakeTests{},
-		Locker:    &fakeLocker{acquired: true},
-		Schedule:  newTestSchedule(t),
-		Now:       func() time.Time { return at },
+		Models:      &fakeModels{err: errors.New("model list unavailable")},
+		Channels:    &fakePicker{channel: &store.Channel{ID: 7}, ok: true},
+		Performer:   func(context.Context, *store.Channel, string, int) []channelhealth.PerfRunResult { return nil },
+		Tests:       &fakeTests{},
+		Locker:      &fakeLocker{acquired: true},
+		ScheduleFor: fixedScheduleFor(newTestSchedule(t)),
+		Now:         func() time.Time { return at },
 	})
 	var (
 		count    atomic.Int64
@@ -1274,5 +1321,318 @@ func TestNextDueMatchesScheduleNext(t *testing.T) {
 	}
 	if got, want := s.NextDue(cases[2]), time.Date(2026, 10, 28, 0, 0, 0, 0, loc); !got.Equal(want) {
 		t.Fatalf("NextDue across midnight = %v, want %v", got, want)
+	}
+}
+
+// dynamicScheduler 把「可变时刻表 + 可变设置 + 可推进时钟」捆在一起，供
+// 「每 tick 重新读取」的用例复用。settings 初值为启用、runs=1、并发=1；
+// 时刻表初值为 12h 间隔（与每日 00:00/12:00 逐点一致）。
+type dynamicScheduler struct {
+	s        *Scheduler
+	schedule *scheduleSource
+	settings *roundSettingsSource
+	clock    *atomicClock
+	locker   *fakeLocker
+	tests    *fakeTests
+	calls    *atomic.Int64
+}
+
+func newDynamicScheduler(t *testing.T, at time.Time, models []string,
+	performer Performer) *dynamicScheduler {
+	t.Helper()
+	loc := shanghai(t)
+	d := &dynamicScheduler{
+		schedule: newScheduleSource(IntervalSchedule{Hours: 12, Loc: loc}),
+		settings: &roundSettingsSource{st: RoundSettings{Enabled: true, Runs: 1, Concurrency: 1}},
+		clock:    &atomicClock{at: at},
+		locker:   &fakeLocker{acquired: true},
+		tests:    &fakeTests{},
+		calls:    &atomic.Int64{},
+	}
+	d.s = mustScheduler(t, SchedulerConfig{
+		Models:   &fakeModels{names: models},
+		Channels: &fakePicker{channel: &store.Channel{ID: 7}, ok: true},
+		Performer: func(ctx context.Context, ch *store.Channel, model string, runs int) []channelhealth.PerfRunResult {
+			d.calls.Add(1)
+			if performer != nil {
+				return performer(ctx, ch, model, runs)
+			}
+			return []channelhealth.PerfRunResult{{Success: true}}
+		},
+		Tests:       d.tests,
+		ScheduleFor: d.schedule.get,
+		Settings:    d.settings.get,
+		Locker:      d.locker,
+		Now:         d.clock.now,
+	})
+	return d
+}
+
+func TestSchedulerRecomputesNextDueWhenScheduleChanges(t *testing.T) {
+	loc := shanghai(t)
+	// 06:30 时 12h 表的下一次是 12:00，1h 表的下一次是 07:00，两者可分。
+	d := newDynamicScheduler(t, time.Date(2026, 10, 27, 6, 30, 0, 0, loc),
+		[]string{"gpt-4o"}, nil)
+
+	noon := time.Date(2026, 10, 27, 12, 0, 0, 0, loc)
+	if !d.s.nextDue.Equal(noon) {
+		t.Fatalf("nextDue = %v, want %v", d.s.nextDue, noon)
+	}
+	// 未到点的常规 tick 不改变 nextDue。
+	d.s.step(context.Background())
+
+	// 运维把间隔从 12h 改成 1h：下一个 tick 必须按新表重算到 07:00。
+	d.schedule.set(IntervalSchedule{Hours: 1, Loc: loc})
+	d.s.step(context.Background())
+	if want := time.Date(2026, 10, 27, 7, 0, 0, 0, loc); !d.s.nextDue.Equal(want) {
+		t.Fatalf("nextDue after schedule change = %v, want %v", d.s.nextDue, want)
+	}
+	// 换表本身不触发探测，也不去抢锁（不回补）。
+	if got := d.calls.Load(); got != 0 {
+		t.Fatalf("performer called %d times on a schedule change, want 0", got)
+	}
+	if keys, _ := d.locker.snapshot(); len(keys) != 0 {
+		t.Fatalf("lock attempted on a schedule change: %v", keys)
+	}
+}
+
+func TestSchedulerSkipsWhenDisabled(t *testing.T) {
+	loc := shanghai(t)
+	d := newDynamicScheduler(t, time.Date(2026, 10, 27, 11, 59, 0, 0, loc),
+		[]string{"gpt-4o"}, nil)
+	d.settings.set(RoundSettings{Enabled: false, Runs: 1, Concurrency: 1})
+
+	d.clock.set(time.Date(2026, 10, 27, 12, 0, 0, 0, loc))
+	// 到点也不取锁、不跑。
+	d.s.step(context.Background())
+	if got := d.calls.Load(); got != 0 {
+		t.Fatalf("performer called %d times while disabled, want 0", got)
+	}
+	if keys, _ := d.locker.snapshot(); len(keys) != 0 {
+		t.Fatalf("lock attempted while disabled: %v", keys)
+	}
+	if got := len(d.tests.snapshot()); got != 0 {
+		t.Fatalf("persisted %d tests while disabled, want 0", got)
+	}
+
+	// 停用期间 nextDue 仍推进：同一时刻重复 tick 不会补跑，且始终在未来。
+	for i := 0; i < 3; i++ {
+		d.s.step(context.Background())
+		if !d.s.nextDue.After(d.clock.now()) {
+			t.Fatalf("nextDue = %v is not in the future while disabled", d.s.nextDue)
+		}
+	}
+	if want := time.Date(2026, 10, 28, 0, 0, 0, 0, loc); !d.s.nextDue.Equal(want) {
+		t.Fatalf("nextDue = %v after the skipped slot, want %v", d.s.nextDue, want)
+	}
+}
+
+func TestSchedulerReenableWaitsForNextSlot(t *testing.T) {
+	loc := shanghai(t)
+	d := newDynamicScheduler(t, time.Date(2026, 10, 27, 11, 59, 0, 0, loc),
+		[]string{"gpt-4o"}, nil)
+	d.settings.set(RoundSettings{Enabled: false, Runs: 1, Concurrency: 1})
+
+	// 停用期间走完 3 个周期（12:00、次日 00:00、次日 12:00），每个时段都跳过。
+	for _, slot := range []time.Time{
+		time.Date(2026, 10, 27, 12, 0, 0, 0, loc),
+		time.Date(2026, 10, 28, 0, 0, 0, 0, loc),
+		time.Date(2026, 10, 28, 12, 0, 0, 0, loc),
+	} {
+		d.clock.set(slot)
+		d.s.step(context.Background())
+	}
+	if got := d.calls.Load(); got != 0 {
+		t.Fatalf("performer called %d times while disabled", got)
+	}
+
+	// 在第三个周期上重新启用：当次 tick 不能立刻补跑。
+	d.settings.set(RoundSettings{Enabled: true, Runs: 1, Concurrency: 1})
+	d.s.step(context.Background())
+	if got := d.calls.Load(); got != 0 {
+		t.Fatalf("performer called %d times right after re-enabling, want 0", got)
+	}
+	if !d.s.nextDue.After(d.clock.now()) {
+		t.Fatalf("nextDue = %v, want a future slot after re-enabling", d.s.nextDue)
+	}
+
+	// 到了下一个时段才真的跑。
+	d.clock.set(d.s.nextDue)
+	d.s.step(context.Background())
+	if got := d.calls.Load(); got != 1 {
+		t.Fatalf("performer called %d times at the next slot, want 1", got)
+	}
+}
+
+func TestSchedulerReadsRunsAndConcurrencyPerRound(t *testing.T) {
+	loc := shanghai(t)
+	models := []string{"m1", "m2", "m3"}
+
+	var (
+		mu      sync.Mutex
+		gotRuns []int
+		// 第二轮靠屏障钉住并发：若并发仍沿用上一轮的 1，屏障永远凑不齐，
+		// 探测在超时后失败，峰值也只有 1。
+		barrier  = make(chan struct{})
+		arrived  atomic.Int64
+		inFlight atomic.Int64
+		peak     atomic.Int64
+	)
+
+	var d *dynamicScheduler
+	performer := func(_ context.Context, _ *store.Channel, _ string, runs int) []channelhealth.PerfRunResult {
+		mu.Lock()
+		gotRuns = append(gotRuns, runs)
+		// 第一轮探测进行中就把设置改掉：RunOnce 已在轮次开始时快照，
+		// 本轮剩余模型必须仍用旧值（2 次）。
+		if len(gotRuns) == 1 {
+			d.settings.set(RoundSettings{Enabled: true, Runs: 5, Concurrency: 2})
+		}
+		mu.Unlock()
+
+		cur := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for {
+			observed := peak.Load()
+			if cur <= observed || peak.CompareAndSwap(observed, cur) {
+				break
+			}
+		}
+		if runs == 5 {
+			if arrived.Add(1) == 2 {
+				close(barrier)
+			}
+			select {
+			case <-barrier:
+			case <-time.After(5 * time.Second):
+				t.Errorf("a probe never saw a second concurrent probe; concurrency was not re-read")
+			}
+		}
+		return []channelhealth.PerfRunResult{{Success: true}}
+	}
+
+	d = newDynamicScheduler(t, time.Date(2026, 10, 27, 11, 59, 0, 0, loc), models, performer)
+	d.settings.set(RoundSettings{Enabled: true, Runs: 2, Concurrency: 1})
+
+	// 第一轮：runs=2、并发=1。
+	d.clock.set(time.Date(2026, 10, 27, 12, 0, 0, 0, loc))
+	d.s.step(context.Background())
+
+	mu.Lock()
+	firstRound := append([]int(nil), gotRuns...)
+	mu.Unlock()
+	if len(firstRound) != len(models) {
+		t.Fatalf("round 1 performer calls = %d, want %d", len(firstRound), len(models))
+	}
+	for i, runs := range firstRound {
+		if runs != 2 {
+			t.Fatalf("round 1 call %d used runs=%d, want 2 (a mid-round settings change must not affect the running round)", i, runs)
+		}
+	}
+	firstPeak := peak.Load()
+	peak.Store(0)
+
+	// 第二轮：step 重新读设置，runs=5、并发=2。
+	d.clock.set(time.Date(2026, 10, 28, 0, 0, 0, 0, loc))
+	d.s.step(context.Background())
+
+	mu.Lock()
+	all := append([]int(nil), gotRuns...)
+	mu.Unlock()
+	if len(all) != 2*len(models) {
+		t.Fatalf("performer calls = %d after two rounds, want %d", len(all), 2*len(models))
+	}
+	for i, runs := range all[len(models):] {
+		if runs != 5 {
+			t.Fatalf("round 2 call %d used runs=%d, want 5 (settings not re-read per round)", i, runs)
+		}
+	}
+	if firstPeak != 1 {
+		t.Fatalf("round 1 peak in-flight = %d, want 1", firstPeak)
+	}
+	if got := peak.Load(); got != 2 {
+		t.Fatalf("round 2 peak in-flight = %d, want 2 (concurrency not re-read per round)", got)
+	}
+}
+
+func TestSchedulerRequiresScheduleFor(t *testing.T) {
+	base := SchedulerConfig{
+		Models:    &fakeModels{},
+		Channels:  &fakePicker{},
+		Performer: func(context.Context, *store.Channel, string, int) []channelhealth.PerfRunResult { return nil },
+		Tests:     &fakeTests{},
+		Locker:    openLocker{},
+	}
+	if _, err := NewScheduler(base); err == nil {
+		t.Fatal("NewScheduler accepted a config without ScheduleFor")
+	}
+	base.ScheduleFor = func(time.Time) Schedule { return nil }
+	if _, err := NewScheduler(base); err == nil {
+		t.Fatal("NewScheduler accepted a ScheduleFor that returns a nil schedule")
+	}
+}
+
+func TestSchedulerNilScheduleFallback(t *testing.T) {
+	loc := shanghai(t)
+	d := newDynamicScheduler(t, time.Date(2026, 10, 27, 6, 30, 0, 0, loc),
+		[]string{"gpt-4o"}, nil)
+
+	// 先让一次 tick 存下 1h 表：「沿用上一个非 nil」只有在存在上一个时才可观测。
+	d.schedule.set(IntervalSchedule{Hours: 1, Loc: loc})
+	d.s.step(context.Background())
+	if want := time.Date(2026, 10, 27, 7, 0, 0, 0, loc); !d.s.nextDue.Equal(want) {
+		t.Fatalf("nextDue after schedule switch = %v, want %v", d.s.nextDue, want)
+	}
+
+	// 之后读取器返回 nil：沿用上一个时刻表，不 panic。
+	d.schedule.set(nil)
+	d.s.step(context.Background())
+	if got := d.calls.Load(); got != 0 {
+		t.Fatalf("performer called %d times before the inherited slot, want 0", got)
+	}
+
+	d.clock.set(time.Date(2026, 10, 27, 7, 0, 0, 0, loc))
+	d.s.step(context.Background())
+	if got := d.calls.Load(); got != 1 {
+		t.Fatalf("performer called %d times at the inherited slot, want 1", got)
+	}
+	if want := time.Date(2026, 10, 27, 8, 0, 0, 0, loc); !d.s.nextDue.Equal(want) {
+		t.Fatalf("nextDue = %v after a nil-schedule round, want %v", d.s.nextDue, want)
+	}
+	// 锁键仍按上一个时刻表成键。
+	keys, _ := d.locker.snapshot()
+	if len(keys) != 1 || keys[0] != "model_perf_schedule:2026-10-27T07:00" {
+		t.Fatalf("lock keys = %v, want the 2026-10-27T07:00 slot", keys)
+	}
+	// NextDue 同样回落，不 panic。
+	if got, want := d.s.NextDue(time.Date(2026, 10, 27, 7, 30, 0, 0, loc)),
+		time.Date(2026, 10, 27, 8, 0, 0, 0, loc); !got.Equal(want) {
+		t.Fatalf("NextDue with a nil schedule = %v, want the inherited %v", got, want)
+	}
+}
+
+// TestNextDueUsesCurrentSchedule 钉住 NextDue 的并发安全语义：它由 HTTP
+// handler goroutine 调用，必须读 step 最近一次存下的时刻表，而不是构造时的
+// 快照，也不能在 ScheduleFor 返回 nil 时 panic。
+func TestNextDueUsesCurrentSchedule(t *testing.T) {
+	loc := shanghai(t)
+	now := time.Date(2026, 10, 27, 6, 30, 0, 0, loc)
+	d := newDynamicScheduler(t, now, nil, nil)
+
+	if got, want := d.s.NextDue(now), time.Date(2026, 10, 27, 12, 0, 0, 0, loc); !got.Equal(want) {
+		t.Fatalf("NextDue = %v, want %v", got, want)
+	}
+
+	// 换成 1h 表后走一个 tick：NextDue 必须反映新时刻表。
+	d.schedule.set(IntervalSchedule{Hours: 1, Loc: loc})
+	d.s.step(context.Background())
+	if got, want := d.s.NextDue(now), time.Date(2026, 10, 27, 7, 0, 0, 0, loc); !got.Equal(want) {
+		t.Fatalf("NextDue after the switch = %v, want %v", got, want)
+	}
+
+	// 读取器随后返回 nil 也不能 panic：回落到 step 存下的 1h 表。
+	d.schedule.set(nil)
+	if got, want := d.s.NextDue(now), time.Date(2026, 10, 27, 7, 0, 0, 0, loc); !got.Equal(want) {
+		t.Fatalf("NextDue with a nil schedule = %v, want the stored %v", got, want)
 	}
 }

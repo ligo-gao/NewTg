@@ -88,6 +88,16 @@ type Stats struct {
 	Duration         time.Duration
 }
 
+// RoundSettings 是一轮定时探测的生效参数：启停开关与每轮探测次数/并发。
+//
+// 由 SchedulerConfig.Settings 每个 tick 返回一次，运维在控制台保存的改动
+// 因此无需重启即可生效。
+type RoundSettings struct {
+	Enabled     bool
+	Runs        int
+	Concurrency int
+}
+
 // SchedulerConfig 是调度器的显式依赖与参数。
 type SchedulerConfig struct {
 	// Models/Channels/Performer/Tests/Locker 必填：缺任何一项都无法完成
@@ -97,8 +107,12 @@ type SchedulerConfig struct {
 	Performer Performer
 	Tests     TestStore
 	Locker    Locker
-	// Schedule 必填（至少一个时刻）：零值会让循环永远不到点。
-	Schedule DailyTimes
+	// ScheduleFor 必填：返回 now 时刻生效的时刻表。每个 tick 都调用一次，
+	// 返回 nil 时调度器沿用上一个非 nil 时刻表。
+	ScheduleFor func(now time.Time) Schedule
+	// Settings 可选：返回当前的启停与每轮参数。nil 时与改造前一致——始终
+	// 启用，并使用下面的静态 Runs/Concurrency。
+	Settings func() RoundSettings
 	// Runs/Concurrency 超界时钳制（见 minRuns..maxRuns / minConcurrency..maxConcurrency）。
 	Runs        int
 	Concurrency int
@@ -117,14 +131,27 @@ type SchedulerConfig struct {
 
 // Scheduler 是定时性能探测的调度器。
 //
-// 字段名固定：Task 7 的 step 直接读写 schedule/logger/locker/slotTTL/
-// tickInterval/nextDue。构造后除 nextDue 与启动前注入的 onRound 外全部只读。
+// 字段名固定：schedule/logger/locker/slotTTL/tickInterval/nextDue 是调度
+// 循环直接依赖的名字，不随内部重构改名。每个 tick 都会重新读取
+// scheduleFor/settings 并改写 schedule/runs/concurrency，运维保存的改动
+// 因此无需重启即可生效；其余字段构造后只读。schedule 另由 scheduleMu 保护
+// ——NextDue 会被 HTTP handler goroutine 调用，必须与 step 的写入串行化。
 type Scheduler struct {
-	models       ModelSource
-	channels     ChannelPicker
-	performer    Performer
-	tests        TestStore
-	schedule     DailyTimes
+	models      ModelSource
+	channels    ChannelPicker
+	performer   Performer
+	tests       TestStore
+	scheduleFor func(now time.Time) Schedule
+	settings    func() RoundSettings
+	// scheduleMu 保护 schedule 的并发访问（currentSchedule/setSchedule）；
+	// 构造期字段尚未发布，直接赋值。
+	scheduleMu sync.RWMutex
+	// schedule 是最近一次生效的时刻表：构造时由 ScheduleFor 初始化，之后每个
+	// tick 在 step 里刷新。
+	schedule Schedule
+	// roundMu 保护 runs/concurrency：step 在每个轮次之间写入，手动触发的
+	// RunOnce 会从 HTTP handler goroutine 上快照读取。
+	roundMu      sync.RWMutex
 	runs         int
 	concurrency  int
 	locker       Locker
@@ -157,18 +184,25 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 	if cfg.Locker == nil {
 		return nil, errors.New("modelperf: scheduler requires a slot locker")
 	}
-	if len(cfg.Schedule.dayTimes) == 0 {
-		return nil, errors.New("modelperf: scheduler requires a schedule with at least one time")
+	if cfg.ScheduleFor == nil {
+		return nil, errors.New("modelperf: scheduler requires a schedule")
 	}
-
+	// 有 Settings 时用当前值做初始参数：首个 tick 之前的手动 RunOnce 也应
+	// 按操作员保存的设置跑，而不是用零值被钳到下限。
+	runs, concurrency := cfg.Runs, cfg.Concurrency
+	if cfg.Settings != nil {
+		st := cfg.Settings()
+		runs, concurrency = st.Runs, st.Concurrency
+	}
 	s := &Scheduler{
 		models:       cfg.Models,
 		channels:     cfg.Channels,
 		performer:    cfg.Performer,
 		tests:        cfg.Tests,
-		schedule:     cfg.Schedule,
-		runs:         clamp(cfg.Runs, minRuns, maxRuns),
-		concurrency:  clamp(cfg.Concurrency, minConcurrency, maxConcurrency),
+		scheduleFor:  cfg.ScheduleFor,
+		settings:     cfg.Settings,
+		runs:         clamp(runs, minRuns, maxRuns),
+		concurrency:  clamp(concurrency, minConcurrency, maxConcurrency),
 		locker:       cfg.Locker,
 		logger:       cfg.Logger,
 		now:          cfg.Now,
@@ -188,7 +222,14 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 	if s.slotTTL <= 0 {
 		s.slotTTL = defaultSlotTTL
 	}
-	s.nextDue = s.schedule.Next(s.now())
+	now := s.now()
+	schedule := s.scheduleFor(now)
+	if schedule == nil {
+		// 构造期就必须有生效时刻表：nil 会让循环永远不到点，属于装配错误。
+		return nil, errors.New("modelperf: scheduler requires a schedule")
+	}
+	s.schedule = schedule
+	s.nextDue = schedule.Next(now)
 	return s, nil
 }
 
@@ -203,6 +244,36 @@ func clamp(v, lo, hi int) int {
 	return v
 }
 
+// currentSchedule 在读锁下返回最近生效的时刻表。NextDue 会被调度循环之外的
+// goroutine（HTTP handler）调用，因此不能直接读字段。
+func (s *Scheduler) currentSchedule() Schedule {
+	s.scheduleMu.RLock()
+	defer s.scheduleMu.RUnlock()
+	return s.schedule
+}
+
+// setSchedule 更新最近生效的时刻表，只由 step 所在 goroutine 调用。
+func (s *Scheduler) setSchedule(schedule Schedule) {
+	s.scheduleMu.Lock()
+	defer s.scheduleMu.Unlock()
+	s.schedule = schedule
+}
+
+// roundParams 在读锁下快照本轮的 runs/concurrency：step 会在轮次之间改写
+// 它们，而手动触发的 RunOnce 可能与调度循环并发。
+func (s *Scheduler) roundParams() (runs, concurrency int) {
+	s.roundMu.RLock()
+	defer s.roundMu.RUnlock()
+	return s.runs, s.concurrency
+}
+
+// setRoundParams 写入下一轮生效的参数，只由 step 所在 goroutine 调用。
+func (s *Scheduler) setRoundParams(runs, concurrency int) {
+	s.roundMu.Lock()
+	defer s.roundMu.Unlock()
+	s.runs, s.concurrency = runs, concurrency
+}
+
 // SetOnRound 在构造后注入轮次回调。
 //
 // 为什么不在 NewScheduler 里一次配好：生产装配必须先拿到 *Scheduler 才能用
@@ -212,11 +283,17 @@ func (s *Scheduler) SetOnRound(fn func(ctx context.Context, startedAt time.Time,
 	s.onRound = fn
 }
 
-// NextDue 返回 now 之后的第一个时段（按时刻表时区解释），供运行记录回填
-// next_due_at：管理面显示的周期是固定 12h，而真实的下一次可能是
-// PERF_SCHEDULE_TIMES 配出来的任意时刻。
+// NextDue 返回 now 之后的第一个时段（按当前生效时刻表解释），供运行记录
+// 回填 next_due_at：管理面显示的周期由操作员保存的设置决定，真实的下一次
+// 必须由服务端用与 worker 相同的 ScheduleFor 计算，而不是页面重算。
+//
+// 每次调用都重新问 ScheduleFor，因此调度循环之外的调用方也能立即看到新设置；
+// ScheduleFor 返回 nil 时沿用最近一次生效的时刻表。
 func (s *Scheduler) NextDue(now time.Time) time.Time {
-	return s.schedule.Next(now)
+	if schedule := s.scheduleFor(now); schedule != nil {
+		return schedule.Next(now)
+	}
+	return s.currentSchedule().Next(now)
 }
 
 // RunOnce 执行一轮全量探测：所有公开对话模型各测一次（每模型 runs 次请求）。
@@ -224,8 +301,13 @@ func (s *Scheduler) NextDue(now time.Time) time.Time {
 // 单模型的失败（选渠道报错、落库报错）只记日志并计入 Stats，不中止其他
 // 模型；只有取模型列表失败才返回 error。RunOnce 不取时段锁——锁属于
 // 调度循环，手工/测试触发的单轮执行不应被锁竞争挡住。
+//
+// runs/concurrency 在入口一次性快照（读锁下）：一轮之内 Settings 再变化也不
+// 影响本轮，step 在轮次开始前写入的新值则对下一轮生效；快照也避免手动触发
+// 的 RunOnce 与调度循环并发读写这两个字段。
 func (s *Scheduler) RunOnce(ctx context.Context) (Stats, error) {
 	start := s.now()
+	runs, concurrency := s.roundParams()
 	var stats Stats
 
 	names, err := s.models.ListPublicChatModels(ctx)
@@ -244,7 +326,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) (Stats, error) {
 	)
 	// 信号量在**派发侧**获取：循环本身因此被限流，最多只有 concurrency
 	// 个模型同时在探测，而不只是限制 goroutine 数量。
-	sem := make(chan struct{}, s.concurrency)
+	sem := make(chan struct{}, concurrency)
 
 dispatch:
 	for _, model := range names {
@@ -281,8 +363,8 @@ dispatch:
 				return
 			}
 
-			results := s.performer(ctx, ch, model, s.runs)
-			test, runRows := Aggregate(ch, model, s.runs, results, nil)
+			results := s.performer(ctx, ch, model, runs)
+			test, runRows := Aggregate(ch, model, runs, results, nil)
 			if _, createErr := s.tests.Create(ctx, test, runRows); createErr != nil {
 				s.logger.Warn("modelperf: persist performance test failed",
 					"model", model, "channel_id", ch.ID, "error", createErr)
@@ -310,17 +392,47 @@ dispatch:
 // 必须落到同一个字符串上，所以既不能用 slot 自身的时区，也不能固定用 UTC
 // ——只有时刻表的时区是跨副本一致的语义锚点。
 func (s *Scheduler) slotKey(slot time.Time) string {
-	return "model_perf_schedule:" + slot.In(s.schedule.Location()).Format("2006-01-02T15:04")
+	return "model_perf_schedule:" + slot.In(s.currentSchedule().Location()).Format("2006-01-02T15:04")
 }
 
-// step 处理一个 tick：到点才取锁，取到锁才跑一轮。
+// step 处理一个 tick：先重新读取本 tick 生效的时刻表与设置，再「到点才取锁，
+// 取到锁才跑一轮」。
 //
 // step 至多阻塞一次 RunOnce（锁与探测都受 ctx 控制），因此 ticker 的后续
 // tick 最多延后一轮，不会堆积执行。测试直接调用它以绕开真实时钟。
 func (s *Scheduler) step(ctx context.Context) {
 	now := s.now()
+	// 每个 tick 都重新问一次：控制台保存后，下一个 tick 就能生效，无需重启。
+	schedule := s.scheduleFor(now)
+	if schedule == nil {
+		// 读取器偶发返回 nil：沿用上一个非 nil 时刻表，而不是 panic 或停摆。
+		schedule = s.currentSchedule()
+	}
+	s.setSchedule(schedule)
+
+	var settings RoundSettings
+	if s.settings != nil {
+		settings = s.settings()
+		if !settings.Enabled {
+			// 停用期间照样推进 nextDue：恢复后从下一个时段开始，而不是立刻
+			// 补跑停用期间积压的轮次。
+			s.nextDue = schedule.Next(now)
+			return
+		}
+	}
 	if now.Before(s.nextDue) {
+		// 未到点也可能换了时刻表：把 nextDue 重算到新表的下一时段。
+		if next := schedule.Next(now); !next.Equal(s.nextDue) {
+			s.logger.Info("modelperf: schedule changed; next due recomputed",
+				"from", s.nextDue.Format(time.RFC3339), "to", next.Format(time.RFC3339))
+			s.nextDue = next
+		}
 		return
+	}
+	if s.settings != nil {
+		s.setRoundParams(
+			clamp(settings.Runs, minRuns, maxRuns),
+			clamp(settings.Concurrency, minConcurrency, maxConcurrency))
 	}
 	slot := s.nextDue
 	key := s.slotKey(slot)
@@ -336,13 +448,13 @@ func (s *Scheduler) step(ctx context.Context) {
 		// 仍在当前时段内：保持 nextDue，下个 tick 重试。若已越过下一个时段
 		// （错过整整一个周期，例如 Redis 长时间不可用），直接跳到未来时段，
 		// 避免恢复后连续补跑多个时段。
-		if next := s.schedule.Next(slot); !now.Before(next) {
-			s.nextDue = s.schedule.Next(now)
+		if next := schedule.Next(slot); !now.Before(next) {
+			s.nextDue = schedule.Next(now)
 		}
 	case !acquired:
 		s.logger.Info("modelperf: scheduled round skipped",
 			"slot", slot.Format(time.RFC3339), "skipped_locked", true)
-		s.nextDue = s.schedule.Next(now)
+		s.nextDue = schedule.Next(now)
 	default:
 		// startedAt 取 RunOnce 之前：运行记录的开始时间是轮次真实起点，而不是
 		// 钩子触发时刻；平台层还用它回填 worker_tasks.last_run_at。
@@ -362,7 +474,7 @@ func (s *Scheduler) step(ctx context.Context) {
 		s.notifyRound(ctx, startedAt, stats, runErr)
 		// 以轮次结束时刻（而非触发时刻）计算下一个时段：一轮跑得久时，
 		// 已过去的时段直接跳过，不会排队补跑。
-		s.nextDue = s.schedule.Next(s.now())
+		s.nextDue = schedule.Next(s.now())
 	}
 }
 
