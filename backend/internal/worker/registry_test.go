@@ -29,8 +29,8 @@ func TestDefaultRegistrySchedulesModelPerfTest(t *testing.T) {
 	if task.Timeout < time.Hour {
 		t.Fatal("a full round can exceed the 10m default timeout")
 	}
-	// 目录里的 Interval 只是出厂展示默认值（首次启动落进
-	// worker_task_states.interval_seconds 后以库值为准），真实节奏由性能页的
+	// 目录里的 Interval 只是出厂展示默认值：EnsureTaskRows 每次 worker 启动都会
+	// 把它 UPSERT 进 worker_tasks.interval_seconds，真实节奏由性能页的
 	// perf.schedule.* 决定。文案必须说清真源，否则管理员会以为改这个常量
 	// 或者等 12 小时就能调整周期。
 	if !strings.Contains(task.Description, "performance settings page") {
