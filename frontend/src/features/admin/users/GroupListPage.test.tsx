@@ -133,7 +133,9 @@ describe('GroupListPage group discounts', () => {
 
     const { sheet } = await openDiscountSheet()
 
-    expect(sheet.textContent).toContain('acme')
+    expect(
+      within(sheet).getByRole('heading', { name: 'Discounts for acme' }),
+    ).toBeTruthy()
     expect(sheet.textContent).toContain(
       'Personal and group discounts do not stack; the lower effective rate applies.',
     )

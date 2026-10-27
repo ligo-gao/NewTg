@@ -1,6 +1,8 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
+import { isTopModal, popModal, pushModal } from './dialog'
+
 export interface SheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -58,6 +60,9 @@ export function Sheet({
   const panelRef = useRef<HTMLDivElement>(null)
   const titleId = useId()
   const descriptionId = useId()
+  // One token per mounted instance: push/pop are identity-based, so this Sheet
+  // and a Dialog opened from inside it are independent layers of one stack.
+  const tokenRef = useRef(Symbol('sheet'))
   const onOpenChangeRef = useRef(onOpenChange)
 
   useEffect(() => {
@@ -69,8 +74,15 @@ export function Sheet({
     const panel = panelRef.current
     if (panel === null) return
 
+    const token = tokenRef.current
     const previouslyFocused =
       document.activeElement instanceof HTMLElement ? document.activeElement : null
+
+    // Join the shared modal stack so a Dialog opened on top of this Sheet (for
+    // example the discount-delete confirmation) owns Escape and Tab while it is
+    // present. Without this the sheet's document listener closed both layers at
+    // once and pulled focus into the now-inert sheet panel.
+    pushModal(token)
     panel.focus()
 
     const portalRoot = panel.parentElement
@@ -88,6 +100,9 @@ export function Sheet({
     }
 
     const handleKeyDown = (event: KeyboardEvent): void => {
+      // Only the topmost layer owns keyboard navigation; while a Dialog sits
+      // above this Sheet both Escape and Tab belong to that Dialog.
+      if (!isTopModal(token)) return
       if (event.key === 'Escape') {
         event.preventDefault()
         onOpenChangeRef.current(false)
@@ -120,6 +135,11 @@ export function Sheet({
     document.addEventListener('keydown', handleKeyDown)
     return () => {
       document.removeEventListener('keydown', handleKeyDown)
+      // A lower layer can unmount while a Dialog above it is still open; remove
+      // by identity so the layer above stays on top, and skip focus restore in
+      // that case (restoring would pull focus out of the live dialog).
+      const wasTop = isTopModal(token)
+      popModal(token)
       for (const snapshot of snapshots) {
         if (!snapshot.wasInert) snapshot.element.removeAttribute('inert')
         if (snapshot.ariaHidden === null) {
@@ -128,7 +148,7 @@ export function Sheet({
           snapshot.element.setAttribute('aria-hidden', snapshot.ariaHidden)
         }
       }
-      if (previouslyFocused?.isConnected) previouslyFocused.focus()
+      if (wasTop && previouslyFocused?.isConnected) previouslyFocused.focus()
     }
   }, [open])
 
@@ -140,6 +160,10 @@ export function Sheet({
         className="absolute inset-0 bg-overlay"
         aria-hidden="true"
         onClick={() => {
+          // The backdrop is covered by any layer above; browsers block the
+          // click through `inert`, but jsdom and some webviews do not, so the
+          // stack guard keeps the behaviour identical there.
+          if (!isTopModal(tokenRef.current)) return
           onOpenChange(false)
         }}
       />

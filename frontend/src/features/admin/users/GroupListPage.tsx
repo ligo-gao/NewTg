@@ -279,6 +279,11 @@ function GroupDiscountSheet({ group, onOpenChange }: GroupDiscountSheetProps) {
       }
       description={t('admin.groups.discount_description')}
       widthClassName="max-w-[900px]"
+      footer={
+        <Button variant="secondary" onClick={() => onOpenChange(false)}>
+          {t('common.action.close')}
+        </Button>
+      }
     >
       {group === null ? null : (
         <DiscountRuleTable targetType="group" targetID={group.name} />

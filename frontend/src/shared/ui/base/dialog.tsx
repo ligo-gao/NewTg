@@ -72,17 +72,31 @@ function focusableInside(panel: HTMLElement): HTMLElement[] {
 }
 
 /**
- * Module-level modal stack (WAI-ARIA nested dialogs).
+ * Module-level modal stack (WAI-ARIA nested dialogs), shared by `Dialog` and
+ * `Sheet`.
  *
- * Every open `Dialog` pushes a token; only the last one — the visually topmost
- * portal — may consume Tab/Escape. Without this, a confirmation opened from a
- * drawer would leave the drawer's key handler alive: Escape would dismiss both
- * layers at once and Tab could jump into the inert background panel. Tokens
- * (not booleans) make removal order-independent when nested effects clean up.
+ * Every open modal layer pushes a token; only the last one — the visually
+ * topmost portal — may consume Tab/Escape. Without this, a confirmation opened
+ * from a drawer would leave the drawer's key handler alive: Escape would
+ * dismiss both layers at once and Tab could jump into the inert background
+ * panel. Tokens (not booleans) make removal order-independent when nested
+ * effects clean up out of order.
  */
 const dialogStack: symbol[] = []
 
-function isTopDialog(token: symbol): boolean {
+/** Register a modal layer on the shared stack. */
+export function pushModal(token: symbol): void {
+  dialogStack.push(token)
+}
+
+/** Remove a layer by identity, wherever it sits (usable from lower layers). */
+export function popModal(token: symbol): void {
+  const index = dialogStack.indexOf(token)
+  if (index !== -1) dialogStack.splice(index, 1)
+}
+
+/** Only the topmost layer may handle Tab/Escape or restore focus. */
+export function isTopModal(token: symbol): boolean {
   return dialogStack[dialogStack.length - 1] === token
 }
 
@@ -150,7 +164,7 @@ export function Dialog({
     // Register before the first paint of the handler; the token identifies
     // this specific dialog on the module-level stack.
     const token = Symbol('dialog')
-    dialogStack.push(token)
+    pushModal(token)
 
     panel.focus()
 
@@ -183,7 +197,7 @@ export function Dialog({
       // Only the topmost modal owns keyboard navigation. A lower dialog stays
       // mounted (and inert) while a confirmation is on top, but must not react
       // to Escape or Tab.
-      if (!isTopDialog(token)) return
+      if (!isTopModal(token)) return
 
       if (event.key === 'Escape') {
         event.preventDefault()
@@ -224,8 +238,7 @@ export function Dialog({
 
     return () => {
       document.removeEventListener('keydown', handleKeyDown)
-      const index = dialogStack.indexOf(token)
-      if (index !== -1) dialogStack.splice(index, 1)
+      popModal(token)
       for (const snapshot of snapshots) {
         if (!snapshot.wasInert) snapshot.element.removeAttribute('inert')
         if (snapshot.ariaHidden === null) {

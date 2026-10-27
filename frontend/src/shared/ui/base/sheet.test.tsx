@@ -1,6 +1,8 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { Dialog } from './dialog'
 import { Sheet } from './sheet'
 
 /**
@@ -43,5 +45,85 @@ describe('Sheet focus trap candidate filtering (UI-5)', () => {
     expect(document.activeElement).toBe(visible)
     fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
     expect(document.activeElement).toBe(visible)
+  })
+})
+
+/**
+ * The production shape: a destructive confirmation `Dialog` opened from inside
+ * a `Sheet` (discount delete over the discount sheet). Both are modal layers,
+ * so they must share one stack; otherwise the sheet's document listener runs
+ * first and closes the sheet together with the dialog (Escape) and pulls focus
+ * into the sheet panel that is inert while the dialog sits on top (Tab).
+ */
+function NestedSheetHarness() {
+  const [sheetOpen, setSheetOpen] = useState(true)
+  const [dialogOpen, setDialogOpen] = useState(false)
+  return (
+    <Sheet
+      open={sheetOpen}
+      onOpenChange={setSheetOpen}
+      title="Sheet"
+      footer={
+        <button type="button" onClick={() => setDialogOpen(true)}>
+          Open confirmation
+        </button>
+      }
+    >
+      <button type="button">Sheet body</button>
+      <Dialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        title="Confirm"
+        footer={
+          <>
+            <button type="button" onClick={() => setDialogOpen(false)}>
+              Dialog cancel
+            </button>
+            <button type="button">Delete</button>
+          </>
+        }
+      >
+        <button type="button">Dialog middle</button>
+      </Dialog>
+    </Sheet>
+  )
+}
+
+describe('Sheet in the shared modal stack', () => {
+  it('leaves Escape and Tab to a Dialog opened on top of it', () => {
+    render(<NestedSheetHarness />)
+
+    const sheetBody = screen.getByRole('button', { name: 'Sheet body' })
+    fireEvent.click(screen.getByRole('button', { name: 'Open confirmation' }))
+
+    // Both portals are body children; the sheet's is inert while the dialog is
+    // open, so the accessibility tree hides it — query the DOM to see both.
+    const layers = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="dialog"]'),
+    )
+    expect(layers).toHaveLength(2)
+    const [sheetPanel, confirm] = layers as [HTMLElement, HTMLElement]
+    expect(sheetPanel.textContent).toContain('Sheet')
+    expect(confirm.textContent).toContain('Confirm')
+    expect(sheetPanel.parentElement?.hasAttribute('inert')).toBe(true)
+
+    // Tab from inside the Dialog must never be served by the lower sheet: focus
+    // stays in the dialog and the (inert) sheet panel is never focused.
+    const dialogMiddle = screen.getByRole('button', { name: 'Dialog middle' })
+    dialogMiddle.focus()
+    const sheetFocus = vi.fn()
+    sheetBody.addEventListener('focus', sheetFocus)
+
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(sheetFocus).not.toHaveBeenCalled()
+    expect(confirm.contains(document.activeElement)).toBe(true)
+
+    // Escape closes only the confirmation; the sheet stays open behind it.
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1)
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+      'Sheet',
+    )
+    expect(sheetPanel.parentElement?.hasAttribute('inert')).toBe(false)
   })
 })
