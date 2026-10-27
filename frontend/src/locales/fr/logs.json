@@ -46,7 +46,7 @@
       "format": "Format",
       "format_txt": "TXT (séparé par tabulations)",
       "format_markdown": "Markdown (tableau)",
-      "fields": "Toutes les colonnes standard sont exportées (la visibilité des colonnes ne s'applique pas)",
+      "fields": "Toutes les colonnes standard sont exportées (la visibilité des colonnes ne s'applique pas). Les colonnes de prix initial et de remise sont ajoutées à la fin",
       "sensitive": "Inclure le contenu sensible",
       "sensitive_notice": "Cet export inclut du contenu sensible",
       "sensitive_off": "Le texte des erreurs est exporté masqué",
@@ -78,7 +78,9 @@
       "model": "Modèle",
       "token": "Jeton",
       "tokens": "Jetons",
-      "cost": "Coût",
+      "original_cost": "Prix initial",
+      "discount": "Remise",
+      "cost": "Facturé",
       "timing": "Durée",
       "channel": "Canal",
       "user": "Utilisateur",
@@ -143,6 +145,8 @@
       "cache_write_cost": "Coût d'écriture du cache",
       "per_million": "{price}/1 M",
       "group_ratio": "Ratio du groupe",
+      "original_cost": "Prix initial",
+      "discount": "Remise",
       "pre_deducted": "Pré-débité",
       "settled": "Réglé",
       "refunded": "Remboursé",
@@ -165,6 +169,9 @@
       "sensitive_hidden": "Contenu sensible masqué",
       "retry_count_label": "Tentatives",
       "masked_prompt": "••••••"
+    },
+    "discount": {
+      "percent": "{value}%"
     },
     "credits": "crédits",
     "tabs": {

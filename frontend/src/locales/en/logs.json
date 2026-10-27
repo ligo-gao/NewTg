@@ -46,7 +46,7 @@
       "format": "Format",
       "format_txt": "TXT (tab-separated)",
       "format_markdown": "Markdown (table)",
-      "fields": "All standard columns are exported (column visibility does not apply)",
+      "fields": "All standard columns are exported (column visibility does not apply). Original cost and discount columns are appended at the end",
       "sensitive": "Include sensitive content",
       "sensitive_notice": "This export includes sensitive content",
       "sensitive_off": "Error text is exported masked",
@@ -78,7 +78,9 @@
       "model": "Model",
       "token": "Token",
       "tokens": "Tokens",
-      "cost": "Cost",
+      "original_cost": "Original",
+      "discount": "Discount",
+      "cost": "Charged",
       "timing": "Timing",
       "channel": "Channel",
       "user": "User",
@@ -143,6 +145,8 @@
       "cache_write_cost": "Cache write cost",
       "per_million": "{price}/1M",
       "group_ratio": "Group ratio",
+      "original_cost": "Original cost",
+      "discount": "Discount",
       "pre_deducted": "Pre-deducted",
       "settled": "Settled",
       "refunded": "Refunded",
@@ -165,6 +169,9 @@
       "sensitive_hidden": "Sensitive content hidden",
       "masked_prompt": "••••••",
       "retry_count_label": "Retries"
+    },
+    "discount": {
+      "percent": "{value}%"
     },
     "credits": "credits",
     "tabs": {

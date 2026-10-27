@@ -46,7 +46,7 @@
       "format": "形式",
       "format_txt": "TXT（タブ区切り）",
       "format_markdown": "Markdown（表）",
-      "fields": "標準列はすべてエクスポートされます（列の表示設定は適用されません）",
+      "fields": "標準列はすべてエクスポートされます（列の表示設定は適用されません）。末尾に元の価格と割引の列が追加されます",
       "sensitive": "機密コンテンツを含める",
       "sensitive_notice": "このエクスポートには機密コンテンツが含まれます",
       "sensitive_off": "エラーテキストはマスクされてエクスポートされます",
@@ -78,7 +78,9 @@
       "model": "モデル",
       "token": "トークン",
       "tokens": "トークン数",
-      "cost": "費用",
+      "original_cost": "元の価格",
+      "discount": "割引",
+      "cost": "請求額",
       "timing": "所要時間",
       "channel": "チャネル",
       "user": "ユーザー",
@@ -143,6 +145,8 @@
       "cache_write_cost": "キャッシュ書き込み費用",
       "per_million": "{price}/100 万",
       "group_ratio": "グループ倍率",
+      "original_cost": "元の料金",
+      "discount": "割引",
       "pre_deducted": "事前控除",
       "settled": "精算済み",
       "refunded": "返金済み",
@@ -165,6 +169,9 @@
       "sensitive_hidden": "機密コンテンツは非表示です",
       "retry_count_label": "再試行回数",
       "masked_prompt": "••••••"
+    },
+    "discount": {
+      "percent": "{value}%"
     },
     "credits": "クレジット",
     "tabs": {

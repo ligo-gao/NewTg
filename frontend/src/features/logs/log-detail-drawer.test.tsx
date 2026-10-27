@@ -94,3 +94,63 @@ describe('log detail drawer role gating', () => {
     expect(within(dialog).queryByText('alice')).toBeNull()
   })
 })
+
+describe('log detail drawer cost breakdown', () => {
+  it('renders original cost and discount before the pre-deducted row', async () => {
+    installDetail({
+      ...DETAIL,
+      cost: 90,
+      original_cost: 100,
+      applied_discount: 0.9,
+      discount_target: 'user:1',
+    })
+    renderDrawer(ADMIN)
+
+    const dialog = await screen.findByRole('dialog')
+    expect(await within(dialog).findByText('Original cost')).toBeTruthy()
+    expect(within(dialog).getByText('100')).toBeTruthy()
+    expect(within(dialog).getByText('Discount')).toBeTruthy()
+    expect(within(dialog).getByText('90%')).toBeTruthy()
+
+    const terms = within(dialog)
+      .getAllByRole('term')
+      .map((term) => term.textContent)
+    expect(terms.indexOf('Original cost')).toBeLessThan(terms.indexOf('Pre-deducted'))
+    expect(terms.indexOf('Discount')).toBeLessThan(terms.indexOf('Pre-deducted'))
+  })
+
+  it('shows a dash and 0% for a fully waived row', async () => {
+    installDetail({
+      ...DETAIL,
+      cost: 0,
+      original_cost: null,
+      applied_discount: 0,
+      discount_target: 'group:vip',
+      refunded: 0,
+    })
+    renderDrawer(ADMIN)
+
+    const dialog = await screen.findByRole('dialog')
+    const originalRow = (await within(dialog).findByText('Original cost')).closest(
+      'div',
+    )
+    expect(originalRow).not.toBeNull()
+    expect(within(originalRow as HTMLElement).getByText('—')).toBeTruthy()
+    expect(within(dialog).getByText('0%')).toBeTruthy()
+  })
+
+  it('omits the discount rows entirely when no discount data is present', async () => {
+    installDetail({
+      ...DETAIL,
+      original_cost: null,
+      applied_discount: null,
+      discount_target: null,
+    })
+    renderDrawer(ADMIN)
+
+    const dialog = await screen.findByRole('dialog')
+    expect(await within(dialog).findByText('Pre-deducted')).toBeTruthy()
+    expect(within(dialog).queryByText('Original cost')).toBeNull()
+    expect(within(dialog).queryByText('Discount')).toBeNull()
+  })
+})

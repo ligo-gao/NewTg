@@ -1028,3 +1028,97 @@ describe('usage logs tabs and request_id deep links', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 })
+
+describe('usage logs cost breakdown', () => {
+  /**
+   * The three cost columns sit between the token columns and the timing column
+   * for every role: index 5 原价, 6 折扣, 7 实收. The column order is the
+   * contract D6 asks for, so an index read is the honest assertion.
+   */
+  function costCells(model: string): {
+    original: string
+    discount: string
+    charged: string
+  } {
+    const row = screen.getByText(model).closest('tr')
+    if (row === null) throw new Error(`row for ${model} not found`)
+    const cells = within(row as HTMLElement).getAllByRole('cell')
+    return {
+      original: (cells[5]?.textContent ?? '').trim(),
+      discount: (cells[6]?.textContent ?? '').trim(),
+      charged: (cells[7]?.textContent ?? '').trim(),
+    }
+  }
+
+  it('renders original cost, discount and charged cost for a discounted row', async () => {
+    installScenario({
+      list: () =>
+        jsonResponse(
+          page([
+            {
+              ...USER_ROW,
+              id: 5,
+              model: 'gpt-4o-discounted',
+              cost: 90,
+              original_cost: 100,
+              applied_discount: 0.9,
+              discount_target: 'user:1',
+              refunded: 0,
+            },
+          ]),
+        ),
+    })
+    renderWithProviders(<PageHarness />)
+
+    await screen.findByText('gpt-4o-discounted')
+    expect(screen.getByRole('columnheader', { name: 'Original' })).toBeTruthy()
+    expect(screen.getByRole('columnheader', { name: 'Discount' })).toBeTruthy()
+    expect(screen.getByRole('columnheader', { name: 'Charged' })).toBeTruthy()
+    expect(screen.queryByRole('columnheader', { name: 'Cost' })).toBeNull()
+
+    const cells = costCells('gpt-4o-discounted')
+    expect(cells.original).toBe('100')
+    expect(cells.discount).toBe('90%')
+    expect(cells.charged).toContain('90')
+  })
+
+  it('shows a dash for an unknown original cost on a fully waived row', async () => {
+    installScenario({
+      list: () =>
+        jsonResponse(
+          page([
+            {
+              ...USER_ROW,
+              id: 6,
+              model: 'gpt-4o-free',
+              cost: 0,
+              original_cost: null,
+              applied_discount: 0,
+              discount_target: 'group:vip',
+              refunded: 0,
+            },
+          ]),
+        ),
+    })
+    renderWithProviders(<PageHarness />)
+
+    await screen.findByText('gpt-4o-free')
+    const cells = costCells('gpt-4o-free')
+    // 0% is a granted full waiver, not "no discount"; the original cost cannot
+    // be reconstructed for it and must read as unknown rather than zero.
+    expect(cells.original).toBe('—')
+    expect(cells.discount).toBe('0%')
+    expect(cells.charged).toContain('0')
+  })
+
+  it('falls back to the charged cost when no discount applies', async () => {
+    installScenario({ list: () => jsonResponse(page([USER_ROW])) })
+    renderWithProviders(<PageHarness />)
+
+    await screen.findByText('gpt-4o')
+    const cells = costCells('gpt-4o')
+    expect(cells.original).toBe('45')
+    expect(cells.discount).toBe('—')
+    expect(cells.charged).toContain('45')
+  })
+})

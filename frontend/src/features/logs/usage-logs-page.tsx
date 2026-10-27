@@ -25,6 +25,7 @@ import { Dialog } from '@/shared/ui/base/dialog'
 import { useToastStore } from '@/shared/ui/toast'
 
 import { useLogsCapabilities } from './capabilities'
+import { DiscountLabel } from './discount-label'
 import { ExportDialog } from './export-dialog'
 import { formatSeconds } from './format'
 import { LogDetailDrawer } from './log-detail-drawer'
@@ -530,8 +531,9 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
     errorMessage = t('logs.usage.error.load')
   }
 
+  // 时间/状态/模型/令牌/Token/原价/折扣/实收/耗时 = 9 个基础列。
   const columnCount =
-    7 +
+    9 +
     (capabilities.isAdmin ? 1 : 0) +
     (capabilities.canFilterByUsername ? 1 : 0) +
     1
@@ -896,6 +898,12 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
                   {t('logs.usage.columns.tokens')}
                 </th>
                 <th scope="col" className="px-4 py-2 text-right">
+                  {t('logs.usage.columns.original_cost')}
+                </th>
+                <th scope="col" className="px-4 py-2 text-right">
+                  {t('logs.usage.columns.discount')}
+                </th>
+                <th scope="col" className="px-4 py-2 text-right">
                   {t('logs.usage.columns.cost')}
                 </th>
                 <th scope="col" className="px-4 py-2">
@@ -922,6 +930,12 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
                   0,
                   (row.retry_chain?.length ?? 0) - 1,
                 )
+                // 原价沿用「没有折扣信息时等于实收」的口径：`original_cost` 缺失且
+                // 没有 `applied_discount` 说明这笔根本没打折。null 保留为「未知」，
+                // 交给渲染层显示 em dash，而不是被 `?? 0` 变成免费。
+                const originalCost =
+                  row.original_cost ??
+                  (row.applied_discount == null ? row.cost : null)
                 return (
                   <tr
                     key={row.id}
@@ -978,6 +992,23 @@ export function UsageLogsPage({ search, onSearchChange }: UsageLogsPageProps) {
                           })}
                         </span>
                       ) : null}
+                    </td>
+                    {/*
+                      原价：折扣前的金额。`applied_discount` 为空表示这笔没打折，
+                      此时原价就是实收；有折扣但后端取不到原价时是「未知」，显示 —，
+                      绝不能用 0 冒充（全免正是这种情形）。
+                    */}
+                    <td className="px-4 py-2 text-right tabular-nums">
+                      <span className="font-mono text-meta">
+                        {originalCost === null
+                          ? '—'
+                          : formatCredits(originalCost, locale)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums">
+                      <span className="text-meta">
+                        <DiscountLabel rate={row.applied_discount} />
+                      </span>
                     </td>
                     <td className="px-4 py-2 text-right tabular-nums">
                       <span className="font-mono text-meta">

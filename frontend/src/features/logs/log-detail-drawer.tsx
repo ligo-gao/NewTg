@@ -12,6 +12,7 @@ import { Button } from '@/shared/ui/button'
 import { useToastStore } from '@/shared/ui/toast'
 
 import type { LogsCapabilities } from './capabilities'
+import { DiscountLabel } from './discount-label'
 import { formatPercent, formatSeconds, formatUnitPrice } from './format'
 import { UsageStatusBadge } from './log-status-badge'
 import type { UsageLogDetail } from './search'
@@ -238,6 +239,20 @@ export function LogDetailDrawer({
 
   const conclusionText = conclusion()
 
+  // 原价 / 折扣两行只在日志带折扣信息时出现：三个键全空表示这笔没打折，整块
+  // 折扣信息不显示（列表页则保留固定表头，见 T14-R5）。原价缺失但确有折扣
+  // （典型是全免）时为「未知」，渲染 em dash，不能当 0。
+  const originalCost =
+    detail === undefined
+      ? null
+      : (detail.original_cost ??
+        (detail.applied_discount == null ? detail.cost : null))
+  const hasDiscountInfo =
+    detail !== undefined &&
+    (detail.original_cost != null ||
+      detail.applied_discount != null ||
+      detail.discount_target != null)
+
   return (
     <Dialog
       open={logId !== null}
@@ -396,6 +411,28 @@ export function LogDetailDrawer({
                 ) : null}
               </dl>
               <dl className="mt-3 flex flex-col gap-2 border-t border-border-hairline pt-3 text-body tabular-nums">
+                {hasDiscountInfo ? (
+                  <>
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-ink-2">
+                        {t('logs.usage.detail.original_cost')}
+                      </dt>
+                      <dd>
+                        {originalCost === null
+                          ? '—'
+                          : formatCredits(originalCost, locale)}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-ink-2">
+                        {t('logs.usage.detail.discount')}
+                      </dt>
+                      <dd>
+                        <DiscountLabel rate={detail.applied_discount} />
+                      </dd>
+                    </div>
+                  </>
+                ) : null}
                 <div className="flex justify-between gap-2">
                   <dt className="text-ink-2">
                     {t('logs.usage.detail.pre_deducted')}

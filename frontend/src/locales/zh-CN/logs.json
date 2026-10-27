@@ -46,7 +46,7 @@
       "format": "格式",
       "format_txt": "TXT（制表符分隔）",
       "format_markdown": "Markdown（表格）",
-      "fields": "导出全部标准列（列显示设置不生效）",
+      "fields": "导出全部标准列（列显示设置不生效）。导出末尾追加原价、折扣两列",
       "sensitive": "包含敏感内容",
       "sensitive_notice": "此导出包含敏感内容",
       "sensitive_off": "错误文本将以脱敏形式导出",
@@ -78,7 +78,9 @@
       "model": "模型",
       "token": "令牌",
       "tokens": "Token 数",
-      "cost": "费用",
+      "original_cost": "原价",
+      "discount": "折扣",
+      "cost": "实收",
       "timing": "耗时",
       "channel": "渠道",
       "user": "用户",
@@ -143,6 +145,8 @@
       "cache_write_cost": "缓存写入费用",
       "per_million": "{price}/百万",
       "group_ratio": "分组倍率",
+      "original_cost": "原价",
+      "discount": "折扣",
       "pre_deducted": "预扣",
       "settled": "已结算",
       "refunded": "已退还",
@@ -165,6 +169,9 @@
       "sensitive_hidden": "敏感内容已隐藏",
       "retry_count_label": "重试次数",
       "masked_prompt": "••••••"
+    },
+    "discount": {
+      "percent": "{value}%"
     },
     "credits": "积分",
     "tabs": {

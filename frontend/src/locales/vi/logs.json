@@ -46,7 +46,7 @@
       "format": "Định dạng",
       "format_txt": "TXT (phân tách bằng tab)",
       "format_markdown": "Markdown (bảng)",
-      "fields": "Xuất tất cả cột tiêu chuẩn (thiết lập hiển thị cột không áp dụng)",
+      "fields": "Xuất tất cả cột tiêu chuẩn (thiết lập hiển thị cột không áp dụng). Cột giá gốc và giảm giá được thêm vào cuối",
       "sensitive": "Bao gồm nội dung nhạy cảm",
       "sensitive_notice": "Lần xuất này bao gồm nội dung nhạy cảm",
       "sensitive_off": "Văn bản lỗi được xuất ở dạng che khuất",
@@ -78,7 +78,9 @@
       "model": "Mô hình",
       "token": "Token",
       "tokens": "Số token",
-      "cost": "Chi phí",
+      "original_cost": "Giá gốc",
+      "discount": "Giảm giá",
+      "cost": "Thực thu",
       "timing": "Thời gian",
       "channel": "Kênh",
       "user": "Người dùng",
@@ -143,6 +145,8 @@
       "cache_write_cost": "Chi phí ghi bộ nhớ đệm",
       "per_million": "{price}/1 triệu",
       "group_ratio": "Tỷ lệ nhóm",
+      "original_cost": "Giá gốc",
+      "discount": "Giảm giá",
       "pre_deducted": "Đã trừ trước",
       "settled": "Đã quyết toán",
       "refunded": "Đã hoàn",
@@ -165,6 +169,9 @@
       "sensitive_hidden": "Đã ẩn nội dung nhạy cảm",
       "retry_count_label": "Số lần thử lại",
       "masked_prompt": "••••••"
+    },
+    "discount": {
+      "percent": "{value}%"
     },
     "credits": "điểm",
     "tabs": {
