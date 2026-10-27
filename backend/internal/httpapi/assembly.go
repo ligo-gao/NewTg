@@ -45,6 +45,7 @@ import (
 	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/perfmetrics"
 	"newtg/gateway/internal/perfquery"
+	"newtg/gateway/internal/perfsettings"
 	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/pricingstrategy"
 	"newtg/gateway/internal/rbac"
@@ -221,6 +222,12 @@ type GatewayDeps struct {
 	// 生产由 platform 注入同一份主库仓储；nil 时对应列为 null，端点照常 200。
 	PerfProbes   store.ModelPerformanceStore
 	PerfChannels ChannelModelCatalog
+	// PerfSchedule 是性能页 config 端的测速生效值读取器；生产由 platform
+	// 与 worker 调度器共用同一实例构造，nil 时 schedule 为 null（端点仍 200）。
+	PerfSchedule *perfsettings.Reader
+	// PerfSettingGet 是 A 类设置当前值读取接缝（configcenter.Get 的适配）；
+	// nil 时全部按注册表默认值。
+	PerfSettingGet func(key string) ([]byte, bool)
 }
 
 // BuildGatewayRouter 组装全部 M1 端点。返回的 Router 已包含：
@@ -577,6 +584,9 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		// 性能页 models 端：测速行与渠道目录（与看板共用同一主库装配）。
 		PerfProbes:   deps.PerfProbes,
 		PerfChannels: deps.PerfChannels,
+		// 性能页 config 端：生效节奏与 A 类设置当前值。
+		PerfSchedule:   deps.PerfSchedule,
+		PerfSettingGet: deps.PerfSettingGet,
 	})
 	if err != nil {
 		return nil, err

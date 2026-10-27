@@ -674,6 +674,14 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		// 性能页 models 端：复用渠道管理端点的同一渠道仓储与测速仓储。
 		PerfProbes:   modelPerformanceStore,
 		PerfChannels: channelRepo,
+		// 性能页 config 端：生效节奏与 A 类设置当前值。节奏读取器必须走真实
+		// 配置中心（center），不能用 demoConfig 包装——后者只为演示模式覆盖
+		// 计费/守卫的读取面，测速节奏不参与该覆盖。
+		PerfSchedule: newPerfSettingsReader(cfg, center, log),
+		PerfSettingGet: func(key string) ([]byte, bool) {
+			raw, ok := center.Get(key)
+			return raw, ok
+		},
 		// W7/M5-b：准入限流器复用同一个 Redis 客户端（跨副本共享计数），
 		// 装配一次、由中继面与任务提交面共同持有（R-M5-04/07）。
 		RateLimiter: rateLimiter,

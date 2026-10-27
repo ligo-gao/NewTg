@@ -3,6 +3,7 @@
 //	GET    /api/performance/stats               settings:manage（只读）
 //	GET    /api/performance/overview            settings:manage（只读，Prometheus 代理）
 //	GET    /api/performance/models              settings:manage（只读，模型汇总表）
+//	GET    /api/performance/config              settings:manage（只读，运行参数）
 //	DELETE /api/performance/disk-cache          settings:manage + X-Confirm-Action
 //	POST   /api/performance/gc                  settings:manage + X-Confirm-Action
 //	GET    /api/performance/logs                settings:manage（只读）
@@ -44,6 +45,7 @@ import (
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/perfmetrics"
 	"newtg/gateway/internal/perfquery"
+	"newtg/gateway/internal/perfsettings"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 )
@@ -148,6 +150,17 @@ type PerformanceHandlerConfig struct {
 	// Channels 是模型/渠道目录的只读接缝（启用模型并集 + 可路由渠道数）；
 	// nil 时 channels 列与模型集合退化为其余数据源。
 	Channels ChannelModelCatalog
+
+	// Schedule 是测速四项生效值的读取器（config 端点）。必须与 worker 的
+	// 调度器共用同一个 *perfsettings.Reader，页面展示的「生效值 / 来源」才能
+	// 与真实节奏一致。nil 时响应里 schedule 为 null，端点仍 200。
+	Schedule *perfsettings.Reader
+	// Env 是一次免读的环境快照接缝（测试/自定义部署）；nil 时每次请求按
+	// 当前环境读取（envSnapshot）。
+	Env *PerfEnvSnapshot
+	// SettingGet 是 A 类设置的读取接缝（生产为 configcenter.Center.Get）。
+	// nil 表示未接配置中心：全部按注册表默认值。
+	SettingGet func(key string) ([]byte, bool)
 }
 
 // PerformanceHandlers 持有性能端点依赖，可并发使用。
@@ -171,6 +184,12 @@ type PerformanceHandlers struct {
 	perf     perfmetrics.Source
 	probes   store.ModelPerformanceStore
 	channels ChannelModelCatalog
+	// schedule 是测速生效值的读取器；nil 表示未装配（config 端点给 null）。
+	schedule *perfsettings.Reader
+	// env 非 nil 时替代逐请求的环境读取（测试/自定义部署的静态快照）。
+	env *PerfEnvSnapshot
+	// settingGet 读取 A 类设置的当前 JSON 值；nil 时全部按注册表默认。
+	settingGet func(key string) ([]byte, bool)
 	// lastClearedAt 是本进程最近一次磁盘缓存清理的完成时间（UnixNano）。
 	// 0 = 从未清理。它是进程本地观测值：重启后归零，与三个对象本身一样
 	// 不跨副本、不落库（§3.19 Q4）。
@@ -233,6 +252,7 @@ func NewPerformanceHandlers(cfg PerformanceHandlerConfig) *PerformanceHandlers {
 		authz: authz, now: now, geten: getenv, host: hostname, rm: remove, gc: runGC,
 		prom: prom, promURL: strings.TrimSpace(cfg.PromURL), instances: instances,
 		perf: cfg.Perf, probes: cfg.Probes, channels: cfg.Channels,
+		schedule: cfg.Schedule, env: cfg.Env, settingGet: cfg.SettingGet,
 	}
 }
 
@@ -249,6 +269,8 @@ func (h *PerformanceHandlers) Register(mux *http.ServeMux) {
 		h.authz.Handler(rbac.PermSettingsManage, performanceReadAction)(http.HandlerFunc(h.handleOverview)))
 	mux.Handle("GET /api/performance/models",
 		h.authz.Handler(rbac.PermSettingsManage, performanceReadAction)(http.HandlerFunc(h.handleModels)))
+	mux.Handle("GET /api/performance/config",
+		h.authz.Handler(rbac.PermSettingsManage, performanceReadAction)(http.HandlerFunc(h.handleConfig)))
 	mux.Handle("DELETE /api/performance/disk-cache",
 		h.authz.Handler(rbac.PermSettingsManage, performanceDiskClearAction)(http.HandlerFunc(h.handleDiskCacheClear)))
 	mux.Handle("POST /api/performance/gc",

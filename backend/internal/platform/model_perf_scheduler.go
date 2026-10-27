@@ -26,6 +26,19 @@ import (
 // perfProbeTimeout 与手工测速同一上限：覆盖「建连 + 整段生成」（R-M4-14）。
 const perfProbeTimeout = 30 * time.Second
 
+// newPerfSettingsReader 把 config 里的 PERF_SCHEDULE_* 解释成 perfsettings 的
+// Defaults。全仓只此一处映射：worker 的调度器与 gateway 的 config 端点必须
+// 对「页面未保存时按什么跑」给出同一个答案，第二份映射迟早漂移。
+func newPerfSettingsReader(cfg *config.Config, center *configcenter.Center, log *slog.Logger) *perfsettings.Reader {
+	return perfsettings.New(center, perfsettings.Defaults{
+		Enabled:     cfg.PerfScheduleEnabled,
+		Times:       cfg.PerfScheduleTimes,
+		Timezone:    cfg.PerfScheduleTimezone,
+		Runs:        cfg.PerfScheduleRuns,
+		Concurrency: cfg.PerfScheduleConcurrency,
+	}, log)
+}
+
 // newModelPerfScheduler 装配模型性能定时实测（spec 2026-10-27 §5.4）。
 //
 // 依赖全部在启动期构造一次：仓储与探测器都无状态，执行时才触库/出站。
@@ -39,13 +52,7 @@ const perfProbeTimeout = 30 * time.Second
 // 读取逻辑，不会各读各的。PERF_SCHEDULE_* 只作为 Defaults（未落库时才生效）。
 func newModelPerfScheduler(cfg *config.Config, db *sql.DB, rdb *redis.Client,
 	center *configcenter.Center, log *slog.Logger) (*modelperf.Scheduler, *perfsettings.Reader, error) {
-	perfReader := perfsettings.New(center, perfsettings.Defaults{
-		Enabled:     cfg.PerfScheduleEnabled,
-		Times:       cfg.PerfScheduleTimes,
-		Timezone:    cfg.PerfScheduleTimezone,
-		Runs:        cfg.PerfScheduleRuns,
-		Concurrency: cfg.PerfScheduleConcurrency,
-	}, log)
+	perfReader := newPerfSettingsReader(cfg, center, log)
 	// 与 gateway 的手工测速共用同一出站客户端与凭据解封面，不新增第二套
 	// 上游策略。
 	runner, err := channelhealth.NewPerfRunner(channelhealth.ProberConfig{

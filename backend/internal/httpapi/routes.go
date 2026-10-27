@@ -19,6 +19,7 @@ import (
 	"newtg/gateway/internal/notify"
 	"newtg/gateway/internal/perfmetrics"
 	"newtg/gateway/internal/perfquery"
+	"newtg/gateway/internal/perfsettings"
 	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
@@ -153,6 +154,13 @@ type RouterConfig struct {
 	// PerfChannels 是性能页 models 端的模型/渠道目录接缝；nil 时 channels
 	// 列为 null、模型集合退化为其余两源。
 	PerfChannels ChannelModelCatalog
+	// PerfSchedule 是性能页 config 端的「生效节奏」读取器。生产由 platform
+	// 与 worker 调度器共用同一实例构造；nil 时 config 响应的 schedule 为
+	// null（端点仍 200）。
+	PerfSchedule *perfsettings.Reader
+	// PerfSettingGet 是 A 类设置当前值的读取接缝（生产为 configcenter.Get）；
+	// nil 时全部按注册表默认值。
+	PerfSettingGet func(key string) ([]byte, bool)
 	// RankingsRepo 是公开排行榜（GET /api/rankings）的快照只读接缝。
 	// nil 且 DB 非 nil 时由 store.NewRankingsRepo(DB) 构造；两者都为空时
 	// 不挂载端点（纯内存装配没有 rankings_* 表）。
@@ -491,6 +499,10 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 		Perf:     cfg.PerfMetricsSource,
 		Probes:   cfg.PerfProbes,
 		Channels: cfg.PerfChannels,
+		// config 端：生效节奏与 A 类设置当前值。未装配时 schedule 为 null，
+		// 设置值全部回落注册表默认，端点照常 200。
+		Schedule:   cfg.PerfSchedule,
+		SettingGet: cfg.PerfSettingGet,
 	}).Register(rt.protected)
 
 	// M6 只读日志/统计/审计端点：日志库是数据源、主库提供用户名与权限
