@@ -5,6 +5,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -119,5 +120,43 @@ func TestRegistrySetEnabledUnknownTask(t *testing.T) {
 	task, _ := registry.Get("known")
 	if task.Enabled == nil || task.Enabled() || task.BlockedCode != "code" {
 		t.Fatalf("谓词未生效: %+v", task)
+	}
+}
+
+// TestRunJSONFieldNames 钉住运行历史的线上字段名。
+//
+// 原缺陷：Run 没有 json tag，TaskDetail.Runs 序列化出 PascalCase，前端读
+// snake_case 全部落空。集成测试能捕获它，但集成文件带 build tag，日常
+// `go test ./...` 与 CI 单测作业都不编译——所以在无依赖的单测里再钉一道。
+func TestRunJSONFieldNames(t *testing.T) {
+	started := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	raw, err := json.Marshal(Run{
+		ID:        7,
+		TaskType:  "model_perf_test",
+		Status:    RunSucceeded,
+		NodeID:    "node-a",
+		StartedAt: &started,
+		Trigger:   TriggerSchedule,
+	})
+	if err != nil {
+		t.Fatalf("marshal run: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal run: %v", err)
+	}
+	for _, key := range []string{
+		"id", "task_type", "status", "node_id", "started_at", "finished_at", "result", "trigger",
+	} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("运行历史 JSON 缺少字段 %q：%s", key, raw)
+		}
+	}
+	for _, key := range []string{
+		"ID", "TaskType", "Status", "NodeID", "StartedAt", "FinishedAt", "Result", "Trigger",
+	} {
+		if _, ok := got[key]; ok {
+			t.Fatalf("运行历史 JSON 不应出现 Go 字段名 %q：%s", key, raw)
+		}
 	}
 }
