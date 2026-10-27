@@ -3439,7 +3439,10 @@ schemas:
         description: 非特权进程可用空间（statfs Bavail）。
       used_bytes: {type: integer, format: int64, minimum: 0}
 
-  PerformanceConfig:
+  # 磁盘缓存配置投影。原名为 PerformanceConfig；2026-10-28 性能页改版新增
+  # GET /api/performance/config（只读运行参数），组件名让给它，本类型改名。
+  # 形状不变，仍是 PerformanceStats.config 的载荷。
+  PerformanceDiskCacheConfig:
     type: object
     additionalProperties: false
     required: [enabled, path, max_mb, threshold_mb]
@@ -3461,7 +3464,7 @@ schemas:
       memory_stats: {$ref: '#/schemas/PerformanceMemoryStats'}
       disk_cache_info: {$ref: '#/schemas/PerformanceDiskCacheInfo'}
       disk_space_info: {$ref: '#/schemas/PerformanceDiskSpaceInfo'}
-      config: {$ref: '#/schemas/PerformanceConfig'}
+      config: {$ref: '#/schemas/PerformanceDiskCacheConfig'}
 
   PerformanceDiskCacheClearResult:
     type: object
@@ -3600,6 +3603,450 @@ schemas:
       items:
         type: array
         items: {$ref: '#/schemas/PerformanceRecentOperation'}
+
+  # ---------------------------------------------------------------------------
+  # 性能页只读观测（2026-10-28 性能页改版 Task 11）。
+  # 响应形状以 handlers_perf_overview.go / handlers_perf_models.go /
+  # handlers_perf_config.go 的 json tag 为准：缺失的可空指标为 null，不用 0
+  # 冒充；resources 的数字字段按 spec §7.2 固定为 0。
+  # 可空标量写成 type: [T, 'null']、可空对象写成 oneOf [$ref, null]（OAS 3.1）：
+  # 这两种写法能让 oapi-codegen 与 openapi-typescript 都生成真正的可空类型，
+  # 而 nullable: true 在 3.1 下会被 oapi-codegen 忽略。
+  # ---------------------------------------------------------------------------
+  PerformanceSource:
+    type: object
+    additionalProperties: false
+    description: |
+      数据源健康。`name` 固定为 prometheus / heartbeat（overview）或
+      perfmetrics / probes（models）；`status` ∈ {ok, unavailable, error}。
+    required: [name, status]
+    properties:
+      name:
+        type: string
+        enum: [prometheus, heartbeat, perfmetrics, probes]
+      status:
+        type: string
+        enum: [ok, unavailable, error]
+
+  PerformanceOverview:
+    type: object
+    additionalProperties: false
+    required: [generated_at, range, windows, sources, vitals, gateways, resources]
+    properties:
+      generated_at: {type: string, format: date-time}
+      range: {type: string, enum: ['15m', '1h', '6h', '24h']}
+      windows: {$ref: '#/schemas/PerformanceOverviewWindow'}
+      sources:
+        type: array
+        items: {$ref: '#/schemas/PerformanceSource'}
+      vitals:
+        type: array
+        items: {$ref: '#/schemas/PerformanceOverviewVital'}
+      gateways:
+        type: array
+        description: 只列网关副本（按 service="gateway" 过滤），不含 exporter / Prometheus 自身。
+        items: {$ref: '#/schemas/PerformanceOverviewGateway'}
+      resources: {$ref: '#/schemas/PerformanceResources'}
+
+  PerformanceOverviewWindow:
+    type: object
+    additionalProperties: false
+    description: |
+      服务端实际使用的查询窗。`start`/`end` 已截断到查询缓存 TTL 桶边界，同一
+      TTL 内重复请求返回同一 `windows`；`points` 是每条查询的采样点数（15m 为
+      15，其余 24），`step_seconds` = span / points。
+    required: [range, start, end, step_seconds, points]
+    properties:
+      range: {type: string, enum: ['15m', '1h', '6h', '24h']}
+      start: {type: string, format: date-time}
+      end: {type: string, format: date-time}
+      step_seconds: {type: integer, format: int64, minimum: 1}
+      points: {type: integer, minimum: 1}
+
+  PerformanceOverviewVital:
+    type: object
+    additionalProperties: false
+    description: |
+      一个体检格。`status` ∈ {ok, warn, crit, unknown}；unknown 表示数据源缺失
+      或无样本，不等于异常。`series` 的元素是 [unix 秒, 值]，NaN/±Inf 已剔除。
+    required: [key, value, unit, status, note, series]
+    properties:
+      key:
+        type: string
+        description: 查询名（perfquery 目录，如 gateway.rps / db.pool）。
+      value:
+        type: [number, 'null']
+        format: double
+        description: 最新有限值；NaN/±Inf 或无样本时为 null（不是 0）。
+      unit:
+        type: string
+        description: 'perfquery 单位：ratio / s / req/s / conn / B/s / ops/s 等。'
+      status: {type: string, enum: [ok, warn, crit, unknown]}
+      note:
+        type: string
+        description: 副标题文案；无可用数字时为空串。
+      series:
+        type: array
+        items:
+          type: array
+          description: '[unix 秒, 值]'
+          minItems: 2
+          maxItems: 2
+          items: {type: number, format: double}
+
+  PerformanceOverviewGateway:
+    type: object
+    additionalProperties: false
+    required: [instance_id, role, version, last_seen, heartbeat_fresh, metrics, metrics_status]
+    properties:
+      instance_id: {type: string}
+      role:
+        type: string
+        description: 心跳中的角色（gateway）；仅由指标发现、无心跳的副本为空串。
+      version: {type: string}
+      last_seen:
+        type: [string, 'null']
+        format: date-time
+        description: 最后心跳时间；无心跳时为 null。
+      heartbeat_fresh: {type: boolean}
+      metrics:
+        description: 逐副本指标；一个值都没有时为 null（部分缺失时子字段为 null）。
+        oneOf:
+          - $ref: '#/schemas/PerformanceOverviewGatewayMetrics'
+          - type: 'null'
+      metrics_status:
+        type: string
+        enum: [ok, unknown]
+        description: ok 要求五项指标齐全；否则 unknown（不臆造数据）。
+
+  PerformanceOverviewGatewayMetrics:
+    type: object
+    additionalProperties: false
+    required: [goroutines, heap_mb, p95_ms, error_rate, inflight]
+    properties:
+      goroutines: {type: [number, 'null'], format: double}
+      heap_mb: {type: [number, 'null'], format: double, description: 堆分配内存（MB）。}
+      p95_ms: {type: [number, 'null'], format: double, description: 端到端延迟 p95（毫秒）。}
+      error_rate: {type: [number, 'null'], format: double, description: 5xx 比例（0–1）。}
+      inflight: {type: [number, 'null'], format: double, description: 在途请求数。}
+
+  PerformanceResources:
+    type: object
+    additionalProperties: false
+    description: |
+      资源三段的数值字段不可为空：指标缺失（NaN/±Inf、查询失败或无样本）时
+      填 0，而不是 null——与 spec §7.2 的示例形状一致。
+    required: [host, postgres, redis]
+    properties:
+      host: {$ref: '#/schemas/PerformanceHostResources'}
+      postgres: {$ref: '#/schemas/PerformancePostgresResources'}
+      redis: {$ref: '#/schemas/PerformanceRedisResources'}
+
+  PerformanceHostResources:
+    type: object
+    additionalProperties: false
+    required: [cpu, mem, disk, net_in, net_out]
+    properties:
+      cpu: {type: number, format: double, description: CPU 使用率（0–1）。}
+      mem: {type: number, format: double, description: 内存使用率（0–1）。}
+      disk: {type: number, format: double, description: 磁盘使用率（0–1）。}
+      net_in: {type: number, format: double, description: 入站流量（B/s）。}
+      net_out: {type: number, format: double, description: 出站流量（B/s）。}
+
+  PerformancePostgresResources:
+    type: object
+    additionalProperties: false
+    required: [backends, max, tps, size_bytes, lock_wait]
+    properties:
+      backends: {type: number, format: double, description: 当前连接数（conn）。}
+      max: {type: number, format: double, description: max_connections（conn）。}
+      tps: {type: number, format: double, description: 事务速率（tx/s）。}
+      size_bytes: {type: number, format: double, description: 数据库大小（B）。}
+      lock_wait: {type: number, format: double, description: 锁等待（wait/s）。}
+
+  PerformanceRedisResources:
+    type: object
+    additionalProperties: false
+    required: [up, clients, mem_ratio, hit_rate, cmd_rate]
+    properties:
+      up: {type: number, format: double, description: 可用性（1=up，0=down）。}
+      clients: {type: number, format: double, description: 连接数（conn）。}
+      mem_ratio: {type: number, format: double, description: 内存使用率（0–1）。}
+      hit_rate: {type: number, format: double, description: 命中率（0–1）。}
+      cmd_rate: {type: number, format: double, description: 命令速率（ops/s）。}
+
+  PerformanceModels:
+    type: object
+    additionalProperties: false
+    description: |
+      模型汇总表。行集合 = 24h 内有流量桶的模型 ∪ 当前可路由渠道声明的模型；
+      已停用模型的孤儿测速记录不会出现在 rows 里。
+    required: [generated_at, sources, rows, summary]
+    properties:
+      generated_at: {type: string, format: date-time}
+      sources:
+        type: array
+        items: {$ref: '#/schemas/PerformanceSource'}
+      rows:
+        type: array
+        items: {$ref: '#/schemas/PerformanceModelRow'}
+      summary: {$ref: '#/schemas/PerformanceModelsSummary'}
+
+  PerformanceModelsSummary:
+    type: object
+    additionalProperties: false
+    required: [models, degraded, incident, no_sample]
+    properties:
+      models: {type: integer, minimum: 0}
+      degraded: {type: integer, minimum: 0}
+      incident: {type: integer, minimum: 0}
+      no_sample: {type: integer, minimum: 0}
+
+  PerformanceModelRow:
+    type: object
+    additionalProperties: false
+    description: |
+      一行模型汇总：流量列来自 perfmetrics 分钟桶（延迟口径是端到端 p95，不是
+      TTFT），探针列来自最近一次主动测速。`*_over_30s` 为 true 时同级 `*_ms`
+      不表示有限延迟，而是「已知 ≥30s、真实值未知」的下界（+Inf 桶），前端
+      必须渲染为 `>30s`。
+    required:
+      - model
+      - channels
+      - ttft_p50_ms
+      - ttft_p95_ms
+      - ttft_p50_over_30s
+      - ttft_p95_over_30s
+      - latency_p95_ms
+      - latency_p95_over_30s
+      - tps
+      - samples
+      - success_rate
+      - probe
+      - uptime
+      - status
+      - spark
+    properties:
+      model: {type: string}
+      channels:
+        type: [integer, 'null']
+        description: 当前可路由渠道数；渠道统计失败时为 null（不是 0）。
+      ttft_p50_ms:
+        type: [number, 'null']
+        format: double
+        description: 首字延迟 p50（毫秒，只统计流式样本）。
+      ttft_p95_ms:
+        type: [number, 'null']
+        format: double
+        description: 首字延迟 p95（毫秒）。
+      ttft_p50_over_30s:
+        type: boolean
+        description: p50 落进 +Inf 桶时为 true；此时 ttft_p50_ms 不是有限值。
+      ttft_p95_over_30s:
+        type: boolean
+        description: p95 落进 +Inf 桶时为 true；此时 ttft_p95_ms 不是有限值。
+      latency_p95_ms:
+        type: [number, 'null']
+        format: double
+        description: 端到端延迟 p95（毫秒）；越过 30s 时见 latency_p95_over_30s。
+      latency_p95_over_30s:
+        type: boolean
+        description: p95 落进 +Inf 桶时为 true；此时 latency_p95_ms 不是有限值。
+      tps:
+        type: [number, 'null']
+        format: double
+        description: 输出速度（tokens/s）。
+      samples: {type: integer, format: int64, minimum: 0}
+      success_rate:
+        type: [number, 'null']
+        format: double
+        minimum: 0
+        maximum: 1
+      probe:
+        description: 最近一次主动测速；没有测速记录时为 null。
+        oneOf:
+          - $ref: '#/schemas/PerformanceModelProbe'
+          - type: 'null'
+      uptime:
+        type: [number, 'null']
+        format: double
+        minimum: 0
+        maximum: 1
+        description: 最近一次测速的成功率（不是 24h 加权）；无测速记录时为 null。
+      status:
+        type: string
+        enum: [normal, degraded, incident, no_sample]
+        description: |
+          判定顺序严格为 incident → degraded → no_sample → normal。
+          incident = 最新一次探针成功率 0 或窗口成功率 < 0.9；
+          degraded = 24h p95 超过近 7 天逐小时 p95 中位数 ×2（7d 无有限基线则
+          不判）、最近探针早于 36 小时、或 24h p95 越过 30s 而 7d 存在有限基线；
+          no_sample = 既无流量桶也无探针。
+      spark:
+        type: array
+        description: |
+          固定 24 点、以当前小时为最后一格（最早的不完整小时被丢弃）。空小时
+          与 p95 越过 30s 的小时为 null（不是 0、不是 30000）。
+        minItems: 24
+        maxItems: 24
+        items:
+          type: [number, 'null']
+          format: double
+          description: 该小时的端到端延迟 p95（毫秒）。
+
+  PerformanceModelProbe:
+    type: object
+    additionalProperties: false
+    description: |
+      最近一次测速的展示面。`ok` 表示整轮全部成功；部分成功为 false，但不等于
+      incident——incident 只认全失败。
+    required: [last_tested_at, ok, runs, ttft_p95_ms, latency_p95_ms, success_rate]
+    properties:
+      last_tested_at: {type: [string, 'null'], format: date-time}
+      ok: {type: boolean}
+      runs: {type: integer, minimum: 0}
+      ttft_p95_ms:
+        type: [integer, 'null']
+        description: 该轮测速的首字延迟 p95（毫秒）；无样本时为 null。
+      latency_p95_ms:
+        type: [integer, 'null']
+        description: 该轮测速的端到端延迟 p95（毫秒）；无样本时为 null。
+      success_rate: {type: number, format: double, minimum: 0, maximum: 1}
+
+  PerformanceConfig:
+    type: object
+    additionalProperties: false
+    description: |
+      性能页「运行参数」：全部是服务端实际生效值，不在前端硬编码。
+    required: [generated_at, schedule, env, fixed, settings_groups]
+    properties:
+      generated_at: {type: string, format: date-time}
+      schedule:
+        description: 测速四项的生效值；部署未装配调度器时为 null。
+        oneOf:
+          - $ref: '#/schemas/PerformanceConfigSchedule'
+          - type: 'null'
+      env:
+        type: array
+        description: |
+          部署环境变量快照（B 类）。METRICS_TOKEN 只报是否已配置（该行没有
+          `value` 键），永不回显值；PERF_METRICS_DSN 整行不存在（DSN 可能含口令）。
+          PROMETHEUS_URL 已脱敏：userinfo 口令为 `xxxxx`，query 与 fragment 内容
+          为 `…`。
+        items: {$ref: '#/schemas/PerformanceConfigEnvRow'}
+      fixed:
+        type: array
+        description: 代码内置参数（C 类，改部署配置也不生效）。
+        items: {$ref: '#/schemas/PerformanceConfigFixedRow'}
+      settings_groups:
+        type: array
+        items: {$ref: '#/schemas/PerformanceConfigSettingsGroup'}
+
+  PerformanceConfigSchedule:
+    type: object
+    additionalProperties: false
+    required: [enabled, interval_hours, runs, concurrency, source, timezone, next_run_at, legacy_times]
+    properties:
+      enabled: {type: boolean}
+      interval_hours: {type: integer}
+      runs: {type: integer}
+      concurrency: {type: integer}
+      source:
+        type: string
+        enum: [settings, env, mixed]
+        description: 生效值来源——四个键全部可用 / 全部回落环境变量 / 部分可用。
+      timezone: {type: string, description: IANA 时区（PERF_SCHEDULE_TIMEZONE）。}
+      next_run_at:
+        type: [string, 'null']
+        format: date-time
+        description: |
+          `enabled=false` 时为 null；与 `enabled` 出自同一次设置快照，服务端
+          按 `timezone` 计算（客户端不得自行重算）。
+      legacy_times:
+        type: string
+        description: 旧时刻表（每日 HH:MM 列表）；只在旧时刻表模式下非空。
+
+  PerformanceConfigEnvRow:
+    type: object
+    additionalProperties: false
+    required: [key, configured, set, effect]
+    properties:
+      key:
+        type: string
+        description: 环境变量名（稳定契约）。
+      value:
+        type: string
+        description: |
+          渲染后的生效值；未配置的普通行为空串。秘钥行（METRICS_TOKEN）没有
+          该键——值永不回显。
+      configured:
+        type: boolean
+        description: 渲染后有非空值（环境变量或内置默认）；与 set 独立。
+      set:
+        type: boolean
+        description: 环境变量被显式设置；与 configured 独立。
+      effect:
+        type: string
+        enum: [restart]
+        description: 生效方式——需重启。
+
+  PerformanceConfigFixedRow:
+    type: object
+    additionalProperties: false
+    required: [key, value, unit, effect]
+    properties:
+      key:
+        type: string
+        description: 'probe_timeout / write_rate_limit / disk_cache_idle / usage_log_retention。'
+      value:
+        type: string
+        description: 已带单位的展示值（如 30s、10/min）。
+      unit:
+        type: string
+        description: 'duration / rate。'
+      effect:
+        type: string
+        enum: [code]
+        description: 生效方式——需改代码。
+
+  PerformanceConfigSettingsGroup:
+    type: object
+    additionalProperties: false
+    required: [id, tab, link, items]
+    properties:
+      id:
+        type: string
+        description: 'channel_health / rate_limit / retention。'
+      tab:
+        type: string
+        description: 设置页 tab 锚点（policy / security）；无入口的组为空串。
+      link:
+        type: string
+        description: '/admin/settings?tab=<tab>；无 tab 时为空串（前端渲染为纯文本）。'
+      items:
+        type: array
+        items: {$ref: '#/schemas/PerformanceConfigSettingItem'}
+
+  PerformanceConfigSettingItem:
+    type: object
+    additionalProperties: false
+    required: [key, value, type, unit, source]
+    properties:
+      key: {type: string}
+      value:
+        description: 当前值（注册表原生 JSON 类型：数字 / 布尔 / 字符串 / 数组 / 对象）。
+      type:
+        type: string
+        description: '注册表类型：bool / string / int / number / enum / list / object。'
+      unit:
+        type: string
+        description: 'minutes / count / seconds / onoff / rpm / months / days。'
+      source:
+        type: string
+        enum: [settings, default]
+        description: |
+          settings = 落库值被采用；default = 未落库、null、类型不符或越界，已回落
+          注册表默认并记 Warn。
 
   # ---------------------------------------------------------------------------
   # 订阅套餐（D5b；billing-08 §2.1 / §15.1）

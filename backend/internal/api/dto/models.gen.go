@@ -1695,6 +1695,75 @@ func (e Pending2FAResponseStatus) Valid() bool {
 	}
 }
 
+// Defines values for PerformanceConfigEnvRowEffect.
+const (
+	Restart PerformanceConfigEnvRowEffect = "restart"
+)
+
+// Valid indicates whether the value is a known member of the PerformanceConfigEnvRowEffect enum.
+func (e PerformanceConfigEnvRowEffect) Valid() bool {
+	switch e {
+	case Restart:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PerformanceConfigFixedRowEffect.
+const (
+	Code PerformanceConfigFixedRowEffect = "code"
+)
+
+// Valid indicates whether the value is a known member of the PerformanceConfigFixedRowEffect enum.
+func (e PerformanceConfigFixedRowEffect) Valid() bool {
+	switch e {
+	case Code:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PerformanceConfigScheduleSource.
+const (
+	PerformanceConfigScheduleSourceEnv      PerformanceConfigScheduleSource = "env"
+	PerformanceConfigScheduleSourceMixed    PerformanceConfigScheduleSource = "mixed"
+	PerformanceConfigScheduleSourceSettings PerformanceConfigScheduleSource = "settings"
+)
+
+// Valid indicates whether the value is a known member of the PerformanceConfigScheduleSource enum.
+func (e PerformanceConfigScheduleSource) Valid() bool {
+	switch e {
+	case PerformanceConfigScheduleSourceEnv:
+		return true
+	case PerformanceConfigScheduleSourceMixed:
+		return true
+	case PerformanceConfigScheduleSourceSettings:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PerformanceConfigSettingItemSource.
+const (
+	PerformanceConfigSettingItemSourceDefault  PerformanceConfigSettingItemSource = "default"
+	PerformanceConfigSettingItemSourceSettings PerformanceConfigSettingItemSource = "settings"
+)
+
+// Valid indicates whether the value is a known member of the PerformanceConfigSettingItemSource enum.
+func (e PerformanceConfigSettingItemSource) Valid() bool {
+	switch e {
+	case PerformanceConfigSettingItemSourceDefault:
+		return true
+	case PerformanceConfigSettingItemSourceSettings:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PerformanceLogCleanupResultMode.
 const (
 	PerformanceLogCleanupResultModeByCount PerformanceLogCleanupResultMode = "by_count"
@@ -1707,6 +1776,120 @@ func (e PerformanceLogCleanupResultMode) Valid() bool {
 	case PerformanceLogCleanupResultModeByCount:
 		return true
 	case PerformanceLogCleanupResultModeByDays:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PerformanceModelRowStatus.
+const (
+	PerformanceModelRowStatusDegraded PerformanceModelRowStatus = "degraded"
+	PerformanceModelRowStatusIncident PerformanceModelRowStatus = "incident"
+	PerformanceModelRowStatusNoSample PerformanceModelRowStatus = "no_sample"
+	PerformanceModelRowStatusNormal   PerformanceModelRowStatus = "normal"
+)
+
+// Valid indicates whether the value is a known member of the PerformanceModelRowStatus enum.
+func (e PerformanceModelRowStatus) Valid() bool {
+	switch e {
+	case PerformanceModelRowStatusDegraded:
+		return true
+	case PerformanceModelRowStatusIncident:
+		return true
+	case PerformanceModelRowStatusNoSample:
+		return true
+	case PerformanceModelRowStatusNormal:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PerformanceOverviewRange.
+const (
+	PerformanceOverviewRangeN15m PerformanceOverviewRange = "15m"
+	PerformanceOverviewRangeN1h  PerformanceOverviewRange = "1h"
+	PerformanceOverviewRangeN24h PerformanceOverviewRange = "24h"
+	PerformanceOverviewRangeN6h  PerformanceOverviewRange = "6h"
+)
+
+// Valid indicates whether the value is a known member of the PerformanceOverviewRange enum.
+func (e PerformanceOverviewRange) Valid() bool {
+	switch e {
+	case PerformanceOverviewRangeN15m:
+		return true
+	case PerformanceOverviewRangeN1h:
+		return true
+	case PerformanceOverviewRangeN24h:
+		return true
+	case PerformanceOverviewRangeN6h:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PerformanceOverviewGatewayMetricsStatus.
+const (
+	PerformanceOverviewGatewayMetricsStatusOk      PerformanceOverviewGatewayMetricsStatus = "ok"
+	PerformanceOverviewGatewayMetricsStatusUnknown PerformanceOverviewGatewayMetricsStatus = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the PerformanceOverviewGatewayMetricsStatus enum.
+func (e PerformanceOverviewGatewayMetricsStatus) Valid() bool {
+	switch e {
+	case PerformanceOverviewGatewayMetricsStatusOk:
+		return true
+	case PerformanceOverviewGatewayMetricsStatusUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PerformanceOverviewVitalStatus.
+const (
+	PerformanceOverviewVitalStatusCrit    PerformanceOverviewVitalStatus = "crit"
+	PerformanceOverviewVitalStatusOk      PerformanceOverviewVitalStatus = "ok"
+	PerformanceOverviewVitalStatusUnknown PerformanceOverviewVitalStatus = "unknown"
+	PerformanceOverviewVitalStatusWarn    PerformanceOverviewVitalStatus = "warn"
+)
+
+// Valid indicates whether the value is a known member of the PerformanceOverviewVitalStatus enum.
+func (e PerformanceOverviewVitalStatus) Valid() bool {
+	switch e {
+	case PerformanceOverviewVitalStatusCrit:
+		return true
+	case PerformanceOverviewVitalStatusOk:
+		return true
+	case PerformanceOverviewVitalStatusUnknown:
+		return true
+	case PerformanceOverviewVitalStatusWarn:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PerformanceOverviewWindowRange.
+const (
+	PerformanceOverviewWindowRangeN15m PerformanceOverviewWindowRange = "15m"
+	PerformanceOverviewWindowRangeN1h  PerformanceOverviewWindowRange = "1h"
+	PerformanceOverviewWindowRangeN24h PerformanceOverviewWindowRange = "24h"
+	PerformanceOverviewWindowRangeN6h  PerformanceOverviewWindowRange = "6h"
+)
+
+// Valid indicates whether the value is a known member of the PerformanceOverviewWindowRange enum.
+func (e PerformanceOverviewWindowRange) Valid() bool {
+	switch e {
+	case PerformanceOverviewWindowRangeN15m:
+		return true
+	case PerformanceOverviewWindowRangeN1h:
+		return true
+	case PerformanceOverviewWindowRangeN24h:
+		return true
+	case PerformanceOverviewWindowRangeN6h:
 		return true
 	default:
 		return false
@@ -1764,6 +1947,51 @@ func (e PerformanceRecentOperationResult) Valid() bool {
 	case PerformanceRecentOperationResultFailed:
 		return true
 	case PerformanceRecentOperationResultSuccess:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PerformanceSourceName.
+const (
+	Heartbeat   PerformanceSourceName = "heartbeat"
+	Perfmetrics PerformanceSourceName = "perfmetrics"
+	Probes      PerformanceSourceName = "probes"
+	Prometheus  PerformanceSourceName = "prometheus"
+)
+
+// Valid indicates whether the value is a known member of the PerformanceSourceName enum.
+func (e PerformanceSourceName) Valid() bool {
+	switch e {
+	case Heartbeat:
+		return true
+	case Perfmetrics:
+		return true
+	case Probes:
+		return true
+	case Prometheus:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PerformanceSourceStatus.
+const (
+	PerformanceSourceStatusError       PerformanceSourceStatus = "error"
+	PerformanceSourceStatusOk          PerformanceSourceStatus = "ok"
+	PerformanceSourceStatusUnavailable PerformanceSourceStatus = "unavailable"
+)
+
+// Valid indicates whether the value is a known member of the PerformanceSourceStatus enum.
+func (e PerformanceSourceStatus) Valid() bool {
+	switch e {
+	case PerformanceSourceStatusError:
+		return true
+	case PerformanceSourceStatusOk:
+		return true
+	case PerformanceSourceStatusUnavailable:
 		return true
 	default:
 		return false
@@ -4383,6 +4611,45 @@ func (e CleanupPerformanceLogsParamsMode) Valid() bool {
 	case CleanupPerformanceLogsParamsModeByCount:
 		return true
 	case CleanupPerformanceLogsParamsModeByDays:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetPerformanceModelsParamsRange.
+const (
+	GetPerformanceModelsParamsRangeN24h GetPerformanceModelsParamsRange = "24h"
+)
+
+// Valid indicates whether the value is a known member of the GetPerformanceModelsParamsRange enum.
+func (e GetPerformanceModelsParamsRange) Valid() bool {
+	switch e {
+	case GetPerformanceModelsParamsRangeN24h:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetPerformanceOverviewParamsRange.
+const (
+	GetPerformanceOverviewParamsRangeN15m GetPerformanceOverviewParamsRange = "15m"
+	GetPerformanceOverviewParamsRangeN1h  GetPerformanceOverviewParamsRange = "1h"
+	GetPerformanceOverviewParamsRangeN24h GetPerformanceOverviewParamsRange = "24h"
+	GetPerformanceOverviewParamsRangeN6h  GetPerformanceOverviewParamsRange = "6h"
+)
+
+// Valid indicates whether the value is a known member of the GetPerformanceOverviewParamsRange enum.
+func (e GetPerformanceOverviewParamsRange) Valid() bool {
+	switch e {
+	case GetPerformanceOverviewParamsRangeN15m:
+		return true
+	case GetPerformanceOverviewParamsRangeN1h:
+		return true
+	case GetPerformanceOverviewParamsRangeN24h:
+		return true
+	case GetPerformanceOverviewParamsRangeN6h:
 		return true
 	default:
 		return false
@@ -8272,13 +8539,120 @@ type PerformanceCacheStats struct {
 	TotalBytes    int64     `json:"total_bytes"`
 }
 
-// PerformanceConfig defines model for PerformanceConfig.
+// PerformanceConfig 性能页「运行参数」：全部是服务端实际生效值，不在前端硬编码。
 type PerformanceConfig struct {
-	// Enabled 回显 DISK_CACHE_ENABLED 原值（不因目录缺失而改变）。
-	Enabled     bool   `json:"enabled"`
-	MaxMb       int64  `json:"max_mb"`
-	Path        string `json:"path"`
-	ThresholdMb int64  `json:"threshold_mb"`
+	// Env 部署环境变量快照（B 类）。METRICS_TOKEN 只报是否已配置（该行没有
+	// `value` 键），永不回显值；PERF_METRICS_DSN 整行不存在（DSN 可能含口令）。
+	// PROMETHEUS_URL 已脱敏：userinfo 口令为 `xxxxx`，query 与 fragment 内容
+	// 为 `…`。
+	Env []PerformanceConfigEnvRow `json:"env"`
+
+	// Fixed 代码内置参数（C 类，改部署配置也不生效）。
+	Fixed       []PerformanceConfigFixedRow `json:"fixed"`
+	GeneratedAt time.Time                   `json:"generated_at"`
+
+	// Schedule 测速四项的生效值；部署未装配调度器时为 null。
+	Schedule       *PerformanceConfigSchedule       `json:"schedule"`
+	SettingsGroups []PerformanceConfigSettingsGroup `json:"settings_groups"`
+}
+
+// PerformanceConfigEnvRow defines model for PerformanceConfigEnvRow.
+type PerformanceConfigEnvRow struct {
+	// Configured 渲染后有非空值（环境变量或内置默认）；与 set 独立。
+	Configured bool `json:"configured"`
+
+	// Effect 生效方式——需重启。
+	Effect PerformanceConfigEnvRowEffect `json:"effect"`
+
+	// Key 环境变量名（稳定契约）。
+	Key string `json:"key"`
+
+	// Set 环境变量被显式设置；与 configured 独立。
+	Set bool `json:"set"`
+
+	// Value 渲染后的生效值；未配置的普通行为空串。秘钥行（METRICS_TOKEN）没有
+	// 该键——值永不回显。
+	Value *string `json:"value,omitempty"`
+}
+
+// PerformanceConfigEnvRowEffect 生效方式——需重启。
+type PerformanceConfigEnvRowEffect string
+
+// PerformanceConfigFixedRow defines model for PerformanceConfigFixedRow.
+type PerformanceConfigFixedRow struct {
+	// Effect 生效方式——需改代码。
+	Effect PerformanceConfigFixedRowEffect `json:"effect"`
+
+	// Key probe_timeout / write_rate_limit / disk_cache_idle / usage_log_retention。
+	Key string `json:"key"`
+
+	// Unit duration / rate。
+	Unit string `json:"unit"`
+
+	// Value 已带单位的展示值（如 30s、10/min）。
+	Value string `json:"value"`
+}
+
+// PerformanceConfigFixedRowEffect 生效方式——需改代码。
+type PerformanceConfigFixedRowEffect string
+
+// PerformanceConfigSchedule defines model for PerformanceConfigSchedule.
+type PerformanceConfigSchedule struct {
+	Concurrency   int  `json:"concurrency"`
+	Enabled       bool `json:"enabled"`
+	IntervalHours int  `json:"interval_hours"`
+
+	// LegacyTimes 旧时刻表（每日 HH:MM 列表）；只在旧时刻表模式下非空。
+	LegacyTimes string `json:"legacy_times"`
+
+	// NextRunAt `enabled=false` 时为 null；与 `enabled` 出自同一次设置快照，服务端
+	// 按 `timezone` 计算（客户端不得自行重算）。
+	NextRunAt *time.Time `json:"next_run_at"`
+	Runs      int        `json:"runs"`
+
+	// Source 生效值来源——四个键全部可用 / 全部回落环境变量 / 部分可用。
+	Source PerformanceConfigScheduleSource `json:"source"`
+
+	// Timezone IANA 时区（PERF_SCHEDULE_TIMEZONE）。
+	Timezone string `json:"timezone"`
+}
+
+// PerformanceConfigScheduleSource 生效值来源——四个键全部可用 / 全部回落环境变量 / 部分可用。
+type PerformanceConfigScheduleSource string
+
+// PerformanceConfigSettingItem defines model for PerformanceConfigSettingItem.
+type PerformanceConfigSettingItem struct {
+	Key string `json:"key"`
+
+	// Source settings = 落库值被采用；default = 未落库、null、类型不符或越界，已回落
+	// 注册表默认并记 Warn。
+	Source PerformanceConfigSettingItemSource `json:"source"`
+
+	// Type 注册表类型：bool / string / int / number / enum / list / object。
+	Type string `json:"type"`
+
+	// Unit minutes / count / seconds / onoff / rpm / months / days。
+	Unit string `json:"unit"`
+
+	// Value 当前值（注册表原生 JSON 类型：数字 / 布尔 / 字符串 / 数组 / 对象）。
+	Value interface{} `json:"value"`
+}
+
+// PerformanceConfigSettingItemSource settings = 落库值被采用；default = 未落库、null、类型不符或越界，已回落
+// 注册表默认并记 Warn。
+type PerformanceConfigSettingItemSource string
+
+// PerformanceConfigSettingsGroup defines model for PerformanceConfigSettingsGroup.
+type PerformanceConfigSettingsGroup struct {
+	// Id channel_health / rate_limit / retention。
+	Id    string                         `json:"id"`
+	Items []PerformanceConfigSettingItem `json:"items"`
+
+	// Link /admin/settings?tab=<tab>；无 tab 时为空串（前端渲染为纯文本）。
+	Link string `json:"link"`
+
+	// Tab 设置页 tab 锚点（policy / security）；无入口的组为空串。
+	Tab string `json:"tab"`
 }
 
 // PerformanceDiskCacheClearResult defines model for PerformanceDiskCacheClearResult.
@@ -8289,6 +8663,15 @@ type PerformanceDiskCacheClearResult struct {
 	FailedFiles []string `json:"failed_files"`
 	FreedBytes  int64    `json:"freed_bytes"`
 	InstanceId  string   `json:"instance_id"`
+}
+
+// PerformanceDiskCacheConfig defines model for PerformanceDiskCacheConfig.
+type PerformanceDiskCacheConfig struct {
+	// Enabled 回显 DISK_CACHE_ENABLED 原值（不因目录缺失而改变）。
+	Enabled     bool   `json:"enabled"`
+	MaxMb       int64  `json:"max_mb"`
+	Path        string `json:"path"`
+	ThresholdMb int64  `json:"threshold_mb"`
 }
 
 // PerformanceDiskCacheInfo defines model for PerformanceDiskCacheInfo.
@@ -8325,6 +8708,24 @@ type PerformanceGCResult struct {
 	InstanceId      string `json:"instance_id"`
 	NumGcAfter      int64  `json:"num_gc_after"`
 	NumGcBefore     int64  `json:"num_gc_before"`
+}
+
+// PerformanceHostResources defines model for PerformanceHostResources.
+type PerformanceHostResources struct {
+	// Cpu CPU 使用率（0–1）。
+	Cpu float64 `json:"cpu"`
+
+	// Disk 磁盘使用率（0–1）。
+	Disk float64 `json:"disk"`
+
+	// Mem 内存使用率（0–1）。
+	Mem float64 `json:"mem"`
+
+	// NetIn 入站流量（B/s）。
+	NetIn float64 `json:"net_in"`
+
+	// NetOut 出站流量（B/s）。
+	NetOut float64 `json:"net_out"`
 }
 
 // PerformanceLogCleanupResult defines model for PerformanceLogCleanupResult.
@@ -8370,6 +8771,208 @@ type PerformanceMemoryStats struct {
 	SysBytes     int64 `json:"sys_bytes"`
 }
 
+// PerformanceModelProbe 最近一次测速的展示面。`ok` 表示整轮全部成功；部分成功为 false，但不等于
+// incident——incident 只认全失败。
+type PerformanceModelProbe struct {
+	LastTestedAt *time.Time `json:"last_tested_at"`
+
+	// LatencyP95Ms 该轮测速的端到端延迟 p95（毫秒）；无样本时为 null。
+	LatencyP95Ms *int    `json:"latency_p95_ms"`
+	Ok           bool    `json:"ok"`
+	Runs         int     `json:"runs"`
+	SuccessRate  float64 `json:"success_rate"`
+
+	// TtftP95Ms 该轮测速的首字延迟 p95（毫秒）；无样本时为 null。
+	TtftP95Ms *int `json:"ttft_p95_ms"`
+}
+
+// PerformanceModelRow 一行模型汇总：流量列来自 perfmetrics 分钟桶（延迟口径是端到端 p95，不是
+// TTFT），探针列来自最近一次主动测速。`*_over_30s` 为 true 时同级 `*_ms`
+// 不表示有限延迟，而是「已知 ≥30s、真实值未知」的下界（+Inf 桶），前端
+// 必须渲染为 `>30s`。
+type PerformanceModelRow struct {
+	// Channels 当前可路由渠道数；渠道统计失败时为 null（不是 0）。
+	Channels *int `json:"channels"`
+
+	// LatencyP95Ms 端到端延迟 p95（毫秒）；越过 30s 时见 latency_p95_over_30s。
+	LatencyP95Ms *float64 `json:"latency_p95_ms"`
+
+	// LatencyP95Over30s p95 落进 +Inf 桶时为 true；此时 latency_p95_ms 不是有限值。
+	LatencyP95Over30s bool   `json:"latency_p95_over_30s"`
+	Model             string `json:"model"`
+
+	// Probe 最近一次主动测速；没有测速记录时为 null。
+	Probe   *PerformanceModelProbe `json:"probe"`
+	Samples int64                  `json:"samples"`
+
+	// Spark 固定 24 点、以当前小时为最后一格（最早的不完整小时被丢弃）。空小时
+	// 与 p95 越过 30s 的小时为 null（不是 0、不是 30000）。
+	Spark []*float64 `json:"spark"`
+
+	// Status 判定顺序严格为 incident → degraded → no_sample → normal。
+	// incident = 最新一次探针成功率 0 或窗口成功率 < 0.9；
+	// degraded = 24h p95 超过近 7 天逐小时 p95 中位数 ×2（7d 无有限基线则
+	// 不判）、最近探针早于 36 小时、或 24h p95 越过 30s 而 7d 存在有限基线；
+	// no_sample = 既无流量桶也无探针。
+	Status      PerformanceModelRowStatus `json:"status"`
+	SuccessRate *float64                  `json:"success_rate"`
+
+	// Tps 输出速度（tokens/s）。
+	Tps *float64 `json:"tps"`
+
+	// TtftP50Ms 首字延迟 p50（毫秒，只统计流式样本）。
+	TtftP50Ms *float64 `json:"ttft_p50_ms"`
+
+	// TtftP50Over30s p50 落进 +Inf 桶时为 true；此时 ttft_p50_ms 不是有限值。
+	TtftP50Over30s bool `json:"ttft_p50_over_30s"`
+
+	// TtftP95Ms 首字延迟 p95（毫秒）。
+	TtftP95Ms *float64 `json:"ttft_p95_ms"`
+
+	// TtftP95Over30s p95 落进 +Inf 桶时为 true；此时 ttft_p95_ms 不是有限值。
+	TtftP95Over30s bool `json:"ttft_p95_over_30s"`
+
+	// Uptime 最近一次测速的成功率（不是 24h 加权）；无测速记录时为 null。
+	Uptime *float64 `json:"uptime"`
+}
+
+// PerformanceModelRowStatus 判定顺序严格为 incident → degraded → no_sample → normal。
+// incident = 最新一次探针成功率 0 或窗口成功率 < 0.9；
+// degraded = 24h p95 超过近 7 天逐小时 p95 中位数 ×2（7d 无有限基线则
+// 不判）、最近探针早于 36 小时、或 24h p95 越过 30s 而 7d 存在有限基线；
+// no_sample = 既无流量桶也无探针。
+type PerformanceModelRowStatus string
+
+// PerformanceModels 模型汇总表。行集合 = 24h 内有流量桶的模型 ∪ 当前可路由渠道声明的模型；
+// 已停用模型的孤儿测速记录不会出现在 rows 里。
+type PerformanceModels struct {
+	GeneratedAt time.Time                `json:"generated_at"`
+	Rows        []PerformanceModelRow    `json:"rows"`
+	Sources     []PerformanceSource      `json:"sources"`
+	Summary     PerformanceModelsSummary `json:"summary"`
+}
+
+// PerformanceModelsSummary defines model for PerformanceModelsSummary.
+type PerformanceModelsSummary struct {
+	Degraded int `json:"degraded"`
+	Incident int `json:"incident"`
+	Models   int `json:"models"`
+	NoSample int `json:"no_sample"`
+}
+
+// PerformanceOverview defines model for PerformanceOverview.
+type PerformanceOverview struct {
+	// Gateways 只列网关副本（按 service="gateway" 过滤），不含 exporter / Prometheus 自身。
+	Gateways    []PerformanceOverviewGateway `json:"gateways"`
+	GeneratedAt time.Time                    `json:"generated_at"`
+	Range       PerformanceOverviewRange     `json:"range"`
+
+	// Resources 资源三段的数值字段不可为空：指标缺失（NaN/±Inf、查询失败或无样本）时
+	// 填 0，而不是 null——与 spec §7.2 的示例形状一致。
+	Resources PerformanceResources       `json:"resources"`
+	Sources   []PerformanceSource        `json:"sources"`
+	Vitals    []PerformanceOverviewVital `json:"vitals"`
+
+	// Windows 服务端实际使用的查询窗。`start`/`end` 已截断到查询缓存 TTL 桶边界，同一
+	// TTL 内重复请求返回同一 `windows`；`points` 是每条查询的采样点数（15m 为
+	// 15，其余 24），`step_seconds` = span / points。
+	Windows PerformanceOverviewWindow `json:"windows"`
+}
+
+// PerformanceOverviewRange defines model for PerformanceOverview.Range.
+type PerformanceOverviewRange string
+
+// PerformanceOverviewGateway defines model for PerformanceOverviewGateway.
+type PerformanceOverviewGateway struct {
+	HeartbeatFresh bool   `json:"heartbeat_fresh"`
+	InstanceId     string `json:"instance_id"`
+
+	// LastSeen 最后心跳时间；无心跳时为 null。
+	LastSeen *time.Time `json:"last_seen"`
+
+	// Metrics 逐副本指标；一个值都没有时为 null（部分缺失时子字段为 null）。
+	Metrics *PerformanceOverviewGatewayMetrics `json:"metrics"`
+
+	// MetricsStatus ok 要求五项指标齐全；否则 unknown（不臆造数据）。
+	MetricsStatus PerformanceOverviewGatewayMetricsStatus `json:"metrics_status"`
+
+	// Role 心跳中的角色（gateway）；仅由指标发现、无心跳的副本为空串。
+	Role    string `json:"role"`
+	Version string `json:"version"`
+}
+
+// PerformanceOverviewGatewayMetricsStatus ok 要求五项指标齐全；否则 unknown（不臆造数据）。
+type PerformanceOverviewGatewayMetricsStatus string
+
+// PerformanceOverviewGatewayMetrics defines model for PerformanceOverviewGatewayMetrics.
+type PerformanceOverviewGatewayMetrics struct {
+	// ErrorRate 5xx 比例（0–1）。
+	ErrorRate  *float64 `json:"error_rate"`
+	Goroutines *float64 `json:"goroutines"`
+
+	// HeapMb 堆分配内存（MB）。
+	HeapMb *float64 `json:"heap_mb"`
+
+	// Inflight 在途请求数。
+	Inflight *float64 `json:"inflight"`
+
+	// P95Ms 端到端延迟 p95（毫秒）。
+	P95Ms *float64 `json:"p95_ms"`
+}
+
+// PerformanceOverviewVital 一个体检格。`status` ∈ {ok, warn, crit, unknown}；unknown 表示数据源缺失
+// 或无样本，不等于异常。`series` 的元素是 [unix 秒, 值]，NaN/±Inf 已剔除。
+type PerformanceOverviewVital struct {
+	// Key 查询名（perfquery 目录，如 gateway.rps / db.pool）。
+	Key string `json:"key"`
+
+	// Note 副标题文案；无可用数字时为空串。
+	Note   string                         `json:"note"`
+	Series [][]float64                    `json:"series"`
+	Status PerformanceOverviewVitalStatus `json:"status"`
+
+	// Unit perfquery 单位：ratio / s / req/s / conn / B/s / ops/s 等。
+	Unit string `json:"unit"`
+
+	// Value 最新有限值；NaN/±Inf 或无样本时为 null（不是 0）。
+	Value *float64 `json:"value"`
+}
+
+// PerformanceOverviewVitalStatus defines model for PerformanceOverviewVital.Status.
+type PerformanceOverviewVitalStatus string
+
+// PerformanceOverviewWindow 服务端实际使用的查询窗。`start`/`end` 已截断到查询缓存 TTL 桶边界，同一
+// TTL 内重复请求返回同一 `windows`；`points` 是每条查询的采样点数（15m 为
+// 15，其余 24），`step_seconds` = span / points。
+type PerformanceOverviewWindow struct {
+	End         time.Time                      `json:"end"`
+	Points      int                            `json:"points"`
+	Range       PerformanceOverviewWindowRange `json:"range"`
+	Start       time.Time                      `json:"start"`
+	StepSeconds int64                          `json:"step_seconds"`
+}
+
+// PerformanceOverviewWindowRange defines model for PerformanceOverviewWindow.Range.
+type PerformanceOverviewWindowRange string
+
+// PerformancePostgresResources defines model for PerformancePostgresResources.
+type PerformancePostgresResources struct {
+	// Backends 当前连接数（conn）。
+	Backends float64 `json:"backends"`
+
+	// LockWait 锁等待（wait/s）。
+	LockWait float64 `json:"lock_wait"`
+
+	// Max max_connections（conn）。
+	Max float64 `json:"max"`
+
+	// SizeBytes 数据库大小（B）。
+	SizeBytes float64 `json:"size_bytes"`
+
+	// Tps 事务速率（tx/s）。
+	Tps float64 `json:"tps"`
+}
+
 // PerformanceRecentOperation defines model for PerformanceRecentOperation.
 type PerformanceRecentOperation struct {
 	Action PerformanceRecentOperationAction `json:"action"`
@@ -8407,14 +9010,53 @@ type PerformanceRecentOperations struct {
 	Items []PerformanceRecentOperation `json:"items"`
 }
 
+// PerformanceRedisResources defines model for PerformanceRedisResources.
+type PerformanceRedisResources struct {
+	// Clients 连接数（conn）。
+	Clients float64 `json:"clients"`
+
+	// CmdRate 命令速率（ops/s）。
+	CmdRate float64 `json:"cmd_rate"`
+
+	// HitRate 命中率（0–1）。
+	HitRate float64 `json:"hit_rate"`
+
+	// MemRatio 内存使用率（0–1）。
+	MemRatio float64 `json:"mem_ratio"`
+
+	// Up 可用性（1=up，0=down）。
+	Up float64 `json:"up"`
+}
+
+// PerformanceResources 资源三段的数值字段不可为空：指标缺失（NaN/±Inf、查询失败或无样本）时
+// 填 0，而不是 null——与 spec §7.2 的示例形状一致。
+type PerformanceResources struct {
+	Host     PerformanceHostResources     `json:"host"`
+	Postgres PerformancePostgresResources `json:"postgres"`
+	Redis    PerformanceRedisResources    `json:"redis"`
+}
+
+// PerformanceSource 数据源健康。`name` 固定为 prometheus / heartbeat（overview）或
+// perfmetrics / probes（models）；`status` ∈ {ok, unavailable, error}。
+type PerformanceSource struct {
+	Name   PerformanceSourceName   `json:"name"`
+	Status PerformanceSourceStatus `json:"status"`
+}
+
+// PerformanceSourceName defines model for PerformanceSource.Name.
+type PerformanceSourceName string
+
+// PerformanceSourceStatus defines model for PerformanceSource.Status.
+type PerformanceSourceStatus string
+
 // PerformanceStats defines model for PerformanceStats.
 type PerformanceStats struct {
-	CacheStats    PerformanceCacheStats    `json:"cache_stats"`
-	Config        PerformanceConfig        `json:"config"`
-	DiskCacheInfo PerformanceDiskCacheInfo `json:"disk_cache_info"`
-	DiskSpaceInfo PerformanceDiskSpaceInfo `json:"disk_space_info"`
-	InstanceId    string                   `json:"instance_id"`
-	MemoryStats   PerformanceMemoryStats   `json:"memory_stats"`
+	CacheStats    PerformanceCacheStats      `json:"cache_stats"`
+	Config        PerformanceDiskCacheConfig `json:"config"`
+	DiskCacheInfo PerformanceDiskCacheInfo   `json:"disk_cache_info"`
+	DiskSpaceInfo PerformanceDiskSpaceInfo   `json:"disk_space_info"`
+	InstanceId    string                     `json:"instance_id"`
+	MemoryStats   PerformanceMemoryStats     `json:"memory_stats"`
 }
 
 // PermissionGrant 权限矩阵成员：20 键之一或全权通配符 "*"。
@@ -13044,6 +13686,24 @@ type CleanupPerformanceLogsParams struct {
 
 // CleanupPerformanceLogsParamsMode defines parameters for CleanupPerformanceLogs.
 type CleanupPerformanceLogsParamsMode string
+
+// GetPerformanceModelsParams defines parameters for GetPerformanceModels.
+type GetPerformanceModelsParams struct {
+	// Range 只接受空或 `24h`；其它值 400 `invalid_range`。
+	Range *GetPerformanceModelsParamsRange `form:"range,omitempty" json:"range,omitempty"`
+}
+
+// GetPerformanceModelsParamsRange defines parameters for GetPerformanceModels.
+type GetPerformanceModelsParamsRange string
+
+// GetPerformanceOverviewParams defines parameters for GetPerformanceOverview.
+type GetPerformanceOverviewParams struct {
+	// Range 时间窗；缺省 `1h`，大小写敏感，其它值 400 `invalid_range`。
+	Range *GetPerformanceOverviewParamsRange `form:"range,omitempty" json:"range,omitempty"`
+}
+
+// GetPerformanceOverviewParamsRange defines parameters for GetPerformanceOverview.
+type GetPerformanceOverviewParamsRange string
 
 // ListPerformanceRecentOperationsParams defines parameters for ListPerformanceRecentOperations.
 type ListPerformanceRecentOperationsParams struct {

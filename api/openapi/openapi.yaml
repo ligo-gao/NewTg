@@ -278,6 +278,13 @@ paths:
     $ref: './paths/admin.yaml#/paths/~1api~1performance~1logs'
   /api/performance/recent-operations:
     $ref: './paths/admin.yaml#/paths/~1api~1performance~1recent-operations'
+  # 性能页只读观测（2026-10-28 性能页改版 Task 11）：总览 / 模型表 / 运行参数。
+  /api/performance/overview:
+    $ref: './paths/admin.yaml#/paths/~1api~1performance~1overview'
+  /api/performance/models:
+    $ref: './paths/admin.yaml#/paths/~1api~1performance~1models'
+  /api/performance/config:
+    $ref: './paths/admin.yaml#/paths/~1api~1performance~1config'
   /api/instances:
     $ref: './paths/admin.yaml#/paths/~1api~1instances'
 

@@ -2775,6 +2775,102 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/performance/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 性能总览（vitals / 数据源 / 副本 / 资源）
+         * @description `range` 只接受 `15m|1h|6h|24h`（缺省 `1h`，大小写敏感），其它值返回
+         *     400 `invalid_range`。`windows` 回显服务端实际使用的查询窗：`start`/`end`
+         *     已截断到查询缓存 TTL 桶边界，同一 TTL 内重复请求返回同一 `windows`；
+         *     `points` 是每条查询的采样点数（15m 为 15，其余 24）。
+         *     `sources[].status` 只有 `ok|unavailable|error`，`name` 固定为
+         *     `prometheus|heartbeat`。`vitals[].status` 只有 `ok|warn|crit|unknown`——
+         *     未知不等于异常：数据源缺失或无样本时为 `unknown`。`gateways[]` 只列
+         *     网关副本（按 service 过滤），不含 exporter / Prometheus 自身；
+         *     `gateways[].metrics_status` 只有 `ok|unknown`。
+         *     可空指标（vitals[].value、gateways[].metrics 及其子字段）在 NaN/±Inf
+         *     时为 null，不写 0；resources 的数字字段按 spec §7.2 固定为 0。
+         */
+        get: operations["getPerformanceOverview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/performance/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 模型汇总表（流量 + 探针 + 状态 + spark）
+         * @description `range` 只接受空或 `24h`，其它值返回 400 `invalid_range`；表格窗口固定
+         *     24h，不随 range 切换。行集合 = 「24h 内有流量桶的模型 ∪ 当前可路由渠道
+         *     声明的模型」——已停用模型的孤儿测速行不会出现。
+         *     `channels` 是该模型当前可路由的渠道数，渠道统计失败时为 null（不是 0）。
+         *     `status` 判定顺序严格为 `incident → degraded → no_sample → normal`：
+         *     incident = 最新一次探针成功率 0 或窗口成功率 < 0.9；degraded = 24h p95
+         *     超过近 7 天逐小时 p95 中位数 ×2（7d 无有限基线则不判）、最近探针早于
+         *     36 小时、或 24h p95 越过 30s 而 7d 存在有限基线；no_sample = 既无流量桶
+         *     也无探针；其余为 normal。
+         *     `spark` 固定 24 点、以当前小时为最后一格（最早的不完整小时被丢弃）；
+         *     空小时与 p95 越过 30s 的小时为 null（不是 0、不是 30000）。`uptime` 是
+         *     最近一次测速的成功率（不是 24h 加权）。`latency_p95_ms` 的口径是端到端
+         *     延迟 p95，不是 TTFT。
+         *     `latency_p95_over_30s` / `ttft_p95_over_30s` / `ttft_p50_over_30s` 为 true
+         *     时，同级 `*_ms` 不表示有限延迟，而是「已知 ≥30s、真实值未知」——前端
+         *     必须渲染成 `>30s`，不得当有限值格式化（分位落进 +Inf 桶即为 true）。
+         */
+        get: operations["getPerformanceModels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/performance/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 运行参数（生效节奏 + 部署参数 + A 类设置值）
+         * @description 返回实际生效值而不是前端硬编码。`schedule` 可为 null（部署未装配调度器）；
+         *     `schedule.source` 三值 `settings|env|mixed`；`schedule.next_run_at` 在
+         *     `enabled=false` 时为 null，且与 `enabled` 出自同一次读取快照；`legacy_times`
+         *     只在旧时刻表模式下非空。
+         *     `env[].configured` = 渲染后有非空值（环境变量或内置默认），`env[].set` =
+         *     环境变量被显式设置，两者独立；`env[].effect` 固定 `restart`。
+         *     `METRICS_TOKEN` 只报是否已配置，永不回显值（该行没有 `value` 键）；
+         *     `PERF_METRICS_DSN` 整行不存在（带口令）。`PROMETHEUS_URL` 已脱敏：
+         *     userinfo 口令变 `xxxxx`，query 与 fragment 内容变 `…`。
+         *     `fixed[].effect` 固定 `code`。`settings_groups[].items[].source` 只有
+         *     `settings|default`：越界、类型错误或 null 的落库值会回落注册表默认并记
+         *     Warn。
+         */
+        get: operations["getPerformanceConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/instances": {
         parameters: {
             query?: never;
@@ -3299,7 +3395,7 @@ export interface paths {
          * 读取一个设置 section
          * @description 必须提供 `section`（如 site / auth / billing / pay / pay.stripe /
          *     pay.alipay / pay.epay / rl / sec / notify.smtp / notify.webhook /
-         *     rl.health / policy）。缺参数与未知 section 均返回 400。
+         *     rl.health / policy / perf）。缺参数与未知 section 均返回 400。
          *     `value=null` 表示该键尚未落库（使用 `default`）；secret 键的 value
          *     恒为掩码或 null。
          */
@@ -9534,7 +9630,7 @@ export interface components {
             /** Format: int64 */
             used_bytes: number;
         };
-        PerformanceConfig: {
+        PerformanceDiskCacheConfig: {
             /** @description 回显 DISK_CACHE_ENABLED 原值（不因目录缺失而改变）。 */
             enabled: boolean;
             path: string;
@@ -9549,7 +9645,7 @@ export interface components {
             memory_stats: components["schemas"]["PerformanceMemoryStats"];
             disk_cache_info: components["schemas"]["PerformanceDiskCacheInfo"];
             disk_space_info: components["schemas"]["PerformanceDiskSpaceInfo"];
-            config: components["schemas"]["PerformanceConfig"];
+            config: components["schemas"]["PerformanceDiskCacheConfig"];
         };
         PerformanceDiskCacheClearResult: {
             instance_id: string;
@@ -9638,6 +9734,385 @@ export interface components {
         };
         PerformanceRecentOperations: {
             items: components["schemas"]["PerformanceRecentOperation"][];
+        };
+        /**
+         * @description 服务端实际使用的查询窗。`start`/`end` 已截断到查询缓存 TTL 桶边界，同一
+         *     TTL 内重复请求返回同一 `windows`；`points` 是每条查询的采样点数（15m 为
+         *     15，其余 24），`step_seconds` = span / points。
+         */
+        PerformanceOverviewWindow: {
+            /** @enum {string} */
+            range: "15m" | "1h" | "6h" | "24h";
+            /** Format: date-time */
+            start: string;
+            /** Format: date-time */
+            end: string;
+            /** Format: int64 */
+            step_seconds: number;
+            points: number;
+        };
+        /**
+         * @description 数据源健康。`name` 固定为 prometheus / heartbeat（overview）或
+         *     perfmetrics / probes（models）；`status` ∈ {ok, unavailable, error}。
+         */
+        PerformanceSource: {
+            /** @enum {string} */
+            name: "prometheus" | "heartbeat" | "perfmetrics" | "probes";
+            /** @enum {string} */
+            status: "ok" | "unavailable" | "error";
+        };
+        /**
+         * @description 一个体检格。`status` ∈ {ok, warn, crit, unknown}；unknown 表示数据源缺失
+         *     或无样本，不等于异常。`series` 的元素是 [unix 秒, 值]，NaN/±Inf 已剔除。
+         */
+        PerformanceOverviewVital: {
+            /** @description 查询名（perfquery 目录，如 gateway.rps / db.pool）。 */
+            key: string;
+            /**
+             * Format: double
+             * @description 最新有限值；NaN/±Inf 或无样本时为 null（不是 0）。
+             */
+            value: number | null;
+            /** @description perfquery 单位：ratio / s / req/s / conn / B/s / ops/s 等。 */
+            unit: string;
+            /** @enum {string} */
+            status: "ok" | "warn" | "crit" | "unknown";
+            /** @description 副标题文案；无可用数字时为空串。 */
+            note: string;
+            series: number[][];
+        };
+        PerformanceOverviewGatewayMetrics: {
+            /** Format: double */
+            goroutines: number | null;
+            /**
+             * Format: double
+             * @description 堆分配内存（MB）。
+             */
+            heap_mb: number | null;
+            /**
+             * Format: double
+             * @description 端到端延迟 p95（毫秒）。
+             */
+            p95_ms: number | null;
+            /**
+             * Format: double
+             * @description 5xx 比例（0–1）。
+             */
+            error_rate: number | null;
+            /**
+             * Format: double
+             * @description 在途请求数。
+             */
+            inflight: number | null;
+        };
+        PerformanceOverviewGateway: {
+            instance_id: string;
+            /** @description 心跳中的角色（gateway）；仅由指标发现、无心跳的副本为空串。 */
+            role: string;
+            version: string;
+            /**
+             * Format: date-time
+             * @description 最后心跳时间；无心跳时为 null。
+             */
+            last_seen: string | null;
+            heartbeat_fresh: boolean;
+            /** @description 逐副本指标；一个值都没有时为 null（部分缺失时子字段为 null）。 */
+            metrics: components["schemas"]["PerformanceOverviewGatewayMetrics"] | null;
+            /**
+             * @description ok 要求五项指标齐全；否则 unknown（不臆造数据）。
+             * @enum {string}
+             */
+            metrics_status: "ok" | "unknown";
+        };
+        PerformanceHostResources: {
+            /**
+             * Format: double
+             * @description CPU 使用率（0–1）。
+             */
+            cpu: number;
+            /**
+             * Format: double
+             * @description 内存使用率（0–1）。
+             */
+            mem: number;
+            /**
+             * Format: double
+             * @description 磁盘使用率（0–1）。
+             */
+            disk: number;
+            /**
+             * Format: double
+             * @description 入站流量（B/s）。
+             */
+            net_in: number;
+            /**
+             * Format: double
+             * @description 出站流量（B/s）。
+             */
+            net_out: number;
+        };
+        PerformancePostgresResources: {
+            /**
+             * Format: double
+             * @description 当前连接数（conn）。
+             */
+            backends: number;
+            /**
+             * Format: double
+             * @description max_connections（conn）。
+             */
+            max: number;
+            /**
+             * Format: double
+             * @description 事务速率（tx/s）。
+             */
+            tps: number;
+            /**
+             * Format: double
+             * @description 数据库大小（B）。
+             */
+            size_bytes: number;
+            /**
+             * Format: double
+             * @description 锁等待（wait/s）。
+             */
+            lock_wait: number;
+        };
+        PerformanceRedisResources: {
+            /**
+             * Format: double
+             * @description 可用性（1=up，0=down）。
+             */
+            up: number;
+            /**
+             * Format: double
+             * @description 连接数（conn）。
+             */
+            clients: number;
+            /**
+             * Format: double
+             * @description 内存使用率（0–1）。
+             */
+            mem_ratio: number;
+            /**
+             * Format: double
+             * @description 命中率（0–1）。
+             */
+            hit_rate: number;
+            /**
+             * Format: double
+             * @description 命令速率（ops/s）。
+             */
+            cmd_rate: number;
+        };
+        /**
+         * @description 资源三段的数值字段不可为空：指标缺失（NaN/±Inf、查询失败或无样本）时
+         *     填 0，而不是 null——与 spec §7.2 的示例形状一致。
+         */
+        PerformanceResources: {
+            host: components["schemas"]["PerformanceHostResources"];
+            postgres: components["schemas"]["PerformancePostgresResources"];
+            redis: components["schemas"]["PerformanceRedisResources"];
+        };
+        PerformanceOverview: {
+            /** Format: date-time */
+            generated_at: string;
+            /** @enum {string} */
+            range: "15m" | "1h" | "6h" | "24h";
+            windows: components["schemas"]["PerformanceOverviewWindow"];
+            sources: components["schemas"]["PerformanceSource"][];
+            vitals: components["schemas"]["PerformanceOverviewVital"][];
+            /** @description 只列网关副本（按 service="gateway" 过滤），不含 exporter / Prometheus 自身。 */
+            gateways: components["schemas"]["PerformanceOverviewGateway"][];
+            resources: components["schemas"]["PerformanceResources"];
+        };
+        /**
+         * @description 最近一次测速的展示面。`ok` 表示整轮全部成功；部分成功为 false，但不等于
+         *     incident——incident 只认全失败。
+         */
+        PerformanceModelProbe: {
+            /** Format: date-time */
+            last_tested_at: string | null;
+            ok: boolean;
+            runs: number;
+            /** @description 该轮测速的首字延迟 p95（毫秒）；无样本时为 null。 */
+            ttft_p95_ms: number | null;
+            /** @description 该轮测速的端到端延迟 p95（毫秒）；无样本时为 null。 */
+            latency_p95_ms: number | null;
+            /** Format: double */
+            success_rate: number;
+        };
+        /**
+         * @description 一行模型汇总：流量列来自 perfmetrics 分钟桶（延迟口径是端到端 p95，不是
+         *     TTFT），探针列来自最近一次主动测速。`*_over_30s` 为 true 时同级 `*_ms`
+         *     不表示有限延迟，而是「已知 ≥30s、真实值未知」的下界（+Inf 桶），前端
+         *     必须渲染为 `>30s`。
+         */
+        PerformanceModelRow: {
+            model: string;
+            /** @description 当前可路由渠道数；渠道统计失败时为 null（不是 0）。 */
+            channels: number | null;
+            /**
+             * Format: double
+             * @description 首字延迟 p50（毫秒，只统计流式样本）。
+             */
+            ttft_p50_ms: number | null;
+            /**
+             * Format: double
+             * @description 首字延迟 p95（毫秒）。
+             */
+            ttft_p95_ms: number | null;
+            /** @description p50 落进 +Inf 桶时为 true；此时 ttft_p50_ms 不是有限值。 */
+            ttft_p50_over_30s: boolean;
+            /** @description p95 落进 +Inf 桶时为 true；此时 ttft_p95_ms 不是有限值。 */
+            ttft_p95_over_30s: boolean;
+            /**
+             * Format: double
+             * @description 端到端延迟 p95（毫秒）；越过 30s 时见 latency_p95_over_30s。
+             */
+            latency_p95_ms: number | null;
+            /** @description p95 落进 +Inf 桶时为 true；此时 latency_p95_ms 不是有限值。 */
+            latency_p95_over_30s: boolean;
+            /**
+             * Format: double
+             * @description 输出速度（tokens/s）。
+             */
+            tps: number | null;
+            /** Format: int64 */
+            samples: number;
+            /** Format: double */
+            success_rate: number | null;
+            /** @description 最近一次主动测速；没有测速记录时为 null。 */
+            probe: components["schemas"]["PerformanceModelProbe"] | null;
+            /**
+             * Format: double
+             * @description 最近一次测速的成功率（不是 24h 加权）；无测速记录时为 null。
+             */
+            uptime: number | null;
+            /**
+             * @description 判定顺序严格为 incident → degraded → no_sample → normal。
+             *     incident = 最新一次探针成功率 0 或窗口成功率 < 0.9；
+             *     degraded = 24h p95 超过近 7 天逐小时 p95 中位数 ×2（7d 无有限基线则
+             *     不判）、最近探针早于 36 小时、或 24h p95 越过 30s 而 7d 存在有限基线；
+             *     no_sample = 既无流量桶也无探针。
+             * @enum {string}
+             */
+            status: "normal" | "degraded" | "incident" | "no_sample";
+            /**
+             * @description 固定 24 点、以当前小时为最后一格（最早的不完整小时被丢弃）。空小时
+             *     与 p95 越过 30s 的小时为 null（不是 0、不是 30000）。
+             */
+            spark: (number | null)[];
+        };
+        PerformanceModelsSummary: {
+            models: number;
+            degraded: number;
+            incident: number;
+            no_sample: number;
+        };
+        /**
+         * @description 模型汇总表。行集合 = 24h 内有流量桶的模型 ∪ 当前可路由渠道声明的模型；
+         *     已停用模型的孤儿测速记录不会出现在 rows 里。
+         */
+        PerformanceModels: {
+            /** Format: date-time */
+            generated_at: string;
+            sources: components["schemas"]["PerformanceSource"][];
+            rows: components["schemas"]["PerformanceModelRow"][];
+            summary: components["schemas"]["PerformanceModelsSummary"];
+        };
+        PerformanceConfigSchedule: {
+            enabled: boolean;
+            interval_hours: number;
+            runs: number;
+            concurrency: number;
+            /**
+             * @description 生效值来源——四个键全部可用 / 全部回落环境变量 / 部分可用。
+             * @enum {string}
+             */
+            source: "settings" | "env" | "mixed";
+            /** @description IANA 时区（PERF_SCHEDULE_TIMEZONE）。 */
+            timezone: string;
+            /**
+             * Format: date-time
+             * @description `enabled=false` 时为 null；与 `enabled` 出自同一次设置快照，服务端
+             *     按 `timezone` 计算（客户端不得自行重算）。
+             */
+            next_run_at: string | null;
+            /** @description 旧时刻表（每日 HH:MM 列表）；只在旧时刻表模式下非空。 */
+            legacy_times: string;
+        };
+        PerformanceConfigEnvRow: {
+            /** @description 环境变量名（稳定契约）。 */
+            key: string;
+            /**
+             * @description 渲染后的生效值；未配置的普通行为空串。秘钥行（METRICS_TOKEN）没有
+             *     该键——值永不回显。
+             */
+            value?: string;
+            /** @description 渲染后有非空值（环境变量或内置默认）；与 set 独立。 */
+            configured: boolean;
+            /** @description 环境变量被显式设置；与 configured 独立。 */
+            set: boolean;
+            /**
+             * @description 生效方式——需重启。
+             * @enum {string}
+             */
+            effect: "restart";
+        };
+        PerformanceConfigFixedRow: {
+            /** @description probe_timeout / write_rate_limit / disk_cache_idle / usage_log_retention。 */
+            key: string;
+            /** @description 已带单位的展示值（如 30s、10/min）。 */
+            value: string;
+            /** @description duration / rate。 */
+            unit: string;
+            /**
+             * @description 生效方式——需改代码。
+             * @enum {string}
+             */
+            effect: "code";
+        };
+        PerformanceConfigSettingItem: {
+            key: string;
+            /** @description 当前值（注册表原生 JSON 类型：数字 / 布尔 / 字符串 / 数组 / 对象）。 */
+            value: unknown;
+            /** @description 注册表类型：bool / string / int / number / enum / list / object。 */
+            type: string;
+            /** @description minutes / count / seconds / onoff / rpm / months / days。 */
+            unit: string;
+            /**
+             * @description settings = 落库值被采用；default = 未落库、null、类型不符或越界，已回落
+             *     注册表默认并记 Warn。
+             * @enum {string}
+             */
+            source: "settings" | "default";
+        };
+        PerformanceConfigSettingsGroup: {
+            /** @description channel_health / rate_limit / retention。 */
+            id: string;
+            /** @description 设置页 tab 锚点（policy / security）；无入口的组为空串。 */
+            tab: string;
+            /** @description /admin/settings?tab=<tab>；无 tab 时为空串（前端渲染为纯文本）。 */
+            link: string;
+            items: components["schemas"]["PerformanceConfigSettingItem"][];
+        };
+        /** @description 性能页「运行参数」：全部是服务端实际生效值，不在前端硬编码。 */
+        PerformanceConfig: {
+            /** Format: date-time */
+            generated_at: string;
+            /** @description 测速四项的生效值；部署未装配调度器时为 null。 */
+            schedule: components["schemas"]["PerformanceConfigSchedule"] | null;
+            /**
+             * @description 部署环境变量快照（B 类）。METRICS_TOKEN 只报是否已配置（该行没有
+             *     `value` 键），永不回显值；PERF_METRICS_DSN 整行不存在（DSN 可能含口令）。
+             *     PROMETHEUS_URL 已脱敏：userinfo 口令为 `xxxxx`，query 与 fragment 内容
+             *     为 `…`。
+             */
+            env: components["schemas"]["PerformanceConfigEnvRow"][];
+            /** @description 代码内置参数（C 类，改部署配置也不生效）。 */
+            fixed: components["schemas"]["PerformanceConfigFixedRow"][];
+            settings_groups: components["schemas"]["PerformanceConfigSettingsGroup"][];
         };
         InstanceSummary: {
             /** @description INSTANCE_ID，缺省为进程主机名。 */
@@ -17445,6 +17920,83 @@ export interface operations {
             401: components["responses"]["Error401"];
             403: components["responses"]["Error403"];
             422: components["responses"]["Error422"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getPerformanceOverview: {
+        parameters: {
+            query?: {
+                /** @description 时间窗；缺省 `1h`，大小写敏感，其它值 400 `invalid_range`。 */
+                range?: "15m" | "1h" | "6h" | "24h";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 总览 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PerformanceOverview"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getPerformanceModels: {
+        parameters: {
+            query?: {
+                /** @description 只接受空或 `24h`；其它值 400 `invalid_range`。 */
+                range?: "24h";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 模型汇总 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PerformanceModels"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            500: components["responses"]["Error500"];
+        };
+    };
+    getPerformanceConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 运行参数 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PerformanceConfig"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
             500: components["responses"]["Error500"];
         };
     };

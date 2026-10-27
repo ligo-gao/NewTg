@@ -3628,7 +3628,7 @@ paths:
       description: |
         必须提供 `section`（如 site / auth / billing / pay / pay.stripe /
         pay.alipay / pay.epay / rl / sec / notify.smtp / notify.webhook /
-        rl.health / policy）。缺参数与未知 section 均返回 400。
+        rl.health / policy / perf）。缺参数与未知 section 均返回 400。
         `value=null` 表示该键尚未落库（使用 `default`）；secret 键的 value
         恒为掩码或 null。
       security:
@@ -4847,6 +4847,141 @@ paths:
           $ref: '../components/responses.yaml#/responses/Error403'
         '422':
           $ref: '../components/responses.yaml#/responses/Error422'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  # ---------------------------------------------------------------------------
+  # 性能页只读观测（2026-10-28 性能页改版 Task 11）。
+  #
+  # 三个端点一律 settings:manage、只读 GET。监控/指标库未接入时仍返回 200，
+  # 在 sources[] 的状态里降级，不返回 5xx；可空指标为 null，不用 0 冒充。
+  # ---------------------------------------------------------------------------
+  /api/performance/overview:
+    get:
+      tags: [admin]
+      operationId: getPerformanceOverview
+      x-required-permission: settings:manage
+      summary: 性能总览（vitals / 数据源 / 副本 / 资源）
+      description: |
+        `range` 只接受 `15m|1h|6h|24h`（缺省 `1h`，大小写敏感），其它值返回
+        400 `invalid_range`。`windows` 回显服务端实际使用的查询窗：`start`/`end`
+        已截断到查询缓存 TTL 桶边界，同一 TTL 内重复请求返回同一 `windows`；
+        `points` 是每条查询的采样点数（15m 为 15，其余 24）。
+        `sources[].status` 只有 `ok|unavailable|error`，`name` 固定为
+        `prometheus|heartbeat`。`vitals[].status` 只有 `ok|warn|crit|unknown`——
+        未知不等于异常：数据源缺失或无样本时为 `unknown`。`gateways[]` 只列
+        网关副本（按 service 过滤），不含 exporter / Prometheus 自身；
+        `gateways[].metrics_status` 只有 `ok|unknown`。
+        可空指标（vitals[].value、gateways[].metrics 及其子字段）在 NaN/±Inf
+        时为 null，不写 0；resources 的数字字段按 spec §7.2 固定为 0。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: range
+          in: query
+          required: false
+          description: 时间窗；缺省 `1h`，大小写敏感，其它值 400 `invalid_range`。
+          schema:
+            type: string
+            enum: ['15m', '1h', '6h', '24h']
+            default: '1h'
+      responses:
+        '200':
+          description: 总览
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/PerformanceOverview'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/performance/models:
+    get:
+      tags: [admin]
+      operationId: getPerformanceModels
+      x-required-permission: settings:manage
+      summary: 模型汇总表（流量 + 探针 + 状态 + spark）
+      description: |
+        `range` 只接受空或 `24h`，其它值返回 400 `invalid_range`；表格窗口固定
+        24h，不随 range 切换。行集合 = 「24h 内有流量桶的模型 ∪ 当前可路由渠道
+        声明的模型」——已停用模型的孤儿测速行不会出现。
+        `channels` 是该模型当前可路由的渠道数，渠道统计失败时为 null（不是 0）。
+        `status` 判定顺序严格为 `incident → degraded → no_sample → normal`：
+        incident = 最新一次探针成功率 0 或窗口成功率 < 0.9；degraded = 24h p95
+        超过近 7 天逐小时 p95 中位数 ×2（7d 无有限基线则不判）、最近探针早于
+        36 小时、或 24h p95 越过 30s 而 7d 存在有限基线；no_sample = 既无流量桶
+        也无探针；其余为 normal。
+        `spark` 固定 24 点、以当前小时为最后一格（最早的不完整小时被丢弃）；
+        空小时与 p95 越过 30s 的小时为 null（不是 0、不是 30000）。`uptime` 是
+        最近一次测速的成功率（不是 24h 加权）。`latency_p95_ms` 的口径是端到端
+        延迟 p95，不是 TTFT。
+        `latency_p95_over_30s` / `ttft_p95_over_30s` / `ttft_p50_over_30s` 为 true
+        时，同级 `*_ms` 不表示有限延迟，而是「已知 ≥30s、真实值未知」——前端
+        必须渲染成 `>30s`，不得当有限值格式化（分位落进 +Inf 桶即为 true）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: range
+          in: query
+          required: false
+          description: 只接受空或 `24h`；其它值 400 `invalid_range`。
+          schema:
+            type: string
+            enum: ['24h']
+      responses:
+        '200':
+          description: 模型汇总
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/PerformanceModels'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '500':
+          $ref: '../components/responses.yaml#/responses/Error500'
+
+  /api/performance/config:
+    get:
+      tags: [admin]
+      operationId: getPerformanceConfig
+      x-required-permission: settings:manage
+      summary: 运行参数（生效节奏 + 部署参数 + A 类设置值）
+      description: |
+        返回实际生效值而不是前端硬编码。`schedule` 可为 null（部署未装配调度器）；
+        `schedule.source` 三值 `settings|env|mixed`；`schedule.next_run_at` 在
+        `enabled=false` 时为 null，且与 `enabled` 出自同一次读取快照；`legacy_times`
+        只在旧时刻表模式下非空。
+        `env[].configured` = 渲染后有非空值（环境变量或内置默认），`env[].set` =
+        环境变量被显式设置，两者独立；`env[].effect` 固定 `restart`。
+        `METRICS_TOKEN` 只报是否已配置，永不回显值（该行没有 `value` 键）；
+        `PERF_METRICS_DSN` 整行不存在（带口令）。`PROMETHEUS_URL` 已脱敏：
+        userinfo 口令变 `xxxxx`，query 与 fragment 内容变 `…`。
+        `fixed[].effect` 固定 `code`。`settings_groups[].items[].source` 只有
+        `settings|default`：越界、类型错误或 null 的落库值会回落注册表默认并记
+        Warn。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 运行参数
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/PerformanceConfig'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
         '500':
           $ref: '../components/responses.yaml#/responses/Error500'
 
