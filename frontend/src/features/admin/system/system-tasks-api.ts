@@ -27,6 +27,13 @@ export interface SystemTaskSummary {
   last_duration_ms: number | null
   manual_trigger_allowed: boolean
   concurrency?: string
+  /**
+   * 当前是否有能执行该任务的 worker 实例。false 时「立即运行」必须禁用——
+   * 网关只负责入队，没有 worker 在线时 pending 行永远不会被执行。
+   */
+  available: boolean
+  /** available=false 时的固定原因码（目前只有 `worker_unavailable`）。 */
+  blocked_reason?: string
 }
 
 export interface SystemTaskRun {

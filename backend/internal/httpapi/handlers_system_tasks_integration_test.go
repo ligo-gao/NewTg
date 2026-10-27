@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -265,6 +266,127 @@ func TestSystemTasksIntegration(t *testing.T) {
 	}
 	if leaked != 0 {
 		t.Fatal("审计 detail 不得包含节点标识")
+	}
+}
+
+// TestSystemTasksTriggerRequiresOnlineWorker 锁定 F-3：worker 不在线时管理面
+// 必须提前暴露不可用（列表 available=false + blocked_reason），触发当场 409
+// worker_unavailable，且**零 pending 行**——否则管理员会以为任务已排期，而
+// 那条 pending 行永远不会被执行。
+func TestSystemTasksTriggerRequiresOnlineWorker(t *testing.T) {
+	db, logs := systemTaskIntegrationDBs(t)
+	addr := os.Getenv("NEWTG_TEST_REDIS_ADDR")
+	if addr == "" {
+		t.Skip("NEWTG_TEST_REDIS_ADDR 未设置，跳过集成测试")
+	}
+	rdb := redis.NewClient(&redis.Options{Addr: addr})
+	t.Cleanup(func() { _ = rdb.Close() })
+	ctx := context.Background()
+
+	for _, table := range []string{"worker_task_runs", "worker_task_locks", "worker_tasks"} {
+		if _, err := db.ExecContext(ctx, "DELETE FROM "+table); err != nil {
+			t.Fatalf("clear %s: %v", table, err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, table := range []string{"worker_task_runs", "worker_task_locks", "worker_tasks"} {
+			_, _ = db.Exec("DELETE FROM " + table)
+		}
+		_, _ = logs.Exec(`DELETE FROM audit_logs WHERE detail->>'event' = 'system.task.trigger'`)
+	})
+
+	registry, err := worker.DefaultRegistry()
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	store, err := worker.NewSQLStore(db)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	if err := store.EnsureTaskRows(ctx, registry.Tasks()); err != nil {
+		t.Fatalf("ensure rows: %v", err)
+	}
+	// 第二个 Service 模拟网关进程：不 BindRun（Run 全为 nil），且探针恒报
+	// 「没有 worker 在线」。
+	service, err := worker.NewService(worker.ServiceConfig{
+		Registry: registry,
+		Store:    store,
+		Lease:    worker.NewRedisLease(rdb),
+		Logger:   testLogger(),
+		RuntimeAvailability: func(context.Context) (bool, string) {
+			return false, worker.BlockedCodeWorkerUnavailable
+		},
+	})
+	if err != nil {
+		t.Fatalf("service: %v", err)
+	}
+	mux := http.NewServeMux()
+	NewSystemTaskHandlers(SystemTaskHandlerConfig{
+		Service: service,
+		Authz:   rbac.NewAuthzMiddleware(),
+		Audit:   audit.New(logs),
+		Idem:    NewRedisIdempotencyStore(rdb),
+		Logger:  testLogger(),
+	}).Register(mux)
+
+	// 列表：白名单任务标 unavailable，非白名单任务恒为 available。
+	list := httptest.NewRecorder()
+	mux.ServeHTTP(list, settingsRequest(http.MethodGet, "/api/system/tasks?page_size=100",
+		"", systemTaskAdmin(), nil))
+	if list.Code != http.StatusOK {
+		t.Fatalf("列表 = %d，期望 200", list.Code)
+	}
+	var page worker.TaskPage
+	if err := json.Unmarshal(list.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	byName := make(map[string]worker.TaskSummary, len(page.Items))
+	for _, item := range page.Items {
+		byName[item.TaskType] = item
+	}
+	cleanupTask, ok := byName["worker_history_cleanup"]
+	if !ok {
+		t.Fatalf("列表缺少 worker_history_cleanup：%v", byName)
+	}
+	if !cleanupTask.ManualTriggerAllowed || cleanupTask.Available {
+		t.Fatalf("worker_history_cleanup 摘要 = %+v，期望可手动触发且 available=false", cleanupTask)
+	}
+	if cleanupTask.BlockedReason != worker.BlockedCodeWorkerUnavailable {
+		t.Fatalf("blocked_reason = %q，期望 %q", cleanupTask.BlockedReason, worker.BlockedCodeWorkerUnavailable)
+	}
+	if pollTask, ok := byName["async_task_poll"]; !ok || !pollTask.Available || pollTask.BlockedReason != "" {
+		t.Fatalf("非白名单任务摘要 = %+v，期望 available=true 且无 blocked_reason", pollTask)
+	}
+
+	// 触发：409 + problem type 以 worker_unavailable 结尾。
+	blocked := httptest.NewRecorder()
+	mux.ServeHTTP(blocked, settingsRequest(http.MethodPost,
+		"/api/system/tasks/worker_history_cleanup:trigger", "", systemTaskAdmin(),
+		map[string]string{"Idempotency-Key": fmt.Sprintf("int-worker-offline-%d", time.Now().UnixNano())}))
+	if blocked.Code != http.StatusConflict {
+		t.Fatalf("worker 离线触发 = %d，期望 409（body=%s）", blocked.Code, blocked.Body.String())
+	}
+	var problem map[string]any
+	if err := json.Unmarshal(blocked.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	typeURI, _ := problem["type"].(string)
+	if !strings.HasSuffix(typeURI, "/"+worker.BlockedCodeWorkerUnavailable) {
+		t.Fatalf("problem type = %q，期望以 %q 结尾", typeURI, worker.BlockedCodeWorkerUnavailable)
+	}
+
+	// 副作用为零：零条 pending 行（也零条任何运行行）。
+	var pendingRows int
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*) FROM worker_task_runs
+		 WHERE task_type = 'worker_history_cleanup' AND status = 'pending'`).Scan(&pendingRows); err != nil {
+		t.Fatalf("count pending: %v", err)
+	}
+	if pendingRows != 0 {
+		t.Fatalf("worker 离线仍写下 %d 条 pending 行", pendingRows)
+	}
+	if _, total, err := store.ListRuns(ctx, "worker_history_cleanup", 5, 0); err != nil || total != 0 {
+		t.Fatalf("worker 离线触发产生了运行行: total=%d err=%v", total, err)
 	}
 }
 

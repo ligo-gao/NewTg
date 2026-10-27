@@ -20645,6 +20645,7 @@ components:
         - running
         - manual_trigger_allowed
         - concurrency
+        - available
       properties:
         task_type:
           type: string
@@ -20688,6 +20689,14 @@ components:
           type: string
           enum:
             - single
+        available:
+          type: boolean
+          description: 当前是否有能执行该任务的 worker 实例；非手动白名单任务恒为 true。
+        blocked_reason:
+          type: string
+          enum:
+            - worker_unavailable
+          description: available=false 时的固定原因码；可用时不返回。
     SystemTaskPage:
       type: object
       additionalProperties: false

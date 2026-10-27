@@ -30,6 +30,13 @@ const (
 	// 它只可能出现在「触发时开关已关、执行前又被关」的竞态窗口，或手动
 	// 通过其他入口执行；正常 409 根本不会入队。
 	ErrClassBlocked = "blocked"
+	// ErrClassPendingExpired 是超龄 pending 行的兜底终态。
+	//
+	// 正常路径下 pending 行在 15s 的调度 pass 内就会被认领；一条 pending
+	// 行活过 24h 说明认领它的进程从未出现（例如没有 worker 在线时的入队、
+	// 或 worker 在线但该任务不可执行）。没有这条兜底，pending 行会永久停留
+	// 在运行历史里，让管理员误以为任务已排期。
+	ErrClassPendingExpired = "pending_expired"
 )
 
 // TaskState 是 worker_tasks 行与最近一次运行/当前租约的合并投影。
@@ -102,6 +109,11 @@ type TaskSummary struct {
 	LastDurationMS       *int64     `json:"last_duration_ms"`
 	ManualTriggerAllowed bool       `json:"manual_trigger_allowed"`
 	Concurrency          string     `json:"concurrency"`
+	// Available 表示当前是否有能执行该任务的 worker 实例。非手动白名单
+	// 任务恒为 true（它们本来就不可手动触发，不可用标记只会误导）。
+	Available bool `json:"available"`
+	// BlockedReason 是 available=false 时的固定原因码；可用时不返回。
+	BlockedReason string `json:"blocked_reason,omitempty"`
 }
 
 // TaskDetail 是 GET /api/system/tasks/{name} 的响应。
@@ -551,10 +563,15 @@ func (s *SQLStore) UpdateTaskAfterRun(ctx context.Context, taskType string, star
 	return nil
 }
 
-// ExpireRunningRuns 把「租约已过期但仍标记 running」的运行标记失败。
+// ExpireRunningRuns 收敛两类悬挂运行：过期租约的 running 行 + 超龄 pending 行。
 //
-// 这是崩溃/强杀后的收敛点：执行者来不及写终态，只有过期租约能证明它已
+// 前者是崩溃/强杀后的收敛点：执行者来不及写终态，只有过期租约能证明它已
 // 不再持有执行权。固定错误文案与设计 §2.3.1 一致。
+//
+// 后者是「入队了却没人认领」的兜底：pending 行正常在 15s 的调度 pass 内
+// 被认领，最长任务超时是 model_perf_test 的 3 小时，所以 24h 远超任何正常
+// 路径（3h 执行 + 调度抖动）。24h 是明确的兜底而非正常机制：它只保证管理面
+// 不会永远显示一条「已排期」的幽灵运行，而不是替代逐任务可用性上报。
 func (s *SQLStore) ExpireRunningRuns(ctx context.Context) (int64, error) {
 	// 过期判定与 finished_at 都取数据库 now()，与 ClaimLock/RenewLock 同一时钟。
 	res, err := s.db.ExecContext(ctx, `
@@ -573,7 +590,20 @@ func (s *SQLStore) ExpireRunningRuns(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("worker: expire running runs rows: %w", err)
 	}
-	return affected, nil
+	// 第二条 UPDATE 复用同一个返回计数：调用方只关心「本轮收敛了多少行」。
+	pendingRes, err := s.db.ExecContext(ctx, `
+		UPDATE worker_task_runs
+		   SET status = 'failed', finished_at = now(), error = $1, updated_at = now()
+		 WHERE status = 'pending'
+		   AND created_at < now() - interval '24 hours'`, ErrClassPendingExpired)
+	if err != nil {
+		return affected, fmt.Errorf("worker: expire pending runs: %w", err)
+	}
+	pendingAffected, err := pendingRes.RowsAffected()
+	if err != nil {
+		return affected, fmt.Errorf("worker: expire pending runs rows: %w", err)
+	}
+	return affected + pendingAffected, nil
 }
 
 // DeleteRunsBefore 删除 started_at（或 pending 的 created_at）早于 cutoff 的行。

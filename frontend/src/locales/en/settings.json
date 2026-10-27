@@ -567,7 +567,8 @@
       "cancel": "Cancel",
       "trigger_success": "Task enqueued (run #{run_id}).",
       "trigger_already_running": "The task is already running or queued.",
-      "trigger_forbidden": "You do not have permission to trigger this task."
+      "trigger_forbidden": "You do not have permission to trigger this task.",
+      "trigger_unavailable_worker": "No worker instance is online, so this task cannot be triggered."
     }},
   "notification_templates": {
     "entry": {

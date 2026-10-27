@@ -25,7 +25,11 @@ import {
  *
  * 权限：端点要求 settings:manage；403 时整卡隐藏（与实例卡同一处理），
  * 不在前端伪造权限判断。触发按钮只对 `manual_trigger_allowed` 渲染，
- * 但真正的授权仍在服务端（非白名单 403）。
+ * 真正的授权仍在服务端（非白名单 403）。
+ *
+ * 可用性：网关只负责入队，执行者是 worker 进程。`available=false` 表示
+ * 当前没有在线的 worker，此时按钮禁用并显示原因——管理员不需要先点一次
+ * 才知道会 409（服务端同样提前拒绝，前端只是把结论放在点之前）。
  */
 
 const TASK_POLL_INTERVAL = 10_000
@@ -299,6 +303,12 @@ export function SystemTasksCard() {
                             {task.manual_trigger_allowed ? (
                               <Button
                                 variant="secondary"
+                                disabled={!task.available}
+                                title={
+                                  task.available
+                                    ? undefined
+                                    : t('settings.status.tasks.trigger_unavailable_worker')
+                                }
                                 onClick={() => {
                                   setPending(task)
                                   setTriggerKey(createTaskTriggerKey())
@@ -308,6 +318,13 @@ export function SystemTasksCard() {
                               </Button>
                             ) : null}
                           </div>
+                          {/* 只靠 title/禁用态不够：触屏与键盘用户看不到 title，
+                              必须在行内给出可见原因。 */}
+                          {task.manual_trigger_allowed && !task.available ? (
+                            <p className="mt-1 text-meta text-ink-3">
+                              {t('settings.status.tasks.trigger_unavailable_worker')}
+                            </p>
+                          ) : null}
                         </td>
                       </tr>
                       {isExpanded ? (

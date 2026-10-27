@@ -567,7 +567,8 @@
       "cancel": "取消",
       "trigger_success": "任务已入队（运行 #{run_id}）。",
       "trigger_already_running": "任务正在运行或已入队。",
-      "trigger_forbidden": "你没有触发该任务的权限。"
+      "trigger_forbidden": "你没有触发该任务的权限。",
+      "trigger_unavailable_worker": "worker 实例未在线，无法触发"
     }
   },
   "notification_templates": {

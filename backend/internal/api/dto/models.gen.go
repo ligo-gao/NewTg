@@ -2907,6 +2907,21 @@ func (e SystemTaskRunTrigger) Valid() bool {
 	}
 }
 
+// Defines values for SystemTaskSummaryBlockedReason.
+const (
+	WorkerUnavailable SystemTaskSummaryBlockedReason = "worker_unavailable"
+)
+
+// Valid indicates whether the value is a known member of the SystemTaskSummaryBlockedReason enum.
+func (e SystemTaskSummaryBlockedReason) Valid() bool {
+	switch e {
+	case WorkerUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SystemTaskSummaryConcurrency.
 const (
 	Single SystemTaskSummaryConcurrency = "single"
@@ -10664,9 +10679,14 @@ type SystemTaskRunPage struct {
 
 // SystemTaskSummary defines model for SystemTaskSummary.
 type SystemTaskSummary struct {
-	Concurrency SystemTaskSummaryConcurrency `json:"concurrency"`
-	Description string                       `json:"description"`
-	Enabled     bool                         `json:"enabled"`
+	// Available 当前是否有能执行该任务的 worker 实例；非手动白名单任务恒为 true。
+	Available bool `json:"available"`
+
+	// BlockedReason available=false 时的固定原因码；可用时不返回。
+	BlockedReason *SystemTaskSummaryBlockedReason `json:"blocked_reason,omitempty"`
+	Concurrency   SystemTaskSummaryConcurrency    `json:"concurrency"`
+	Description   string                          `json:"description"`
+	Enabled       bool                            `json:"enabled"`
 
 	// HolderId 运行中时的持有者标识（已截断）；非运行中不返回。
 	HolderId *string `json:"holder_id,omitempty"`
@@ -10687,6 +10707,9 @@ type SystemTaskSummary struct {
 	// TaskType 静态注册表中的精确任务名。
 	TaskType string `json:"task_type"`
 }
+
+// SystemTaskSummaryBlockedReason available=false 时的固定原因码；可用时不返回。
+type SystemTaskSummaryBlockedReason string
 
 // SystemTaskSummaryConcurrency defines model for SystemTaskSummary.Concurrency.
 type SystemTaskSummaryConcurrency string

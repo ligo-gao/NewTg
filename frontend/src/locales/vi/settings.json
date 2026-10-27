@@ -567,7 +567,8 @@
       "cancel": "Hủy",
       "trigger_success": "Đã đưa tác vụ vào hàng đợi (lần chạy #{run_id}).",
       "trigger_already_running": "Tác vụ đang chạy hoặc đã có trong hàng đợi.",
-      "trigger_forbidden": "Bạn không có quyền chạy tác vụ này."
+      "trigger_forbidden": "Bạn không có quyền chạy tác vụ này.",
+      "trigger_unavailable_worker": "Không có instance worker nào đang online nên không thể chạy tác vụ này."
     }
   },
   "notification_templates": {

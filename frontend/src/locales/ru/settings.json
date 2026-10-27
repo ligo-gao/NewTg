@@ -567,7 +567,8 @@
       "cancel": "Отмена",
       "trigger_success": "Задача добавлена в очередь (запуск #{run_id}).",
       "trigger_already_running": "Задача уже выполняется или стоит в очереди.",
-      "trigger_forbidden": "У вас нет прав на запуск этой задачи."
+      "trigger_forbidden": "У вас нет прав на запуск этой задачи.",
+      "trigger_unavailable_worker": "Ни один экземпляр воркера не в сети, поэтому задачу нельзя запустить."
     }
   },
   "notification_templates": {

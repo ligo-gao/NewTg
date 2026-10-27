@@ -321,3 +321,33 @@ func ListInstanceHeartbeats(ctx context.Context, rdb *redis.Client) ([]InstanceR
 func ResolveProcessInstanceID() string {
 	return ResolveInstanceID(os.Getenv, os.Hostname)
 }
+
+// WorkerPresenceProbe 返回「是否有存活 worker 角色实例」的可用性探针。
+//
+// 网关进程不绑定任务的 Run，手动触发写下的 pending 行只能由 worker 认领；
+// 探针让管理面在写行之前就知道执行者是否存在。信号取实例心跳而不是租约：
+// 租约只在执行期存在，空闲的在线 worker 与停机的 worker 在租约上无法区分。
+//
+// 【fail-open】rdb 未装配或 Redis 读取失败时返回可用。Redis 故障不能把
+// 管理面所有手动任务一起禁用——那会把一次可观测性降级放大成无法补跑任何
+// 维护任务的运维事故。宁可放行一条可能滞留的 pending 行（24h 兜底会收敛），
+// 也不拒绝管理员在故障期发起的操作。
+func WorkerPresenceProbe(rdb *redis.Client) func(context.Context) (bool, string) {
+	return func(ctx context.Context) (bool, string) {
+		if rdb == nil {
+			slog.Default().Warn("worker presence probe has no redis client; assuming a worker is online")
+			return true, ""
+		}
+		records, err := ListInstanceHeartbeats(ctx, rdb)
+		if err != nil {
+			slog.Default().Warn("worker presence probe failed; assuming a worker is online", "error", err)
+			return true, ""
+		}
+		for _, record := range records {
+			if record.Role == instanceRoleWorker {
+				return true, ""
+			}
+		}
+		return false, "worker_unavailable"
+	}
+}

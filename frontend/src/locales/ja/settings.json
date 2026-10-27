@@ -567,7 +567,8 @@
       "cancel": "キャンセル",
       "trigger_success": "タスクをキューに追加しました（実行 #{run_id}）。",
       "trigger_already_running": "タスクは既に実行中またはキューにあります。",
-      "trigger_forbidden": "このタスクを実行する権限がありません。"
+      "trigger_forbidden": "このタスクを実行する権限がありません。",
+      "trigger_unavailable_worker": "worker インスタンスがオンラインでないため、このタスクを実行できません。"
     }
   },
   "notification_templates": {

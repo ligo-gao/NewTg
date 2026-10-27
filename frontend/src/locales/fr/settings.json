@@ -567,7 +567,8 @@
       "cancel": "Annuler",
       "trigger_success": "Tâche mise en file (exécution #{run_id}).",
       "trigger_already_running": "La tâche est déjà en cours ou en file.",
-      "trigger_forbidden": "Vous n'avez pas la permission de déclencher cette tâche."
+      "trigger_forbidden": "Vous n'avez pas la permission de déclencher cette tâche.",
+      "trigger_unavailable_worker": "Aucune instance worker n'est en ligne, cette tâche ne peut pas être déclenchée."
     }
   },
   "notification_templates": {

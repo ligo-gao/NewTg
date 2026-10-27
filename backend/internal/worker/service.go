@@ -39,6 +39,13 @@ func BlockedCodeOf(err error) string {
 	return ""
 }
 
+// BlockedCodeWorkerUnavailable 是「没有存活 worker 实例」的固定错误码。
+//
+// 网关进程不绑定任务的 Run，手动触发写下的 pending 行只能由 worker 进程
+// 认领；没有 worker 在线时该行永远不会被执行。这个码同时用于两处：触发被
+// 拒时的 409 problem type 后缀，以及摘要里的 blocked_reason。
+const BlockedCodeWorkerUnavailable = "worker_unavailable"
+
 // WakeupChannel 是「管理员触发后立即唤醒调度 pass」的 Redis 频道。
 //
 // 网关进程与 worker 进程分离，进程内 channel 无法跨副本；用 pub/sub 让
@@ -62,15 +69,19 @@ type ServiceConfig struct {
 	Logger   *slog.Logger
 	// Wakeup 可选：手动触发成功后发布唤醒信号（nil 时只靠周期 pass）。
 	Wakeup func(ctx context.Context, taskType string) error
+	// RuntimeAvailability 可选：报告「能执行手动任务的主体（worker 进程）是否在线」。
+	// nil 表示本进程就是执行者（worker 角色），恒为可用。
+	RuntimeAvailability func(ctx context.Context) (available bool, reason string)
 }
 
 // Service 实现列表/详情/触发（billing-06 §13.5.1）。
 type Service struct {
-	registry *Registry
-	store    Store
-	lease    Lease
-	log      *slog.Logger
-	wakeup   func(ctx context.Context, taskType string) error
+	registry         *Registry
+	store            Store
+	lease            Lease
+	log              *slog.Logger
+	wakeup           func(ctx context.Context, taskType string) error
+	runtimeAvailable func(ctx context.Context) (bool, string)
 }
 
 // NewService 构造服务。
@@ -90,12 +101,29 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 		lease = nopLease{}
 	}
 	return &Service{
-		registry: cfg.Registry,
-		store:    cfg.Store,
-		lease:    lease,
-		log:      logger,
-		wakeup:   cfg.Wakeup,
+		registry:         cfg.Registry,
+		store:            cfg.Store,
+		lease:            lease,
+		log:              logger,
+		wakeup:           cfg.Wakeup,
+		runtimeAvailable: cfg.RuntimeAvailability,
 	}, nil
+}
+
+// runtimeAvailability 返回「能执行手动任务的主体是否在线」。
+//
+// 未注入探针意味着本进程就是执行者（worker 角色），恒可用；不可用但探针
+// 没给原因时回退固定码，保证 TaskBlockedError.Code 永远非空——handler 直接
+// 把它拼进 problem type，空码会退化成 task_disabled 之外的模糊 409。
+func (s *Service) runtimeAvailability(ctx context.Context) (bool, string) {
+	if s.runtimeAvailable == nil {
+		return true, ""
+	}
+	available, reason := s.runtimeAvailable(ctx)
+	if !available && reason == "" {
+		reason = BlockedCodeWorkerUnavailable
+	}
+	return available, reason
 }
 
 // List 返回注册表全集的摘要分页（含无调度行者的默认值）。
@@ -111,10 +139,14 @@ func (s *Service) List(ctx context.Context, page, pageSize int) (TaskPage, error
 		stateByName[state.TaskType] = state
 	}
 
+	// 可用性探针每页只问一次：列表有 30+ 个任务，逐个探 Redis 会让一次
+	// 管理面刷新打出一串 SCAN/HGETALL。同一请求内结果也应当一致。
+	available, reason := s.runtimeAvailability(ctx)
+
 	items := make([]TaskSummary, 0, len(tasks))
 	for _, task := range tasks {
 		state, ok := stateByName[task.Name]
-		summary, summaryErr := s.summary(ctx, task, state, ok)
+		summary, summaryErr := s.summary(ctx, task, state, ok, available, reason)
 		if summaryErr != nil {
 			return TaskPage{}, summaryErr
 		}
@@ -143,7 +175,9 @@ func (s *Service) Detail(ctx context.Context, name string, page, pageSize int) (
 	if err != nil {
 		return TaskDetail{}, err
 	}
-	summary, err := s.summary(ctx, task, state, hasState)
+	// 与 List 同口径：详情也只探一次。
+	available, reason := s.runtimeAvailability(ctx)
+	summary, err := s.summary(ctx, task, state, hasState, available, reason)
 	if err != nil {
 		return TaskDetail{}, err
 	}
@@ -178,6 +212,14 @@ func (s *Service) Trigger(ctx context.Context, name string) (TriggerResult, erro
 	}
 	if !task.ManualTriggerAllowed {
 		return TriggerResult{}, ErrTaskManualNotAllowed
+	}
+	// 网关进程不绑定 Run：写下的 pending 行只能由 worker 认领。worker 不在线
+	// 时入队只会留下一条永远不会执行的 pending 行（§13.5 明确禁止这种误导），
+	// 所以必须在写行之前返回，保证 409 的副作用为零。
+	if task.Run == nil {
+		if available, reason := s.runtimeAvailability(ctx); !available {
+			return TriggerResult{}, &TaskBlockedError{Code: reason}
+		}
 	}
 	// 运行时谓词（如 log.partition_drop_enabled）为假时，触发必须当场 409：
 	// 入队一条永远不会执行的 pending 行会让管理员误以为任务已排期。
@@ -228,7 +270,7 @@ func (s *Service) Trigger(ctx context.Context, name string) (TriggerResult, erro
 	return TriggerResult{RunID: runID, TaskType: name, Trigger: TriggerManual}, nil
 }
 
-func (s *Service) summary(ctx context.Context, task Task, state TaskState, hasState bool) (TaskSummary, error) {
+func (s *Service) summary(ctx context.Context, task Task, state TaskState, hasState bool, available bool, reason string) (TaskSummary, error) {
 	interval := int(task.Interval / time.Second)
 	summary := TaskSummary{
 		TaskType:             task.Name,
@@ -237,6 +279,16 @@ func (s *Service) summary(ctx context.Context, task Task, state TaskState, hasSt
 		IntervalSeconds:      interval,
 		ManualTriggerAllowed: task.ManualTriggerAllowed,
 		Concurrency:          string(task.Concurrency),
+		// 只有「网关有按钮、但执行者在另一进程」的任务才需要运行期可用性：
+		// 手动白名单 + 本进程未绑定 Run。其它任务根本不可手动触发，标成
+		// 不可用只会误导管理员去追一个不存在的故障。
+		Available: true,
+	}
+	if task.ManualTriggerAllowed && task.Run == nil {
+		summary.Available = available
+		if !available {
+			summary.BlockedReason = reason
+		}
 	}
 	if hasState {
 		summary.Enabled = state.Enabled

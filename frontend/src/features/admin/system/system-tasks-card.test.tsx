@@ -32,6 +32,7 @@ const TASK_PAGE: SystemTaskPage = {
       last_duration_ms: 1200,
       manual_trigger_allowed: true,
       concurrency: 'single',
+      available: true,
     },
     {
       task_type: 'async_task_poll',
@@ -46,6 +47,7 @@ const TASK_PAGE: SystemTaskPage = {
       last_duration_ms: null,
       manual_trigger_allowed: false,
       concurrency: 'single',
+      available: true,
     },
   ],
   total: 2,
@@ -169,6 +171,31 @@ describe('SystemTasksCard', () => {
     const dialog = await screen.findByRole('dialog')
     await user.click(within(dialog).getByRole('button', { name: 'Trigger' }))
     expect(await screen.findByText('The task is already running or queued.')).toBeTruthy()
+  })
+
+  it('disables the trigger and shows the reason when no worker is online', async () => {
+    // available=false：网关侧没有可认领 pending 行的 worker，点下去只会 409。
+    // 按钮必须禁用，且原因要在行内可见（title 只是补充，不是唯一载体）。
+    const offlinePage: SystemTaskPage = {
+      ...TASK_PAGE,
+      items: [
+        { ...TASK_PAGE.items[0]!, available: false, blocked_reason: 'worker_unavailable' },
+        TASK_PAGE.items[1]!,
+      ],
+    }
+    server.use(
+      http.get(`${ORIGIN}/api/system/tasks`, () => HttpResponse.json(offlinePage)),
+    )
+    await renderCard()
+    await screen.findByText('worker_history_cleanup')
+
+    const trigger = screen.getByRole('button', { name: 'Trigger now' }) as HTMLButtonElement
+    expect(trigger.disabled).toBe(true)
+    expect(
+      screen.getByText('No worker instance is online, so this task cannot be triggered.'),
+    ).toBeTruthy()
+    // 非白名单任务不受影响：它们本来就没有按钮。
+    expect(screen.getAllByRole('button', { name: 'Trigger now' })).toHaveLength(1)
   })
 
   it('hides the whole card without settings:manage', async () => {

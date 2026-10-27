@@ -759,6 +759,10 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			Store:    taskStore,
 			Lease:    worker.NewRedisLease(deps.Redis),
 			Logger:   deps.Logger,
+			// 网关是「有按钮但不会执行」的一侧：注册表里的 Run 全为 nil，
+			// 只能靠实例心跳判断是否有 worker 进程在线，避免在没有执行者时
+			// 写下永远不会被认领的 pending 行。
+			RuntimeAvailability: WorkerPresenceProbe(deps.Redis),
 			Wakeup: func(ctx context.Context, taskType string) error {
 				return worker.PublishWakeup(ctx, deps.Redis, taskType)
 			},

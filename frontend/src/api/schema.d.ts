@@ -9672,6 +9672,13 @@ export interface components {
             manual_trigger_allowed: boolean;
             /** @enum {string} */
             concurrency: "single";
+            /** @description 当前是否有能执行该任务的 worker 实例；非手动白名单任务恒为 true。 */
+            available: boolean;
+            /**
+             * @description available=false 时的固定原因码；可用时不返回。
+             * @enum {string}
+             */
+            blocked_reason?: "worker_unavailable";
         };
         SystemTaskPage: {
             items: components["schemas"]["SystemTaskSummary"][];
