@@ -7,6 +7,9 @@ export default defineConfig({
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
+    // The shared shell package lives outside this app and carries no
+    // node_modules of its own; both React copies must resolve to this one.
+    dedupe: ['react', 'react-dom'],
   },
   test: {
     environment: 'jsdom',

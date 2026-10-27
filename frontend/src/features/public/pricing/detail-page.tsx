@@ -14,6 +14,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import { ApiError } from '@/api/errors'
 import { Breadcrumb } from '@/features/public/breadcrumb'
+import { shellCopy } from '@/features/public/shell-copy'
 import { usePublicStatus } from '@/lib/public-status'
 import { ME_QUERY_KEY, meQueryOptions } from '@/lib/session'
 import { useI18n } from '@/shared/lib/i18n-context'
@@ -75,7 +76,7 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
       <div className="flex flex-col gap-4">
         <Breadcrumb
           items={[
-            { label: t('public.nav.home'), path: '/' },
+            { label: shellCopy(locale)['nav.home'], path: '/' },
             { label: t('public.pricing.title'), path: '/pricing' },
             { label: modelId, current: true },
           ]}
@@ -197,7 +198,7 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
     <div className="flex flex-col gap-6">
       <Breadcrumb
         items={[
-          { label: t('public.nav.home'), path: '/' },
+          { label: shellCopy(locale)['nav.home'], path: '/' },
           { label: t('public.pricing.title'), path: '/pricing' },
           { label: displayName, current: true },
         ]}

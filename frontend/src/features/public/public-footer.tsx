@@ -1,21 +1,20 @@
+import {
+  ShellFooter,
+  formatShellCopy,
+  type ShellFooterColumn,
+  type ShellFooterLink,
+} from '@newtg/public-shell'
 import { useQuery } from '@tanstack/react-query'
 
 import { usePublicStatus } from '@/lib/public-status'
 import { ME_QUERY_KEY, meQueryOptions } from '@/lib/session'
 import { useLanguageSelection } from '@/lib/use-language-selection'
-import { useI18n } from '@/shared/lib/i18n-context'
+import { useI18n, type Locale } from '@/shared/lib/i18n-context'
 
 import { htmlToPlainText, sanitizeHtmlFragment } from './home/custom-html'
-import { LanguageSwitch } from '@/shared/ui/language-switch'
 import { isNavEntryVisible, isSafePublicHref } from './nav-visibility'
-import { SiteBrand } from './public-header'
-
-interface FooterLink {
-  key: string
-  label: string
-  href: string
-  external: boolean
-}
+import { siteBrand } from './public-header'
+import { shellCopy, shellLocaleOptions } from './shell-copy'
 
 function isExternal(href: string): boolean {
   return /^https?:\/\//i.test(href)
@@ -23,22 +22,23 @@ function isExternal(href: string): boolean {
 
 /**
  * F-09-37 footer. Rendered only inside `PublicLayout`; console routes use
- * `_console` and therefore never mount it (TC-F-09-37-04) — there is no
- * feature-flag branch to get wrong.
+ * `_console` and therefore never mount it (TC-F-09-37-04).
  *
- * Columns: brand, operator links (`site.footer_html`, sanitized), resources,
- * language. When the operator HTML is empty (or nothing survives sanitizing)
- * the links column falls back to the default group instead of leaving a blank
- * column.
+ * The shell package owns the markup, styling and copy; this component supplies
+ * the operator's switches: the product column (`site.footer_html`, sanitized,
+ * or the default links), the resources column and the language control.
  */
 export function PublicFooter() {
-  const { t } = useI18n()
+  const { locale, setLocale, availableLocales } = useI18n()
   const status = usePublicStatus()
   const me = useQuery({ ...meQueryOptions(), queryKey: ME_QUERY_KEY })
   const isLoggedIn = me.isSuccess
   const { onChange } = useLanguageSelection(isLoggedIn)
+
+  const copy = shellCopy(locale)
   const site = status.data?.site
   const title = site?.title?.trim() || 'NEWTG'
+  const brand = siteBrand(site)
   const year = new Date().getFullYear()
   const docsUrl = (site?.docs_url ?? '').trim()
   const statusPageUrl = (site?.status_page_url ?? '').trim()
@@ -52,143 +52,85 @@ export function PublicFooter() {
   const safeStatusPageUrl = isSafePublicHref(statusPageUrl) ? statusPageUrl : ''
 
   const operatorLinks = sanitizeHtmlFragment(site?.footer_html)
-
   const nav = status.data?.nav
-  const productLinks: FooterLink[] = [
+
+  const productLinks: ShellFooterLink[] = [
     ...(isNavEntryVisible(nav, 'pricing', isLoggedIn)
-      ? [{ key: 'pricing', label: t('public.nav.pricing'), href: '/pricing', external: false }]
+      ? [{ label: copy['nav.pricing'], href: '/pricing' }]
       : []),
     ...(isNavEntryVisible(nav, 'rankings', isLoggedIn)
-      ? [{ key: 'rankings', label: t('public.nav.rankings'), href: '/rankings', external: false }]
+      ? [{ label: copy['nav.rankings'], href: '/rankings' }]
       : []),
     ...(isNavEntryVisible(nav, 'about', isLoggedIn)
-      ? [{ key: 'about', label: t('public.nav.about'), href: '/about', external: false }]
+      ? [{ label: copy['nav.about'], href: '/about' }]
       : []),
   ]
 
-  const resourceLinks: FooterLink[] = [
+  const resourceLinks: ShellFooterLink[] = [
     ...(docsVisible
-      ? [{ key: 'docs', label: t('public.footer.docs'), href: docsUrl, external: isExternal(docsUrl) }]
+      ? [
+          {
+            label: copy['footer.docs_column'],
+            href: docsUrl,
+            external: isExternal(docsUrl),
+          },
+        ]
       : []),
     ...(safeStatusPageUrl !== ''
       ? [
           {
-            key: 'status',
-            label: t('public.footer.status'),
+            label: copy['footer.status'],
             href: safeStatusPageUrl,
             external: isExternal(statusPageUrl),
           },
         ]
       : []),
-    {
-      key: 'terms',
-      label: t('public.footer.terms'),
-      href: '/legal/terms',
-      external: false,
-    },
-    {
-      key: 'privacy',
-      label: t('public.footer.privacy'),
-      href: '/legal/privacy',
-      external: false,
-    },
+    { label: copy['footer.terms'], href: '/legal/terms' },
+    { label: copy['footer.privacy'], href: '/legal/privacy' },
   ]
 
-  const aboutSummary = htmlToPlainText(site?.about_html) || t('public.footer.tagline')
+  const columns: ShellFooterColumn[] = []
+  if (operatorLinks !== '' || productLinks.length > 0) {
+    columns.push({
+      key: 'product',
+      title: copy['footer.product'],
+      // Operator HTML wins over the default links; it never renders both.
+      html: operatorLinks !== '' ? operatorLinks : undefined,
+      links: productLinks,
+    })
+  }
+  columns.push({ key: 'resources', title: copy['footer.resources'], links: resourceLinks })
+
+  const copyright = `${formatShellCopy(copy['footer.copyright'], { year, site: title })} ${copy['footer.all_rights']}`
+  const filingNo = site?.filing_no?.trim()
 
   // F-09-37 异常流程: a status outage with no cached config degrades to the
   // minimal copyright line instead of guessing links or columns.
-  if (status.isError && site === undefined) {
-    return (
-      <footer role="contentinfo" className="site-footer">
-        <div className="wrap footer-bottom">
-          <p>{t('public.footer.copyright', { year, site: title })}</p>
-        </div>
-      </footer>
-    )
+  const degraded = status.isError && site === undefined
+
+  function changeLocale(next: string) {
+    const value = next as Locale
+    setLocale?.(value)
+    onChange?.(value)
   }
 
   return (
-    <footer role="contentinfo" className="site-footer">
-      <div className="wrap">
-        <div className="footer-grid">
-          <div>
-            <SiteBrand site={site} />
-            <p className="footer-tag">{aboutSummary}</p>
-          </div>
-
-          {operatorLinks !== '' || productLinks.length > 0 ? (
-            <div className="footer-col">
-              <h2>{t('public.footer.product')}</h2>
-              {operatorLinks !== '' ? (
-                // Server-sanitized operator HTML; the client allowlist above ran
-                // again and already forced external rel/target.
-                <div
-                  className="footer-operator"
-                  dangerouslySetInnerHTML={{ __html: operatorLinks }}
-                />
-              ) : (
-                <FooterLinkList links={productLinks} />
-              )}
-            </div>
-          ) : null}
-
-          <div className="footer-col">
-            <h2>{t('public.footer.resources')}</h2>
-            <FooterLinkList links={resourceLinks} />
-          </div>
-
-          <div className="footer-col">
-            <h2>{t('public.language.label')}</h2>
-            <LanguageSwitch
-              variant="footer"
-              className="home-lang"
-              label={t('public.language.label')}
-              onChange={onChange}
-            />
-          </div>
-        </div>
-
-        <div className="footer-bottom">
-          <p>
-            {t('public.footer.copyright', { year, site: title })}
-            {'. '}
-            {t('public.footer.all_rights')}
-          </p>
-          {site?.filing_no?.trim() ? (
-            <a
-              href="https://beian.miit.gov.cn/"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              {site.filing_no.trim()}
-            </a>
-          ) : null}
-        </div>
-      </div>
-    </footer>
-  )
-}
-
-function FooterLinkList({ links }: { links: readonly FooterLink[] }) {
-  const { t } = useI18n()
-  if (links.length === 0) return null
-  return (
-    <ul>
-      {links.map((link) => (
-        <li key={link.key}>
-          <a
-            href={link.href}
-            target={link.external ? '_blank' : undefined}
-            rel={link.external ? 'noopener noreferrer' : undefined}
-            aria-label={
-              link.external ? `${link.label} (${t('public.nav.external')})` : undefined
+    <ShellFooter
+      copy={copy}
+      brand={brand}
+      tagline={degraded ? undefined : htmlToPlainText(site?.about_html) || copy['footer.tagline']}
+      columns={degraded ? [] : columns}
+      locale={
+        degraded
+          ? undefined
+          : {
+              value: locale,
+              options: shellLocaleOptions(availableLocales),
+              onChange: changeLocale,
             }
-          >
-            {link.label}
-          </a>
-        </li>
-      ))}
-    </ul>
+      }
+      copyright={copyright}
+      filing={filingNo ? { label: filingNo, href: 'https://beian.miit.gov.cn/' } : null}
+    />
   )
 }

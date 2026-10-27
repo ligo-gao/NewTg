@@ -4,7 +4,7 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
@@ -83,13 +83,17 @@ function meUnauthorized() {
 
 describe('error page shell', () => {
   it('401 renders the shared skeleton and sanitizes the redirect', async () => {
+    // The public chrome renders its own guest "Sign in" hand-off, so every
+    // assertion below is scoped to the page's <main>.
     const first = await renderWithProviders(<ErrorStatusPage status={401} />)
 
     expect(first.getByRole('heading', { level: 1 }).textContent).toBe(
       'Your session has expired',
     )
     expect(
-      first.getByRole('link', { name: 'Sign in' }).getAttribute('href'),
+      within(first.getByRole('main'))
+        .getByRole('link', { name: 'Sign in' })
+        .getAttribute('href'),
     ).toBe('/sign-in')
     // 401/403 是确定性结果：不得出现重试按钮。
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
@@ -99,7 +103,9 @@ describe('error page shell', () => {
       <ErrorStatusPage status={401} redirect="//evil.example" />,
     )
     expect(
-      screen.getByRole('link', { name: 'Sign in' }).getAttribute('href'),
+      within(screen.getByRole('main'))
+        .getByRole('link', { name: 'Sign in' })
+        .getAttribute('href'),
     ).toBe(`/sign-in?redirect=${encodeURIComponent('/dashboard')}`)
     evil.unmount()
 
@@ -108,7 +114,9 @@ describe('error page shell', () => {
       <ErrorStatusPage status={401} redirect="/wallet?tab=1" />,
     )
     expect(
-      screen.getByRole('link', { name: 'Sign in' }).getAttribute('href'),
+      within(screen.getByRole('main'))
+        .getByRole('link', { name: 'Sign in' })
+        .getAttribute('href'),
     ).toBe(`/sign-in?redirect=${encodeURIComponent('/wallet?tab=1')}`)
   })
 
@@ -575,7 +583,7 @@ describe('public chrome around error pages (P1-4)', () => {
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(
       'Service temporarily unavailable',
     )
-    expect(screen.queryByRole('navigation', { name: 'Public pages' })).toBeNull()
+    expect(screen.queryByRole('navigation', { name: 'Main navigation' })).toBeNull()
     expect(screen.getByRole('contentinfo').textContent).toContain('NEWTG')
   })
 })
@@ -793,18 +801,18 @@ describe('catch-all 404 dictionary loading (WS2)', () => {
 })
 
 /**
- * Final-review regression: the boundary path (`__root` errorComponent,
- * `router.defaultErrorComponent`, global `ErrorBoundary`) renders
- * `ErrorFallback` → `ErrorPageShell` → `PublicHeader`, but `AppProviders`
- * preloads only `common`. On a console route whose loader/render throws, the
- * header used to show literal `public.nav.*` keys.
+ * Regression, originally found in final review: the boundary path (`__root`
+ * errorComponent, `router.defaultErrorComponent`, global `ErrorBoundary`)
+ * renders `ErrorFallback` → `ErrorPageShell` → `PublicHeader` while
+ * `AppProviders` has preloaded only `common`. The header used to render
+ * `public.nav.*` keys here.
  *
- * The pristine module graph makes the assertion meaningful: the module-level
- * dictionary cache is empty except for `common`, so a translated header can
- * only appear if the error shell itself loaded `public`. Removing the shell's
- * loader turns this test red (the visible text contains `public.nav.*`).
+ * The shell's copy now ships inside `@newtg/public-shell` (bundled, not a
+ * lazily loaded dictionary module), so the chrome renders fully translated
+ * with no `public` module at all. The pristine module graph keeps the test
+ * honest: nothing can quietly reintroduce a dictionary dependency.
  */
-describe('error boundary public dictionary loading (final review)', () => {
+describe('error boundary shell copy (final review)', () => {
   it('renders the boundary fallback without raw public.* keys from only `common`', async () => {
     statusHandler()
     meUnauthorized()
@@ -833,8 +841,8 @@ describe('error boundary public dictionary loading (final review)', () => {
     )
 
     try {
-      // A translated guest action proves `public` actually arrived (the loader
-      // is what makes this test fail if removed).
+      // A translated guest action proves the bundled shell copy rendered
+      // without the `public` dictionary being loaded.
       expect(
         await freshRtl.screen.findByRole('link', { name: 'Sign in' }),
       ).toBeTruthy()

@@ -15,11 +15,18 @@ export default defineConfig({
     entry: {
       index: './src/main.tsx',
     },
+    // The shared public shell ships TypeScript source (one copy for both the
+    // SPA and the marketing site), so it must go through the same JSX loader
+    // as `src/` instead of being treated as pre-built vendor code.
+    include: [path.resolve(process.cwd(), '../packages/public-shell')],
   },
   resolve: {
     alias: {
       '@': path.resolve(process.cwd(), 'src'),
     },
+    // `packages/public-shell` lives outside this app, so its `react` import
+    // must resolve to this app's copy (one React instance, one hook runtime).
+    dedupe: ['react', 'react-dom'],
   },
   html: {
     template: './index.html',

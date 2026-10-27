@@ -8,6 +8,9 @@ import { router } from '@/app/router'
 
 import '@/styles/tokens.css'
 import '@/styles/tailwind.css'
+// Shared public header/footer (packages/public-shell). Loaded before home.css
+// so a page-level rule can still win when it needs to.
+import '@newtg/public-shell/styles.css'
 import '@/styles/home.css'
 import '@/styles/auth-hall.css'
 

@@ -65,7 +65,7 @@ describe('PublicLayout shell (F-09-34/37)', () => {
       ['public'],
     )
 
-    const nav = await findByRole('navigation', { name: 'Public pages' })
+    const nav = await findByRole('navigation', { name: 'Main navigation' })
     expect(nav.textContent).toContain('Models')
     expect(nav.textContent).toContain('Pricing')
     expect(nav.textContent).toContain('About')

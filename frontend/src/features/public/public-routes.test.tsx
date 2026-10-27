@@ -252,7 +252,7 @@ describe('public route integration (anonymous reachability)', () => {
       expect(router.state.location.pathname).toBe('/')
     })
     // 导航里不再有入口，且页面从未渲染（没有去拉目录指标）。
-    const nav = await findByRole('navigation', { name: 'Public pages' })
+    const nav = await findByRole('navigation', { name: 'Main navigation' })
     expect(within(nav).queryByRole('link', { name: 'Models' })).toBeNull()
     expect(requestedPaths).not.toContain('/api/pricing/metrics')
   })

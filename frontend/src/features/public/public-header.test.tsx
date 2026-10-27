@@ -106,7 +106,7 @@ describe('PublicHeader (F-09-34)', () => {
       ['public'],
     )
 
-    const nav = within(await findByRole('navigation', { name: 'Public pages' }))
+    const nav = within(await findByRole('navigation', { name: 'Main navigation' }))
     expect([...nav.queryAllByRole('link')].map((link) => link.textContent)).toEqual([
       'Models',
       'Pricing',
@@ -127,7 +127,7 @@ describe('PublicHeader (F-09-34)', () => {
       ['public'],
     )
 
-    const nav = within(await findByRole('navigation', { name: 'Public pages' }))
+    const nav = within(await findByRole('navigation', { name: 'Main navigation' }))
     const links = nav.queryAllByRole('link')
     expect(links.map((link) => link.textContent)).toEqual([
       'Console',
@@ -160,7 +160,7 @@ describe('PublicHeader (F-09-34)', () => {
       ['public'],
     )
 
-    const nav = within(await findByRole('navigation', { name: 'Public pages' }))
+    const nav = within(await findByRole('navigation', { name: 'Main navigation' }))
     expect(nav.queryByRole('link', { name: 'About' })).toBeNull()
     expect(getByText('content')).not.toBeNull()
   })
@@ -207,7 +207,7 @@ describe('PublicHeader (F-09-34)', () => {
       ['public'],
     )
 
-    const trigger = await findByRole('button', { name: 'Open navigation' })
+    const trigger = await findByRole('button', { name: 'Open navigation menu' })
     expect(trigger.getAttribute('aria-controls')).toBe('mobile-menu')
     expect(trigger.getAttribute('aria-expanded')).toBe('false')
 
@@ -250,7 +250,7 @@ describe('PublicHeader (F-09-34)', () => {
       ['public'],
     )
 
-    fireEvent.click(await findByRole('button', { name: 'Open navigation' }))
+    fireEvent.click(await findByRole('button', { name: 'Open navigation menu' }))
     const panel = document.getElementById('mobile-menu')
     expect(panel).not.toBeNull()
     expect(within(panel as HTMLElement).getByRole('link', { name: 'Sign in' })).toBeTruthy()
@@ -292,7 +292,7 @@ describe('PublicHeader (F-09-34)', () => {
     // 登录态就绪后 hook 才提供 onChange。
     await findByRole('button', { name: 'Account menu' })
     const select = document.querySelector(
-      '.home-lang select',
+      '.ps-lang select',
     ) as HTMLSelectElement
     const user = userEvent.setup()
 
@@ -330,7 +330,7 @@ describe('PublicHeader (F-09-34)', () => {
     )
     await findByRole('link', { name: 'Sign in' })
     const select = document.querySelector(
-      '.home-lang select',
+      '.ps-lang select',
     ) as HTMLSelectElement
     const user = userEvent.setup()
 
