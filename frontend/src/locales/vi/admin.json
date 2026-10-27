@@ -78,11 +78,14 @@
     "customer_type_required": "Hãy chọn loại khách hàng.",
     "group": "Nhóm",
     "group_required": "Hãy chọn nhóm.",
+    "group_hint": "Nhập tên nhóm. Gợi ý sẽ xuất hiện khi danh sách nhóm tải xong.",
+    "group_load_failed": "Không thể tải danh sách nhóm. Bạn vẫn có thể nhập tên nhóm.",
     "choose": "Chọn...",
     "generate_submit": "Tạo",
     "generating": "Đang tạo...",
     "credentials_notice": "Tệp tải xuống chứa mật khẩu dùng một lần và là bản duy nhất. Sau khi đóng bạn không thể xem lại; hãy tạo lại lô hoặc đặt lại mật khẩu.",
     "generated": "Đã tạo {count} người dùng. Hãy lưu tệp đã tải xuống ngay.",
+    "generated_download_failed": "Các tài khoản đã được tạo nhưng không thể tải tệp mật khẩu. Đừng tạo lại: một lô mới sẽ khiến các tài khoản này có mật khẩu không thể khôi phục. Hãy đặt lại mật khẩu cho chúng.",
     "generate_error": "Không thể tạo người dùng. Vui lòng thử lại."
   },
   "user_form": {

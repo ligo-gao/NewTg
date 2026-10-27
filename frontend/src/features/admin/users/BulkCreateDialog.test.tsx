@@ -326,7 +326,7 @@ describe('BulkCreateDialog', () => {
 
     await user.type(screen.getByLabelText('Number of users'), '3')
     await user.selectOptions(screen.getByLabelText('Customer type'), 'enterprise')
-    await user.selectOptions(screen.getByLabelText('Group'), 'default')
+    await user.type(screen.getByLabelText('Group'), 'default')
     await user.click(screen.getByRole('button', { name: 'Generate' }))
 
     await waitFor(() => {
@@ -355,12 +355,82 @@ describe('BulkCreateDialog', () => {
       true,
     )
 
-    await waitFor(() => {
-      expect(screen.getByRole('option', { name: 'default' })).toBeTruthy()
-    })
-    await user.selectOptions(screen.getByLabelText('Group'), 'default')
+    await user.type(screen.getByLabelText('Group'), 'default')
     expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(
       false,
     )
+  })
+
+  // F2: the generate endpoint is gated by users:create, but GET /api/groups is
+  // gated by groups:manage. An operator with only users:create gets a 403 here
+  // and must still be able to name a group by hand (the server validates it).
+  it('accepts a typed group when the group list is forbidden', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/groups`, () =>
+        HttpResponse.json(
+          {
+            type: 'https://newtg.dev/problems/forbidden',
+            title: 'Forbidden',
+            status: 403,
+          },
+          { status: 403 },
+        ),
+      ),
+    )
+
+    const { user } = await renderDialog()
+    await user.click(screen.getByRole('tab', { name: 'Generate' }))
+
+    expect(await screen.findByText(/Could not load the group list/)).toBeTruthy()
+
+    await user.type(screen.getByLabelText('Number of users'), '2')
+    await user.selectOptions(screen.getByLabelText('Customer type'), 'general')
+    const groupInput = screen.getByLabelText('Group') as HTMLInputElement
+    await user.type(groupInput, 'vip')
+
+    expect(groupInput.value).toBe('vip')
+    expect((screen.getByRole('button', { name: 'Generate' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    )
+  })
+
+  // F3: the server has already created the accounts when the response arrives;
+  // the CSV is the only copy of their passwords. A download failure must not
+  // put the form back — a retry would create a second batch.
+  it('reports a created batch when the download fails instead of re-offering the form', async () => {
+    server.use(
+      groupsHandler(),
+      http.post(`${ORIGIN}/api/users/bulk/generate`, () =>
+        HttpResponse.text(
+          'username,password,customer_type,group\nNewTG_user0001,secret,general,default\n',
+          {
+            headers: {
+              'Content-Type': 'text/csv; charset=utf-8',
+              'Content-Disposition':
+                'attachment; filename="newtg-users-20261027T000000Z.csv"',
+              'Cache-Control': 'no-store',
+            },
+          },
+        ),
+      ),
+    )
+    // The save itself throws after the response was received.
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {
+      throw new Error('download blocked')
+    })
+
+    const { user, onCreated } = await renderDialog()
+    await user.click(screen.getByRole('tab', { name: 'Generate' }))
+
+    await user.type(screen.getByLabelText('Number of users'), '2')
+    await user.selectOptions(screen.getByLabelText('Customer type'), 'general')
+    await user.type(screen.getByLabelText('Group'), 'default')
+    await user.click(screen.getByRole('button', { name: 'Generate' }))
+
+    expect(await screen.findByText(/accounts were created/i)).toBeTruthy()
+    expect(onCreated).toHaveBeenCalledTimes(1)
+    // The generate form is gone: there is no path to a second batch.
+    expect(screen.queryByRole('button', { name: 'Generate' })).toBeNull()
+    expect(screen.queryByLabelText('Number of users')).toBeNull()
   })
 })

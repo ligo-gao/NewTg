@@ -78,11 +78,14 @@
     "customer_type_required": "Choisissez un type de client.",
     "group": "Groupe",
     "group_required": "Choisissez un groupe.",
+    "group_hint": "Saisissez le nom du groupe. Des suggestions apparaissent dès que la liste est chargée.",
+    "group_load_failed": "Impossible de charger la liste des groupes. Vous pouvez tout de même saisir le nom du groupe.",
     "choose": "Sélectionner...",
     "generate_submit": "Générer",
     "generating": "Génération...",
     "credentials_notice": "Le fichier téléchargé contient des mots de passe à usage unique et en est la seule copie. Une fois fermé, vous ne pourrez plus le consulter ; régénérez le lot ou réinitialisez les mots de passe.",
     "generated": "{count} utilisateurs générés. Enregistrez immédiatement le fichier téléchargé.",
+    "generated_download_failed": "Les comptes ont été créés, mais le fichier des mots de passe n’a pas pu être téléchargé. Ne relancez pas la génération : un nouveau lot laisserait ces comptes avec des mots de passe irrécupérables. Réinitialisez plutôt leurs mots de passe.",
     "generate_error": "Impossible de générer les utilisateurs. Veuillez réessayer."
   },
   "user_form": {

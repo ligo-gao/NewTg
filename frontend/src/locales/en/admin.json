@@ -78,11 +78,14 @@
     "customer_type_required": "Choose a customer type.",
     "group": "Group",
     "group_required": "Choose a group.",
+    "group_hint": "Type the group name. Suggestions appear once the group list loads.",
+    "group_load_failed": "Could not load the group list. You can still type the group name.",
     "choose": "Select...",
     "generate_submit": "Generate",
     "generating": "Generating...",
     "credentials_notice": "The downloaded file contains one-time passwords and is the only copy. Once you close it you cannot view it again; regenerate the batch or reset passwords instead.",
     "generated": "{count} users generated. Save the downloaded file now.",
+    "generated_download_failed": "The accounts were created, but the password file failed to download. Do not generate again — a new batch would leave these accounts with unrecoverable passwords. Reset their passwords instead.",
     "generate_error": "Could not generate users. Please try again."
   },
   "user_form": {

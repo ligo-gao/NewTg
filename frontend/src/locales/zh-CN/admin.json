@@ -78,11 +78,14 @@
     "customer_type_required": "请选择客户类型。",
     "group": "分组",
     "group_required": "请选择分组。",
+    "group_hint": "输入分组名称；分组列表加载后会给出候选。",
+    "group_load_failed": "无法加载分组列表，但仍可手动输入分组名称。",
     "choose": "请选择…",
     "generate_submit": "生成",
     "generating": "生成中...",
     "credentials_notice": "下载的文件包含一次性口令，是唯一的副本。关闭后无法再次查看，请重新生成或重置口令。",
     "generated": "已生成 {count} 个用户，请立即保存下载的文件。",
+    "generated_download_failed": "账号已创建，但口令文件下载失败。请勿重新生成：新批次会让这些账号的口令无法找回。请改为重置这些账号的口令。",
     "generate_error": "生成用户失败，请重试。"
   },
   "user_form": {

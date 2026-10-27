@@ -244,13 +244,21 @@ export function BulkCreateDialog({ open, onOpenChange, onCreated }: BulkCreateDi
       const filename =
         filenameFromContentDisposition(response.headers.get('Content-Disposition')) ??
         fallbackGenerateFilename()
-      downloadBlob(await response.blob(), filename)
+      // The accounts exist on the server now and the CSV is the only copy of
+      // their passwords. Record success before downloading: if the save throws,
+      // putting the form back would invite a retry that creates a second batch
+      // while the first batch's passwords are gone for good.
       setGeneratedCount(parsed)
+      onCreated()
       push({
         tone: 'success',
         message: t('admin.bulk.generated', { count: parsed }),
       })
-      onCreated()
+      try {
+        downloadBlob(await response.blob(), filename)
+      } catch {
+        setGenerateError(t('admin.bulk.generated_download_failed'))
+      }
     } catch {
       setGenerateError(t('admin.bulk.generate_error'))
     } finally {
@@ -384,9 +392,12 @@ export function BulkCreateDialog({ open, onOpenChange, onCreated }: BulkCreateDi
         >
           <FormAlert tone="info">{t('admin.bulk.credentials_notice')}</FormAlert>
           {generatedCount !== null ? (
-            <FormAlert tone="success">
-              {t('admin.bulk.generated', { count: generatedCount })}
-            </FormAlert>
+            <>
+              <FormAlert tone="success">
+                {t('admin.bulk.generated', { count: generatedCount })}
+              </FormAlert>
+              {generateError !== undefined ? <FormAlert>{generateError}</FormAlert> : null}
+            </>
           ) : (
             <form
               id="bulk-generate-form"
@@ -451,13 +462,20 @@ export function BulkCreateDialog({ open, onOpenChange, onCreated }: BulkCreateDi
                 <label htmlFor="bulk-group" className="text-meta font-medium text-ink-1">
                   {t('admin.bulk.group')}
                 </label>
-                <select
+                <input
                   id="bulk-group"
+                  type="text"
+                  list="bulk-group-suggestions"
+                  autoComplete="off"
                   className="h-10 rounded-lg border border-border-default bg-surface-card px-3 text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
                   value={group}
                   aria-invalid={fieldErrors.group !== undefined ? true : undefined}
                   aria-describedby={
-                    fieldErrors.group !== undefined ? 'bulk-group-error' : undefined
+                    fieldErrors.group !== undefined
+                      ? 'bulk-group-error'
+                      : groupsQuery.isError
+                        ? 'bulk-group-load-failed'
+                        : 'bulk-group-hint'
                   }
                   onChange={(event) => {
                     setGroup(event.target.value)
@@ -467,14 +485,25 @@ export function BulkCreateDialog({ open, onOpenChange, onCreated }: BulkCreateDi
                       return next
                     })
                   }}
-                >
-                  <option value="">{t('admin.bulk.choose')}</option>
+                />
+                {/* Suggestions are optional: GET /api/groups needs groups:manage,
+                    while bulk generation only needs users:create. A typed group
+                    name is validated by the server (store.ExistingGroups). */}
+                <datalist id="bulk-group-suggestions">
                   {(groupsQuery.data?.items ?? []).map((candidate) => (
-                    <option key={candidate.name} value={candidate.name}>
-                      {candidate.name}
-                    </option>
+                    <option key={candidate.name} value={candidate.name} />
                   ))}
-                </select>
+                </datalist>
+                {fieldErrors.group === undefined && groupsQuery.isError ? (
+                  <p id="bulk-group-load-failed" className="text-meta text-ink-3">
+                    {t('admin.bulk.group_load_failed')}
+                  </p>
+                ) : null}
+                {fieldErrors.group === undefined && !groupsQuery.isError ? (
+                  <p id="bulk-group-hint" className="text-meta text-ink-3">
+                    {t('admin.bulk.group_hint')}
+                  </p>
+                ) : null}
                 {fieldErrors.group !== undefined ? (
                   <p id="bulk-group-error" className="text-meta text-danger">
                     {fieldErrors.group}

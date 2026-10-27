@@ -78,11 +78,14 @@
     "customer_type_required": "請選擇客戶類型。",
     "group": "群組",
     "group_required": "請選擇群組。",
+    "group_hint": "輸入群組名稱；群組清單載入後會提供候選。",
+    "group_load_failed": "無法載入群組清單，但仍可手動輸入群組名稱。",
     "choose": "請選擇…",
     "generate_submit": "產生",
     "generating": "產生中...",
     "credentials_notice": "下載的檔案包含一次性密碼，是唯一的副本。關閉後無法再次查看，請重新產生或重設密碼。",
     "generated": "已產生 {count} 位使用者，請立即儲存下載的檔案。",
+    "generated_download_failed": "帳號已建立，但密碼檔案下載失敗。請勿重新產生：新批次會讓這些帳號的密碼無法找回。請改為重設這些帳號的密碼。",
     "generate_error": "產生使用者失敗，請重試。"
   },
   "user_form": {
