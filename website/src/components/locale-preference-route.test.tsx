@@ -59,14 +59,23 @@ describe("LocalePreferenceRoute", () => {
 
   it("does not redirect an anonymous visitor who never chose", async () => {
     router.pathname = "/en/";
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => new Response(null, { status: 401 }));
+    let resolveProbe: ((response: Response) => void) | undefined;
+    const fetchMock = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveProbe = resolve;
+        }),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     render(<LocalePreferenceRoute />);
 
+    // 先确认探测已经发出，再让 401 落地；跨过一个宏任务后 decide() 的整条
+    // 异步链必然结束，此时断言「没有跳转」才不是早跑的空断言。
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     await act(async () => {
-      await Promise.resolve();
+      resolveProbe?.(new Response(null, { status: 401 }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(mockAssign).not.toHaveBeenCalled();
   });
@@ -91,6 +100,22 @@ describe("LocalePreferenceRoute", () => {
     render(<LocalePreferenceRoute />);
 
     await waitFor(() => expect(mockAssign).toHaveBeenCalledWith("/ja/"));
+  });
+
+  it("clears a pending marker whose locale is unreadable and follows the account", async () => {
+    router.pathname = "/";
+    localStorage.setItem("newtg.language.pending", "1");
+    // 非法值：readStoredLocale 返回 null。守卫不能永远停在 pending 分支，
+    // 必须清掉标记后继续探测账号。
+    localStorage.setItem("newtg.language", "de");
+    const fetchMock = vi.fn(async () => jsonResponse({ language: "fr", updated_at: "t1" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LocalePreferenceRoute />);
+
+    await waitFor(() => expect(mockAssign).toHaveBeenCalledWith("/fr/"));
+    expect(fetchMock).toHaveBeenCalledWith("/api/self", expect.anything());
+    expect(localStorage.getItem("newtg.language.pending")).toBeNull();
   });
 
   it("retries a pending write even when the URL already matches the local choice", async () => {
@@ -155,6 +180,17 @@ describe("LocalePreferenceRoute", () => {
     });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(mockAssign).not.toHaveBeenCalled();
+  });
+
+  it("stamps the schema version on mount without fabricating a choice", async () => {
+    router.pathname = "/";
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 401 })));
+
+    render(<LocalePreferenceRoute />);
+
+    await waitFor(() => expect(localStorage.getItem("newtg.language.schema")).toBe("2"));
+    expect(localStorage.getItem("newtg.language.explicit")).toBeNull();
+    expect(localStorage.getItem("newtg.language.pending")).toBeNull();
   });
 
   it("sets document lang from the path", async () => {

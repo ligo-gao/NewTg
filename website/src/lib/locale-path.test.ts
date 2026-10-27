@@ -27,6 +27,9 @@ describe("isMarketingPath", () => {
 
   it("rejects the console and unknown marketing paths", () => {
     expect(isMarketingPath("/dashboard")).toBe(false);
+    // localizePath 只对营销站页面有意义：静态导出没有 /<locale>/models 路由，
+    // 把 /models 改写成 /fr/models/ 只会得到一个 404，不是可预期的行为。
+    expect(isMarketingPath("/models")).toBe(false);
     expect(isMarketingPath("/en/models/")).toBe(false);
     expect(isMarketingPath("/en/rankings/")).toBe(false);
   });

@@ -69,6 +69,9 @@ export async function fetchAccountLocale(
     const response = await fetch(ACCOUNT_PATH, {
       credentials: "same-origin",
       cache: "no-store",
+      // 探测也可能与随后的整页导航重合（pending 补写路径），keepalive 让
+      // 请求活过导航，与 PUT 保持一致。
+      keepalive: true,
       headers: { Accept: "application/json" },
       signal: controller.signal,
     });

@@ -158,15 +158,13 @@
     "title": "Ngôn ngữ",
     "description": "Chọn ngôn ngữ dùng trong bảng điều khiển.",
     "label": "Ngôn ngữ giao diện",
-    "updated": "Đã cập nhật ngôn ngữ",
     "name_en": "English",
     "name_zh_cn": "简体中文",
     "name_zh_tw": "繁體中文",
     "name_fr": "Français",
     "name_ru": "Русский",
     "name_ja": "日本語",
-    "name_vi": "Tiếng Việt",
-    "saved_locally": "Ngôn ngữ chỉ được đổi trên thiết bị này. Không thể lưu tùy chọn lên máy chủ."
+    "name_vi": "Tiếng Việt"
   },
   "topup": {
     "title": "Nạp tiền",

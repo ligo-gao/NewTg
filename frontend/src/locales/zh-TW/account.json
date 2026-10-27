@@ -158,15 +158,13 @@
     "title": "語言",
     "description": "選擇控制台使用的語言。",
     "label": "介面語言",
-    "updated": "語言已更新",
     "name_en": "English",
     "name_zh_cn": "简体中文",
     "name_zh_tw": "繁體中文",
     "name_fr": "Français",
     "name_ru": "Русский",
     "name_ja": "日本語",
-    "name_vi": "Tiếng Việt",
-    "saved_locally": "語言已在此裝置切換，但未能儲存至伺服器偏好。"
+    "name_vi": "Tiếng Việt"
   },
   "topup": {
     "title": "儲值",

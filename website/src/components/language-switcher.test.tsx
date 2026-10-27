@@ -99,18 +99,6 @@ describe("LanguageSwitcher", () => {
     expect(mockAssign).toHaveBeenCalledWith("/ja/pricing/");
   });
 
-  it("handles future pages correctly - models page", async () => {
-    const user = userEvent.setup();
-    window.location.pathname = "/en/models/";
-
-    render(<LanguageSwitcher locale="en" label="Language" />);
-    const select = screen.getByLabelText("Language");
-
-    await user.selectOptions(select, "fr");
-
-    expect(mockAssign).toHaveBeenCalledWith("/fr/models/");
-  });
-
   it("handles localStorage unavailable gracefully", async () => {
     const user = userEvent.setup();
     window.location.pathname = "/";

@@ -4,6 +4,8 @@ import { useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { localeInfo } from "@/config/locales";
 import {
+  clearPendingSync,
+  ensureLanguageSchema,
   hasExplicitChoice,
   hasPendingSync,
   readStoredLocale,
@@ -27,6 +29,11 @@ const PROBE_TIMEOUT_MS = 1500;
 export function LocalePreferenceRoute() {
   const pathname = usePathname() ?? "";
 
+  // 新版本首次加载即写入 schema 标记；它只是迁移水位，绝不补 explicit。
+  useEffect(() => {
+    ensureLanguageSchema();
+  }, []);
+
   useEffect(() => {
     const locale = localeForPath(pathname);
     if (locale === null) return;
@@ -42,14 +49,19 @@ export function LocalePreferenceRoute() {
     async function decide() {
       if (hasPendingSync()) {
         const local = readStoredLocale();
-        if (local === null) return;
-        // 即使当前 URL 已是本地选择也要补写一次：此刻没有跳转，上下文还活着，
-        // 探测 + PUT 能真正完成并清掉 pending。只有语言不同才需要导航。
-        void syncLanguageToAccount(local);
-        if (local !== current) {
-          window.location.assign(localizePath(pathname, local));
+        if (local !== null) {
+          // 即使当前 URL 已是本地选择也要补写一次：此刻没有跳转，上下文还活着，
+          // 探测 + PUT 能真正完成并清掉 pending。只有语言不同才需要导航。
+          void syncLanguageToAccount(local);
+          if (local !== current) {
+            window.location.assign(localizePath(pathname, local));
+          }
+          return;
         }
-        return;
+        // pending 存在但语言值缺失/非法（扩展写入、手工同步、旧版本残留）：
+        // 不能永远停在 pending 分支。清掉标记后继续走探测，匿名就按匿名处理，
+        // 否则营销站再也不会跟随账号语言。
+        clearPendingSync();
       }
 
       const account = await fetchAccountLocale({ timeoutMs: PROBE_TIMEOUT_MS });
