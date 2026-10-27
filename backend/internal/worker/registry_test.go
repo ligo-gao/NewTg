@@ -5,6 +5,7 @@ package worker
 // 任务必须登记、不得被本包周期执行、并且允许管理员手动触发一轮。
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -27,5 +28,12 @@ func TestDefaultRegistrySchedulesModelPerfTest(t *testing.T) {
 	// 一轮要覆盖全部公开对话模型，默认 10 分钟会把长轮次截断在租约里。
 	if task.Timeout < time.Hour {
 		t.Fatal("a full round can exceed the 10m default timeout")
+	}
+	// 目录里的 Interval 只是出厂展示默认值（首次启动落进
+	// worker_task_states.interval_seconds 后以库值为准），真实节奏由性能页的
+	// perf.schedule.* 决定。文案必须说清真源，否则管理员会以为改这个常量
+	// 或者等 12 小时就能调整周期。
+	if !strings.Contains(task.Description, "performance settings page") {
+		t.Fatalf("Description = %q, must state that the cadence follows the performance settings page", task.Description)
 	}
 }

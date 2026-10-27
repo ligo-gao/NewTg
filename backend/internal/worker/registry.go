@@ -349,10 +349,16 @@ func DefaultRegistry() (*Registry, error) {
 		},
 		// ---- E 类：模型性能定时实测（spec 2026-10-27 §5.5） ----
 		Task{
-			Name:        "model_perf_test",
-			Description: "Scheduled model performance probes for all public chat models",
-			// 仅用于管理面展示节奏；真实时刻由 PERF_SCHEDULE_TIMES 决定，
-			// 周期由 modelperf.RunLoop 自己持有，因此 Scheduled=false。
+			Name: "model_perf_test",
+			// 周期真源是性能页的 perf.schedule.*（间隔小时数或每日时刻表），
+			// 不是本目录的 Interval：12h 只是出厂时的展示默认值，首次启动经
+			// EnsureTaskRows 写进 worker_task_states.interval_seconds，之后以
+			// 库值为准。改这个常量只对全新库生效，升级库会继续显示旧值，
+			// 因此文案写「以设置为准」而不是动态渲染周期。
+			Description: "Scheduled model performance probes for all public chat models; cadence follows the performance settings page",
+			// 仅用于管理面展示节奏；真实时刻由 perf.schedule.interval_hours /
+			// PERF_SCHEDULE_TIMES 决定，周期由 modelperf.RunLoop 自己持有，
+			// 因此 Scheduled=false。
 			Interval: 12 * time.Hour,
 			// 一轮要覆盖全部公开对话模型（每个 3 次探测），远超 10 分钟默认
 			// 上限；手动触发由框架按租约执行，超时过短会把长轮次截断。

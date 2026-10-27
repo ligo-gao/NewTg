@@ -9,7 +9,6 @@ package platform
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -17,8 +16,10 @@ import (
 
 	"newtg/gateway/internal/channelhealth"
 	"newtg/gateway/internal/config"
+	"newtg/gateway/internal/configcenter"
 	"newtg/gateway/internal/httpapi"
 	"newtg/gateway/internal/modelperf"
+	"newtg/gateway/internal/perfsettings"
 	"newtg/gateway/internal/store"
 )
 
@@ -27,19 +28,24 @@ const perfProbeTimeout = 30 * time.Second
 
 // newModelPerfScheduler 装配模型性能定时实测（spec 2026-10-27 §5.4）。
 //
-// 依赖全部在启动期构造一次：仓储与探测器都无状态，执行时才触库/出站。时区
-// 与时刻表在 config 校验阶段已解析过一遍，这里重新解析是为了让装配函数自洽
-// （不依赖调用方的校验顺序），解析失败仍视为装配错误。
+// 依赖全部在启动期构造一次：仓储与探测器都无状态，执行时才触库/出站。
+// 时区与时刻表**不在这里解析**：perfsettings.Reader 每次读取时按「页面设置
+// 优先、env 默认兜底」解释，解析失败回落 UTC / 00:00,12:00 并告警，而不是
+// 让装配失败——节奏配置脏了最多回到默认节奏，不能让 worker 起不来。
+// 启动期仍由 config.Validate 校验 env 取值，拼写错误在启动时就暴露。
+//
+// 返回的 reader 与调度器共用同一个 *perfsettings.Reader：控制面的 config
+// 端点复用它，页面展示的「生效值/来源」与 worker 的真实节奏因此出自同一份
+// 读取逻辑，不会各读各的。PERF_SCHEDULE_* 只作为 Defaults（未落库时才生效）。
 func newModelPerfScheduler(cfg *config.Config, db *sql.DB, rdb *redis.Client,
-	log *slog.Logger) (*modelperf.Scheduler, error) {
-	loc, err := time.LoadLocation(cfg.PerfScheduleTimezone)
-	if err != nil {
-		return nil, fmt.Errorf("model perf: load timezone %q: %w", cfg.PerfScheduleTimezone, err)
-	}
-	schedule, err := modelperf.ParseTimes(cfg.PerfScheduleTimes, loc)
-	if err != nil {
-		return nil, fmt.Errorf("model perf: parse schedule times: %w", err)
-	}
+	center *configcenter.Center, log *slog.Logger) (*modelperf.Scheduler, *perfsettings.Reader, error) {
+	perfReader := perfsettings.New(center, perfsettings.Defaults{
+		Enabled:     cfg.PerfScheduleEnabled,
+		Times:       cfg.PerfScheduleTimes,
+		Timezone:    cfg.PerfScheduleTimezone,
+		Runs:        cfg.PerfScheduleRuns,
+		Concurrency: cfg.PerfScheduleConcurrency,
+	}, log)
 	// 与 gateway 的手工测速共用同一出站客户端与凭据解封面，不新增第二套
 	// 上游策略。
 	runner, err := channelhealth.NewPerfRunner(channelhealth.ProberConfig{
@@ -48,34 +54,51 @@ func newModelPerfScheduler(cfg *config.Config, db *sql.DB, rdb *redis.Client,
 		Timeout: perfProbeTimeout,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return modelperf.NewScheduler(modelperf.SchedulerConfig{
-		Models:      store.NewPublicPricingRepo(db),
-		Channels:    store.NewChannelRepo(db),
-		Performer:   runner.Run,
-		Tests:       store.NewSQLModelPerformanceStore(db),
-		ScheduleFor: func(time.Time) modelperf.Schedule { return schedule },
-		Runs:        cfg.PerfScheduleRuns,
-		Concurrency: cfg.PerfScheduleConcurrency,
-		Locker:      channelhealth.NewRedisLocker(rdb).WithLogger(log),
-		Logger:      log,
+	scheduler, err := modelperf.NewScheduler(modelperf.SchedulerConfig{
+		Models:    store.NewPublicPricingRepo(db),
+		Channels:  store.NewChannelRepo(db),
+		Performer: runner.Run,
+		Tests:     store.NewSQLModelPerformanceStore(db),
+		// 两个闭包是「设置 → 调度器」的唯一接缝：NewScheduler 只做首次计算，
+		// step 每个 tick 重新调用一次，运维保存后无需重启即可生效。
+		ScheduleFor: func(now time.Time) modelperf.Schedule {
+			schedule, _ := perfReader.Schedule(now)
+			return schedule
+		},
+		Settings: func() modelperf.RoundSettings {
+			settings := perfReader.Settings(time.Now())
+			return modelperf.RoundSettings{
+				Enabled:     settings.Enabled,
+				Runs:        settings.Runs,
+				Concurrency: settings.Concurrency,
+			}
+		},
+		Locker: channelhealth.NewRedisLocker(rdb).WithLogger(log),
+		Logger: log,
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return scheduler, perfReader, nil
 }
 
 // startModelPerfLoop 启动定时循环，返回 cancel+Wait 的停止函数。
 //
-// enabled=false（PERF_SCHEDULE_ENABLED=false）时不启动任何 goroutine——
-// 手动触发仍可经 RunOnce 使用。scheduler 为 nil（装配失败）时同样返回
-// no-op：停机序列可以无条件调用返回值，不必再判空。
+// 循环**总是**启动：启停开关在控制台可以随时保存，若沿用启动期的
+// PERF_SCHEDULE_ENABLED 短路 goroutine，打开开关就必须重启 worker；关闭
+// （Settings().Enabled=false）由每个 tick 判定并跳过轮次。scheduler 为 nil
+// （装配失败）时返回 no-op：停机序列可以无条件调用返回值，不必再判空。
+// 定时停用期间手动触发仍可经 RunOnce 使用——那条路径不经过本循环。
 //
 // onRound 是轮次结束后补写运行记录的回调（见 model_perf_runs.go）。它只在
 // 循环启动前注入：step 之后并发读取该字段，启动后再改写会有数据竞争。nil
 // （装配失败）表示不留运行记录，调度本身照常推进。
 func startModelPerfLoop(parent context.Context, scheduler *modelperf.Scheduler,
-	enabled bool, log *slog.Logger,
+	log *slog.Logger,
 	onRound func(context.Context, time.Time, modelperf.Stats, error)) func() {
-	if !enabled || scheduler == nil {
+	if scheduler == nil {
 		return func() {}
 	}
 	if onRound != nil {
