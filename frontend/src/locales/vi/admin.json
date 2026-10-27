@@ -1554,7 +1554,7 @@
       "sub_postgres": "{tps} giao dịch/s · {backends} / {max_backends} kết nối",
       "sub_redis": "{ops} ops/s · {clients} máy khách",
       "sub_host": "CPU {cpu} · bộ nhớ {mem} · ổ đĩa {disk}",
-      "sub_model": "{model} · từ {time}",
+      "sub_model": "{model} · lần thăm dò gần nhất {time}",
       "unknown": "Chưa kết nối giám sát",
       "unit_rps": "yêu cầu/giây",
       "unit_conn": "/ {max} kết nối",

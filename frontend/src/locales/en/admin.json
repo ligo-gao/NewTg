@@ -1554,7 +1554,7 @@
       "sub_postgres": "{tps} tx/s · {backends} / {max_backends} connections",
       "sub_redis": "{ops} ops/s · {clients} clients",
       "sub_host": "CPU {cpu} · memory {mem} · disk {disk}",
-      "sub_model": "{model} · since {time}",
+      "sub_model": "{model} · last probe {time}",
       "unknown": "Monitoring not connected",
       "unit_rps": "req/s",
       "unit_conn": "/ {max} connections",

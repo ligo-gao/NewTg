@@ -1554,7 +1554,7 @@
       "sub_postgres": "{tps} транз./с · {backends} / {max_backends} соединений",
       "sub_redis": "{ops} оп/с · {clients} клиентов",
       "sub_host": "CPU {cpu} · память {mem} · диск {disk}",
-      "sub_model": "{model} · с {time}",
+      "sub_model": "{model} · последняя проба {time}",
       "unknown": "Мониторинг не подключён",
       "unit_rps": "зап/с",
       "unit_conn": "/ {max} соединений",

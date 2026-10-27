@@ -1554,7 +1554,7 @@
       "sub_postgres": "{tps} 事务/s · {backends} / {max_backends} 连接",
       "sub_redis": "{ops} ops/s · {clients} 客户端",
       "sub_host": "CPU {cpu} · 内存 {mem} · 磁盘 {disk}",
-      "sub_model": "{model} · {time} 起",
+      "sub_model": "{model} · 最近探针 {time}",
       "unknown": "监控采集未接入",
       "unit_rps": "req/s",
       "unit_conn": "/ {max} 连接",

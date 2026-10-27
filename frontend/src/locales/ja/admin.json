@@ -1554,7 +1554,7 @@
       "sub_postgres": "{tps} トランザクション/秒 · {backends} / {max_backends} 接続",
       "sub_redis": "{ops} ops/s · {clients} クライアント",
       "sub_host": "CPU {cpu} · メモリ {mem} · ディスク {disk}",
-      "sub_model": "{model} · {time} から",
+      "sub_model": "{model} · 最終プローブ {time}",
       "unknown": "監視収集が未接続",
       "unit_rps": "req/s",
       "unit_conn": "/ {max} 接続",
