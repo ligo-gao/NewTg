@@ -11,6 +11,7 @@ import {
   type ChartConfig,
   type ChartSeries,
 } from '@/shared/lib/chart-data'
+import { nextIndex, selectNearest } from '@/shared/lib/chart-selection'
 import { useI18n } from '@/shared/lib/i18n-context'
 
 /**
@@ -245,21 +246,18 @@ export function AnalyticsChart({
       : null
 
   /** 指针位置换算到 viewBox 坐标后，取水平距离最近的数据点。 */
-  function selectNearest(svg: SVGSVGElement, clientX: number): void {
+  function selectNearestPoint(svg: SVGSVGElement, clientX: number): void {
     if (hoverPoints.length === 0) return
     const bounds = svg.getBoundingClientRect()
     if (bounds.width === 0) return
     const x = ((clientX - bounds.left) / bounds.width) * VIEW_WIDTH
-    let nearest = 0
-    let best = Number.POSITIVE_INFINITY
-    hoverPoints.forEach((point, index) => {
-      const distance = Math.abs(point.x - x)
-      if (distance < best) {
-        best = distance
-        nearest = index
-      }
-    })
-    setSelected(nearest)
+    setSelected(
+      selectNearest(
+        hoverPoints.map((point) => point.x),
+        x,
+        VIEW_WIDTH,
+      ),
+    )
   }
 
   // 鼠标与指针事件都接：测试环境（jsdom）没有完整 PointerEvent 实现，
@@ -267,40 +265,22 @@ export function AnalyticsChart({
   function handlePointerMove(
     event: ReactPointerEvent<SVGSVGElement> | ReactMouseEvent<SVGSVGElement>,
   ): void {
-    selectNearest(event.currentTarget, event.clientX)
+    selectNearestPoint(event.currentTarget, event.clientX)
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<SVGSVGElement>): void {
     if (hoverPoints.length === 0) return
-    const last = hoverPoints.length - 1
-    if (event.key === 'ArrowLeft') {
-      event.preventDefault()
-      // 尚未选中时从右端进入；之后逐步左移并 clamp 到 0。
-      setSelected((current) =>
-        current === null ? last : Math.max(0, current - 1),
-      )
-      return
-    }
-    if (event.key === 'ArrowRight') {
-      event.preventDefault()
-      setSelected((current) =>
-        current === null ? 0 : Math.min(last, current + 1),
-      )
-      return
-    }
-    if (event.key === 'Home') {
-      event.preventDefault()
-      setSelected(0)
-      return
-    }
-    if (event.key === 'End') {
-      event.preventDefault()
-      setSelected(last)
-      return
-    }
     if (event.key === 'Escape') {
       setSelected(null)
+      return
     }
+    const next = nextIndex(event.key, selected, hoverPoints.length)
+    if (next === null) return
+    event.preventDefault()
+    // 与旧实现一样走函数式更新：连续按键不会读到渲染时捕获的旧索引。
+    setSelected(
+      (current) => nextIndex(event.key, current, hoverPoints.length) ?? current,
+    )
   }
 
   return (

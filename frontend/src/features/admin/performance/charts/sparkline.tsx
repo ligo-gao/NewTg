@@ -5,12 +5,13 @@ import { sparkPath } from '../utils'
  * 辅助技术隐藏。`values` 允许 null（模型表的 24 点 spark 用 null 表示空小时
  * 或 p95 越过 30s 的小时）；null 处断线，而不是连成一条假趋势。
  *
- * `stroke` 固定 `currentColor`，颜色只由外层 tone 类决定（default 用分类色
- * cat-1、warning/danger 用状态色），这样暗色主题不需要第二套内联颜色。
+ * `stroke` 固定 `currentColor`，颜色只由外层 tone 类决定（default 用非文本
+ * 专用的中性 `ink-4`，与设计稿一致；warning/danger 用状态色），这样暗色主题
+ * 不需要第二套内联颜色。
  */
 
 const TONE_CLASS = {
-  default: 'text-chart-cat-1',
+  default: 'text-ink-4',
   warning: 'text-warning',
   danger: 'text-danger',
 } as const
@@ -36,7 +37,17 @@ export function Sparkline({
   className,
 }: SparklineProps) {
   const path = sparkPath(values, width, height)
-  const svgClassName = ['block', TONE_CLASS[tone], className]
+  // 基础尺寸作为默认值，调用方显式给了同方向的尺寸类就不再叠加，
+  // 避免两个 Tailwind 任意值类互相覆盖的顺序由生成顺序决定。
+  const hasWidth = /(^|\s)w-/.test(className ?? '')
+  const hasHeight = /(^|\s)h-/.test(className ?? '')
+  const svgClassName = [
+    'block',
+    hasHeight ? '' : 'h-[22px]',
+    hasWidth ? '' : 'w-[72px]',
+    TONE_CLASS[tone],
+    className,
+  ]
     .filter((value): value is string => Boolean(value))
     .join(' ')
 

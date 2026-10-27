@@ -45,7 +45,7 @@ describe('Sparkline', () => {
   })
 
   it.each([
-    ['default', 'text-chart-cat-1'],
+    ['default', 'text-ink-4'],
     ['warning', 'text-warning'],
     ['danger', 'text-danger'],
   ] as const)('applies the %s tone as %s', (tone, expected) => {
@@ -54,5 +54,20 @@ describe('Sparkline', () => {
     )
 
     expect(svgOf(container).getAttribute('class')).toContain(expected)
+  })
+
+  it('carries the base 22×72 box and lets className override a dimension', () => {
+    const { container: base } = render(<Sparkline values={[1, 2]} />)
+    expect(svgOf(base).getAttribute('class')).toContain('h-[22px]')
+    expect(svgOf(base).getAttribute('class')).toContain('w-[72px]')
+
+    const { container } = render(
+      <Sparkline values={[1, 2]} className="w-[120px]" />,
+    )
+    const className = svgOf(container).getAttribute('class') ?? ''
+
+    expect(className).toContain('w-[120px]')
+    expect(className).not.toContain('w-[72px]')
+    expect(className).toContain('h-[22px]')
   })
 })

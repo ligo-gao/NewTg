@@ -1,10 +1,14 @@
 import {
+  useEffect,
+  useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type RefObject,
 } from 'react'
 
+import { nextIndex, selectNearest } from '@/shared/lib/chart-selection'
 import { useI18n } from '@/shared/lib/i18n-context'
 
 import { formatClock } from '../utils'
@@ -19,35 +23,70 @@ import { formatClock } from '../utils'
  * 3. x 轴是数值（epoch 毫秒），而 AnalyticsChart 把时间字符串分桶到
  *    固定槽位。
  *
+ * 只有「指针/键盘选最近点」这两段纯逻辑与 AnalyticsChart 共用
+ * `shared/lib/chart-selection.ts`；渲染与样式不共享。
+ *
  * 刻意不做动画（没有 transition / animation），所以在
  * `prefers-reduced-motion` 下不需要额外分支。
  */
 
-const VIEW_WIDTH = 720
+const VIEW_WIDTH_FALLBACK = 720
+const VIEW_HEIGHT = 220
 const PLOT_LEFT = 48
 const PLOT_RIGHT = 12
 const PLOT_TOP = 12
 const PLOT_BOTTOM = 28
-const DEFAULT_HEIGHT = 220
 const Y_TICK_COUNT = 4
 const X_TICK_COUNT = 5
+const HOUR_MS = 60 * 60 * 1000
 
 export interface LineChartSeries {
   key: string
   label: string
   /** CSS 颜色表达式，由调用方按设计稿指定，例如 `var(--chart-cat-1)`。 */
   color: string
+  /** 数据表表头文案（例如 `detail.table_p50`）；缺省时用 `label`。 */
+  tableLabel?: string
   /** `[x, value]`；x 是 epoch 毫秒，组件按数值定位而不是分桶。 */
   points: [number, number][]
+  /** 与 `points` 按索引对齐的样本数；提供时才渲染样本列。 */
+  samples?: (number | null)[]
 }
 
 export interface LineChartProps {
   series: LineChartSeries[]
-  /** 图表的无障碍名（`aria-label` 与 `<title>`）。 */
+  /** 图表的无障碍名（`aria-label` 的 `{kind}` 与 `<title>`）。 */
   title: string
-  /** tooltip 与数据表表头的单位，例如 `'ms'`。 */
-  unit: string
-  height?: number
+  /** tooltip 与图例的单位，例如 `'ms'`；空串表示无单位。 */
+  unit?: string
+  /** y 轴刻度文案；默认取整后直接显示。 */
+  tickFormatter?: (value: number) => string
+}
+
+/**
+ * 量出容器宽度。jsdom 没有 ResizeObserver，测量前也先退回 720，保证
+ * 服务端渲染与测试都拿到确定的 viewBox；真实浏览器首帧后立即按实际宽度
+ * 重绘，viewBox 宽高比与渲染盒一致，文字不会被拉伸。
+ */
+function useElementWidth(): [RefObject<HTMLDivElement | null>, number] {
+  const ref = useRef<HTMLDivElement | null>(null)
+  const [width, setWidth] = useState(VIEW_WIDTH_FALLBACK)
+
+  useEffect(() => {
+    const element = ref.current
+    if (element === null || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (entry === undefined) return
+      const measured =
+        entry.borderBoxSize?.[0]?.inlineSize ?? entry.contentRect.width
+      if (Number.isFinite(measured) && measured > 0) setWidth(measured)
+    })
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
+
+  return [ref, width]
 }
 
 function formatValue(value: number, locale: string): string {
@@ -55,6 +94,10 @@ function formatValue(value: number, locale: string): string {
   return new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(
     value,
   )
+}
+
+function withUnit(value: string, unit: string): string {
+  return unit === '' ? value : `${value} ${unit}`
 }
 
 /** 把原始上限向上取整到 1/1.5/2/2.5/3/4/5/7.5 倍的十次幂，刻度才可读。 */
@@ -72,25 +115,34 @@ function niceMax(raw: number): number {
   return niceStep(raw / Y_TICK_COUNT) * Y_TICK_COUNT
 }
 
+/** 跨本地午夜或窗口超过 12 小时时补月/日，否则只显示时分。 */
+function crossesLocalMidnight(min: number, max: number): boolean {
+  const start = new Date(min)
+  const end = new Date(max)
+  return (
+    start.getFullYear() !== end.getFullYear() ||
+    start.getMonth() !== end.getMonth() ||
+    start.getDate() !== end.getDate()
+  )
+}
+
 export function LineChart({
   series,
   title,
-  unit,
-  height = DEFAULT_HEIGHT,
+  unit = '',
+  tickFormatter,
 }: LineChartProps) {
   const { t, locale } = useI18n()
+  const [containerRef, width] = useElementWidth()
   const [selected, setSelected] = useState<number | null>(null)
 
-  const viewHeight = Math.max(height, PLOT_TOP + PLOT_BOTTOM + 40)
-  const plotWidth = VIEW_WIDTH - PLOT_LEFT - PLOT_RIGHT
-  const plotHeight = viewHeight - PLOT_TOP - PLOT_BOTTOM
+  const plotWidth = Math.max(width - PLOT_LEFT - PLOT_RIGHT, 1)
+  const plotHeight = VIEW_HEIGHT - PLOT_TOP - PLOT_BOTTOM
 
   const xs = [
     ...new Set(
       series.flatMap((item) =>
-        item.points
-          .map(([x]) => x)
-          .filter((x) => Number.isFinite(x)),
+        item.points.map(([x]) => x).filter((x) => Number.isFinite(x)),
       ),
     ),
   ].sort((a, b) => a - b)
@@ -107,15 +159,41 @@ export function LineChart({
   )
 
   const allValues = series.flatMap((item) =>
-    item.points
-      .map(([, y]) => y)
-      .filter((value) => Number.isFinite(value)),
+    item.points.map(([, y]) => y).filter((value) => Number.isFinite(value)),
   )
   const rawMax = allValues.length > 0 ? Math.max(...allValues) : 0
   const yMax = niceMax(rawMax > 0 ? rawMax : 1)
 
   const xMin = xs[0] ?? 0
   const xMax = xs[xs.length - 1] ?? 0
+  const axisSpan = xMax - xMin
+  const spansDays = xs.length > 1 && crossesLocalMidnight(xMin, xMax)
+  const formatXAxis = (timestamp: number): string =>
+    new Intl.DateTimeFormat(
+      locale,
+      spansDays || axisSpan > 12 * HOUR_MS
+        ? {
+            month: 'numeric',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+          }
+        : { hour: '2-digit', minute: '2-digit' },
+    ).format(timestamp)
+
+  const formatYTick =
+    tickFormatter ?? ((value: number) => String(Math.round(value)))
+
+  const hasSamples = series.some((item) => item.samples !== undefined)
+  const rowSamples = hasSamples ? xs.map((x) => sampleAt(series, x)) : []
+
+  const seriesLabels = series.map((item) => item.label).join(', ')
+  const ariaLabel = t('common.chart.aria', {
+    kind: title,
+    count: series.length,
+    series: seriesLabels,
+    unit,
+  })
 
   function xFor(value: number): number {
     if (xs.length <= 1) return PLOT_LEFT + plotWidth / 2
@@ -147,8 +225,7 @@ export function LineChart({
     selected === null
       ? null
       : Math.min(Math.max(selected, 0), Math.max(xs.length - 1, 0))
-  const activeX =
-    selectedIndex === null ? null : (xs[selectedIndex] ?? null)
+  const activeX = selectedIndex === null ? null : (xs[selectedIndex] ?? null)
 
   const activeEntries =
     activeX === null
@@ -160,69 +237,60 @@ export function LineChart({
   const activeYs = activeEntries.flatMap(({ value }) =>
     value === undefined ? [] : [yFor(value)],
   )
-  const activeTop =
-    activeYs.length > 0 ? Math.min(...activeYs) : PLOT_TOP
+  const activeTop = activeYs.length > 0 ? Math.min(...activeYs) : PLOT_TOP
+  const activeXPos = activeX === null ? 0 : xFor(activeX)
+
+  const activeAnnouncement =
+    activeX === null
+      ? ''
+      : `${formatClock(activeX, locale)} · ${activeEntries
+          .map(
+            ({ item, value }) =>
+              `${item.label}: ${
+                value === undefined
+                  ? '—'
+                  : withUnit(formatValue(value, locale), unit)
+              }`,
+          )
+          .join(' · ')}`
 
   /** 指针位置换算到 viewBox 坐标后，取水平距离最近的那个 x。 */
-  function selectNearest(svg: SVGSVGElement, clientX: number): void {
+  function selectNearestPoint(svg: SVGSVGElement, clientX: number): void {
     if (xs.length === 0) return
     const bounds = svg.getBoundingClientRect()
     if (bounds.width === 0) return
-    const localX = ((clientX - bounds.left) / bounds.width) * VIEW_WIDTH
-    let nearest = 0
-    let best = Number.POSITIVE_INFINITY
-    xs.forEach((x, index) => {
-      const distance = Math.abs(xFor(x) - localX)
-      if (distance < best) {
-        best = distance
-        nearest = index
-      }
-    })
-    setSelected(nearest)
+    const localX = ((clientX - bounds.left) / bounds.width) * width
+    setSelected(
+      selectNearest(
+        xs.map((x) => xFor(x)),
+        localX,
+        width,
+      ),
+    )
   }
 
   // jsdom 没有完整的 PointerEvent 实现，真实鼠标也可能只发 mousemove；
-  // 两个事件都接，行为一致。
-  function handlePointerMove(
+  // 两个事件都接，触摸则走 pointerdown，行为一致。
+  function handlePointer(
     event: ReactPointerEvent<SVGSVGElement> | ReactMouseEvent<SVGSVGElement>,
   ): void {
-    selectNearest(event.currentTarget, event.clientX)
+    selectNearestPoint(event.currentTarget, event.clientX)
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<SVGSVGElement>): void {
     if (xs.length === 0) return
-    const last = xs.length - 1
-    if (event.key === 'ArrowLeft') {
-      event.preventDefault()
-      setSelected((current) =>
-        current === null ? last : Math.max(0, current - 1),
-      )
-      return
-    }
-    if (event.key === 'ArrowRight') {
-      event.preventDefault()
-      setSelected((current) =>
-        current === null ? 0 : Math.min(last, current + 1),
-      )
-      return
-    }
-    if (event.key === 'Home') {
-      event.preventDefault()
-      setSelected(0)
-      return
-    }
-    if (event.key === 'End') {
-      event.preventDefault()
-      setSelected(last)
-      return
-    }
     if (event.key === 'Escape') {
       setSelected(null)
+      return
     }
+    const next = nextIndex(event.key, selected, xs.length)
+    if (next === null) return
+    event.preventDefault()
+    setSelected((current) => nextIndex(event.key, current, xs.length) ?? current)
   }
 
   return (
-    <div data-testid="line-chart" className="w-full">
+    <div data-testid="line-chart" ref={containerRef} className="w-full">
       {series.length >= 2 ? (
         // 两条以上必须有图例：色块与文字同时出现，不靠颜色单独传达序列。
         <ul className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-badge text-ink-2">
@@ -242,12 +310,15 @@ export function LineChart({
       <div className="relative">
         <svg
           role="img"
-          aria-label={title}
-          viewBox={`0 0 ${VIEW_WIDTH} ${viewHeight}`}
-          className="h-auto w-full focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          aria-label={ariaLabel}
+          viewBox={`0 0 ${width} ${VIEW_HEIGHT}`}
+          width="100%"
+          height={VIEW_HEIGHT}
+          className="h-[220px] w-full focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           tabIndex={0}
-          onPointerMove={handlePointerMove}
-          onMouseMove={handlePointerMove}
+          onPointerMove={handlePointer}
+          onPointerDown={handlePointer}
+          onMouseMove={handlePointer}
           onPointerLeave={() => setSelected(null)}
           onMouseLeave={() => setSelected(null)}
           onKeyDown={handleKeyDown}
@@ -279,7 +350,7 @@ export function LineChart({
                 fill="var(--ink-3)"
                 className="tabular-nums"
               >
-                {formatValue(tick, locale)}
+                {formatYTick(tick)}
               </text>
             ))}
             {xTicks.map((tick, index) => (
@@ -298,7 +369,7 @@ export function LineChart({
                 fill="var(--ink-3)"
                 className="tabular-nums"
               >
-                {formatClock(tick, locale)}
+                {formatXAxis(tick)}
               </text>
             ))}
           </g>
@@ -347,9 +418,9 @@ export function LineChart({
             <g data-testid="chart-crosshair" aria-hidden="true">
               <line
                 data-crosshair="true"
-                x1={xFor(activeX)}
+                x1={activeXPos}
                 y1={PLOT_TOP}
-                x2={xFor(activeX)}
+                x2={activeXPos}
                 y2={PLOT_TOP + plotHeight}
                 stroke="var(--border-default)"
                 strokeWidth={1}
@@ -360,7 +431,7 @@ export function LineChart({
                 value === undefined ? null : (
                   <circle
                     key={item.key}
-                    cx={xFor(activeX)}
+                    cx={activeXPos}
                     cy={yFor(value)}
                     r={4}
                     fill={item.color}
@@ -377,11 +448,16 @@ export function LineChart({
         {activeX === null ? null : (
           <div
             data-testid="chart-tip"
-            aria-live="polite"
-            className="pointer-events-none absolute z-10 -translate-y-full rounded-md border border-border-hairline bg-surface-card px-2 py-1 text-badge shadow-sm"
+            className={[
+              'pointer-events-none absolute z-10 rounded-md border border-border-hairline bg-surface-card px-2 py-1 text-badge shadow-sm',
+              activeXPos > PLOT_LEFT + plotWidth * 0.65
+                ? '-translate-x-full -ml-1'
+                : 'ml-1',
+              activeTop < PLOT_TOP + 24 ? 'mt-1' : '-translate-y-full -mt-1',
+            ].join(' ')}
             style={{
-              left: `${(xFor(activeX) / VIEW_WIDTH) * 100}%`,
-              top: `${(activeTop / viewHeight) * 100}%`,
+              left: `${(activeXPos / width) * 100}%`,
+              top: `${(activeTop / VIEW_HEIGHT) * 100}%`,
             }}
           >
             <span className="block font-mono tabular-nums text-ink-1">
@@ -395,12 +471,17 @@ export function LineChart({
                 {item.label}:{' '}
                 {value === undefined
                   ? '—'
-                  : `${formatValue(value, locale)} ${unit}`}
+                  : withUnit(formatValue(value, locale), unit)}
               </span>
             ))}
           </div>
         )}
       </div>
+
+      {/* 屏幕阅读器播报当前选中点；浮层只服务视觉用户，且始终挂载。 */}
+      <p data-testid="chart-live" aria-live="polite" className="sr-only">
+        {activeAnnouncement}
+      </p>
 
       <details className="mt-3">
         <summary className="cursor-pointer text-badge text-ink-2">
@@ -408,6 +489,9 @@ export function LineChart({
         </summary>
         <div className="mt-2 overflow-x-auto">
           <table className="w-full text-badge tabular-nums">
+            <caption className="sr-only">
+              {`${title} — ${t('common.chart.table.time')}, ${t('common.chart.table.series')}, ${t('common.chart.table.value')}`}
+            </caption>
             <thead>
               <tr>
                 <th scope="col" className="text-left font-normal text-ink-3">
@@ -419,36 +503,72 @@ export function LineChart({
                     scope="col"
                     className="text-right font-normal text-ink-3"
                   >
-                    {unit === '' ? item.label : `${item.label} (${unit})`}
+                    {item.tableLabel ?? item.label}
                   </th>
                 ))}
+                {hasSamples ? (
+                  <th scope="col" className="text-right font-normal text-ink-3">
+                    {t('admin.performance.detail.table_samples')}
+                  </th>
+                ) : null}
               </tr>
             </thead>
             <tbody>
-              {xs.map((x) => (
-                <tr key={x}>
-                  <td className="text-left text-ink-2">
-                    {formatClock(x, locale)}
-                  </td>
-                  {series.map((item) => {
-                    const value = valueMaps.get(item.key)?.get(x)
-                    return (
-                      <td
-                        key={item.key}
-                        className="text-right text-ink-1"
-                      >
-                        {value === undefined
+              {xs.map((x, rowIndex) => {
+                const sample = rowSamples[rowIndex]
+                return (
+                  <tr key={x}>
+                    <th
+                      scope="row"
+                      className="text-left font-normal text-ink-2"
+                    >
+                      {formatXAxis(x)}
+                    </th>
+                    {series.map((item) => {
+                      const value = valueMaps.get(item.key)?.get(x)
+                      return (
+                        <td key={item.key} className="text-right text-ink-1">
+                          {value === undefined
+                            ? '—'
+                            : formatValue(value, locale)}
+                        </td>
+                      )
+                    })}
+                    {hasSamples ? (
+                      <td className="text-right text-ink-1">
+                        {sample === null || sample === undefined
                           ? '—'
-                          : formatValue(value, locale)}
+                          : formatValue(sample, locale)}
                       </td>
-                    )
-                  })}
-                </tr>
-              ))}
+                    ) : null}
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
       </details>
     </div>
   )
+}
+
+/**
+ * 行级样本数：`samples` 与 `points` 按索引对齐，所以先找到该 x 在
+ * series.points 中的位置；缺样本或该序列没有点都返回 undefined。
+ */
+function sampleAt(
+  series: LineChartSeries[],
+  x: number,
+): number | null | undefined {
+  let found: number | null | undefined
+  for (const item of series) {
+    if (item.samples === undefined) continue
+    const index = item.points.findIndex(([px]) => px === x)
+    const sample = index === -1 ? undefined : item.samples[index]
+    if (sample !== undefined) {
+      found = sample ?? null
+      break
+    }
+  }
+  return found
 }
