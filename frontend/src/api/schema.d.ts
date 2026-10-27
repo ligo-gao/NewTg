@@ -2793,7 +2793,10 @@ export interface paths {
          *     `sources[].status` 只有 `ok|unavailable|error`，`name` 固定为
          *     `prometheus|heartbeat`。`vitals[].status` 只有 `ok|warn|crit|unknown`——
          *     未知不等于异常：数据源缺失、无样本，或任一构成查询（p95、错误率、
-         *     pg.max_backends 等）失败而主值仍存在时都是 `unknown`。`gateways[]` 只列
+         *     pg.max_backends 等）失败而主值仍存在时都是 `unknown`。`vitals[].details`
+         *     是副标题的结构化数字：`value` 为查询原值（`ratio` 不乘 100，由前端按语言
+         *     格式化），`unit` 只有 `s|ratio|count`；某项无数据点时不出现，主值为 null
+         *     时为空数组（不是 null，前端按数组遍历）。`gateways[]` 只列
          *     网关副本（按 service 过滤），不含 exporter / Prometheus 自身；
          *     `gateways[].metrics_status` 只有 `ok|unknown`。
          *     可空指标（vitals[].value、gateways[].metrics 及其子字段）在 NaN/±Inf
@@ -9773,6 +9776,24 @@ export interface components {
             status: "ok" | "unavailable" | "error";
         };
         /**
+         * @description 体检格副标题里的一个数字。`key` 是冻结的稳定键，按体检格取值为：
+         *     gateway.rps → p95 / errors；db.pool → tps / backends / max_backends；
+         *     redis.hit_rate → ops / clients；host.disk → cpu / mem / disk。
+         *     `value` 是查询原值（`ratio` 不乘 100）；`unit` 只有三种：`s`（秒）、
+         *     `ratio`（0–1 比例，渲染成百分数）、`count`（计数）。
+         */
+        PerformanceVitalDetail: {
+            /** @description 副标题键；无数据点的项不出现。 */
+            key: string;
+            /**
+             * Format: double
+             * @description 查询原值；比例类不乘 100。
+             */
+            value: number;
+            /** @enum {string} */
+            unit: "s" | "ratio" | "count";
+        };
+        /**
          * @description 一个体检格。`status` ∈ {ok, warn, crit, unknown}；unknown 表示数据源缺失、
          *     无样本，或任一构成查询（p95、错误率、pg.max_backends 等）失败而主值仍存在，
          *     不等于异常。`series` 的元素是 [unix 秒, 值]，NaN/±Inf 已剔除。
@@ -9789,8 +9810,12 @@ export interface components {
             unit: string;
             /** @enum {string} */
             status: "ok" | "warn" | "crit" | "unknown";
-            /** @description 副标题文案；无可用数字时为空串。 */
-            note: string;
+            /**
+             * @description 副标题的结构化数字。`value` 是查询原值：`ratio` 是 0–1 比例，不乘 100，
+             *     百分号由前端按语言格式化；某项没有数据点时不产出该条；headline `value`
+             *     为 null 时为空数组。恒为数组（`[]`，不是 null），前端按数组遍历。
+             */
+            details: components["schemas"]["PerformanceVitalDetail"][];
             series: number[][];
         };
         PerformanceOverviewGatewayMetrics: {

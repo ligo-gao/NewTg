@@ -3671,7 +3671,7 @@ schemas:
       一个体检格。`status` ∈ {ok, warn, crit, unknown}；unknown 表示数据源缺失、
       无样本，或任一构成查询（p95、错误率、pg.max_backends 等）失败而主值仍存在，
       不等于异常。`series` 的元素是 [unix 秒, 值]，NaN/±Inf 已剔除。
-    required: [key, value, unit, status, note, series]
+    required: [key, value, unit, status, details, series]
     properties:
       key:
         type: string
@@ -3684,9 +3684,13 @@ schemas:
         type: string
         description: 'perfquery 单位：ratio / s / req/s / conn / B/s / ops/s 等。'
       status: {type: string, enum: [ok, warn, crit, unknown]}
-      note:
-        type: string
-        description: 副标题文案；无可用数字时为空串。
+      details:
+        type: array
+        description: |
+          副标题的结构化数字。`value` 是查询原值：`ratio` 是 0–1 比例，不乘 100，
+          百分号由前端按语言格式化；某项没有数据点时不产出该条；headline `value`
+          为 null 时为空数组。恒为数组（`[]`，不是 null），前端按数组遍历。
+        items: {$ref: '#/schemas/PerformanceVitalDetail'}
       series:
         type: array
         items:
@@ -3695,6 +3699,28 @@ schemas:
           minItems: 2
           maxItems: 2
           items: {type: number, format: double}
+
+  PerformanceVitalDetail:
+    type: object
+    additionalProperties: false
+    description: |
+      体检格副标题里的一个数字。`key` 是冻结的稳定键，按体检格取值为：
+      gateway.rps → p95 / errors；db.pool → tps / backends / max_backends；
+      redis.hit_rate → ops / clients；host.disk → cpu / mem / disk。
+      `value` 是查询原值（`ratio` 不乘 100）；`unit` 只有三种：`s`（秒）、
+      `ratio`（0–1 比例，渲染成百分数）、`count`（计数）。
+    required: [key, value, unit]
+    properties:
+      key:
+        type: string
+        description: 副标题键；无数据点的项不出现。
+      value:
+        type: number
+        format: double
+        description: 查询原值；比例类不乘 100。
+      unit:
+        type: string
+        enum: [s, ratio, count]
 
   PerformanceOverviewGateway:
     type: object

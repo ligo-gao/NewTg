@@ -1998,6 +1998,27 @@ func (e PerformanceSourceStatus) Valid() bool {
 	}
 }
 
+// Defines values for PerformanceVitalDetailUnit.
+const (
+	Count PerformanceVitalDetailUnit = "count"
+	Ratio PerformanceVitalDetailUnit = "ratio"
+	S     PerformanceVitalDetailUnit = "s"
+)
+
+// Valid indicates whether the value is a known member of the PerformanceVitalDetailUnit enum.
+func (e PerformanceVitalDetailUnit) Valid() bool {
+	switch e {
+	case Count:
+		return true
+	case Ratio:
+		return true
+	case S:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PermissionGrant1.
 const (
 	Asterisk PermissionGrant1 = "*"
@@ -8926,11 +8947,13 @@ type PerformanceOverviewGatewayMetrics struct {
 // 无样本，或任一构成查询（p95、错误率、pg.max_backends 等）失败而主值仍存在，
 // 不等于异常。`series` 的元素是 [unix 秒, 值]，NaN/±Inf 已剔除。
 type PerformanceOverviewVital struct {
-	// Key 查询名（perfquery 目录，如 gateway.rps / db.pool）。
-	Key string `json:"key"`
+	// Details 副标题的结构化数字。`value` 是查询原值：`ratio` 是 0–1 比例，不乘 100，
+	// 百分号由前端按语言格式化；某项没有数据点时不产出该条；headline `value`
+	// 为 null 时为空数组。恒为数组（`[]`，不是 null），前端按数组遍历。
+	Details []PerformanceVitalDetail `json:"details"`
 
-	// Note 副标题文案；无可用数字时为空串。
-	Note   string                         `json:"note"`
+	// Key 查询名（perfquery 目录，如 gateway.rps / db.pool）。
+	Key    string                         `json:"key"`
 	Series [][]float64                    `json:"series"`
 	Status PerformanceOverviewVitalStatus `json:"status"`
 
@@ -9065,6 +9088,23 @@ type PerformanceStats struct {
 	InstanceId    string                     `json:"instance_id"`
 	MemoryStats   PerformanceMemoryStats     `json:"memory_stats"`
 }
+
+// PerformanceVitalDetail 体检格副标题里的一个数字。`key` 是冻结的稳定键，按体检格取值为：
+// gateway.rps → p95 / errors；db.pool → tps / backends / max_backends；
+// redis.hit_rate → ops / clients；host.disk → cpu / mem / disk。
+// `value` 是查询原值（`ratio` 不乘 100）；`unit` 只有三种：`s`（秒）、
+// `ratio`（0–1 比例，渲染成百分数）、`count`（计数）。
+type PerformanceVitalDetail struct {
+	// Key 副标题键；无数据点的项不出现。
+	Key  string                     `json:"key"`
+	Unit PerformanceVitalDetailUnit `json:"unit"`
+
+	// Value 查询原值；比例类不乘 100。
+	Value float64 `json:"value"`
+}
+
+// PerformanceVitalDetailUnit defines model for PerformanceVitalDetail.Unit.
+type PerformanceVitalDetailUnit string
 
 // PermissionGrant 权限矩阵成员：20 键之一或全权通配符 "*"。
 type PermissionGrant struct {

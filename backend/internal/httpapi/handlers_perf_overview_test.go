@@ -237,6 +237,36 @@ func vitalKeys(vitals []perfVital) []string {
 	return keys
 }
 
+// vitalDetail 取体检格里指定 key 的副标题数字；不存在直接失败。
+func vitalDetail(t *testing.T, vital perfVital, key string) perfVitalDetail {
+	t.Helper()
+	for _, detail := range vital.Details {
+		if detail.Key == key {
+			return detail
+		}
+	}
+	t.Fatalf("%s: details 缺少 %q（现有 %v）", vital.Key, key, detailKeys(vital.Details))
+	return perfVitalDetail{}
+}
+
+func detailKeys(details []perfVitalDetail) []string {
+	keys := make([]string, 0, len(details))
+	for _, detail := range details {
+		keys = append(keys, detail.Key)
+	}
+	return keys
+}
+
+// hasDetail 报告体检格的 details 是否包含某个 key。
+func hasDetail(vital perfVital, key string) bool {
+	for _, detail := range vital.Details {
+		if detail.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
 func TestOverviewShapes(t *testing.T) {
 	fake := newFakeOverviewProm()
 	srv := httptest.NewServer(fake)
@@ -246,7 +276,8 @@ func TestOverviewShapes(t *testing.T) {
 		return []InstanceRecord{overviewInstance("gw-a", instanceRoleGateway, overviewTestNow.Add(-10*time.Second))}, nil
 	})
 
-	resp := decodeOverview(t, getOverview(t, mux, "/api/performance/overview"))
+	rr := getOverview(t, mux, "/api/performance/overview")
+	resp := decodeOverview(t, rr)
 
 	if resp.Range != "1h" {
 		t.Errorf("Range = %q, want 1h（缺省窗口）", resp.Range)
@@ -296,8 +327,51 @@ func TestOverviewShapes(t *testing.T) {
 	if gateway.Value == nil || *gateway.Value != 21.4 {
 		t.Errorf("gateway.rps value = %v, want 21.4", gateway.Value)
 	}
-	if gateway.Note == "" {
-		t.Error("gateway.rps note 为空：副标题应带 p95 与 5xx")
+	// details 是结构化数字（键名冻结）：p95 用查询原值（秒），errors 是 ratio
+	// 原值——不在这里乘 100，百分号由前端按语言格式化。
+	if got := detailKeys(gateway.Details); len(got) != 2 || got[0] != "p95" || got[1] != "errors" {
+		t.Errorf("gateway.rps details keys = %v, want [p95 errors]", got)
+	}
+	if p95 := vitalDetail(t, gateway, "p95"); p95.Value != 0.3 || p95.Unit != "s" {
+		t.Errorf("gateway.rps p95 = %+v, want value=0.3 unit=s", p95)
+	}
+	if errorsDetail := vitalDetail(t, gateway, "errors"); errorsDetail.Value != 0.002 || errorsDetail.Unit != "ratio" {
+		t.Errorf("gateway.rps errors = %+v, want value=0.002（原值，未乘 100）unit=ratio", errorsDetail)
+	}
+
+	// 数据库格带 tps / backends / max_backends 三条计数。
+	db := vitalByKey(t, resp, perfquery.NameDBPool)
+	if got := detailKeys(db.Details); len(got) != 3 || got[0] != "tps" || got[1] != "backends" || got[2] != "max_backends" {
+		t.Errorf("db.pool details keys = %v, want [tps backends max_backends]", got)
+	}
+	if tps := vitalDetail(t, db, "tps"); tps.Value != 46.2 || tps.Unit != "count" {
+		t.Errorf("db.pool tps = %+v, want 46.2/count", tps)
+	}
+	if backends := vitalDetail(t, db, "backends"); backends.Value != 11 || backends.Unit != "count" {
+		t.Errorf("db.pool backends = %+v, want 11/count", backends)
+	}
+	if maxBackends := vitalDetail(t, db, "max_backends"); maxBackends.Value != 25 || maxBackends.Unit != "count" {
+		t.Errorf("db.pool max_backends = %+v, want 25/count", maxBackends)
+	}
+
+	// Redis 格与主机格同样是原值：比例类（cpu/mem/disk）不乘 100。
+	redis := vitalByKey(t, resp, perfquery.NameRedisHitRate)
+	if ops := vitalDetail(t, redis, "ops"); ops.Value != 238 || ops.Unit != "count" {
+		t.Errorf("redis.hit_rate ops = %+v, want 238/count", ops)
+	}
+	if clients := vitalDetail(t, redis, "clients"); clients.Value != 18 || clients.Unit != "count" {
+		t.Errorf("redis.hit_rate clients = %+v, want 18/count", clients)
+	}
+	host := vitalByKey(t, resp, perfquery.NameHostDisk)
+	for key, want := range map[string]float64{"cpu": 0.2, "mem": 0.68, "disk": 0.71} {
+		if detail := vitalDetail(t, host, key); detail.Value != want || detail.Unit != "ratio" {
+			t.Errorf("host.disk %s = %+v, want %v/ratio（原值，未乘 100）", key, detail, want)
+		}
+	}
+
+	// 服务端不再拼英文副标题：响应里不得出现 note 键。
+	if strings.Contains(rr.Body.String(), `"note":`) {
+		t.Errorf("overview 响应仍含 note 键: %s", rr.Body.String())
 	}
 
 	// series 的点是 [unix 秒, 值]，且按时间升序。
@@ -336,6 +410,64 @@ func TestOverviewShapes(t *testing.T) {
 	}
 }
 
+// TestOverviewVitalDetailsSkipMissing 钉住「没有数据点的子指标不产出该条」：
+// 用 NaN 模拟某项未暴露，details 里既不能出现该条，也不能拿 0 冒充。
+func TestOverviewVitalDetailsSkipMissing(t *testing.T) {
+	fake := newFakeOverviewProm()
+	for _, name := range []string{
+		perfquery.NameGatewayP95,
+		perfquery.NamePGTPS,
+		perfquery.NameRedisClients,
+		perfquery.NameHostMem,
+	} {
+		fake.values[name] = "NaN"
+	}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	mux := overviewMux(t, srv.URL, func(context.Context) ([]InstanceRecord, error) {
+		return []InstanceRecord{}, nil
+	})
+
+	resp := decodeOverview(t, getOverview(t, mux, "/api/performance/overview"))
+
+	gateway := vitalByKey(t, resp, perfquery.NameGatewayRPS)
+	if hasDetail(gateway, "p95") {
+		t.Errorf("gateway.rps p95 无数据点却出现在 details: %v", detailKeys(gateway.Details))
+	}
+	if !hasDetail(gateway, "errors") {
+		t.Errorf("gateway.rps errors 有数据点却缺失: %v", detailKeys(gateway.Details))
+	}
+
+	db := vitalByKey(t, resp, perfquery.NameDBPool)
+	if hasDetail(db, "tps") {
+		t.Errorf("db.pool tps 无数据点却出现在 details: %v", detailKeys(db.Details))
+	}
+	for _, key := range []string{"backends", "max_backends"} {
+		if !hasDetail(db, key) {
+			t.Errorf("db.pool %s 有数据点却缺失: %v", key, detailKeys(db.Details))
+		}
+	}
+
+	redis := vitalByKey(t, resp, perfquery.NameRedisHitRate)
+	if hasDetail(redis, "clients") {
+		t.Errorf("redis.hit_rate clients 无数据点却出现在 details: %v", detailKeys(redis.Details))
+	}
+	if !hasDetail(redis, "ops") {
+		t.Errorf("redis.hit_rate ops 有数据点却缺失: %v", detailKeys(redis.Details))
+	}
+
+	host := vitalByKey(t, resp, perfquery.NameHostDisk)
+	if hasDetail(host, "mem") {
+		t.Errorf("host.disk mem 无数据点却出现在 details: %v", detailKeys(host.Details))
+	}
+	for _, key := range []string{"cpu", "disk"} {
+		if !hasDetail(host, key) {
+			t.Errorf("host.disk %s 有数据点却缺失: %v", key, detailKeys(host.Details))
+		}
+	}
+}
+
 func TestOverviewDegradesWhenPrometheusUnset(t *testing.T) {
 	mux := overviewMux(t, "", func(context.Context) ([]InstanceRecord, error) {
 		return []InstanceRecord{overviewInstance("gw-a", instanceRoleGateway, overviewTestNow.Add(-10*time.Second))}, nil
@@ -358,10 +490,20 @@ func TestOverviewDegradesWhenPrometheusUnset(t *testing.T) {
 		if len(vital.Series) != 0 {
 			t.Errorf("%s: series 非空: %v", vital.Key, vital.Series)
 		}
+		// headline 缺失时 details 必须是空数组：前端按数组遍历，null 会崩。
+		if vital.Details == nil {
+			t.Errorf("%s: details = nil（编码成了 null），want []", vital.Key)
+		}
+		if len(vital.Details) != 0 {
+			t.Errorf("%s: details = %v, want 空数组", vital.Key, vital.Details)
+		}
 	}
-	// series 必须是 []，不是 null（前端 .map 不判空）。
+	// series 与 details 必须是 []，不是 null（前端 .map 不判空）。
 	if strings.Contains(rr.Body.String(), `"series":null`) {
 		t.Errorf("series 编码成了 null: %s", rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), `"details":null`) {
+		t.Errorf("details 编码成了 null: %s", rr.Body.String())
 	}
 
 	// 监控未接入不影响心跳：副本行仍在，只是没有进程数字。
@@ -405,8 +547,11 @@ func TestOverviewSingleQueryFailureIsLocal(t *testing.T) {
 	if gateway.Value == nil || *gateway.Value != 21.4 {
 		t.Errorf("gateway.rps value = %v, want 21.4（headline 仍有数据）", gateway.Value)
 	}
-	if strings.Contains(gateway.Note, "P95") {
-		t.Errorf("P95 查询失败时 note 不应含 P95: %q", gateway.Note)
+	if hasDetail(gateway, "p95") {
+		t.Errorf("P95 查询失败时 details 不应含 p95: %v", detailKeys(gateway.Details))
+	}
+	if errorsDetail := vitalDetail(t, gateway, "errors"); errorsDetail.Value != 0.002 || errorsDetail.Unit != "ratio" {
+		t.Errorf("gateway.rps errors = %+v, want 0.002/ratio（错误率查询仍成功）", errorsDetail)
 	}
 	for _, key := range []string{perfquery.NameDBPool, perfquery.NameRedisHitRate, perfquery.NameHostDisk} {
 		vital := vitalByKey(t, resp, key)

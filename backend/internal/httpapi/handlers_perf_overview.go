@@ -20,7 +20,6 @@ import (
 	"math"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -167,12 +166,21 @@ type perfSource struct {
 }
 
 type perfVital struct {
-	Key    string       `json:"key"`
-	Value  *float64     `json:"value"`
-	Unit   string       `json:"unit"`
-	Status string       `json:"status"`
-	Note   string       `json:"note"`
-	Series [][2]float64 `json:"series"`
+	Key     string            `json:"key"`
+	Value   *float64          `json:"value"`
+	Unit    string            `json:"unit"`
+	Status  string            `json:"status"`
+	Details []perfVitalDetail `json:"details"`
+	Series  [][2]float64      `json:"series"`
+}
+
+// perfVitalDetail 是体检格副标题里的一个数字。Value 是查询原值：比例类
+// （unit=ratio，0–1）不在这里乘 100，百分号由前端按语言格式化。Unit 只有
+// s（秒）、ratio（0–1 比例）、count（计数）三种。
+type perfVitalDetail struct {
+	Key   string  `json:"key"`
+	Value float64 `json:"value"`
+	Unit  string  `json:"unit"`
 }
 
 type perfGatewayInfo struct {
@@ -378,33 +386,33 @@ func (h *PerformanceHandlers) queryOverview(ctx context.Context, start, end time
 
 // perfVitalSpec 描述一个体检格：headline 查询决定数值与 sparkline，
 // statusKeys 里的指标一起参与徽标判定（例如网关格的 p95 / 错误率阈值），
-// note 是给页面副标题用的「其余数字」。
+// details 是给页面副标题用的「其余数字」（结构化，由前端按语言格式化）。
 type perfVitalSpec struct {
 	key        string
 	statusKeys []string
-	note       func(get func(string) (float64, bool)) string
+	details    func(get func(string) (float64, bool)) []perfVitalDetail
 }
 
 var perfVitalSpecs = []perfVitalSpec{
 	{
 		key:        perfquery.NameGatewayRPS,
 		statusKeys: []string{perfquery.NameGatewayP95, perfquery.NameGatewayErrorRate},
-		note:       gatewayVitalNote,
+		details:    gatewayVitalDetails,
 	},
 	{
 		key:        perfquery.NameDBPool,
 		statusKeys: []string{perfquery.NameDBPool},
-		note:       dbVitalNote,
+		details:    dbVitalDetails,
 	},
 	{
 		key:        perfquery.NameRedisHitRate,
 		statusKeys: []string{perfquery.NameRedisMem},
-		note:       redisVitalNote,
+		details:    redisVitalDetails,
 	},
 	{
 		key:        perfquery.NameHostDisk,
 		statusKeys: []string{perfquery.NameHostDisk, perfquery.NameHostCPU, perfquery.NameHostMem},
-		note:       hostVitalNote,
+		details:    hostVitalDetails,
 	},
 }
 
@@ -418,7 +426,10 @@ func buildPerfVitals(series map[string][]perfquery.Sample, points int, queryErrs
 		vital := perfVital{
 			Key:    spec.key,
 			Status: perfStatusUnknown,
-			Series: sparkline(series[spec.key], points),
+			// 空切片而非 nil：headline 缺失时 details 也必须编码成 []（前端按
+			// 数组遍历，null 会崩）。
+			Details: make([]perfVitalDetail, 0, 3),
+			Series:  sparkline(series[spec.key], points),
 		}
 		if _, unit, ok := perfquery.Lookup(spec.key); ok {
 			vital.Unit = unit
@@ -426,7 +437,7 @@ func buildPerfVitals(series map[string][]perfquery.Sample, points int, queryErrs
 		if value, ok := latestFinite(series[spec.key]); ok {
 			vital.Value = perfFloatPtr(value)
 			vital.Status = vitalStatus(spec, get, queryErrs)
-			vital.Note = spec.note(get)
+			vital.Details = append(vital.Details, spec.details(get)...)
 		}
 		vitals = append(vitals, vital)
 	}
@@ -513,50 +524,54 @@ func worseStatus(a, b string) string {
 	return a
 }
 
-func gatewayVitalNote(get func(string) (float64, bool)) string {
-	var parts []string
-	if value, ok := get(perfquery.NameGatewayP95); ok {
-		parts = append(parts, "P95 "+formatFloat(value, 2)+"s")
-	}
-	if value, ok := get(perfquery.NameGatewayErrorRate); ok {
-		parts = append(parts, "5xx "+formatFloat(value*100, 2)+"%")
-	}
-	return strings.Join(parts, " · ")
+// perfVitalDetailSpec 把一个副标题键绑定到查询名与单位：key 是前端文案的
+// 稳定键（冻结），query 是 perfquery 目录名，unit 只有 s / ratio / count。
+type perfVitalDetailSpec struct {
+	key   string
+	query string
+	unit  string
 }
 
-func dbVitalNote(get func(string) (float64, bool)) string {
-	var parts []string
-	if value, ok := get(perfquery.NamePGTPS); ok {
-		parts = append(parts, "TPS "+formatFloat(value, 1))
+// vitalDetails 按给定顺序收集有数据点的子指标。没有数据点的项直接跳过——
+// 不拿 0 冒充「该指标为 0」。返回空切片而不是 nil（JSON 里必须是 []）。
+func vitalDetails(get func(string) (float64, bool), specs ...perfVitalDetailSpec) []perfVitalDetail {
+	details := make([]perfVitalDetail, 0, len(specs))
+	for _, spec := range specs {
+		if value, ok := get(spec.query); ok {
+			details = append(details, perfVitalDetail{Key: spec.key, Value: value, Unit: spec.unit})
+		}
 	}
-	backends, hasBackends := get(perfquery.NamePGBackends)
-	max, hasMax := get(perfquery.NamePGMaxBackends)
-	if hasBackends && hasMax {
-		parts = append(parts, formatFloat(backends, 0)+"/"+formatFloat(max, 0)+" conn")
-	}
-	return strings.Join(parts, " · ")
+	return details
 }
 
-func redisVitalNote(get func(string) (float64, bool)) string {
-	var parts []string
-	if value, ok := get(perfquery.NameRedisCmdRate); ok {
-		parts = append(parts, formatFloat(value, 0)+" ops/s")
-	}
-	if value, ok := get(perfquery.NameRedisClients); ok {
-		parts = append(parts, formatFloat(value, 0)+" clients")
-	}
-	return strings.Join(parts, " · ")
+func gatewayVitalDetails(get func(string) (float64, bool)) []perfVitalDetail {
+	return vitalDetails(get,
+		perfVitalDetailSpec{key: "p95", query: perfquery.NameGatewayP95, unit: "s"},
+		perfVitalDetailSpec{key: "errors", query: perfquery.NameGatewayErrorRate, unit: "ratio"},
+	)
 }
 
-func hostVitalNote(get func(string) (float64, bool)) string {
-	var parts []string
-	if value, ok := get(perfquery.NameHostCPU); ok {
-		parts = append(parts, "CPU "+formatFloat(value*100, 0)+"%")
-	}
-	if value, ok := get(perfquery.NameHostMem); ok {
-		parts = append(parts, "MEM "+formatFloat(value*100, 0)+"%")
-	}
-	return strings.Join(parts, " · ")
+func dbVitalDetails(get func(string) (float64, bool)) []perfVitalDetail {
+	return vitalDetails(get,
+		perfVitalDetailSpec{key: "tps", query: perfquery.NamePGTPS, unit: "count"},
+		perfVitalDetailSpec{key: "backends", query: perfquery.NamePGBackends, unit: "count"},
+		perfVitalDetailSpec{key: "max_backends", query: perfquery.NamePGMaxBackends, unit: "count"},
+	)
+}
+
+func redisVitalDetails(get func(string) (float64, bool)) []perfVitalDetail {
+	return vitalDetails(get,
+		perfVitalDetailSpec{key: "ops", query: perfquery.NameRedisCmdRate, unit: "count"},
+		perfVitalDetailSpec{key: "clients", query: perfquery.NameRedisClients, unit: "count"},
+	)
+}
+
+func hostVitalDetails(get func(string) (float64, bool)) []perfVitalDetail {
+	return vitalDetails(get,
+		perfVitalDetailSpec{key: "cpu", query: perfquery.NameHostCPU, unit: "ratio"},
+		perfVitalDetailSpec{key: "mem", query: perfquery.NameHostMem, unit: "ratio"},
+		perfVitalDetailSpec{key: "disk", query: perfquery.NameHostDisk, unit: "ratio"},
+	)
 }
 
 // ---------------------------------------------------------------------------
@@ -726,7 +741,3 @@ func sparkline(samples []perfquery.Sample, points int) [][2]float64 {
 }
 
 func perfFloatPtr(value float64) *float64 { return &value }
-
-func formatFloat(value float64, digits int) string {
-	return strconv.FormatFloat(value, 'f', digits, 64)
-}

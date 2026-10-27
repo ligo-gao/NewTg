@@ -4872,7 +4872,10 @@ paths:
         `sources[].status` 只有 `ok|unavailable|error`，`name` 固定为
         `prometheus|heartbeat`。`vitals[].status` 只有 `ok|warn|crit|unknown`——
         未知不等于异常：数据源缺失、无样本，或任一构成查询（p95、错误率、
-        pg.max_backends 等）失败而主值仍存在时都是 `unknown`。`gateways[]` 只列
+        pg.max_backends 等）失败而主值仍存在时都是 `unknown`。`vitals[].details`
+        是副标题的结构化数字：`value` 为查询原值（`ratio` 不乘 100，由前端按语言
+        格式化），`unit` 只有 `s|ratio|count`；某项无数据点时不出现，主值为 null
+        时为空数组（不是 null，前端按数组遍历）。`gateways[]` 只列
         网关副本（按 service 过滤），不含 exporter / Prometheus 自身；
         `gateways[].metrics_status` 只有 `ok|unknown`。
         可空指标（vitals[].value、gateways[].metrics 及其子字段）在 NaN/±Inf
