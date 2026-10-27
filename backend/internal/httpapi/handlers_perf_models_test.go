@@ -9,6 +9,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -501,5 +502,210 @@ func TestModelsSparkHas24Points(t *testing.T) {
 	}
 	if row.Spark[23] == nil || *row.Spark[23] <= 0 {
 		t.Errorf("spark[23] = %v, want 当前小时的 p95", row.Spark[23])
+	}
+}
+
+// TestModelsNilPerfKeepsRows：指标库未装配（Perf==nil）不是整表空态——启用模型
+// 与探针行照常出行，流量列为 null，sources 标明 perfmetrics 不可用。
+func TestModelsNilPerfKeepsRows(t *testing.T) {
+	probes := &fakeProbeStore{latest: map[string]store.ModelPerformanceTest{
+		"probe-model": modelsTestProbe("probe-model", modelsTestNow.Add(-time.Hour), 3, 3, 1),
+	}}
+	channels := &fakeChannelCatalog{
+		enabled: []string{"probe-model", "idle-model"},
+		counts:  map[string]int{"probe-model": 2, "idle-model": 1},
+	}
+	resp := getModels(t, newModelsTestMux(t, PerformanceHandlerConfig{
+		Probes: probes, Channels: channels,
+	}))
+
+	if len(resp.Sources) != 2 ||
+		resp.Sources[0].Name != perfSourcePerfmetrics ||
+		resp.Sources[0].Status != perfSourceUnavailable ||
+		resp.Sources[1].Status != perfStatusOK {
+		t.Fatalf("sources = %+v, want perfmetrics/unavailable + probes/ok", resp.Sources)
+	}
+	if len(resp.Rows) != 2 {
+		t.Fatalf("rows 数 = %d, want 2（启用模型照常出行）", len(resp.Rows))
+	}
+
+	for _, model := range []string{"probe-model", "idle-model"} {
+		row := modelsRow(t, resp, model)
+		if row.Samples != 0 || row.TTFTp50 != nil || row.TTFTp95 != nil ||
+			row.LatencyP95 != nil || row.TPS != nil || row.SuccessRate != nil {
+			t.Errorf("%s 流量列应为 null: %+v", model, row)
+		}
+		if row.TTFTP95Over30s || row.LatencyP95Over30s {
+			t.Errorf("%s 没有流量却置了 over_30s 标志: %+v", model, row)
+		}
+		assertSparkShape(t, row.Spark)
+	}
+
+	probeRow := modelsRow(t, resp, "probe-model")
+	if probeRow.Probe == nil || probeRow.Uptime == nil {
+		t.Errorf("probe-model 探针列缺失: %+v", probeRow)
+	}
+	if probeRow.Status != perfModelStatusNormal {
+		t.Errorf("probe-model status = %q, want normal", probeRow.Status)
+	}
+	if idle := modelsRow(t, resp, "idle-model"); idle.Status != perfModelStatusNoSample {
+		t.Errorf("idle-model status = %q, want no_sample", idle.Status)
+	}
+}
+
+// TestModelsNilProbesKeepsTraffic：探针存储未装配时流量列不受影响，probe/uptime
+// 为 null，sources 标明 probes 不可用。
+func TestModelsNilProbesKeepsTraffic(t *testing.T) {
+	source := &fakeModelPerfSource{minute: []perfmetrics.Bucket{
+		modelsTestBucket("live", modelsTestNow.Add(-10*time.Minute), 100, 100, 30),
+	}}
+	resp := getModels(t, newModelsTestMux(t, PerformanceHandlerConfig{
+		Perf:     source,
+		Channels: &fakeChannelCatalog{enabled: []string{"live"}, counts: map[string]int{"live": 1}},
+	}))
+
+	if len(resp.Sources) != 2 ||
+		resp.Sources[0].Status != perfStatusOK ||
+		resp.Sources[1].Name != perfSourceProbes ||
+		resp.Sources[1].Status != perfSourceUnavailable {
+		t.Fatalf("sources = %+v, want perfmetrics/ok + probes/unavailable", resp.Sources)
+	}
+
+	row := modelsRow(t, resp, "live")
+	if row.Probe != nil || row.Uptime != nil {
+		t.Errorf("探针列应为 null: probe=%+v uptime=%v", row.Probe, row.Uptime)
+	}
+	if row.LatencyP95 == nil || row.TTFTp95 == nil || row.TPS == nil || row.Samples != 100 {
+		t.Errorf("流量列缺失: %+v", row)
+	}
+	if row.Status != perfModelStatusNormal {
+		t.Errorf("status = %q, want normal", row.Status)
+	}
+}
+
+// TestModelsChannelsCountFailureIsNull：渠道数查询失败只让 channels 整列变 null，
+// 端点仍 200，其它列正常。
+func TestModelsChannelsCountFailureIsNull(t *testing.T) {
+	source := &fakeModelPerfSource{minute: []perfmetrics.Bucket{
+		modelsTestBucket("counted", modelsTestNow.Add(-10*time.Minute), 100, 100, 30),
+	}}
+	channels := &fakeChannelCatalog{
+		enabled:   []string{"counted"},
+		countsErr: errors.New("counts query down"),
+	}
+	resp := getModels(t, newModelsTestMux(t, PerformanceHandlerConfig{
+		Perf:     source,
+		Probes:   &fakeProbeStore{latest: map[string]store.ModelPerformanceTest{}},
+		Channels: channels,
+	}))
+
+	row := modelsRow(t, resp, "counted")
+	if row.Channels != nil {
+		t.Errorf("channels = %v, want null（查询失败不是 0 个渠道）", *row.Channels)
+	}
+	if row.LatencyP95 == nil || row.TTFTp95 == nil || row.TPS == nil || row.Samples != 100 {
+		t.Errorf("其它列应正常: %+v", row)
+	}
+	if row.Status != perfModelStatusNormal {
+		t.Errorf("status = %q, want normal", row.Status)
+	}
+}
+
+// TestModelsIncidentBeatsDegraded：最新探针全失败且已过期（>36h）时，incident
+// 优先于 degraded——状态顺序严格 incident → degraded。
+func TestModelsIncidentBeatsDegraded(t *testing.T) {
+	source := &fakeModelPerfSource{minute: []perfmetrics.Bucket{
+		modelsTestBucket("dead", modelsTestNow.Add(-10*time.Minute), 100, 100, 30),
+	}}
+	probes := &fakeProbeStore{latest: map[string]store.ModelPerformanceTest{
+		"dead": modelsTestProbe("dead", modelsTestNow.Add(-40*time.Hour), 3, 0, 0),
+	}}
+	resp := getModels(t, newModelsTestMux(t, PerformanceHandlerConfig{
+		Perf:     source,
+		Probes:   probes,
+		Channels: &fakeChannelCatalog{enabled: []string{"dead"}},
+	}))
+
+	row := modelsRow(t, resp, "dead")
+	if row.Status != perfModelStatusIncident {
+		t.Errorf("status = %q, want incident（全失败优先于过期 degraded）", row.Status)
+	}
+	if resp.Summary.Incident != 1 || resp.Summary.Degraded != 0 {
+		t.Errorf("summary = %+v, want incident=1 degraded=0", resp.Summary)
+	}
+}
+
+// TestModelsInfinityP95Flagged：24h 延迟 p95 落进 +Inf 桶时，*_ms 仍是
+// 30000 下界，但 over_30s 布尔位必须为 true；对应 spark 槽为 null；只要 7d
+// 存在有限基线就判 degraded。
+func TestModelsInfinityP95Flagged(t *testing.T) {
+	recent := modelsTestNow.Add(-10 * time.Minute)
+	// 100 个样本里 94 个在 [0,50)，其余 6 个落进 +Inf（>30s）：p95 秩 = 95
+	// 越过 94 个有限样本，落进 +Inf 桶。
+	overflow := perfmetrics.Bucket{
+		Model:        "overflow",
+		Start:        recent,
+		Success:      100,
+		LatencyCount: 100,
+		TTFTCount:    100,
+	}
+	overflow.LatencyBuckets[0] = 94
+	overflow.TTFTBuckets[0] = 100
+
+	source := &fakeModelPerfSource{
+		minute: []perfmetrics.Bucket{overflow},
+		hourly: []perfmetrics.Bucket{
+			modelsTestBucket("overflow", recent.Add(-3*time.Hour), 100, 100, 20000),
+			modelsTestBucket("overflow", recent.Add(-4*time.Hour), 100, 100, 20000),
+		},
+	}
+	resp := getModels(t, newModelsTestMux(t, PerformanceHandlerConfig{
+		Perf:     source,
+		Probes:   &fakeProbeStore{latest: map[string]store.ModelPerformanceTest{}},
+		Channels: &fakeChannelCatalog{enabled: []string{"overflow"}},
+	}))
+
+	row := modelsRow(t, resp, "overflow")
+	if !row.LatencyP95Over30s {
+		t.Errorf("latency_p95_over_30s = false, want true（p95 落 +Inf 桶）")
+	}
+	if row.LatencyP95 == nil || *row.LatencyP95 != modelPerfInfinityMS {
+		t.Errorf("latency_p95_ms = %v, want 下界标记 %v", row.LatencyP95, modelPerfInfinityMS)
+	}
+	if row.TTFTP95Over30s {
+		t.Errorf("ttft_p95_over_30s = true, want false（TTFT 全在有限桶）")
+	}
+	if row.Status != perfModelStatusDegraded {
+		t.Errorf("status = %q, want degraded（>30s 且存在有限基线）", row.Status)
+	}
+	assertSparkShape(t, row.Spark)
+	// 唯一的分钟桶在 12:20（当前小时 → 下标 23），p95 落 +Inf → null。
+	if row.Spark[23] != nil {
+		t.Errorf("spark[23] = %v, want null（+Inf 小时不画 30000）", *row.Spark[23])
+	}
+}
+
+// TestModelsRejectsUnsupportedRange：模型表固定 24h，显式传其它 range 返回 400，
+// detail 前缀与 overview 一致（invalid_range:）。
+func TestModelsRejectsUnsupportedRange(t *testing.T) {
+	mux := newModelsTestMux(t, PerformanceHandlerConfig{
+		Perf:     &fakeModelPerfSource{},
+		Probes:   &fakeProbeStore{latest: map[string]store.ModelPerformanceTest{}},
+		Channels: &fakeChannelCatalog{enabled: []string{"m"}},
+	})
+
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, perfRequest(http.MethodGet, "/api/performance/models?range=7d", "", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400（不支持 7d）", rr.Code)
+	}
+	if body := rr.Body.String(); !strings.Contains(body, "invalid_range:") {
+		t.Errorf("body 缺少 invalid_range 前缀: %s", body)
+	}
+
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, perfRequest(http.MethodGet, "/api/performance/models?range=24h", "", nil))
+	if rr.Code != http.StatusOK {
+		t.Errorf("range=24h status = %d, want 200", rr.Code)
 	}
 }

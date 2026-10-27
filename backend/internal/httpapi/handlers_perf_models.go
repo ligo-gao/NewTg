@@ -91,17 +91,21 @@ type perfModelsSummary struct {
 // success_rate/spark）来自 perfmetrics，探针列（probe/uptime）来自
 // model_performance_tests；任一数据源不可用时只让对应列变 null，端点仍 200。
 type perfModelRow struct {
-	Model       string          `json:"model"`
-	Channels    *int            `json:"channels"`
-	TTFTp50     *float64        `json:"ttft_p50_ms"`
-	TTFTp95     *float64        `json:"ttft_p95_ms"`
-	LatencyP95  *float64        `json:"latency_p95_ms"`
-	TPS         *float64        `json:"tps"`
-	Samples     int64           `json:"samples"`
-	SuccessRate *float64        `json:"success_rate"`
-	Probe       *perfModelProbe `json:"probe"`
-	Uptime      *float64        `json:"uptime"`
-	Status      string          `json:"status"`
+	Model    string   `json:"model"`
+	Channels *int     `json:"channels"`
+	TTFTp50  *float64 `json:"ttft_p50_ms"`
+	TTFTp95  *float64 `json:"ttft_p95_ms"`
+	// p95 落进 +Inf 桶时，*_ms 仍是 modelPerfInfinityMS（30000，只代表下界），
+	// 下面的布尔位告诉前端这个数字不是真实分位值；前端应显示「>30s」。
+	TTFTP95Over30s    bool            `json:"ttft_p95_over_30s"`
+	LatencyP95        *float64        `json:"latency_p95_ms"`
+	LatencyP95Over30s bool            `json:"latency_p95_over_30s"`
+	TPS               *float64        `json:"tps"`
+	Samples           int64           `json:"samples"`
+	SuccessRate       *float64        `json:"success_rate"`
+	Probe             *perfModelProbe `json:"probe"`
+	Uptime            *float64        `json:"uptime"`
+	Status            string          `json:"status"`
 	// Spark 长度恒为 24：小时桶没有样本的位置是 null（不能用 0 冒充，
 	// 曲线会掉到零）。
 	Spark []*float64 `json:"spark"`
@@ -124,6 +128,15 @@ type perfModelProbe struct {
 // ---------------------------------------------------------------------------
 
 func (h *PerformanceHandlers) handleModels(w http.ResponseWriter, r *http.Request) {
+	// 模型表固定看 24h（spark 也锚定 24 个小时），不支持切换窗口。显式传
+	// 别的 range（例如 7d）直接 400，避免前端以为换窗口生效了。
+	rangeName := strings.TrimSpace(r.URL.Query().Get("range"))
+	if rangeName != "" && rangeName != "24h" {
+		writeProblemDetail(w, http.StatusBadRequest, problemTypePerformanceInvalidValue,
+			"Invalid range", "invalid_range: range must be 24h")
+		return
+	}
+
 	now := h.now().UTC()
 	ctx := r.Context()
 
@@ -171,8 +184,9 @@ func (h *PerformanceHandlers) handleModels(w http.ResponseWriter, r *http.Reques
 	minuteByModel := groupModelPerfBuckets(minuteBuckets)
 	hourByModel := groupModelPerfHourly(hourBuckets)
 
-	// 模型集合 = 24h 流量桶模型 ∪ EnabledModels ∪ 探针行模型。EnabledModels
-	// 失败只记 Warn：集合退化为其余两源，而不是整表 500。
+	// 模型集合 = 24h 流量桶模型 ∪ EnabledModels。EnabledModels 失败只记
+	// Warn：集合退化为流量桶，而不是整表 500。探针行不参与发现模型——测速
+	// 记录残留的孤儿模型不会因此进入表格。
 	modelSet := make(map[string]struct{}, len(minuteByModel))
 	for model := range minuteByModel {
 		if model != "" {
@@ -185,15 +199,15 @@ func (h *PerformanceHandlers) handleModels(w http.ResponseWriter, r *http.Reques
 			h.log.Warn("performance: enabled models query failed", "err", err)
 		} else {
 			for _, model := range enabled {
-				if model = strings.TrimSpace(model); model != "" {
+				if model != "" {
 					modelSet[model] = struct{}{}
 				}
 			}
 		}
 	}
 
-	// LatestByModels 需要先有模型集（桶 ∪ 启用模型）；返回的探针行本身
-	// 再并入模型集，覆盖「渠道已删、测速记录还在」的残留模型。
+	// LatestByModels 以当前模型集为种子；返回的键并入集合只是防御性处理
+	// （查询本身限定在种子里，正常不会带出集合外的模型）。
 	probes := map[string]store.ModelPerformanceTest{}
 	if h.probes != nil {
 		seed := sortedModelNames(modelSet)
@@ -280,11 +294,15 @@ func buildPerfModelRow(
 	if value, _, ok := quantileFromBuckets(agg.TTFTCount, agg.TTFT, 0.50); ok {
 		row.TTFTp50 = perfFinitePtr(value)
 	}
-	if value, _, ok := quantileFromBuckets(agg.TTFTCount, agg.TTFT, 0.95); ok {
+	// over=true 表示分位落进 +Inf 桶：value 只是 modelPerfInfinityMS 下界，
+	// 不能当作有限 p95 展示，用布尔位标记出来。
+	if value, over, ok := quantileFromBuckets(agg.TTFTCount, agg.TTFT, 0.95); ok {
 		row.TTFTp95 = perfFinitePtr(value)
+		row.TTFTP95Over30s = over
 	}
-	if value, _, ok := quantileFromBuckets(agg.LatencyCount, agg.Latency, 0.95); ok {
+	if value, over, ok := quantileFromBuckets(agg.LatencyCount, agg.Latency, 0.95); ok {
 		row.LatencyP95 = perfFinitePtr(value)
+		row.LatencyP95Over30s = over
 	}
 
 	// 只有知道才输出数字：模型不在 map 里（查询失败或没有启用渠道）时
@@ -313,7 +331,8 @@ func buildPerfModelRow(
 	}
 
 	row.Status = perfModelStatus(
-		agg.sampleSize() > 0, row.SuccessRate, row.LatencyP95, perfModelBaselineP95(hours), probe, now)
+		agg.sampleSize() > 0, row.SuccessRate, row.LatencyP95, row.LatencyP95Over30s,
+		perfModelBaselineP95(hours), probe, now)
 	return row
 }
 
@@ -322,7 +341,9 @@ func buildPerfModelRow(
 // 同时「全失败」且「很久没测」的模型被显示成 degraded。
 func perfModelStatus(
 	hasTraffic bool,
-	successRate, p95, baselineP95 *float64,
+	successRate, p95 *float64,
+	p95Over30s bool,
+	baselineP95 *float64,
 	probe *store.ModelPerformanceTest,
 	now time.Time,
 ) string {
@@ -332,9 +353,16 @@ func perfModelStatus(
 	if successRate != nil && *successRate < perfModelIncidentSuccessRate {
 		return perfModelStatusIncident
 	}
-	if p95 != nil && baselineP95 != nil && *baselineP95 > 0 &&
-		*p95 > perfModelDegradedFactor**baselineP95 {
-		return perfModelStatusDegraded
+	// 24h p95 落进 +Inf 桶时，只要存在有限基线就说明明显退化（>30s 对比
+	// 一个有限的历史分位）。没有有限基线（7d 全是 +Inf 小时）则不判
+	// degraded——没有可比对象。
+	if p95 != nil && baselineP95 != nil {
+		if p95Over30s {
+			return perfModelStatusDegraded
+		}
+		if *baselineP95 > 0 && *p95 > perfModelDegradedFactor**baselineP95 {
+			return perfModelStatusDegraded
+		}
 	}
 	if probe != nil && now.Sub(probe.CreatedAt.UTC()) > perfModelProbeStaleAfter {
 		return perfModelStatusDegraded
@@ -348,12 +376,13 @@ func perfModelStatus(
 }
 
 // perfModelBaselineP95 把 7 天小时桶逐小时算 p95，再取非空小时的中位数。
-// 没有任何非空小时时返回 nil（不判 degraded）。中位数的口径：奇数取中间
-// 值，偶数取中间两个的平均值。
+// 落进 +Inf 桶的小时不是有限分位，不能进基线（否则中位数会被 30000 这个
+// 下界污染）；所有小时都是 +Inf 时返回 nil（不判 degraded）。中位数的口径：
+// 奇数取中间值，偶数取中间两个的平均值。
 func perfModelBaselineP95(hours map[time.Time]*modelPerfAggregate) *float64 {
 	values := make([]float64, 0, len(hours))
 	for _, agg := range hours {
-		if value, _, ok := quantileFromBuckets(agg.LatencyCount, agg.Latency, 0.95); ok {
+		if value, over, ok := quantileFromBuckets(agg.LatencyCount, agg.Latency, 0.95); ok && !over {
 			values = append(values, value)
 		}
 	}
@@ -362,9 +391,9 @@ func perfModelBaselineP95(hours map[time.Time]*modelPerfAggregate) *float64 {
 
 // perfModelSpark 把 24h 分钟桶按小时聚合为固定 24 点的 p95 序列。
 //
-// 24 个位置锚定到当前小时（最后一个点是当前这个未满的小时），最早的边界
-// 部分小时被丢弃——那是最旧的数据，比丢掉刚刚发生的一小时更可接受。
-// 没有样本的小时保持 nil，JSON 里是 null。
+// 槽位锚定当前小时：包含当前未完成小时、丢弃最早的边界小时——那是最旧的
+// 数据，比丢掉刚刚发生的一小时更可接受。没有样本的小时保持 nil，JSON 里是
+// null；p95 落进 +Inf 桶的小时也写 null，不用 30000 下界冒充有限分位。
 func perfModelSpark(buckets []ModelPerfBucket, now time.Time) []*float64 {
 	byHour := make(map[time.Time]*modelPerfAggregate, perfModelSparkPoints)
 	for _, bucket := range buckets {
@@ -385,7 +414,7 @@ func perfModelSpark(buckets []ModelPerfBucket, now time.Time) []*float64 {
 		if agg == nil {
 			continue
 		}
-		if value, _, ok := quantileFromBuckets(agg.LatencyCount, agg.Latency, 0.95); ok {
+		if value, over, ok := quantileFromBuckets(agg.LatencyCount, agg.Latency, 0.95); ok && !over {
 			points[i] = perfFinitePtr(value)
 		}
 	}

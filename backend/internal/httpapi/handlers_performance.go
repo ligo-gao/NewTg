@@ -236,7 +236,7 @@ func NewPerformanceHandlers(cfg PerformanceHandlerConfig) *PerformanceHandlers {
 	}
 }
 
-// Register 把七个端点挂到受保护管理子树。权限一律 settings:manage
+// Register 把性能管理端点挂到受保护管理子树。权限一律 settings:manage
 // （§3.19 Q2：不新增 ops:*/performance:* 键）。
 func (h *PerformanceHandlers) Register(mux *http.ServeMux) {
 	mux.Handle("GET /api/performance/stats",

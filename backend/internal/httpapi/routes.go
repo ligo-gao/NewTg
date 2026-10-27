@@ -479,7 +479,7 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 
 	// 性能管理端点（modules-08 §3.19 / F-08-48～50；D3a）。三个对象都是
 	// 进程本地的，不依赖主库；日志库只用于「最近操作」的审计查询，缺省时
-	// 该端点返回空列表而不是拒绝挂载。七个端点统一要求 settings:manage。
+	// 该端点返回空列表而不是拒绝挂载。性能管理端点统一要求 settings:manage。
 	NewPerformanceHandlers(PerformanceHandlerConfig{
 		LogDB:    cfg.LogDB,
 		Audit:    cfg.Audit,
