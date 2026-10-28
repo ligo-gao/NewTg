@@ -1,6 +1,7 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
+import { useState } from 'react'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
@@ -17,6 +18,7 @@ import { SettingsZone } from './settings-zone'
 
 const ORIGIN = 'http://localhost:3000'
 const UPDATED_AT = '2026-10-28T01:00:00Z'
+const POLLED_UPDATED_AT = '2026-10-28T03:00:00Z'
 
 const server = setupServer()
 
@@ -146,6 +148,58 @@ function numberInput(label: string): HTMLInputElement {
   return screen.getByLabelText(label) as HTMLInputElement
 }
 
+/**
+ * 带「父层轮询」的表单：页面每 60s 重拉 settings section，这里用一个按钮模拟
+ * 那次重渲染，把新的 `section`（通常是新的 `updated_at`）传下去。
+ */
+async function renderPollingForm(
+  options: {
+    section?: SettingsSectionResponse
+    polledSection?: SettingsSectionResponse
+    config?: PerfConfig
+    canManage?: boolean
+  } = {},
+) {
+  const onSaved = vi.fn()
+  const initial = options.section ?? section()
+  const polled = options.polledSection ?? initial
+
+  function Harness() {
+    const [current, setCurrent] = useState(initial)
+    return (
+      <>
+        <button type="button" onClick={() => setCurrent(polled)}>
+          Simulate a poll
+        </button>
+        <ProbeScheduleForm
+          section={current}
+          config={options.config ?? config()}
+          canManage={options.canManage ?? true}
+          onSaved={onSaved}
+        />
+      </>
+    )
+  }
+
+  const view = await renderWithProviders(<Harness />, ['admin'])
+  return { ...view, onSaved }
+}
+
+function polledSection(): SettingsSectionResponse {
+  return { section: 'perf', updated_at: POLLED_UPDATED_AT, items: savedItems() }
+}
+
+function conflictResponse(): Response {
+  return HttpResponse.json(
+    {
+      type: 'https://newtg.dev/problems/conflict',
+      title: 'Conflict',
+      detail: 'settings version mismatch',
+    },
+    { status: 409 },
+  )
+}
+
 describe('ProbeScheduleForm', () => {
   it('shows the registry default and the environment source when a key is unsaved', async () => {
     await renderForm({
@@ -188,17 +242,8 @@ describe('ProbeScheduleForm', () => {
     expect(useToastStore.getState().toasts.at(-1)?.message).toBe('Saved')
   })
 
-  it('keeps the user input and shows conflict copy on 409', async () => {
-    installSave(() =>
-      HttpResponse.json(
-        {
-          type: 'https://newtg.dev/problems/conflict',
-          title: 'Conflict',
-          detail: 'settings version mismatch',
-        },
-        { status: 409 },
-      ),
-    )
+  it('keeps the user input, the old token and offers a discard action on 409', async () => {
+    const saves = installSave(conflictResponse)
     const { onSaved } = await renderForm()
 
     fireEvent.change(numberInput('Runs per round'), { target: { value: '5' } })
@@ -212,6 +257,67 @@ describe('ProbeScheduleForm', () => {
     // 不静默覆盖、也不自动重拉替换用户输入。
     expect(numberInput('Runs per round').value).toBe('5')
     expect(onSaved).not.toHaveBeenCalled()
+    // 409 旁边必须有显式出口，不能只让用户自己猜该怎么刷新。
+    expect(
+      screen.getByRole('button', { name: 'Discard my edits and reload' }),
+    ).toBeTruthy()
+
+    // 旧令牌保留：再次保存仍带着首次变脏时的 updated_at，因此仍会 409。
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(saves).toHaveLength(2))
+    expect(saves[1]?.body.expect_updated_at).toBe(UPDATED_AT)
+  })
+
+  it('snapshots expect_updated_at at the first edit, not at save time', async () => {
+    const saves = installSave(successResponse)
+    await renderPollingForm({ polledSection: polledSection() })
+
+    fireEvent.change(numberInput('Probe interval'), {
+      target: { value: '6' },
+    })
+    // 页面轮询拿到新的 updated_at —— 未保存的草稿必须继续用旧令牌。
+    fireEvent.click(screen.getByRole('button', { name: 'Simulate a poll' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saves).toHaveLength(1))
+    expect(saves[0]?.body.expect_updated_at).toBe(UPDATED_AT)
+  })
+
+  it('discards the draft on request and then saves against the refreshed version', async () => {
+    let calls = 0
+    const saves = installSave(() => {
+      calls += 1
+      return calls === 1 ? conflictResponse() : successResponse()
+    })
+    const { onSaved } = await renderPollingForm({
+      polledSection: polledSection(),
+    })
+
+    fireEvent.change(numberInput('Runs per round'), { target: { value: '5' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Simulate a poll' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await screen.findByText(
+      'Settings were changed elsewhere. Refresh and try again.',
+    )
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Discard my edits and reload' }),
+    )
+
+    // 草稿清空（输入框回到基线）并让父层重拉；令牌一起清空。
+    expect(numberInput('Runs per round').value).toBe('3')
+    expect(
+      screen.queryByText(
+        'Settings were changed elsewhere. Refresh and try again.',
+      ),
+    ).toBeNull()
+    expect(onSaved).toHaveBeenCalledTimes(1)
+
+    // 令牌清空后再次变脏，快照的是刷新后的 updated_at。
+    fireEvent.change(numberInput('Runs per round'), { target: { value: '6' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(saves).toHaveLength(2))
+    expect(saves[1]?.body.expect_updated_at).toBe(POLLED_UPDATED_AT)
   })
 
   it('attaches a server 422 field error to the matching input', async () => {
@@ -293,8 +399,8 @@ describe('ProbeScheduleForm', () => {
   it('renders a read-only notice instead of the form when no scheduler is wired', async () => {
     await renderForm({ config: config({ schedule: null }) })
 
-    expect(screen.getByTestId('probe-schedule-readonly').textContent).toContain(
-      'Comes from environment variables or built into the code; takes effect only by changing the deployment config and rebuilding.',
+    expect(screen.getByTestId('probe-schedule-readonly').textContent).toBe(
+      'Rows marked "Restart required" come from environment variables: change them in the deployment config, then restart the service. Rows marked "Code change required" are built into the code and only change with a new build.',
     )
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
     expect(screen.queryByRole('switch')).toBeNull()

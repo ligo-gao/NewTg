@@ -1,4 +1,4 @@
-import { useId, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useState, type ReactNode } from 'react'
 
 import { ApiError } from '@/api/errors'
 import {
@@ -34,7 +34,7 @@ type ScheduleKey =
   | 'perf.schedule.runs'
   | 'perf.schedule.concurrency'
 
-const SCHEDULE_KEYS: readonly ScheduleKey[] = [
+export const SCHEDULE_KEYS: readonly ScheduleKey[] = [
   'perf.schedule.enabled',
   'perf.schedule.interval_hours',
   'perf.schedule.runs',
@@ -136,7 +136,14 @@ export function ProbeScheduleForm({
   const [draft, setDraft] = useState<Draft>({})
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
   const [serverError, setServerError] = useState<string | null>(null)
+  const [conflict, setConflict] = useState(false)
   const [saving, setSaving] = useState(false)
+  /**
+   * 乐观锁令牌：页面每 60s 重拉 section，若每次保存都用最新的
+   * `section.updated_at`，409 后重试必然成功，锁等于不存在。所以在「首次变脏」
+   * 那一刻快照，保存成功或用户显式放弃才换。
+   */
+  const [lockToken, setLockToken] = useState<string | null>(null)
 
   const itemByKey = useMemo(() => {
     const map = new Map<string, SettingsItem>()
@@ -145,6 +152,21 @@ export function ProbeScheduleForm({
   }, [section.items])
 
   const schedule = config.schedule
+
+  const changed = schedule === null ? [] : changedEntries(schedule)
+  // 非法草稿也算「有未保存改动」：保存按钮必须可点，本地校验才能把错误
+  // 挂到输入框上；否则用户会看到一个不可点击的按钮而没有任何解释。
+  const dirty = changed.length > 0
+
+  // 首次变脏时快照 `updated_at`：轮询随后刷新的 section 不影响本次保存的
+  // 乐观锁令牌，否则 409 后重试必然成功、锁形同虚设。
+  useEffect(() => {
+    if (dirty && lockToken === null) {
+      setLockToken(section.updated_at)
+    } else if (!dirty && lockToken !== null) {
+      setLockToken(null)
+    }
+  }, [dirty, lockToken, section.updated_at])
 
   if (schedule === null) {
     return (
@@ -206,13 +228,16 @@ export function ProbeScheduleForm({
       return next
     })
     setServerError(null)
+    setConflict(false)
   }
 
   /**
    * 与最近一次 GET 的 `item.value` 比较后只保留改动过的键；`null` 表示未落库，
    * 用户一旦编辑就按改动提交（即使数值恰好等于默认值）。
    */
-  function changedEntries(): Array<[ScheduleKey, unknown]> {
+  function changedEntries(
+    current: Schedule,
+  ): Array<[ScheduleKey, unknown]> {
     const entries: Array<[ScheduleKey, unknown]> = []
     for (const key of SCHEDULE_KEYS) {
       const item = itemByKey.get(key)
@@ -225,7 +250,7 @@ export function ProbeScheduleForm({
         if (typeof entry !== 'boolean') continue
         if (item.value === null || item.value === undefined) {
           entries.push([key, entry])
-        } else if (!sameBoolean(item, effective, entry)) {
+        } else if (!sameBoolean(item, current, entry)) {
           entries.push([key, entry])
         }
         continue
@@ -244,17 +269,12 @@ export function ProbeScheduleForm({
         entries.push([key, parsed])
         continue
       }
-      if (parsed !== baselineValue(item, key, effective)) {
+      if (parsed !== baselineValue(item, key, current)) {
         entries.push([key, parsed])
       }
     }
     return entries
   }
-
-  const changed = changedEntries()
-  // 非法草稿也算「有未保存改动」：保存按钮必须可点，本地校验才能把错误
-  // 挂到输入框上；否则用户会看到一个不可点击的按钮而没有任何解释。
-  const dirty = changed.length > 0
 
   function validate(changedKeys: readonly ScheduleKey[]): FieldErrors {
     const errors: FieldErrors = {}
@@ -272,7 +292,7 @@ export function ProbeScheduleForm({
 
   async function save(): Promise<void> {
     if (!canManage || saving) return
-    const entries = changedEntries()
+    const entries = changedEntries(effective)
     if (entries.length === 0) return
 
     const errors = validate(entries.map(([key]) => key))
@@ -290,10 +310,12 @@ export function ProbeScheduleForm({
 
     setSaving(true)
     setServerError(null)
+    setConflict(false)
     try {
-      await savePerfSettings(values, section.updated_at)
+      await savePerfSettings(values, lockToken ?? section.updated_at)
       setDraft({})
       setFieldErrors({})
+      setLockToken(null)
       push({
         tone: 'success',
         message: t('admin.performance.settings.saved'),
@@ -301,8 +323,10 @@ export function ProbeScheduleForm({
       onSaved()
     } catch (error) {
       if (error instanceof ApiError && error.kind === 'conflict') {
-        // 409：保留用户输入，不自动覆盖、不自动重拉替换——由用户自己决定
-        // 刷新还是重新输入（adjudications §2）。
+        // 409：保留用户输入**与旧令牌**，不自动覆盖、不自动重拉替换——由用户
+        // 自己决定刷新还是重新输入（adjudications §2）。旧令牌保留意味着再次
+        // 保存仍会 409，不会静默覆盖别人的改动。
+        setConflict(true)
         setServerError(t('admin.performance.settings.conflict'))
       } else {
         const fieldErrorList = fieldErrorsOf(error)
@@ -326,6 +350,19 @@ export function ProbeScheduleForm({
     } finally {
       setSaving(false)
     }
+  }
+
+  /**
+   * 显式放弃：清掉草稿与旧令牌，让父层重拉 —— 拿到最新的 `updated_at` 与值后，
+   * 用户再编辑保存时用的就是刷新后的版本。
+   */
+  function discardAndReload(): void {
+    setDraft({})
+    setFieldErrors({})
+    setServerError(null)
+    setConflict(false)
+    setLockToken(null)
+    onSaved()
   }
 
   const nextRun =
@@ -363,8 +400,13 @@ export function ProbeScheduleForm({
       </p>
 
       {serverError !== null ? (
-        <div className="mt-4">
+        <div className="mt-4 space-y-2">
           <FormAlert tone="danger">{serverError}</FormAlert>
+          {conflict ? (
+            <Button variant="secondary" onClick={discardAndReload}>
+              {t('admin.performance.settings.conflict_reload')}
+            </Button>
+          ) : null}
         </div>
       ) : null}
 
