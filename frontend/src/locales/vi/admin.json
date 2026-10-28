@@ -1438,6 +1438,12 @@
       "scope_notice": "Thao tác chỉ áp dụng cho phiên bản hiện tại. Với triển khai nhiều bản sao, hãy chạy cho từng phiên bản.",
       "offline_snapshot": "Ảnh chụp ngoại tuyến; dữ liệu có thể đã cũ.",
       "offline_toast": "Mất kết nối mạng.",
+      "range": {
+        "h1": "1 giờ",
+        "h24": "24 giờ",
+        "h6": "6 giờ",
+        "m15": "15 phút"
+      },
       "desktop_only": "Trang này chỉ dùng được trên màn hình máy tính (từ 1024px)."
     },
     "common": {

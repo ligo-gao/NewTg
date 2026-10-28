@@ -2,7 +2,6 @@ import { useState, type ReactNode } from 'react'
 
 import { ApiError } from '@/api/errors'
 import { useI18n } from '@/shared/lib/i18n-context'
-import type { TranslateFn } from '@/shared/lib/i18n-context'
 import { Button } from '@/shared/ui/button'
 import { StatusBadge } from '@/shared/ui/status-badge'
 
@@ -19,18 +18,21 @@ import {
 } from '../api'
 import { DangerConfirm } from '../danger-confirm'
 import {
-  KNOWN_PROBLEM_CODES,
   diskUsagePercent,
   formatBytes,
   formatCount,
   formatDateTime,
   formatDecimal,
   previewLogCleanup,
-  problemCode,
   usageBarClass,
   usageTone,
   validateCleanupValue,
 } from '../utils'
+import {
+  InlineError,
+  SkeletonLines,
+  describePerformanceError,
+} from './primitives'
 
 /**
  * 维护动作区（Task 18 / adjudications §5）。
@@ -56,7 +58,7 @@ type LogsOutcome =
   | { kind: 'success'; data: PerformanceLogCleanupResult }
   | { kind: 'error'; message: string }
 
-export function MaintenanceCard({
+function MaintenanceCard({
   title,
   testId,
   children,
@@ -75,47 +77,6 @@ export function MaintenanceCard({
       </h2>
       {children}
     </section>
-  )
-}
-
-export function SkeletonLines({
-  rows,
-  testId,
-}: {
-  rows: number
-  testId: string
-}) {
-  return (
-    <div data-testid={testId} aria-hidden="true" className="space-y-2">
-      {Array.from({ length: rows }, (_, index) => (
-        <div key={index} className="h-4 w-full rounded bg-surface-subtle" />
-      ))}
-    </div>
-  )
-}
-
-export function InlineError({
-  message,
-  retryLabel,
-  onRetry,
-  testId,
-}: {
-  message: string
-  retryLabel: string
-  onRetry: () => void
-  testId: string
-}) {
-  return (
-    <div
-      data-testid={testId}
-      role="alert"
-      className="flex flex-wrap items-center gap-3 rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-body text-danger"
-    >
-      <span>{message}</span>
-      <Button variant="ghost" className="h-7 px-2 text-body" onClick={onRetry}>
-        {retryLabel}
-      </Button>
-    </div>
   )
 }
 
@@ -145,35 +106,6 @@ function ResultLine({
       {children}
     </p>
   )
-}
-
-/**
- * 统一错误文案：已知 Problem 码本地化，429 原地提示，传输失败单独说明。
- * 维护动作与最近操作（只读表格的重试）共用同一口径。
- */
-export function describePerformanceError(
-  error: unknown,
-  t: TranslateFn,
-): string {
-  if (error instanceof ApiError) {
-    // 传输失败没有 Problem 码可映射，必须使用本地化的网络文案，而不是
-    // 让它落到「操作失败」——后者会误导用户去重复提交。
-    if (error.kind === 'offline') {
-      return t('admin.performance.errors.offline')
-    }
-    if (error.status === 429) {
-      return error.retry_after !== undefined
-        ? t('admin.performance.errors.rate_limited_retry', {
-            seconds: error.retry_after,
-          })
-        : t('admin.performance.errors.rate_limited')
-    }
-    const code = problemCode(error)
-    if (KNOWN_PROBLEM_CODES.has(code)) {
-      return t(`admin.performance.errors.${code}`)
-    }
-  }
-  return t('admin.performance.errors.generic')
 }
 
 export interface MaintenanceZoneProps {

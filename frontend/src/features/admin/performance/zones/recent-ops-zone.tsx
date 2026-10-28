@@ -13,7 +13,7 @@ import {
   InlineError,
   SkeletonLines,
   describePerformanceError,
-} from './maintenance-zone'
+} from './primitives'
 
 /**
  * 最近操作（只读）区（Task 18 / adjudications §5）。

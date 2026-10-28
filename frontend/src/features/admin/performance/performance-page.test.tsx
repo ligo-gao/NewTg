@@ -623,18 +623,21 @@ describe('performance page composition', () => {
       screen.getByText(/Actions apply to the current instance only/),
     ).toBeTruthy()
 
-    // 范围选择器：四个窗口，默认 1h（与 fetchPerfOverview 的缺省一致）。
-    const ranges = within(
-      screen.getByRole('radiogroup', { name: 'Time range' }),
-    ).getAllByRole('radio')
-    expect(ranges.map((radio) => radio.textContent)).toEqual([
-      '15m',
-      '1h',
-      '6h',
-      '24h',
-    ])
+    // 范围选择器：四个本地化窗口，默认 1h（与 fetchPerfOverview 的缺省一致）。
     expect(
-      screen.getByRole('radio', { name: '1h' }).getAttribute('aria-checked'),
+      within(
+        screen.getByRole('radiogroup', { name: 'Time range' }),
+      ).getAllByRole('radio'),
+    ).toHaveLength(4)
+    expect(
+      ['15m', '1h', '6h', '24h'].map(
+        (option) => screen.getByTestId(`performance-range-${option}`).textContent,
+      ),
+    ).toEqual(['15m', '1h', '6h', '24h'])
+    expect(
+      screen
+        .getByTestId('performance-range-1h')
+        .getAttribute('aria-checked'),
     ).toBe('true')
 
     // 五格体检条：四格 Prometheus + 模型汇总。
@@ -666,23 +669,49 @@ describe('performance page composition', () => {
     expect(disk.textContent).toContain('Enabled')
     expect(disk.textContent).toContain('/var/cache/newtg')
     expect(disk.textContent).toContain('1,284 files')
+    // 迁移后的卡片数字没丢：使用量/上限、阈值与最近清理时间。
+    expect(disk.textContent).toContain('812.0 MB / limit 2.0 GB')
+    expect(disk.textContent).toContain('Threshold 256.0 MB')
     const progress = screen.getByRole('progressbar', {
       name: 'Disk cache usage',
     })
     expect(progress.getAttribute('aria-valuenow')).toBe('40')
     expect(progress.getAttribute('data-tone')).toBe('default')
-    expect(screen.getByTestId('performance-gc-card').textContent).toContain(
-      'GC runs 128',
-    )
-    expect(screen.getByTestId('performance-logs-card').textContent).toContain(
-      '/var/log/newtg',
+    const gcCard = screen.getByTestId('performance-gc-card')
+    expect(gcCard.textContent).toContain('Heap allocation 340.0 MB')
+    expect(gcCard.textContent).toContain('GC runs 128')
+    const logsCard = screen.getByTestId('performance-logs-card')
+    expect(logsCard.textContent).toContain('/var/log/newtg')
+    expect(logsCard.textContent).toContain(
+      'The active log file is never deleted.',
     )
 
     // 最近操作。
     const rows = await screen.findAllByTestId('performance-recent-row')
     expect(rows).toHaveLength(2)
     expect(within(rows[0] as HTMLElement).getByText('Log cleanup')).toBeTruthy()
+    expect(rows[0]?.textContent).toContain('Keep by days · 30')
+    expect(within(rows[0] as HTMLElement).getByText('Success')).toBeTruthy()
     expect(within(rows[1] as HTMLElement).getByText('7 ms')).toBeTruthy()
+
+    // 七区顺序：体检条 → 模型 → 网关 → 资源 → 运行参数 → 维护 → 最近操作。
+    const zones = [
+      screen.getByRole('region', { name: 'Service health' }),
+      screen.getByRole('region', { name: 'Model performance' }),
+      screen.getByRole('region', { name: 'Gateway instances' }),
+      screen.getByRole('region', { name: 'Server resources' }),
+      screen.getByTestId('settings-zone'),
+      screen.getByTestId('performance-disk-card'),
+      screen.getByTestId('performance-recent-card'),
+    ]
+    for (let index = 1; index < zones.length; index += 1) {
+      const previous = zones[index - 1] as HTMLElement
+      const current = zones[index] as HTMLElement
+      expect(
+        previous.compareDocumentPosition(current) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy()
+    }
 
     // 所有表头都是列头（读屏按列导航依赖 scope="col"）。
     for (const header of screen.getAllByRole('columnheader')) {
@@ -766,6 +795,150 @@ describe('performance page composition', () => {
     // incident（gpt-4o）优先于正常的 claude-haiku-3-5，即便它的探针更早。
     expect(modelCell?.textContent).toContain('gpt-4o')
     expect(modelCell?.textContent).not.toContain('claude-haiku-3-5')
+  })
+
+  it('shows the source error block and retries the failed source in place', async () => {
+    const capture = installPage()
+    let failFirstOverview = true
+    server.use(
+      http.get(`${ORIGIN}/api/performance/overview`, ({ request }) => {
+        capture.counts.overview += 1
+        capture.overviewUrls.push(new URL(request.url))
+        if (failFirstOverview) {
+          failFirstOverview = false
+          return jsonProblem('internal_error', 500)
+        }
+        return HttpResponse.json(overviewFixture())
+      }),
+    )
+    await renderWithProviders(<PerformancePage />, ['common', 'admin'])
+
+    const error = await screen.findByTestId('performance-source-error')
+    expect(error.textContent).toContain(
+      'The action failed. Please try again.',
+    )
+    // overview 未加载时不臆造断线横幅。
+    expect(screen.queryByTestId('performance-degraded-banner')).toBeNull()
+    expect(capture.counts.overview).toBe(1)
+
+    const user = userEvent.setup()
+    await user.click(within(error).getByRole('button', { name: 'Retry' }))
+
+    await screen.findAllByTestId('vital')
+    await waitFor(() =>
+      expect(screen.queryByTestId('performance-source-error')).toBeNull(),
+    )
+    expect(capture.counts.overview).toBe(2)
+  })
+
+  it('shows the stats refresh clock in the header', async () => {
+    installPage()
+    await renderPage()
+
+    expect(
+      screen.getByTestId('performance-last-updated').textContent,
+    ).toMatch(/^Last updated \S/)
+  })
+
+  it('prefers incident over degraded, then the latest probe among equals', async () => {
+    installPage({
+      models: modelsFixture({
+        rows: [
+          modelRow({
+            model: 'degraded-new',
+            status: 'degraded',
+            probe: {
+              last_tested_at: '2026-10-20T09:45:00Z',
+              ok: false,
+              runs: 3,
+              ttft_p95_ms: 900,
+              latency_p95_ms: 1800,
+              success_rate: 0.9,
+            },
+          }),
+          modelRow({
+            model: 'degraded-old',
+            status: 'degraded',
+            probe: {
+              last_tested_at: '2026-10-20T08:00:00Z',
+              ok: false,
+              runs: 3,
+              ttft_p95_ms: 900,
+              latency_p95_ms: 1800,
+              success_rate: 0.9,
+            },
+          }),
+          modelRow({
+            model: 'incident-ancient',
+            status: 'incident',
+            probe: {
+              last_tested_at: '2026-10-19T08:00:00Z',
+              ok: false,
+              runs: 3,
+              ttft_p95_ms: null,
+              latency_p95_ms: null,
+              success_rate: 0,
+            },
+          }),
+        ],
+      }),
+    })
+    const { container } = await renderWithProviders(<PerformancePage />, [
+      'common',
+      'admin',
+    ])
+    await screen.findAllByTestId('vital')
+
+    const modelCell = container.querySelector<HTMLElement>(
+      '[data-vital="models"]',
+    )
+    // incident 再早也压过更新的 degraded。
+    expect(modelCell?.textContent).toContain('incident-ancient')
+    expect(modelCell?.textContent).not.toContain('degraded-new')
+  })
+
+  it('breaks ties between equally severe models by the newest probe', async () => {
+    installPage({
+      models: modelsFixture({
+        rows: [
+          modelRow({
+            model: 'degraded-old',
+            status: 'degraded',
+            probe: {
+              last_tested_at: '2026-10-20T08:00:00Z',
+              ok: false,
+              runs: 3,
+              ttft_p95_ms: 900,
+              latency_p95_ms: 1800,
+              success_rate: 0.9,
+            },
+          }),
+          modelRow({
+            model: 'degraded-new',
+            status: 'degraded',
+            probe: {
+              last_tested_at: '2026-10-20T09:45:00Z',
+              ok: false,
+              runs: 3,
+              ttft_p95_ms: 900,
+              latency_p95_ms: 1800,
+              success_rate: 0.9,
+            },
+          }),
+        ],
+      }),
+    })
+    const { container } = await renderWithProviders(<PerformancePage />, [
+      'common',
+      'admin',
+    ])
+    await screen.findAllByTestId('vital')
+
+    const modelCell = container.querySelector<HTMLElement>(
+      '[data-vital="models"]',
+    )
+    expect(modelCell?.textContent).toContain('degraded-new')
+    expect(modelCell?.textContent).not.toContain('degraded-old')
   })
 
   it('does not request the new endpoints without settings:manage', async () => {
@@ -881,14 +1054,50 @@ describe('performance page polling', () => {
     const modelsBefore = capture.counts.models
     const user = userEvent.setup()
 
-    await user.click(screen.getByRole('radio', { name: '6h' }))
+    await user.click(screen.getByTestId('performance-range-6h'))
 
     await waitFor(() => expect(capture.counts.overview).toBe(2))
     expect(capture.overviewUrls.at(-1)?.searchParams.get('range')).toBe('6h')
     expect(capture.counts.models).toBe(modelsBefore)
     expect(
-      screen.getByRole('radio', { name: '6h' }).getAttribute('aria-checked'),
+      screen.getByTestId('performance-range-6h').getAttribute('aria-checked'),
     ).toBe('true')
+  })
+
+  it('resumes polling once the tab becomes visible again', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const capture = installPage()
+    const rendered = await renderWithProviders(<PerformancePage />, [
+      'common',
+      'admin',
+    ])
+    await screen.findAllByTestId('vital')
+
+    Object.defineProperty(document, 'hidden', {
+      configurable: true,
+      get: () => true,
+    })
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+
+    const paused = { ...capture.counts }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    expect(capture.counts).toEqual(paused)
+
+    Reflect.deleteProperty(document, 'hidden')
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    expect(capture.counts.overview).toBe(paused.overview + 1)
+
+    rendered.unmount()
   })
 })
 
@@ -1530,9 +1739,12 @@ describe('maintenance actions', () => {
     const capture = installPage()
     await renderPage()
 
-    await waitFor(() =>
-      expect(capture.readHeaders).toHaveLength(7),
-    )
+    // 七个只读端点各至少成功取数过一次；并发顺序不定，不看固定总条数。
+    await waitFor(() => {
+      for (const count of Object.values(capture.counts)) {
+        expect(count).toBeGreaterThanOrEqual(1)
+      }
+    })
     for (const headers of capture.readHeaders) {
       expect(headers.get('X-Confirm-Action')).toBeNull()
     }

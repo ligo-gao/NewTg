@@ -24,8 +24,9 @@ import { useOnlineStatus } from './use-online'
 import { formatClock } from './utils'
 import { DegradedBanner } from './zones/degraded-banner'
 import { GatewayZone } from './zones/gateway-zone'
-import { MaintenanceZone, describePerformanceError } from './zones/maintenance-zone'
+import { MaintenanceZone } from './zones/maintenance-zone'
 import { ModelPerfZone } from './zones/model-perf-zone'
+import { describePerformanceError } from './zones/primitives'
 import { RecentOpsZone } from './zones/recent-ops-zone'
 import { ResourcesZone } from './zones/resources-zone'
 import { SettingsZone } from './zones/settings-zone'
@@ -74,15 +75,21 @@ function useDocumentHidden(): boolean {
 
 const RANGES: readonly OverviewRange[] = ['15m', '1h', '6h', '24h']
 
+/** 时间窗按钮的文案键：API 值不进 UI，按钮显示本地化标签。 */
+const RANGE_LABEL_KEYS: Record<OverviewRange, string> = {
+  '15m': 'admin.performance.page.range.m15',
+  '1h': 'admin.performance.page.range.h1',
+  '6h': 'admin.performance.page.range.h6',
+  '24h': 'admin.performance.page.range.h24',
+}
+
 /** 轮询节奏：均 ≥ 后端 Prometheus 15s 缓存 TTL，不会打出穿透缓存的高频请求。 */
 const OVERVIEW_INTERVAL = 30_000
 const MODELS_INTERVAL = 60_000
 const CONFIG_INTERVAL = 60_000
 const STATS_INTERVAL = 10_000
 
-function probeTime(models: PerfModels, model: string): number {
-  const row = models.rows.find((candidate) => candidate.model === model)
-  const at = row?.probe?.last_tested_at
+function probeTime(at: string | null | undefined): number {
   if (at === null || at === undefined) return Number.NEGATIVE_INFINITY
   const parsed = Date.parse(at)
   return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed
@@ -107,7 +114,11 @@ function pickModelProbe(models: PerfModels | undefined): ModelProbe | undefined 
       continue
     }
     if (rowRank > bestRank) continue
-    if (probeTime(models, row.model) > probeTime(models, best.model)) best = row
+    if (
+      probeTime(row.probe?.last_tested_at) > probeTime(best.probe?.last_tested_at)
+    ) {
+      best = row
+    }
   }
   return { name: best.model, at: best.probe?.last_tested_at ?? null }
 }
@@ -353,13 +364,13 @@ export function PerformancePage() {
                   data-testid={`performance-range-${option}`}
                   onClick={() => setRange(option)}
                   className={[
-                    'rounded-md px-2.5 py-1 font-mono text-meta focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                    'rounded-md px-2.5 py-1 text-meta focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
                     active
                       ? 'bg-surface-hover font-medium text-ink-1'
                       : 'text-ink-2 hover:text-ink-1',
                   ].join(' ')}
                 >
-                  {option}
+                  {t(RANGE_LABEL_KEYS[option])}
                 </button>
               )
             })}

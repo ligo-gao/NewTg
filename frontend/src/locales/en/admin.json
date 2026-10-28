@@ -1438,6 +1438,12 @@
       "scope_notice": "Actions apply to the current instance only. On multi-replica deployments, run them per instance.",
       "offline_snapshot": "Offline snapshot; data may be stale.",
       "offline_toast": "Network connection lost.",
+      "range": {
+        "h1": "1h",
+        "h24": "24h",
+        "h6": "6h",
+        "m15": "15m"
+      },
       "desktop_only": "This page is available on desktop screens (1024px and wider)."
     },
     "common": {
