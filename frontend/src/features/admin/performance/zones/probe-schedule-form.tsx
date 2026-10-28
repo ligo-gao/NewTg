@@ -142,11 +142,15 @@ export function ProbeScheduleForm({
   const [conflict, setConflict] = useState(false)
   const [saving, setSaving] = useState(false)
   /**
-   * 乐观锁令牌：页面每 60s 重拉 section，若每次保存都用最新的
+   * 乐观锁快照：页面每 60s 重拉 section，若每次保存都用最新的
    * `section.updated_at`，409 后重试必然成功，锁等于不存在。所以在「首次变脏」
    * 那一刻快照，保存成功或用户显式放弃才换。
+   *
+   * 用对象哨兵而不是 `string | null`：`updated_at` 本身可以是 null（全新部署的
+   * perf section 没有种子行），`lockToken === null` 就无法区分「尚未快照」与
+   * 「快照值就是 null」——后者会让轮询期间别人保存产生的值被误写进令牌。
    */
-  const [lockToken, setLockToken] = useState<string | null>(null)
+  const [lock, setLock] = useState<{ token: string | null } | null>(null)
 
   const itemByKey = useMemo(() => {
     const map = new Map<string, SettingsItem>()
@@ -164,12 +168,12 @@ export function ProbeScheduleForm({
   // 首次变脏时快照 `updated_at`：轮询随后刷新的 section 不影响本次保存的
   // 乐观锁令牌，否则 409 后重试必然成功、锁形同虚设。
   useEffect(() => {
-    if (dirty && lockToken === null) {
-      setLockToken(section.updated_at)
-    } else if (!dirty && lockToken !== null) {
-      setLockToken(null)
+    if (dirty && lock === null) {
+      setLock({ token: section.updated_at })
+    } else if (!dirty && lock !== null) {
+      setLock(null)
     }
-  }, [dirty, lockToken, section.updated_at])
+  }, [dirty, lock, section.updated_at])
 
   if (schedule === null) {
     return (
@@ -231,7 +235,6 @@ export function ProbeScheduleForm({
       return next
     })
     setServerError(null)
-    setConflict(false)
   }
 
   /**
@@ -315,10 +318,13 @@ export function ProbeScheduleForm({
     setServerError(null)
     setConflict(false)
     try {
-      await savePerfSettings(values, lockToken ?? section.updated_at)
+      await savePerfSettings(
+        values,
+        lock === null ? section.updated_at : lock.token,
+      )
       setDraft({})
       setFieldErrors({})
-      setLockToken(null)
+      setLock(null)
       push({
         tone: 'success',
         message: t('admin.performance.settings.saved'),
@@ -364,7 +370,7 @@ export function ProbeScheduleForm({
     setFieldErrors({})
     setServerError(null)
     setConflict(false)
-    setLockToken(null)
+    setLock(null)
     onSaved()
   }
 
@@ -386,6 +392,12 @@ export function ProbeScheduleForm({
     concurrency: schedule.concurrency,
   })
 
+  // 409 的提示与「放弃」按钮由 conflict 驱动：用户在冲突后继续编辑时提示不能
+  // 跟着 serverError 一起消失，否则必须再失败一次才看得到出口。
+  const alertMessage = conflict
+    ? t('admin.performance.settings.conflict')
+    : serverError
+
   return (
     <section
       data-testid="probe-schedule-form"
@@ -403,9 +415,9 @@ export function ProbeScheduleForm({
         {t('admin.performance.settings.probe_note')}
       </p>
 
-      {serverError !== null ? (
+      {alertMessage !== null ? (
         <div className="mt-4 space-y-2">
-          <FormAlert tone="danger">{serverError}</FormAlert>
+          <FormAlert tone="danger">{alertMessage}</FormAlert>
           {conflict ? (
             <Button variant="secondary" onClick={discardAndReload}>
               {t('admin.performance.settings.conflict_reload')}

@@ -244,7 +244,9 @@ describe('ProbeScheduleForm', () => {
 
   it('keeps the user input, the old token and offers a discard action on 409', async () => {
     const saves = installSave(conflictResponse)
-    const { onSaved } = await renderForm()
+    const { onSaved } = await renderPollingForm({
+      polledSection: polledSection(),
+    })
 
     fireEvent.change(numberInput('Runs per round'), { target: { value: '5' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
@@ -262,10 +264,41 @@ describe('ProbeScheduleForm', () => {
       screen.getByRole('button', { name: 'Discard my edits and reload' }),
     ).toBeTruthy()
 
-    // 旧令牌保留：再次保存仍带着首次变脏时的 updated_at，因此仍会 409。
+    // 冲突后父层轮询拿到新的 updated_at，用户继续编辑：提示和出口都还在，
+    // 但令牌仍是首次变脏时的旧值——不能悄悄换成轮询到的新版本。
+    fireEvent.click(screen.getByRole('button', { name: 'Simulate a poll' }))
+    fireEvent.change(numberInput('Runs per round'), { target: { value: '6' } })
+    expect(
+      screen.getByText(
+        'Settings were changed elsewhere. Refresh and try again.',
+      ),
+    ).toBeTruthy()
+    expect(
+      screen.getByRole('button', { name: 'Discard my edits and reload' }),
+    ).toBeTruthy()
+
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(saves).toHaveLength(2))
     expect(saves[1]?.body.expect_updated_at).toBe(UPDATED_AT)
+    expect(saves[1]?.body.expect_updated_at).not.toBe(POLLED_UPDATED_AT)
+  })
+
+  it('keeps a null expect_updated_at when the section was never saved', async () => {
+    const saves = installSave(successResponse)
+    await renderPollingForm({
+      // 全新部署的 perf section 没有种子行，首次 GET 的 updated_at 就是 null。
+      section: { section: 'perf', updated_at: null, items: savedItems() },
+      // 轮询期间别的管理员保存过，updated_at 变成非空。
+      polledSection: polledSection(),
+    })
+
+    fireEvent.change(numberInput('Probe interval'), { target: { value: '6' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Simulate a poll' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saves).toHaveLength(1))
+    // 「尚未保存」的快照值就是 null，不能被轮询到的非空令牌顶替。
+    expect(saves[0]?.body.expect_updated_at).toBeNull()
   })
 
   it('snapshots expect_updated_at at the first edit, not at save time', async () => {
@@ -415,11 +448,9 @@ describe('ProbeScheduleForm', () => {
     })
 
     // 启用但没有时间戳 ≠ 已停用：调度器算不出下一次运行。
-    const footer = screen.getByTestId('probe-next-run')
-    expect(footer.textContent).toBe(
+    expect(screen.getByTestId('probe-next-run').textContent).toBe(
       'Next run: unknown — check the probe interval.',
     )
-    expect(footer.textContent).not.toBe('Disabled')
   })
 
   it.each([
