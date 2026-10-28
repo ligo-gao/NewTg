@@ -1,6 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
-import { Archivo, JetBrains_Mono, Noto_Sans_SC } from "next/font/google";
+import { Inter, JetBrains_Mono, Noto_Sans_SC } from "next/font/google";
 import { LocalePreferenceRoute } from "@/components/locale-preference-route";
 import { site } from "@/config/site";
 import { THEME_INIT_SCRIPT } from "@/lib/theme";
@@ -9,10 +9,12 @@ import { THEME_INIT_SCRIPT } from "@/lib/theme";
 import "@newtg/public-shell/styles.css";
 import "./globals.css";
 
-const archivo = Archivo({
+// 西文 Inter、中文 Noto Sans SC；字重全站只有 400 / 500 / 600 三档
+// （docs/typography-00-排版标准.md）。CJK 仍优先系统苹方 / 雅黑，见 globals.css。
+const inter = Inter({
   subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
-  variable: "--font-archivo",
+  weight: ["400", "500", "600"],
+  variable: "--font-inter",
   display: "swap",
 });
 
@@ -25,7 +27,7 @@ const jetbrainsMono = JetBrains_Mono({
 
 const notoSansSc = Noto_Sans_SC({
   subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
+  weight: ["400", "500", "600"],
   variable: "--font-noto-sc",
   display: "swap",
 });
@@ -79,7 +81,7 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
   return (
     <html
       lang="zh-CN"
-      className={`${archivo.variable} ${jetbrainsMono.variable} ${notoSansSc.variable}`}
+      className={`${inter.variable} ${jetbrainsMono.variable} ${notoSansSc.variable}`}
       suppressHydrationWarning
     >
       <head>

@@ -7,32 +7,17 @@
    Colour tokens live in styles/tokens.css (--home-*). This file only maps
    them to the public surfaces; no raw colour value belongs here.
 
-   Type scale (2026-10-24 全量统一, docs/modules-00 §4.7): 本站字号只取
-   12/18 (徽章与 mono 小件) · 13/20 (辅助与 mono 数据) · 14/22 (正文) ·
-   16/24 600 (区块标题) · 18/28 (Hero 导语/品牌字) · 24/32 600 (区块大标题
-   clamp(1.5rem,2.4vw,2rem) 与统计数值) · display-1 clamp(2.5rem,4.6vw,3rem)
-   (Hero 主标题)。代码块一律等宽 13/20 (§4.6.6)。低于 12px 的字号已被
-   取缔,新增样式不得重新引入。
+   Type scale (2026-10-28 公开页全量统一): 16px 基准、1.25 倍阶梯
+   16 · 20 · 25 · 31 · 39（下行一级取 14px 地板）。语义档位定义在
+   styles/tailwind.css 的 --text-public-*，本文件的页面级类必须落回同一组
+   尺寸：14/22 (caption · label/500) · 16/28 (body · body-strong/600) ·
+   20/28 (subhead) · 25/34 (section · figure) · 31 (page title) · 39 (hero)，
+   移动端不小于 14px。数字用无衬线 + tabular-nums；等宽体只留给代码与
+   model_id。低于 14px 的字号已被取缔，新增样式不得重新引入。
    ========================================================================== */
 
-/* Archivo and IBM Plex Mono are self-hosted so a private deployment never
-   calls a font CDN. CJK text falls back to the platform faces below. */
-@font-face {
-  font-family: 'Archivo';
-  font-style: normal;
-  font-weight: 400 700;
-  font-display: swap;
-  src: url('../assets/fonts/archivo-latin-ext.woff2') format('woff2');
-  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
-}
-@font-face {
-  font-family: 'Archivo';
-  font-style: normal;
-  font-weight: 400 700;
-  font-display: swap;
-  src: url('../assets/fonts/archivo-latin.woff2') format('woff2');
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
+/* IBM Plex Mono is self-hosted so a private deployment never calls a font
+   CDN. CJK text falls back to the platform faces in --font-public below. */
 @font-face {
   font-family: 'IBM Plex Mono';
   font-style: normal;
@@ -67,7 +52,12 @@
 }
 
 .public-shell {
-  --font-public: 'Archivo', 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', system-ui, sans-serif;
+  /* Inter + Noto Sans SC 由 shell-fonts.css 自托管，与营销站同一批文件、同一组
+     unicode-range；'Inter Fallback' / 'Noto Sans SC Fallback' 是 next/font 的
+     度量兜底（见 shell-fonts.css），保留它们，字体加载前后行高不变。 */
+  --font-public: 'Inter', 'Inter Fallback', 'Noto Sans SC',
+    'Noto Sans SC Fallback', 'PingFang SC', 'Microsoft YaHei', system-ui,
+    sans-serif;
   --font-public-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
   /* Re-map the shared primitives for every public page. The console renders
@@ -89,9 +79,18 @@
   --ink-3: var(--home-muted);
   --ink-4: var(--home-faint);
 
+  /* 页头节奏：页头最后一行文字 → 首个内容容器顶边的距离。模型库、定价、
+     排行、关于四个公开页共用这一个值；带分隔线的页头（排行、关于）把
+     分隔线放在这段留白里，线的上下两侧合计仍是这个距离（见下）。
+     值取间距刻度 --space-page-gap（40px），不在这里另写数字。 */
+  --public-head-gap: var(--space-page-gap);
+
   background: var(--home-paper);
   color: var(--home-ink);
   font-family: var(--font-public);
+  /* 公开页的正文基线是 16/28（1.75），不再是全局 14/22。 */
+  font-size: 16px;
+  line-height: 28px;
 }
 
 .public-shell [hidden] { display: none !important; }
@@ -115,6 +114,12 @@
 
 .public-shell .mono { font-family: var(--font-public-mono); }
 
+/* 公开页的「首个内容容器」：页头文字块之后的第一块正文（模型库的统计条、
+   定价的筛选+卡片区）。间距只由 `--public-head-gap` 决定，页面不得再加
+   gap / margin 去凑这个距离。带分隔线的页头（排行、关于）由分隔线自己
+   承担这段留白，不加这个类。 */
+.public-shell .public-page-body { margin-top: var(--public-head-gap); }
+
 /* The shared header is fixed; every public page reserves its height so the
    first heading is never covered. (The header itself lives in
    `packages/public-shell`.) */
@@ -136,8 +141,8 @@
   font-family: var(--font-public);
   font-size: 14px;
   line-height: 22px;
-  font-weight: 600;
-  letter-spacing: -0.005em;
+  font-weight: 500;
+  letter-spacing: 0;
   text-decoration: none;
   cursor: pointer;
   transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
@@ -172,7 +177,7 @@
   color: var(--home-ink);
 }
 
-.public-shell .btn-sm { height: 34px; padding: 0 13px; font-size: 13px; line-height: 20px; }
+.public-shell .btn-sm { height: 34px; padding: 0 13px; font-size: 14px; line-height: 22px; }
 
 /* ---------- Hero ---------- */
 /* ---------- Hero ---------- */
@@ -191,10 +196,10 @@
 
 .public-shell .home-hero-title {
   margin: 0;
-  font-size: clamp(2.5rem, 4.6vw, 3rem);
-  line-height: 1.05;
+  font-size: clamp(39px, 4.6vw, 49px);
+  line-height: 1.1;
   font-weight: 600;
-  letter-spacing: -0.038em;
+  letter-spacing: -0.03em;
   max-width: 15ch;
 }
 
@@ -202,10 +207,10 @@
 
 .public-shell .home-hero-lead {
   margin: 26px 0 0;
-  max-width: 52ch;
+  max-width: 34em;
   color: var(--home-muted);
-  font-size: 18px;
-  line-height: 28px;
+  font-size: 20px;
+  line-height: 30px;
 }
 
 .public-shell .home-hero-actions {
@@ -225,10 +230,8 @@
   padding: 0;
   list-style: none;
   color: var(--home-muted);
-  font-family: var(--font-public-mono);
-  font-size: 12px;
-  line-height: 18px;
-  letter-spacing: 0.02em;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .home-specs li { padding: 0 14px; border-left: 1px solid var(--home-rule-strong); }
@@ -236,8 +239,8 @@
 
 .public-shell .home-hero-failed {
   margin-top: 22px;
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
   color: var(--home-muted);
 }
 
@@ -246,8 +249,8 @@
   border: 0;
   background: transparent;
   color: var(--home-muted);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
   text-decoration: underline;
   text-underline-offset: 3px;
   cursor: pointer;
@@ -297,9 +300,8 @@
   align-items: center;
   gap: 8px;
   font-family: var(--font-public-mono);
-  font-size: 12px;
-  line-height: 18px;
-  letter-spacing: 0.03em;
+  font-size: 14px;
+  line-height: 22px;
   color: var(--home-panel-muted);
 }
 
@@ -323,9 +325,8 @@
   border-radius: 4px;
   color: var(--home-panel-muted);
   font-family: var(--font-public-mono);
-  font-size: 12px;
-  line-height: 18px;
-  letter-spacing: 0.04em;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .trace-req {
@@ -339,8 +340,8 @@
   align-items: center;
   gap: 10px;
   font-family: var(--font-public-mono);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
   color: var(--home-panel-ink);
 }
 
@@ -349,14 +350,14 @@
 .public-shell .trace-chip {
   display: inline-flex;
   align-items: center;
-  height: 20px;
+  height: 24px;
   padding: 0 7px;
   border: 1px solid var(--home-panel-line);
   border-radius: 4px;
   color: var(--home-panel-muted);
   font-family: var(--font-public-mono);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .trace-meta {
@@ -366,8 +367,8 @@
   margin: 9px 0 0;
   color: var(--home-panel-muted);
   font-family: var(--font-public-mono);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 22px;
 }
 .public-shell .trace-meta b { color: var(--home-panel-ink); font-weight: 400; }
 
@@ -393,7 +394,7 @@
 .public-shell .trace-stages li {
   position: relative;
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr);
+  grid-template-columns: 104px minmax(0, 1fr);
   gap: 10px;
   padding: 7px 0;
 }
@@ -414,16 +415,15 @@
   padding-top: 1px;
   color: var(--home-signal-bright);
   font-family: var(--font-public-mono);
-  font-size: 12px;
-  line-height: 18px;
-  letter-spacing: 0.02em;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .trace-stage-body {
   display: block;
   color: var(--home-panel-muted);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .trace-channels {
@@ -439,8 +439,8 @@
   border-radius: 4px;
   color: var(--home-panel-muted);
   font-family: var(--font-public-mono);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .trace-foot {
@@ -453,8 +453,8 @@
   background: var(--home-panel-2);
   color: var(--home-panel-muted);
   font-family: var(--font-public-mono);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .trace-pulse-dot {
@@ -481,10 +481,8 @@
 .public-shell .trace-caption {
   margin: 12px 2px 0;
   color: var(--home-muted);
-  font-family: var(--font-public-mono);
-  font-size: 12px;
-  line-height: 18px;
-  letter-spacing: 0.02em;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 /* ---------- Live ledger ---------- */
@@ -505,15 +503,15 @@
 
 .public-shell .section-title {
   margin: 0;
-  font-size: clamp(1.5rem, 2.4vw, 2rem);
-  line-height: 1.15;
+  font-size: 25px;
+  line-height: 34px;
   font-weight: 600;
-  letter-spacing: -0.028em;
+  letter-spacing: -0.015em;
 }
 
 .public-shell .section-note {
   margin: 8px 0 0;
-  max-width: 62ch;
+  max-width: 40em;
   color: var(--home-muted);
   font-size: 14px;
   line-height: 22px;
@@ -530,10 +528,9 @@
   align-items: center;
   gap: 7px;
   color: var(--success-fg);
-  font-family: var(--font-public-mono);
-  font-size: 12px;
-  line-height: 18px;
-  letter-spacing: 0.03em;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
 }
 
 .public-shell .live-badge i {
@@ -567,16 +564,16 @@
   align-items: center;
   margin: 20px 0 0;
   color: var(--home-muted);
-  font-family: var(--font-public-mono);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
+  font-variant-numeric: tabular-nums;
 }
 
 .public-shell .ledger-hint {
   margin: 10px 0 0;
   color: var(--warning-fg);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .live-badge.is-warning { color: var(--warning-fg); }
@@ -602,8 +599,8 @@
   min-width: 760px;
   border-collapse: collapse;
   table-layout: fixed;
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .ledger-table caption {
@@ -619,11 +616,9 @@
   padding: 0 14px;
   border-bottom: 1px solid var(--home-rule);
   color: var(--home-muted);
-  font-family: var(--font-public-mono);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 22px;
   font-weight: 500;
-  letter-spacing: 0.03em;
   text-align: left;
   white-space: nowrap;
 }
@@ -642,7 +637,11 @@
 .public-shell .ledger-table tbody tr:last-child td { border-bottom: 0; }
 .public-shell .ledger-table tbody tr:hover { background: var(--home-paper); }
 
-.public-shell .ledger-table td.time,
+.public-shell .ledger-table td.time {
+  color: var(--home-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .public-shell .ledger-table td.data {
   color: var(--home-muted);
   font-family: var(--font-public-mono);
@@ -650,7 +649,7 @@
 }
 
 .public-shell .ledger-table td.model { font-weight: 500; }
-.public-shell .ledger-table td.status-cell { font-size: 12px; line-height: 18px; font-weight: 500; }
+.public-shell .ledger-table td.status-cell { font-size: 14px; line-height: 22px; font-weight: 500; }
 
 .public-shell .status-ok { color: var(--success-fg); }
 .public-shell .status-error { color: var(--danger-fg); }
@@ -671,16 +670,15 @@
   align-items: center;
   gap: 9px;
   color: var(--home-ink);
-  font-family: var(--font-public-mono);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .ledger-empty .hint {
   margin: 0;
   color: var(--home-muted);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .feed-skeleton {
@@ -721,15 +719,15 @@
 
 .public-shell .ledger-card .time {
   color: var(--home-muted);
-  font-family: var(--font-public-mono);
-  font-size: 12px;
-  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .ledger-card .model {
   margin-top: 4px;
-  font-size: 14px;
-  line-height: 22px;
+  font-size: 16px;
+  line-height: 28px;
   font-weight: 600;
 }
 
@@ -739,9 +737,9 @@
   gap: 4px 14px;
   margin-top: 6px;
   color: var(--home-muted);
-  font-family: var(--font-public-mono);
-  font-size: 12px;
-  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  line-height: 22px;
 }
 .public-shell .ledger-card .meta b { color: var(--home-ink); font-weight: 400; }
 
@@ -798,18 +796,18 @@
 
 .public-shell .cap h3 {
   margin: 0;
-  font-size: 16px;
-  line-height: 1.5;
+  font-size: 20px;
+  line-height: 28px;
   font-weight: 600;
   letter-spacing: -0.01em;
 }
 
 .public-shell .cap p {
-  max-width: 46ch;
+  max-width: 34em;
   margin: 6px 0 0;
   color: var(--home-muted);
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: 16px;
+  line-height: 28px;
 }
 
 /* ---------- Counter band ---------- */
@@ -830,20 +828,17 @@
 .public-shell .stat { display: flex; flex-direction: column; gap: 2px; }
 
 .public-shell .stat-n {
-  font-size: 24px;
-  line-height: 32px;
+  font-size: 25px;
   line-height: 1;
   font-weight: 600;
-  letter-spacing: -0.035em;
+  letter-spacing: -0.02em;
   font-variant-numeric: proportional-nums;
 }
 
 .public-shell .stat-l {
   color: var(--home-muted);
-  font-family: var(--font-public-mono);
-  font-size: 12px;
-  line-height: 18px;
-  letter-spacing: 0.03em;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .stats-link {
@@ -852,8 +847,8 @@
   padding-bottom: 2px;
   border-bottom: 1px solid var(--home-signal);
   color: var(--home-ink);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
   font-weight: 500;
   text-decoration: none;
 }
@@ -906,25 +901,25 @@
   border-radius: 50%;
   background: var(--home-paper);
   color: var(--home-muted);
-  font-family: var(--font-public-mono);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 22px;
+  font-variant-numeric: tabular-nums;
 }
 
 .public-shell .step h3 {
   margin: 4px 0 0;
-  font-size: 16px;
-  line-height: 24px;
+  font-size: 20px;
+  line-height: 28px;
   font-weight: 600;
-  letter-spacing: -0.012em;
+  letter-spacing: -0.01em;
 }
 
 .public-shell .step p {
-  max-width: 42ch;
+  max-width: 34em;
   margin: 6px 0 0;
   color: var(--home-muted);
-  font-size: 14px;
-  line-height: 22px;
+  font-size: 16px;
+  line-height: 28px;
 }
 
 .public-shell .step .btn-sm { margin-top: 14px; }
@@ -932,8 +927,8 @@
 .public-shell .step-hint {
   margin: 8px 0 0;
   color: var(--home-muted);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .baseurl {
@@ -952,8 +947,8 @@
   background: var(--home-card);
   color: var(--home-ink);
   font-family: var(--font-public-mono);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
   overflow-x: auto;
   white-space: nowrap;
 }
@@ -1002,9 +997,9 @@
   border: 0;
   background: transparent;
   color: var(--home-panel-muted);
-  font-family: var(--font-public-mono);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
   cursor: pointer;
 }
 .public-shell .term-tab:hover { color: var(--home-panel-ink); }
@@ -1025,9 +1020,9 @@
   border-radius: 4px;
   background: transparent;
   color: var(--home-panel-muted);
-  font-family: var(--font-public-mono);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
   cursor: pointer;
 }
 .public-shell .term-copy:hover { color: var(--home-panel-ink); border-color: var(--home-panel-muted); }
@@ -1038,8 +1033,8 @@
   overflow-x: auto;
   color: var(--home-panel-ink);
   font-family: var(--font-public-mono);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
   tab-size: 2;
 }
 
@@ -1054,8 +1049,8 @@
   border-top: 1px solid var(--home-panel-line);
   color: var(--home-panel-muted);
   font-family: var(--font-public-mono);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 /* ---------- Rankings ----------
@@ -1074,25 +1069,28 @@
   gap: 16px;
   align-items: flex-end;
   justify-content: space-between;
-  padding-block: 32px 24px;
+  /* 最后一行文字到分隔线 39px，线本身占 1px，面板顶边因此正好落在
+     `--public-head-gap`（40px）上——与没有分隔线的模型库、定价同距。 */
+  padding-block: 32px calc(var(--public-head-gap) - 1px);
   border-bottom: 1px solid var(--home-rule);
 }
 
 .public-shell .rank-head h1 {
   margin: 0;
   color: var(--home-ink);
-  font-size: clamp(1.5rem, 2.4vw, 2rem);
-  line-height: 1.2;
+  font-size: clamp(25px, 2.2vw, 31px);
+  line-height: 1.28;
   font-weight: 600;
-  letter-spacing: -0.025em;
+  letter-spacing: -0.02em;
 }
 
 .public-shell .rank-head p {
   margin: 10px 0 0;
-  max-width: 52em;
-  color: var(--home-faint);
+  /* 16px 下 40em = 640px，正好 40 个汉字一行。 */
+  max-width: 40em;
+  color: var(--home-muted);
   font-size: 16px;
-  line-height: 24px;
+  line-height: 28px;
 }
 
 .public-shell .rank-actions {
@@ -1121,10 +1119,11 @@
   padding-inline: 14px;
   border: 0;
   background: transparent;
-  color: var(--home-faint);
+  color: var(--home-muted);
   font: inherit;
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
   transition: color 150ms ease, background-color 150ms ease;
@@ -1157,10 +1156,11 @@
   border: 1px solid var(--home-rule-strong);
   border-radius: 6px;
   background: transparent;
-  color: var(--home-faint);
+  color: var(--home-muted);
   font: inherit;
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
   transition: color 150ms ease, border-color 150ms ease;
@@ -1187,14 +1187,13 @@
   padding-block: 14px;
   border-bottom: 1px solid var(--home-rule);
   color: var(--home-faint);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .rank-window b {
   color: var(--home-muted);
   font-weight: 500;
-  font-family: var(--font-public-mono);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1219,25 +1218,25 @@
 
 .public-shell .rank-sum .rank-k {
   color: var(--home-faint);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .rank-sum .rank-v {
   margin-top: 3px;
   color: var(--home-ink);
-  font-size: 24px;
-  line-height: 32px;
+  font-size: 25px;
+  line-height: 34px;
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.015em;
   font-variant-numeric: tabular-nums;
 }
 
 .public-shell .rank-sum .rank-s {
   margin-top: 3px;
   color: var(--home-faint);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1294,15 +1293,17 @@
 .public-shell .ranking-title {
   margin: 0;
   color: var(--home-ink);
-  font-size: 16px;
-  line-height: 24px;
+  /* 与所有公开页的区块 h2 同档：25 / 34 / 600（--text-public-section）。 */
+  font-size: 25px;
+  line-height: 34px;
   font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
 .public-shell .ranking-meta {
   color: var(--home-faint);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .ranking-list {
@@ -1332,17 +1333,16 @@
 
 .public-shell .rank-num {
   color: var(--home-faint);
-  font-family: var(--font-public-mono);
-  font-size: 14px;
-  line-height: 22px;
-  font-weight: 600;
+  font-size: 16px;
+  line-height: 28px;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
 
-.public-shell .ranking-row.top-1 .rank-num { color: var(--home-signal); font-size: 16px; }
-.public-shell .ranking-row.top-2 .rank-num { color: var(--home-muted); font-size: 16px; }
-.public-shell .ranking-row.top-3 .rank-num { color: var(--chart-cat-4); font-size: 16px; }
+.public-shell .ranking-row.top-1 .rank-num { color: var(--home-signal); }
+.public-shell .ranking-row.top-2 .rank-num { color: var(--home-muted); }
+.public-shell .ranking-row.top-3 .rank-num { color: var(--chart-cat-4); }
 
 .public-shell .rank-main { min-width: 0; }
 
@@ -1351,27 +1351,25 @@
   overflow: hidden;
   color: var(--home-ink);
   font-size: 16px;
-  line-height: 24px;
+  line-height: 28px;
   font-weight: 600;
-  letter-spacing: -0.01em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .public-shell .rank-meta {
   display: block;
-  margin-top: 4px;
+  margin-top: 2px;
   color: var(--home-faint);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 22px;
   font-variant-numeric: tabular-nums;
 }
 
 .public-shell .rank-value {
   color: var(--home-muted);
-  font-family: var(--font-public-mono);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 16px;
+  line-height: 28px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   text-align: right;
@@ -1379,16 +1377,16 @@
 
 .public-shell .ranking-row.top-1 .rank-value {
   color: var(--home-signal);
-  font-size: 14px;
-  line-height: 22px;
+  font-size: 16px;
+  line-height: 28px;
 }
 
 .public-shell .rank-value small {
   display: block;
-  margin-top: 3px;
+  margin-top: 2px;
   color: var(--home-faint);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 22px;
   font-weight: 400;
 }
 
@@ -1408,8 +1406,8 @@
   border-radius: 3px;
   background: var(--home-paper-2);
   color: var(--home-faint);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 22px;
   white-space: nowrap;
 }
 
@@ -1469,9 +1467,10 @@
 .public-shell .info-panel h3 {
   margin: 0 0 14px;
   color: var(--home-ink);
-  font-size: 16px;
-  line-height: 24px;
+  font-size: 20px;
+  line-height: 28px;
   font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
 .public-shell .share-bar {
@@ -1499,8 +1498,8 @@
   gap: 10px;
   padding-block: 8px;
   border-bottom: 1px solid var(--home-rule);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 16px;
+  line-height: 28px;
 }
 
 .public-shell .provider-row:last-child { border-bottom: 0; }
@@ -1516,9 +1515,8 @@
 .public-shell .provider-share {
   flex: none;
   color: var(--home-ink);
-  font-family: var(--font-public-mono);
   font-variant-numeric: tabular-nums;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .public-shell .mover-group { margin-bottom: 16px; }
@@ -1530,9 +1528,9 @@
   gap: 5px;
   margin: 0 0 8px;
   color: var(--home-muted);
-  font-size: 13px;
-  line-height: 20px;
-  font-weight: 600;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
 }
 
 .public-shell .mover-list {
@@ -1548,8 +1546,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 16px;
+  line-height: 28px;
 }
 
 .public-shell .mover-name {
@@ -1561,9 +1559,8 @@
 
 .public-shell .mover-change {
   color: var(--home-muted);
-  font-family: var(--font-public-mono);
   font-variant-numeric: tabular-nums;
-  font-weight: 600;
+  font-weight: 500;
   white-space: nowrap;
 }
 
@@ -1579,15 +1576,14 @@
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 16px;
+  line-height: 28px;
 }
 
 .public-shell .fact-label { color: var(--home-faint); }
 
 .public-shell .fact-value {
   color: var(--home-muted);
-  font-family: var(--font-public-mono);
   font-variant-numeric: tabular-nums;
   font-weight: 500;
   text-align: right;
@@ -1599,8 +1595,8 @@
   border: 1px dashed var(--home-rule-strong);
   border-radius: 6px;
   color: var(--home-faint);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 22px;
   text-align: center;
 }
 
@@ -1644,16 +1640,17 @@
 .public-shell .benchmark-modal-title-group h3 {
   margin: 0 0 6px;
   color: var(--home-ink);
-  font-size: 18px;
+  font-size: 20px;
   line-height: 28px;
   font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
 .public-shell .benchmark-modal-subtitle {
   margin: 0;
   color: var(--home-faint);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .benchmark-modal-close {
@@ -1695,11 +1692,9 @@
   gap: 8px;
   margin: 0 0 12px;
   color: var(--home-muted);
-  font-size: 13px;
-  line-height: 20px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
 }
 
 .public-shell .benchmark-category-title::before {
@@ -1741,18 +1736,19 @@
   display: block;
   margin-bottom: 6px;
   color: var(--home-faint);
-  font-size: 12px;
-  line-height: 18px;
-  font-weight: 500;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 400;
 }
 
 .public-shell .benchmark-score {
   display: block;
   margin-bottom: 3px;
   color: var(--home-ink);
-  font-size: 24px;
-  line-height: 32px;
+  font-size: 25px;
+  line-height: 34px;
   font-weight: 600;
+  letter-spacing: -0.015em;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1760,8 +1756,8 @@
 
 .public-shell .benchmark-percentile {
   color: var(--home-faint);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .benchmark-detail-section {
@@ -1774,7 +1770,7 @@
   margin: 0 0 12px;
   color: var(--home-ink);
   font-size: 16px;
-  line-height: 24px;
+  line-height: 28px;
   font-weight: 600;
 }
 
@@ -1790,8 +1786,8 @@
   gap: 16px;
   padding: 10px 0;
   border-bottom: 1px solid var(--home-rule);
-  font-size: 14px;
-  line-height: 22px;
+  font-size: 16px;
+  line-height: 28px;
 }
 
 .public-shell .benchmark-detail-item:last-child { border-bottom: 0; }
@@ -1804,7 +1800,6 @@
 .public-shell .benchmark-detail-value {
   flex: none;
   color: var(--home-ink);
-  font-family: var(--font-public-mono);
   font-variant-numeric: tabular-nums;
   font-weight: 500;
   text-align: right;
@@ -1813,8 +1808,8 @@
 .public-shell .benchmark-detail-note {
   margin: 0 0 10px;
   color: var(--home-muted);
-  font-size: 13px;
-  line-height: 21px;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .benchmark-detail-note:last-child { margin-bottom: 0; }
@@ -1855,13 +1850,13 @@
   }
   .public-shell .benchmark-modal-header { padding: 20px 20px 16px; }
   .public-shell .benchmark-modal-body { padding: 20px; }
-  .public-shell .benchmark-modal-title-group h3 { font-size: 16px; line-height: 24px; }
 }
 
 .public-shell .rank-panel-body {
   display: flex;
   flex-direction: column;
-  margin-top: 32px;
+  /* 与面板的间距由 `.rank-head` 的 padding-bottom 承担（见上），这里不再
+     另加 margin——两处叠加会把页头到内容的距离放大成两套数值。 */
 }
 
 /* Cold start: the guide card and the four "accumulating" sections keep the
@@ -1877,34 +1872,51 @@
    Ported from demos/shell-unified/frame.html (`data-page="about"`). Every
    class carries an `about-` prefix because the demo's `caps`, `trace`,
    `facts` and `endpoints` already name homepage or rankings primitives.
-   Demo sizes map onto the file's type scale (12.5→12, 13.5→14, 15→16,
-   20→18); nothing drops below 12px. */
+   Type follows the public scale: hero 39 · section 25 · subhead 20 ·
+   body 16 · caption 14. Prose measures stay under 40 CJK characters. */
 
 .public-shell .about-wrap { max-width: 1200px; }
 
 .public-shell .about-hero {
-  padding-block: 56px 36px;
+  /* 与排行同法：文字到分隔线 39px + 线 1px = 事实条顶边距文字 40px。 */
+  padding-block: 56px calc(var(--public-head-gap) - 1px);
   border-bottom: 1px solid var(--home-rule);
 }
 
 .public-shell .about-hero h1 {
   margin: 0;
+  /* 标题固定两行：第一行由两句拼成，日语一行就占 20 个全角字，15em 会把它
+     挤成两行、整题变三行。21em 让七种语言的第一行都放得下（最窄的西文行
+     仍远小于此值，不会因为宽而变长）。 */
   max-width: 21em;
   color: var(--home-ink);
-  font-size: clamp(1.9rem, 3.6vw, 2.9rem);
-  line-height: 1.2;
+  /* 与模型库 / 定价 / 排行同一档：页面 h1 = --text-public-title。
+     四个公开页的一级标题必须同字号，不得单独放大。 */
+  font-size: clamp(25px, 2.2vw, 31px);
+  line-height: 1.28;
   font-weight: 600;
-  letter-spacing: -0.032em;
+  letter-spacing: -0.02em;
 }
 
-.public-shell .about-hero h1 span { display: block; }
+/* 每句占一行（整题最多两行）；只认 h1 的直接子元素——分隔空格是孙元素，
+   下面那条 inline 声明是它的防线：哪天子选择器被写成后代选择器，空格
+   也不能跟着变成整行，标题就不会多出第三行。 */
+.public-shell .about-hero h1 > span { display: block; }
+
+/* 第一行是两句话拼出来的：西文句间要空格，中日文句号自带间隙、再加空格
+   会多出一个字宽。空格按文档语言收起，不新造一条文案。 */
+.public-shell .about-hero h1 .about-hero-title-space { display: inline; }
+.public-shell:lang(zh) .about-hero h1 .about-hero-title-space,
+.public-shell:lang(ja) .about-hero h1 .about-hero-title-space {
+  display: none;
+}
 
 .public-shell .about-hero .lede {
   margin: 18px 0 0;
-  max-width: 46em;
+  max-width: 34em;
   color: var(--home-muted);
-  font-size: 16px;
-  line-height: 1.7;
+  font-size: 20px;
+  line-height: 30px;
 }
 
 .public-shell .about-specs {
@@ -1923,8 +1935,8 @@
   border: 1px solid var(--home-rule-strong);
   border-radius: 999px;
   color: var(--home-muted);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .about-specs span::before {
@@ -1943,15 +1955,14 @@
   padding-block: 18px;
   border-bottom: 1px solid var(--home-rule);
   color: var(--home-faint);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .about-facts b {
   margin-right: 8px;
   color: var(--home-ink);
-  font-family: var(--font-public-mono);
-  font-size: 18px;
+  font-size: 20px;
   line-height: 28px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
@@ -1967,18 +1978,19 @@
 .public-shell .about-sec > h2 {
   margin: 0;
   color: var(--home-ink);
-  font-size: 18px;
-  line-height: 28px;
+  /* 与所有公开页的区块 h2 同档：25 / 34 / 600（--text-public-section）。 */
+  font-size: 25px;
+  line-height: 34px;
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.01em;
 }
 
 .public-shell .about-sec > .hint {
   margin: 8px 0 0;
-  max-width: 52em;
-  color: var(--home-faint);
-  font-size: 14px;
-  line-height: 1.7;
+  max-width: 38em;
+  color: var(--home-muted);
+  font-size: 16px;
+  line-height: 28px;
 }
 
 /* Capability grid: hairlines instead of cards. */
@@ -1997,8 +2009,8 @@
 .public-shell .about-caps h3 {
   margin: 0;
   color: var(--home-ink);
-  font-size: 16px;
-  line-height: 24px;
+  font-size: 20px;
+  line-height: 28px;
   font-weight: 600;
   letter-spacing: -0.01em;
 }
@@ -2006,8 +2018,8 @@
 .public-shell .about-caps p {
   margin: 7px 0 0;
   color: var(--home-muted);
-  font-size: 14px;
-  line-height: 1.7;
+  font-size: 16px;
+  line-height: 28px;
 }
 
 @media (min-width: 700px) {
@@ -2073,24 +2085,24 @@
   background: var(--home-card);
   color: var(--home-signal);
   font-family: var(--font-public-mono);
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1;
 }
 
 .public-shell .about-trace-step h4 {
   margin: 0;
   color: var(--home-ink);
-  font-size: 14px;
-  line-height: 22px;
+  font-size: 16px;
+  line-height: 28px;
   font-weight: 600;
 }
 
 .public-shell .about-trace-step p {
   margin: 5px 0 0;
   max-width: 26ch;
-  color: var(--home-faint);
-  font-size: 12px;
-  line-height: 1.65;
+  color: var(--home-muted);
+  font-size: 14px;
+  line-height: 22px;
 }
 
 @media (min-width: 760px) {
@@ -2139,8 +2151,8 @@
   padding-top: 16px;
   border-top: 1px solid var(--home-rule);
   color: var(--home-faint);
-  font-size: 12px;
-  line-height: 1.65;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .public-shell .about-trace-notes span {
@@ -2180,15 +2192,15 @@
   margin-bottom: 7px;
   color: var(--home-signal);
   font-family: var(--font-public-mono);
-  font-size: 14px;
-  line-height: 22px;
+  font-size: 16px;
+  line-height: 24px;
 }
 
 .public-shell .about-endpoints span {
   display: block;
-  color: var(--home-faint);
-  font-size: 12px;
-  line-height: 1.65;
+  color: var(--home-muted);
+  font-size: 14px;
+  line-height: 22px;
 }
 
 @media (min-width: 900px) {

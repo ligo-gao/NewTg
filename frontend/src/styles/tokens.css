@@ -283,3 +283,42 @@
   --home-on-action: #03121a;
   --home-nav-bg: rgba(7, 11, 18, 0.74);
 }
+
+/* ==========================================================================
+   Spacing — the 4px grid Tailwind already uses, exported as variables so the
+   plain-CSS files (home.css / auth-hall.css) can stop hand-writing pixels.
+   `--space-N` is exactly the utility `p-N` (N × 4px), so a class and a CSS
+   rule carrying the same number agree by construction. Authority:
+   docs/typography-00-排版标准.md §12. New layout code uses these; the literal
+   ratchet in spacing-standard.test.ts only lets the old values go down.
+
+   These live outside `@theme` on purpose: Tailwind only emits theme variables
+   that a generated utility references, and a plain-CSS `var()` does not count.
+   ========================================================================== */
+
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-14: 56px;
+  --space-16: 64px;
+  --space-20: 80px;
+  --space-24: 96px;
+
+  /* Vertical rhythm contract: one name per relationship, never a raw number
+     at the call site. */
+  --space-page-gap: var(--space-10); /* page head → first content block */
+  --space-block: var(--space-14); /* section padding-block */
+  --space-block-lg: var(--space-20); /* marketing section, one tier louder */
+  --space-stack: var(--space-4); /* paragraph / field ↔ paragraph */
+  --space-stack-tight: var(--space-2); /* label → its control */
+  --space-title-above: var(--space-12); /* ≥ 1.5 × --space-title-below */
+  --space-title-below: var(--space-6);
+}

@@ -93,6 +93,16 @@ export default tseslint.config(
     },
   },
   {
+    // The typography tests scan CSS source and never render UI: their titles
+    // are Chinese on purpose (they enforce a Chinese-language standard), and
+    // they must be able to spell the banned forms (`text-[13px]`, `#fff`) in
+    // order to assert they are absent. The i18n and colour gates do not apply.
+    files: ['src/styles/*.test.ts'],
+    rules: {
+      'no-restricted-syntax': 'off',
+    },
+  },
+  {
     files: ['*.config.ts', '*.config.js', 'eslint.config.js'],
     languageOptions: {
       globals: { ...globals.node },

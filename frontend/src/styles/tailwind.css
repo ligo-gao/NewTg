@@ -100,9 +100,44 @@
   --text-display-2: 48px;
   --text-display-2--line-height: 56px;
   --text-display-2--font-weight: 700;
-  --text-public-title: 24px;
-  --text-public-title--line-height: 32px;
+  /* 公开页字阶（首页 / 模型库 / 定价 / 排行 / 关于 / 文档）：16px 基准、
+     1.25 倍。14（地板）→ 16 → 20 → 25 → 31 → 39，首页主标题再上一级
+     48.8 → 49 作为全站唯一的 display。12.8px 是 16 下一级的理论值，按
+     「移动端不小于 14px」取 14 为地板（唯一的比例例外）。控制台仍用上面
+     那套 12–24 的阶，两者互不覆盖：公开页只引用 --text-public-*。 */
+  --text-public-display: clamp(39px, 4.6vw, 49px);
+  --text-public-display--line-height: 1.1;
+  --text-public-display--font-weight: 600;
+  --text-public-hero: clamp(31px, 3.2vw, 39px);
+  --text-public-hero--line-height: 1.18;
+  --text-public-hero--font-weight: 600;
+  --text-public-title: clamp(25px, 2.2vw, 31px);
+  --text-public-title--line-height: 1.28;
   --text-public-title--font-weight: 600;
+  --text-public-section: 25px;
+  --text-public-section--line-height: 34px;
+  --text-public-section--font-weight: 600;
+  --text-public-subhead: 20px;
+  --text-public-subhead--line-height: 28px;
+  --text-public-subhead--font-weight: 600;
+  --text-public-figure: 25px;
+  --text-public-figure--line-height: 34px;
+  --text-public-figure--font-weight: 600;
+  --text-public-lead: 20px;
+  --text-public-lead--line-height: 30px;
+  --text-public-lead--font-weight: 400;
+  --text-public-body: 16px;
+  --text-public-body--line-height: 28px;
+  --text-public-body--font-weight: 400;
+  --text-public-body-strong: 16px;
+  --text-public-body-strong--line-height: 28px;
+  --text-public-body-strong--font-weight: 600;
+  --text-public-label: 14px;
+  --text-public-label--line-height: 22px;
+  --text-public-label--font-weight: 500;
+  --text-public-caption: 14px;
+  --text-public-caption--line-height: 22px;
+  --text-public-caption--font-weight: 400;
   --text-lead: 18px;
   --text-lead--line-height: 28px;
   --text-auth-title: 22px;

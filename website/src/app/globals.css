@@ -21,8 +21,46 @@
   --color-amber: var(--amber);
   --color-on-action: var(--on-action);
 
-  --font-sans: var(--font-archivo), var(--font-noto-sc), "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-sans: var(--font-inter), var(--font-noto-sc), "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   --font-mono: var(--font-jetbrains), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* 公开页字阶：与 frontend/src/styles/tailwind.css 的 --text-public-* 同源，
+     权威口径见 docs/typography-00-排版标准.md。16px 基准 × 1.25；14 为地板
+     （16 的下一级 12.8 会跌破移动端 14px 下限），49 为全站唯一 display。
+     每档同时落定字号 / 行高 / 字重，调用点用 font-* / leading-* 覆盖。 */
+  --text-public-display: clamp(39px, 4.6vw, 49px);
+  --text-public-display--line-height: 1.1;
+  --text-public-display--font-weight: 600;
+  --text-public-hero: clamp(31px, 3.2vw, 39px);
+  --text-public-hero--line-height: 1.18;
+  --text-public-hero--font-weight: 600;
+  --text-public-title: clamp(25px, 2.2vw, 31px);
+  --text-public-title--line-height: 1.28;
+  --text-public-title--font-weight: 600;
+  --text-public-section: 25px;
+  --text-public-section--line-height: 34px;
+  --text-public-section--font-weight: 600;
+  --text-public-subhead: 20px;
+  --text-public-subhead--line-height: 28px;
+  --text-public-subhead--font-weight: 600;
+  --text-public-figure: 25px;
+  --text-public-figure--line-height: 34px;
+  --text-public-figure--font-weight: 600;
+  --text-public-lead: 20px;
+  --text-public-lead--line-height: 30px;
+  --text-public-lead--font-weight: 400;
+  --text-public-body: 16px;
+  --text-public-body--line-height: 28px;
+  --text-public-body--font-weight: 400;
+  --text-public-body-strong: 16px;
+  --text-public-body-strong--line-height: 28px;
+  --text-public-body-strong--font-weight: 600;
+  --text-public-label: 14px;
+  --text-public-label--line-height: 22px;
+  --text-public-label--font-weight: 500;
+  --text-public-caption: 14px;
+  --text-public-caption--line-height: 22px;
+  --text-public-caption--font-weight: 400;
 
   --breakpoint-nav: 860px;
   --breakpoint-wide: 1280px;
@@ -80,7 +118,9 @@
   --ink: #e8eef5;
   --ink-2: #b6c2d1;
   --muted: #8797aa;
-  --faint: #5f6f83;
+  /* 原 #5f6f83 在 --panel-2 上只有 3.41:1，正文级文字不达标；
+     #76879d 在三层深色底上均 ≥4.77:1。 */
+  --faint: #76879d;
   --cyan: #4cd7e8;
   --cyan-soft: #7fe7f2;
   --cyan-dim: #1d8fa0;
@@ -119,8 +159,8 @@
     background-repeat: no-repeat;
     color: var(--ink);
     font-family: var(--font-sans);
-    font-size: 15px;
-    line-height: 1.7;
+    font-size: 16px;
+    line-height: 28px;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
     transition: background-color 0.25s ease, color 0.25s ease;
@@ -146,43 +186,44 @@
 }
 
 @layer components {
-  /* Typography System - Unified heading and body text styles */
+  /* Typography System - Unified heading and body text styles.
+     与 --text-public-* 一一对应（docs/typography-00-排版标准.md）。 */
   .heading-page {
-    font-size: clamp(2.1rem, 3.8vw, 3.2rem);
-    font-weight: 700;
-    line-height: 1.12;
-    letter-spacing: -0.035em;
+    font-size: clamp(31px, 3.2vw, 39px);
+    font-weight: 600;
+    line-height: 1.18;
+    letter-spacing: -0.025em;
   }
 
   .heading-section {
-    font-size: clamp(1.75rem, 3vw, 2.4rem);
+    font-size: 25px;
     font-weight: 600;
-    line-height: 1.2;
-    letter-spacing: -0.03em;
+    line-height: 34px;
+    letter-spacing: -0.01em;
   }
 
   .heading-sub {
-    font-size: 1.375rem;
+    font-size: 20px;
     font-weight: 600;
-    line-height: 1.3;
-    letter-spacing: -0.02em;
+    line-height: 28px;
+    letter-spacing: -0.01em;
   }
 
   .body-primary {
-    font-size: 15px;
-    line-height: 1.8;
+    font-size: 16px;
+    line-height: 28px;
     color: var(--ink-2);
   }
 
   .body-secondary {
-    font-size: 13.5px;
-    line-height: 1.7;
+    font-size: 14px;
+    line-height: 22px;
     color: var(--muted);
   }
 
   .body-small {
-    font-size: 12px;
-    line-height: 1.6;
+    font-size: 14px;
+    line-height: 22px;
     color: var(--faint);
   }
 
@@ -195,8 +236,8 @@
     padding-inline: 1.25rem;
     border: 1px solid transparent;
     border-radius: 0.375rem;
-    font-size: 0.875rem;
-    font-weight: 600;
+    font-size: 16px;
+    font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
     transition:
@@ -228,7 +269,7 @@
   .btn-sm {
     height: 2.25rem;
     padding-inline: 0.9375rem;
-    font-size: 0.8125rem;
+    font-size: 14px;
   }
 
   .nav-surface {
@@ -260,8 +301,10 @@
   }
 
   .code-track {
+    --code-track-gap: 16px;
     display: flex;
-    gap: 16px;
+    width: 100%;
+    gap: var(--code-track-gap);
     transition: transform 0.62s cubic-bezier(0.22, 0.7, 0.25, 1);
     will-change: transform;
   }
@@ -299,8 +342,8 @@
     overflow-x: auto;
     background: transparent !important;
     font-family: var(--font-mono);
-    font-size: 0.78125rem;
-    line-height: 1.85;
+    font-size: 14px;
+    line-height: 22px;
   }
 
   .code-block .shiki,
@@ -321,7 +364,7 @@
   @media (max-width: 620px) {
     .code-block .shiki {
       padding: 1rem 0.875rem 1.125rem;
-      font-size: 0.72rem;
+      font-size: 14px;
     }
   }
 }

@@ -1,0 +1,74 @@
+{
+  "$comment": "排版标准的例外登记表（docs/typography-00-排版标准.md §13）。每条例外都必须有负责人和复核日期；spacing-standard.test.ts 校验字段齐全、文件存在、复核日期未过期。新增例外先在本文件登记，再写代码。",
+  "exceptions": [
+    {
+      "id": "console-ladder",
+      "title": "控制台与认证页沿用 12–24 字阶",
+      "scope": [
+        "frontend/src/styles/auth-hall.css",
+        "frontend/src/features/admin"
+      ],
+      "rule": "允许 12 / 13 / 15 / 22 / 24px 等非公开页刻度的字号，以及 12px 徽章",
+      "reason": "控制台是高密度工具界面，14px 正文会显著降低同屏信息量；该字阶由 docs/modules-00-总览与设计原则.md §4.7 定义，与公开页 16 基准、1.25 倍的字阶互不覆盖。",
+      "owner": "design-system",
+      "reviewBy": "2027-04-30",
+      "tracking": "docs/modules-00-总览与设计原则.md §4.7"
+    },
+    {
+      "id": "auth-hero-rem",
+      "title": "认证页主视觉用 rem 视口函数",
+      "scope": ["frontend/src/styles/auth-hall.css"],
+      "rule": "允许 clamp() / rem 表达的 hero 字号，不占用 --text-public-* 档位",
+      "reason": "认证页是整屏品牌页，标题随视口等比缩放；若压进公开页字阶会与「每屏一个 display」的规则冲突。",
+      "owner": "design-system",
+      "reviewBy": "2027-04-30",
+      "tracking": "docs/typography-00-排版标准.md §13"
+    },
+    {
+      "id": "brand-wordmark",
+      "title": "品牌字标（NEW TG）的正字距与高字重",
+      "scope": [
+        "packages/public-shell/src/shell.css",
+        "frontend/src/styles/auth-hall.css"
+      ],
+      "rule": "允许 Latin 字标使用 0.04–0.09em 正字距与 600/700 字重",
+      "reason": "字标是标识物不是文案：字距随字形设计而定，且只作用于 Latin 字母；不对应任何正文档位。",
+      "owner": "design-system",
+      "reviewBy": "2027-04-30",
+      "tracking": "docs/typography-00-排版标准.md §11"
+    },
+    {
+      "id": "avatar-monogram",
+      "title": "账号首字母头像（11px、uppercase）",
+      "scope": ["packages/public-shell/src/shell.css"],
+      "rule": "允许 11px 与 text-transform: uppercase",
+      "reason": "aria-hidden 的装饰性字母，可访问名来自旁边的账号名，不承载信息，因此不适用 14px 下限。",
+      "owner": "design-system",
+      "reviewBy": "2027-04-30",
+      "tracking": "docs/typography-00-排版标准.md §7"
+    },
+    {
+      "id": "chart-tick",
+      "title": "图表坐标轴刻度（10–10.5px）",
+      "scope": [
+        "frontend/src/features/admin/performance/charts/line-chart.tsx",
+        "frontend/src/features/dashboard/dashboard-chart.tsx"
+      ],
+      "rule": "SVG <text> 允许 10–10.5px",
+      "reason": "刻度是图内标注而非可读正文，随画布等比缩放；DOM 内的图例、标题仍按控制台字号。",
+      "owner": "design-system",
+      "reviewBy": "2027-04-30",
+      "tracking": "docs/typography-00-排版标准.md §13"
+    },
+    {
+      "id": "shell-self-contained",
+      "title": "public-shell 包不消费宿主 token",
+      "scope": ["packages/public-shell/src/shell.css"],
+      "rule": "允许在 shell.css 内直接写字号 / 行高（14 / 16 / 25，与公开页刻度同值）",
+      "reason": "该包同时被 SPA 与营销站引用，若读取宿主 --text-public-* 就会在两端漂移；包内数值必须与刻度同值，由 typography-standard.test.ts 逐条比对。",
+      "owner": "design-system",
+      "reviewBy": "2027-04-30",
+      "tracking": "packages/public-shell/README.md"
+    }
+  ]
+}

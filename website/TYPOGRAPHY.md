@@ -1,313 +1,60 @@
-# 排版系统文档
-
-本文档定义了 NEWTG 网站的统一排版系统，适用于所有公共页面（首页、模型库、定价、关于等）。
-
-## 设计原则
-
-- **一致性（Consistency）**：所有页面使用统一的标题层级和字号体系
-- **协调性（Harmony）**：标题、正文、小字的比例关系经过精心设计
-- **响应式（Responsive）**：使用 clamp() 实现流畅的响应式字号
-- **易读性（Readability）**：合理的行高和字间距确保舒适的阅读体验
-- **大气感（Elegance）**：字号比例和留白营造出专业、大气的视觉效果
-
-## 标题层级
-
-### 页面主标题（Page Hero Title）
-用于页面顶部的主标题，例如定价页、关于页的顶部标题。
-
-```tsx
-<h1 className="text-[clamp(2.1rem,3.8vw,3.2rem)] font-bold leading-[1.12] tracking-[-0.035em]">
-  {title}
-</h1>
-```
-
-**或使用工具类：**
-```tsx
-<h1 className="heading-page">{title}</h1>
-```
-
-- **字号范围**：33.6px (mobile) → 51.2px (desktop)
-- **字重**：700 (bold)
-- **行高**：1.12
-- **字间距**：-0.035em
-
-**适用场景：**
-- 定价页面主标题
-- 关于页面主标题
-- 独立的模型库页面主标题
-- Closing CTA 标题
-
----
-
-### 区块标题（Section Heading）
-用于首页各个区块的标题。
-
-```tsx
-<h2 className="text-[clamp(1.75rem,3vw,2.4rem)] font-semibold leading-tight tracking-[-0.03em]">
-  {title}
-</h2>
-```
-
-**或使用工具类：**
-```tsx
-<h2 className="heading-section">{title}</h2>
-```
-
-- **字号范围**：28px (mobile) → 38.4px (desktop)
-- **字重**：600 (semibold)
-- **行高**：1.2 (tight)
-- **字间距**：-0.03em
-
-**适用场景：**
-- 首页模型库区块标题
-- 首页性能区块标题
-- 首页特性网格标题
-- 各种页面内的主要区块标题
-
----
-
-### 次级标题（Sub-heading）
-用于卡片组、表格区域等次级内容的标题。
-
-```tsx
-<h3 className="text-[1.375rem] font-semibold leading-[1.3] tracking-[-0.02em]">
-  {title}
-</h3>
-```
-
-**或使用工具类：**
-```tsx
-<h3 className="heading-sub">{title}</h3>
-```
-
-- **字号**：22px (固定)
-- **字重**：600 (semibold)
-- **行高**：1.3
-- **字间距**：-0.02em
-
-**适用场景：**
-- 卡片组标题
-- 表格区域标题
-- 对话框标题
-
----
-
-## 正文层级
-
-### 主正文（Primary Body）
-用于页面副标题和主要段落文本。
-
-```tsx
-<p className="text-[15px] leading-[1.8] text-ink-2">
-  {content}
-</p>
-```
-
-**或使用工具类：**
-```tsx
-<p className="body-primary">{content}</p>
-```
-
-- **字号**：15px
-- **行高**：1.8
-- **颜色**：`text-ink-2` (次要墨色)
-
-**适用场景：**
-- 页面副标题
-- 主要段落文本
-- 按钮文本
-
----
-
-### 次正文（Secondary Body）
-用于卡片描述和辅助说明。
-
-```tsx
-<p className="text-[13.5px] leading-[1.7] text-muted">
-  {content}
-</p>
-```
-
-**或使用工具类：**
-```tsx
-<p className="body-secondary">{content}</p>
-```
-
-- **字号**：13.5px
-- **行高**：1.7
-- **颜色**：`text-muted` (柔和色)
-
-**适用场景：**
-- 卡片描述
-- 辅助说明文本
-- 表单帮助文本
-
----
-
-### 小文本（Small Text）
-用于脚注、图例、元数据等。
-
-```tsx
-<p className="text-[12px] leading-[1.6] text-faint">
-  {content}
-</p>
-```
-
-**或使用工具类：**
-```tsx
-<p className="body-small">{content}</p>
-```
-
-- **字号**：12px
-- **行高**：1.6
-- **颜色**：`text-faint` (浅灰色)
-
-**适用场景：**
-- 页面脚注
-- 图例说明
-- 时间戳、元数据
-- 版权信息
-
----
-
-## 字体家族
-
-### 无衬线字体（Sans-serif）
-用于所有标题和正文。
-
-```css
-font-family: var(--font-sans);
-/* Archivo, Noto Sans SC, PingFang SC, Microsoft YaHei, system-ui, sans-serif */
-```
-
-- **西文**：Archivo (现代、几何、友好)
-- **中文**：Noto Sans SC (Google 开源，优雅清晰)
-- **回退**：PingFang SC, Microsoft YaHei, system-ui
-
----
-
-### 等宽字体（Monospace）
-用于代码、数据、模型 ID 等。
-
-```css
-font-family: var(--font-mono);
-/* JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace */
-```
-
-- **主字体**：JetBrains Mono (开发者友好)
-- **回退**：系统等宽字体
-
----
-
-## 使用示例
-
-### 定价页面
-
-```tsx
-<section>
-  <h1 className="heading-page">
-    {copy.pricingPage.title}
-  </h1>
-  <p className="body-primary mt-3.5 max-w-[46em]">
-    {copy.pricingPage.subtitle}
-  </p>
-</section>
-```
-
-### 首页模型库区块
-
-```tsx
-<section>
-  <h2 className="heading-section">
-    {copy.models.title}
-  </h2>
-  <p className="body-primary mt-3 max-w-[34em]">
-    {copy.models.subtitle}
-  </p>
-</section>
-```
-
-### 卡片组件
-
-```tsx
-<div className="card">
-  <h3 className="heading-sub">
-    {card.title}
-  </h3>
-  <p className="body-secondary mt-2">
-    {card.description}
-  </p>
-  <p className="body-small mt-4">
-    {card.metadata}
-  </p>
-</div>
-```
-
----
-
-## 实施的更改
-
-### 已统一的组件
-
-- ✅ `pricing-workbench.tsx` - 定价页主标题和副标题
-- ✅ `model-explorer.tsx` - 模型库区块标题和副标题
-- ✅ `performance-section.tsx` - 性能区块标题
-- ✅ `feature-grid.tsx` - 特性网格标题
-- ✅ `closing-cta.tsx` - 结尾 CTA 标题
-
-### CSS 工具类
-
-在 `globals.css` 中添加了以下工具类：
-
-- `.heading-page` - 页面主标题
-- `.heading-section` - 区块标题
-- `.heading-sub` - 次级标题
-- `.body-primary` - 主正文
-- `.body-secondary` - 次正文
-- `.body-small` - 小文本
-
----
-
-## 迁移指南
-
-如果要为新页面或组件应用此排版系统：
-
-1. **确定内容层级**：页面主标题 > 区块标题 > 次级标题
-2. **选择合适的类**：使用 `.heading-*` 或直接使用 Tailwind 类
-3. **保持一致性**：同级标题使用相同的样式
-4. **验证响应式**：在移动端和桌面端都要检查视觉效果
-5. **测试可访问性**：确保标题层级语义正确（h1 > h2 > h3）
-
----
-
-## 注意事项
-
-### 响应式断点
-
-- **移动端**：< 621px
-- **平板**：621px - 1080px
-- **桌面**：> 1080px
-- **宽屏**：> 1280px
-- **超宽屏**：> 1360px
-
-### 不要做
-
-❌ 在同一页面混用不同的标题字号体系  
-❌ 随意调整 clamp() 值破坏一致性  
-❌ 在标题上使用 `text-balance` 之外的文本工具  
-❌ 混用 `text-muted` 和 `text-ink-2` 作为正文颜色
-
-### 应该做
-
-✅ 优先使用工具类 `.heading-*` 和 `.body-*`  
-✅ 标题使用语义化的 HTML 标签（h1, h2, h3）  
-✅ 为长文本设置合理的 `max-w-*` 限制行长  
-✅ 在标题和正文之间保持合适的间距（mt-3, mt-3.5）
-
----
-
-## 相关文件
-
-- `src/app/globals.css` - 排版工具类定义
-- `src/components/landing/*.tsx` - 应用排版系统的组件
-- `typography-audit.md` - 排版审计和变更记录
+# 营销站排版（website/）
+
+> 本文件是**入口指针**，不是第二套标准。唯一权威口径是
+> [`docs/typography-00-排版标准.md`](../docs/typography-00-排版标准.md)，
+> 机器校验是 `frontend/src/styles/typography-standard.test.ts`（含 website 扫描）
+> 与 `frontend/src/styles/spacing-standard.test.ts`（间距刻度与例外登记）。
+>
+> 本文件只覆盖**字阶**。中文混排（§11）、间距与垂直节奏（§12）、例外登记（§13）
+> 在权威文档里，营销站同样适用：间距用 Tailwind 的 4px 网格（`p-N` = N×4px），
+> 刻度变量 `--space-*` 定义在 `frontend/src/styles/tokens.css`。
+
+## 1. 与主站的同一套尺度
+
+`website/src/app/globals.css` 的 `@theme` 里声明了与
+`frontend/src/styles/tailwind.css` **逐值相同**的 `--text-public-*`：
+
+| 层级 | 字号 / 行高 | 字重 | Token | 用途 |
+|---|---|---|---|---|
+| display | `clamp(39px, 4.6vw, 49px)` / 1.1 | 600 | `text-public-display` | 首页 hero h1，全站唯一 |
+| hero | `clamp(31px, 3.2vw, 39px)` / 1.18 | 600 | `text-public-hero` | 预留：独立落地页主视觉（当前无页面使用） |
+| title | `clamp(25px, 2.2vw, 31px)` / 1.28 | 600 | `text-public-title` | 所有内页 h1（定价 / 模型库 / 排行 / 关于…） |
+| section | 25 / 34 | 600 | `text-public-section` | 所有区块 h2（含收尾 CTA） |
+| subhead | 20 / 28 | 600 | `text-public-subhead` | 小节 h3、卡片组标题 |
+| figure | 25 / 34 | 600 | `text-public-figure` | 信任带三数字等统计值 |
+| lead | 20 / 30 | 400 | `text-public-lead` | 页面导语 |
+| body-strong | 16 / 28 | 600 | `text-public-body-strong` | 卡片标题、表格主列 |
+| body | 16 / 28 | 400 | `text-public-body` | 正文、按钮、输入框 |
+| label | 14 / 22 | 500 | `text-public-label` | 表头、标签、控件 |
+| caption | 14 / 22 | 400 | `text-public-caption` | 辅助说明、元信息、表格次列 |
+
+等价组件类（`globals.css` 的 `@layer components`）：`.heading-page` = hero、
+`.heading-section` = section、`.heading-sub` = subhead、`.body-primary` = body、
+`.body-secondary` / `.body-small` = caption。
+
+## 2. 字体
+
+- 西文：`Inter`（`next/font/google`，`--font-inter`），字重只有 400 / 500 / 600。
+- 中文：`Noto Sans SC` 随站加载，运行时优先系统苹方 / 微软雅黑（顺序见 `--font-sans`）。
+- 等宽：`JetBrains Mono`，只用于代码块、模型 ID、参数名、端点路径。
+- 2026-10-28 起 Archivo 已移除：它的骨架与中文黑体不搭，且引入 700 字重。
+
+## 3. 硬规则（测试会拦）
+
+1. 不写 `text-[13px]`、`text-[clamp(...)]` 一类任意字号。
+2. 不用 Tailwind 默认阶 `text-xs/sm/base/lg/xl`——它们不在这套比例里。
+3. 不写 `font-bold`（700）；强调一律 600。
+4. 可见文字 ≥ 14px；唯一例外是 `aria-hidden` 的装饰元素。
+5. 正文段落 ≤ 40 个汉字（`max-w-[40em]`），导语 ≤ 34 字（`max-w-[34em]`）。
+6. 数字用无衬线 + `tabular-nums`，不要用等宽体排版价格与分数。
+
+## 4. 检查清单
+
+- [ ] 改字号前先改 `docs/typography-00-排版标准.md` 与两个 Tailwind 入口，再改测试。
+- [ ] `bun run typecheck && bun run test` 在 `website/` 与 `frontend/` 都通过。
+- [ ] `bun run build` 后按 1440 / 768 / 375 三档目视验收（字号、行长、溢出）。
+
+## 5. 历史文档
+
+`typography-audit.md` 与 `CHANGELOG-typography.md` 记录的是 2026-10 之前的旧系统
+（Archivo + 7 档任意 clamp），仅作沿革参考，**不得据其新增样式**。
