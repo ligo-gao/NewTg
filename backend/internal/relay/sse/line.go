@@ -15,17 +15,23 @@ import (
 // 硬错误处理（终止流、不伪造 [DONE]），不能截断后继续解析。
 var ErrLineTooLong = errors.New("sse: line exceeds the byte limit")
 
-// ReadLine 读取一行（含行尾 '\n'），累计长度超过 limit 时立即返回
+// ReadLine 读取一行（含行尾 '\n'），行内容累计超过 limit 时立即返回
 // ErrLineTooLong，绝不把超限的行整条读进内存。
 //
-// limit 的语义是「含换行符的原始字节数」，与既有解析器 `len(line)+1` 的
-// 记法一致。返回的字符串只在非 ErrLineTooLong 的错误下有意义（例如 EOF
-// 前的最后一行）；超限时返回空串。
+// limit 只数行内容，不数行尾 '\n'：调用方通常把预算用到刚好（例如
+// `maxEventBytes - consumed`），若把结束符算进去，预算归零时连事件之间那个
+// 空行都会被判超限。CRLF 的 '\r' 计为内容，与调用方读取后 trim '\r' 再
+// `len+1` 的记法一致。返回的字符串只在非 ErrLineTooLong 的错误下有意义
+// （例如 EOF 前的最后一行）；超限时返回空串。
 func ReadLine(reader *bufio.Reader, limit int) (string, error) {
 	var line []byte
 	for {
 		fragment, err := reader.ReadSlice('\n')
-		if len(line)+len(fragment) > limit {
+		content := len(line) + len(fragment)
+		if n := len(fragment); n > 0 && fragment[n-1] == '\n' {
+			content--
+		}
+		if content > limit {
 			return "", ErrLineTooLong
 		}
 		line = append(line, fragment...)

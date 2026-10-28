@@ -31,6 +31,31 @@ func TestReadLineBoundaries(t *testing.T) {
 	}
 }
 
+// TestReadLineExcludesTerminatorFromBudget 冻结 limit 的计数口径：只数行内容，
+// 不数行尾 '\n'。否则调用方把预算用到刚好时，事件之间那个空行（"\n"）会被
+// 判超限；CRLF 行也会比调用方 `len(trimmed)+1` 的记法多算一个 '\r'。
+func TestReadLineExcludesTerminatorFromBudget(t *testing.T) {
+	// 预算 0：空行必须放行——它是事件的结束符，不贡献任何内容字节。
+	reader := bufio.NewReaderSize(strings.NewReader("\n"), 4)
+	line, err := ReadLine(reader, 0)
+	if err != nil || line != "\n" {
+		t.Fatalf("预算 0 的空行应成功：line=%q err=%v", line, err)
+	}
+
+	// 预算 0：有内容就必须失败。
+	reader = bufio.NewReaderSize(strings.NewReader("x\n"), 4)
+	if _, err = ReadLine(reader, 0); !errors.Is(err, ErrLineTooLong) {
+		t.Fatalf("预算 0 的内容行 err = %v，期望 ErrLineTooLong", err)
+	}
+
+	// CRLF：内容 "ab\r" 是 3 字节，与调用方 trim 后 +1 的记法一致。
+	reader = bufio.NewReaderSize(strings.NewReader("ab\r\n"), 4)
+	line, err = ReadLine(reader, 3)
+	if err != nil || line != "ab\r\n" {
+		t.Fatalf("CRLF 行按内容计 3 字节应成功：line=%q err=%v", line, err)
+	}
+}
+
 // TestReadLineEOFWithoutNewline 冻结 EOF 前最后一行（无换行）的语义：
 // 返回已读内容与 io.EOF，由调用方决定是否按最后一行处理。
 func TestReadLineEOFWithoutNewline(t *testing.T) {
