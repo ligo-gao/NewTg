@@ -207,32 +207,31 @@ type perfResources struct {
 	Redis    perfRedisResources    `json:"redis"`
 }
 
-// 资源三段的数值一律是 JSON 数字：缺失时填 0（与 spec §7.2 的示例形状一致，
-// 前端在 sourceDown 时整块显示空态，不需要逐字段判空）。整个响应里的
-// 「缺失」口径因此只有两种：可空字段用 null（vitals.value、gateways.metrics
-// 及其子字段），资源数字用 0。
+// 资源三段的数值一律可空：查询失败 / 无样本为 null，前端渲染 `—`。
+// 不要再用 0 冒充缺失——0 是「连接数 0」「命中率 0」这类真实读数，
+// 与「不知道」在运维决策里含义相反。
 type perfHostResources struct {
-	CPU    float64 `json:"cpu"`
-	Mem    float64 `json:"mem"`
-	Disk   float64 `json:"disk"`
-	NetIn  float64 `json:"net_in"`
-	NetOut float64 `json:"net_out"`
+	CPU    *float64 `json:"cpu"`
+	Mem    *float64 `json:"mem"`
+	Disk   *float64 `json:"disk"`
+	NetIn  *float64 `json:"net_in"`
+	NetOut *float64 `json:"net_out"`
 }
 
 type perfPostgresResources struct {
-	Backends  float64 `json:"backends"`
-	Max       float64 `json:"max"`
-	TPS       float64 `json:"tps"`
-	SizeBytes float64 `json:"size_bytes"`
-	LockWait  float64 `json:"lock_wait"`
+	Backends  *float64 `json:"backends"`
+	Max       *float64 `json:"max"`
+	TPS       *float64 `json:"tps"`
+	SizeBytes *float64 `json:"size_bytes"`
+	LockWait  *float64 `json:"lock_wait"`
 }
 
 type perfRedisResources struct {
-	Up       float64 `json:"up"`
-	Clients  float64 `json:"clients"`
-	MemRatio float64 `json:"mem_ratio"`
-	HitRate  float64 `json:"hit_rate"`
-	CmdRate  float64 `json:"cmd_rate"`
+	Up       *float64 `json:"up"`
+	Clients  *float64 `json:"clients"`
+	MemRatio *float64 `json:"mem_ratio"`
+	HitRate  *float64 `json:"hit_rate"`
+	CmdRate  *float64 `json:"cmd_rate"`
 }
 
 // ---------------------------------------------------------------------------
@@ -579,11 +578,11 @@ func hostVitalDetails(get func(string) (float64, bool)) []perfVitalDetail {
 // ---------------------------------------------------------------------------
 
 func buildPerfResources(series map[string][]perfquery.Sample) perfResources {
-	value := func(name string) float64 {
+	value := func(name string) *float64 {
 		if v, ok := latestFinite(series[name]); ok {
-			return v
+			return &v
 		}
-		return 0
+		return nil
 	}
 	return perfResources{
 		Host: perfHostResources{

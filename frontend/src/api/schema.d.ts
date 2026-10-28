@@ -9861,90 +9861,106 @@ export interface components {
              */
             metrics_status: "ok" | "unknown";
         };
+        /**
+         * @description 数值为 null 表示该指标在当前时间窗内没有可用样本（查询失败或上游无数据），
+         *     与真实的 0 不同——前端渲染为 `—`，不做任何假设值。资源查询走 Prometheus
+         *     代理；未接入/断线时整区已是空态，这里只覆盖「部分查询失败」的情形。
+         */
         PerformanceHostResources: {
             /**
              * Format: double
              * @description CPU 使用率（0–1）。
              */
-            cpu: number;
+            cpu: number | null;
             /**
              * Format: double
              * @description 内存使用率（0–1）。
              */
-            mem: number;
+            mem: number | null;
             /**
              * Format: double
              * @description 磁盘使用率（0–1）。
              */
-            disk: number;
+            disk: number | null;
             /**
              * Format: double
              * @description 入站流量（B/s）。
              */
-            net_in: number;
+            net_in: number | null;
             /**
              * Format: double
              * @description 出站流量（B/s）。
              */
-            net_out: number;
+            net_out: number | null;
         };
+        /**
+         * @description 数值为 null 表示该指标在当前时间窗内没有可用样本（查询失败或上游无数据），
+         *     与真实的 0 不同——前端渲染为 `—`，不做任何假设值。资源查询走 Prometheus
+         *     代理；未接入/断线时整区已是空态，这里只覆盖「部分查询失败」的情形。
+         */
         PerformancePostgresResources: {
             /**
              * Format: double
              * @description 当前连接数（conn）。
              */
-            backends: number;
+            backends: number | null;
             /**
              * Format: double
              * @description max_connections（conn）。
              */
-            max: number;
+            max: number | null;
             /**
              * Format: double
              * @description 事务速率（tx/s）。
              */
-            tps: number;
+            tps: number | null;
             /**
              * Format: double
              * @description 数据库大小（B）。
              */
-            size_bytes: number;
+            size_bytes: number | null;
             /**
              * Format: double
              * @description 锁等待（wait/s）。
              */
-            lock_wait: number;
+            lock_wait: number | null;
         };
+        /**
+         * @description 数值为 null 表示该指标在当前时间窗内没有可用样本（查询失败或上游无数据），
+         *     与真实的 0 不同——前端渲染为 `—`，不做任何假设值。资源查询走 Prometheus
+         *     代理；未接入/断线时整区已是空态，这里只覆盖「部分查询失败」的情形。
+         */
         PerformanceRedisResources: {
             /**
              * Format: double
-             * @description 可用性（1=up，0=down）。
+             * @description 可用性（1=up，0=down）；null = 未知（查询失败）。
              */
-            up: number;
+            up: number | null;
             /**
              * Format: double
              * @description 连接数（conn）。
              */
-            clients: number;
+            clients: number | null;
             /**
              * Format: double
              * @description 内存使用率（0–1）。
              */
-            mem_ratio: number;
+            mem_ratio: number | null;
             /**
              * Format: double
              * @description 命中率（0–1）。
              */
-            hit_rate: number;
+            hit_rate: number | null;
             /**
              * Format: double
              * @description 命令速率（ops/s）。
              */
-            cmd_rate: number;
+            cmd_rate: number | null;
         };
         /**
-         * @description 资源三段的数值字段不可为空：指标缺失（NaN/±Inf、查询失败或无样本）时
-         *     填 0，而不是 null——与 spec §7.2 的示例形状一致。
+         * @description 资源三段。整段未接入/断线时页面已是空态，这里只覆盖「部分查询失败」
+         *     的情形：host / postgres / redis 的数值一律可为 null（该指标在当前
+         *     时间窗内没有可用样本），与真实的 0 不同。
          */
         PerformanceResources: {
             host: components["schemas"]["PerformanceHostResources"];

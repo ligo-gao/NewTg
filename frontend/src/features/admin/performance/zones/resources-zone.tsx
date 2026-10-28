@@ -12,8 +12,8 @@ import { codePhrase } from './degraded-banner'
 
 /**
  * 服务器资源三卡（adjudications §5）。数值全部来自 Prometheus 资源查询；
- * 监控断线时整区替换为虚线空态，绝不能把契约里「缺失填 0」的字段当成真实的
- * 0 展示出来。
+ * 监控断线时整区替换为虚线空态，契约里可空的字段（null = 无样本）渲染为
+ * `—`，绝不能当成真实的 0 展示出来。
  */
 
 type Resources = PerfOverview['resources']
@@ -90,7 +90,8 @@ export function ResourcesZone({ resources, sourceDown }: ResourcesZoneProps) {
   }
 
   const { host, postgres, redis } = resources
-  const redisUp = redis.up > 0
+  // null（未知）不是故障：不渲染徽标。只有明确的 1/0 才给出 up/down。
+  const redisUp = redis.up === null ? null : redis.up > 0
 
   const hostRows: ResourceRow[] = [
     { label: t('admin.performance.resources.cpu'), value: formatPercent(host.cpu) },
@@ -112,10 +113,14 @@ export function ResourcesZone({ resources, sourceDown }: ResourcesZoneProps) {
   const postgresRows: ResourceRow[] = [
     {
       label: t('admin.performance.resources.backends'),
-      value: `${formatCount(postgres.backends, locale)} / ${formatCount(
-        postgres.max,
-        locale,
-      )}`,
+      // 两边都未知时整行只显示 `—`；单边未知自然得到 `11 / —`。
+      value:
+        postgres.backends === null && postgres.max === null
+          ? '—'
+          : `${formatCount(postgres.backends, locale)} / ${formatCount(
+              postgres.max,
+              locale,
+            )}`,
     },
     {
       label: t('admin.performance.resources.tps'),
@@ -164,14 +169,18 @@ export function ResourcesZone({ resources, sourceDown }: ResourcesZoneProps) {
       <ResourceCard
         resourceKey="redis"
         title={t('admin.performance.resources.redis')}
-        badge={{
-          variant: redisUp ? 'success' : 'danger',
-          text: t(
-            redisUp
-              ? 'admin.performance.resources.redis_up'
-              : 'admin.performance.resources.redis_down',
-          ),
-        }}
+        badge={
+          redisUp === null
+            ? undefined
+            : {
+                variant: redisUp ? 'success' : 'danger',
+                text: t(
+                  redisUp
+                    ? 'admin.performance.resources.redis_up'
+                    : 'admin.performance.resources.redis_down',
+                ),
+              }
+        }
         rows={redisRows}
       />
     </section>

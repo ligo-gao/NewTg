@@ -16,10 +16,11 @@ const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const
 
 /**
  * 字节展示：B 取整，KB 及以上保留 1 位小数（UI §6.12「字节数等宽并保留
- * 1 位小数」）。非有限/负数返回占位符，避免把 NaN 写进统计行。
+ * 1 位小数」）。null 表示无样本、非有限/负数返回占位符，避免把 NaN 或
+ * 伪造的 0 写进统计行。
  */
-export function formatBytes(bytes: number, locale: string): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return '—'
+export function formatBytes(bytes: number | null, locale: string): string {
+  if (bytes === null || !Number.isFinite(bytes) || bytes < 0) return '—'
   if (bytes < 1024) {
     return `${new Intl.NumberFormat(locale, {
       maximumFractionDigits: 0,
@@ -37,14 +38,14 @@ export function formatBytes(bytes: number, locale: string): string {
   }).format(value)} ${BYTE_UNITS[unit] ?? 'B'}`
 }
 
-/** 计数列（文件数/GC 次数/协程数）用分组格式，不做缩写。 */
-export function formatCount(value: number, locale: string): string {
-  if (!Number.isFinite(value)) return '—'
+/** 计数列（文件数/GC 次数/协程数）用分组格式，不做缩写。null = 未知。 */
+export function formatCount(value: number | null, locale: string): string {
+  if (value === null || !Number.isFinite(value)) return '—'
   return new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(value)
 }
 
-export function formatDecimal(value: number, locale: string): string {
-  if (!Number.isFinite(value)) return '—'
+export function formatDecimal(value: number | null, locale: string): string {
+  if (value === null || !Number.isFinite(value)) return '—'
   return new Intl.NumberFormat(locale, {
     minimumFractionDigits: 1,
     maximumFractionDigits: 1,

@@ -3762,8 +3762,9 @@ schemas:
     type: object
     additionalProperties: false
     description: |
-      资源三段的数值字段不可为空：指标缺失（NaN/±Inf、查询失败或无样本）时
-      填 0，而不是 null——与 spec §7.2 的示例形状一致。
+      资源三段。整段未接入/断线时页面已是空态，这里只覆盖「部分查询失败」
+      的情形：host / postgres / redis 的数值一律可为 null（该指标在当前
+      时间窗内没有可用样本），与真实的 0 不同。
     required: [host, postgres, redis]
     properties:
       host: {$ref: '#/schemas/PerformanceHostResources'}
@@ -3773,35 +3774,107 @@ schemas:
   PerformanceHostResources:
     type: object
     additionalProperties: false
+    description: |
+      数值为 null 表示该指标在当前时间窗内没有可用样本（查询失败或上游无数据），
+      与真实的 0 不同——前端渲染为 `—`，不做任何假设值。资源查询走 Prometheus
+      代理；未接入/断线时整区已是空态，这里只覆盖「部分查询失败」的情形。
     required: [cpu, mem, disk, net_in, net_out]
     properties:
-      cpu: {type: number, format: double, description: CPU 使用率（0–1）。}
-      mem: {type: number, format: double, description: 内存使用率（0–1）。}
-      disk: {type: number, format: double, description: 磁盘使用率（0–1）。}
-      net_in: {type: number, format: double, description: 入站流量（B/s）。}
-      net_out: {type: number, format: double, description: 出站流量（B/s）。}
+      cpu:
+        type: number
+        format: double
+        nullable: true
+        description: CPU 使用率（0–1）。
+      mem:
+        type: number
+        format: double
+        nullable: true
+        description: 内存使用率（0–1）。
+      disk:
+        type: number
+        format: double
+        nullable: true
+        description: 磁盘使用率（0–1）。
+      net_in:
+        type: number
+        format: double
+        nullable: true
+        description: 入站流量（B/s）。
+      net_out:
+        type: number
+        format: double
+        nullable: true
+        description: 出站流量（B/s）。
 
   PerformancePostgresResources:
     type: object
     additionalProperties: false
+    description: |
+      数值为 null 表示该指标在当前时间窗内没有可用样本（查询失败或上游无数据），
+      与真实的 0 不同——前端渲染为 `—`，不做任何假设值。资源查询走 Prometheus
+      代理；未接入/断线时整区已是空态，这里只覆盖「部分查询失败」的情形。
     required: [backends, max, tps, size_bytes, lock_wait]
     properties:
-      backends: {type: number, format: double, description: 当前连接数（conn）。}
-      max: {type: number, format: double, description: max_connections（conn）。}
-      tps: {type: number, format: double, description: 事务速率（tx/s）。}
-      size_bytes: {type: number, format: double, description: 数据库大小（B）。}
-      lock_wait: {type: number, format: double, description: 锁等待（wait/s）。}
+      backends:
+        type: number
+        format: double
+        nullable: true
+        description: 当前连接数（conn）。
+      max:
+        type: number
+        format: double
+        nullable: true
+        description: max_connections（conn）。
+      tps:
+        type: number
+        format: double
+        nullable: true
+        description: 事务速率（tx/s）。
+      size_bytes:
+        type: number
+        format: double
+        nullable: true
+        description: 数据库大小（B）。
+      lock_wait:
+        type: number
+        format: double
+        nullable: true
+        description: 锁等待（wait/s）。
 
   PerformanceRedisResources:
     type: object
     additionalProperties: false
+    description: |
+      数值为 null 表示该指标在当前时间窗内没有可用样本（查询失败或上游无数据），
+      与真实的 0 不同——前端渲染为 `—`，不做任何假设值。资源查询走 Prometheus
+      代理；未接入/断线时整区已是空态，这里只覆盖「部分查询失败」的情形。
     required: [up, clients, mem_ratio, hit_rate, cmd_rate]
     properties:
-      up: {type: number, format: double, description: 可用性（1=up，0=down）。}
-      clients: {type: number, format: double, description: 连接数（conn）。}
-      mem_ratio: {type: number, format: double, description: 内存使用率（0–1）。}
-      hit_rate: {type: number, format: double, description: 命中率（0–1）。}
-      cmd_rate: {type: number, format: double, description: 命令速率（ops/s）。}
+      up:
+        type: number
+        format: double
+        nullable: true
+        description: 可用性（1=up，0=down）；null = 未知（查询失败）。
+      clients:
+        type: number
+        format: double
+        nullable: true
+        description: 连接数（conn）。
+      mem_ratio:
+        type: number
+        format: double
+        nullable: true
+        description: 内存使用率（0–1）。
+      hit_rate:
+        type: number
+        format: double
+        nullable: true
+        description: 命中率（0–1）。
+      cmd_rate:
+        type: number
+        format: double
+        nullable: true
+        description: 命令速率（ops/s）。
 
   PerformanceModels:
     type: object

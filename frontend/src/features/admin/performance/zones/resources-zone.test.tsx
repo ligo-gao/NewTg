@@ -103,6 +103,29 @@ describe('ResourcesZone', () => {
     expect(card('postgres').textContent).toContain('—')
   })
 
+  it('renders null readings as an em dash instead of a fake zero', async () => {
+    await renderZone({
+      resources: {
+        ...RESOURCES,
+        host: { ...RESOURCES.host, cpu: null },
+        postgres: { ...RESOURCES.postgres, max: null },
+        redis: { ...RESOURCES.redis, up: null },
+      },
+    })
+
+    // null = 无样本：渲染 `—`，同卡其它读数照常显示。
+    const host = card('host')
+    expect(host.textContent).toContain('—')
+    expect(host.textContent).toContain('62.0%')
+    expect(host.textContent).not.toContain('0.0%')
+
+    // 单边未知：backends 已知、max 未知 → `11 / —`，不补 0，也不整行吞掉。
+    expect(card('postgres').textContent).toContain('11 / —')
+
+    // redis.up = null 是「未知」不是「故障」：整卡不渲染徽标。
+    expect(within(card('redis')).queryByTestId('status-badge')).toBeNull()
+  })
+
   it('marks Redis up with a success badge that carries both colour and text', async () => {
     await renderZone()
 

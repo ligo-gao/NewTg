@@ -8732,7 +8732,9 @@ type PerformanceGCResult struct {
 	NumGcBefore     int64  `json:"num_gc_before"`
 }
 
-// PerformanceHostResources defines model for PerformanceHostResources.
+// PerformanceHostResources 数值为 null 表示该指标在当前时间窗内没有可用样本（查询失败或上游无数据），
+// 与真实的 0 不同——前端渲染为 `—`，不做任何假设值。资源查询走 Prometheus
+// 代理；未接入/断线时整区已是空态，这里只覆盖「部分查询失败」的情形。
 type PerformanceHostResources struct {
 	// Cpu CPU 使用率（0–1）。
 	Cpu float64 `json:"cpu"`
@@ -8889,8 +8891,9 @@ type PerformanceOverview struct {
 	GeneratedAt time.Time                    `json:"generated_at"`
 	Range       PerformanceOverviewRange     `json:"range"`
 
-	// Resources 资源三段的数值字段不可为空：指标缺失（NaN/±Inf、查询失败或无样本）时
-	// 填 0，而不是 null——与 spec §7.2 的示例形状一致。
+	// Resources 资源三段。整段未接入/断线时页面已是空态，这里只覆盖「部分查询失败」
+	// 的情形：host / postgres / redis 的数值一律可为 null（该指标在当前
+	// 时间窗内没有可用样本），与真实的 0 不同。
 	Resources PerformanceResources       `json:"resources"`
 	Sources   []PerformanceSource        `json:"sources"`
 	Vitals    []PerformanceOverviewVital `json:"vitals"`
@@ -8985,7 +8988,9 @@ type PerformanceOverviewWindow struct {
 // PerformanceOverviewWindowRange defines model for PerformanceOverviewWindow.Range.
 type PerformanceOverviewWindowRange string
 
-// PerformancePostgresResources defines model for PerformancePostgresResources.
+// PerformancePostgresResources 数值为 null 表示该指标在当前时间窗内没有可用样本（查询失败或上游无数据），
+// 与真实的 0 不同——前端渲染为 `—`，不做任何假设值。资源查询走 Prometheus
+// 代理；未接入/断线时整区已是空态，这里只覆盖「部分查询失败」的情形。
 type PerformancePostgresResources struct {
 	// Backends 当前连接数（conn）。
 	Backends float64 `json:"backends"`
@@ -9040,7 +9045,9 @@ type PerformanceRecentOperations struct {
 	Items []PerformanceRecentOperation `json:"items"`
 }
 
-// PerformanceRedisResources defines model for PerformanceRedisResources.
+// PerformanceRedisResources 数值为 null 表示该指标在当前时间窗内没有可用样本（查询失败或上游无数据），
+// 与真实的 0 不同——前端渲染为 `—`，不做任何假设值。资源查询走 Prometheus
+// 代理；未接入/断线时整区已是空态，这里只覆盖「部分查询失败」的情形。
 type PerformanceRedisResources struct {
 	// Clients 连接数（conn）。
 	Clients float64 `json:"clients"`
@@ -9054,16 +9061,28 @@ type PerformanceRedisResources struct {
 	// MemRatio 内存使用率（0–1）。
 	MemRatio float64 `json:"mem_ratio"`
 
-	// Up 可用性（1=up，0=down）。
+	// Up 可用性（1=up，0=down）；null = 未知（查询失败）。
 	Up float64 `json:"up"`
 }
 
-// PerformanceResources 资源三段的数值字段不可为空：指标缺失（NaN/±Inf、查询失败或无样本）时
-// 填 0，而不是 null——与 spec §7.2 的示例形状一致。
+// PerformanceResources 资源三段。整段未接入/断线时页面已是空态，这里只覆盖「部分查询失败」
+// 的情形：host / postgres / redis 的数值一律可为 null（该指标在当前
+// 时间窗内没有可用样本），与真实的 0 不同。
 type PerformanceResources struct {
-	Host     PerformanceHostResources     `json:"host"`
+	// Host 数值为 null 表示该指标在当前时间窗内没有可用样本（查询失败或上游无数据），
+	// 与真实的 0 不同——前端渲染为 `—`，不做任何假设值。资源查询走 Prometheus
+	// 代理；未接入/断线时整区已是空态，这里只覆盖「部分查询失败」的情形。
+	Host PerformanceHostResources `json:"host"`
+
+	// Postgres 数值为 null 表示该指标在当前时间窗内没有可用样本（查询失败或上游无数据），
+	// 与真实的 0 不同——前端渲染为 `—`，不做任何假设值。资源查询走 Prometheus
+	// 代理；未接入/断线时整区已是空态，这里只覆盖「部分查询失败」的情形。
 	Postgres PerformancePostgresResources `json:"postgres"`
-	Redis    PerformanceRedisResources    `json:"redis"`
+
+	// Redis 数值为 null 表示该指标在当前时间窗内没有可用样本（查询失败或上游无数据），
+	// 与真实的 0 不同——前端渲染为 `—`，不做任何假设值。资源查询走 Prometheus
+	// 代理；未接入/断线时整区已是空态，这里只覆盖「部分查询失败」的情形。
+	Redis PerformanceRedisResources `json:"redis"`
 }
 
 // PerformanceSource 数据源健康。`name` 固定为 prometheus / heartbeat（overview）或

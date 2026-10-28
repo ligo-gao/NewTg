@@ -398,14 +398,23 @@ func TestOverviewShapes(t *testing.T) {
 	}
 
 	// resources：host / postgres / redis 三段都要有值，postgres 必须含
-	// lock_wait（spec §7.2 的示例字段）。
-	if resp.Resources.Host.CPU != 0.2 || resp.Resources.Host.Disk != 0.71 {
+	// lock_wait（spec §7.2 的示例字段）。资源数值现在可空，断言先判 nil
+	// 再比 *v：nil 与真实 0 是两种不同状态。
+	if resp.Resources.Host.CPU == nil || *resp.Resources.Host.CPU != 0.2 ||
+		resp.Resources.Host.Disk == nil || *resp.Resources.Host.Disk != 0.71 {
 		t.Errorf("host resources = %+v", resp.Resources.Host)
 	}
-	if resp.Resources.Postgres.Backends != 11 || resp.Resources.Postgres.Max != 25 || resp.Resources.Postgres.LockWait != 0 {
+	if resp.Resources.Postgres.Backends == nil || *resp.Resources.Postgres.Backends != 11 ||
+		resp.Resources.Postgres.Max == nil || *resp.Resources.Postgres.Max != 25 {
 		t.Errorf("postgres resources = %+v", resp.Resources.Postgres)
 	}
-	if resp.Resources.Redis.Up != 1 || resp.Resources.Redis.HitRate != 0.962 {
+	// fixture 里 NameDBWait = "0" 是**真实 0 样本**：必须保持 0，不能因为
+	// 「可空」就把真实读数一起吞成 null。
+	if resp.Resources.Postgres.LockWait == nil || *resp.Resources.Postgres.LockWait != 0 {
+		t.Errorf("postgres lock_wait = %v, want 真实 0 样本（不是 null）", resp.Resources.Postgres.LockWait)
+	}
+	if resp.Resources.Redis.Up == nil || *resp.Resources.Redis.Up != 1 ||
+		resp.Resources.Redis.HitRate == nil || *resp.Resources.Redis.HitRate != 0.962 {
 		t.Errorf("redis resources = %+v", resp.Resources.Redis)
 	}
 }
@@ -520,9 +529,9 @@ func TestOverviewDegradesWhenPrometheusUnset(t *testing.T) {
 		t.Error("heartbeat_fresh = false, want true（10s 前的心跳）")
 	}
 
-	// 资源数字在未接入时按 0 输出，保持响应形状稳定。
-	if resp.Resources.Host.CPU != 0 || resp.Resources.Redis.Up != 0 {
-		t.Errorf("resources 未接入时应为 0: %+v", resp.Resources)
+	// 资源数字在未接入时为 null（未知），不再用 0 冒充。键仍在，值可空。
+	if resp.Resources.Host.CPU != nil || resp.Resources.Redis.Up != nil {
+		t.Errorf("resources 未接入时应为 null: %+v", resp.Resources)
 	}
 }
 
@@ -708,8 +717,8 @@ func TestOverviewDropsNaNValues(t *testing.T) {
 	if rps.Value != nil || rps.Status != perfStatusUnknown || len(rps.Series) != 0 {
 		t.Errorf("gateway.rps = %+v, want value=nil status=unknown series=[]", rps)
 	}
-	if resp.Resources.Host.CPU != 0 {
-		t.Errorf("host.cpu = %v, want 0（+Inf 被丢弃）", resp.Resources.Host.CPU)
+	if resp.Resources.Host.CPU != nil {
+		t.Errorf("host.cpu = %v, want null（+Inf 被丢弃）", resp.Resources.Host.CPU)
 	}
 }
 
