@@ -605,6 +605,13 @@ func (p *Poller) applyParsed(ctx context.Context, task *Task, compiled *plugin.C
 		task.RawState = rawState
 		task.ProgressPercent = progress
 		task.Data = mergeMaps(task.Data, data)
+		// poll_failures 也必须同步：上面刚把 0 写进 DB，内存里若还留着旧计数，
+		// 本轮的 recordFailure / 后续轮次的 applyUnknown 会从旧值继续累加，
+		// 距离上限只差一次的任务就被误判失败并退款（P1-6）。
+		if task.PrivateData == nil {
+			task.PrivateData = map[string]any{}
+		}
+		task.PrivateData["poll_failures"] = 0
 	}
 	return true
 }
@@ -741,17 +748,15 @@ func (p *Poller) failAndRefund(ctx context.Context, task *Task, reason string) {
 }
 
 // recordFailure 累计连续轮询失败；达到上限时转 FAILURE + 退款。
+//
+// 计数以 DB 的原子递增为准，不用内存快照读-改-写：applyParsed 可能刚把
+// poll_failures 清零而调用方的 task 还是旧值，按旧值 +1 会让一次有效响应
+// 直接触顶（P1-6）。与 MJ poller 共用同一条原子路径（M-6）。
 func (p *Poller) recordFailure(ctx context.Context, task *Task, reason string) {
 	if task.State.Terminal() {
 		return
 	}
-	failures := privateInt(task.PrivateData["poll_failures"]) + 1
-	won, err := p.repo.ApplyPoll(ctx, task.ID, task.State, PollUpdate{
-		State:    task.State,
-		RawState: task.RawState,
-		Progress: task.ProgressPercent,
-		Private:  map[string]any{"poll_failures": failures},
-	})
+	failures, won, err := p.repo.IncrementPollFailures(ctx, task.ID, task.State)
 	if err != nil {
 		p.log.Error("tasks: record poll failure failed", "task_id", task.PublicTaskID, "error", err)
 		return
@@ -759,6 +764,11 @@ func (p *Poller) recordFailure(ctx context.Context, task *Task, reason string) {
 	if !won {
 		return
 	}
+	// 快照跟随 DB：下一轮 applyUnknown / recordFailure 读到的必须是真值。
+	if task.PrivateData == nil {
+		task.PrivateData = map[string]any{}
+	}
+	task.PrivateData["poll_failures"] = failures
 	if p.maxFailures > 0 && failures >= p.maxFailures {
 		// 连续失败上限 → FAILURE 走退款链（relay-06 §8.3）。
 		p.failAndRefund(ctx, task, "poll_failures_exceeded")

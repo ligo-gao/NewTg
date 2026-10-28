@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -485,6 +486,75 @@ func TestPollOther4xxNonTerminalAccumulatesFailure(t *testing.T) {
 	}
 	if handoff.refundCount() != 0 || handoff.terminateCount() != 0 {
 		t.Fatalf("non-terminal 4xx must not settle or refund")
+	}
+}
+
+// TestPollValidResponseResetsStaleFailureCount 冻结 P1-6：一次「能解析、但仍
+// 非终态」的响应先清零 DB 里的 poll_failures，随后的 recordFailure 必须从 1
+// 重新计数，而不是拿内存快照里的旧值 +1。否则距离上限只差一次的任务会被
+// 误判失败并退款，而上游其实还在跑。
+func TestPollValidResponseResetsStaleFailureCount(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"state":"IN_PROGRESS","progress":50}`))
+	}))
+	defer upstream.Close()
+
+	repo := newFakePollRepo()
+	repo.channels[7] = &ChannelTarget{ID: 7, BaseURL: upstream.URL}
+	task := submittedTask(1, 7)
+	task.PrivateData["poll_failures"] = float64(19) // 距离上限只差一次
+	repo.add(task)
+	handoff := &fakeHandoff{}
+	p := newTestPoller(t, repo, handoff, NewOutboundClient())
+	p.RunOnce(context.Background())
+
+	got := repo.get(task.ID)
+	if got.State == StateFailure {
+		t.Fatalf("有效响应不得把任务判失败：state=%s reason=%s failures=%v",
+			got.State, got.FailReason, got.PrivateData["poll_failures"])
+	}
+	if failures := privateInt(got.PrivateData["poll_failures"]); failures != 1 {
+		t.Fatalf("poll_failures = %d, want 1（先清零再计一次）", failures)
+	}
+	if handoff.refundCount() != 0 {
+		t.Fatalf("不得退款，refunds=%d", handoff.refundCount())
+	}
+}
+
+// TestPollUnknownAfterValidResponseCountsFromDB 覆盖同一缺陷的另一半：清零后
+// 内存快照也必须同步，否则下一轮的 UNKNOWN 会拿旧计数继续累加。
+func TestPollUnknownAfterValidResponseCountsFromDB(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		if calls.Add(1) == 1 {
+			_, _ = w.Write([]byte(`{"state":"IN_PROGRESS","progress":50}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"state":"UNKNOWN"}`))
+	}))
+	defer upstream.Close()
+
+	repo := newFakePollRepo()
+	repo.channels[7] = &ChannelTarget{ID: 7, BaseURL: upstream.URL}
+	task := submittedTask(1, 7)
+	task.PrivateData["poll_failures"] = float64(19)
+	repo.add(task)
+	handoff := &fakeHandoff{}
+	p := newTestPoller(t, repo, handoff, NewOutboundClient())
+	p.RunOnce(context.Background())
+	p.RunOnce(context.Background())
+
+	got := repo.get(task.ID)
+	if got.State == StateFailure {
+		t.Fatalf("第二轮 UNKNOWN 不该立刻失败：%s（%s）", got.State, got.FailReason)
+	}
+	if failures := privateInt(got.PrivateData["poll_failures"]); failures != 2 {
+		t.Fatalf("poll_failures = %d, want 2（第一轮清零后计 1，第二轮 +1）", failures)
+	}
+	if handoff.refundCount() != 0 {
+		t.Fatalf("不得退款，refunds=%d", handoff.refundCount())
 	}
 }
 
