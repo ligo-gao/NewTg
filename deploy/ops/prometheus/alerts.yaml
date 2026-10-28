@@ -69,6 +69,22 @@ groups:
           threshold_source: "待实测：0.01 为 M7 前【假设】初值，按 platform-06 §6.2 用稳态 p99×1.5 校准"
           runbook: "deploy/ops/runbooks/canary-rollback.md"
 
+      # 补充规则（无 A 编号）：gateway 走 DNS SD，副本全停时 target 会从结果集
+      # 消失（不是 up==0），NewTGServiceDown 因此结构性静默。absent() 只在整组
+      # 序列不存在时返回 1；5m 的 for 覆盖一次正常的 DNS 刷新抖动。
+      - alert: NewTGGatewayJobAbsent
+        expr: absent(up{job="newtg-gateway"})
+        for: 5m
+        labels:
+          severity: critical
+          category: availability
+          source: newtg-ops-initial
+        annotations:
+          summary: "Prometheus 找不到任何 newtg-gateway 抓取目标"
+          description: "连续 5m 没有 newtg-gateway 的 up 序列：两个副本可能全停了，或 DNS SD 解析不到 gateway。先看 docker compose ps / DNS，再看 edge 是否 502。"
+          threshold_source: "newtg-ops-initial：【假设】5m 覆盖 DNS SD 刷新抖动"
+          runbook: "deploy/ops/runbooks/canary-rollback.md"
+
   - name: newtg-relay
     interval: 30s
     rules:
@@ -538,4 +554,4 @@ groups:
           summary: "Prometheus TSDB 序列数异常增长"
           description: "head series 超过 5 万，疑似标签基数爆炸。检查 newtg_* 的 route/model/channel_id 等标签；必要时降低保留或收敛标签后再回写阈值。"
           threshold_source: "newtg-ops-initial 假设值（TSDB 默认内存耗尽线附近的保守值）"
-          runbook: "deploy/ops/runbooks/"
+          runbook: "deploy/ops/runbooks/go-live-checklist.md"
