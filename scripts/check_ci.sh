@@ -18,6 +18,9 @@
 #      METRICS_TOKEN（不带监控 override 的部署不该被它拦住；无 docker 时跳过，不假红）。
 #
 # 退出码：0 全部通过；1 存在断言失败。本脚本不改任何文件，可安全在 CI 与本机运行。
+#
+# 需 bash ≥4.3（h 段用 nameref `local -n` 按名展开 env 数组）——macOS 自带的
+# bash 3.2 不支持，需用 homebrew bash 或 CI 的 bash 运行。
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -226,8 +229,11 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
     local -n env_ref="$1"
     local env_ref_name="$1"; shift
     local out
+    # --env-file /dev/null：compose 默认会加载 -f 文件旁的 deploy/.env，
+    # 那样「主文件不依赖 METRICS_TOKEN」的断言在本机可能假绿。置空后只吃
+    # 下面显式注入的 env，断言才真的证明性质。
     # 2>&1 >/dev/null：先把 stderr 复制到命令替换管道，再丢弃 stdout，只留错误。
-    if out="$(env "${env_ref[@]}" docker compose -p ci-check "$@" config 2>&1 >/dev/null)"; then
+    if out="$(env "${env_ref[@]}" docker compose -p ci-check --env-file /dev/null "$@" config 2>&1 >/dev/null)"; then
       ok "compose config（$env_ref_name）: $*"
     else
       bad "compose config 失败（$env_ref_name）: $*"

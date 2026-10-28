@@ -69,9 +69,12 @@ groups:
           threshold_source: "待实测：0.01 为 M7 前【假设】初值，按 platform-06 §6.2 用稳态 p99×1.5 校准"
           runbook: "deploy/ops/runbooks/canary-rollback.md"
 
-      # 补充规则（无 A 编号）：gateway 走 DNS SD，副本全停时 target 会从结果集
-      # 消失（不是 up==0），NewTGServiceDown 因此结构性静默。absent() 只在整组
-      # 序列不存在时返回 1；5m 的 for 覆盖一次正常的 DNS 刷新抖动。
+      # 补充规则（无 A 编号）：gateway 走 DNS SD，target 从结果集消失时不会有
+      # up==0，NewTGServiceDown 因此结构性静默。absent() 只在整组序列不存在时
+      # 返回 1。注意 DNS **解析失败**时 Prometheus 会保留上一次的 target 集合
+      # （只打日志），那条路径仍由 NewTGServiceDown 覆盖；本规则主要覆盖
+      # 「解析成功但返回空集合」或 scrape_configs 里该 job 被删/改名。
+      # 5m 的 for 覆盖一次正常的 DNS 刷新抖动。
       - alert: NewTGGatewayJobAbsent
         expr: absent(up{job="newtg-gateway"})
         for: 5m
@@ -81,7 +84,7 @@ groups:
           source: newtg-ops-initial
         annotations:
           summary: "Prometheus 找不到任何 newtg-gateway 抓取目标"
-          description: "连续 5m 没有 newtg-gateway 的 up 序列：两个副本可能全停了，或 DNS SD 解析不到 gateway。先看 docker compose ps / DNS，再看 edge 是否 502。"
+          description: "连续 5m 没有 newtg-gateway 的 up 序列：可能是 DNS SD 解析成功但返回空集合，或 scrape_configs 里该 job 被删/改名。DNS 解析失败时 Prometheus 会保留上次的 target（只打日志），那条路径由 NewTGServiceDown 覆盖。先看容器的健康与 scrape_configs，再看 edge 是否 502。"
           threshold_source: "newtg-ops-initial：【假设】5m 覆盖 DNS SD 刷新抖动"
           runbook: "deploy/ops/runbooks/canary-rollback.md"
 
