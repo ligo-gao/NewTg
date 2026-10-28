@@ -490,6 +490,9 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			// W7/M5-b：提交面与中继共用同一 limiter/config（同一次装配）。
 			RateLimiter: deps.RateLimiter,
 			Config:      deps.Config,
+			// 管理台账需要回源权威权限：SessionAuth 不填 Permissions，
+			// nil 会被 RBAC 判成 FULL。
+			Authz: deps.Authz,
 		})
 
 		// W8/MJ-a2：绘图任务族提交面。与任务数据面共用 taskRepo 与 Sealer；

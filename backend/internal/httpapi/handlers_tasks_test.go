@@ -16,6 +16,7 @@ import (
 	billingpkg "newtg/gateway/internal/billing"
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/plugin"
+	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/relay/billingseam"
 	"newtg/gateway/internal/tasks"
 	"newtg/gateway/plugins"
@@ -883,6 +884,40 @@ func TestTaskSelfListHidesUserAndAdminRequiresPermission(t *testing.T) {
 	sort.Strings(ids)
 	if strings.Join(ids, ",") != "task_1,task_2" {
 		t.Fatalf("admin list = %v", ids)
+	}
+}
+
+// TestTaskAdminListResolvesPermissionsFromLoader 验收 P1-1：会话 Principal
+// 的 Permissions 为 nil（SessionAuth 不填），nil 在 RBAC 里等价于 DB
+// NULL=FULL。台账端点必须先按 UserID 回源权威权限，不能把「未加载」
+// 当成全权——否则没有 logs:read 的受限管理员可以读全站任务台账。
+func TestTaskAdminListResolvesPermissionsFromLoader(t *testing.T) {
+	store := &fakeTaskStore{}
+	store.rows = append(store.rows,
+		&tasks.Task{PublicTaskID: "task_1", PluginKey: "sample", UserID: 42, CreatedAt: time.Now()},
+	)
+	handler, _ := newTaskTestHandler(t, store, &fakeTaskChannels{}, sampleTaskManager(t), nil)
+
+	authz := rbac.NewAuthzMiddleware()
+	authz.SetPermissionLoader(staticPermissions{perms: []string{rbac.PermUsersRead}})
+	handler.authz = authz
+
+	req := httptest.NewRequest(http.MethodGet, "/api/task", nil)
+	req = req.WithContext(auth.WithPrincipal(req.Context(), &auth.Principal{
+		UserID: 1, Role: rbac.RoleAdmin, Permissions: nil,
+	}))
+	rec := httptest.NewRecorder()
+	handler.handleAdminList(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("restricted admin status = %d, want 403（body=%s）", rec.Code, rec.Body.String())
+	}
+
+	// 权威权限确实包含 logs:read 时仍然放行。
+	authz.SetPermissionLoader(staticPermissions{perms: []string{rbac.PermLogsRead}})
+	rec = httptest.NewRecorder()
+	handler.handleAdminList(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("allowed admin status = %d, want 200（body=%s）", rec.Code, rec.Body.String())
 	}
 }
 

@@ -115,6 +115,11 @@ type TasksHandlerConfig struct {
 	// 跳过（仅测试/无 Redis 的降级装配）。
 	RateLimiter RelayRateLimiter
 	Config      ConfigReader
+	// Authz 解析管理台账的权威权限（logs:read）。生产必填：SessionAuth 注入
+	// 的 Principal.Permissions 为 nil，而 nil 在 RBAC 语义里是 DB NULL=FULL；
+	// 不解析会让没有 logs:read 的受限管理员读到全站任务台账。nil 仅用于
+	// 已显式注入权限集合的测试。
+	Authz *rbac.AuthzMiddleware
 }
 
 // TasksHandler 持有任务端点依赖，可并发使用。
@@ -136,6 +141,7 @@ type TasksHandler struct {
 	// rateLimiter/config 是 W7/M5-b 的提交面准入限流缝（R-M5-07）。
 	rateLimiter RelayRateLimiter
 	config      ConfigReader
+	authz       *rbac.AuthzMiddleware
 	// sensitive 是 sec.sensitive.* 的解析缓存（F-08-18 / W14）；零值可用。
 	sensitive *sensitive.Cache
 }
@@ -178,6 +184,7 @@ func NewTasksHandler(cfg TasksHandlerConfig) *TasksHandler {
 		modelExpr:      cfg.ModelExpr,
 		rateLimiter:    cfg.RateLimiter,
 		config:         cfg.Config,
+		authz:          cfg.Authz,
 		sensitive:      &sensitive.Cache{},
 	}
 }
@@ -1145,6 +1152,18 @@ func (h *TasksHandler) handleAdminList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		writeProblem(w, http.StatusUnauthorized, problemTypeUnauthorized, "unauthorized")
 		return
+	}
+	// SessionAuth 注入的 Principal 不带 Permissions，而 nil 在 RBAC 语义里是
+	// DB NULL=FULL。管理台账必须回源权威权限，否则受限管理员会被判成全权。
+	if h.authz != nil {
+		resolved, err := h.authz.ResolvePermissions(r.Context(), *principal)
+		if err != nil {
+			slog.Warn("tasks: resolve permissions for admin list failed",
+				"request_id", RequestIDFromContext(r.Context()), "error", err)
+			writeProblem(w, http.StatusForbidden, problemTypeTasksForbidden, "permission_denied")
+			return
+		}
+		principal = &resolved
 	}
 	// 管理员可见性沿用 logs:read 口径：role=admin 且持有 logs:read（或 FULL）。
 	// 缺权限返回 403，而不是「静默收窄成本人」——管理端的过滤参数与权限

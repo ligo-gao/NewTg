@@ -681,6 +681,7 @@ type subscriptionTestEnv struct {
 	mr       *miniredis.Miniredis
 	audit    *subAuditExecer
 	purchase *fakeSubscriptionPurchase
+	authz    *rbac.AuthzMiddleware
 }
 
 // subAuditExecer 捕获 audit_logs 的 INSERT 参数（列序见 audit.insertSQL）。
@@ -719,11 +720,12 @@ func newSubscriptionTestEnv(t *testing.T) *subscriptionTestEnv {
 	repo := newFakeSubscriptionRepo()
 	capture := &subAuditExecer{}
 	purchase := &fakeSubscriptionPurchase{}
+	authz := rbac.NewAuthzMiddleware()
 	// 这些用例不触碰 users 表；*sql.DB 零值只作为构造期非 nil 占位，
 	// 让「DB 必填」校验仍然真实执行。
 	handlers, err := NewSubscriptionHandlers(SubscriptionHandlerConfig{
 		Repo: repo, DB: &sql.DB{}, Redis: rdb,
-		Authz: rbac.NewAuthzMiddleware(), Audit: audit.New(capture), Logger: testLogger(),
+		Authz: authz, Audit: audit.New(capture), Logger: testLogger(),
 		Purchase: purchase,
 	})
 	if err != nil {
@@ -731,7 +733,8 @@ func newSubscriptionTestEnv(t *testing.T) *subscriptionTestEnv {
 	}
 	mux := http.NewServeMux()
 	handlers.Register(mux)
-	return &subscriptionTestEnv{repo: repo, router: mux, rdb: rdb, mr: mr, audit: capture, purchase: purchase}
+	return &subscriptionTestEnv{repo: repo, router: mux, rdb: rdb, mr: mr, audit: capture,
+		purchase: purchase, authz: authz}
 }
 
 func (e *subscriptionTestEnv) do(t *testing.T, principal *auth.Principal, method, path string, body any, headers map[string]string) *httptest.ResponseRecorder {
@@ -2495,6 +2498,40 @@ func TestSubscriptionEventsVisibilityAndShape(t *testing.T) {
 			t.Fatalf("未认证 = %d，期望 401", rr.Code)
 		}
 	})
+}
+
+// TestSubscriptionEventsResolvesPermissionsFromLoader 验收 P1-1：事件流端点
+// 刻意不挂 AuthzMiddleware（本人与管理员共用同一 handler），因此必须自己
+// 回源权威权限。会话 Principal 的 Permissions 为 nil 时不能被当成 FULL。
+func TestSubscriptionEventsResolvesPermissionsFromLoader(t *testing.T) {
+	env := newSubscriptionTestEnv(t)
+	ownerID, adminID := int64(41), int64(2)
+	subscriptionID := int64(7)
+	env.repo.mu.Lock()
+	env.repo.subs[subscriptionID] = &store.Subscription{
+		ID: subscriptionID, UserID: ownerID, PlanID: 1, Status: "active",
+	}
+	env.repo.events[subscriptionID] = []store.SubscriptionEvent{
+		{SubscriptionID: subscriptionID, Seq: 1, Kind: store.SubscriptionEventCreated,
+			Detail: []byte(`{}`), CreatedAt: time.Unix(1000, 0).UTC()},
+	}
+	env.repo.mu.Unlock()
+
+	// nil Permissions + 权威权限只有 settings:manage → 不得跨用户读取。
+	env.authz.SetPermissionLoader(staticPermissions{perms: []string{rbac.PermSettingsManage}})
+	rr := env.do(t, &auth.Principal{UserID: adminID, Role: rbac.RoleAdmin, Permissions: nil},
+		http.MethodGet, fmt.Sprintf("/api/subscriptions/%d/events", subscriptionID), nil, nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("restricted admin status = %d, want 404（body=%s）", rr.Code, rr.Body.String())
+	}
+
+	// 权威权限包含 users:read 时放行。
+	env.authz.SetPermissionLoader(staticPermissions{perms: []string{rbac.PermUsersRead}})
+	rr = env.do(t, &auth.Principal{UserID: adminID, Role: rbac.RoleAdmin, Permissions: nil},
+		http.MethodGet, fmt.Sprintf("/api/subscriptions/%d/events", subscriptionID), nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("allowed admin status = %d, want 200（body=%s）", rr.Code, rr.Body.String())
+	}
 }
 
 // ---------------------------------------------------------------------------

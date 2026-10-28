@@ -1306,6 +1306,19 @@ func (h *SubscriptionHandlers) handleListSubscriptionEvents(w http.ResponseWrite
 	if !ok {
 		return
 	}
+	// SessionAuth 注入的 Principal 不带 Permissions，而 nil 在 RBAC 语义里是
+	// DB NULL=FULL。事件可见性依赖 users:read，必须回源权威权限，否则受限
+	// 管理员能读到全站订阅事件。
+	if h.authz != nil {
+		resolved, err := h.authz.ResolvePermissions(r.Context(), *p)
+		if err != nil {
+			h.log.Error("subscription: resolve permissions for events failed",
+				"request_id", RequestIDFromContext(r.Context()), "error", err)
+			writeAdminProblem(w, http.StatusForbidden, authProblemForbidden, "Forbidden", "")
+			return
+		}
+		p = &resolved
+	}
 	id, ok := parsePlanPathID(r)
 	if !ok {
 		writeAdminProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found", "")
