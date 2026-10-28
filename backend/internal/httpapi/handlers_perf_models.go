@@ -159,8 +159,16 @@ func (h *PerformanceHandlers) handleModels(w http.ResponseWriter, r *http.Reques
 		minuteBuckets, _, perfErr = h.perf.ModelPerfBuckets(
 			ctx, now.Add(-perfModelWindow), now, "1m", "")
 		if perfErr == nil {
-			hourBuckets, _, perfErr = h.perf.ModelPerfBuckets(
+			// 7d 基线只用于 degraded 判定，属于锦上添花；流量列才是表的主体。
+			// 基线查询失败只丢基线（hourBuckets 保持 nil = 无基线），不把
+			// perfmetrics 标成 error，也不提前返回清空整表：没有可比对象时状态
+			// 判定自然退化为「不做 p95 对比」，表格照常展示 24h 流量。
+			var baseErr error
+			hourBuckets, _, baseErr = h.perf.ModelPerfBuckets(
 				ctx, now.Add(-perfModelBaselineWindow), now, "1h", "")
+			if baseErr != nil {
+				h.log.Warn("performance: models baseline query failed", "err", baseErr)
+			}
 		}
 		if perfErr != nil {
 			sources[0].Status = perfSourceStatusForError(perfErr)

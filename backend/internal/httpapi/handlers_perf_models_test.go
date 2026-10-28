@@ -481,6 +481,46 @@ func TestModelsPerfStoreUnavailableReturnsEmptyRows(t *testing.T) {
 	}
 }
 
+// TestModelsBaselineQueryFailureKeepsTable：24h 流量查询成功、7d 基线查询失败时，
+// 端点仍返回完整表格；失败只丢掉 degraded 判定的比较基准，不把 perfmetrics 标成
+// error，也不清空 rows。基线属于锦上添花，流量列才是表的主体。
+func TestModelsBaselineQueryFailureKeepsTable(t *testing.T) {
+	source := &fakeModelPerfSource{
+		minute: []perfmetrics.Bucket{
+			modelsTestBucket("live", modelsTestNow.Add(-10*time.Minute), 100, 100, 30),
+		},
+		errHourly: errors.New("boom"),
+	}
+	resp := getModels(t, newModelsTestMux(t, PerformanceHandlerConfig{
+		Perf:     source,
+		Probes:   &fakeProbeStore{latest: map[string]store.ModelPerformanceTest{}},
+		Channels: &fakeChannelCatalog{enabled: []string{"live"}, counts: map[string]int{"live": 1}},
+	}))
+
+	if len(resp.Sources) != 2 ||
+		resp.Sources[0].Name != perfSourcePerfmetrics ||
+		resp.Sources[0].Status != perfStatusOK {
+		t.Errorf("sources = %+v, want perfmetrics/ok（基线失败不改数据源状态）", resp.Sources)
+	}
+	if len(resp.Rows) != 1 {
+		t.Fatalf("rows 数 = %d, want 1（基线失败不清空模型表）", len(resp.Rows))
+	}
+	row := modelsRow(t, resp, "live")
+	if row.TPS == nil || row.LatencyP95 == nil || row.TTFTp95 == nil || row.Samples != 100 {
+		t.Errorf("流量列缺失: %+v", row)
+	}
+	if row.Status != perfModelStatusNormal {
+		t.Errorf("status = %q, want normal（没有基线就不做 p95 对比，不判 degraded）", row.Status)
+	}
+	if resp.Summary.Degraded != 0 {
+		t.Errorf("summary.degraded = %d, want 0（缺基线不是 degraded）", resp.Summary.Degraded)
+	}
+	// 两次查询都要发出：证明失败的是基线那一次，而不是 1h 查询被跳过。
+	if len(source.calls) != 2 || source.calls[0] != "1m" || source.calls[1] != "1h" {
+		t.Errorf("查询粒度 = %v, want [1m 1h]", source.calls)
+	}
+}
+
 func TestModelsSparkHas24Points(t *testing.T) {
 	source := &fakeModelPerfSource{
 		minute: []perfmetrics.Bucket{
