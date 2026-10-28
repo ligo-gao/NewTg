@@ -55,12 +55,27 @@ x-app-env: &app-env
   # （config.parseDemoEnabled 把空串视为未设置）。
   NEWTG_DEMO_ENABLED: "${NEWTG_DEMO_ENABLED:-}"
 
+# 容器日志轮转（P2-7）：json-file 默认不轮转，长期运行会把宿主盘写满。
+# 50MB × 5 个文件 ≈ 单服务上限 250MB，足以覆盖一次事故取证的窗口。
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
 services:
   # 唯一对外入口：反向代理 + 轮询负载均衡 + 对副本做 /readyz 主动健康检查。
   # M0 不挂 443/TLS（cert_source=off 等价物），仅 :80。
   edge:
     image: caddy:2-alpine
     restart: unless-stopped
+    logging: *default-logging
+    # 内存上限是天花板而非预留：Caddy 稳态只有几十 MB，上限只用来在异常时
+    # 让容器被 OOMKill 重启，而不是把宿主（含 Postgres）拖到 swap 耗尽。
+    deploy:
+      resources:
+        limits:
+          memory: "${EDGE_MEM_LIMIT:-256m}"
     ports:
       - "8080:80"
       - "8443:8443"
@@ -87,8 +102,14 @@ services:
     # Docker 默认只等 10s 就 SIGKILL，短于应用 SHUTDOWN_GRACE_SECONDS（默认 30）：
     # 优雅停机窗口未走完进程即被强杀，在途请求会被硬断。35s 为 30s 窗口留 5s 余量。
     stop_grace_period: 35s
+    logging: *default-logging
     deploy:
       replicas: 2
+      resources:
+        limits:
+          # 天花板而非预留（稳态约 30–50MB）。按宿主规格调：两个副本共享
+          # GATEWAY_MEM_LIMIT 各自一份，宿主内存需留足 Postgres 与页缓存。
+          memory: "${GATEWAY_MEM_LIMIT:-2g}"
     environment:
       <<: *app-env
       RUN_MODE: gateway
@@ -141,8 +162,12 @@ services:
     container_name: newtg-worker
     # 与 gateway 同理：worker 同样消费 SHUTDOWN_GRACE_SECONDS，必须留足优雅退出窗口。
     stop_grace_period: 35s
+    logging: *default-logging
     deploy:
       replicas: 1
+      resources:
+        limits:
+          memory: "${WORKER_MEM_LIMIT:-2g}"
     environment:
       <<: *app-env
       RUN_MODE: worker
@@ -183,6 +208,7 @@ services:
   web:
     image: nginx:alpine
     restart: unless-stopped
+    logging: *default-logging
     profiles: ["web"]
     volumes:
       - "../frontend/dist:/usr/share/nginx/html:ro"
@@ -193,6 +219,7 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_USER: "${POSTGRES_USER:-newtg}"      # 引导超级用户：仅 initdb 建库/建角色
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}"
@@ -220,6 +247,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    logging: *default-logging
     environment:
       # 供 healthcheck 的 redis-cli 取用（command 里的口令由 compose 插值注入）。
       REDIS_PASSWORD: "${REDIS_PASSWORD:?set REDIS_PASSWORD in deploy/.env}"
@@ -236,17 +264,21 @@ services:
 
   # 按需备份（只读角色 newtg_backup）：
   #   docker compose --profile ops run --rm pg-backup
+  # 只做一次性转储 + 本地保留天数清理（P2-7）：调度与 GFS 保留属生产策略，
+  # 见 deploy/ops/backup/README.md（systemd timer / 外部调度），本服务不排期。
   pg-backup:
     image: postgres:16-alpine
     profiles: ["ops"]
     environment:
       PGPASSWORD: "${POSTGRES_BACKUP_PASSWORD:?set POSTGRES_BACKUP_PASSWORD in deploy/.env}"
+      # 本地转储保留天数；生产按 platform-08 §3.2 的 GFS 策略另行配置。
+      BACKUP_RETENTION_DAYS: "${BACKUP_RETENTION_DAYS:-14}"
     volumes:
       - "./backups:/backups"
     command:
       - "sh"
       - "-c"
-      - "pg_dump -h postgres -U newtg_backup -d ${POSTGRES_DB:-newtg} -Fc -f /backups/newtg-$$(date +%Y%m%d%H%M%S).dump"
+      - "pg_dump -h postgres -U newtg_backup -d ${POSTGRES_DB:-newtg} -Fc -f /backups/newtg-$$(date +%Y%m%d%H%M%S).dump && find /backups -maxdepth 1 -name 'newtg-*.dump' -mtime +$${BACKUP_RETENTION_DAYS} -delete"
     depends_on:
       postgres:
         condition: service_healthy
