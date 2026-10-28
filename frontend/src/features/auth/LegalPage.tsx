@@ -1,3 +1,4 @@
+import { PublicFooter } from '@/features/public/public-footer'
 import { useI18n } from '@/shared/lib/i18n-context'
 
 import { LEGAL_LAST_UPDATED } from './legal-meta'
@@ -108,6 +109,10 @@ export function LegalPage({ doc }: LegalPageProps) {
           </ul>
         </nav>
       </main>
+
+      {/* Legal documents are public pages too: they carry the same footer as
+          every other non-console route. */}
+      <PublicFooter />
     </div>
   )
 }

@@ -3,6 +3,16 @@
 import { useEffect, useState } from "react";
 import { isNavEntryVisible, type PublicNavSwitches } from "@newtg/public-shell";
 
+/** The `site` block the public chrome reads; every field is optional in the API. */
+export interface PublicStatusSite {
+  title?: string;
+  about_html?: string;
+  docs_url?: string;
+  status_page_url?: string;
+  server_address?: string;
+  filing_no?: string;
+}
+
 /**
  * The subset of `GET /api/status` the marketing site reads.
  *
@@ -12,9 +22,7 @@ import { isNavEntryVisible, type PublicNavSwitches } from "@newtg/public-shell";
  */
 export interface PublicStatus {
   nav?: PublicNavSwitches;
-  site?: {
-    docs_url?: string;
-  };
+  site?: PublicStatusSite;
 }
 
 export interface PublicStatusState {
@@ -27,6 +35,12 @@ export interface PublicStatusState {
   docsUrl: string;
   /** Whether the docs entry point is configured and enabled. */
   docsEnabled: boolean;
+  /** Trimmed `site.status_page_url`; empty string when unconfigured. */
+  statusPageUrl: string;
+  /** Trimmed `site.server_address`; the origin the API is served from. */
+  serverAddress: string;
+  /** Trimmed `site.title`; empty string when unconfigured (callers fall back). */
+  siteTitle: string;
 }
 
 /**
@@ -86,5 +100,8 @@ export function usePublicStatus(): PublicStatusState {
     nav: status?.nav,
     docsUrl: (status?.site?.docs_url ?? "").trim(),
     docsEnabled: !loading && error === undefined && resolveDocsEnabled(status),
+    statusPageUrl: (status?.site?.status_page_url ?? "").trim(),
+    serverAddress: (status?.site?.server_address ?? "").trim(),
+    siteTitle: (status?.site?.title ?? "").trim(),
   };
 }

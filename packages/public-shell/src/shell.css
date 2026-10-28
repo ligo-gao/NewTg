@@ -28,6 +28,19 @@
   --ps-nav-bg: rgba(250, 252, 255, 0.78);
   --ps-shadow: 0 20px 50px -24px rgb(22 50 70 / 0.25);
 
+  /* Spacing: the 4px grid, named locally so the shell stays self-contained
+     (the shell never reaches into a host app's token layer). */
+  --ps-space-1: 4px;
+  --ps-space-2: 8px;
+  --ps-space-3: 12px;
+  --ps-space-4: 16px;
+  --ps-space-5: 20px;
+  --ps-space-6: 24px;
+  --ps-space-7: 28px;
+  --ps-space-9: 36px;
+  --ps-space-10: 40px;
+  --ps-space-12: 48px;
+
   /* Motion: one decelerating curve for anything that moves, one short value
      for colour/opacity feedback, one for the press. Nothing springs. */
   --ps-motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -597,39 +610,105 @@
   transition-duration: var(--ps-motion-press);
 }
 
-/* ---------- Footer ---------- */
+/* ---------- Footer ----------
+   Identity + statement + endpoint on the left, link columns on the right.
+   Wide screens split 5/7; below 860px the top grid stacks and the nav keeps
+   its columns in a row; below 640px the columns wrap two per row. */
 
 .ps-shell.ps-footer {
-  padding-block: 44px 32px;
+  padding-block: var(--ps-space-12) var(--ps-space-7);
   border-top: 1px solid var(--ps-rule);
   color: var(--ps-ink);
   font-size: 14px;
   line-height: 22px;
 }
 
-.ps-shell .ps-footer-grid {
+.ps-shell .ps-footer-top {
   display: grid;
-  grid-template-columns: var(
-    --ps-footer-grid,
-    minmax(0, 1.6fr) repeat(3, minmax(0, 1fr))
-  );
-  gap: 40px;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  align-items: start;
+  gap: 48px 56px;
 }
 
-.ps-shell .ps-footer-tag {
-  max-width: 26em;
-  margin: 12px 0 0;
+.ps-shell .ps-footer-id {
+  min-width: 0;
+  max-width: 600px;
+}
+
+.ps-shell .ps-footer-statement {
+  max-width: 34em;
+  margin: var(--ps-space-4) 0 0;
+  color: var(--ps-ink);
+  font-size: 16px;
+  line-height: 28px;
+}
+
+/* The endpoint strip: the real OpenAI-compatible base URL, ruled above and
+   below rather than boxed, so it reads as data and not as a card. */
+.ps-shell .ps-footer-endpoint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  margin-top: var(--ps-space-6);
+  padding-block: var(--ps-space-2);
+  border-top: 1px solid color-mix(in srgb, var(--ps-ink) 16%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--ps-ink) 16%, transparent);
+}
+
+.ps-shell .ps-footer-endpoint-label {
+  flex: none;
   color: var(--ps-faint);
-  font-size: 14px;
-  line-height: 22px;
+  white-space: nowrap;
+}
+
+.ps-shell .ps-footer-endpoint code {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: var(--ps-ink);
+  font-family: ui-monospace, SFMono-Regular, 'JetBrains Mono', Menlo, Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ps-shell .ps-footer-copy {
+  flex: none;
+  margin-left: var(--ps-space-1);
+  padding: var(--ps-space-1) var(--ps-space-1) var(--ps-space-1) var(--ps-space-3);
+  border: 0;
+  border-left: 1px solid color-mix(in srgb, var(--ps-ink) 16%, transparent);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ps-signal);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--ps-motion-fast) var(--ps-motion-ease),
+    color var(--ps-motion-fast) var(--ps-motion-ease);
+}
+
+.ps-shell .ps-footer-copy:hover {
+  background: var(--ps-paper-2);
+}
+
+.ps-shell .ps-footer-nav {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 32px;
+  padding-top: var(--ps-space-1);
+}
+
+.ps-shell .ps-footer-col {
+  min-width: 88px;
 }
 
 .ps-shell .ps-footer-col h2 {
-  margin: 0 0 14px;
+  margin: 0 0 var(--ps-space-3);
   color: var(--ps-faint);
   font-family: inherit;
-  font-size: 14px;
-  line-height: 22px;
   font-weight: 500;
 }
 
@@ -640,11 +719,9 @@
 }
 
 .ps-shell .ps-footer-col a {
-  display: block;
-  padding-block: 5px;
+  display: inline-block;
+  padding-block: var(--ps-space-1);
   color: var(--ps-muted);
-  font-size: 14px;
-  line-height: 22px;
   transition: color 150ms ease;
 }
 
@@ -670,11 +747,6 @@
 
 /* Operator-supplied link HTML (`site.footer_html`), already sanitized by the
    host before it reaches the shell. */
-.ps-shell .ps-footer-operator {
-  font-size: 14px;
-  line-height: 22px;
-}
-
 .ps-shell .ps-footer-operator p { margin: 0; }
 
 .ps-shell .ps-footer-operator a { color: var(--ps-muted); transition: color 150ms ease; }
@@ -684,19 +756,28 @@
 .ps-shell .ps-footer-bottom {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  margin-top: 32px;
-  padding-top: 20px;
+  gap: 12px 24px;
+  margin-top: var(--ps-space-10);
+  padding-top: var(--ps-space-5);
   border-top: 1px solid var(--ps-rule);
   color: var(--ps-faint);
-  font-size: 14px;
-  line-height: 22px;
 }
 
 .ps-shell .ps-footer-bottom p { margin: 0; }
 
 .ps-shell .ps-footer-bottom a { color: inherit; }
+
+.ps-shell .ps-footer-bottom a:hover { color: var(--ps-ink); }
+
+@media (prefers-reduced-motion: reduce) {
+  .ps-shell .ps-footer-copy,
+  .ps-shell .ps-footer-col a,
+  .ps-shell .ps-footer-operator a {
+    transition: none;
+  }
+}
 
 /* ---------- Focus ---------- */
 
@@ -712,6 +793,7 @@
 .ps-shell .ps-account-menu a:focus-visible,
 .ps-shell .ps-account-menu button:focus-visible,
 .ps-shell .ps-mobile-nav-link:focus-visible,
+.ps-shell .ps-footer-copy:focus-visible,
 .ps-shell .ps-footer-col a:focus-visible,
 .ps-shell .ps-footer-bottom a:focus-visible,
 .ps-shell .ps-footer-operator a:focus-visible {
@@ -740,11 +822,35 @@
   .ps-shell .ps-mobile-nav { display: none; }
 }
 
-/* Brand across the top, link columns two-up. */
-@media (max-width: 859px) {
-  .ps-shell .ps-footer-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 32px;
+/* Footer: stack identity over the link columns, which keep their row. */
+@media (max-width: 860px) {
+  .ps-shell .ps-footer-top {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 36px;
   }
-  .ps-shell .ps-footer-grid > :first-child { grid-column: 1 / -1; }
+  .ps-shell .ps-footer-nav {
+    justify-content: flex-start;
+    gap: 56px;
+    padding-top: 0;
+  }
+}
+
+/* Footer: two columns per row, and the endpoint may wrap. */
+@media (max-width: 640px) {
+  .ps-shell.ps-footer { padding-block: var(--ps-space-9) var(--ps-space-6); }
+  .ps-shell .ps-footer-nav {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 32px 24px;
+  }
+  .ps-shell .ps-footer-col { min-width: 0; }
+  .ps-shell .ps-footer-endpoint { flex-wrap: wrap; }
+  .ps-shell .ps-footer-endpoint code {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .ps-shell .ps-footer-bottom {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }

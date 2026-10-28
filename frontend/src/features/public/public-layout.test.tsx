@@ -134,3 +134,70 @@ describe('PublicFooter URL safety (F-09-37)', () => {
     expect(container.querySelector('a[href="//evil.example"]')).toBeNull()
   })
 })
+
+describe('PublicFooter real link set (unified footer)', () => {
+  it('renders only real destinations and the public API endpoint', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(PUBLIC_STATUS)),
+      http.get(`${ORIGIN}/api/me`, () => HttpResponse.json({}, { status: 401 })),
+    )
+
+    const { findByRole, getByRole } = await renderWithProviders(<PublicFooter />, ['public'])
+    const footer = await findByRole('contentinfo')
+    // The shell renders defaults before `/api/status` resolves; wait for the
+    // operator snapshot so the assertions below describe the loaded footer.
+    await within(footer).findByText('Acme Gateway')
+
+    expect(within(footer).getByRole('link', { name: 'Models' }).getAttribute('href')).toBe(
+      '/models',
+    )
+    expect(within(footer).getByRole('link', { name: 'Pricing' }).getAttribute('href')).toBe(
+      '/pricing',
+    )
+    expect(within(footer).getByRole('link', { name: 'About' }).getAttribute('href')).toBe('/about')
+    // 控制台入口对访客也显示；受保护的是 /dashboard 本身。
+    expect(within(footer).getByRole('link', { name: 'Console' }).getAttribute('href')).toBe(
+      '/dashboard',
+    )
+    // rankings.enabled=false — the footer must not resurrect a hidden nav entry.
+    expect(within(footer).queryByRole('link', { name: 'Rankings' })).toBeNull()
+    expect(
+      within(footer).getByRole('link', { name: 'Terms of service' }).getAttribute('href'),
+    ).toBe('/legal/terms')
+    expect(
+      within(footer).getByRole('link', { name: 'Privacy policy' }).getAttribute('href'),
+    ).toBe('/legal/privacy')
+    // status_page_url is empty → no status link and no placeholder anchor.
+    expect(within(footer).queryByRole('link', { name: 'Status' })).toBeNull()
+
+    expect(footer.textContent).toContain('https://api.example.com/v1')
+    expect(
+      getByRole('button', { name: 'Copy https://api.example.com/v1' }),
+    ).toBeTruthy()
+
+    // 友情链接 carries the same real external list in both apps.
+    const openai = within(footer).getByRole('link', {
+      name: 'OpenAI (Opens in a new tab)',
+    })
+    expect(openai.getAttribute('href')).toBe('https://openai.com')
+    expect(openai.getAttribute('target')).toBe('_blank')
+    expect(openai.getAttribute('rel')).toBe('noopener noreferrer')
+  })
+
+  it('omits the endpoint when server_address is loopback', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () =>
+        HttpResponse.json({
+          ...PUBLIC_STATUS,
+          site: { ...PUBLIC_STATUS.site, server_address: 'http://127.0.0.1:3000' },
+        }),
+      ),
+      http.get(`${ORIGIN}/api/me`, () => HttpResponse.json({}, { status: 401 })),
+    )
+
+    const { findByRole } = await renderWithProviders(<PublicFooter />, ['public'])
+    const footer = await findByRole('contentinfo')
+    await within(footer).findByText('Acme Gateway')
+    expect(footer.textContent).not.toContain('/v1')
+  })
+})

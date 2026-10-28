@@ -11,6 +11,21 @@
    push it into the text above. The right pane is the form column.
    ========================================================================== */
 
+/* The shared footer follows the hall instead of living inside it: the split
+   layout keeps a full viewport height and grows with its content, so the page
+   scrolls normally and the two never overlap. `.auth-hall` therefore stays
+   `min-height` (never a fixed `height`), and the frame lets it size itself. */
+.auth-hall-frame {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.auth-hall-frame > .auth-hall {
+  flex: 1 0 auto;
+}
+
 .auth-hall {
   --font-auth: 'Archivo', 'PingFang SC', 'Noto Sans SC', 'Noto Sans CJK SC',
     'Microsoft YaHei', system-ui, sans-serif;
@@ -472,8 +487,7 @@
 }
 
 .auth-hall-forgot:focus-visible,
-.auth-hall-link:focus-visible,
-.auth-hall-legal a:focus-visible {
+.auth-hall-link:focus-visible {
   outline: 2px solid var(--home-signal);
   outline-offset: 2px;
 }
@@ -615,29 +629,6 @@
 .auth-hall-terms a:focus-visible {
   outline: 2px solid var(--home-signal);
   outline-offset: 2px;
-}
-
-.auth-hall-legal {
-  display: flex;
-  align-items: center;
-  gap: 20px;
-  padding-bottom: 4px;
-  color: var(--home-faint);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.auth-hall-legal a {
-  margin: -4px 0;
-  padding: 4px 0;
-  color: inherit;
-  text-decoration: none;
-}
-
-.auth-hall-legal a:hover {
-  color: var(--home-ink);
-  text-decoration: underline;
-  text-underline-offset: 3px;
 }
 
 /* ---------- Setup wizard: steps, review card ---------- */
@@ -828,12 +819,6 @@
   .auth-hall-title {
     margin-bottom: 26px;
     font-size: 22px;
-  }
-
-  .auth-hall-legal {
-    margin-top: auto;
-    padding-top: 44px;
-    padding-bottom: 0;
   }
 }
 

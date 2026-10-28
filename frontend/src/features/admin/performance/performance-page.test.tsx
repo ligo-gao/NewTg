@@ -418,6 +418,7 @@ interface Capture {
   disk: { calls: number; headers: Headers[]; urls: URL[]; bodies: string[] }
   gc: { calls: number; headers: Headers[]; urls: URL[]; bodies: string[] }
   cleanup: { calls: number; headers: Headers[]; urls: URL[]; bodies: string[] }
+  trigger: { calls: number; keys: string[]; urls: URL[] }
   counts: {
     overview: number
     models: number
@@ -436,6 +437,7 @@ function emptyCapture(): Capture {
     disk: { calls: 0, headers: [], urls: [], bodies: [] },
     gc: { calls: 0, headers: [], urls: [], bodies: [] },
     cleanup: { calls: 0, headers: [], urls: [], bodies: [] },
+    trigger: { calls: 0, keys: [], urls: [] },
     counts: {
       overview: 0,
       models: 0,
@@ -560,6 +562,26 @@ function installPage(
         failed_files: [],
       })
     }),
+    // 手动触发一轮测速走的是既有任务触发端点（spec §6.5 第 6 条），
+    // 不是本页新增的后端动作。
+    http.post(
+      `${ORIGIN}/api/system/tasks/model_perf_test:trigger`,
+      ({ request }) => {
+        capture.trigger.calls += 1
+        capture.trigger.urls.push(new URL(request.url))
+        capture.trigger.keys.push(
+          request.headers.get('Idempotency-Key') ?? '',
+        )
+        return HttpResponse.json(
+          {
+            task_type: 'model_perf_test',
+            run_id: 7,
+            status: 'pending',
+          },
+          { status: 202 },
+        )
+      },
+    ),
   )
 
   return capture
@@ -1050,6 +1072,57 @@ describe('performance page composition', () => {
 /* ------------------------------------------------------------------------- *
  * 轮询 / 失焦 / 范围（adjudications §3、§6）
  * ------------------------------------------------------------------------- */
+
+describe('manual model probe run', () => {
+  beforeEach(() => {
+    useToastStore.setState({ toasts: [] })
+  })
+
+  it('enqueues a run through the existing task-trigger endpoint', async () => {
+    const capture = installPage()
+    await renderPage()
+    const user = userEvent.setup()
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Run a round now' }),
+    )
+
+    await waitFor(() => expect(capture.trigger.calls).toBe(1))
+    expect(capture.trigger.urls[0]?.pathname).toBe(
+      '/api/system/tasks/model_perf_test:trigger',
+    )
+    // 幂等键必须非空：服务端缺它直接 400，重试也靠它避免第二条运行。
+    expect(capture.trigger.keys[0]).toBeTruthy()
+    await waitFor(() =>
+      expect(
+        useToastStore.getState().toasts.at(-1)?.message,
+      ).toContain('#7'),
+    )
+  })
+
+  it('explains a missing worker instead of leaving the click silent', async () => {
+    const capture = installPage()
+    server.use(
+      http.post(`${ORIGIN}/api/system/tasks/model_perf_test:trigger`, () => {
+        capture.trigger.calls += 1
+        return jsonProblem('worker_unavailable', 409)
+      }),
+    )
+    await renderPage()
+    const user = userEvent.setup()
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Run a round now' }),
+    )
+
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.at(-1)?.tone).toBe('error'),
+    )
+    expect(useToastStore.getState().toasts.at(-1)?.message).toContain(
+      'No worker instance is online',
+    )
+  })
+})
 
 describe('performance page polling', () => {
   it('polls overview every 30s and models every 60s', async () => {

@@ -24,7 +24,12 @@ scrape_configs:
     dns_sd_configs:
       # compose 的 deploy.replicas: 2 没有固定容器名，DNS 返回两条 A 记录，
       # Prometheus 自动拆成两个 target。
-      - names: [gateway]
+      # 名字末尾的点是必需的（部署验证时实测）：容器内 resolv.conf 带
+      # search localdomain，裸名 gateway 会让 DNS 先试 gateway.localdomain，
+      # 内嵌 DNS 对 search 域回 SERVFAIL 而非 NXDOMAIN，Go 的解析器据此报
+      # 「all servers responded with errors to at least one search domain」，
+      # 整个 job 拿不到 target；写成绝对名（trailing dot）只查 gateway.
+      - names: [gateway.]
         type: A
         port: 8006
     authorization:

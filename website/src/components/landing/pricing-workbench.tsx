@@ -738,7 +738,9 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
           } rounded-lg border border-line bg-panel p-[18px] min-[1101px]:sticky min-[1101px]:top-[84px] min-[1101px]:block`}
         >
           <div className="flex items-center justify-between gap-3 border-b border-line pb-3">
-            <h2 className="text-public-caption font-semibold text-ink">{pageCopy.filters.title}</h2>
+            {/* 与 SPA 筛选面板同档：面板标题 body-strong（16 / 28 / 600），
+                下一层分组标签才是 label（14 / 22 / 500）。 */}
+            <h2 className="text-public-body-strong text-ink">{pageCopy.filters.title}</h2>
             <div className="flex items-center gap-2">
               <button
                 type="button"

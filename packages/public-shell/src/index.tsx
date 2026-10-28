@@ -14,6 +14,7 @@ export { ShellFooter } from './footer'
 export { ShellBrandMark } from './brand'
 export { ShellLanguageControl } from './language-control'
 export { ShellThemeButton } from './theme-control'
+export { FRIEND_LINKS } from './friend-links'
 
 export {
   COPY_BY_LOCALE,

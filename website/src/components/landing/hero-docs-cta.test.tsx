@@ -16,6 +16,9 @@ function mockStatus(overrides: Partial<PublicStatusState> = {}) {
     nav: { docs: { enabled: true } },
     docsUrl: "https://docs.newtg.ai",
     docsEnabled: true,
+    statusPageUrl: "",
+    serverAddress: "",
+    siteTitle: "",
     ...overrides,
   });
 }

@@ -37,6 +37,9 @@ function mockStatus(
     nav,
     docsUrl,
     docsEnabled: docsUrl.trim() !== "",
+    statusPageUrl: "",
+    serverAddress: "",
+    siteTitle: "NEWTG",
   });
 }
 
@@ -155,6 +158,9 @@ describe("SiteHeader", () => {
       nav: undefined,
       docsUrl: "",
       docsEnabled: false,
+      statusPageUrl: "",
+      serverAddress: "",
+      siteTitle: "",
     });
     render(<SiteHeader copy={copy} locale="zh-CN" />);
 

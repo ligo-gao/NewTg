@@ -1,4 +1,5 @@
 import {
+  FRIEND_LINKS,
   ShellFooter,
   formatShellCopy,
   type ShellFooterColumn,
@@ -12,12 +13,33 @@ import { useLanguageSelection } from '@/lib/use-language-selection'
 import { useI18n, type Locale } from '@/shared/lib/i18n-context'
 
 import { htmlToPlainText, sanitizeHtmlFragment } from './home/custom-html'
-import { isNavEntryVisible, isSafePublicHref } from './nav-visibility'
+import {
+  NAV_COPY_KEY,
+  PUBLIC_NAV_HREFS,
+  isNavEntryVisible,
+  isSafePublicHref,
+} from './nav-visibility'
 import { siteBrand } from './public-header'
 import { shellCopy, shellLocaleOptions } from './shell-copy'
 
 function isExternal(href: string): boolean {
   return /^https?:\/\//i.test(href)
+}
+
+/** Product column order, mirroring the approved footer demo's PRODUCT_ORDER. */
+const PRODUCT_KEYS = ['models', 'pricing', 'rankings', 'about', 'console'] as const
+
+/**
+ * The OpenAI-compatible base URL shown in the footer, copied verbatim from
+ * `demos/unified-footer/index.html`. A private address (`localhost`,
+ * `127.0.0.1`, `[::1]`) is not an endpoint a visitor can call, so it renders
+ * nothing rather than a copyable dead end.
+ */
+export function apiEndpoint(serverAddress: string | undefined): string {
+  const raw = (serverAddress ?? '').trim().replace(/\/+$/, '')
+  if (!/^https?:\/\//i.test(raw)) return ''
+  if (/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(raw)) return ''
+  return `${raw}/v1`
 }
 
 /**
@@ -42,35 +64,29 @@ export function PublicFooter() {
   const year = new Date().getFullYear()
   const docsUrl = (site?.docs_url ?? '').trim()
   const statusPageUrl = (site?.status_page_url ?? '').trim()
+  const nav = status.data?.nav
   // Same `enabled && (!require_auth || isLoggedIn) && docs_url` rule as the
   // header: a hidden nav entry must not reappear in the footer.
   const docsVisible =
-    isNavEntryVisible(status.data?.nav, 'docs', isLoggedIn, docsUrl) &&
-    isSafePublicHref(docsUrl)
+    isNavEntryVisible(nav, 'docs', isLoggedIn, docsUrl) && isSafePublicHref(docsUrl)
   // Status-page URLs never render as links unless they pass the same scheme
   // rule (defence in depth; the server validates on write).
   const safeStatusPageUrl = isSafePublicHref(statusPageUrl) ? statusPageUrl : ''
 
   const operatorLinks = sanitizeHtmlFragment(site?.footer_html)
-  const nav = status.data?.nav
 
-  const productLinks: ShellFooterLink[] = [
-    ...(isNavEntryVisible(nav, 'pricing', isLoggedIn)
-      ? [{ label: copy['nav.pricing'], href: '/pricing' }]
-      : []),
-    ...(isNavEntryVisible(nav, 'rankings', isLoggedIn)
-      ? [{ label: copy['nav.rankings'], href: '/rankings' }]
-      : []),
-    ...(isNavEntryVisible(nav, 'about', isLoggedIn)
-      ? [{ label: copy['nav.about'], href: '/about' }]
-      : []),
-  ]
+  const productLinks: ShellFooterLink[] = PRODUCT_KEYS.filter((key) =>
+    isNavEntryVisible(nav, key, isLoggedIn),
+  ).map((key) => ({
+    label: copy[NAV_COPY_KEY[key]],
+    href: PUBLIC_NAV_HREFS[key],
+  }))
 
   const resourceLinks: ShellFooterLink[] = [
     ...(docsVisible
       ? [
           {
-            label: copy['footer.docs_column'],
+            label: copy['nav.docs'],
             href: docsUrl,
             external: isExternal(docsUrl),
           },
@@ -81,7 +97,7 @@ export function PublicFooter() {
           {
             label: copy['footer.status'],
             href: safeStatusPageUrl,
-            external: isExternal(statusPageUrl),
+            external: isExternal(safeStatusPageUrl),
           },
         ]
       : []),
@@ -100,6 +116,7 @@ export function PublicFooter() {
     })
   }
   columns.push({ key: 'resources', title: copy['footer.resources'], links: resourceLinks })
+  columns.push({ key: 'friends', title: copy['footer.friends'], links: FRIEND_LINKS })
 
   const copyright = `${formatShellCopy(copy['footer.copyright'], { year, site: title })} ${copy['footer.all_rights']}`
   const filingNo = site?.filing_no?.trim()
@@ -107,6 +124,9 @@ export function PublicFooter() {
   // F-09-37 异常流程: a status outage with no cached config degrades to the
   // minimal copyright line instead of guessing links or columns.
   const degraded = status.isError && site === undefined
+  // A private/loopback address (or no address at all) yields '', so the strip
+  // is simply omitted.
+  const endpoint = apiEndpoint(site?.server_address)
 
   function changeLocale(next: string) {
     const value = next as Locale
@@ -118,7 +138,10 @@ export function PublicFooter() {
     <ShellFooter
       copy={copy}
       brand={brand}
-      tagline={degraded ? undefined : htmlToPlainText(site?.about_html) || copy['footer.tagline']}
+      statement={
+        degraded ? undefined : htmlToPlainText(site?.about_html) || copy['footer.tagline']
+      }
+      endpoint={degraded || endpoint === '' ? undefined : endpoint}
       columns={degraded ? [] : columns}
       locale={
         degraded

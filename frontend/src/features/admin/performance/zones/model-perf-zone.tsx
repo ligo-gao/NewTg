@@ -76,7 +76,7 @@ export interface ModelPerfZoneProps {
    * 页面传入；缺席时不渲染 rail 的节奏说明，不臆造默认值。
    */
   probeSchedule?: { hours: number; runs: number }
-  /** 「立即跑一轮」动作；当前分支没有该后端动作，页面不传就不渲染按钮。 */
+  /** 「立即跑一轮」动作；走既有的任务触发端点，由页面装配并传入。 */
   onRunNow?: () => void
 }
 

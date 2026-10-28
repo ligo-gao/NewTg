@@ -20,6 +20,10 @@ import {
   type SettingsSectionResponse,
   type SettingsValuesResponse,
 } from '@/features/admin/settings/api'
+import {
+  triggerSystemTask,
+  type SystemTaskTriggerResult,
+} from '@/features/admin/system/system-tasks-api'
 
 export type PerformanceStats = components['schemas']['PerformanceStats']
 export type PerformanceDiskCacheClearResult =
@@ -34,6 +38,23 @@ export type PerformanceRecentOperations =
 export type PerformanceRecentOperation =
   components['schemas']['PerformanceRecentOperation']
 export type CleanupMode = 'by_count' | 'by_days'
+
+/**
+ * 手动触发一轮测速。走的是既有的任务触发端点
+ * `POST /api/system/tasks/model_perf_test:trigger`（spec §6.5 第 6 条：
+ * 手动触发不取时段锁，直接入队由 worker 按租约执行），本页不新增后端动作。
+ *
+ * 返回 202 只代表**已入队**：一轮要覆盖全部公开对话模型，通常 1～2 分钟才
+ * 出结果，所以调用方应提示「已排队」并等下一次 models 轮询，不能立刻断言
+ * 表格已更新。
+ */
+export const MODEL_PERF_TASK = 'model_perf_test'
+
+export async function triggerModelPerfRun(
+  idempotencyKey: string,
+): Promise<SystemTaskTriggerResult> {
+  return triggerSystemTask(MODEL_PERF_TASK, idempotencyKey)
+}
 
 /**
  * 三个观测端点（Task 8–10 后端 / Task 11 契约）的生成类型别名。

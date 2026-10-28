@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 
 import { ApiError } from '@/api/errors'
@@ -9,6 +9,7 @@ import { Button } from '@/shared/ui/button'
 import { FormAlert } from '@/shared/ui/form'
 import { useToastStore } from '@/shared/ui/toast'
 
+import { createIdempotencyKey } from '@/features/admin/settings/api'
 import {
   fetchPerfConfig,
   fetchPerfModels,
@@ -17,6 +18,7 @@ import {
   fetchPerformanceLogs,
   fetchPerformanceStats,
   fetchRecentOperations,
+  triggerModelPerfRun,
   type OverviewRange,
   type PerfModels,
 } from './api'
@@ -295,6 +297,71 @@ export function PerformancePage() {
     void Promise.all(sourceQueries.map((query) => query.refetch()))
   }
 
+  /**
+   * 手动触发一轮测速（spec §6.5 第 6 条）：复用任务框架的触发端点，入队后由
+   * worker 按租约执行。202 只代表已排队——一轮覆盖全部公开对话模型，通常要
+   * 1～2 分钟；表格靠既有 60s 轮询自然刷新，这里不轮询任务状态，也不假装
+   * 立刻有结果。
+   *
+   * 幂等键在每次点击时新生成（一次点击 = 一次管理员意图）；mutation 本身
+   * `retry:false`，不自动重放，所以不会因为退避重试产生第二条运行记录。
+   */
+  const queryClient = useQueryClient()
+  const runNowMutation = useMutation({
+    mutationFn: () => triggerModelPerfRun(createIdempotencyKey()),
+    retry: false,
+    onSuccess: async (result) => {
+      push({
+        tone: 'success',
+        message: t('admin.performance.models.run_now_success', {
+          run_id: result.run_id,
+        }),
+      })
+      await queryClient.invalidateQueries({
+        queryKey: ['performance', 'models'],
+      })
+    },
+    onError: (error: unknown) => {
+      // 409 有多个成因；把 worker 掉线说成「正在运行」恰好是相反诊断。
+      if (error instanceof ApiError && error.status === 409) {
+        if (error.type.endsWith('/worker_unavailable')) {
+          push({
+            tone: 'error',
+            message: t('admin.performance.models.run_now_unavailable_worker'),
+          })
+          return
+        }
+        if (error.type.endsWith('/task_already_running')) {
+          push({
+            tone: 'error',
+            message: t('admin.performance.models.run_now_already_running'),
+          })
+          return
+        }
+      }
+      if (error instanceof ApiError && error.status === 403) {
+        push({
+          tone: 'error',
+          message: t('admin.performance.models.run_now_forbidden'),
+        })
+        return
+      }
+      push({
+        tone: 'error',
+        message: describePerformanceError(error, t),
+      })
+    },
+  })
+
+  // 请求在飞时按钮保持可见但不重复发（两个入口共用同一个 handler）：
+  // 置为 undefined 会让按钮在点击后消失，视觉上像「点了就没了」。
+  const runNow = canManage
+    ? (): void => {
+        if (runNowMutation.isPending) return
+        runNowMutation.mutate()
+      }
+    : undefined
+
   const overview = overviewQuery.data
   const models = modelsQuery.data
   const config = configQuery.data
@@ -468,7 +535,11 @@ export function PerformancePage() {
       ) : null}
 
       {models !== undefined ? (
-        <ModelPerfZone models={models} probeSchedule={probeSchedule} />
+        <ModelPerfZone
+          models={models}
+          probeSchedule={probeSchedule}
+          onRunNow={runNow}
+        />
       ) : null}
 
       {overview !== undefined ? (
@@ -491,6 +562,7 @@ export function PerformancePage() {
           onSaved={() => {
             void Promise.all([configQuery.refetch(), sectionQuery.refetch()])
           }}
+          onRunNow={runNow}
         />
       ) : null}
 

@@ -41,24 +41,18 @@ export interface ShellCopy {
   'nav.theme.light': string
   'language.label': string
   'footer.product': string
-  'footer.docs_column': string
-  'footer.community': string
-  'footer.legal': string
   'footer.resources': string
+  'footer.friends': string
   'footer.language': string
   'footer.status': string
   'footer.terms': string
   'footer.privacy': string
-  'footer.quickstart': string
-  'footer.api_reference': string
-  'footer.sdks': string
-  'footer.changelog': string
-  'footer.github': string
-  'footer.discord': string
-  'footer.x': string
-  'footer.contact': string
   'footer.home_aria': string
   'footer.tagline': string
+  'footer.endpoint': string
+  'footer.copy': string
+  'footer.copied': string
+  'footer.nav_label': string
   'footer.copyright': string
   'footer.all_rights': string
 }

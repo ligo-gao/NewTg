@@ -119,8 +119,9 @@ export interface ProbeScheduleFormProps {
   /** 保存成功后由页面重拉 config 与 section。 */
   onSaved: () => void
   /**
-   * 手动触发一轮测速。后端当前没有暴露该端点（`RunOnce` 未上 HTTP），
-   * 调用方不传就不渲染按钮——绝不伪造一个会失败的入口。
+   * 手动触发一轮测速。走的是既有任务触发端点
+   * `POST /api/system/tasks/model_perf_test:trigger`（spec §6.5 第 6 条），
+   * 由页面装配并传入；调用方不传就不渲染按钮，绝不伪造一个会失败的入口。
    */
   onRunNow?: () => void
 }

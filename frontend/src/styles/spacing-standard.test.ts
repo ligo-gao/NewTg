@@ -173,9 +173,9 @@ describe('存量硬编码棘轮', () => {
       letterSpacing: 3,
     },
     'packages/public-shell/src/shell.css': {
-      fontSize: 17,
+      fontSize: 13,
       fontWeight: 7,
-      spacePx: 24,
+      spacePx: 18,
       letterSpacing: 2,
     },
     'website/src/app/globals.css': {

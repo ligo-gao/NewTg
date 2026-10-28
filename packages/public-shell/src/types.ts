@@ -86,8 +86,14 @@ export interface ShellFooterColumn {
 export interface ShellFooterProps {
   copy: ShellCopy
   brand: ShellBrand
-  /** Omitted when the host has nothing to say (for example a degraded page). */
-  tagline?: string
+  /** The site statement paragraph. Omitted when the host has nothing to say. */
+  statement?: string
+  /**
+   * Absolute http(s) API base (for example `https://gateway.example.com/v1`),
+   * rendered as a copyable strip. Hidden when omitted; the host decides
+   * whether its configured address is public enough to show.
+   */
+  endpoint?: string
   columns: readonly ShellFooterColumn[]
   /** Rendered as its own column when present (the shell's language switcher). */
   locale?: ShellLocaleControl

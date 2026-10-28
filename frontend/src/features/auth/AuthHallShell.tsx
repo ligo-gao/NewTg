@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 
+import { PublicFooter } from '@/features/public/public-footer'
 import { useI18n } from '@/shared/lib/i18n-context'
 
 import { AuthFlowMap } from './AuthFlowMap'
@@ -48,44 +49,45 @@ export function AuthHallShell({
   const { t } = useI18n()
 
   return (
-    <main id="main" className="auth-hall">
-      <section className="auth-hall-brand">
-        <div className="auth-hall-top">
-          <a className="auth-hall-logo" href="/">
-            <BrandMark />
-            <span className="auth-hall-logo-name">{t('auth.shell.brand')}</span>
-          </a>
-        </div>
-
-        <div className="auth-hall-statement">
-          <p className="auth-hall-headline">
-            <span>{t('auth.sign_in.statement_first')}</span>
-            <span>{t('auth.sign_in.statement_second')}</span>
-          </p>
-          <p className="auth-hall-lead">{t('auth.sign_in.lead')}</p>
-        </div>
-
-        <AuthFlowMap />
-      </section>
-
-      <section className="auth-hall-pane" aria-labelledby="auth-hall-title">
-        <div className="auth-hall-pane-inner" data-variant={variant}>
-          <div className="auth-hall-form">
-            <h1 id="auth-hall-title" className="auth-hall-title">
-              {title}
-            </h1>
-            {subtitle !== undefined ? (
-              <p className="auth-hall-subtitle">{subtitle}</p>
-            ) : null}
-            {children}
+    <div className="auth-hall-frame">
+      <main id="main" className="auth-hall">
+        <section className="auth-hall-brand">
+          <div className="auth-hall-top">
+            <a className="auth-hall-logo" href="/">
+              <BrandMark />
+              <span className="auth-hall-logo-name">{t('auth.shell.brand')}</span>
+            </a>
           </div>
 
-          <footer className="auth-hall-legal">
-            <a href="/legal/terms">{t('auth.shell.terms')}</a>
-            <a href="/legal/privacy">{t('auth.shell.privacy')}</a>
-          </footer>
-        </div>
-      </section>
-    </main>
+          <div className="auth-hall-statement">
+            <p className="auth-hall-headline">
+              <span>{t('auth.sign_in.statement_first')}</span>
+              <span>{t('auth.sign_in.statement_second')}</span>
+            </p>
+            <p className="auth-hall-lead">{t('auth.sign_in.lead')}</p>
+          </div>
+
+          <AuthFlowMap />
+        </section>
+
+        <section className="auth-hall-pane" aria-labelledby="auth-hall-title">
+          <div className="auth-hall-pane-inner" data-variant={variant}>
+            <div className="auth-hall-form">
+              <h1 id="auth-hall-title" className="auth-hall-title">
+                {title}
+              </h1>
+              {subtitle !== undefined ? (
+                <p className="auth-hall-subtitle">{subtitle}</p>
+              ) : null}
+              {children}
+            </div>
+          </div>
+        </section>
+      </main>
+      {/* The console never mounts this shell, so every auth page gets the same
+          footer as the public pages. It follows the hall instead of living
+          inside it so the split layout keeps its full viewport height. */}
+      <PublicFooter />
+    </div>
   )
 }

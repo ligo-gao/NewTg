@@ -1,7 +1,7 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
-import { waitFor } from '@testing-library/react'
+import { waitFor, within } from '@testing-library/react'
 import {
   afterAll,
   afterEach,
@@ -86,6 +86,21 @@ describe('SignInPage hall', () => {
     expect(stage?.querySelectorAll('.auth-hall-clients li')).toHaveLength(6)
     expect(stage?.querySelectorAll('.auth-hall-providers li')).toHaveLength(6)
     expect(stage?.textContent).toBe('')
+  })
+
+  it('carries the same single public footer as the other pages', async () => {
+    const result = await renderWithProviders(<SignInPage onNavigate={() => {}} />, [
+      'common',
+      'auth',
+    ])
+
+    // The hall used to end in its own mini legal footer; the shared shell
+    // footer now owns terms/privacy, so a page must never render two.
+    const footers = result.getAllByRole('contentinfo')
+    expect(footers).toHaveLength(1)
+    expect(
+      within(footers[0]!).getByRole('link', { name: 'OpenAI (Opens in a new tab)' }).getAttribute('href'),
+    ).toBe('https://openai.com')
   })
 
   it('keeps the recovery link in the password label row and uses line fields', async () => {
