@@ -77,6 +77,10 @@ function isPrivateIPv6(host: string): boolean {
   if (hextets[0] === 0x2002) {
     return isPrivateIPv4(dottedFromHextets(hextets[1]!, hextets[2]!));
   }
+  // 0000::/8 is reserved by IANA (only the forms handled above have a
+  // meaning); no public service lives there. `fc::1` is 00fc::, not ULA, and
+  // still lands here.
+  if ((hextets[0]! & 0xff00) === 0) return true;
   return false;
 }
 
