@@ -162,7 +162,8 @@ kubectl -n newtg rollout undo deployment/gateway
 回滚后检查：
 
 1. `kubectl rollout status` 完成，所有 Pod Ready；
-2. `/readyz` 200（注意 platform-07 §5.5 的“期望版本 ≥ 最低需求”口径）；
+2. `/readyz` 200。**R3 是精确相等**：`schema_migrations.version == 二进制内置的期望版本` 且 `dirty=false`（`backend/internal/platform/health.go`）。回滚到旧二进制后，若库已 expand 到更新的版本，必须先执行对应的 `down` 迁移把版本退回旧二进制期望的值（注意 `down` 可能丢数据），否则 Pod 不会 Ready。
+   platform-07 §5.5 里「期望版本 ≥ 最低需求」只是**未实现的假设**（U-07-5），不能按它判断当前行为。
 3. 5xx 回到基线，A3/A5/A6/A16/A19 消除；
 4. `deploy/ops/loadtest/ledger_check.sh` 全局断言通过（余额/流水）；
 5. 保留证据：告警快照、Pod 版本分布、日志、`usage_logs` 尾部、备份路径。
