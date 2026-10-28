@@ -57,6 +57,17 @@ function card(resource: string): HTMLElement {
 }
 
 describe('ResourcesZone', () => {
+  it('renders the zone rail as the section heading', async () => {
+    await renderZone()
+
+    expect(
+      screen.getByRole('heading', { name: 'Server resources' }),
+    ).toBeTruthy()
+    expect(
+      screen.getByRole('region', { name: 'Server resources' }),
+    ).toBeTruthy()
+  })
+
   it('renders the host, PostgreSQL and Redis cards with their readings', async () => {
     await renderZone()
 
@@ -66,8 +77,9 @@ describe('ResourcesZone', () => {
     expect(host.textContent).toContain('38.0%')
     expect(host.textContent).toContain('62.0%')
     expect(host.textContent).toContain('71.0%')
-    expect(host.textContent).toContain('4.2 MB')
-    expect(host.textContent).toContain('1.1 MB')
+    // 网络与命令速率是「每秒」量：读数必须带 /s 单位。
+    expect(host.textContent).toContain('4.2 MB/s')
+    expect(host.textContent).toContain('1.1 MB/s')
 
     const postgres = card('postgres')
     expect(postgres.textContent).toContain('11 / 25')
@@ -79,10 +91,10 @@ describe('ResourcesZone', () => {
     const redis = card('redis')
     expect(redis.textContent).toContain('38')
     expect(redis.textContent).toContain('96.2%')
-    expect(redis.textContent).toContain('1,204')
+    expect(redis.textContent).toContain('1,204/s')
   })
 
-  it('renders a zero or missing lock-wait value instead of hiding the row', async () => {
+  it('renders a zero or non-finite lock-wait value instead of hiding the row', async () => {
     const zero = await renderZone({
       resources: {
         ...RESOURCES,

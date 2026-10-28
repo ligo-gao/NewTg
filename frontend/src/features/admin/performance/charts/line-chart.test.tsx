@@ -268,11 +268,32 @@ describe('LineChart', () => {
   })
 
   it('breaks the path into separate subpaths at null points', () => {
+    const base = {
+      key: 'p95',
+      label: 'TTFT p95',
+      color: 'var(--chart-cat-3)',
+    }
+
+    // 基线：没有空洞时整条线只有一条子路径。
+    const straight = renderChart([
+      {
+        ...base,
+        points: [
+          [T0, 300],
+          [T0 + HOUR, 320],
+          [T0 + 2 * HOUR, 420],
+        ],
+      },
+    ])
+    const straightPath = straight.container.querySelector(
+      'path[data-series-key="p95"]',
+    )
+    expect((straightPath?.getAttribute('d')?.match(/M/g) ?? []).length).toBe(1)
+    straight.unmount()
+
     const { container } = renderChart([
       {
-        key: 'p95',
-        label: 'TTFT p95',
-        color: 'var(--chart-cat-3)',
+        ...base,
         points: [
           [T0, 300],
           [T0 + HOUR, null],
@@ -283,13 +304,53 @@ describe('LineChart', () => {
 
     const path = container.querySelector('path[data-series-key="p95"]')
     const d = path?.getAttribute('d') ?? ''
-    // null 处断线：两个有限点各起一条 M 子路径，不跨空洞连线。
+    // null 处断线：两个有限点各起一条 M 子路径，不跨空洞连线（分段数 +1）。
     expect((d.match(/M/g) ?? []).length).toBe(2)
 
     // 数据表仍保留该 x，值为 —。
     const rows = [...container.querySelectorAll('table tbody tr')]
     expect(rows).toHaveLength(3)
     expect(rows[1]?.querySelectorAll('td')[0]?.textContent).toBe('—')
+  })
+
+  it('reads an over-30s point as >30s without pulling the y domain to 30000', () => {
+    const overX = T0 + HOUR
+    const { container } = renderChart([
+      {
+        key: 'p95',
+        label: 'TTFT p95',
+        color: 'var(--chart-cat-3)',
+        points: [
+          [T0, 100],
+          [overX, null],
+          [T0 + 2 * HOUR, 200],
+        ],
+        overAt: new Set([overX]),
+      },
+    ])
+
+    // 折线仍在该点断开：两个有限点各起一条 M。
+    const path = container.querySelector('path[data-series-key="p95"]')
+    expect((path?.getAttribute('d')?.match(/M/g) ?? []).length).toBe(2)
+
+    // 数据表：已知 ≥30s 是读数，不是缺样本。
+    const rows = [...container.querySelectorAll('table tbody tr')]
+    expect(rows[1]?.querySelectorAll('td')[0]?.textContent).toBe('>30s')
+
+    // y 域只由有限值决定：上限是 200，而不是把 over 点当成 30000。
+    const tickLabels = [...container.querySelectorAll('svg text')].map(
+      (node) => node.textContent ?? '',
+    )
+    expect(tickLabels).toContain('200')
+    expect(tickLabels.some((label) => /30[,.]?000/.test(label))).toBe(false)
+
+    // tooltip 同样读 >30s。
+    const svg = resolveSvg()
+    mockChartBox(svg)
+    movePointer(svg, 378)
+    expect(screen.getByTestId('chart-tip').textContent).toContain(
+      'TTFT p95: >30s',
+    )
   })
 
   it('renders no animation or transition classes', () => {

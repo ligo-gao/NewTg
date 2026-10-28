@@ -56,6 +56,23 @@ async function renderZone(options: {
 }
 
 describe('GatewayZone', () => {
+  it('renders the zone rail with the visible title and replica count', async () => {
+    await renderZone({
+      gateways: [
+        gateway({ instance_id: 'gw-b' }),
+        gateway({ instance_id: 'gw-a' }),
+      ],
+    })
+
+    expect(
+      screen.getByRole('heading', { name: 'Gateway instances' }),
+    ).toBeTruthy()
+    expect(screen.getByText('2 replicas online')).toBeTruthy()
+    expect(
+      screen.getByRole('region', { name: 'Gateway instances' }),
+    ).toBeTruthy()
+  })
+
   it('renders the instance table with a metrics column sorted by instance id', async () => {
     await renderZone({
       gateways: [

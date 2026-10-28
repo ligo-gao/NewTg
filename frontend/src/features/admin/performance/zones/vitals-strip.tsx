@@ -1,3 +1,5 @@
+import { useId } from 'react'
+
 import { useI18n } from '@/shared/lib/i18n-context'
 import type { TranslateFn } from '@/shared/lib/i18n-context'
 import { StatusBadge } from '@/shared/ui/status-badge'
@@ -5,6 +7,7 @@ import { StatusBadge } from '@/shared/ui/status-badge'
 import type { PerfModels, PerfOverview } from '../api'
 import { Sparkline, type SparklineTone } from '../charts/sparkline'
 import { formatCount, formatPercent, vitalTone } from '../utils'
+import { ZoneRail } from './primitives'
 
 /**
  * 五格体检条：四格来自 Prometheus（网关 / 数据库 / Redis / 主机），第五格由
@@ -279,6 +282,7 @@ export function VitalsStrip({
   modelProbe,
 }: VitalsStripProps) {
   const { t, locale } = useI18n()
+  const titleId = useId()
 
   const cells = vitals
     .filter((vital) => isPrometheusVitalKey(vital.key))
@@ -330,36 +334,39 @@ export function VitalsStrip({
   }
 
   return (
-    <section
-      aria-label={t('admin.performance.vitals.title')}
-      className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-border-hairline bg-border-hairline sm:grid-cols-2 xl:grid-cols-5"
-    >
-      {cells.map((cell) => (
-        <VitalCell
-          key={cell.key}
-          vitalKey={cell.key}
-          name={cell.name}
-          figure={cell.figure}
-          unit={cell.unit}
-          status={cell.status}
-          subtitle={cell.subtitle}
-          spark={cell.spark}
-        />
-      ))}
-      <VitalCell
-        vitalKey="models"
-        name={t('admin.performance.vitals.model')}
-        figure={summary === undefined ? '—' : String(summary.incident)}
-        unit={
-          summary === undefined
-            ? ''
-            : t('admin.performance.vitals.unit_incident', {
-                total: summary.degraded,
-              })
-        }
-        status={fifthStatus}
-        subtitle={modelSubtitle}
+    <section aria-labelledby={titleId}>
+      <ZoneRail
+        titleId={titleId}
+        title={t('admin.performance.vitals.title')}
       />
+      <div className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-border-hairline bg-border-hairline sm:grid-cols-2 xl:grid-cols-5">
+        {cells.map((cell) => (
+          <VitalCell
+            key={cell.key}
+            vitalKey={cell.key}
+            name={cell.name}
+            figure={cell.figure}
+            unit={cell.unit}
+            status={cell.status}
+            subtitle={cell.subtitle}
+            spark={cell.spark}
+          />
+        ))}
+        <VitalCell
+          vitalKey="models"
+          name={t('admin.performance.vitals.model')}
+          figure={summary === undefined ? '—' : String(summary.incident)}
+          unit={
+            summary === undefined
+              ? ''
+              : t('admin.performance.vitals.unit_incident', {
+                  total: summary.degraded,
+                })
+          }
+          status={fifthStatus}
+          subtitle={modelSubtitle}
+        />
+      </div>
     </section>
   )
 }

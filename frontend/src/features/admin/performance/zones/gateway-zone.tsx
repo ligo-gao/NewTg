@@ -1,3 +1,5 @@
+import { useId } from 'react'
+
 import { useI18n } from '@/shared/lib/i18n-context'
 import type { TranslateFn } from '@/shared/lib/i18n-context'
 import { StatusBadge } from '@/shared/ui/status-badge'
@@ -11,6 +13,7 @@ import {
   formatPercent,
 } from '../utils'
 import { codePhrase } from './degraded-banner'
+import { ZoneRail } from './primitives'
 
 /**
  * 网关实例表（adjudications §4）。心跳来自数据库，所以监控断线时表格照常
@@ -94,6 +97,7 @@ export function GatewayZone({
   localStats,
 }: GatewayZoneProps) {
   const { t, locale } = useI18n()
+  const titleId = useId()
 
   // 按 instance_id 升序：服务端的发现顺序随 Prometheus 返回顺序变化，
   // 排序让同一组副本在每次刷新后保持稳定位置。
@@ -102,7 +106,14 @@ export function GatewayZone({
   )
 
   return (
-    <section aria-label={t('admin.performance.gateways.title')}>
+    <section aria-labelledby={titleId}>
+      <ZoneRail
+        titleId={titleId}
+        title={t('admin.performance.gateways.title')}
+        sub={t('admin.performance.gateways.rail_sub', {
+          count: gateways.length,
+        })}
+      />
       <div className="overflow-x-auto rounded-xl border border-border-hairline bg-surface-card">
         <table className="w-full min-w-[760px] text-body">
           <caption className="sr-only">

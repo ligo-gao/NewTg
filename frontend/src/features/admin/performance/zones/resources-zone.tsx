@@ -1,3 +1,5 @@
+import { useId } from 'react'
+
 import { useI18n } from '@/shared/lib/i18n-context'
 import { StatusBadge } from '@/shared/ui/status-badge'
 
@@ -9,6 +11,7 @@ import {
   formatPercent,
 } from '../utils'
 import { codePhrase } from './degraded-banner'
+import { ZoneRail } from './primitives'
 
 /**
  * 服务器资源三卡（adjudications §5）。数值全部来自 Prometheus 资源查询；
@@ -67,10 +70,15 @@ export interface ResourcesZoneProps {
 
 export function ResourcesZone({ resources, sourceDown }: ResourcesZoneProps) {
   const { t, locale } = useI18n()
+  const titleId = useId()
+  const rail = (
+    <ZoneRail titleId={titleId} title={t('admin.performance.resources.title')} />
+  )
 
   if (sourceDown) {
     return (
-      <section aria-label={t('admin.performance.resources.title')}>
+      <section aria-labelledby={titleId}>
+        {rail}
         <div
           data-testid="resources-unavailable"
           className="rounded-lg border border-dashed border-border-default bg-surface-subtle px-5 py-5"
@@ -92,6 +100,8 @@ export function ResourcesZone({ resources, sourceDown }: ResourcesZoneProps) {
   const { host, postgres, redis } = resources
   // null（未知）不是故障：不渲染徽标。只有明确的 1/0 才给出 up/down。
   const redisUp = redis.up === null ? null : redis.up > 0
+  // 这三行是「每秒」量：单位来自词典（en `/s`、zh `/秒`），不硬编码。
+  const perSecond = t('admin.performance.common.per_second')
 
   const hostRows: ResourceRow[] = [
     { label: t('admin.performance.resources.cpu'), value: formatPercent(host.cpu) },
@@ -102,11 +112,11 @@ export function ResourcesZone({ resources, sourceDown }: ResourcesZoneProps) {
     },
     {
       label: t('admin.performance.resources.net_in'),
-      value: formatBytes(host.net_in, locale),
+      value: `${formatBytes(host.net_in, locale)}${perSecond}`,
     },
     {
       label: t('admin.performance.resources.net_out'),
-      value: formatBytes(host.net_out, locale),
+      value: `${formatBytes(host.net_out, locale)}${perSecond}`,
     },
   ]
 
@@ -147,42 +157,42 @@ export function ResourcesZone({ resources, sourceDown }: ResourcesZoneProps) {
     },
     {
       label: t('admin.performance.resources.cmd_rate'),
-      value: formatCount(redis.cmd_rate, locale),
+      value: `${formatCount(redis.cmd_rate, locale)}${perSecond}`,
     },
   ]
 
   return (
-    <section
-      aria-label={t('admin.performance.resources.title')}
-      className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-border-hairline bg-border-hairline md:grid-cols-3"
-    >
-      <ResourceCard
-        resourceKey="host"
-        title={t('admin.performance.resources.host')}
-        rows={hostRows}
-      />
-      <ResourceCard
-        resourceKey="postgres"
-        title={t('admin.performance.resources.postgres')}
-        rows={postgresRows}
-      />
-      <ResourceCard
-        resourceKey="redis"
-        title={t('admin.performance.resources.redis')}
-        badge={
-          redisUp === null
-            ? undefined
-            : {
-                variant: redisUp ? 'success' : 'danger',
-                text: t(
-                  redisUp
-                    ? 'admin.performance.resources.redis_up'
-                    : 'admin.performance.resources.redis_down',
-                ),
-              }
-        }
-        rows={redisRows}
-      />
+    <section aria-labelledby={titleId}>
+      {rail}
+      <div className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-border-hairline bg-border-hairline md:grid-cols-3">
+        <ResourceCard
+          resourceKey="host"
+          title={t('admin.performance.resources.host')}
+          rows={hostRows}
+        />
+        <ResourceCard
+          resourceKey="postgres"
+          title={t('admin.performance.resources.postgres')}
+          rows={postgresRows}
+        />
+        <ResourceCard
+          resourceKey="redis"
+          title={t('admin.performance.resources.redis')}
+          badge={
+            redisUp === null
+              ? undefined
+              : {
+                  variant: redisUp ? 'success' : 'danger',
+                  text: t(
+                    redisUp
+                      ? 'admin.performance.resources.redis_up'
+                      : 'admin.performance.resources.redis_down',
+                  ),
+                }
+          }
+          rows={redisRows}
+        />
+      </div>
     </section>
   )
 }

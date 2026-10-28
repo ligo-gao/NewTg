@@ -108,7 +108,7 @@ describe('ModelDetail', () => {
     expect(chart.textContent).not.toContain('1970')
   })
 
-  it('breaks the line and shows a dash at over-30s points', async () => {
+  it('breaks the line at over-30s points and reads >30s in the data table', async () => {
     useSeries({
       buckets: [
         bucket(T0),
@@ -132,8 +132,9 @@ describe('ModelDetail', () => {
     // 1 行表头 + 3 个桶。
     expect(rows).toHaveLength(4)
     expect(rows[0]?.textContent).toContain('Samples')
-    // 第二个桶的 p95 越过 30s：表格显示 —，样本列仍保留 requests。
-    expect(rows[2]?.textContent).toContain('—')
+    // 第二个桶的 p95 越过 30s：折线断开，但读数是已知下界 `>30s` 而非 `—`。
+    expect(rows[2]?.textContent).toContain('>30s')
+    expect(rows[2]?.textContent).not.toContain('—')
     expect(rows[2]?.textContent).toContain('12')
     // 两侧的有限点照常渲染。
     expect(rows[1]?.textContent).toContain('910')

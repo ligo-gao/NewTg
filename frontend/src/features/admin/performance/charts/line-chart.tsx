@@ -54,6 +54,9 @@ export interface LineChartSeries {
    * 数据表显示 `—`，tooltip/刻度与 y 域都忽略它。
    */
   points: readonly [number, number | null][]
+  /** 该序列里「已知 ≥30s、但无有限值」的 x 集合；点仍为 null（断线），
+   *  但 tooltip 与数据表显示 `>30s` 而不是 `—`。 */
+  overAt?: ReadonlySet<number>
   /** 与 `points` 按索引对齐的样本数；提供时才渲染样本列。 */
   samples?: (number | null)[]
 }
@@ -103,6 +106,21 @@ function formatValue(value: number, locale: string): string {
 
 function withUnit(value: string, unit: string): string {
   return unit === '' ? value : `${value} ${unit}`
+}
+
+/**
+ * 某序列在 x 处的读数。有限值按 locale 格式化；没有有限值但在 `overAt` 里
+ * 说明「已知 ≥30s」——这是读数，不是缺样本，必须显示 `>30s`。其余才是 `—`。
+ */
+function readout(
+  item: LineChartSeries,
+  x: number,
+  value: number | undefined,
+  locale: string,
+  unit: string,
+): string {
+  if (value !== undefined) return withUnit(formatValue(value, locale), unit)
+  return item.overAt?.has(x) ? '>30s' : '—'
 }
 
 /** 把原始上限向上取整到 1/1.5/2/2.5/3/4/5/7.5 倍的十次幂，刻度才可读。 */
@@ -277,11 +295,7 @@ export function LineChart({
       : `${formatClock(activeX, locale)} · ${activeEntries
           .map(
             ({ item, value }) =>
-              `${item.label}: ${
-                value === undefined
-                  ? '—'
-                  : withUnit(formatValue(value, locale), unit)
-              }`,
+              `${item.label}: ${readout(item, activeX, value, locale, unit)}`,
           )
           .join(' · ')}`
 
@@ -512,9 +526,7 @@ export function LineChart({
                 className="block whitespace-nowrap text-ink-2"
               >
                 {item.label}:{' '}
-                {value === undefined
-                  ? '—'
-                  : withUnit(formatValue(value, locale), unit)}
+                {readout(item, activeX, value, locale, unit)}
               </span>
             ))}
           </div>
@@ -571,9 +583,7 @@ export function LineChart({
                       const value = valueMaps.get(item.key)?.get(x)
                       return (
                         <td key={item.key} className="text-right text-ink-1">
-                          {value === undefined
-                            ? '—'
-                            : formatValue(value, locale)}
+                          {readout(item, x, value, locale, '')}
                         </td>
                       )
                     })}

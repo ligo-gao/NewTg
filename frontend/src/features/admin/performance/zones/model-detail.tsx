@@ -15,8 +15,9 @@ import { formatMs } from '../utils'
  *
  * x 轴必须是 `Date.parse(bucket.start)` 的 epoch 毫秒：LineChart 的 x 是数值
  * 时间戳，传桶序号会把 1970 年当日期渲染。越过 30s 的桶没有有限值，点位
- * 写成 null——LineChart 在 null 处断开子路径，数据表该格显示 `—`（与后端
- * spark 的既有口径一致，不插值、不补 30000）。
+ * 写成 null——LineChart 在 null 处断开子路径；这些 x 另外收进 `overAt`，
+ * 让 tooltip 与数据表显示 `>30s`（已知下界）而不是 `—`（无读数）。不插值、
+ * 不补 30000。
  */
 
 export interface ModelDetailProps {
@@ -26,20 +27,34 @@ export interface ModelDetailProps {
 type NumericField = 'ttft_p50_ms' | 'ttft_p95_ms'
 type OverField = 'ttft_p50_over_30s' | 'ttft_p95_over_30s'
 
+interface SeriesPoints {
+  points: [number, number | null][]
+  /** 已越过 30s 的 x（点仍是 null，只用于读数文案）。 */
+  overAt: Set<number>
+}
+
 /**
- * 桶 → `[epoch 毫秒, 值]`。`over_30s` 的点直接写 null：LineChart 现在按
- * null 断线（独立子路径）、数据表显示 `—`，tooltip 跳过该点——不伪造
- * 30000，也不跨空洞连线。
+ * 桶 → `[epoch 毫秒, 值]`，并单独收集 `over_30s` 的 x。over 点直接写 null：
+ * LineChart 按 null 断线（独立子路径），tooltip 与数据表靠 `overAt` 把它
+ * 读成 `>30s`——不伪造 30000，也不跨空洞连线。
  */
 function pointsFor(
   buckets: readonly ModelPerfBucket[],
   valueField: NumericField,
   overField: OverField,
-): [number, number | null][] {
-  return buckets.map((bucket) => [
-    Date.parse(bucket.start),
-    bucket[overField] ? null : bucket[valueField],
-  ])
+): SeriesPoints {
+  const points: [number, number | null][] = []
+  const overAt = new Set<number>()
+  for (const bucket of buckets) {
+    const x = Date.parse(bucket.start)
+    if (bucket[overField]) {
+      points.push([x, null])
+      if (Number.isFinite(x)) overAt.add(x)
+    } else {
+      points.push([x, bucket[valueField]])
+    }
+  }
+  return { points, overAt }
 }
 
 export function ModelDetail({ model }: ModelDetailProps) {
@@ -109,13 +124,16 @@ export function ModelDetail({ model }: ModelDetailProps) {
   }
 
   const samples = buckets.map((bucket) => bucket.requests)
+  const p50 = pointsFor(buckets, 'ttft_p50_ms', 'ttft_p50_over_30s')
+  const p95 = pointsFor(buckets, 'ttft_p95_ms', 'ttft_p95_over_30s')
   const series: LineChartSeries[] = [
     {
       key: 'ttft_p50',
       label: t('admin.performance.detail.legend_p50'),
       color: 'var(--chart-cat-1)',
       tableLabel: t('admin.performance.detail.table_p50'),
-      points: pointsFor(buckets, 'ttft_p50_ms', 'ttft_p50_over_30s'),
+      points: p50.points,
+      overAt: p50.overAt,
       samples,
     },
     {
@@ -123,7 +141,8 @@ export function ModelDetail({ model }: ModelDetailProps) {
       label: t('admin.performance.detail.legend_p95'),
       color: 'var(--chart-cat-3)',
       tableLabel: t('admin.performance.detail.table_p95'),
-      points: pointsFor(buckets, 'ttft_p95_ms', 'ttft_p95_over_30s'),
+      points: p95.points,
+      overAt: p95.overAt,
       samples,
     },
   ]

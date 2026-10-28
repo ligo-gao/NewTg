@@ -109,6 +109,16 @@ async function renderStrip(options: {
 }
 
 describe('VitalsStrip', () => {
+  it('renders the zone rail as the section heading', async () => {
+    await renderStrip()
+
+    expect(
+      screen.getByRole('heading', { name: 'Service health' }),
+    ).toBeTruthy()
+    // section 通过 aria-labelledby 指向可见 h2，读屏按 region 导航仍可用。
+    expect(screen.getByRole('region', { name: 'Service health' })).toBeTruthy()
+  })
+
   it('renders four Prometheus cells plus the derived model cell', async () => {
     const { container } = await renderStrip({
       modelProbe: { name: 'claude-haiku-3-5', at: '2026-10-20T18:20:00' },
