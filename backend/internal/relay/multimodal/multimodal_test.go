@@ -7,6 +7,7 @@ package multimodal
 // httptest.Server。
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -26,8 +27,45 @@ import (
 	"newtg/gateway/internal/relay"
 	"newtg/gateway/internal/relay/adapters"
 	"newtg/gateway/internal/relay/ir"
+	"newtg/gateway/internal/relay/sse"
 	"newtg/gateway/internal/triage"
 )
+
+// TestReadSSEFrameCapsUnterminatedLine 冻结 P1-8 在多模态透传路径上的口径：
+// 单条不带换行的流必须在读取过程中截停，不能先整行读进内存。
+func TestReadSSEFrameCapsUnterminatedLine(t *testing.T) {
+	long := &endlessFrameReader{remaining: 4 << 20}
+	frame, err := readSSEFrame(bufio.NewReaderSize(long, 64*1024), 8)
+	if !errors.Is(err, sse.ErrLineTooLong) {
+		t.Fatalf("err = %v，期望 ErrLineTooLong", err)
+	}
+	if len(frame) != 0 {
+		t.Fatalf("超限行不得留在帧里，got %d 字节", len(frame))
+	}
+	if long.read > 4*64*1024 {
+		t.Fatalf("为 64MB 帧上限读了 %d 字节：必须在分片内截停", long.read)
+	}
+}
+
+type endlessFrameReader struct {
+	remaining int64
+	read      int64
+}
+
+func (r *endlessFrameReader) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, io.EOF
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	for i := range p {
+		p[i] = 'x'
+	}
+	r.remaining -= int64(len(p))
+	r.read += int64(len(p))
+	return len(p), nil
+}
 
 // ---------- fake billing ----------
 

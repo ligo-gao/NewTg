@@ -14,6 +14,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"iter"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/relay/ir"
+	"newtg/gateway/internal/relay/sse"
 )
 
 const (
@@ -691,7 +693,13 @@ func sseFrameSeq(rw io.ReadWriter, maxEventBytes int) iter.Seq[sseFrame] {
 		}
 
 		for {
-			line, readErr := reader.ReadString('\n')
+			// 单行上限 = 当前事件的剩余预算（P1-8）：sse.ReadLine 在分片边界
+			// 就地截停，不带换行的流不会把整条流读进内存。
+			line, readErr := sse.ReadLine(reader, maxEventBytes-eventBytes)
+			if errors.Is(readErr, sse.ErrLineTooLong) {
+				yield(sseFrame{hard: true})
+				return
+			}
 			if len(line) > 0 {
 				line = strings.TrimSuffix(line, "\n")
 				line = strings.TrimSuffix(line, "\r")

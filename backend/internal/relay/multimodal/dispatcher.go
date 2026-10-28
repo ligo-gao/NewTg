@@ -22,6 +22,7 @@ import (
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/relay"
 	"newtg/gateway/internal/relay/adapters"
+	"newtg/gateway/internal/relay/sse"
 	"newtg/gateway/internal/relay/usage"
 )
 
@@ -954,7 +955,7 @@ func (d *Dispatcher) serveImageStream(w http.ResponseWriter, r *http.Request, rc
 			clientGone = true
 			break
 		}
-		frame, readErr := readSSEFrame(reader)
+		frame, readErr := readSSEFrame(reader, maxSSEFrameBytes)
 		if len(frame) > 0 {
 			if payload := sseDataPayload(frame); payload != "" {
 				if payload == "[DONE]" {
@@ -1184,11 +1185,20 @@ func (f *flushWriter) flush() {
 	}
 }
 
+// maxSSEFrameBytes 是单个 SSE 事件块的累计上限（与适配器的 sseMaxEventBytes
+// 同口径）。图像事件远小于此值；上限只用来让恶意上游无法用无界帧吃光内存。
+const maxSSEFrameBytes = 64 << 20
+
 // readSSEFrame 读取一个以空行结尾的 SSE 事件块（保留原始字节）。
-func readSSEFrame(reader *bufio.Reader) ([]byte, error) {
+//
+// 单行与整帧都有上限（P1-8）：ReadString 会先把整行读进内存，一条不带换行
+// 的流可以把内存拖到上游长度；整帧预算则挡住「许多短行拼成的大帧」。
+// 超限按读取错误返回，调用方走 `readErrored` 的中断结算口径。
+// limit 参数化以便测试用小上限验证截停位置（生产恒为 maxSSEFrameBytes）。
+func readSSEFrame(reader *bufio.Reader, limit int) ([]byte, error) {
 	var frame bytes.Buffer
 	for {
-		line, err := reader.ReadString('\n')
+		line, err := sse.ReadLine(reader, limit-frame.Len())
 		if len(line) > 0 {
 			frame.WriteString(line)
 		}

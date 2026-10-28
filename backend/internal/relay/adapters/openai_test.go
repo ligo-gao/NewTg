@@ -779,6 +779,49 @@ func TestReadUpstreamBodyCap(t *testing.T) {
 	}
 }
 
+// TestOpenAIStreamEventsCapsSingleLineRead 冻结 P1-8：单条不带换行的超长行
+// 必须在读取过程中就地截停，不能先 ReadString 把整行读进内存再检查——恶意
+// 或被攻陷的上游只要持续发送不带 '\n' 的数据，网关内存就按流长度增长。
+func TestOpenAIStreamEventsCapsSingleLineRead(t *testing.T) {
+	// 4MB 的惰性数据源：旧实现会把它全部读进内存后才触发上限检查。
+	rw := &endlessLineReader{remaining: 4 << 20}
+	var events []contract.StreamEvent
+	for ev := range openAIStreamEvents(rw, 8) {
+		events = append(events, ev)
+	}
+	if len(events) != 1 || events[0].Kind != contract.EventError || events[0].Raw != nil {
+		t.Fatalf("超长单行必须交付唯一的硬错误事件：%+v", events)
+	}
+	// 读取量必须是常数级（一个 sseInitialBuffer 分片），而不是整条流。
+	if rw.read > 4*sseInitialBuffer {
+		t.Fatalf("为 8 字节的事件上限读了 %d 字节：单行上限必须边读边判", rw.read)
+	}
+}
+
+// endlessLineReader 惰性产生 'x'，永不换行；remaining 让它最终 EOF，避免
+// 旧实现下测试无限挂起。
+type endlessLineReader struct {
+	remaining int64
+	read      int64
+}
+
+func (r *endlessLineReader) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, io.EOF
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	for i := range p {
+		p[i] = 'x'
+	}
+	r.remaining -= int64(len(p))
+	r.read += int64(len(p))
+	return len(p), nil
+}
+
+func (r *endlessLineReader) Write(p []byte) (int, error) { return len(p), nil }
+
 // TestOpenAIStreamEventsEventCapIsHardError 冻结 finding 5：事件字节上限触发时
 // 必须产出 Raw == nil 的硬错误事件（bridgeStream 据此终止且不伪造 [DONE]），
 // 绝不能带 Raw 被当成软错误。

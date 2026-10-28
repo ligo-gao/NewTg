@@ -3,18 +3,20 @@ package adapters
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"io"
 	"iter"
 	"strings"
 
 	"newtg/gateway/internal/contract"
 	"newtg/gateway/internal/relay/ir"
+	"newtg/gateway/internal/relay/sse"
 )
 
 // sseInitialBuffer 是逐行读取的初始缓冲（relay-03 §4.1：初始 64KB）。
-// 使用 bufio.Reader.ReadString 而非 Scanner：行会按需增长，不受 Scanner
-// 默认 64KB 上限约束（relay-03 §4.1 的 64MB 上限属框架层配置，本适配器
-// 自带帧解析时不做截断）。
+// 使用 bufio.Reader + sse.ReadLine 而非 Scanner：行会按需增长，不受 Scanner
+// 默认 64KB 上限约束，但增长在事件字节上限处硬停（P1-8：ReadString 会先把
+// 整行读进内存再检查，单条不带换行的流足以让网关 OOM）。
 const sseInitialBuffer = 64 * 1024
 
 // sseMaxEventBytes 是单个 SSE 事件的累计字节上限（64MB，relay-03 §4.1 的
@@ -208,7 +210,15 @@ func openAIStreamEvents(rw io.ReadWriter, maxEventBytes int) iter.Seq[contract.S
 		}
 
 		for {
-			line, readErr := reader.ReadString('\n')
+			// 单行上限 = 当前事件的剩余预算：ReadString 会先把整行读进内存，
+			// 不带换行的流可以把内存拖到上游长度（P1-8）；sse.ReadLine 在
+			// 分片边界就地截停。
+			line, readErr := sse.ReadLine(reader, maxEventBytes-eventBytes)
+			if errors.Is(readErr, sse.ErrLineTooLong) {
+				// 与事件超限同形状的硬错误：Raw == nil，端点层终止流且不伪造 [DONE]。
+				yield(contract.StreamEvent{Kind: contract.EventError})
+				return
+			}
 			if len(line) > 0 {
 				line = strings.TrimSuffix(line, "\n")
 				line = strings.TrimSuffix(line, "\r")
