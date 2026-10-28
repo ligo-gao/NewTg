@@ -1,0 +1,103 @@
+# 监控栈 override（Task 19 / spec §6.1）。不单独使用，必须与主文件叠加：
+#   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+#
+# 为什么拆成 override 而不是 profiles（spec §6.1）：compose 在按 profile 过滤
+# **之前**就对整份文件做变量插值，主文件里一旦出现 ${METRICS_TOKEN:?…}，所有
+# 未启用监控栈的 `docker compose up` 都会在插值阶段直接失败。拆出来后 `:?`
+# 只在被 -f 引入本文件时才求值，不装监控栈的部署一个字节都不变。
+#
+# 只引用主文件已定义的 `backend` 网（internal: true，禁出站），不重声明 driver；
+# 不发布任何宿主端口：Prometheus 与 exporter 只在数据面内可达，页面查询走
+# 网关代理（后端只认 PROMETHEUS_URL，不感知部署形态）。
+# Compose v2 已废弃 version:，本文件不写。
+
+services:
+  # 一次性把 METRICS_TOKEN 写进命名卷：Prometheus 以 credentials_file 读取，
+  # 避免把密钥明文写进 prometheus.yml / 镜像层。
+  metrics-token:
+    image: alpine:3.20
+    restart: "no"
+    # 只写卷，不需要任何网络（spec §6.1 表格网络列为「—」）：用 none 避免
+    # compose 为本项目额外创建一个隐式的 default 网络。
+    network_mode: none
+    command: ["sh", "-c", "printf %s \"$$METRICS_TOKEN\" > /token/metrics_token && chmod 0444 /token/metrics_token"]
+    environment:
+      # :? 只影响带本 override 的 up：缺 token 时监控栈整体起不来（不静默降级）；
+      # 主文件单独 up 仍然不需要 METRICS_TOKEN。
+      METRICS_TOKEN: "${METRICS_TOKEN:?set METRICS_TOKEN in deploy/.env}"
+    volumes:
+      - "prom_token:/token"
+
+  # 抓取与规则求值；TSDB 落命名卷，保留 15 天（spec §6.4）。
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+    volumes:
+      - "./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"
+      - "./ops/prometheus/alerts.yaml:/etc/prometheus/rules/newtg-alerts.yaml:ro"
+      - "prom_data:/prometheus"
+      - "prom_token:/etc/prometheus/token:ro"
+    depends_on:
+      # 先写好 token 文件再启动，避免首轮抓取 401/文件缺失。
+      metrics-token:
+        condition: service_completed_successfully
+    networks:
+      - backend
+
+  # 宿主视角的 CPU/内存/磁盘。只挂载不够，还必须用 --path.* 指到挂载点，
+  # 否则容器读到的是自己的 /proc（统计到容器自身而不是宿主）。
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    restart: unless-stopped
+    pid: host
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+    volumes:
+      - "/proc:/host/proc:ro"
+      - "/sys:/host/sys:ro"
+      - "/:/rootfs:ro"
+    networks:
+      - backend
+
+  # 复用既有只读角色 newtg_backup（postgres-init/10-roles.sql 已授予全表 SELECT），
+  # 不新增数据库角色。代价（备份角色用于监控）记录在 spec §13 未决项。
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.16.0
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: "postgres://newtg_backup:${POSTGRES_BACKUP_PASSWORD:?set POSTGRES_BACKUP_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_DB:-newtg}?sslmode=${DATABASE_TLS:-disable}"
+    networks:
+      - backend
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.67.0
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?set REDIS_PASSWORD in deploy/.env}"
+    networks:
+      - backend
+
+  # 性能页查询的数据源。只补 PROMETHEUS_URL，不重复主文件已有的
+  # METRICS_ADDR / METRICS_TOKEN（compose 合并 environment 映射，重复写只会
+  # 增加漂移风险）。
+  gateway:
+    environment:
+      PROMETHEUS_URL: "${PROMETHEUS_URL:-http://prometheus:9090}"
+
+  worker:
+    environment:
+      PROMETHEUS_URL: "${PROMETHEUS_URL:-http://prometheus:9090}"
+
+volumes:
+  # 与主文件一致使用显式卷名，便于备份/清理时辨认归属。
+  prom_data:
+    name: newtg_prom_data
+  prom_token:
+    name: newtg_prom_token

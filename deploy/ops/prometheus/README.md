@@ -15,6 +15,7 @@ Prometheus `rule_files` 加载；也可包进 Prometheus Operator 的
 | `newtg-notify` | Webhook / 通知投递失败 |
 | `newtg-database` | 连接池饱和/等待、DB 错误、迁移 dirty |
 | `newtg-dependency` | Redis / PG 依赖、配置广播 |
+| `newtg-selfmonitoring` | Prometheus 自身 TSDB 基数 |
 
 ## 阈值来源与“待实测”
 

@@ -13,6 +13,8 @@
 #   e. ci.yml 八个阻断 job 齐全，release.yml 具备 tag 触发、packages: write、双架构与 SBOM/provenance；
 #   f. 镜像构建上下文为仓库根（仓根 .dockerignore 裁剪），notices 随镜像与 release 附件分发
 #      （MIT/ISC 许可文本保留要求；backend/.dockerignore 已迁至仓根）。
+#   g. 7 语种词典键集合一致（scripts/check_locale_parity.sh）；
+#   h. 监控栈 compose override 与主文件均可解析（无 docker 时跳过，不假红）。
 #
 # 退出码：0 全部通过；1 存在断言失败。本脚本不改任何文件，可安全在 CI 与本机运行。
 set -uo pipefail
@@ -199,6 +201,36 @@ if [ -f "$ROOT/scripts/check_locale_parity.sh" ]; then
   fi
 else
   bad "缺少 scripts/check_locale_parity.sh"
+fi
+
+# --- h. 监控栈 compose 可解析（Task 19 / spec §6.1） ------------------------
+# 为什么在本地真跑：override 的 ${METRICS_TOKEN:?…}、卷引用与挂载路径只有
+# `docker compose config` 才会暴露拼写/引用错误。本机无 docker 时打印跳过行
+# 并继续，保证部署静态门禁在开发机上仍以 0 退出。
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+  # 主文件 :? 必填变量共 8 个（DATABASE_TLS 是 :-disable 的选填项，一并给出
+  # 无害）；override 另需 METRICS_TOKEN。显式注入，避免读到开发者本机 deploy/.env。
+  COMPOSE_ENV=(
+    CREDENTIAL_ENCRYPTION_KEY=ci-key DATABASE_TLS=disable METRICS_TOKEN=ci-token
+    POSTGRES_PASSWORD=x POSTGRES_APP_PASSWORD=x POSTGRES_MIGRATE_PASSWORD=x
+    POSTGRES_BACKUP_PASSWORD=x POSTGRES_RETENTION_PASSWORD=x
+    REDIS_PASSWORD=x SESSION_SECRET=x
+  )
+  check_compose() {
+    local out
+    # 2>&1 >/dev/null：先把 stderr 复制到命令替换管道，再丢弃 stdout，只留错误。
+    if out="$(env "${COMPOSE_ENV[@]}" docker compose -p ci-check "$@" config 2>&1 >/dev/null)"; then
+      ok "compose config: $*"
+    else
+      bad "compose config 失败: $*"
+      printf '%s\n' "$out" >&2
+    fi
+  }
+  # -p ci-check：避免与开发者本地项目名 newtg 的网络/卷冲突。
+  check_compose -f "$ROOT/deploy/docker-compose.yml" -f "$ROOT/deploy/docker-compose.monitoring.yml"
+  check_compose -f "$ROOT/deploy/docker-compose.yml"
+else
+  ok "跳过 compose 校验（无 docker）"
 fi
 
 echo

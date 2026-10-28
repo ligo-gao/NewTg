@@ -519,3 +519,23 @@ groups:
           description: "配置可能未全副本生效。检查 Redis pub/sub 与 configcenter；灰度窗口内禁止非兼容配置变更。"
           threshold_source: "platform-05 §6.1 A21：increase>0 持续 10m（设计值）"
           runbook: "deploy/ops/runbooks/canary-rollback.md"
+
+  # 自监控（Task 19 / spec §6.4）：Prometheus 自身 TSDB 基数。
+  # 待实测：按 15d 保留与六 job 的标签基数实测后回写阈值；当前 50000 是
+  # newtg-ops-initial 假设值（TSDB 默认内存耗尽线附近的保守值），不是设计文档
+  # 冻结数值。触发时优先检查 newtg_* 的 route/model/channel_id 标签是否爆炸。
+  - name: newtg-selfmonitoring
+    interval: 60s
+    rules:
+      - alert: NewTGPrometheusSeriesBloating
+        expr: prometheus_tsdb_head_series > 50000
+        for: 30m
+        labels:
+          severity: warning
+          category: observability
+          source: newtg-ops-initial
+        annotations:
+          summary: "Prometheus TSDB 序列数异常增长"
+          description: "head series 超过 5 万，疑似标签基数爆炸。检查 newtg_* 的 route/model/channel_id 等标签；必要时降低保留或收敛标签后再回写阈值。"
+          threshold_source: "newtg-ops-initial 假设值（TSDB 默认内存耗尽线附近的保守值）"
+          runbook: "deploy/ops/runbooks/"

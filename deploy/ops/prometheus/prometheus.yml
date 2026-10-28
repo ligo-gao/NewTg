@@ -1,0 +1,57 @@
+# 本文件由 deploy/docker-compose.monitoring.yml 挂载进 prometheus 容器，
+# 路径为 /etc/prometheus/prometheus.yml（只读）。
+# 修改后需重启容器才会重新加载：
+#   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml restart prometheus
+# 因此未启用 --web.enable-lifecycle（页面不需要 reload，少一个攻击面）。
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/rules/newtg-alerts.yaml
+
+scrape_configs:
+  # job 名是契约：后端 NameTargetUp 查 up{job=~"newtg-.*"} 统计副本存活，
+  # 所以只有这两个应用 job 能用 newtg- 前缀；exporter 与自监控不得使用，
+  # 否则会被算进「副本存活数」。
+  #
+  # honor_labels: true 只加在这两个 job：Prometheus 默认 false 会把指标自带的
+  # instance=<心跳 id> 改名成 exported_instance 并用 target 地址覆盖，存储层就
+  # 没有心跳 id，sum by (instance) 与 /api/instances 永远对不上。
+  - job_name: newtg-gateway
+    honor_labels: true
+    dns_sd_configs:
+      # compose 的 deploy.replicas: 2 没有固定容器名，DNS 返回两条 A 记录，
+      # Prometheus 自动拆成两个 target。
+      - names: [gateway]
+        type: A
+        port: 8006
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/token/metrics_token
+
+  - job_name: newtg-worker
+    honor_labels: true
+    static_configs:
+      - targets: ["worker:8006"]
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/token/metrics_token
+
+  - job_name: node-exporter
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  - job_name: postgres-exporter
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  - job_name: redis-exporter
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+
+  # 自监控 job 不得以 newtg- 开头（见上），否则会污染副本存活计数。
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
