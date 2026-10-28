@@ -10,8 +10,9 @@
    palette (`--bg`, `--line`, `--ink`, …), which the SPA's `--home-*` tokens
    already mirrored — so this file is the single source for both.
 
-   Type scale: 12/18 labels · 13/22 footer links and controls · 14/22 nav ·
-   16/24 brand. Sizes below 12px are not allowed.
+   Type scale: 14/22 captions, controls and footer · 16/24 nav and body ·
+   25/34 header wordmark. The 14px caption is the floor: no size below it
+   except the decorative, aria-hidden account monogram.
    ========================================================================== */
 
 .ps-shell {
@@ -27,10 +28,17 @@
   --ps-nav-bg: rgba(250, 252, 255, 0.78);
   --ps-shadow: 0 20px 50px -24px rgb(22 50 70 / 0.25);
 
+  /* Motion: one decelerating curve for anything that moves, one short value
+     for colour/opacity feedback, one for the press. Nothing springs. */
+  --ps-motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --ps-motion-slide: 240ms;
+  --ps-motion-fast: 160ms;
+  --ps-motion-press: 80ms;
+
   color: var(--ps-ink);
   font-family: var(--ps-font, inherit);
-  font-size: 14px;
-  line-height: 22px;
+  font-size: 16px;
+  line-height: 28px;
 }
 
 /* Hosts that nest the shell under a themed root (both apps do) and hosts that
@@ -129,18 +137,18 @@
 .ps-shell .ps-brand-name {
   font-size: 16px;
   line-height: 24px;
-  font-weight: 700;
-  letter-spacing: 0.09em;
+  font-weight: 600;
+  letter-spacing: 0.06em;
 }
 
-/* The header wordmark runs 1.5× the footer's: at 24px it reads as the page
+/* The header wordmark runs ~1.5× the footer's: at 25px it reads as the page
    title from across the row. The footer and standalone brand stay at 16px. */
 .ps-shell.ps-header .ps-brand { gap: 11px; }
 
 .ps-shell.ps-header .ps-brand-name {
-  font-size: 24px;
-  line-height: 36px;
-  letter-spacing: 0.05em;
+  font-size: 25px;
+  line-height: 34px;
+  letter-spacing: 0.04em;
 }
 
 .ps-shell.ps-header .ps-brand-mark,
@@ -154,24 +162,94 @@
 .ps-shell.ps-footer .ps-brand-mark { color: inherit; }
 
 .ps-shell .ps-nav {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 28px;
 }
 
+/* The padding/negative-margin pair grows the hit area and the hover capsule
+   without moving the label or the row: the flex item's outer size is
+   unchanged, so there is nothing to reflow and nothing to shift (no CLS).
+   Weight is deliberately not transitioned — 500→600 changes label width and
+   the marker would lag behind it. */
 .ps-shell .ps-nav-link {
   display: inline-flex;
   align-items: center;
   gap: 2px;
+  padding: 5px 9px;
+  margin: -5px -9px;
+  border-radius: 6px;
   color: var(--ps-muted);
-  font-size: 14px;
-  line-height: 22px;
-  font-weight: 400;
-  transition: color 150ms ease;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 500;
+  transition:
+    color var(--ps-motion-fast) var(--ps-motion-ease),
+    background-color var(--ps-motion-fast) var(--ps-motion-ease),
+    opacity var(--ps-motion-press) linear;
 }
 
-.ps-shell .ps-nav-link:hover,
 .ps-shell .ps-nav-link[aria-current='page'] { color: var(--ps-ink); }
+
+/* Touch devices get no stuck hover state. */
+@media (hover: hover) {
+  .ps-shell .ps-nav-link:hover {
+    color: var(--ps-ink);
+    background-color: color-mix(in srgb, var(--ps-ink) 6%, transparent);
+  }
+}
+
+.ps-shell .ps-nav-link:active {
+  opacity: 0.68;
+  transition-duration: var(--ps-motion-press);
+}
+
+/* One line, one position: the marker is told where the current entry sits by
+   `--ps-nav-x` / `--ps-nav-w` (set in header.tsx). Absolute, so neither its
+   width nor its travel touches layout. */
+.ps-shell .ps-nav-marker {
+  position: absolute;
+  left: 0;
+  bottom: -6px;
+  width: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--ps-signal);
+  opacity: 0;
+  pointer-events: none;
+  view-transition-name: ps-nav-marker;
+}
+
+.ps-shell .ps-nav[data-nav-active] .ps-nav-marker {
+  width: var(--ps-nav-w, 0px);
+  transform: translateX(var(--ps-nav-x, 0px));
+  opacity: 1;
+}
+
+/* Enabled after the first placement, so a fresh page load shows the marker
+   where it belongs instead of sliding in from the left edge. */
+.ps-shell .ps-nav[data-nav-ready] .ps-nav-marker {
+  transition:
+    transform var(--ps-motion-slide) var(--ps-motion-ease),
+    width var(--ps-motion-slide) var(--ps-motion-ease),
+    opacity var(--ps-motion-fast) linear;
+}
+
+/* Every nav click is a full page load, so the only place the marker can be
+   seen to travel is *between* documents. Only the marker takes part: the root
+   snapshot is frozen, so the new page appears at once and one 2px line glides
+   from the old entry to the new one. Browsers without the API — and users who
+   asked for reduced motion — get the marker already in place. */
+@view-transition { navigation: auto; }
+
+::view-transition-old(root),
+::view-transition-new(root) { animation: none; }
+
+::view-transition-group(ps-nav-marker) {
+  animation-duration: 240ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
 
 .ps-shell .ps-external-glyph {
   width: 14px;
@@ -251,8 +329,17 @@
   to { opacity: 1; transform: none; }
 }
 
+/* Reduced motion: the marker still moves to the current entry — it is the
+   state, not decoration — but it teleports instead of travelling, and the
+   panel opens without the slide. Colour and opacity still change; they are
+   not motion. */
 @media (prefers-reduced-motion: reduce) {
+  @view-transition { navigation: none; }
   .ps-shell .ps-lang-menu { animation: none; }
+  .ps-shell .ps-mobile-nav { animation: none; }
+  .ps-shell .ps-nav-marker,
+  .ps-shell .ps-nav-link,
+  .ps-shell .ps-mobile-nav-link { transition: none; }
 }
 
 .ps-shell .ps-lang-item {
@@ -268,8 +355,8 @@
   background: transparent;
   color: var(--ps-ink);
   font: inherit;
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
   text-align: left;
   cursor: pointer;
 }
@@ -296,8 +383,8 @@
   background: transparent;
   color: var(--ps-muted);
   font: inherit;
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
   cursor: pointer;
 }
 
@@ -334,9 +421,9 @@
   display: inline-flex;
   align-items: center;
   color: var(--ps-muted);
-  font-size: 14px;
-  line-height: 22px;
-  font-weight: 400;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 500;
   white-space: nowrap;
   transition: color 150ms ease;
 }
@@ -359,8 +446,8 @@
   background: transparent;
   color: var(--ps-ink);
   font: inherit;
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 22px;
   cursor: pointer;
   transition: border-color 150ms ease;
 }
@@ -378,8 +465,10 @@
   border-radius: 50%;
   background: color-mix(in srgb, var(--ps-signal) 16%, transparent);
   color: var(--ps-signal);
+  /* Decorative monogram: the button's accessible name is the account name
+     beside it, so this glyph is aria-hidden and exempt from the text floor. */
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1;
   text-transform: uppercase;
 }
@@ -461,6 +550,13 @@
   background: var(--ps-card);
   max-height: calc(100dvh - 64px);
   overflow-y: auto;
+  animation: ps-mobile-nav-in var(--ps-motion-slide) var(--ps-motion-ease);
+}
+
+/* The panel answers a click, so it is allowed to move — 8px and a fade, once. */
+@keyframes ps-mobile-nav-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: none; }
 }
 
 .ps-shell .ps-mobile-nav-inner {
@@ -471,15 +567,35 @@
 
 .ps-shell .ps-mobile-nav-link {
   display: block;
-  padding: 12px 0;
+  padding: 12px 10px;
+  margin-inline: -10px;
   border-bottom: 1px solid var(--ps-rule);
   color: var(--ps-muted);
   font-size: 16px;
   line-height: 24px;
+  font-weight: 500;
+  transition:
+    color var(--ps-motion-fast) var(--ps-motion-ease),
+    background-color var(--ps-motion-fast) var(--ps-motion-ease),
+    opacity var(--ps-motion-press) linear;
 }
 
-.ps-shell .ps-mobile-nav-link:hover,
-.ps-shell .ps-mobile-nav-link[aria-current='page'] { color: var(--ps-ink); }
+.ps-shell .ps-mobile-nav-link[aria-current='page'] {
+  color: var(--ps-ink);
+  background-color: color-mix(in srgb, var(--ps-signal) 7%, transparent);
+}
+
+@media (hover: hover) {
+  .ps-shell .ps-mobile-nav-link:hover {
+    color: var(--ps-ink);
+    background-color: color-mix(in srgb, var(--ps-ink) 5%, transparent);
+  }
+}
+
+.ps-shell .ps-mobile-nav-link:active {
+  opacity: 0.68;
+  transition-duration: var(--ps-motion-press);
+}
 
 /* ---------- Footer ---------- */
 
@@ -487,7 +603,7 @@
   padding-block: 44px 32px;
   border-top: 1px solid var(--ps-rule);
   color: var(--ps-ink);
-  font-size: 13px;
+  font-size: 14px;
   line-height: 22px;
 }
 
@@ -504,7 +620,7 @@
   max-width: 26em;
   margin: 12px 0 0;
   color: var(--ps-faint);
-  font-size: 13px;
+  font-size: 14px;
   line-height: 22px;
 }
 
@@ -512,8 +628,8 @@
   margin: 0 0 14px;
   color: var(--ps-faint);
   font-family: inherit;
-  font-size: 12px;
-  line-height: 16px;
+  font-size: 14px;
+  line-height: 22px;
   font-weight: 500;
 }
 
@@ -527,7 +643,7 @@
   display: block;
   padding-block: 5px;
   color: var(--ps-muted);
-  font-size: 13px;
+  font-size: 14px;
   line-height: 22px;
   transition: color 150ms ease;
 }
@@ -555,7 +671,7 @@
 /* Operator-supplied link HTML (`site.footer_html`), already sanitized by the
    host before it reaches the shell. */
 .ps-shell .ps-footer-operator {
-  font-size: 13px;
+  font-size: 14px;
   line-height: 22px;
 }
 
@@ -574,8 +690,8 @@
   padding-top: 20px;
   border-top: 1px solid var(--ps-rule);
   color: var(--ps-faint);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .ps-shell .ps-footer-bottom p { margin: 0; }

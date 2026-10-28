@@ -19,15 +19,86 @@ function linkTargetProps(item: ShellNavItem) {
   }
 }
 
+/**
+ * One marker travels between the entries instead of every link painting its
+ * own underline. Its position is written to CSS variables on the nav, so the
+ * motion is pure `transform`/`width` on a single absolutely positioned node —
+ * no re-render per frame and no effect on the row's layout.
+ *
+ * Measurement runs after mount, on resize, when the entries change and once
+ * the webfonts settle (Inter/Noto swap in after first paint and change label
+ * widths). `data-nav-ready` is set only after the first placement so the
+ * marker does not travel in from x=0 on load.
+ */
+function useNavMarker(activeKey: string | null, signature: string) {
+  const navRef = useRef<HTMLElement | null>(null)
+
+  useEffect(() => {
+    const nav = navRef.current
+    if (!nav) return
+    let frame = 0
+    let readyFrame = 0
+
+    const place = () => {
+      const link = activeKey
+        ? nav.querySelector<HTMLElement>(`[data-nav-key="${activeKey}"]`)
+        : null
+      if (!link) {
+        nav.removeAttribute('data-nav-active')
+        return
+      }
+      const row = nav.getBoundingClientRect()
+      const box = link.getBoundingClientRect()
+      nav.style.setProperty('--ps-nav-x', `${box.left - row.left}px`)
+      nav.style.setProperty('--ps-nav-w', `${box.width}px`)
+      nav.setAttribute('data-nav-active', '')
+    }
+    const schedule = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(place)
+    }
+
+    place()
+    // Transitions open only after the placed marker has been painted once:
+    // one rAF commits that frame, the next lands after it. Without the second
+    // frame the marker would animate in from `width: 0` on every page load.
+    if (!nav.hasAttribute('data-nav-ready')) {
+      readyFrame = requestAnimationFrame(() => {
+        readyFrame = requestAnimationFrame(() => nav.setAttribute('data-nav-ready', ''))
+      })
+    }
+
+    window.addEventListener('resize', schedule)
+    const observer =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule)
+    observer?.observe(nav)
+    void document.fonts?.ready.then(schedule)
+
+    return () => {
+      cancelAnimationFrame(frame)
+      cancelAnimationFrame(readyFrame)
+      window.removeEventListener('resize', schedule)
+      observer?.disconnect()
+    }
+  }, [activeKey, signature])
+
+  return navRef
+}
+
 function PrimaryNav({ items, copy }: { items: readonly ShellNavItem[]; copy: ShellCopy }) {
+  const activeKey = items.find((item) => item.current)?.key ?? null
+  const signature = items.map((item) => `${item.key}:${item.href}`).join('|')
+  const navRef = useNavMarker(activeKey, signature)
+
   // Every `nav.*` switch can be off (a legal configuration): the header then
   // simply has no navigation block, never an empty one.
   if (items.length === 0) return null
   return (
-    <nav aria-label={copy['nav.primary']} className="ps-nav">
+    <nav ref={navRef} aria-label={copy['nav.primary']} className="ps-nav">
       {items.map((item) => (
         <a
           key={item.key}
+          data-nav-key={item.key}
           href={item.href}
           aria-current={item.current ? 'page' : undefined}
           aria-label={linkAriaLabel(copy, item)}
@@ -38,6 +109,8 @@ function PrimaryNav({ items, copy }: { items: readonly ShellNavItem[]; copy: She
           {item.external ? <ExternalGlyph /> : null}
         </a>
       ))}
+      {/* Decorative: the current entry is already announced by aria-current. */}
+      <span aria-hidden="true" className="ps-nav-marker" />
     </nav>
   )
 }
