@@ -32,6 +32,22 @@ x-app-env: &app-env
   PERF_METRICS_RETENTION_DAYS: "${PERF_METRICS_RETENTION_DAYS:-400}"
   # 独立指标库（与主库/日志库分离；未配置时 /api/model-perf 会 fail-closed）
   PERF_METRICS_DSN: "postgres://newtg_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_METRICS_DB:-newtg_metrics}?sslmode=${DATABASE_TLS:-disable}"
+  # 模型性能定时实测（spec 2026-10-27）：worker 按此时刻表跑测速；gateway 不调度，
+  # 但 /api/performance/config 会用**同一份** env 作为生效值回退（perfsettings.Reader：
+  # system_settings.perf.schedule.* 优先，env 仅作基线），两组进程因此必须同值，
+  # 否则页面报的时间/时区与实际调度不一致。管理面改保存后以 DB 值为准。
+  PERF_SCHEDULE_ENABLED: "${PERF_SCHEDULE_ENABLED:-true}"
+  PERF_SCHEDULE_TIMES: "${PERF_SCHEDULE_TIMES:-00:00,12:00}"
+  PERF_SCHEDULE_TIMEZONE: "${PERF_SCHEDULE_TIMEZONE:-Asia/Shanghai}"
+  PERF_SCHEDULE_RUNS: "${PERF_SCHEDULE_RUNS:-3}"
+  PERF_SCHEDULE_CONCURRENCY: "${PERF_SCHEDULE_CONCURRENCY:-2}"
+  # 性能页 Prometheus 数据源。三项都放进共享 env：不带监控 override 的部署也
+  # 可以指向外部 Prometheus；override 只在 PROMETHEUS_URL 未设时补部署内默认值。
+  # TIMEOUT/CACHE_TTL 由 config.Load 在启动期校验（(0s,60s] / (0s,5m]）——写成
+  # 0 或负值不是「关掉」，是**进程起不来**。
+  PROMETHEUS_URL: "${PROMETHEUS_URL:-}"
+  PROMETHEUS_TIMEOUT: "${PROMETHEUS_TIMEOUT:-5s}"
+  PROMETHEUS_CACHE_TTL: "${PROMETHEUS_CACHE_TTL:-15s}"
   # 演示模式部署侧覆盖（控制端 W13 裁决 I2）：true/1 强制开启，false/0 强制
   # 关闭，空 = 跟随站点设置 site.demo.enabled。必须放在共享 env 里：gateway
   # 的守卫/额度/计费与 worker 的兜底结算要读到**同一个**有效值；只给一个角色
@@ -139,15 +155,6 @@ services:
       # 网络拉取 holiday-cn 年度 JSON；离线部署置 false 即可零出站。
       HOLIDAY_SYNC_ENABLED: "${HOLIDAY_SYNC_ENABLED:-true}"
       HOLIDAY_SYNC_URL_TEMPLATE: "${HOLIDAY_SYNC_URL_TEMPLATE:-https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/%d.json}"
-      # 模型性能定时实测（spec 2026-10-27）：只在 worker 执行。默认按北京时间
-      # 每天 00:00 / 12:00 对全部公开对话模型各测 3 轮，全局并发 2 个模型。
-      # 只给 worker：gateway 侧不消费这些值。管理面任务卡展示的周期是固定
-      # 12h 的展示值，不会反映这里的配置。
-      PERF_SCHEDULE_ENABLED: "${PERF_SCHEDULE_ENABLED:-true}"
-      PERF_SCHEDULE_TIMES: "${PERF_SCHEDULE_TIMES:-00:00,12:00}"
-      PERF_SCHEDULE_TIMEZONE: "${PERF_SCHEDULE_TIMEZONE:-Asia/Shanghai}"
-      PERF_SCHEDULE_RUNS: "${PERF_SCHEDULE_RUNS:-3}"
-      PERF_SCHEDULE_CONCURRENCY: "${PERF_SCHEDULE_CONCURRENCY:-2}"
       METRICS_ADDR: ":8006"
       METRICS_TOKEN: "${METRICS_TOKEN:-}"
     depends_on:

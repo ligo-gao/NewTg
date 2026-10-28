@@ -84,9 +84,10 @@ services:
     networks:
       - backend
 
-  # 性能页查询的数据源。只补 PROMETHEUS_URL，不重复主文件已有的
-  # METRICS_ADDR / METRICS_TOKEN（compose 合并 environment 映射，重复写只会
-  # 增加漂移风险）。
+  # 性能页查询的数据源。主文件已给空默认；本文件只在未显式配置时补部署内
+  # 地址。`PROMETHEUS_TIMEOUT` / `PROMETHEUS_CACHE_TTL` 已由主文件共享 env
+  # 提供，不重复；`METRICS_ADDR` / `METRICS_TOKEN` 同理（compose 合并
+  # environment 映射，重复写只会增加漂移风险）。
   gateway:
     environment:
       PROMETHEUS_URL: "${PROMETHEUS_URL:-http://prometheus:9090}"

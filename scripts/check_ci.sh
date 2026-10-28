@@ -14,7 +14,8 @@
 #   f. 镜像构建上下文为仓库根（仓根 .dockerignore 裁剪），notices 随镜像与 release 附件分发
 #      （MIT/ISC 许可文本保留要求；backend/.dockerignore 已迁至仓根）。
 #   g. 7 语种词典键集合一致（scripts/check_locale_parity.sh）；
-#   h. 监控栈 compose override 与主文件均可解析（无 docker 时跳过，不假红）。
+#   h. 监控栈 compose override 与主文件均可解析，且主文件单独解析**不需要**
+#      METRICS_TOKEN（不带监控 override 的部署不该被它拦住；无 docker 时跳过，不假红）。
 #
 # 退出码：0 全部通过；1 存在断言失败。本脚本不改任何文件，可安全在 CI 与本机运行。
 set -uo pipefail
@@ -208,27 +209,36 @@ fi
 # `docker compose config` 才会暴露拼写/引用错误。本机无 docker 时打印跳过行
 # 并继续，保证部署静态门禁在开发机上仍以 0 退出。
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-  # 主文件 :? 必填变量共 8 个（DATABASE_TLS 是 :-disable 的选填项，一并给出
-  # 无害）；override 另需 METRICS_TOKEN。显式注入，避免读到开发者本机 deploy/.env。
-  COMPOSE_ENV=(
-    CREDENTIAL_ENCRYPTION_KEY=ci-key DATABASE_TLS=disable METRICS_TOKEN=ci-token
+  # 主文件 :? 必填变量共 8 个（DATABASE_TLS 是 :-disable 的选填项，一并给出无害）。
+  # METRICS_TOKEN **故意缺席**：不带监控 override 的部署不该需要它，这条断言就是钉住这一点。
+  BASE_ENV=(
+    CREDENTIAL_ENCRYPTION_KEY=ci-key DATABASE_TLS=disable
     POSTGRES_PASSWORD=x POSTGRES_APP_PASSWORD=x POSTGRES_MIGRATE_PASSWORD=x
     POSTGRES_BACKUP_PASSWORD=x POSTGRES_RETENTION_PASSWORD=x
     REDIS_PASSWORD=x SESSION_SECRET=x
   )
+  # override 的 metrics-token 服务用 :? 校验 METRICS_TOKEN，只有带 -f override 时才需要。
+  OVERRIDE_ENV=("${BASE_ENV[@]}" METRICS_TOKEN=ci-token)
   check_compose() {
+    # 第 1 参数是 env 数组**名**；nameref 展开其值。
+    # 注意不能用 "${!ref[@]}"：bash 的 `!` 间接展开对数组返回的是下标（0 1 …），
+    # 不是值——那样会变成 `env 0 1 docker compose …`。
+    local -n env_ref="$1"
+    local env_ref_name="$1"; shift
     local out
     # 2>&1 >/dev/null：先把 stderr 复制到命令替换管道，再丢弃 stdout，只留错误。
-    if out="$(env "${COMPOSE_ENV[@]}" docker compose -p ci-check "$@" config 2>&1 >/dev/null)"; then
-      ok "compose config: $*"
+    if out="$(env "${env_ref[@]}" docker compose -p ci-check "$@" config 2>&1 >/dev/null)"; then
+      ok "compose config（$env_ref_name）: $*"
     else
-      bad "compose config 失败: $*"
+      bad "compose config 失败（$env_ref_name）: $*"
       printf '%s\n' "$out" >&2
     fi
   }
   # -p ci-check：避免与开发者本地项目名 newtg 的网络/卷冲突。
-  check_compose -f "$ROOT/deploy/docker-compose.yml" -f "$ROOT/deploy/docker-compose.monitoring.yml"
-  check_compose -f "$ROOT/deploy/docker-compose.yml"
+  # 1) 仅主文件 + BASE_ENV：证明部署不装监控栈时不需要 METRICS_TOKEN。
+  check_compose BASE_ENV -f "$ROOT/deploy/docker-compose.yml"
+  # 2) 主文件 + override + OVERRIDE_ENV：监控栈（含 metrics-token）可解析。
+  check_compose OVERRIDE_ENV -f "$ROOT/deploy/docker-compose.yml" -f "$ROOT/deploy/docker-compose.monitoring.yml"
 else
   ok "跳过 compose 校验（无 docker）"
 fi
