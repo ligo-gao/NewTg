@@ -10,6 +10,7 @@ import {
   isExternalHref,
   isNavEntryVisible,
   isSafePublicHref,
+  publicApiEndpoint,
   type PublicNavKey,
   type ShellFooterColumn,
   type ShellFooterLink,
@@ -61,27 +62,6 @@ function plainText(html: string | undefined): string {
     })
     .replace(/\s+/g, " ")
     .trim();
-}
-
-/**
- * The copyable OpenAI-compatible base URL. Only a public absolute http(s)
- * address qualifies: loopback is never reachable by a visitor, so showing it
- * would be a lie dressed as data.
- */
-function apiEndpoint(serverAddress: string): string {
-  const value = serverAddress.trim().replace(/\/+$/, "");
-  if (!/^https?:\/\//i.test(value)) return "";
-
-  let host: string;
-  try {
-    host = new URL(value).hostname.toLowerCase();
-  } catch {
-    return "";
-  }
-  if (host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]") {
-    return "";
-  }
-  return `${value}/v1`;
 }
 
 /**
@@ -156,7 +136,7 @@ export function SiteFooter({ copy, locale }: { copy: Copy; locale: Locale }) {
 
   const filingNo = (status?.site?.filing_no ?? "").trim();
   const statement = plainText(status?.site?.about_html) || shell["footer.tagline"];
-  const endpoint = apiEndpoint(serverAddress);
+  const endpoint = publicApiEndpoint(serverAddress);
 
   function changeLocale(next: string) {
     const value = next as Locale;

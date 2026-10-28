@@ -184,12 +184,20 @@ describe('PublicFooter real link set (unified footer)', () => {
     expect(openai.getAttribute('rel')).toBe('noopener noreferrer')
   })
 
-  it('omits the endpoint when server_address is loopback', async () => {
+  it.each([
+    'http://127.0.0.1:3000',
+    'http://192.168.1.10:3000',
+    'http://10.0.0.1:8080',
+    'http://172.16.31.9',
+    'http://169.254.169.254',
+    'http://[fd00::1]:3000',
+    'http://user:pass@gateway.example.com',
+  ])('omits the endpoint when server_address is not publicly reachable: %s', async (address) => {
     server.use(
       http.get(`${ORIGIN}/api/status`, () =>
         HttpResponse.json({
           ...PUBLIC_STATUS,
-          site: { ...PUBLIC_STATUS.site, server_address: 'http://127.0.0.1:3000' },
+          site: { ...PUBLIC_STATUS.site, server_address: address },
         }),
       ),
       http.get(`${ORIGIN}/api/me`, () => HttpResponse.json({}, { status: 401 })),

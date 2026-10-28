@@ -2,6 +2,7 @@ import {
   FRIEND_LINKS,
   ShellFooter,
   formatShellCopy,
+  publicApiEndpoint,
   type ShellFooterColumn,
   type ShellFooterLink,
 } from '@newtg/public-shell'
@@ -28,19 +29,6 @@ function isExternal(href: string): boolean {
 
 /** Product column order, mirroring the approved footer demo's PRODUCT_ORDER. */
 const PRODUCT_KEYS = ['models', 'pricing', 'rankings', 'about', 'console'] as const
-
-/**
- * The OpenAI-compatible base URL shown in the footer, copied verbatim from
- * `demos/unified-footer/index.html`. A private address (`localhost`,
- * `127.0.0.1`, `[::1]`) is not an endpoint a visitor can call, so it renders
- * nothing rather than a copyable dead end.
- */
-export function apiEndpoint(serverAddress: string | undefined): string {
-  const raw = (serverAddress ?? '').trim().replace(/\/+$/, '')
-  if (!/^https?:\/\//i.test(raw)) return ''
-  if (/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(raw)) return ''
-  return `${raw}/v1`
-}
 
 /**
  * F-09-37 footer. Rendered only inside `PublicLayout`; console routes use
@@ -126,7 +114,7 @@ export function PublicFooter() {
   const degraded = status.isError && site === undefined
   // A private/loopback address (or no address at all) yields '', so the strip
   // is simply omitted.
-  const endpoint = apiEndpoint(site?.server_address)
+  const endpoint = publicApiEndpoint(site?.server_address)
 
   function changeLocale(next: string) {
     const value = next as Locale

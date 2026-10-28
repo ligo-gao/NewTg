@@ -261,6 +261,17 @@ describe("SiteFooter", () => {
     "http://localhost:3000",
     "http://127.0.0.1:8080",
     "http://[::1]:8080",
+    // 私网 / 链路本地 / CGNAT / IPv6 ULA：访客根本到不了，渲染出来只是假数据。
+    "http://10.0.0.1:8080",
+    "http://172.16.31.9",
+    "http://192.168.1.10:3000",
+    "http://169.254.169.254",
+    "http://100.64.0.1",
+    "http://0.0.0.0:3000",
+    "http://[fd00::1]:3000",
+    "http://[::ffff:127.0.0.1]:3000",
+    // userinfo 会把凭据印到公开页面上。
+    "http://user:pass@gateway.example.com",
     "10.0.0.1:8080",
     "",
   ])("hides the endpoint for %s", (serverAddress) => {
