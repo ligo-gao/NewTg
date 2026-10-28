@@ -1064,9 +1064,19 @@ func failureAuditFields(rc *contract.RelayContext) (string, string) {
 // refundableConsumed），合并为一行 release。重复调用时：有 hold → CAS 未
 // 命中；无 hold → 命中共用的 billing:* 结案标记（settlementExists）；
 // 最后 release 唯一索引兜底并发窗口。三者都按幂等命中处理。
-func (s *Session) Refund() error {
+func (s *Session) Refund() (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// P1-5：退款失败时请求已经结束，但心跳是用 WithoutCancel 起跑的，不会
+	// 自己退出——留着它租约永远新鲜，worker 的悬挂扫描永远看不到这笔 hold。
+	// 失败路径统一停掉续租；租约**不删**（与 Terminate 失败同口径），让它在
+	// TTL 到期后进入 worker 的兜底扫描。
+	defer func() {
+		if err != nil {
+			s.stopHeartbeatLocked()
+		}
+	}()
 
 	if s.requestID == "" {
 		return ErrMissingRequestID

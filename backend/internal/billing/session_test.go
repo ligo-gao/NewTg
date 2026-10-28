@@ -2687,3 +2687,41 @@ func TestSessionTerminateChargeFailureStopsHeartbeat(t *testing.T) {
 		}
 	}
 }
+
+// TestSessionRefundFailureStopsHeartbeat 覆盖 P1-5：退款事务失败时 hold 留在
+// 账本等补偿扫描，但心跳必须停止——租约用 WithoutCancel 起跑，只有显式停止
+// 才会退出；留着它租约永远新鲜，worker 的悬挂扫描永远看不到这笔 hold。
+func TestSessionRefundFailureStopsHeartbeat(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	userID := createBillingTestUser(t, db, 1_000_000)
+	reg := &fakeRegistry{}
+	e := NewEngine(gormDB, nil, nil, billingTestConfig(), nil, reg, nil)
+	e.heartbeat = 10 * time.Millisecond
+	req := testRequestID("refund-heartbeat")
+	s := newBillingTestSession(e, userID, req, ratioSnapshot(1_000_000, 1_000_000))
+
+	if err := s.PreConsume(contract.QuotaEstimate{Model: "m", PromptTokens: 100}); err != nil {
+		t.Fatalf("PreConsume: %v", err)
+	}
+	waitHeartbeats(t, reg, 2)
+
+	// 关库让退款事务失败（模拟 DB 抖动）：hold 保持开放，等补偿扫描收尾。
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	if err := s.Refund(); err == nil {
+		t.Fatal("关库后退款必须失败")
+	}
+
+	_, _, before := reg.snapshot()
+	time.Sleep(60 * time.Millisecond) // ≥ 5 个心跳周期
+	events, _, after := reg.snapshot()
+	if after != before {
+		t.Fatalf("heartbeats %d -> %d：退款失败后心跳必须停止", before, after)
+	}
+	for _, ev := range events {
+		if ev == "remove" {
+			t.Fatal("租约不得删除：worker 靠 Redis 索引（TTL 过期）发现悬挂 hold")
+		}
+	}
+}
