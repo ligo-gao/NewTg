@@ -351,6 +351,7 @@ jobs:
       POSTGRES_APP_PASSWORD: ci-app-password
       POSTGRES_MIGRATE_PASSWORD: ci-migrate-password
       POSTGRES_BACKUP_PASSWORD: ci-backup-password
+      POSTGRES_RETENTION_PASSWORD: ci-retention-password
       REDIS_PASSWORD: ci-redis-password
       SESSION_SECRET: ci-session-secret
       CREDENTIAL_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
