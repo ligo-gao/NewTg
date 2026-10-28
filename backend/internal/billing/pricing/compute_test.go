@@ -418,3 +418,51 @@ func setQPU(t *testing.T, n int64) func() {
 	}
 	return func() { _ = SetQuotaPerUnit(old) }
 }
+
+// TestComputeRatioLargeUsageInexactGroupRatio 验证结算侧的大用量 × 非精确
+// 二进制分组倍率（audit P1-11）。
+//
+// 结算换算走 decimal（dec(v) = decimal.NewFromFloat，取最短十进制表示），
+// 因此倍率 0.7 被当作精确的 0.7，而不是 0.6999999999999999…；token 数是
+// int64，乘加不经过 float64。第一个用例同时是判别用例：45 × 0.7 = 31.5，
+// 十进制 Round(0) 半离零得 32，而 float64 乘积 31.499999999999996 只会得 31。
+func TestComputeRatioLargeUsageInexactGroupRatio(t *testing.T) {
+	cases := []struct {
+		name   string
+		tokens int64
+		group  float64
+		want   int64
+	}{
+		{"45 积分 × 0.7（float64 会少 1）", 450_000, 0.7, 32},
+		{"1e9 tokens × 0.1", 1_000_000_000, 0.1, 10_000},
+		{"3e9 tokens × 1/3", 3_000_000_000, 1.0 / 3.0, 100_000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// 输入价 100 积分/1M：tokens × 100 / 1e6 = tokens / 10000。
+			snap := ratioSnapshot(100, 0, 0, 0)
+			snap.GroupRatio = tc.group
+			q, err := ComputeQuota(snap, contract.TokenParams{ImageCount: ImageCountUnset, P: tc.tokens}, nil)
+			if err != nil {
+				t.Fatalf("ComputeQuota: %v", err)
+			}
+			if q != tc.want {
+				t.Fatalf("quota = %d, want %d（十进制精确换算）", q, tc.want)
+			}
+		})
+	}
+}
+
+// TestComputeRatioLargeUsageClamps 验证超大用量在结算侧饱和而不是回绕：
+// 返回钳制后的 MaxQuota 与可审计的 ClampError（billing-07 §2.1）。
+func TestComputeRatioLargeUsageClamps(t *testing.T) {
+	snap := ratioSnapshot(100, 0, 0, 0)
+	q, err := ComputeQuota(snap, contract.TokenParams{ImageCount: ImageCountUnset, P: math.MaxInt64}, nil)
+	if q != contract.MaxQuota {
+		t.Fatalf("quota = %d, want MaxQuota %d（饱和而非回绕）", q, contract.MaxQuota)
+	}
+	clamp, ok := AsClamp(err)
+	if !ok || clamp.Kind != contract.ClampOverflow || clamp.Op != "QuotaFromDecimalChecked" {
+		t.Fatalf("应返回 QuotaFromDecimalChecked 溢出标记，got q=%d err=%v", q, err)
+	}
+}

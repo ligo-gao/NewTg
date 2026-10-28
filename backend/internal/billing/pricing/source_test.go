@@ -3,6 +3,7 @@ package pricing
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"testing"
 
 	"newtg/gateway/internal/contract"
@@ -206,3 +207,34 @@ func TestApplyGroupOverride(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// TestExactPriceFloat64DomainBoundary 锁定 int64 积分价进入 float64 域的两侧：
+// 2^53−1 必须无损接受；2^53 及其以上必须拒绝。
+//
+// >2^53−1 的拒绝已由 TestPriceFromModelRowRejectsInexactPrice 覆盖（它走
+// priceFromModelRow 的同一守卫）；本测试补「恰好上界」与「2^53+1 在 float64
+// 中与 2^53 合并」这两个事实，用来说明上界为何取 2^53−1 而不是 2^53。
+func TestExactPriceFloat64DomainBoundary(t *testing.T) {
+	got, err := exactPrice("prompt_price", maxExactFloatInt)
+	if err != nil {
+		t.Fatalf("恰好 2^53−1 应接受，got %v", err)
+	}
+	if got != float64(maxExactFloatInt) || int64(got) != maxExactFloatInt {
+		t.Fatalf("2^53−1 转换应无损，got %v", got)
+	}
+
+	// 前提：2^53+1 无法用 float64 表示（四舍五入回 2^53）。若这条不成立，
+	// 下方的拒绝用例就不再是「静默丢 1」的证据。
+	if float64(maxExactFloatInt+2) != float64(maxExactFloatInt+1) {
+		t.Fatalf("前提不成立：float64(2^53+1) 应等于 float64(2^53)")
+	}
+
+	for _, v := range []int64{maxExactFloatInt + 1, maxExactFloatInt + 2, math.MaxInt64} {
+		if _, err := exactPrice("prompt_price", v); !errors.Is(err, ErrInvalidPrice) {
+			t.Errorf("超出精确整数域的 %d 应拒绝，got %v", v, err)
+		}
+	}
+	if _, err := exactPrice("prompt_price", -1); !errors.Is(err, ErrInvalidPrice) {
+		t.Errorf("负价应拒绝，got %v", err)
+	}
+}

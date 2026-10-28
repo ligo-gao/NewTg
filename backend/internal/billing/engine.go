@@ -771,6 +771,20 @@ func (e *Engine) preConsumeMultiplier(snap *contract.PriceSnapshot) (float64, er
 	return v, nil
 }
 
+// scalePreConsumeQuota 把估算额按 ratio × pre_consume_multiplier 缩放为
+// 预扣额度（billing-03 §3.2 / §5.4）。
+//
+// factor 本身来自 float64 配置与快照（契约字段类型冻结），乘积在 float64
+// 域完成，换算走 QuotaFromFloatStrict：**向零截断**、越界阻断，绝不静默
+// 饱和（billing-07 §2.1）。base 已由 ComputeQuota 钳在 int32 域，float64
+// 相对误差 <2^-52，因此与「十进制精确乘积的向零截断」最多相差 1 积分；
+// 预扣只是 hold，结算走 QuotaFromDecimalChecked，误差不会进入实收。
+//
+// 单独成函数是为了让 P1-11 的边界单测直接覆盖这条乘积（不需要数据库）。
+func scalePreConsumeQuota(base int64, factor float64) (int64, error) {
+	return pricing.QuotaFromFloatStrict(float64(base) * factor)
+}
+
 // shouldTrust 判定是否命中信任额度旁路（billing-00 §6.4 条件全集）。
 //
 // 全部满足才命中：① 非强制预扣；② 阈值是正有限值；③ 令牌无限额或余额超阈；

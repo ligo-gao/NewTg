@@ -397,7 +397,7 @@ func (s *Session) PreConsume(est contract.QuotaEstimate) (err error) {
 	}
 	budget := base
 	if factor != 1 {
-		budget, err = pricing.QuotaFromFloatStrict(float64(base) * factor)
+		budget, err = scalePreConsumeQuota(base, factor)
 		if err != nil {
 			return fmt.Errorf("billing: scale estimated quota: %w", err)
 		}

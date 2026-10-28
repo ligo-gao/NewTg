@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
+	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/contract"
 )
 
@@ -257,5 +259,83 @@ func TestEngineOutputReserveRejectsDefaultAboveMax(t *testing.T) {
 	e := NewEngine(nil, nil, nil, cfg, nil, nil, nil)
 	if _, err := e.outputReserve(); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("err = %v, want ErrInvalidConfig", err)
+	}
+}
+
+// TestScalePreConsumeQuotaInexactFactorDrift 锁定预扣缩放中的 float64 中间态
+// 边界（audit P1-11）。
+//
+// 约定（billing-03 §5.4 / billing-07 §2.1）：预扣的 float 乘积走
+// QuotaFromFloatStrict，即向零截断。base 已被 ComputeQuota 钳在 int32 域
+// （≤2^31−1），float64 相对误差 <2^-52，故「float64 乘积的截断」与「十进制
+// 精确乘积的截断」最多相差 1 积分。预扣只是 hold；结算走
+// QuotaFromDecimalChecked（十进制、半离零），这点误差不会进入实收。
+func TestScalePreConsumeQuotaInexactFactorDrift(t *testing.T) {
+	cases := []struct {
+		name   string
+		base   int64
+		factor float64
+		want   int64 // 当前实现（float64 乘积向零截断）的值
+		exact  int64 // 十进制精确乘积的向零截断值
+	}{
+		{"100 × 0.1", 100, 0.1, 10, 10},
+		{"100 × 1/3", 100, 1.0 / 3.0, 33, 33},
+		{"100000 × 0.1（大用量）", 100_000, 0.1, 10_000, 10_000},
+		{"2147483647 × 0.1（int32 上界）", contract.MaxQuota, 0.1, 214_748_364, 214_748_364},
+		{"2147483647 × 1/3（int32 上界）", contract.MaxQuota, 1.0 / 3.0, 715_827_882, 715_827_882},
+		// 90 × 0.7 = 63，但 float64 乘积为 62.99999999999999，向零截断得
+		// 62——P1-11 要钉住的 1 积分下穿（仍在 ≤1 的误差界内）。
+		{"90 × 0.7（float64 下穿整数）", 90, 0.7, 62, 63},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := scalePreConsumeQuota(tc.base, tc.factor)
+			if err != nil {
+				t.Fatalf("scalePreConsumeQuota: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("quota = %d, want %d（向零截断的 float64 乘积）", got, tc.want)
+			}
+			if diff := got - tc.exact; diff < -1 || diff > 1 {
+				t.Fatalf("与十进制精确乘积差 %d 积分，超出 ≤1 的 float64 误差界", diff)
+			}
+		})
+	}
+}
+
+// TestScalePreConsumeQuotaOverflowBlocks 验证缩放越界时由 Strict 阻断，
+// 不会静默饱和成 MaxQuota 后继续冻结（billing-07 §2.1 的预扣语义）。
+func TestScalePreConsumeQuotaOverflowBlocks(t *testing.T) {
+	q, err := scalePreConsumeQuota(90, 1e9) // 9e10 > MaxInt32
+	if q != 0 || err == nil {
+		t.Fatalf("越界应返回 (0,error)，got q=%d err=%v", q, err)
+	}
+	clamp, ok := pricing.AsClamp(err)
+	if !ok || clamp.Kind != contract.ClampOverflow || clamp.Op != "QuotaFromFloatStrict" {
+		t.Fatalf("应为 QuotaFromFloatStrict 溢出标记，got %v", err)
+	}
+
+	// 恰好 MaxInt32 界内：不产生标记。
+	if q, err := scalePreConsumeQuota(int64(contract.MaxQuota), 1); q != contract.MaxQuota || err != nil {
+		t.Fatalf("上界内应通过，got q=%d err=%v", q, err)
+	}
+}
+
+// TestPreConsumeMultiplierRejectsNonFinite 补齐 pre_consume_multiplier 的
+// 非有限值守卫。负值（TestEngineConfigValidation）与零值默认 1
+// （TestEnginePreConsumeMultiplierDefault）已有覆盖，这里只补 NaN/±Inf。
+func TestPreConsumeMultiplierRejectsNonFinite(t *testing.T) {
+	e := NewEngine(nil, nil, nil, nil, nil, nil, nil)
+	for _, v := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if _, err := e.preConsumeMultiplier(&contract.PriceSnapshot{PreConsumeMultiplier: v}); !errors.Is(err, ErrInvalidConfig) {
+			t.Errorf("multiplier=%v 应拒绝，got %v", v, err)
+		}
+	}
+	// 0.1/1/3 这类合法非精确小数必须原样冻结，不得被取整或拒绝。
+	for _, v := range []float64{0.1, 1.0 / 3.0} {
+		got, err := e.preConsumeMultiplier(&contract.PriceSnapshot{PreConsumeMultiplier: v})
+		if err != nil || got != v {
+			t.Errorf("multiplier=%v 应原样返回，got %v err=%v", v, got, err)
+		}
 	}
 }
