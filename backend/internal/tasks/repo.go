@@ -534,8 +534,14 @@ func (r *Repo) MJChannelCandidates(ctx context.Context, model, group string) ([]
 // 退款等于把「结果已生成」白送给用户，是直接的资金损失；同时 MJ 的 Action
 // 解释权（family=mj 的动作族）也会被插件钩子错误解释。
 //
-// 按 id 升序而不是创建时间：id 是单调的插入序，天然稳定，便于「同渠道内
-// 串行」的确定性遍历；LIMIT 把单轮扫描面压住（TASK_QUERY_LIMIT）。
+// 按最近一次被轮询的时间升序（id 兜底）：ApplyPoll / IncrementPollFailures
+// 都会把 updated_at 推到 now()，于是「刚轮询过的」自动排到队尾。按 id 升序
+// 会让超过单轮 LIMIT 时 id 大的任务永远进不了这一批——视频/动画这类后提交
+// 的长任务正好被饿死，用户看到一直「处理中」、hold 也不解（P1-7）。
+//
+// 代价：部分索引 tasks_pending_idx 只覆盖 state，排序要对全部在飞行做一次
+// sort；在飞行规模受 LIMIT 约束前可接受，真正需要时再补 (family, updated_at)
+// 索引。
 //
 // 未知 family 返回错误而不是空集：静默空结果会把调用方拼错家族名伪装成
 // 「本轮没有任务」，让资金侧停摆不可见。
@@ -552,7 +558,7 @@ func (r *Repo) ListPendingByFamily(ctx context.Context, family string, limit int
 	return r.scanTasks(r.db.QueryContext(ctx,
 		`SELECT `+taskColumns+` FROM tasks
 		 WHERE family = $1 AND state NOT IN ('success', 'failure')
-		 ORDER BY id ASC LIMIT $2`, family, limit))
+		 ORDER BY updated_at ASC, id ASC LIMIT $2`, family, limit))
 }
 
 // ListReconcilable 返回指定家族中可能需要补偿的终态任务（本批最小版本）。

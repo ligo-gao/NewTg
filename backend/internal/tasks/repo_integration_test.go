@@ -240,6 +240,51 @@ func TestRepoPollingAndSettlement(t *testing.T) {
 	}
 }
 
+// TestRepoPendingListRotatesByLastUpdate 冻结 P1-7：未完成列表按「最久没被
+// 轮询」排序而不是 id。非终态任务超过单轮 LIMIT 时，按 id 升序会让队尾
+// （后提交的长任务）永远进不了这一批，用户看到任务一直「处理中」。
+func TestRepoPendingListRotatesByLastUpdate(t *testing.T) {
+	db := openTaskTestDB(t)
+	repo := NewRepo(db)
+	ctx := context.Background()
+	userID := time.Now().UnixNano() % 1_000_000
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM tasks WHERE user_id = $1`, userID) })
+
+	base := time.Now().UTC().Add(-6 * time.Hour)
+	// 插入顺序故意与「最近被轮询」顺序相反：最后插入的行最久没被碰过。
+	// 按 id 排序 → [a b c]；按最近轮询排序必须是 [c b a]。
+	updates := []time.Duration{2 * time.Hour, time.Hour, 0}
+	ids := make([]int64, 0, len(updates))
+	for i, offset := range updates {
+		task := insertTaskFixture(t, repo, ctx,
+			fmt.Sprintf("task_%d_rot%d", userID, i), userID, StateSubmitted, base)
+		ids = append(ids, task.ID)
+		if _, err := db.ExecContext(ctx,
+			`UPDATE tasks SET updated_at = $2 WHERE id = $1`, task.ID, base.Add(offset)); err != nil {
+			t.Fatalf("pin updated_at: %v", err)
+		}
+	}
+
+	pending, err := repo.ListPendingByFamily(ctx, FamilyPlugin, 1000)
+	if err != nil {
+		t.Fatalf("ListPendingByFamily: %v", err)
+	}
+	position := func(id int64) int {
+		for i, task := range pending {
+			if task.ID == id {
+				return i
+			}
+		}
+		t.Fatalf("task %d missing from pending list", id)
+		return -1
+	}
+	// ids[2] 最久没被轮询，必须排在最前；ids[0] 最近被碰过，排在最后。
+	if !(position(ids[2]) < position(ids[1]) && position(ids[1]) < position(ids[0])) {
+		t.Fatalf("未完成列表必须按 last update 升序轮转：c=%d b=%d a=%d",
+			position(ids[2]), position(ids[1]), position(ids[0]))
+	}
+}
+
 // TestRepoGetChannelIgnoresStatus 验证产物/轮询读取渠道时不因渠道被禁用而失效。
 func TestRepoGetChannelIgnoresStatus(t *testing.T) {
 	db := openTaskTestDB(t)
