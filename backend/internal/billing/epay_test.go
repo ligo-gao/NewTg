@@ -291,7 +291,7 @@ func TestEpayNotifyRejectsBadSignatureAndAmount(t *testing.T) {
 		t.Fatalf("验签失败后订单状态 = %s，期望 pending", order.Status)
 	}
 
-	// 金额不符：订单 failed，不入账。
+	// 金额不符：订单 refund_required（P2-1：渠道已收款，转人工核对），不入账。
 	userID = createBillingTestUser(t, db, 0)
 	deleteTestOrders(t, db, userID)
 	second, err := svc.CreateTopupOrder(ctx, userID, 1000, "CNY", ProviderEpay,
@@ -302,8 +302,8 @@ func TestEpayNotifyRejectsBadSignatureAndAmount(t *testing.T) {
 	if err := svc.HandleEpayNotify(ctx, epayNotifyForm(*second.Order.ProviderTxnID, "9.99", "TRADE_SUCCESS")); !errors.Is(err, ErrAmountMismatch) {
 		t.Fatalf("金额不符应返回 ErrAmountMismatch，实际 %v", err)
 	}
-	if order, _ := svc.GetOrder(ctx, second.Order.ID); order.Status != string(OrderFailed) {
-		t.Fatalf("金额不符后订单状态 = %s，期望 failed", order.Status)
+	if order, _ := svc.GetOrder(ctx, second.Order.ID); order.Status != string(OrderRefundRequired) {
+		t.Fatalf("金额不符后订单状态 = %s，期望 refund_required", order.Status)
 	}
 	if bal := userBalance(t, db, userID); bal != 0 {
 		t.Fatalf("金额不符不得入账，余额 = %d", bal)

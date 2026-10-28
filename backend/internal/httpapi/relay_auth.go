@@ -14,6 +14,7 @@ import (
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/store"
+	"newtg/gateway/internal/tokenstore"
 )
 
 // 本文件实现 /v1 中继路径的令牌鉴权中间件（relay-01 §3 / §3.6）。
@@ -305,6 +306,23 @@ func RelayAuth(tokenStore auth.TokenLookup, access UserAccessStore, trustedProxi
 	return RelayAuthWithRecorder(tokenStore, access, trustedProxies, nil, nil)
 }
 
+// tokenLookupRejected 判定 token Resolve 的错误是否属于「确定的用户侧事实」。
+//
+// 两个 TokenLookup 实现的错误口径不同但语义等价：
+//   - store.TokenRepo（SQL 直查）：只有不存在才报错，禁用/过期通过返回的
+//     meta 由 tokenUsable 判定；
+//   - tokenstore.Store（缓存层，P2-2 的生产实现）：三种拒绝都直接以错误返回。
+//
+// 无论走哪条，这三类都必须在 usage_logs 里留下 refused 行；存储故障
+// （Redis/DB）则一律不记——把基础设施故障说成用户请求的问题会污染限流与
+// 排障结论。新增 TokenLookup 实现时必须在这里显式登记它的拒绝错误。
+func tokenLookupRejected(err error) bool {
+	return errors.Is(err, store.ErrTokenNotFound) ||
+		errors.Is(err, tokenstore.ErrInvalidToken) ||
+		errors.Is(err, tokenstore.ErrTokenDisabled) ||
+		errors.Is(err, tokenstore.ErrTokenExpired)
+}
+
 // RelayAuthWithRecorder 与 RelayAuth 相同，但在鉴权失败时把拒绝写进日志库
 // （status=refused，stage=auth），让客户端错误消息里的 requestId 可以查。
 //
@@ -372,10 +390,10 @@ func RelayAuthWithRecorder(tokenStore auth.TokenLookup, access UserAccessStore,
 			meta, err := tokenStore.Resolve(r.Context(), auth.HashTokenKey(key))
 			if err != nil {
 				// §3.6 对客户端一律 401，但落库必须区分两类原因：
-				//   - 查无此令牌（ErrTokenNotFound）= 确定的用户侧事实，记录；
+				//   - 令牌不存在/禁用/过期 = 确定的用户侧事实，记录；
 				//   - 其它错误（Redis/DB 故障，fail-closed 成 401）在协议上
 				//     不可区分，记成 refused 会把存储故障说成用户请求的问题。
-				if errors.Is(err, store.ErrTokenNotFound) {
+				if tokenLookupRejected(err) {
 					reject(http.StatusUnauthorized, "", "invalid token", 0, nil)
 					return
 				}

@@ -269,6 +269,17 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 // 这不是降级（生产永远命中具体类型），而是为了保持 M0 单测的 GC-8 隔离。
 // logsSQL 是独立的日志库连接（可为 nil：探针-only/测试装配），只用于
 // Task 3b 的拒绝落库。
+// relayTokenLookup 选择中继的令牌解析实现（P2-2）。
+//
+// 生产装配（newGatewayAPI）总是带 Tokens；回退分支只为探针-only/测试装配
+// 保留——那里没有 Redis 缓存，直查仓储是唯一可行实现。
+func relayTokenLookup(assembly *gatewayAssembly, fallback auth.TokenLookup) auth.TokenLookup {
+	if assembly != nil && assembly.Tokens != nil {
+		return assembly.Tokens
+	}
+	return fallback
+}
+
 func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db Resource, logsSQL *sql.DB,
 	rds Resource, assembly *gatewayAssembly) {
 	sqlDB, ok := db.(*sql.DB)
@@ -328,8 +339,11 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db Resource, logsS
 		refusals = httpapi.NewThrottledRefusalRecorder(billing.NewDBLogger(logsSQL))
 	}
 	relayHandler := httpapi.NewRelayHandler(httpapi.RelayHandlerOptions{
-		Channels:        channelRepo,
-		Tokens:          tokenRepo,
+		Channels: channelRepo,
+		// P2-2：生产走带缓存的 tokenstore.Store（与 TokenService、管理面失效
+		// 广播同一个实例）；探针/测试装配没有它时回退直查仓储。
+		Tokens: relayTokenLookup(assembly, tokenRepo),
+		// Access 回源 users.role/status：tokenstore 只有令牌面，没有用户面。
 		Access:          tokenRepo,
 		Sealer:          sealer,
 		Billing:         billingFactory,

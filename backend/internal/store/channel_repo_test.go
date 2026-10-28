@@ -123,3 +123,15 @@ func TestCountRoutableChannelsQueryShape(t *testing.T) {
 		t.Fatalf("渠道数查询必须只用 model_mapping 的键: %s", countRoutableChannelsQuery)
 	}
 }
+
+// TestChannelsByIDsQueryUsesArrayParameter 固定 P2-2 的批量读取 SQL 形状：
+// 必须用 id = ANY($1::bigint[]) 一次取回（与批量状态锁同一写法），并按 id
+// 排序让扫描顺序确定；逐个 id 拼 OR 会让候选规模直接变成 SQL 文本长度。
+func TestChannelsByIDsQueryUsesArrayParameter(t *testing.T) {
+	if !strings.Contains(channelsByIDsQuery, "id = ANY($1::bigint[])") {
+		t.Fatalf("批量读取未使用数组参数: %s", channelsByIDsQuery)
+	}
+	if !strings.Contains(channelsByIDsQuery, "ORDER BY id") {
+		t.Fatalf("批量读取缺少 ORDER BY id（扫描顺序必须确定）: %s", channelsByIDsQuery)
+	}
+}

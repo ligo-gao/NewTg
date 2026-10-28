@@ -13,6 +13,7 @@ import (
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/store"
+	"newtg/gateway/internal/tokenstore"
 )
 
 func TestRelayCredentialCarriers(t *testing.T) {
@@ -341,4 +342,43 @@ func TestRelayAuthSkipsRefusalForInfrastructureFailures(t *testing.T) {
 			t.Fatalf("refusals = %d, want 0（接线故障不得记成用户拒绝）", got)
 		}
 	})
+}
+
+// TestRelayAuthRecordsTokenstoreRejections 固定 P2-2 的缓存层接线口径：
+// 生产 relay 改为 tokenstore.Store 之后，「令牌不存在/禁用/过期」由它直接
+// 以错误返回（不再返回 meta 交给 tokenUsable 判定）。这三类都是确定的用户
+// 侧事实，必须照旧写 refused 行——否则换成缓存层会让禁用/过期令牌的拒绝
+// 从用量日志里消失，而存储故障仍必须保持「不记」。
+func TestRelayAuthRecordsTokenstoreRejections(t *testing.T) {
+	body := `{"model":"gpt-test","messages":[{"role":"user","content":"hi"}]}`
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{name: "invalid token", err: tokenstore.ErrInvalidToken},
+		{name: "disabled token", err: tokenstore.ErrTokenDisabled},
+		{name: "expired token", err: tokenstore.ErrTokenExpired},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Error("auth failure must not reach upstream")
+			}))
+			defer upstream.Close()
+			env := newRelayTestEnv(t, upstream, nil)
+			rec := &fakeRefusalRecorder{}
+			env.handler.refusals = rec
+			env.tokens.mu.Lock()
+			env.tokens.resolveErr = tc.err
+			env.tokens.mu.Unlock()
+
+			w := env.doAuthed(t, http.MethodPost, "/v1/chat/completions", body)
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401", w.Code)
+			}
+			if got := len(rec.snapshot()); got != 1 {
+				t.Fatalf("refusals = %d, want 1（确定的令牌拒绝必须落库）", got)
+			}
+		})
+	}
 }

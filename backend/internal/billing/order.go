@@ -96,6 +96,9 @@ func (s OrderStatus) Terminal() bool {
 //
 // 合法迁移（白名单显式列出，避免依赖 Terminal 的实现细节）：
 //   - pending → succeeded | failed | expired | cancelled（支付生命周期）；
+//   - pending → refund_required（P2-1：回调确认已收款，但金额/币种与订单不符。
+//     钱已经到渠道，不能记成 failed——failed 的语义是「没收到钱」，对账会把它
+//     当未收款，退款与人工完成两条路也都进不去）；
 //   - succeeded → refund_required（S2/R-29②：钱已收、履约失败）。
 //     S2 的结算事务会在快照迁移失败时走这条迁移并落库；R-33 要求它显式
 //     加白，而不是在业务代码里直接拼 SQL 绕过状态机；
@@ -111,8 +114,13 @@ func Transition(from, to OrderStatus) error {
 		from == OrderPending && to == OrderFailed,
 		from == OrderPending && to == OrderExpired,
 		from == OrderPending && to == OrderCancelled,
+		// P2-1：支付回调确认已收款但金额/币种不符，同样是「钱已收、履约失败」。
+		from == OrderPending && to == OrderRefundRequired,
 		// S2/R-29②：履约失败的「已付款 → 待退款」入口（R-33 显式加白）。
 		from == OrderSucceeded && to == OrderRefundRequired,
+		// P2-1：管理员「按实收入账」——用渠道确认的实收金额补记一次未完成的
+		// 充值，把异常订单收敛为 succeeded；credits 按实收而非订单金额计算。
+		from == OrderRefundRequired && to == OrderSucceeded,
 		// S3/R-31：退款完成。refund_required 的订单同样是「钱已收」。
 		from == OrderSucceeded && to == OrderRefunded,
 		from == OrderRefundRequired && to == OrderRefunded,

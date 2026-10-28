@@ -147,6 +147,9 @@ func BuildRelayContext(ctx context.Context, principal *auth.Principal, req *http
 		if tokenStore == nil {
 			return nil, ErrTokenInvalid
 		}
+		// P2-2：这里的第二次 Resolve 与鉴权中间件读的是同一个带缓存的
+		// tokenstore.Store，命中缓存时不触库；保留它是因为身份一致性能
+		// 在组装阶段被独立复核（鉴权后被换凭据 → 立即 fail-closed）。
 		meta, err := tokenStore.Resolve(ctx, auth.HashTokenKey(key))
 		if err != nil {
 			// 对外仍是 401（不区分存储故障与坏令牌：区分二者会变成状态探测信道，

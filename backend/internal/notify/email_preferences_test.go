@@ -81,6 +81,34 @@ func TestEmailTokenBucketAllowsTenImmediateThenThrottles(t *testing.T) {
 	}
 }
 
+// TestEmailTokenBucketIdleDoesNotBankCredits 冻结 P2-3 的修复：空闲期不得把
+// 令牌攒成「信贷」。
+//
+// 原实现的 next 只在 take 时推进，空闲 10 分钟后 next 仍停在很久以前，
+// 之后的每一次 take 都满足 scheduled.Before(now)，于是可以连续放行任意多条
+// 邮件——burst 形同虚设，发信域名可能被上游判成滥用。修复后空闲最多攒
+// burst 个令牌：前 burst 次立即通过，第 burst+1 次必须等一个间隔。
+func TestEmailTokenBucketIdleDoesNotBankCredits(t *testing.T) {
+	bucket := newEmailTokenBucket(EmailRateLimitPerSecond, emailRateBurst)
+	now := time.Date(2026, 10, 28, 9, 0, 0, 0, time.UTC)
+
+	// 先用掉初始 burst，让 next 处于稳态。
+	for i := 0; i < emailRateBurst; i++ {
+		bucket.take(now)
+	}
+
+	idle := now.Add(10 * time.Minute)
+	for i := 0; i < emailRateBurst; i++ {
+		if wait := bucket.take(idle); wait != 0 {
+			t.Fatalf("空闲后第 %d 个令牌等待 %v，期望 0（burst=%d）", i+1, wait, emailRateBurst)
+		}
+	}
+	if wait := bucket.take(idle); wait != 100*time.Millisecond {
+		t.Fatalf("空闲后第 %d 个令牌等待 %v，期望 100ms（空闲不得累积超过 burst 个令牌）",
+			emailRateBurst+1, wait)
+	}
+}
+
 func TestIsTransactionalEmailCategoryFrozenSet(t *testing.T) {
 	transactional := []string{
 		"auth.verify_code", "auth.password_reset", "auth.welcome",

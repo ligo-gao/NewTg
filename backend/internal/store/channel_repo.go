@@ -261,6 +261,38 @@ func (r *ChannelRepo) Get(ctx context.Context, id int64) (*Channel, error) {
 	return ch, nil
 }
 
+// channelsByIDsQuery 是批量读取（GetMany）的 SQL。与批量状态锁同一写法
+// （id = ANY($1::bigint[])）；ORDER BY id 让结果扫描顺序确定。
+const channelsByIDsQuery = `SELECT ` + channelColumns + ` FROM channels WHERE id = ANY($1::bigint[]) ORDER BY id`
+
+// GetMany 按 id 批量读取渠道（P2-2：中继跨协议过滤一次取回全部候选）。
+//
+// 不存在的 id 不出现在结果里且**不报错**：候选索引可能陈旧（渠道刚被删），
+// 调用方按「缺行 = 不可用」处理。只有存储故障才返回 error。空入参直接返回
+// 空 map，不触库（否则 ANY(空数组) 虽是空集，却没有理由付一次往返）。
+func (r *ChannelRepo) GetMany(ctx context.Context, ids []int64) (map[int64]*Channel, error) {
+	if len(ids) == 0 {
+		return map[int64]*Channel{}, nil
+	}
+	rows, err := r.db.QueryContext(ctx, channelsByIDsQuery, ids)
+	if err != nil {
+		return nil, fmt.Errorf("store: get channels %v: %w", ids, err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make(map[int64]*Channel, len(ids))
+	for rows.Next() {
+		ch, err := scanChannel(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan channels %v: %w", ids, err)
+		}
+		out[ch.ID] = ch
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: get channels %v: %w", ids, err)
+	}
+	return out, nil
+}
+
 // Create 插入一行并返回数据库生成的 id/created_at/updated_at。
 // credentials 必须已是密文（GC-8）；本层不做加解密，避免密钥泄漏到 SQL 层。
 func (r *ChannelRepo) Create(ctx context.Context, ch *Channel) (*Channel, error) {

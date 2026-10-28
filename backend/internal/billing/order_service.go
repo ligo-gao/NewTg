@@ -242,7 +242,17 @@ func (s *TopupService) CompleteOrder(ctx context.Context, order *store.Order,
 		n > manualReasonMaxRunes || hasControlChars(reason) {
 		return ErrInvalidManualReason
 	}
-	if err := Transition(OrderStatus(order.Status), OrderSucceeded); err != nil {
+	// P2-1：refund_required 是「渠道已确认收款、但金额/币种与订单不符」的
+	// 状态。人工核对的处置只有两种——退款，或按实收入账；后者就是本方法。
+	// 只对充值订单开放：订阅购买/续费/升级的 refund_required 意味着履约
+	// 失败，加积分不能替代发货，只能走退款（R-29②/R-33）。
+	entry := OrderStatus(order.Status)
+	creditReceived := entry == OrderRefundRequired
+	if creditReceived && order.BizKind != store.OrderBizKindTopup {
+		return fmt.Errorf("%w: order %d is %s and is not a topup order",
+			ErrOrderStateConflict, order.ID, order.Status)
+	}
+	if err := Transition(entry, OrderSucceeded); err != nil {
 		return fmt.Errorf("%w: order %d is %s", ErrOrderStateConflict, order.ID, order.Status)
 	}
 	state, err := s.queryProviderPayment(ctx, order)
@@ -252,20 +262,24 @@ func (s *TopupService) CompleteOrder(ctx context.Context, order *store.Order,
 	if !state.Paid {
 		return fmt.Errorf("%w: order %d", ErrOrderNotPaid, order.ID)
 	}
-	// 金额一致性在写 manual 标记前判定：金额不符的订单应保持 pending 等
-	// 人工核对，而不是留下「已人工完成」的错误痕迹。
-	if state.Currency != "" && state.Currency != order.Currency {
-		return fmt.Errorf("%w: order %d", ErrCurrencyMismatch, order.ID)
+	if !creditReceived {
+		// 金额一致性在写 manual 标记前判定：金额不符的订单应保持 pending 等
+		// 人工核对，而不是留下「已人工完成」的错误痕迹。
+		if state.Currency != "" && state.Currency != order.Currency {
+			return fmt.Errorf("%w: order %d", ErrCurrencyMismatch, order.ID)
+		}
+		if state.Amount != order.Amount {
+			return fmt.Errorf("%w: order %d expected %d got %d",
+				ErrAmountMismatch, order.ID, order.Amount, state.Amount)
+		}
 	}
-	if state.Amount != order.Amount {
-		return fmt.Errorf("%w: order %d expected %d got %d",
-			ErrAmountMismatch, order.ID, order.Amount, state.Amount)
-	}
+	// refund_required 路径不校验币种相等——订单正因币种/金额不符才停在这里；
+	// 入账金额取渠道确认的实收额 state.Amount（channel 权威），不取订单金额。
 
 	res := s.db.WithContext(ctx).Exec(`
 		UPDATE orders
 		SET manual_completed = true, manual_reason = ?, manual_operator_id = ?, updated_at = now()
-		WHERE id = ? AND status = 'pending'`, reason, operatorID, order.ID)
+		WHERE id = ? AND status = ?`, reason, operatorID, order.ID, string(entry))
 	if res.Error != nil {
 		return fmt.Errorf("billing: mark order %d manual: %w", order.ID, res.Error)
 	}
@@ -283,7 +297,13 @@ func (s *TopupService) CompleteOrder(ctx context.Context, order *store.Order,
 		"manual_operator_id": operatorID,
 		"manual_reason":      reason,
 	})
-	if err := s.settleOrder(ctx, order, state.Amount, state.Currency, raw); err != nil {
+	settle := s.settleOrder
+	if creditReceived {
+		settle = func(ctx context.Context, order *store.Order, amount int64, currency string, raw []byte) error {
+			return s.settleMismatchTopup(ctx, order, amount, currency, raw)
+		}
+	}
+	if err := settle(ctx, order, state.Amount, state.Currency, raw); err != nil {
 		// 入账失败（含并发取消/金额竞态）：清掉 manual 标记，保持「未完成」
 		// 的可重试语义。succeeded 行不会经过这里。
 		s.clearManualCompletion(ctx, order.ID)

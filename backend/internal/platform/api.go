@@ -53,6 +53,12 @@ type gatewayAssembly struct {
 	Handler http.Handler
 	// Billing 为每个中继请求构造计费会话；nil 时中继回退 M2 桩。
 	Billing func(*contract.RelayContext) contract.BillingSession
+	// Tokens 是带 Redis 缓存的令牌解析面（P2-2）：中继鉴权与
+	// relay.BuildRelayContext 都通过它解析 sk- 令牌，命中缓存时不再每请求
+	// 直查 api_tokens；管理面（TokenService）复用同一个实例，因此管理端
+	// 改令牌后的失效广播对中继立即生效（GC-11）。
+	// nil 表示本次装配没有缓存层（探针-only/测试），中继回退直查仓储。
+	Tokens *tokenstore.Store
 	// ModelStatus 是派发前的模型停用检查（R-84）。
 	ModelStatus httpapi.RelayModelStatusStore
 	// Config 是配置中心读取面（M4 跨协议转发开关等中继侧配置）。
@@ -735,6 +741,7 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 
 	return &gatewayAssembly{
 		Handler:                router,
+		Tokens:                 tokens,
 		Billing:                engine.NewSession,
 		ModelStatus:            pricingRepo,
 		Config:                 demoConfig,

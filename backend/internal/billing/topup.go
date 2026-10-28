@@ -1501,52 +1501,105 @@ func (s *TopupService) settleOrder(ctx context.Context, order *store.Order,
 		return s.failMismatch(ctx, order, "currency_mismatch", raw, map[string]any{
 			"expected_currency": order.Currency,
 			"got_currency":      providerCurrency,
+			"got_amount":        providerAmount,
 		}, ErrCurrencyMismatch)
 	}
 	if providerAmount != order.Amount {
 		return s.failMismatch(ctx, order, "amount_mismatch", raw, map[string]any{
 			"expected_amount": order.Amount,
 			"got_amount":      providerAmount,
+			// 金额不符也要记币种：它已与订单一致（币种分支在上面先行返回），
+			// 人工按实收入账时要按它换算，缺了就只剩订单自己的币种可猜。
+			"got_currency": providerCurrency,
 		}, ErrAmountMismatch)
 	}
 
-	quotaPerUnit, err := s.quotaPerUnit()
+	credits, err := s.topupCredits(ctx, order, order.Amount)
 	if err != nil {
 		return err
+	}
+	return s.creditTopupTx(ctx, order, credits, providerAmount, providerCurrency, raw, OrderPending)
+}
+
+// topupCredits 把实收金额（最小货币单位）换算为到账积分。
+//
+// creditMinor 在正常路径等于订单金额；人工「按实收入账」时是渠道确认的实收
+// 金额（P2-1）——两者共用同一套配额单位与分组倍率，避免两条入账路径算出不同
+// 的到账数。
+func (s *TopupService) topupCredits(ctx context.Context, order *store.Order, creditMinor int64) (int64, error) {
+	quotaPerUnit, err := s.quotaPerUnit()
+	if err != nil {
+		return 0, err
 	}
 	ratios, err := s.topupGroupRatios()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	group, err := s.userGroup(ctx, order.UserID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	ratio, err := GroupRatio(ratios, group)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	credits, err := ComputeCredits(order.Amount, quotaPerUnit, ratio)
+	credits, err := ComputeCredits(creditMinor, quotaPerUnit, ratio)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if credits <= 0 {
 		// 极小倍率把到账积分抹平：写入 0 积分流水违反 DB CHECK，且用户会
-		// 看到「支付成功但没到账」。整体回滚，订单保持 pending 等人工处理。
-		return fmt.Errorf("%w: credits floor to zero for order %d", ErrInvalidFundingCredit, order.ID)
+		// 看到「支付成功但没到账」。整体回滚，订单保持原状态等人工处理。
+		return 0, fmt.Errorf("%w: credits floor to zero for order %d", ErrInvalidFundingCredit, order.ID)
 	}
+	return credits, nil
+}
 
+// settleMismatchTopup 把 refund_required 的充值订单按渠道确认的实收金额入账
+// （P2-1 的人工处置路径之一）。
+//
+// 只接受充值订单：订阅购买/续费/升级的 refund_required 是「钱已收、履约
+// 失败」，履约动作不是加积分，只能退款（R-29②/R-33）。
+//
+// 入账依据是 received（渠道实收），不是 order.Amount：金额不符的订单如果
+// 按订单金额入账，等于把差额白送出去。
+func (s *TopupService) settleMismatchTopup(ctx context.Context, order *store.Order,
+	received int64, providerCurrency string, raw []byte) error {
+
+	if order.BizKind != store.OrderBizKindTopup {
+		return fmt.Errorf("%w: order %d is %s", ErrOrderStateConflict, order.ID, order.Status)
+	}
+	if received <= 0 {
+		return fmt.Errorf("%w: order %d received %d", ErrInvalidFundingCredit, order.ID, received)
+	}
+	credits, err := s.topupCredits(ctx, order, received)
+	if err != nil {
+		return err
+	}
+	return s.creditTopupTx(ctx, order, credits, received, providerCurrency, raw, OrderRefundRequired)
+}
+
+// creditTopupTx 是充值订单的唯一入账事务。
+//
+// from 是允许被本事务改写的来源状态：正常回调只认 pending，人工按实收入账
+// 认 refund_required（P2-1）。条件 UPDATE 与入账同事务（P-15），否则
+// 「订单成功、入账失败」会留下永远无法重试的成功订单（重投时状态已变）。
+func (s *TopupService) creditTopupTx(ctx context.Context, order *store.Order,
+	credits, providerAmount int64, providerCurrency string, raw []byte, from OrderStatus) error {
+
+	// 币种用 COALESCE 保留旧值：人工按实收入账时渠道可能不回传币种，
+	// 而 refund_required 行上的 provider_currency 是核对时唯一的币种依据。
 	credited := false
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// P-15：条件 UPDATE 与入账同事务。否则「订单成功、入账失败」会
-		// 留下永远无法重试的成功订单（重投时 status != pending）。
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		res := tx.Exec(`
 			UPDATE orders
 			SET status = 'succeeded', paid_at = now(), raw_callback = ?,
-			    credited_credits = ?, provider_amount = ?, provider_currency = ?,
-			    currency_scale = ?, updated_at = now()
-			WHERE id = ? AND status = 'pending'`,
-			raw, credits, providerAmount, providerCurrency, currencyScale(order.Currency), order.ID)
+			    credited_credits = ?, provider_amount = ?,
+			    currency_scale = ?, failure_code = NULL, updated_at = now(),
+			    provider_currency = COALESCE(NULLIF(?, ''), provider_currency)
+			WHERE id = ? AND status = ?`,
+			raw, credits, providerAmount, currencyScale(order.Currency),
+			providerCurrency, order.ID, string(from))
 		if res.Error != nil {
 			return fmt.Errorf("billing: settle order %d: %w", order.ID, res.Error)
 		}
@@ -1581,10 +1634,10 @@ func (s *TopupService) settleOrder(ctx context.Context, order *store.Order,
 	if credited {
 		s.log.Info("payment credited",
 			"order_id", order.ID, "provider", order.Provider, "credits", credits,
-			"amount", order.Amount, "currency", order.Currency)
+			"amount", order.Amount, "currency", order.Currency, "from", string(from))
 	}
 	// 无论本次是否实际入账（并发落败路径 credited=false），都重读数据库：
-	// 条件 UPDATE 可能由另一请求完成，内存状态可能仍是 pending。
+	// 条件 UPDATE 可能由另一请求完成，内存状态可能仍是旧值。
 	if err := s.refreshOrder(ctx, order); err != nil {
 		return err
 	}
@@ -1594,13 +1647,27 @@ func (s *TopupService) settleOrder(ctx context.Context, order *store.Order,
 	return nil
 }
 
-// failMismatch 把订单置 failed 并写受控失败码；绝不入账。
+// failMismatch 把订单置 refund_required 并写受控失败码；绝不入账。
+//
+// P2-1：这里**不能**用 failed。回调已经验签且渠道确认收款，只是金额/币种与
+// 订单不符——failed 的语义是「没收到钱」，对账会把实收当未收，退款入口
+// （refundableOrderStatus）和人工完成入口（Transition 白名单）也都进不去，
+// 这笔钱此后既不能退也不能入账，只能改库。refund_required 才是「钱已收、
+// 履约失败」：管理员可以按实收入账（CompleteOrder），也保留退款路径。
+//
+// 实收金额/币种同时落列，人工处置与核对都以它为准，不必再解析回调原文。
 //
 // 条件 UPDATE 保证不会把并发已成功的订单降级；若回查发现已 succeeded，
 // 视为「成功路径先到」并返回 nil（金额比对失败但钱已按订单金额入账，
 // 属于需要人工核对的异常，告警已经由调用方日志覆盖）。
 func (s *TopupService) failMismatch(ctx context.Context, order *store.Order,
 	failureCode string, raw []byte, detail map[string]any, mismatchErr error) error {
+
+	var receivedArg *int64
+	if received, ok := detail["got_amount"].(int64); ok {
+		receivedArg = &received
+	}
+	currency, _ := detail["got_currency"].(string)
 
 	// 结构化告警：订单号、渠道、期望/实收。绝不记录签名头或卡信息。
 	args := []any{"order_id", order.ID, "provider", order.Provider, "failure_code", failureCode}
@@ -1610,13 +1677,18 @@ func (s *TopupService) failMismatch(ctx context.Context, order *store.Order,
 	s.log.Error("payment callback rejected: order/amount mismatch", args...)
 
 	res := s.db.WithContext(ctx).Exec(
-		`UPDATE orders SET status = 'failed', failure_code = ?, raw_callback = ?, updated_at = now()
-		 WHERE id = ? AND status = 'pending'`, failureCode, raw, order.ID)
+		`UPDATE orders
+		 SET status = 'refund_required', failure_code = ?, raw_callback = ?,
+		     provider_amount = COALESCE(?, provider_amount),
+		     provider_currency = COALESCE(NULLIF(?, ''), provider_currency),
+		     updated_at = now()
+		 WHERE id = ? AND status = 'pending'`,
+		failureCode, raw, receivedArg, currency, order.ID)
 	if res.Error != nil {
 		return fmt.Errorf("billing: mark order %d failed: %w", order.ID, res.Error)
 	}
 	if res.RowsAffected > 0 {
-		order.Status = string(OrderFailed)
+		order.Status = string(OrderRefundRequired)
 		return mismatchErr
 	}
 	var status string

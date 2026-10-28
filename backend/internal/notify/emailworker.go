@@ -509,6 +509,13 @@ func (b *emailTokenBucket) take(now time.Time) time.Duration {
 		b.next = now.Add(-time.Duration(b.burst-1) * b.interval)
 		b.started = true
 	}
+	// P2-3：空闲期不得把令牌攒成「信贷」。next 只在 take 时推进，若长时间
+	// 没有取令牌，next 会停在很久以前，之后每次 take 都满足 scheduled < now，
+	// 于是可以连续放行任意多条邮件，burst 形同虚设。把虚拟时钟的下限钉在
+	// now-(burst-1)*interval：空闲再久，最多也只能攒下 burst 个令牌。
+	if floor := now.Add(-time.Duration(b.burst-1) * b.interval); b.next.Before(floor) {
+		b.next = floor
+	}
 	scheduled := b.next
 	b.next = scheduled.Add(b.interval)
 	if scheduled.Before(now) {

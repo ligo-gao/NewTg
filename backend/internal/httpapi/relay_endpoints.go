@@ -117,6 +117,15 @@ type RelayChannelStore interface {
 
 var _ RelayChannelStore = (*store.ChannelRepo)(nil)
 
+// channelBatchGetter 是 RelayChannelStore 的**可选**扩展：批量读取渠道行。
+//
+// 接口是冻结的，不能为新优化往里加方法；用可选接口 + 类型断言既能拿到
+// 生产实现（*store.ChannelRepo）的批量 SQL，又不破坏任何其它实现（测试
+// fake、插件侧替身）——没有实现时退回逐条 Get，语义完全一致。
+type channelBatchGetter interface {
+	GetMany(ctx context.Context, ids []int64) (map[int64]*store.Channel, error)
+}
+
 // RelayModelStatusStore 是派发前的模型定价状态只读查询面（R-84 /
 // modules-06 TC-F-06-13-01）。生产实现是 *store.SQLPricingRepo。
 //
@@ -157,7 +166,8 @@ const modelPricingStatusDisabled int16 = 2
 type RelayHandlerOptions struct {
 	// Channels 是候选/渠道/模型列表的数据源（必填）。
 	Channels RelayChannelStore
-	// Tokens 是令牌解析接缝（auth.TokenLookup；生产为 *store.TokenRepo）。
+	// Tokens 是令牌解析接缝（auth.TokenLookup；生产为带缓存的
+	// *tokenstore.Store——见 platform 的 relayTokenLookup，P2-2）。
 	Tokens auth.TokenLookup
 	// Access 回源 users.role/status（生产为 *store.TokenRepo）。
 	Access UserAccessStore
@@ -587,10 +597,14 @@ func (h *RelayHandler) hasLaterGroup(rc *contract.RelayContext) bool {
 // 过滤必须在 PreConsume 之前完成（本函数位于 Candidates 回调内，执行层在
 // 预扣前调用）：目标协议没有可用渠道时直接显式失败，不产生任何计费副作用。
 //
-// 为什么逐个 Get 渠道类型而不是让 store 查询时过滤：Candidates 的存储面
+// 为什么读渠道类型而不是让 store 查询时过滤：Candidates 的存储面
 // （RelayChannelStore）是冻结的，且协议族映射的唯一真源在 adapters 分派表；
 // 在路由层做这一层过滤可以避免把「渠道类型 → 协议」的知识泄漏进 store。
-// 候选规模是单个模型 + 分组，通常个位数，额外点查询有界。
+//
+// P2-2：读的是「候选这一批」而不是逐条点查——存储实现支持 GetMany 时一次
+// SQL 取回（候选通常个位数，但每个候选一次往返在高峰期就是 N 倍放大器）；
+// 否则（测试替身等）退回逐条 Get。批量调用本身失败时也退回逐条，让 pin
+// 缺失/渠道已删的判定保持既有语义，而不是把基础设施故障说成「协议不支持」。
 func filterCandidatesByProtocol(
 	ctx context.Context,
 	channels RelayChannelStore,
@@ -601,9 +615,10 @@ func filterCandidatesByProtocol(
 	if targetProtocol == "" {
 		return candidates, nil
 	}
+	load := candidateChannelLoader(ctx, channels, candidates)
 	filtered := make([]contract.ChannelCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		ch, err := channels.Get(ctx, int64(candidate.ChannelID))
+		ch, err := load(int64(candidate.ChannelID))
 		if err != nil {
 			// F4/N1：非 pin 候选的解析失败（索引陈旧/渠道已删）不应拖垮
 			// 整个请求——与执行层「这一轮不可用就换下一个候选」同口径，
@@ -638,6 +653,33 @@ func filterCandidatesByProtocol(
 		return nil, crossproto.ErrUpstreamProtocolUnsupported
 	}
 	return filtered, nil
+}
+
+// candidateChannelLoader 返回按 id 取渠道的函数：优先使用存储的批量读取，
+// 不支持或批量失败时逐条 Get。缺行语义由调用方处理（返回 store.ErrChannelNotFound），
+// 与逐条 Get 完全一致。
+func candidateChannelLoader(ctx context.Context, channels RelayChannelStore,
+	candidates []contract.ChannelCandidate) func(int64) (*store.Channel, error) {
+
+	batch, ok := channels.(channelBatchGetter)
+	if !ok || len(candidates) == 0 {
+		return func(id int64) (*store.Channel, error) { return channels.Get(ctx, id) }
+	}
+	ids := make([]int64, 0, len(candidates))
+	for _, candidate := range candidates {
+		ids = append(ids, int64(candidate.ChannelID))
+	}
+	loaded, err := batch.GetMany(ctx, ids)
+	if err != nil {
+		// 批量读取失败：退回逐条，保持「pin 缺失上抛、普通候选跳过」的判定。
+		return func(id int64) (*store.Channel, error) { return channels.Get(ctx, id) }
+	}
+	return func(id int64) (*store.Channel, error) {
+		if ch, ok := loaded[id]; ok {
+			return ch, nil
+		}
+		return nil, store.ErrChannelNotFound
+	}
 }
 
 // isPinnedCandidate 判定候选是否就是 pin 指向的那一个渠道（N1）。

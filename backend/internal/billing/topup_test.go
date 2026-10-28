@@ -664,13 +664,23 @@ func TestStripeWebhookAmountMismatch(t *testing.T) {
 	if !errors.Is(err, ErrAmountMismatch) {
 		t.Fatalf("err = %v, want ErrAmountMismatch", err)
 	}
+	// P2-1：钱已到账、只是金额不符 → refund_required（「钱已收、履约失败」），
+	// 不是 failed（「没收到钱」）。failed 会被对账当成未收款，且退款入口和人工
+	// 完成入口都进不去，这笔钱就成了死账。
 	var status, failure string
-	if err := db.QueryRow(`SELECT status, failure_code FROM orders WHERE id = $1`, order.Order.ID).
-		Scan(&status, &failure); err != nil {
+	var providerAmount int64
+	var providerCurrency string
+	if err := db.QueryRow(`SELECT status, failure_code, provider_amount, provider_currency
+		FROM orders WHERE id = $1`, order.Order.ID).
+		Scan(&status, &failure, &providerAmount, &providerCurrency); err != nil {
 		t.Fatalf("read order: %v", err)
 	}
-	if status != "failed" || failure != "amount_mismatch" {
-		t.Fatalf("status/failure = %s/%s, want failed/amount_mismatch", status, failure)
+	if status != "refund_required" || failure != "amount_mismatch" {
+		t.Fatalf("status/failure = %s/%s, want refund_required/amount_mismatch", status, failure)
+	}
+	// 实收金额必须落库：人工处置/核对都以它为准，不能只留在回调原文里。
+	if providerAmount != 999 || providerCurrency != "CNY" {
+		t.Fatalf("provider amount/currency = %d/%s, want 999/CNY", providerAmount, providerCurrency)
 	}
 	assertWalletCount(t, db, userID, 0)
 }
@@ -699,10 +709,99 @@ func TestStripeWebhookCurrencyMismatch(t *testing.T) {
 		Scan(&status, &failure); err != nil {
 		t.Fatalf("read order: %v", err)
 	}
-	if status != "failed" || failure != "currency_mismatch" {
-		t.Fatalf("status/failure = %s/%s, want failed/currency_mismatch", status, failure)
+	if status != "refund_required" || failure != "currency_mismatch" {
+		t.Fatalf("status/failure = %s/%s, want refund_required/currency_mismatch", status, failure)
 	}
 	assertWalletCount(t, db, userID, 0)
+}
+
+// newStripePaidStub 同时支持建单（POST /v1/payment_intents）与主动查询
+// （GET /v1/payment_intents/{id}），后者固定返回「已收款 paidAmount」。
+func newStripePaidStub(t *testing.T, paidAmount int64, currency string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer sk_test_123" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/payment_intents":
+			if err := r.ParseForm(); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			_, _ = fmt.Fprintf(w, `{"id":"pi_paid_%s","client_secret":"pi_paid_%s_secret"}`,
+				r.PostForm.Get("amount"), r.PostForm.Get("amount"))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/payment_intents/"):
+			id := strings.TrimPrefix(r.URL.Path, "/v1/payment_intents/")
+			_, _ = fmt.Fprintf(w,
+				`{"id":%q,"amount":%d,"amount_received":%d,"currency":%q,"status":"succeeded"}`,
+				id, paidAmount, paidAmount, currency)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// TestManualCompleteMismatchCreditsReceivedAmount 冻结 P2-1 的处置路径：
+// 金额不符的充值订单可以从 refund_required 由管理员「按实收入账」。
+//
+// 入账依据必须是渠道确认的**实收金额**，不是订单金额——否则一张 1000 分的
+// 订单被实收 999 分时，点一次人工完成就白送 1 分对应的额度。
+func TestManualCompleteMismatchCreditsReceivedAmount(t *testing.T) {
+	gormDB, db := openBillingTestDB(t)
+	stub := newStripePaidStub(t, 999, "cny")
+	userID := createBillingTestUser(t, db, 0)
+	deleteTestOrders(t, db, userID)
+	svc := newStripeTopupService(t, gormDB, stub.URL)
+
+	order, err := svc.CreateTopupOrder(context.Background(), userID, 1000, "CNY", ProviderStripe,
+		fmt.Sprintf("manual-mismatch-%d", topupTestSeq.Add(1)))
+	if err != nil {
+		t.Fatalf("create order: %v", err)
+	}
+	payload := stripeEventPayload(*order.Order.ProviderTxnID, 999, "cny")
+	header := stripeSignatureHeader("whsec_test_123", time.Now().Unix(), payload)
+	if err := svc.HandleStripeWebhook(context.Background(), payload, header); !errors.Is(err, ErrAmountMismatch) {
+		t.Fatalf("webhook err = %v, want ErrAmountMismatch", err)
+	}
+
+	fresh, err := svc.GetOrder(context.Background(), order.Order.ID)
+	if err != nil {
+		t.Fatalf("reload order: %v", err)
+	}
+	if err := svc.CompleteOrder(context.Background(), fresh, 7,
+		"渠道实收与订单不符，按实收入账"); err != nil {
+		t.Fatalf("manual complete: %v", err)
+	}
+
+	var (
+		status      string
+		credited    int64
+		manual      bool
+		walletCount int
+	)
+	if err := db.QueryRow(`SELECT status, credited_credits, manual_completed
+		FROM orders WHERE id = $1`, order.Order.ID).Scan(&status, &credited, &manual); err != nil {
+		t.Fatalf("read order: %v", err)
+	}
+	// 999 分 = ¥9.99 × 100 积分/元（向零截断）= 999 积分。
+	if status != "succeeded" || !manual {
+		t.Fatalf("status/manual = %s/%v, want succeeded/true", status, manual)
+	}
+	if credited != 999 {
+		t.Fatalf("credited_credits = %d, want 999（按实收而非订单金额）", credited)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM wallet_transactions WHERE user_id = $1`,
+		userID).Scan(&walletCount); err != nil {
+		t.Fatalf("count wallet: %v", err)
+	}
+	if walletCount != 1 {
+		t.Fatalf("wallet transactions = %d, want 1", walletCount)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -764,7 +863,8 @@ func TestAlipayPrecreateAndNotify(t *testing.T) {
 	assertWalletCount(t, db, userID, 1)
 	assertWalletReference(t, db, userID, "order", strconv.FormatInt(created.Order.ID, 10))
 
-	// 金额不一致：单独订单，置 failed 且不入账。
+	// 金额不一致：单独订单，置 refund_required（P2-1：渠道已收款，不能标成
+	// 「失败」——那会让这笔钱既不入账也不进人工待处理队列）且不入账。
 	second, err := svc.CreateTopupOrder(context.Background(), userID, 2000, "CNY", ProviderAlipay,
 		fmt.Sprintf("alipay-mismatch-%d", topupTestSeq.Add(1)))
 	if err != nil {
@@ -779,7 +879,7 @@ func TestAlipayPrecreateAndNotify(t *testing.T) {
 		Scan(&secondStatus, &failure); err != nil {
 		t.Fatalf("read second order: %v", err)
 	}
-	if secondStatus != "failed" || failure != "amount_mismatch" {
+	if secondStatus != "refund_required" || failure != "amount_mismatch" {
 		t.Fatalf("second status/failure = %s/%s", secondStatus, failure)
 	}
 	assertWalletCount(t, db, userID, 1)

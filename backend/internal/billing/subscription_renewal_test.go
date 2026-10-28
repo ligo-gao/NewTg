@@ -383,7 +383,7 @@ func TestSubscriptionRenewFailureLeavesOrderAndInstanceUntouched(t *testing.T) {
 		}
 	})
 
-	t.Run("金额不符：订单 failed、实例不扩展", func(t *testing.T) {
+	t.Run("金额不符：订单 refund_required、实例不扩展", func(t *testing.T) {
 		oldEnd := now.Add(10 * 24 * time.Hour)
 		subID := insertRenewalSubscription(t, db, userID, planID, "T",
 			"active", now.Add(-time.Hour), oldEnd, 50, true)
@@ -396,7 +396,9 @@ func TestSubscriptionRenewFailureLeavesOrderAndInstanceUntouched(t *testing.T) {
 		if err := renewViaStripe(t, svc, db, order.Order.ID, 1); !errors.Is(err, ErrAmountMismatch) {
 			t.Fatalf("金额不符 err = %v，期望 ErrAmountMismatch", err)
 		}
-		assertOrderStatus(t, db, order.Order.ID, string(OrderFailed))
+		// P2-1：渠道确认已收款，订单不能标 failed（钱会凭空挂在「失败」里），
+		// 落到 refund_required 等人工退款。
+		assertOrderStatus(t, db, order.Order.ID, string(OrderRefundRequired))
 		sub := readRenewalSubscription(t, db, subID)
 		if !sub.EndAt.Equal(oldEnd) || sub.AmountUsed != 50 {
 			t.Fatalf("失败结算不得扩展实例: %+v", sub)

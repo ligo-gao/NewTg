@@ -263,7 +263,8 @@ func TestSettleOrderPaymentSuccessWebhookFailureDoesNotAffectCredit(t *testing.T
 	assertWalletCount(t, db, userID, 1)
 }
 
-// 极小场景：金额不一致的失败订单绝不能产生 payment_success 事件。
+// 极小场景：金额不一致的订单绝不能产生 payment_success 事件。
+// P2-1 后它落在 refund_required（钱已收、未入账、等人工处置），不再是 failed。
 func TestSettleOrderMismatchDoesNotEnqueueWebhook(t *testing.T) {
 	gormDB, db := openBillingTestDB(t)
 	userID := createBillingTestUser(t, db, 0)
@@ -284,8 +285,8 @@ func TestSettleOrderMismatchDoesNotEnqueueWebhook(t *testing.T) {
 	if err := svc.settleOrder(context.Background(), order, 999, "CNY", []byte(`{}`)); !errors.Is(err, ErrAmountMismatch) {
 		t.Fatalf("settleOrder err = %v, want ErrAmountMismatch", err)
 	}
-	assertOrderStatus(t, db, orderID, "failed")
+	assertOrderStatus(t, db, orderID, "refund_required")
 	if got := countPaymentSuccessDeliveries(t, db, orderID); got != 0 {
-		t.Fatalf("failed order wrote %d deliveries, want 0", got)
+		t.Fatalf("mismatched order wrote %d deliveries, want 0", got)
 	}
 }
