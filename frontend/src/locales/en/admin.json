@@ -1450,7 +1450,8 @@
       "read_only": "Read-only: your account lacks the settings:manage permission.",
       "retry": "Retry",
       "cancel": "Cancel",
-      "working": "Working…"
+      "working": "Working…",
+      "per_second": "/s"
     },
     "disk": {
       "title": "Disk cache",
@@ -1546,6 +1547,8 @@
     },
     "banner": {
       "title": "Monitoring not connected: instance and resource metrics are temporarily unavailable; model data is unaffected.",
+      "title_error": "Monitoring query failed: instance and resource metrics are temporarily unavailable; model data is unaffected.",
+      "note_error": "The backend reached the monitoring address, but Prometheus returned an error or timed out. Check that the backend can reach {code} and that Prometheus itself is healthy; this retries automatically.",
       "note": "The page only reads from the backend, which queries Prometheus itself: check {code} in the deployment (restart required after changing) and whether the monitoring stack is running.",
       "code": "PROMETHEUS_URL"
     },
@@ -1591,6 +1594,10 @@
       "empty_title": "No samples yet",
       "empty_action": "Run a round now",
       "empty_note": "Data appears after the next probe round.",
+      "empty_source_perfmetrics_title": "Metrics store unavailable",
+      "empty_source_perfmetrics_note": "Traffic buckets could not be read, so no models are listed. Probe-based columns reappear once it recovers.",
+      "empty_source_probes_title": "Probe results unavailable",
+      "empty_source_probes_note": "Only live traffic is shown below; latency, availability and status need probe results, which could not be read this time.",
       "foot_latency_source": "Percentiles and TPS come from live relay traffic",
       "foot_uptime_source": "Availability and status come from active probes",
       "status_normal": "Normal",
@@ -1607,10 +1614,7 @@
       "table_time": "Window",
       "table_p50": "p50 (ms)",
       "table_p95": "p95 (ms)",
-      "table_samples": "Samples",
-      "probe_label": "Last probe {time}",
-      "probe_never": "Never probed",
-      "open_logs": "View incident records"
+      "table_samples": "Samples"
     },
     "gateways": {
       "title": "Gateway instances",
@@ -1668,8 +1672,10 @@
       "run_now": "Run a round now",
       "next_run": "Next run {time}",
       "next_run_disabled": "Disabled",
+      "next_run_unknown": "Next run: unknown — check the probe interval.",
       "saved": "Saved",
       "conflict": "Settings were changed elsewhere. Refresh and try again.",
+      "conflict_reload": "Discard my edits and reload",
       "source_env_badge": "Environment variables",
       "source_env_note": "Not saved on this page yet; currently running from {code}: every {hours} h ({times}) · {runs} runs · {concurrency} concurrent. Saving once makes this page authoritative.",
       "source_settings_badge": "This page",
@@ -1677,7 +1683,8 @@
       "source_mixed_badge": "Mixed sources",
       "source_mixed_note": "Some values come from this page, others from environment variables; saving once makes this page authoritative.",
       "readonly": "Read-only",
-      "readonly_note": "Comes from environment variables or built into the code; takes effect only by changing the deployment config and rebuilding.",
+      "readonly_title": "Deployment parameters (read-only)",
+      "readonly_note": "Rows marked \"Restart required\" come from environment variables: change them in the deployment config, then restart the service. Rows marked \"Code change required\" are built into the code and only change with a new build.",
       "col_param": "Parameter",
       "col_value": "Current value",
       "col_source": "Source",
@@ -1696,7 +1703,6 @@
       "unit_days": "days",
       "unit_months": "months",
       "unit_rpm": "RPM",
-      "unit_count": "items",
       "group_health": "Channel health probing",
       "group_ratelimit": "Rate limiting & timeouts",
       "group_retention": "Retention & cleanup",
@@ -1724,10 +1730,12 @@
       "param_perf_metrics_retention_days": "Metrics retention",
       "param_prometheus_url": "Monitoring query address",
       "param_prometheus_timeout": "Monitoring query timeout",
+      "param_prometheus_cache_ttl": "Monitoring query cache",
       "param_perf_schedule_timezone": "Probe anchor timezone",
       "param_disk_cache_enabled": "Disk cache",
       "param_disk_cache_path": "Disk cache path",
       "param_log_dir": "Log directory",
+      "param_log_file_pattern": "Log file pattern",
       "param_disk_cache_max_mb": "Disk cache limit",
       "param_disk_cache_threshold_mb": "Disk cache threshold",
       "param_probe_timeout": "Probe timeout",

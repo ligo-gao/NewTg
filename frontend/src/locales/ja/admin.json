@@ -1450,7 +1450,8 @@
       "read_only": "読み取り専用：アカウントに settings:manage 権限がありません。",
       "retry": "再試行",
       "cancel": "キャンセル",
-      "working": "実行中…"
+      "working": "実行中…",
+      "per_second": "/秒"
     },
     "disk": {
       "title": "ディスクキャッシュ",
@@ -1546,6 +1547,8 @@
     },
     "banner": {
       "title": "監視収集が未接続です。インスタンスとリソースの指標は一時的に取得できませんが、モデルのデータには影響しません。",
+      "title_error": "監視クエリに失敗しました。インスタンスとリソースの指標は一時的に利用できません。モデルデータは影響を受けません。",
+      "note_error": "バックエンドから監視アドレスには到達していますが、Prometheus がエラーを返したかタイムアウトしました。バックエンドから {code} に到達できるか、Prometheus 自体が正常かを確認してください。自動で再試行します。",
       "note": "このページはバックエンドから読み取るだけで、Prometheus への問い合わせはバックエンドが行います。デプロイの {code}（変更後は再起動が必要）と監視スタックが起動しているかを確認してください。",
       "code": "PROMETHEUS_URL"
     },
@@ -1591,6 +1594,10 @@
       "empty_title": "まだサンプルがありません",
       "empty_action": "今すぐ 1 ラウンド実行",
       "empty_note": "次のプローブラウンド後に表示されます。",
+      "empty_source_perfmetrics_title": "メトリクスストアを利用できません",
+      "empty_source_perfmetrics_note": "トラフィックバケットを読み取れないため、モデルを一覧表示できません。復旧するとプローブ関連の列が戻ります。",
+      "empty_source_probes_title": "プローブ結果を利用できません",
+      "empty_source_probes_note": "以下は実トラフィックのみです。レイテンシ・可用性・ステータスはプローブ結果が必要ですが、今回読み取れませんでした。",
       "foot_latency_source": "パーセンタイルと TPS は実際の中継トラフィックから算出",
       "foot_uptime_source": "稼働率とステータスは能動的なプローブから取得",
       "status_normal": "正常",
@@ -1607,10 +1614,7 @@
       "table_time": "時間帯",
       "table_p50": "p50 (ms)",
       "table_p95": "p95 (ms)",
-      "table_samples": "サンプル",
-      "probe_label": "最終プローブ {time}",
-      "probe_never": "未プローブ",
-      "open_logs": "インシデント記録を表示"
+      "table_samples": "サンプル"
     },
     "gateways": {
       "title": "ゲートウェイインスタンス",
@@ -1668,8 +1672,10 @@
       "run_now": "今すぐ 1 ラウンド実行",
       "next_run": "次回実行 {time}",
       "next_run_disabled": "無効",
+      "next_run_unknown": "次回実行時刻は不明です。プローブ間隔を確認してください。",
       "saved": "保存しました",
       "conflict": "設定が他のユーザーによって変更されました。再読み込みしてから再試行してください。",
+      "conflict_reload": "編集内容を破棄して再読み込み",
       "source_env_badge": "環境変数",
       "source_env_note": "このページでは未保存です。現在は {code} に従って実行中：{hours} 時間ごと（{times}）· {runs} 回 · 同時 {concurrency}。一度保存するとこのページの設定が優先されます。",
       "source_settings_badge": "このページ",
@@ -1677,7 +1683,8 @@
       "source_mixed_badge": "混合ソース",
       "source_mixed_note": "一部の値はこのページ、残りは環境変数から取得しています。一度保存するとこのページの設定が優先されます。",
       "readonly": "読み取り専用",
-      "readonly_note": "環境変数またはコードに組み込まれた値で、デプロイ設定の変更と再ビルドでのみ反映されます。",
+      "readonly_title": "デプロイパラメータ（読み取り専用）",
+      "readonly_note": "「再起動が必要」と表示された行は環境変数由来です。デプロイ設定を変更してからサービスを再起動してください。「コード変更が必要」と表示された行はコードに組み込まれた定数で、新しいビルドでのみ変わります。",
       "col_param": "パラメータ",
       "col_value": "現在の値",
       "col_source": "ソース",
@@ -1696,7 +1703,6 @@
       "unit_days": "日",
       "unit_months": "か月",
       "unit_rpm": "RPM",
-      "unit_count": "件",
       "group_health": "チャネルヘルスプローブ",
       "group_ratelimit": "レート制限とタイムアウト",
       "group_retention": "保持とクリーンアップ",
@@ -1724,10 +1730,12 @@
       "param_perf_metrics_retention_days": "メトリクス保持期間",
       "param_prometheus_url": "メトリクス取得先",
       "param_prometheus_timeout": "メトリクスクエリのタイムアウト",
+      "param_prometheus_cache_ttl": "監視クエリのキャッシュ",
       "param_perf_schedule_timezone": "プローブ基準のタイムゾーン",
       "param_disk_cache_enabled": "ディスクキャッシュ",
       "param_disk_cache_path": "ディスクキャッシュのパス",
       "param_log_dir": "ログディレクトリ",
+      "param_log_file_pattern": "ログファイル名のパターン",
       "param_disk_cache_max_mb": "ディスクキャッシュ上限",
       "param_disk_cache_threshold_mb": "ディスクキャッシュしきい値",
       "param_probe_timeout": "プローブのタイムアウト",

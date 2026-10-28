@@ -1450,7 +1450,8 @@
       "read_only": "Lecture seule : votre compte n’a pas la permission settings:manage.",
       "retry": "Réessayer",
       "cancel": "Annuler",
-      "working": "En cours…"
+      "working": "En cours…",
+      "per_second": "/s"
     },
     "disk": {
       "title": "Cache disque",
@@ -1546,6 +1547,8 @@
     },
     "banner": {
       "title": "Collecte de supervision non connectée : les métriques d'instance et de ressources sont temporairement indisponibles ; les données des modèles ne sont pas affectées.",
+      "title_error": "Échec de la requête de supervision : les métriques d'instance et de ressources sont temporairement indisponibles ; les données de modèle ne sont pas affectées.",
+      "note_error": "Le backend a joint l'adresse de supervision, mais Prometheus a renvoyé une erreur ou expiré. Vérifiez que le backend peut joindre {code} et que Prometheus est sain ; la page réessaie automatiquement.",
       "note": "La page ne lit que le backend, qui interroge Prometheus lui-même : vérifiez {code} dans le déploiement (redémarrage requis après modification) et que la pile de supervision est démarrée.",
       "code": "PROMETHEUS_URL"
     },
@@ -1591,6 +1594,10 @@
       "empty_title": "Aucun échantillon pour l'instant",
       "empty_action": "Lancer un cycle maintenant",
       "empty_note": "Les données apparaîtront après le prochain cycle de sondage.",
+      "empty_source_perfmetrics_title": "Base de métriques indisponible",
+      "empty_source_perfmetrics_note": "Les tranches de trafic n'ont pas pu être lues, aucun modèle n'est donc listé. Les colonnes de sonde reviennent dès le rétablissement.",
+      "empty_source_probes_title": "Résultats de sonde indisponibles",
+      "empty_source_probes_note": "Seul le trafic en direct s'affiche ci-dessous ; la latence, la disponibilité et le statut dépendent des sondes, illisibles cette fois.",
       "foot_latency_source": "Les percentiles et le TPS proviennent du trafic relais réel",
       "foot_uptime_source": "La disponibilité et le statut proviennent des sondes actives",
       "status_normal": "Normal",
@@ -1607,10 +1614,7 @@
       "table_time": "Période",
       "table_p50": "p50 (ms)",
       "table_p95": "p95 (ms)",
-      "table_samples": "Échantillons",
-      "probe_label": "Dernière sonde {time}",
-      "probe_never": "Jamais sondé",
-      "open_logs": "Voir les enregistrements d'incident"
+      "table_samples": "Échantillons"
     },
     "gateways": {
       "title": "Instances de passerelle",
@@ -1668,8 +1672,10 @@
       "run_now": "Lancer un cycle maintenant",
       "next_run": "Prochaine exécution {time}",
       "next_run_disabled": "Désactivé",
+      "next_run_unknown": "Prochaine exécution : inconnue — vérifiez l'intervalle de sonde.",
       "saved": "Enregistré",
       "conflict": "Les paramètres ont été modifiés ailleurs. Actualisez puis réessayez.",
+      "conflict_reload": "Abandonner mes modifications et recharger",
       "source_env_badge": "Variables d'environnement",
       "source_env_note": "Pas encore enregistré sur cette page ; exécution actuelle selon {code} : toutes les {hours} h ({times}) · {runs} passes · {concurrency} en parallèle. Après un premier enregistrement, cette page fait foi.",
       "source_settings_badge": "Cette page",
@@ -1677,7 +1683,8 @@
       "source_mixed_badge": "Sources mixtes",
       "source_mixed_note": "Certaines valeurs viennent de cette page, d'autres des variables d'environnement ; après un premier enregistrement, cette page fait foi.",
       "readonly": "Lecture seule",
-      "readonly_note": "Provient des variables d'environnement ou du code ; ne prend effet qu'en modifiant la configuration de déploiement et en reconstruisant.",
+      "readonly_title": "Paramètres de déploiement (lecture seule)",
+      "readonly_note": "Les lignes marquées « Redémarrage requis » viennent de variables d'environnement : modifiez la configuration de déploiement puis redémarrez le service. Les lignes marquées « Modification du code requise » sont des constantes du code et ne changent qu'avec une nouvelle version.",
       "col_param": "Paramètre",
       "col_value": "Valeur actuelle",
       "col_source": "Source",
@@ -1696,7 +1703,6 @@
       "unit_days": "jours",
       "unit_months": "mois",
       "unit_rpm": "RPM",
-      "unit_count": "éléments",
       "group_health": "Sondage de santé des canaux",
       "group_ratelimit": "Limitation de débit et délais d'attente",
       "group_retention": "Conservation et nettoyage",
@@ -1724,10 +1730,12 @@
       "param_perf_metrics_retention_days": "Rétention des métriques",
       "param_prometheus_url": "Adresse d'interrogation de la supervision",
       "param_prometheus_timeout": "Délai d'interrogation de la supervision",
+      "param_prometheus_cache_ttl": "Cache des requêtes de supervision",
       "param_perf_schedule_timezone": "Fuseau horaire d'ancrage des sondes",
       "param_disk_cache_enabled": "Cache disque",
       "param_disk_cache_path": "Chemin du cache disque",
       "param_log_dir": "Répertoire des journaux",
+      "param_log_file_pattern": "Motif des fichiers journaux",
       "param_disk_cache_max_mb": "Limite du cache disque",
       "param_disk_cache_threshold_mb": "Seuil du cache disque",
       "param_probe_timeout": "Délai d'attente des sondes",

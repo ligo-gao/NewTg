@@ -1450,7 +1450,8 @@
       "read_only": "Chỉ đọc: tài khoản của bạn thiếu quyền settings:manage.",
       "retry": "Thử lại",
       "cancel": "Hủy",
-      "working": "Đang thực hiện…"
+      "working": "Đang thực hiện…",
+      "per_second": "/giây"
     },
     "disk": {
       "title": "Bộ đệm đĩa",
@@ -1546,6 +1547,8 @@
     },
     "banner": {
       "title": "Chưa kết nối thu thập giám sát: chỉ số của phiên bản và tài nguyên tạm thời không lấy được; dữ liệu mô hình không bị ảnh hưởng.",
+      "title_error": "Truy vấn giám sát thất bại: chỉ số phiên bản và tài nguyên tạm thời không khả dụng; dữ liệu mô hình không bị ảnh hưởng.",
+      "note_error": "Backend đã kết nối được tới địa chỉ giám sát nhưng Prometheus trả về lỗi hoặc quá thời gian chờ. Hãy kiểm tra backend có truy cập được {code} và Prometheus có khỏe mạnh không; trang sẽ tự thử lại.",
       "note": "Trang chỉ đọc từ backend, backend tự truy vấn Prometheus: kiểm tra {code} trong triển khai (cần khởi động lại sau khi sửa) và xem ngăn xếp giám sát đã chạy chưa.",
       "code": "PROMETHEUS_URL"
     },
@@ -1591,6 +1594,10 @@
       "empty_title": "Chưa có mẫu nào",
       "empty_action": "Chạy một vòng ngay",
       "empty_note": "Dữ liệu sẽ xuất hiện sau vòng thăm dò tiếp theo.",
+      "empty_source_perfmetrics_title": "Kho chỉ số không khả dụng",
+      "empty_source_perfmetrics_note": "Không đọc được các khoảng lưu lượng nên chưa liệt kê được mô hình. Các cột thăm dò sẽ trở lại khi khôi phục.",
+      "empty_source_probes_title": "Kết quả thăm dò không khả dụng",
+      "empty_source_probes_note": "Bên dưới chỉ có lưu lượng trực tiếp; độ trễ, khả dụng và trạng thái phụ thuộc kết quả thăm dò, lần này không đọc được.",
       "foot_latency_source": "Phân vị và TPS lấy từ lưu lượng chuyển tiếp thực tế",
       "foot_uptime_source": "Thời gian hoạt động và trạng thái lấy từ thăm dò chủ động",
       "status_normal": "Bình thường",
@@ -1607,10 +1614,7 @@
       "table_time": "Khoảng thời gian",
       "table_p50": "p50 (ms)",
       "table_p95": "p95 (ms)",
-      "table_samples": "Mẫu",
-      "probe_label": "Lần thăm dò gần nhất {time}",
-      "probe_never": "Chưa từng thăm dò",
-      "open_logs": "Xem hồ sơ sự cố"
+      "table_samples": "Mẫu"
     },
     "gateways": {
       "title": "Các thực thể cổng",
@@ -1668,8 +1672,10 @@
       "run_now": "Chạy một vòng ngay",
       "next_run": "Lần chạy tiếp theo {time}",
       "next_run_disabled": "Đã tắt",
+      "next_run_unknown": "Lần chạy tiếp theo: chưa xác định — hãy kiểm tra khoảng thời gian thăm dò.",
       "saved": "Đã lưu",
       "conflict": "Cài đặt đã được thay đổi ở nơi khác. Hãy làm mới rồi thử lại.",
+      "conflict_reload": "Bỏ thay đổi của tôi và tải lại",
       "source_env_badge": "Biến môi trường",
       "source_env_note": "Chưa lưu trên trang này; hiện chạy theo {code}: mỗi {hours} giờ ({times}) · {runs} lần · song song {concurrency}. Sau khi lưu một lần, trang này sẽ là chuẩn.",
       "source_settings_badge": "Trang này",
@@ -1677,7 +1683,8 @@
       "source_mixed_badge": "Nguồn hỗn hợp",
       "source_mixed_note": "Một số giá trị đến từ trang này, số khác từ biến môi trường; sau khi lưu một lần, trang này sẽ là chuẩn.",
       "readonly": "Chỉ đọc",
-      "readonly_note": "Đến từ biến môi trường hoặc được nhúng trong mã; chỉ có hiệu lực khi sửa cấu hình triển khai và dựng lại.",
+      "readonly_title": "Tham số triển khai (chỉ đọc)",
+      "readonly_note": "Các dòng ghi \"Cần khởi động lại\" đến từ biến môi trường: sửa cấu hình triển khai rồi khởi động lại dịch vụ. Các dòng ghi \"Cần sửa mã\" là hằng số trong mã, chỉ thay đổi khi phát hành bản mới.",
       "col_param": "Tham số",
       "col_value": "Giá trị hiện tại",
       "col_source": "Nguồn",
@@ -1696,7 +1703,6 @@
       "unit_days": "ngày",
       "unit_months": "tháng",
       "unit_rpm": "RPM",
-      "unit_count": "mục",
       "group_health": "Thăm dò sức khỏe kênh",
       "group_ratelimit": "Giới hạn tần suất và thời gian chờ",
       "group_retention": "Lưu trữ và dọn dẹp",
@@ -1724,10 +1730,12 @@
       "param_perf_metrics_retention_days": "Lưu trữ chỉ số",
       "param_prometheus_url": "Địa chỉ truy vấn giám sát",
       "param_prometheus_timeout": "Thời gian chờ truy vấn giám sát",
+      "param_prometheus_cache_ttl": "Bộ đệm truy vấn giám sát",
       "param_perf_schedule_timezone": "Múi giờ neo đo",
       "param_disk_cache_enabled": "Bộ đệm đĩa",
       "param_disk_cache_path": "Đường dẫn bộ đệm đĩa",
       "param_log_dir": "Thư mục nhật ký",
+      "param_log_file_pattern": "Mẫu tên tệp nhật ký",
       "param_disk_cache_max_mb": "Giới hạn bộ đệm đĩa",
       "param_disk_cache_threshold_mb": "Ngưỡng bộ đệm đĩa",
       "param_probe_timeout": "Thời gian chờ thăm dò",

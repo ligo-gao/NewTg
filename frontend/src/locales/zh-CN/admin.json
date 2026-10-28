@@ -1450,7 +1450,8 @@
       "read_only": "只读：你的账号缺少 settings:manage 权限。",
       "retry": "重试",
       "cancel": "取消",
-      "working": "执行中…"
+      "working": "执行中…",
+      "per_second": "/秒"
     },
     "disk": {
       "title": "磁盘缓存",
@@ -1546,6 +1547,8 @@
     },
     "banner": {
       "title": "监控采集未接入：实例与资源指标暂时取不到；模型数据不受影响。",
+      "title_error": "监控查询失败：实例与资源指标暂时不可用；模型数据不受影响。",
+      "note_error": "后端已连到监控地址，但 Prometheus 返回错误或超时。请检查后端能否访问 {code}、Prometheus 自身是否健康；页面会自动重试。",
       "note": "页面只读后端，后端自己去问 Prometheus：检查部署里的 {code}（改完需重启）与监控栈是否已启动。",
       "code": "PROMETHEUS_URL"
     },
@@ -1591,6 +1594,10 @@
       "empty_title": "还没有采样数据",
       "empty_action": "立即跑一轮",
       "empty_note": "下一轮测速后出现。",
+      "empty_source_perfmetrics_title": "指标库不可用",
+      "empty_source_perfmetrics_note": "无法读取流量分桶，暂时列不出模型。恢复后测速相关列会自动回来。",
+      "empty_source_probes_title": "测速结果不可用",
+      "empty_source_probes_note": "下方只有实时流量；延迟、可用性与状态依赖测速结果，本次读取失败。",
       "foot_latency_source": "分位数与 TPS 来自真实中继流量",
       "foot_uptime_source": "可用率与状态来自主动测速",
       "status_normal": "正常",
@@ -1607,10 +1614,7 @@
       "table_time": "时段",
       "table_p50": "p50 (ms)",
       "table_p95": "p95 (ms)",
-      "table_samples": "样本",
-      "probe_label": "最近测速 {time}",
-      "probe_never": "从未测速",
-      "open_logs": "查看事故记录"
+      "table_samples": "样本"
     },
     "gateways": {
       "title": "网关实例",
@@ -1668,8 +1672,10 @@
       "run_now": "立即跑一轮",
       "next_run": "下次运行 {time}",
       "next_run_disabled": "已停用",
+      "next_run_unknown": "下次运行时间未知——请检查测速间隔。",
       "saved": "已保存",
       "conflict": "设置已被他人修改，请刷新后重试。",
+      "conflict_reload": "放弃我的修改并重新加载",
       "source_env_badge": "环境变量",
       "source_env_note": "尚未在性能页保存过，当前按 {code} 运行：每 {hours} 小时（{times}）· {runs} 次 · {concurrency} 并发。保存一次后以本页为准。",
       "source_settings_badge": "本页设置",
@@ -1677,7 +1683,8 @@
       "source_mixed_badge": "混合来源",
       "source_mixed_note": "部分值来自本页设置，部分来自环境变量；保存一次后以本页为准。",
       "readonly": "只读",
-      "readonly_note": "来自环境变量或代码内置，只能通过改部署配置并重建生效。",
+      "readonly_title": "部署参数（只读）",
+      "readonly_note": "标注「需重启」的行来自环境变量：改部署配置后重启服务生效；标注「需改代码」的行是代码内置常量，只能随新版本发布改变。",
       "col_param": "参数",
       "col_value": "当前值",
       "col_source": "来源",
@@ -1696,7 +1703,6 @@
       "unit_days": "天",
       "unit_months": "个月",
       "unit_rpm": "RPM",
-      "unit_count": "项",
       "group_health": "渠道健康探测",
       "group_ratelimit": "限流与超时",
       "group_retention": "保留与清理",
@@ -1724,10 +1730,12 @@
       "param_perf_metrics_retention_days": "指标保留",
       "param_prometheus_url": "指标采集地址",
       "param_prometheus_timeout": "指标查询超时",
+      "param_prometheus_cache_ttl": "监控查询缓存",
       "param_perf_schedule_timezone": "测速锚点时区",
       "param_disk_cache_enabled": "磁盘缓存",
       "param_disk_cache_path": "磁盘缓存目录",
       "param_log_dir": "日志目录",
+      "param_log_file_pattern": "日志文件名模式",
       "param_disk_cache_max_mb": "磁盘缓存上限",
       "param_disk_cache_threshold_mb": "磁盘缓存阈值",
       "param_probe_timeout": "探测超时",
