@@ -1,5 +1,6 @@
 import {
   Fragment,
+  useId,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react'
@@ -20,6 +21,7 @@ import {
   perfStatusTone,
 } from '../utils'
 import { ModelDetail } from './model-detail'
+import { ZoneRail } from './primitives'
 
 /**
  * 模型性能表 + 单模型下钻（Task 16 / adjudications §3–4）。
@@ -70,17 +72,54 @@ function modelSubtitle(row: ModelRow, t: TranslateFn): string | null {
 export interface ModelPerfZoneProps {
   models: PerfModels
   /**
-   * 监控（Prometheus）是否断线。模型表的数据来自指标库与中继流量，**不受**
-   * Prometheus 影响（与体检条 banner「模型数据不受影响」同一口径），所以
-   * 这个 prop 在本区只用于保持页面统一签名，不改变渲染。
+   * 测速节奏（来自运行参数的 schedule）。只在调度器已启用且间隔合法时由
+   * 页面传入；缺席时不渲染 rail 的节奏说明，不臆造默认值。
    */
-  sourceDown: boolean
+  probeSchedule?: { hours: number; runs: number }
   /** 「立即跑一轮」动作；当前分支没有该后端动作，页面不传就不渲染按钮。 */
   onRunNow?: () => void
 }
 
-export function ModelPerfZone({ models, onRunNow }: ModelPerfZoneProps) {
+/** 某数据源是否可用；缺该条按不可用处理（不臆造数据源）。 */
+function sourceOk(models: PerfModels, name: 'perfmetrics' | 'probes'): boolean {
+  return models.sources.find((source) => source.name === name)?.status === 'ok'
+}
+
+interface EmptyCopy {
+  titleKey: string
+  noteKey: string
+}
+
+/**
+ * 空表时的文案分流：指标库不可用和测速结果不可用是两种不同的结论，
+ * 不能一律说「还没有采样数据」。指标库优先——表格的行本身来自它。
+ */
+function emptyCopy(models: PerfModels): EmptyCopy {
+  if (!sourceOk(models, 'perfmetrics')) {
+    return {
+      titleKey: 'admin.performance.models.empty_source_perfmetrics_title',
+      noteKey: 'admin.performance.models.empty_source_perfmetrics_note',
+    }
+  }
+  if (!sourceOk(models, 'probes')) {
+    return {
+      titleKey: 'admin.performance.models.empty_source_probes_title',
+      noteKey: 'admin.performance.models.empty_source_probes_note',
+    }
+  }
+  return {
+    titleKey: 'admin.performance.models.empty_title',
+    noteKey: 'admin.performance.models.empty_note',
+  }
+}
+
+export function ModelPerfZone({
+  models,
+  probeSchedule,
+  onRunNow,
+}: ModelPerfZoneProps) {
   const { t, locale } = useI18n()
+  const titleId = useId()
   // 行互斥：单个字符串即「当前展开的模型」，null 表示全部折叠。
   const [openModel, setOpenModel] = useState<string | null>(null)
 
@@ -98,18 +137,36 @@ export function ModelPerfZone({ models, onRunNow }: ModelPerfZoneProps) {
     toggle(model)
   }
 
+  const rail = (
+    <ZoneRail
+      titleId={titleId}
+      title={t('admin.performance.models.title')}
+      sub={t('admin.performance.models.rail_sub', {
+        count: models.rows.length,
+      })}
+      note={
+        probeSchedule === undefined
+          ? undefined
+          : t('admin.performance.models.rail_note', {
+              hours: probeSchedule.hours,
+              runs: probeSchedule.runs,
+            })
+      }
+    />
+  )
+
   if (models.rows.length === 0) {
+    const copy = emptyCopy(models)
     return (
-      <section aria-label={t('admin.performance.models.title')}>
+      <section aria-labelledby={titleId}>
+        {rail}
         <div
           data-testid="models-empty"
           className="rounded-lg border border-dashed border-border-default bg-surface-subtle px-5 py-5"
         >
-          <p className="font-semibold text-ink-1">
-            {t('admin.performance.models.empty_title')}
-          </p>
+          <p className="font-semibold text-ink-1">{t(copy.titleKey)}</p>
           <p className="mt-1.5 max-w-[72ch] text-meta text-ink-2">
-            {t('admin.performance.models.empty_note')}
+            {t(copy.noteKey)}
           </p>
           {onRunNow === undefined ? null : (
             <Button className="mt-3" onClick={onRunNow}>
@@ -122,7 +179,8 @@ export function ModelPerfZone({ models, onRunNow }: ModelPerfZoneProps) {
   }
 
   return (
-    <section aria-label={t('admin.performance.models.title')}>
+    <section aria-labelledby={titleId}>
+      {rail}
       <div className="overflow-x-auto rounded-xl border border-border-hairline bg-surface-card">
         <table className="w-full min-w-[900px] text-body">
           <caption className="sr-only">
@@ -199,7 +257,7 @@ export function ModelPerfZone({ models, onRunNow }: ModelPerfZoneProps) {
                     data-testid="model-row"
                     data-model={row.model}
                     aria-expanded={open}
-                    aria-controls={detailId}
+                    aria-controls={open ? detailId : undefined}
                     tabIndex={0}
                     onClick={() => toggle(row.model)}
                     onKeyDown={(event) => handleKeyDown(event, row.model)}

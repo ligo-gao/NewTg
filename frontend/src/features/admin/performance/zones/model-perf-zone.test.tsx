@@ -52,13 +52,16 @@ function modelRow(overrides: Partial<ModelRow> = {}): ModelRow {
   }
 }
 
-function modelsFixture(rows: ModelRow[]): PerfModels {
+function modelsFixture(
+  rows: ModelRow[],
+  sources: PerfModels['sources'] = [
+    { name: 'perfmetrics', status: 'ok' },
+    { name: 'probes', status: 'ok' },
+  ],
+): PerfModels {
   return {
     generated_at: '2026-10-28T10:00:00Z',
-    sources: [
-      { name: 'perfmetrics', status: 'ok' },
-      { name: 'probes', status: 'ok' },
-    ],
+    sources,
     rows,
     summary: {
       models: rows.length,
@@ -118,13 +121,17 @@ function seriesBody() {
 
 async function renderZone(options: {
   rows?: ModelRow[]
+  sources?: PerfModels['sources']
+  probeSchedule?: { hours: number; runs: number }
   onRunNow?: () => void
-  sourceDown?: boolean
 } = {}) {
   return renderWithProviders(
     <ModelPerfZone
-      models={modelsFixture(options.rows ?? [modelRow(), DEGRADED, NO_SAMPLE])}
-      sourceDown={options.sourceDown ?? false}
+      models={modelsFixture(
+        options.rows ?? [modelRow(), DEGRADED, NO_SAMPLE],
+        options.sources,
+      )}
+      probeSchedule={options.probeSchedule}
       onRunNow={options.onRunNow}
     />,
     ['admin', 'common'],
@@ -241,6 +248,8 @@ describe('ModelPerfZone', () => {
     await renderZone()
     // 渲染三行后仍没有下钻请求：折叠态不预取。
     expect(requests).toHaveLength(0)
+    // 折叠行没有可指向的下钻节点：`aria-controls` 必须缺席（不能悬空引用）。
+    expect(rowFor('gpt-4o').getAttribute('aria-controls')).toBeNull()
 
     fireEvent.click(rowFor('gpt-4o'))
 
@@ -254,7 +263,7 @@ describe('ModelPerfZone', () => {
 
     // 触发器与展开行通过 aria-controls / id 关联。
     const control = rowFor('gpt-4o').getAttribute('aria-controls')
-    expect(control).toBeTruthy()
+    expect(control).toBe(`model-detail-${encodeURIComponent('gpt-4o')}`)
     expect(screen.getByTestId('model-detail-row').id).toBe(control)
   })
 
@@ -305,11 +314,25 @@ describe('ModelPerfZone', () => {
     expect(rowFor('gpt-4o').getAttribute('aria-expanded')).toBe('false')
   })
 
-  it('keeps the model table intact while the monitoring source is down', async () => {
-    await renderZone({ sourceDown: true })
+  it('renders the zone rail with the visible title and model count', async () => {
+    await renderZone()
 
-    expect(screen.getAllByTestId('model-row')).toHaveLength(3)
-    expect(rowFor('gpt-4o').textContent).toContain('420ms')
+    expect(
+      screen.getByRole('heading', { name: 'Model performance' }),
+    ).toBeTruthy()
+    expect(screen.getByText('3 public chat models')).toBeTruthy()
+    // 没有测速节奏时不得臆造一条周期说明。
+    expect(screen.queryByText(/Real outbound probes/)).toBeNull()
+  })
+
+  it('adds the probe cadence note only when the page supplies a schedule', async () => {
+    await renderZone({ probeSchedule: { hours: 6, runs: 3 } })
+
+    expect(
+      screen.getByText(
+        'Real outbound probes, one round every 6 h, 3 runs per round.',
+      ),
+    ).toBeTruthy()
   })
 
   it('renders the empty state without a button when no run action is wired', async () => {
@@ -333,5 +356,72 @@ describe('ModelPerfZone', () => {
       }),
     )
     expect(onRunNow).toHaveBeenCalledTimes(1)
+  })
+
+  it.each<[string, PerfModels['sources']]>([
+    [
+      'unavailable',
+      [
+        { name: 'perfmetrics', status: 'unavailable' },
+        { name: 'probes', status: 'ok' },
+      ],
+    ],
+    [
+      'error',
+      [
+        { name: 'perfmetrics', status: 'error' },
+        { name: 'probes', status: 'ok' },
+      ],
+    ],
+    // 缺该条同样不能当成「已接入」。
+    ['missing', [{ name: 'probes', status: 'ok' }]],
+  ])(
+    'blames the metrics store when perfmetrics is %s',
+    async (_state, sources) => {
+      await renderZone({ rows: [], sources })
+
+      const empty = screen.getByTestId('models-empty')
+      expect(within(empty).getByText('Metrics store unavailable')).toBeTruthy()
+      expect(
+        within(empty).getByText(
+          'Traffic buckets could not be read, so no models are listed. Probe-based columns reappear once it recovers.',
+        ),
+      ).toBeTruthy()
+      // 不是另外两条空态：来源不同，结论不同。
+      expect(within(empty).queryByText('Probe results unavailable')).toBeNull()
+      expect(within(empty).queryByText('No samples yet')).toBeNull()
+    },
+  )
+
+  it('blames the probes when only the probe source is unavailable', async () => {
+    await renderZone({
+      rows: [],
+      sources: [
+        { name: 'perfmetrics', status: 'ok' },
+        { name: 'probes', status: 'unavailable' },
+      ],
+    })
+
+    const empty = screen.getByTestId('models-empty')
+    expect(within(empty).getByText('Probe results unavailable')).toBeTruthy()
+    expect(
+      within(empty).getByText(
+        'Only live traffic is shown below; latency, availability and status need probe results, which could not be read this time.',
+      ),
+    ).toBeTruthy()
+    expect(within(empty).queryByText('Metrics store unavailable')).toBeNull()
+    expect(within(empty).queryByText('No samples yet')).toBeNull()
+  })
+
+  it('keeps the plain no-samples copy when both sources are healthy', async () => {
+    await renderZone({ rows: [] })
+
+    const empty = screen.getByTestId('models-empty')
+    expect(within(empty).getByText('No samples yet')).toBeTruthy()
+    expect(
+      within(empty).getByText('Data appears after the next probe round.'),
+    ).toBeTruthy()
+    expect(within(empty).queryByText('Metrics store unavailable')).toBeNull()
+    expect(within(empty).queryByText('Probe results unavailable')).toBeNull()
   })
 })

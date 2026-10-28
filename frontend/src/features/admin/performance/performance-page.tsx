@@ -303,7 +303,7 @@ export function PerformancePage() {
   const logs = logsQuery.data
 
   // 找不到 prometheus 那条也视为断线（不臆造数据源）；overview 未加载时
-  // 不提前弹横幅。
+  // 不提前弹横幅，也按 `undefined`（不渲染）传给横幅。
   const prometheus = overview?.sources.find(
     (source) => source.name === 'prometheus',
   )
@@ -311,7 +311,30 @@ export function PerformancePage() {
     overview !== undefined &&
     (prometheus === undefined || prometheus.status !== 'ok')
 
-  const modelProbe = pickModelProbe(models)
+  // 第五格的两个数据面各自校验来源：指标库不可用时 summary 是零值对象，
+  // 直接展示会把「读不到」说成「0 个事故」；测速结果不可用时也不能拿旧行
+  // 编一个「最值得注意的模型」。
+  const modelsPerfSource = models?.sources.find(
+    (source) => source.name === 'perfmetrics',
+  )
+  const probesSource = models?.sources.find(
+    (source) => source.name === 'probes',
+  )
+  const modelSummary =
+    modelsPerfSource?.status === 'ok' ? models?.summary : undefined
+  const modelProbe =
+    probesSource?.status === 'ok' ? pickModelProbe(models) : undefined
+
+  // 模型区标题栏的节奏说明只在调度器真正启用且间隔合法时给出，避免把
+  // 「未装配调度器」臆造成一个默认周期。
+  const schedule = config?.schedule
+  const probeSchedule =
+    schedule !== undefined &&
+    schedule !== null &&
+    schedule.enabled &&
+    schedule.interval_hours > 0
+      ? { hours: schedule.interval_hours, runs: schedule.runs }
+      : undefined
 
   if (!wideEnough) {
     return (
@@ -427,19 +450,25 @@ export function PerformancePage() {
         </div>
       ) : null}
 
-      <DegradedBanner visible={sourceDown} />
+      <DegradedBanner
+        status={
+          overview === undefined
+            ? undefined
+            : (prometheus?.status ?? 'unknown')
+        }
+      />
 
       {overview !== undefined ? (
         <VitalsStrip
           vitals={overview.vitals}
-          modelSummary={models?.summary}
+          modelSummary={modelSummary}
           modelProbe={modelProbe}
           sourceDown={sourceDown}
         />
       ) : null}
 
       {models !== undefined ? (
-        <ModelPerfZone models={models} sourceDown={sourceDown} />
+        <ModelPerfZone models={models} probeSchedule={probeSchedule} />
       ) : null}
 
       {overview !== undefined ? (

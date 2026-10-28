@@ -194,7 +194,10 @@ function modelRow(overrides: Partial<ModelRow> = {}): ModelRow {
 function modelsFixture(overrides: Partial<PerfModels> = {}): PerfModels {
   return {
     generated_at: ISO,
-    sources: [{ name: 'probes', status: 'ok' }],
+    sources: [
+      { name: 'perfmetrics', status: 'ok' },
+      { name: 'probes', status: 'ok' },
+    ],
     rows: [
       modelRow(),
       modelRow({
@@ -781,6 +784,25 @@ describe('performance page composition', () => {
     expect(screen.getByTestId('resources-unavailable')).toBeTruthy()
   })
 
+  it('uses the query-failed banner copy when Prometheus itself returned an error', async () => {
+    installPage({
+      overview: overviewFixture({
+        sources: [
+          { name: 'prometheus', status: 'error' },
+          { name: 'heartbeat', status: 'ok' },
+        ],
+      }),
+    })
+    await renderWithProviders(<PerformancePage />, ['common', 'admin'])
+    await screen.findAllByTestId('vital')
+
+    const banner = screen.getByTestId('performance-degraded-banner')
+    expect(banner.textContent).toContain('Monitoring query failed')
+    expect(banner.textContent).not.toContain('Monitoring not connected')
+    // 三态里 error 仍属于「不可用」：各区的整区空态不变。
+    expect(screen.getByTestId('resources-unavailable')).toBeTruthy()
+  })
+
   it('prefers the incident model for the fifth vital subtitle', async () => {
     installPage()
     const { container } = await renderWithProviders(<PerformancePage />, [
@@ -795,6 +817,36 @@ describe('performance page composition', () => {
     // incident（gpt-4o）优先于正常的 claude-haiku-3-5，即便它的探针更早。
     expect(modelCell?.textContent).toContain('gpt-4o')
     expect(modelCell?.textContent).not.toContain('claude-haiku-3-5')
+  })
+
+  it('renders the fifth vital as — instead of a zero summary when the metrics store is down', async () => {
+    installPage({
+      models: modelsFixture({
+        sources: [
+          { name: 'perfmetrics', status: 'unavailable' },
+          { name: 'probes', status: 'ok' },
+        ],
+        // 指标库不可用时服务端回的是零值汇总：直接展示会变成「0 个事故」。
+        summary: { models: 0, degraded: 0, incident: 0, no_sample: 0 },
+      }),
+    })
+    const { container } = await renderWithProviders(<PerformancePage />, [
+      'common',
+      'admin',
+    ])
+    await screen.findAllByTestId('vital')
+
+    const modelCell = container.querySelector<HTMLElement>(
+      '[data-vital="models"]',
+    )
+    expect(modelCell).not.toBeNull()
+    const cell = modelCell as HTMLElement
+    expect(
+      cell.querySelector('[data-testid="vital-figure"]')?.textContent,
+    ).toBe('—')
+    // 零值 summary 的单位也会跟着消失（`/ 0 degraded` 不是说「读不到」）。
+    expect(within(cell).queryByText(/degraded/i)).toBeNull()
+    expect(within(cell).getByText('No data')).toBeTruthy()
   })
 
   it('shows the source error block and retries the failed source in place', async () => {

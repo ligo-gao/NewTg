@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { Fragment, type ReactNode } from 'react'
 
 import { useI18n } from '@/shared/lib/i18n-context'
 
@@ -11,30 +11,55 @@ import { useI18n } from '@/shared/lib/i18n-context'
  * 把译文里的 `{code}` 占位符渲染成真正的 `<code>` 元素。`t()` 只接受
  * 字符串，插值后无法再包标签，所以这里在未插值的模板上切分——占位符两侧
  * 的文案仍然由词典提供，代码片段的样式则与 demo 一致。
+ *
+ * 模板里的占位符可以出现 0 次、1 次或多次：0 次按纯文本返回，每一处
+ * `{code}` 都渲染成一个 `<code>`。旧实现只接受恰好一次，遇到多占位符的
+ * 语言文件会把 `{code}` 字面量原样漏到界面上。
  */
 export function codePhrase(template: string, code: string): ReactNode {
   const parts = template.split('{code}')
-  if (parts.length !== 2) return template
+  if (parts.length === 1) return template
 
   return (
     <>
-      {parts[0]}
-      <code className="rounded bg-surface-card px-1 py-0.5 font-mono text-badge text-ink-2">
-        {code}
-      </code>
-      {parts[1]}
+      {parts.map((part, index) => (
+        <Fragment key={index}>
+          {index > 0 ? (
+            <code className="rounded bg-surface-card px-1 py-0.5 font-mono text-badge text-ink-2">
+              {code}
+            </code>
+          ) : null}
+          {part}
+        </Fragment>
+      ))}
     </>
   )
 }
 
+/** 后端数据源三态；`unknown` 表示 overview/manifest 里缺该数据源条目。 */
+export type DegradedStatus = 'ok' | 'unavailable' | 'error' | 'unknown'
+
 export interface DegradedBannerProps {
-  visible: boolean
+  /**
+   * Prometheus 数据源状态。`undefined`（overview 还没到）与 `ok` 都不渲染；
+   * `error`（后端连上了、Prometheus 自己报错/超时）与 `unavailable`
+   * （后端根本没连上）是两种不同的故障，文案不能混用。
+   */
+  status: DegradedStatus | undefined
 }
 
-export function DegradedBanner({ visible }: DegradedBannerProps) {
+export function DegradedBanner({ status }: DegradedBannerProps) {
   const { t } = useI18n()
 
-  if (!visible) return null
+  if (status === undefined || status === 'ok') return null
+
+  const failed = status === 'error'
+  const title = failed
+    ? t('admin.performance.banner.title_error')
+    : t('admin.performance.banner.title')
+  const note = failed
+    ? t('admin.performance.banner.note_error')
+    : t('admin.performance.banner.note')
 
   return (
     <div
@@ -42,14 +67,9 @@ export function DegradedBanner({ visible }: DegradedBannerProps) {
       data-testid="performance-degraded-banner"
       className="grid gap-1 rounded-lg border border-warning-line bg-warning-bg px-3.5 py-3"
     >
-      <p className="text-meta font-semibold text-ink-1">
-        {t('admin.performance.banner.title')}
-      </p>
+      <p className="text-meta font-semibold text-ink-1">{title}</p>
       <p className="text-badge text-ink-2">
-        {codePhrase(
-          t('admin.performance.banner.note'),
-          t('admin.performance.banner.code'),
-        )}
+        {codePhrase(note, t('admin.performance.banner.code'))}
       </p>
     </div>
   )

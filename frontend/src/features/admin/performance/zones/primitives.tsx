@@ -11,6 +11,39 @@ import { KNOWN_PROBLEM_CODES, problemCode } from '../utils'
  * 放在独立模块里，避免只读区反向依赖维护动作区。
  */
 
+export interface ZoneRailProps {
+  titleId: string
+  title: string
+  sub?: string
+  note?: string
+}
+
+/**
+ * 每个观测区的可见标题栏（demo 的 `pf-rail`）：`h2` + 可选两行小字。
+ *
+ * `titleId` 由调用方的 `useId()` 提供，`<section aria-labelledby>` 指向它，
+ * 这样区块的无障碍名来自可见标题而不是另一份重复文案。`sub` 是规模副标题
+ * （例如模型数），`note` 是更次要的节奏说明；两者缺席时不渲染空节点。
+ */
+export function ZoneRail({ titleId, title, sub, note }: ZoneRailProps) {
+  return (
+    <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+      <h2
+        id={titleId}
+        className="text-card-title font-semibold leading-[22px] text-ink-1"
+      >
+        {title}
+      </h2>
+      {sub === undefined ? null : (
+        <p className="text-meta text-ink-3">{sub}</p>
+      )}
+      {note === undefined ? null : (
+        <p className="text-badge text-ink-3">{note}</p>
+      )}
+    </div>
+  )
+}
+
 /** 加载骨架：固定行数，`aria-hidden` 让读屏跳过占位。 */
 export function SkeletonLines({
   rows,
