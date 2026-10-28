@@ -150,10 +150,14 @@ describe('公开页组件只引用新字阶', () => {
   })
 
   it('字体栈：西文 Inter 优先，中文回落到苹方 / 雅黑', () => {
-    const stack = /--font-public:\s*([^;]+);/.exec(homeCss)?.[1] ?? ''
+    // 栈本身只有一个来源（tokens.css 的 --font-app），公开页与控制台共用；
+    // home.css 的 --font-public 只做指针，避免出现第二份字族列表。
+    const tokensCss = readFileSync(`${stylesDir}tokens.css`, 'utf8')
+    const stack = /--font-app:\s*([\s\S]*?);/.exec(tokensCss)?.[1] ?? ''
     expect(stack).toContain("'Inter'")
     expect(stack).toContain("'PingFang SC'")
     expect(stack).toContain("'Microsoft YaHei'")
+    expect(homeCss).toContain('--font-public: var(--font-app)')
   })
 })
 

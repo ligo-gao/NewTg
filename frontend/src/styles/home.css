@@ -52,12 +52,9 @@
 }
 
 .public-shell {
-  /* Inter + Noto Sans SC 由 shell-fonts.css 自托管，与营销站同一批文件、同一组
-     unicode-range；'Inter Fallback' / 'Noto Sans SC Fallback' 是 next/font 的
-     度量兜底（见 shell-fonts.css），保留它们，字体加载前后行高不变。 */
-  --font-public: 'Inter', 'Inter Fallback', 'Noto Sans SC',
-    'Noto Sans SC Fallback', 'PingFang SC', 'Microsoft YaHei', system-ui,
-    sans-serif;
+  /* Inter + Noto Sans SC 与营销站同一批自托管分片（shell-fonts.css）；
+     栈本身定义在 tokens.css 的 --font-app，控制台也用同一条。 */
+  --font-public: var(--font-app);
   --font-public-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
   /* Re-map the shared primitives for every public page. The console renders
@@ -1070,8 +1067,10 @@
   align-items: flex-end;
   justify-content: space-between;
   /* 最后一行文字到分隔线 39px，线本身占 1px，面板顶边因此正好落在
-     `--public-head-gap`（40px）上——与没有分隔线的模型库、定价同距。 */
-  padding-block: 32px calc(var(--public-head-gap) - 1px);
+     `--public-head-gap`（40px）上——与没有分隔线的模型库、定价同距。
+     顶部留白不在这里给：导航栏 → 页面首个文字块由 PublicLayout 的
+     pt-14（56px）统一提供，四个公开页同距。 */
+  padding-block: 0 calc(var(--public-head-gap) - 1px);
   border-bottom: 1px solid var(--home-rule);
 }
 
@@ -1878,8 +1877,9 @@
 .public-shell .about-wrap { max-width: 1200px; }
 
 .public-shell .about-hero {
-  /* 与排行同法：文字到分隔线 39px + 线 1px = 事实条顶边距文字 40px。 */
-  padding-block: 56px calc(var(--public-head-gap) - 1px);
+  /* 与排行同法：文字到分隔线 39px + 线 1px = 事实条顶边距文字 40px。
+     顶部留白同样由 PublicLayout 提供（pt-14 = 56px），这里不写 padding-top。 */
+  padding-block: 0 calc(var(--public-head-gap) - 1px);
   border-bottom: 1px solid var(--home-rule);
 }
 

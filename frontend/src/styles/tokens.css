@@ -297,6 +297,16 @@
    ========================================================================== */
 
 :root {
+  /* Interface face for the whole shell — public pages, marketing site and the
+     console. Inter + Noto Sans SC are self-hosted by shell-fonts.css (the same
+     subsets website/ ships), so a private deployment never calls a font CDN.
+     The console previously had no font-family at all and fell back to the OS
+     UI face (Microsoft YaHei on Windows), which is why body copy looked
+     different from the public pages. `--font-public` (home.css) references
+     this, so there is one stack to change. */
+  --font-app: 'Inter', 'Inter Fallback', 'Noto Sans SC', 'Noto Sans SC Fallback',
+    'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;

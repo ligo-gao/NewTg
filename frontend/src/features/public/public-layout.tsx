@@ -28,7 +28,11 @@ export function PublicLayout({ activePath, contained = true, children }: PublicL
       <PublicHeader activePath={activePath} />
       <main id="main" className="flex-1">
         {contained ? (
-          <div className="wrap py-10">{children}</div>
+          // 导航栏底边 → 页面首个文字块 = 56px（--space-14），四个公开页
+          // 只由这里提供；页头组件（.rank-head / .about-hero）不得再写
+          // 自己的 padding-top，否则就是两段留白相加。
+          // 下沿保持 40px，页脚前与页内区块的节奏不变。
+          <div className="wrap pt-14 pb-10">{children}</div>
         ) : (
           children
         )}

@@ -41,16 +41,26 @@ describe('public page head → content gap', () => {
   })
 
   it('splits the same distance around a hairline on the ruled pages', () => {
-    // 排行：39px + 1px 线 = 40px，面板自己不再加 margin。
+    // 排行 / 关于的分隔线只拥有「文字 → 线」这 40px；顶部留白归 PublicLayout，
+    // 页头自己写 0，避免两段留白相加。
     expect(ruleBody('.public-shell .rank-head')).toContain(
-      `padding-block: 32px ${PAIRED_WITH_RULE}`,
+      `padding-block: 0 ${PAIRED_WITH_RULE}`,
     )
     expect(ruleBody('.public-shell .rank-panel-body')).not.toContain('margin-top')
 
-    // 关于：同样的 39px + 1px 线，事实条顶边正好落在 40px。
     expect(ruleBody('.public-shell .about-hero')).toContain(
-      `padding-block: 56px ${PAIRED_WITH_RULE}`,
+      `padding-block: 0 ${PAIRED_WITH_RULE}`,
     )
+  })
+
+  it('owns navigation → first text block in the layout, once', () => {
+    // 导航栏底边 → 页面首个文字块 = 56px（--space-14）。四个公开页只有
+    // 这一个来源；页头组件若再加 padding-top，实测距离会变成 88 / 112。
+    const layout = readFileSync(
+      `${srcDir}features/public/public-layout.tsx`,
+      'utf8',
+    )
+    expect(layout).toContain('wrap pt-14 pb-10')
   })
 
   it('wires the rule-less pages to that class in their components', () => {
@@ -64,9 +74,10 @@ describe('public page head → content gap', () => {
     }
   })
 
-  it('keeps the marketing pricing page (Next app) on the same 40px', () => {
+  it('keeps the marketing pricing page (Next app) on the same numbers', () => {
     // `/pricing` 由营销站（website/）承接，不经过 SPA，所以第 4 个公开页
-    // 在这里单独锁一次；改了两边任何一边都要一起改。
+    // 在这里单独锁一次：顶部 pt-14（56px）与 SPA 的 PublicLayout 同值，
+    // 底部 40px 仍由 `--public-head-gap` 的思路给出。改了两边任何一边都要一起改。
     const workbench = readFileSync(
       fileURLToPath(
         new URL(

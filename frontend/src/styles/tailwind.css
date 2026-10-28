@@ -174,8 +174,11 @@
 }
 
 @layer base {
-  /* 正文基线（§4.7）：未显式定字号的文本回落到 body 档。 */
+  /* 正文基线（§4.7）：未显式定字号的文本回落到 body 档。
+     字体取 tokens.css 的 --font-app：控制台与公开页同一个栈，Windows 上
+     不再落到系统雅黑（公开页的 .public-shell 也会继承到这里）。 */
   body {
+    font-family: var(--font-app);
     font-size: 14px;
     line-height: 22px;
   }
