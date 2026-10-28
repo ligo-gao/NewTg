@@ -590,8 +590,14 @@ func (p *Poller) applyParsed(ctx context.Context, task *Task, compiled *plugin.C
 		RawState: rawState,
 		Progress: progress,
 		Data:     data,
-		// 非终态且有效 → 连续失败清零（relay-06 §8.2）。
-		Private: map[string]any{"poll_failures": 0},
+	}
+	// 只有 2xx 才清零连续失败（relay-06 §8.2）：上游正常应答且任务仍在跑，
+	// 之前的失败作废。「其它 4xx 能解析成 IN_PROGRESS」不算有效应答——照清
+	// 零会让一个持续 400 的上游把计数钉在 1，永远够不到 maxFailures，任务只能
+	// 拖到 1440 分钟超时退款，hold 被多锁。
+	clearsFailures := resp.StatusCode >= 200 && resp.StatusCode <= 299
+	if clearsFailures {
+		update.Private = map[string]any{"poll_failures": 0}
 	}
 	won, err := p.repo.ApplyPoll(ctx, task.ID, task.State, update)
 	if err != nil {
@@ -605,13 +611,16 @@ func (p *Poller) applyParsed(ctx context.Context, task *Task, compiled *plugin.C
 		task.RawState = rawState
 		task.ProgressPercent = progress
 		task.Data = mergeMaps(task.Data, data)
-		// poll_failures 也必须同步：上面刚把 0 写进 DB，内存里若还留着旧计数，
-		// 本轮的 recordFailure / 后续轮次的 applyUnknown 会从旧值继续累加，
-		// 距离上限只差一次的任务就被误判失败并退款（P1-6）。
-		if task.PrivateData == nil {
-			task.PrivateData = map[string]any{}
+		// poll_failures 也要同步：上面刚把 0 写进 DB，内存里若还留着旧计数，
+		// 后续轮次的 applyUnknown 会从旧值继续累加，距离上限只差一次的任务就
+		// 被误判失败并退款（P1-6）。recordFailure 自身以 DB 原子递增为准，但
+		// applyUnknown 仍读内存，所以这一步不能省。
+		if clearsFailures {
+			if task.PrivateData == nil {
+				task.PrivateData = map[string]any{}
+			}
+			task.PrivateData["poll_failures"] = 0
 		}
-		task.PrivateData["poll_failures"] = 0
 	}
 	return true
 }

@@ -539,9 +539,10 @@ func (r *Repo) MJChannelCandidates(ctx context.Context, model, group string) ([]
 // 会让超过单轮 LIMIT 时 id 大的任务永远进不了这一批——视频/动画这类后提交
 // 的长任务正好被饿死，用户看到一直「处理中」、hold 也不解（P1-7）。
 //
-// 代价：部分索引 tasks_pending_idx 只覆盖 state，排序要对全部在飞行做一次
-// sort；在飞行规模受 LIMIT 约束前可接受，真正需要时再补 (family, updated_at)
-// 索引。
+// 代价：现有索引都不支持这个排序——tasks_family_pending_idx 是
+// (family, id)（部分谓词 state NOT IN 终态），tasks_pending_idx 只覆盖 state。
+// 查询对匹配 family 的全部在飞行行做一次排序后才截断，LIMIT 不限制排序输入；
+// 在飞行规模大时应补 (family, updated_at, id) 索引，当前量级可接受。
 //
 // 未知 family 返回错误而不是空集：静默空结果会把调用方拼错家族名伪装成
 // 「本轮没有任务」，让资金侧停摆不可见。

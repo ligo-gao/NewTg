@@ -489,13 +489,45 @@ func TestPollOther4xxNonTerminalAccumulatesFailure(t *testing.T) {
 	}
 }
 
-// TestPollValidResponseResetsStaleFailureCount 冻结 P1-6：一次「能解析、但仍
-// 非终态」的响应先清零 DB 里的 poll_failures，随后的 recordFailure 必须从 1
-// 重新计数，而不是拿内存快照里的旧值 +1。否则距离上限只差一次的任务会被
-// 误判失败并退款，而上游其实还在跑。
-func TestPollValidResponseResetsStaleFailureCount(t *testing.T) {
+// TestPollOther4xxNonTerminalAccumulatesToLimit 冻结 relay-06 §8.2：
+// 「其它 4xx」即使 body 能解析成 IN_PROGRESS 也不得清零计数，必须一路累计到
+// maxFailures 并退款。只清内存或只清 DB 都会让计数卡在 1，任务拖到 1440 分钟
+// 超时才退款，hold 被多锁。
+func TestPollOther4xxNonTerminalAccumulatesToLimit(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"state":"IN_PROGRESS","progress":50}`))
+	}))
+	defer upstream.Close()
+
+	repo := newFakePollRepo()
+	repo.channels[7] = &ChannelTarget{ID: 7, BaseURL: upstream.URL}
+	task := submittedTask(1, 7)
+	task.PrivateData["poll_failures"] = float64(19) // 距离上限只差一次
+	repo.add(task)
+	handoff := &fakeHandoff{}
+	p := newTestPoller(t, repo, handoff, NewOutboundClient())
+	p.RunOnce(context.Background())
+
+	got := repo.get(task.ID)
+	if got.State != StateFailure {
+		t.Fatalf("第 20 次连续 4xx 必须判失败，got state=%s failures=%v",
+			got.State, got.PrivateData["poll_failures"])
+	}
+	if got.FailReason != "poll_failures_exceeded" {
+		t.Fatalf("fail_reason = %q, want poll_failures_exceeded", got.FailReason)
+	}
+	if handoff.refundCount() != 1 {
+		t.Fatalf("refunds = %d, want 1", handoff.refundCount())
+	}
+}
+
+// TestPollValidResponseResetsStaleFailureCount 冻结 P1-6：一次 2xx「能解析、
+// 但仍非终态」的响应把 poll_failures 清零——上游确实在跑，之前的失败不应
+// 再累计。
+func TestPollValidResponseResetsStaleFailureCount(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"state":"IN_PROGRESS","progress":50}`))
 	}))
 	defer upstream.Close()
@@ -514,8 +546,8 @@ func TestPollValidResponseResetsStaleFailureCount(t *testing.T) {
 		t.Fatalf("有效响应不得把任务判失败：state=%s reason=%s failures=%v",
 			got.State, got.FailReason, got.PrivateData["poll_failures"])
 	}
-	if failures := privateInt(got.PrivateData["poll_failures"]); failures != 1 {
-		t.Fatalf("poll_failures = %d, want 1（先清零再计一次）", failures)
+	if failures := privateInt(got.PrivateData["poll_failures"]); failures != 0 {
+		t.Fatalf("poll_failures = %d, want 0（有效响应清零）", failures)
 	}
 	if handoff.refundCount() != 0 {
 		t.Fatalf("不得退款，refunds=%d", handoff.refundCount())
@@ -523,15 +555,17 @@ func TestPollValidResponseResetsStaleFailureCount(t *testing.T) {
 }
 
 // TestPollUnknownAfterValidResponseCountsFromDB 覆盖同一缺陷的另一半：清零后
-// 内存快照也必须同步，否则下一轮的 UNKNOWN 会拿旧计数继续累加。
+// 内存快照也必须同步，否则下一轮（哪怕上游切换成 4xx/UNKNOWN）会拿旧计数
+// 继续累加，距离上限只差一次的任务被误判失败并退款。
 func TestPollUnknownAfterValidResponseCountsFromDB(t *testing.T) {
 	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
 		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"state":"IN_PROGRESS","progress":50}`))
 			return
 		}
+		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"state":"UNKNOWN"}`))
 	}))
 	defer upstream.Close()
@@ -550,8 +584,8 @@ func TestPollUnknownAfterValidResponseCountsFromDB(t *testing.T) {
 	if got.State == StateFailure {
 		t.Fatalf("第二轮 UNKNOWN 不该立刻失败：%s（%s）", got.State, got.FailReason)
 	}
-	if failures := privateInt(got.PrivateData["poll_failures"]); failures != 2 {
-		t.Fatalf("poll_failures = %d, want 2（第一轮清零后计 1，第二轮 +1）", failures)
+	if failures := privateInt(got.PrivateData["poll_failures"]); failures != 1 {
+		t.Fatalf("poll_failures = %d, want 1（第一轮清零，第二轮从 DB 的 0 起算）", failures)
 	}
 	if handoff.refundCount() != 0 {
 		t.Fatalf("不得退款，refunds=%d", handoff.refundCount())
