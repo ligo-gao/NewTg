@@ -750,19 +750,9 @@ func (s *TopupService) ChargeAutoRenewal(ctx context.Context,
 		}
 	}
 	if body.Status != "succeeded" {
-		s.markOrderFailed(ctx, order.ID, "provider_rejected")
-		failure := &AutoRenewChargeFailure{Code: "payment_required", OrderID: order.ID}
-		if body.LastPaymentError != nil && body.LastPaymentError.Code != "" {
-			failure.Code = body.LastPaymentError.Code
-			switch body.LastPaymentError.Code {
-			case "expired_card", "invalid_number", "incorrect_number", "incorrect_cvc":
-				// 渠道明确表示令牌本身不可用：fail-closed（R-42）。
-				failure.InvalidToken = true
-			}
-		}
-		if body.Status == "requires_action" {
-			// off-session 无法完成 SCA；必须由用户重新授权。
-			failure.Code = "authentication_required"
+		failure, markFailed := autoRenewChargeFailure(body, order.ID)
+		if markFailed {
+			s.markOrderFailed(ctx, order.ID, "provider_rejected")
 		}
 		return zero, failure
 	}
@@ -777,6 +767,36 @@ func (s *TopupService) ChargeAutoRenewal(ctx context.Context,
 		}
 	}
 	return result, nil
+}
+
+// autoRenewChargeFailure 把「未成功」的扣款响应分类成失败语义。
+// markFailed=true 表示渠道给出了用户可归责的终态拒绝：订单置 failed，
+// 幂等键的 rejected 计数随之 +1，允许同一周期换卡后重新建单。
+func autoRenewChargeFailure(body *stripeChargeBody,
+	orderID int64) (*AutoRenewChargeFailure, bool) {
+
+	if body.Status == "processing" {
+		// P1-4：processing 是「渠道已受理、结果未定」，不是拒绝。置 failed
+		// 会让 rejected+1 → 换成新幂等键 → 下一轮新建 PaymentIntent，而原
+		// PI 仍可能成功，同周期扣两次。保持 pending，下一轮同键继续确认。
+		return &AutoRenewChargeFailure{
+			Code: "payment_processing", Retryable: true, OrderID: orderID,
+		}, false
+	}
+	failure := &AutoRenewChargeFailure{Code: "payment_required", OrderID: orderID}
+	if body.LastPaymentError != nil && body.LastPaymentError.Code != "" {
+		failure.Code = body.LastPaymentError.Code
+		switch body.LastPaymentError.Code {
+		case "expired_card", "invalid_number", "incorrect_number", "incorrect_cvc":
+			// 渠道明确表示令牌本身不可用：fail-closed（R-42）。
+			failure.InvalidToken = true
+		}
+	}
+	if body.Status == "requires_action" {
+		// off-session 无法完成 SCA；必须由用户重新授权。
+		failure.Code = "authentication_required"
+	}
+	return failure, true
 }
 
 // autoRenewalIdempotencyKey 按「订阅 + 周期末 + 已明确拒绝的订单数」推导键。
@@ -807,14 +827,14 @@ func (s *TopupService) autoRenewalIdempotencyKey(ctx context.Context,
 
 // stripeChargeBody 把响应体与解析结果一起返回（raw 用于 orders.raw_callback）。
 type stripeChargeBody struct {
-	ID               string
-	Status           string
-	Amount           int64
-	Currency         string
+	ID               string `json:"id"`
+	Status           string `json:"status"`
+	Amount           int64  `json:"amount"`
+	Currency         string `json:"currency"`
 	LastPaymentError *struct {
 		Code        string `json:"code"`
 		DeclineCode string `json:"decline_code"`
-	}
+	} `json:"last_payment_error"`
 	raw []byte
 }
 

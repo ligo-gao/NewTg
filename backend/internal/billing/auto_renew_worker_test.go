@@ -1074,3 +1074,55 @@ func TestChargeStripeOffSessionClassifiesErrors(t *testing.T) {
 		})
 	}
 }
+
+// processing 是 Stripe 的「已受理、结果未定」：不是拒绝。把它当 failed 会
+// 让幂等键的 rejected 计数 +1，下一轮新建 PaymentIntent，而原 PI 仍可能
+// 成功——同一周期扣两次。必须保持 pending 并沿用同一幂等键重试。
+func TestAutoRenewChargeFailureProcessingIsRetryable(t *testing.T) {
+	var body stripeChargeBody
+	if err := json.Unmarshal([]byte(
+		`{"id":"pi_proc","status":"processing","amount":5000,"currency":"cny"}`), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	failure, markFailed := autoRenewChargeFailure(&body, 7)
+	if markFailed {
+		t.Fatal("processing 不得把订单置 failed（会换幂等键并二次扣款）")
+	}
+	if failure == nil || !failure.Retryable || failure.Code != "payment_processing" ||
+		failure.OrderID != 7 {
+		t.Fatalf("failure = %+v, want retryable payment_processing", failure)
+	}
+}
+
+// 卡被拒是用户可归责的终态：订单置 failed（换键），过期/无效卡同时标记令牌失效。
+func TestAutoRenewChargeFailureCardDeclineIsTerminal(t *testing.T) {
+	var body stripeChargeBody
+	if err := json.Unmarshal([]byte(
+		`{"status":"requires_payment_method","last_payment_error":{"code":"expired_card"}}`),
+		&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	failure, markFailed := autoRenewChargeFailure(&body, 9)
+	if !markFailed {
+		t.Fatal("渠道拒绝必须把订单置 failed")
+	}
+	if failure == nil || failure.Retryable || failure.Code != "expired_card" ||
+		!failure.InvalidToken {
+		t.Fatalf("failure = %+v, want terminal expired_card invalid token", failure)
+	}
+}
+
+// off-session 无法完成 SCA：提示用户重新授权，订单置 failed 以便换键重新发起。
+func TestAutoRenewChargeFailureRequiresActionNeedsUser(t *testing.T) {
+	var body stripeChargeBody
+	if err := json.Unmarshal([]byte(`{"status":"requires_action"}`), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	failure, markFailed := autoRenewChargeFailure(&body, 3)
+	if !markFailed {
+		t.Fatal("requires_action 必须把订单置 failed")
+	}
+	if failure == nil || failure.Retryable || failure.Code != "authentication_required" {
+		t.Fatalf("failure = %+v, want authentication_required", failure)
+	}
+}
