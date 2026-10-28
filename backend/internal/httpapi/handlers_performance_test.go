@@ -806,20 +806,21 @@ func auditDetail(t *testing.T, call []any) map[string]any {
 // TestPerfEnvSnapshotRedactsPrometheusURL：快照会进 Task 10 的「运行参数」
 // 区（浏览器可见），PROMETHEUS_URL 的 userinfo、query 与 fragment 都必须
 // 先脱敏；无法解析的值按空串展示（Validate 会拒绝它，页面显示「未接入」）。
+// userinfo 整段移除而不是只打码口令：反向代理常用「用户名即 token」的写法。
 func TestPerfEnvSnapshotRedactsPrometheusURL(t *testing.T) {
 	env := map[string]string{"PROMETHEUS_URL": "http://user:pass@prom:9090"}
 	handlers := NewPerformanceHandlers(PerformanceHandlerConfig{
 		Getenv: func(key string) string { return env[key] },
 	})
 
-	if got := handlers.envSnapshot().PrometheusURL; got != "http://user:xxxxx@prom:9090" {
-		t.Fatalf("PrometheusURL = %q, want 口令已脱敏", got)
+	if got := handlers.envSnapshot().PrometheusURL; got != "http://prom:9090" {
+		t.Fatalf("PrometheusURL = %q, want userinfo 整段移除", got)
 	}
 
 	// query / fragment 也可能带 token：内容整段打码，只留分隔符。
-	env["PROMETHEUS_URL"] = "http://prom:9090/metrics?token=s3cr3t#section"
+	env["PROMETHEUS_URL"] = "http://user:pass@prom:9090/metrics?token=s3cr3t#section"
 	if got := handlers.envSnapshot().PrometheusURL; got != "http://prom:9090/metrics?…#…" {
-		t.Fatalf("PrometheusURL = %q, want query/fragment 内容已打码", got)
+		t.Fatalf("PrometheusURL = %q, want userinfo 移除且 query/fragment 内容已打码", got)
 	}
 
 	// fragment 内容里可以合法地含 '?'：不能把它当成 query 分隔符，否则
@@ -837,5 +838,13 @@ func TestPerfEnvSnapshotRedactsPrometheusURL(t *testing.T) {
 	env["PROMETHEUS_URL"] = ""
 	if got := handlers.envSnapshot().PrometheusURL; got != "" {
 		t.Fatalf("未配置时应为空串，got %q", got)
+	}
+
+	// 防回退断言：任何一次输出都不得含 userinfo 的子串（有人改回 Redacted()
+	// 只打码口令时这里会失败）。
+	env["PROMETHEUS_URL"] = "http://user:pass@prom:9090/metrics?token=s3cr3t#section"
+	got := handlers.envSnapshot().PrometheusURL
+	if strings.Contains(got, "user") || strings.Contains(got, "pass") {
+		t.Fatalf("PrometheusURL = %q, 不得包含 userinfo 的 user/pass 子串", got)
 	}
 }

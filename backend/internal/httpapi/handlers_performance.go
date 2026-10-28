@@ -349,10 +349,12 @@ func (h *PerformanceHandlers) envSnapshot() PerfEnvSnapshot {
 // redactedEnvURL 去掉 URL 里的凭据再交给页面：PROMETHEUS_URL 可能带
 // http://user:pass@host（反向代理的 basic auth），也可能带 ?token=… 或
 // #fragment 形式的凭据，而 Task 10 会把快照原样展示在「运行参数」区。
-// userinfo 由 url.URL.Redacted 处理；query 与 fragment 的**内容**整段替换
-// 成 "…"（只保留「有参数 / 有片段」这一事实，绝不回显）。解析失败时返回
-// 空串——那本来就是 Validate 会拒绝的配置，页面按「未接入」展示比回显
-// 一段无法解析的原文安全。
+// userinfo **整段移除**（用户名也不留）：反向代理常用「用户名即 token」的
+// 写法，只打码口令等于把凭据的一半交给浏览器；页面只需要知道「接到哪个
+// 地址」，不需要知道用谁连的。query 与 fragment 的**内容**整段替换成 "…"
+// （只保留「有参数 / 有片段」这一事实，绝不回显）。解析失败时返回空串——
+// 那本来就是 Validate 会拒绝的配置，页面按「未接入」展示比回显一段无法
+// 解析的原文安全。
 func redactedEnvURL(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -362,9 +364,10 @@ func redactedEnvURL(raw string) string {
 	if err != nil {
 		return ""
 	}
+	parsed.User = nil
 	redacted := parsed.Redacted()
-	// Redacted 之后 userinfo/path 里的 '?'、'#' 都已被百分号编码，因此这里
-	// 找到的第一个 '?' / '#' 一定是 query / fragment 的分隔符。
+	// 序列化之后 path 里的 '?'、'#' 都已被百分号编码，因此这里找到的第一个
+	// '?' / '#' 一定是 query / fragment 的分隔符。
 	// 切点取**先出现**的那个：fragment 内容里可以合法地含有 '?'，若只看
 	// queryIndex 就会把 fragment 前缀（如 #access_token=…）回显出去。
 	queryIndex := strings.IndexByte(redacted, '?')

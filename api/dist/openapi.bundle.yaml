@@ -6268,7 +6268,7 @@ paths:
         环境变量被显式设置，两者独立；`env[].effect` 固定 `restart`。
         `METRICS_TOKEN` 只报是否已配置，永不回显值（该行没有 `value` 键）；
         `PERF_METRICS_DSN` 整行不存在（带口令）。`PROMETHEUS_URL` 已脱敏：
-        userinfo 口令变 `xxxxx`，query 与 fragment 内容变 `…`。
+        userinfo 整段移除（用户名与口令都不出现），query 与 fragment 内容为 `…`。
         `fixed[].effect` 固定 `code`。`settings_groups[].items[].source` 只有
         `settings|default`：越界、类型错误或 null 的落库值会回落注册表默认并记
         Warn。
@@ -21485,8 +21485,8 @@ components:
           description: |
             部署环境变量快照（B 类）。METRICS_TOKEN 只报是否已配置（该行没有
             `value` 键），永不回显值；PERF_METRICS_DSN 整行不存在（DSN 可能含口令）。
-            PROMETHEUS_URL 已脱敏：userinfo 口令为 `xxxxx`，query 与 fragment 内容
-            为 `…`。
+            PROMETHEUS_URL 已脱敏：userinfo 整段移除（用户名与口令都不出现），
+            query 与 fragment 内容为 `…`。
           items:
             $ref: '#/components/schemas/PerformanceConfigEnvRow'
         fixed:

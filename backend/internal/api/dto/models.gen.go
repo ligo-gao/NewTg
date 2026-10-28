@@ -8564,8 +8564,8 @@ type PerformanceCacheStats struct {
 type PerformanceConfig struct {
 	// Env 部署环境变量快照（B 类）。METRICS_TOKEN 只报是否已配置（该行没有
 	// `value` 键），永不回显值；PERF_METRICS_DSN 整行不存在（DSN 可能含口令）。
-	// PROMETHEUS_URL 已脱敏：userinfo 口令为 `xxxxx`，query 与 fragment 内容
-	// 为 `…`。
+	// PROMETHEUS_URL 已脱敏：userinfo 整段移除（用户名与口令都不出现），
+	// query 与 fragment 内容为 `…`。
 	Env []PerformanceConfigEnvRow `json:"env"`
 
 	// Fixed 代码内置参数（C 类，改部署配置也不生效）。
