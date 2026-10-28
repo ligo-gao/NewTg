@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"newtg/gateway/internal/egress"
+	"newtg/gateway/internal/relay/sse"
 )
 
 // 本文件是任务提交的出站执行器：宿主拥有连接（relay-06 §0.1），插件只
@@ -66,6 +67,11 @@ const (
 	// SSEEventMaxBytes 是单个 SSE 事件的累积上限（relay-06 §5.3）。
 	// 事件、累积状态与持久化数据各限 1 MiB，且**从不截断**。
 	SSEEventMaxBytes = 1 << 20
+
+	// sseLineBytes 是单行读取上限：事件累积上限 + 1 KiB 余量（容纳
+	// `data: `/`event: ` 之类字段前缀）。没有它，一条不含换行的响应会
+	// 被 bufio.ReadString 整条读进内存。超出按硬错误处理，绝不截断。
+	sseLineBytes = SSEEventMaxBytes + (1 << 10)
 
 	// SSETotalTimeout 是单次提交事件流的**外层**上限。
 	//
@@ -768,8 +774,8 @@ func DoOutboundSSE(ctx context.Context, client *http.Client, desc *RequestDescri
 
 // readSSE 按 SSE 分帧规则读取事件（RFC 风格：CRLF/CR/LF、注释、多行 data）。
 //
-// 宿主只接受 text/event-stream 语义；每个事件的 data 上限 1 MiB，超限
-// 直接失败而不是截断（截断会把不完整 JSON 交给插件）。
+// 宿主只接受 text/event-stream 语义；每个事件的 data 上限 1 MiB，单行上限
+// sseLineBytes，超限直接失败而不是截断（截断会把不完整 JSON 交给插件）。
 func readSSE(ctx context.Context, body io.Reader, onEvent func(SSEEvent) error) error {
 	reader := bufio.NewReader(body)
 	var (
@@ -796,7 +802,10 @@ func readSSE(ctx context.Context, body io.Reader, onEvent func(SSEEvent) error) 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		line, readErr := reader.ReadString('\n')
+		line, readErr := sse.ReadLine(reader, sseLineBytes)
+		if errors.Is(readErr, sse.ErrLineTooLong) {
+			return fmt.Errorf("%w: sse line exceeds %d bytes", ErrPluginHook, sseLineBytes)
+		}
 		if len(line) > 0 {
 			line = strings.TrimSuffix(line, "\n")
 			line = strings.TrimSuffix(line, "\r")
