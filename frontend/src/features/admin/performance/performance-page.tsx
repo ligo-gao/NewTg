@@ -1,56 +1,35 @@
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { ApiError } from '@/api/errors'
 import { meQueryOptions } from '@/lib/session'
 import { useI18n } from '@/shared/lib/i18n-context'
+import { handleRadioGroupKeyDown } from '@/shared/lib/roving-focus'
 import { Button } from '@/shared/ui/button'
 import { FormAlert } from '@/shared/ui/form'
-import { StatusBadge } from '@/shared/ui/status-badge'
 import { useToastStore } from '@/shared/ui/toast'
 
 import {
-  cleanupLogs,
-  clearDiskCache,
+  fetchPerfConfig,
+  fetchPerfModels,
+  fetchPerfOverview,
+  fetchPerfSettings,
   fetchPerformanceLogs,
   fetchPerformanceStats,
   fetchRecentOperations,
-  runGarbageCollection,
-  type CleanupMode,
-  type PerformanceDiskCacheClearResult,
-  type PerformanceGCResult,
-  type PerformanceLogCleanupResult,
-  type PerformanceRecentOperation,
+  type OverviewRange,
+  type PerfModels,
 } from './api'
-import { DangerConfirm } from './danger-confirm'
 import { useOnlineStatus } from './use-online'
-import {
-  KNOWN_PROBLEM_CODES,
-  diskUsagePercent,
-  formatBytes,
-  formatClock,
-  formatCount,
-  formatDateTime,
-  formatDecimal,
-  formatMilliseconds,
-  previewLogCleanup,
-  problemCode,
-  usageBarClass,
-  usageTone,
-  validateCleanupValue,
-} from './utils'
-
-type DiskOutcome =
-  | { kind: 'success'; data: PerformanceDiskCacheClearResult }
-  | { kind: 'error'; message: string }
-
-type GcOutcome =
-  | { kind: 'success'; data: PerformanceGCResult }
-  | { kind: 'error'; message: string }
-
-type LogsOutcome =
-  | { kind: 'success'; data: PerformanceLogCleanupResult }
-  | { kind: 'error'; message: string }
+import { formatClock } from './utils'
+import { DegradedBanner } from './zones/degraded-banner'
+import { GatewayZone } from './zones/gateway-zone'
+import { MaintenanceZone, describePerformanceError } from './zones/maintenance-zone'
+import { ModelPerfZone } from './zones/model-perf-zone'
+import { RecentOpsZone } from './zones/recent-ops-zone'
+import { ResourcesZone } from './zones/resources-zone'
+import { SettingsZone } from './zones/settings-zone'
+import { VitalsStrip, type ModelProbe } from './zones/vitals-strip'
 
 /** `<1024` 管理页闸门（UI §6.12 响应式）；无 matchMedia 的环境按桌面处理。 */
 function useMinWidth(px: number): boolean {
@@ -73,100 +52,64 @@ function useMinWidth(px: number): boolean {
   return matches
 }
 
-function PerformanceCard({
-  title,
-  testId,
-  children,
-}: {
-  title: string
-  testId: string
-  children: ReactNode
-}) {
-  return (
-    <section
-      data-testid={testId}
-      className="rounded-xl border border-border-default bg-surface-card p-5"
-    >
-      <h2 className="mb-3 text-card-title font-semibold leading-[22px] text-ink-1">
-        {title}
-      </h2>
-      {children}
-    </section>
+/**
+ * 页面是否处于后台标签页。轮询必须随 `visibilitychange` 立即停表——只在
+ * `refetchInterval` 函数里读 `document.hidden` 不够：已经排定的定时器仍会
+ * 在隐藏后触发一次请求。状态变化会让 observer 收到新的 interval（`false`）
+ * 并清掉定时器；恢复可见后由 TanStack Query 默认的 `refetchOnWindowFocus`
+ * 补一次，不再另造恢复逻辑。
+ */
+function useDocumentHidden(): boolean {
+  const [hidden, setHidden] = useState(
+    () => typeof document !== 'undefined' && document.hidden,
   )
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    const update = () => setHidden(document.hidden)
+    document.addEventListener('visibilitychange', update)
+    return () => document.removeEventListener('visibilitychange', update)
+  }, [])
+  return hidden
 }
 
-function SkeletonLines({ rows, testId }: { rows: number; testId: string }) {
-  return (
-    <div data-testid={testId} aria-hidden="true" className="space-y-2">
-      {Array.from({ length: rows }, (_, index) => (
-        <div
-          key={index}
-          className="h-4 w-full rounded bg-surface-subtle"
-        />
-      ))}
-    </div>
+const RANGES: readonly OverviewRange[] = ['15m', '1h', '6h', '24h']
+
+/** 轮询节奏：均 ≥ 后端 Prometheus 15s 缓存 TTL，不会打出穿透缓存的高频请求。 */
+const OVERVIEW_INTERVAL = 30_000
+const MODELS_INTERVAL = 60_000
+const CONFIG_INTERVAL = 60_000
+const STATS_INTERVAL = 10_000
+
+function probeTime(models: PerfModels, model: string): number {
+  const row = models.rows.find((candidate) => candidate.model === model)
+  const at = row?.probe?.last_tested_at
+  if (at === null || at === undefined) return Number.NEGATIVE_INFINITY
+  const parsed = Date.parse(at)
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed
+}
+
+/**
+ * 第五格副标题用的「最值得注意的模型」：incident 优先于 degraded，同级取
+ * 最近一次探针时间最新的那行。只做选择与比较，不在页面里格式化日期。
+ */
+function pickModelProbe(models: PerfModels | undefined): ModelProbe | undefined {
+  if (models === undefined) return undefined
+  const candidates = models.rows.filter(
+    (row) => row.status === 'incident' || row.status === 'degraded',
   )
-}
-
-function InlineError({
-  message,
-  retryLabel,
-  onRetry,
-  testId,
-}: {
-  message: string
-  retryLabel: string
-  onRetry: () => void
-  testId: string
-}) {
-  return (
-    <div
-      data-testid={testId}
-      role="alert"
-      className="flex flex-wrap items-center gap-3 rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-body text-danger"
-    >
-      <span>{message}</span>
-      <Button variant="ghost" className="h-7 px-2 text-body" onClick={onRetry}>
-        {retryLabel}
-      </Button>
-    </div>
-  )
-}
-
-/** 结果行：成功/部分失败/失败三色，`aria-live=polite` 只播报一次。 */
-function ResultLine({
-  tone,
-  testId,
-  children,
-}: {
-  tone: 'success' | 'warning' | 'danger'
-  testId: string
-  children: ReactNode
-}) {
-  const toneClass =
-    tone === 'danger'
-      ? 'border-danger-line bg-danger-bg text-danger'
-      : tone === 'warning'
-        ? 'border-warning-line bg-warning-bg text-warning'
-        : 'border-success-line bg-success-bg text-success'
-  return (
-    <p
-      data-testid={testId}
-      data-tone={tone}
-      aria-live="polite"
-      className={`mt-3 rounded-lg border px-3 py-2 text-body ${toneClass}`}
-    >
-      {children}
-    </p>
-  )
-}
-
-function actionKey(action: PerformanceRecentOperation['action']): string {
-  return `admin.performance.recent.action_${action.replace(/\./g, '_')}`
-}
-
-function modeKey(mode: CleanupMode): string {
-  return `admin.performance.logs.mode_${mode}`
+  let best = candidates[0]
+  if (best === undefined) return undefined
+  for (const row of candidates) {
+    const rowRank = row.status === 'incident' ? 0 : 1
+    const bestRank = best.status === 'incident' ? 0 : 1
+    if (rowRank < bestRank) {
+      best = row
+      continue
+    }
+    if (rowRank > bestRank) continue
+    if (probeTime(models, row.model) > probeTime(models, best.model)) best = row
+  }
+  return { name: best.model, at: best.probe?.last_tested_at ?? null }
 }
 
 /**
@@ -177,12 +120,16 @@ function modeKey(mode: CleanupMode): string {
  *
  * 权限 `settings:manage`（modules-07，不新增运维权限键）：入口不渲染、直链
  * 由路由 beforeLoad 送 `/403`；服务端仍逐请求强制。
+ *
+ * 本文件只做编排：查询、范围状态、派生值与七区顺序；各区的渲染与交互
+ * 分别在 `zones/` 下。
  */
 export function PerformancePage() {
   const { t, locale } = useI18n()
   const push = useToastStore((state) => state.push)
   const online = useOnlineStatus()
   const wideEnough = useMinWidth(1024)
+  const pageHidden = useDocumentHidden()
   const me = useQuery(meQueryOptions())
   const canManage =
     me.data?.permissions?.some(
@@ -190,12 +137,54 @@ export function PerformancePage() {
     ) ?? false
   const queriesEnabled = canManage && wideEnough
 
+  const [range, setRange] = useState<OverviewRange>('1h')
+
+  /**
+   * 失焦或无权时不排任何轮询：`refetchInterval` 直接是 `false`（而不是
+   * 函数），这样可见性变化会立刻清掉已排定的定时器。
+   */
+  const interval = (ms: number): number | false =>
+    queriesEnabled && !pageHidden ? ms : false
+
+  const overviewQuery = useQuery({
+    queryKey: ['performance', 'overview', range],
+    queryFn: ({ signal }) => fetchPerfOverview(range, signal),
+    enabled: queriesEnabled,
+    // 管理观测页不自动重试：429 要原地提示而不是退避后无限重发。
+    retry: false,
+    refetchInterval: interval(OVERVIEW_INTERVAL),
+    // 切窗时保留上一窗的读数，避免整条体检条/网关/资源区瞬间消失。
+    placeholderData: (previousData) => previousData,
+  })
+  const modelsQuery = useQuery({
+    queryKey: ['performance', 'models'],
+    queryFn: ({ signal }) => fetchPerfModels(signal),
+    enabled: queriesEnabled,
+    retry: false,
+    refetchInterval: interval(MODELS_INTERVAL),
+  })
+  const configQuery = useQuery({
+    queryKey: ['performance', 'config'],
+    queryFn: ({ signal }) => fetchPerfConfig(signal),
+    enabled: queriesEnabled,
+    retry: false,
+    refetchInterval: interval(CONFIG_INTERVAL),
+  })
+  // 测速四项的落库值与 `updated_at`（乐观锁令牌）来自既有设置端点；
+  // 与 config 同节奏刷新，保存后由 onSaved 立即重拉。
+  const sectionQuery = useQuery({
+    queryKey: ['performance', 'settings'],
+    queryFn: ({ signal }) => fetchPerfSettings(signal),
+    enabled: queriesEnabled,
+    retry: false,
+    refetchInterval: interval(CONFIG_INTERVAL),
+  })
   const statsQuery = useQuery({
     queryKey: ['performance', 'stats'],
     queryFn: ({ signal }) => fetchPerformanceStats(signal),
     enabled: queriesEnabled,
-    // 管理观测页不自动重试：429 要原地提示而不是退避后无限重发。
     retry: false,
+    refetchInterval: interval(STATS_INTERVAL),
   })
   const logsQuery = useQuery({
     queryKey: ['performance', 'logs'],
@@ -208,23 +197,6 @@ export function PerformancePage() {
     queryFn: ({ signal }) => fetchRecentOperations(signal),
     enabled: queriesEnabled,
     retry: false,
-  })
-
-  const [diskConfirmOpen, setDiskConfirmOpen] = useState(false)
-  const [diskPending, setDiskPending] = useState(false)
-  const [diskOutcome, setDiskOutcome] = useState<DiskOutcome | null>(null)
-
-  const [gcConfirmOpen, setGcConfirmOpen] = useState(false)
-  const [gcPending, setGcPending] = useState(false)
-  const [gcOutcome, setGcOutcome] = useState<GcOutcome | null>(null)
-
-  const [logsConfirmOpen, setLogsConfirmOpen] = useState(false)
-  const [logsPending, setLogsPending] = useState(false)
-  const [logsOutcome, setLogsOutcome] = useState<LogsOutcome | null>(null)
-  const [mode, setMode] = useState<CleanupMode>('by_days')
-  const [rawValues, setRawValues] = useState<Record<CleanupMode, string>>({
-    by_days: '30',
-    by_count: '20',
   })
 
   // 写操作传输失败与 GET 的 offline 必须同等对待：否则页面仍显示「已连接」，
@@ -254,7 +226,7 @@ export function PerformancePage() {
   // 写失败后另外两条恢复路径都可能不可达：「写成功」只有在写按钮可用时才会
   // 发生，而三个写按钮已因离线被禁用；服务端不可达但 `navigator.onLine` 仍为
   // true 时浏览器也不会派发 online 事件。若只依赖它们，页面会永久锁在离线态，
-  // 即便点「刷新」后三个 GET 全部成功。任一 GET 成功即证明服务端可达，因此
+  // 即便点「刷新」后 GET 全部成功。任一 GET 成功即证明服务端可达，因此
   // 刷新与卡片「重试」成功后同样清除写离线态（dataUpdatedAt 只在成功取数时
   // 前进，失败不会误清除）。
   useEffect(() => {
@@ -286,115 +258,49 @@ export function PerformancePage() {
     })
   }, [online, push, t])
 
-  const stats = statsQuery.data
-  const logs = logsQuery.data
-
-  const rawValue = rawValues[mode]
-  const valueValidation = validateCleanupValue(rawValue)
-  const cleanupPreview = previewLogCleanup(
-    logs?.files ?? [],
-    mode,
-    valueValidation.value ?? 0,
-    Date.now(),
-  )
+  const sourceQueries = [overviewQuery, modelsQuery, configQuery, sectionQuery]
+  const sourceError = sourceQueries.find((query) => query.error !== null)?.error
+  const sourceRefetching = sourceQueries.some((query) => query.isFetching)
 
   const refreshing =
-    statsQuery.isFetching || logsQuery.isFetching || recentQuery.isFetching
+    sourceRefetching ||
+    statsQuery.isFetching ||
+    logsQuery.isFetching ||
+    recentQuery.isFetching
+
   const refreshAll = (): void => {
     void Promise.all([
+      overviewQuery.refetch(),
+      modelsQuery.refetch(),
+      configQuery.refetch(),
+      sectionQuery.refetch(),
       statsQuery.refetch(),
       logsQuery.refetch(),
       recentQuery.refetch(),
     ])
   }
 
-  /** 统一错误文案：已知 Problem 码本地化，429 原地提示，传输失败单独说明。 */
-  const describeError = (error: unknown): string => {
-    if (error instanceof ApiError) {
-      // 传输失败没有 Problem 码可映射，必须使用本地化的网络文案，而不是
-      // 让它落到「操作失败」——后者会误导用户去重复提交。
-      if (error.kind === 'offline') {
-        return t('admin.performance.errors.offline')
-      }
-      if (error.status === 429) {
-        return error.retry_after !== undefined
-          ? t('admin.performance.errors.rate_limited_retry', {
-              seconds: error.retry_after,
-            })
-          : t('admin.performance.errors.rate_limited')
-      }
-      const code = problemCode(error)
-      if (KNOWN_PROBLEM_CODES.has(code)) {
-        return t(`admin.performance.errors.${code}`)
-      }
-    }
-    return t('admin.performance.errors.generic')
+  const retrySources = (): void => {
+    void Promise.all(sourceQueries.map((query) => query.refetch()))
   }
 
-  /**
-   * 写操作统一的离线判定：只有传输失败（status 0 → kind 'offline'）才把
-   * 页面推入离线态；409/422/429 都是服务端可达的业务结果，不能误标离线。
-   */
-  const noteWriteOutcome = (error?: unknown): void => {
-    setWriteOffline(
-      error instanceof ApiError ? error.kind === 'offline' : false,
-    )
-  }
+  const overview = overviewQuery.data
+  const models = modelsQuery.data
+  const config = configQuery.data
+  const section = sectionQuery.data
+  const stats = statsQuery.data
+  const logs = logsQuery.data
 
-  const handleDiskClear = async (): Promise<void> => {
-    setDiskPending(true)
-    setDiskOutcome(null)
-    try {
-      // 回传页面统计所属实例：实例漂移时服务端 409，而不是清错副本。
-      const data = await clearDiskCache(stats?.instance_id)
-      noteWriteOutcome()
-      setDiskOutcome({ kind: 'success', data })
-      // 成功后刷新统计与最近操作：结果行与卡片数字必须反映同一次清理。
-      await Promise.all([statsQuery.refetch(), recentQuery.refetch()])
-    } catch (error) {
-      noteWriteOutcome(error)
-      setDiskOutcome({ kind: 'error', message: describeError(error) })
-    } finally {
-      setDiskPending(false)
-      setDiskConfirmOpen(false)
-    }
-  }
+  // 找不到 prometheus 那条也视为断线（不臆造数据源）；overview 未加载时
+  // 不提前弹横幅。
+  const prometheus = overview?.sources.find(
+    (source) => source.name === 'prometheus',
+  )
+  const sourceDown =
+    overview !== undefined &&
+    (prometheus === undefined || prometheus.status !== 'ok')
 
-  const handleRunGc = async (): Promise<void> => {
-    setGcPending(true)
-    setGcOutcome(null)
-    try {
-      const data = await runGarbageCollection(stats?.instance_id)
-      noteWriteOutcome()
-      setGcOutcome({ kind: 'success', data })
-      await Promise.all([statsQuery.refetch(), recentQuery.refetch()])
-    } catch (error) {
-      noteWriteOutcome(error)
-      setGcOutcome({ kind: 'error', message: describeError(error) })
-    } finally {
-      setGcPending(false)
-      setGcConfirmOpen(false)
-    }
-  }
-
-  const handleLogCleanup = async (): Promise<void> => {
-    const parsed = validateCleanupValue(rawValue)
-    if (parsed.value === undefined) return
-    setLogsPending(true)
-    setLogsOutcome(null)
-    try {
-      const data = await cleanupLogs(mode, parsed.value, stats?.instance_id)
-      noteWriteOutcome()
-      setLogsOutcome({ kind: 'success', data })
-      await Promise.all([logsQuery.refetch(), recentQuery.refetch()])
-    } catch (error) {
-      noteWriteOutcome(error)
-      setLogsOutcome({ kind: 'error', message: describeError(error) })
-    } finally {
-      setLogsPending(false)
-      setLogsConfirmOpen(false)
-    }
-  }
+  const modelProbe = pickModelProbe(models)
 
   if (!wideEnough) {
     return (
@@ -408,17 +314,6 @@ export function PerformancePage() {
       </div>
     )
   }
-
-  const instanceId = stats?.instance_id
-  const configEnabled = stats?.config.enabled === true
-  const diskEnabled = stats?.cache_stats.enabled === true
-  const diskPath = stats?.disk_cache_info.path || stats?.config.path || ''
-  const diskMaxMb = stats?.config.max_mb ?? 0
-  const diskPercent = diskUsagePercent(
-    stats?.cache_stats.total_bytes ?? 0,
-    diskMaxMb,
-  )
-  const diskTone = usageTone(diskPercent)
 
   const readOnlyNotice =
     !canManage && !me.isPending ? (
@@ -439,11 +334,36 @@ export function PerformancePage() {
           </h1>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          {instanceId !== undefined && instanceId !== '' ? (
-            <StatusBadge variant="neutral">
-              {t('admin.performance.page.instance_label', { id: instanceId })}
-            </StatusBadge>
-          ) : null}
+          {/* 时间窗只驱动 overview（含 sparkline）；模型表固定 24h。 */}
+          <div
+            role="radiogroup"
+            aria-label={t('common.dashboard.range.label')}
+            onKeyDown={handleRadioGroupKeyDown}
+            className="inline-flex rounded-lg border border-border-default bg-surface-card p-0.5"
+          >
+            {RANGES.map((option) => {
+              const active = option === range
+              return (
+                <button
+                  key={option}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  tabIndex={active ? 0 : -1}
+                  data-testid={`performance-range-${option}`}
+                  onClick={() => setRange(option)}
+                  className={[
+                    'rounded-md px-2.5 py-1 font-mono text-meta focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none',
+                    active
+                      ? 'bg-surface-hover font-medium text-ink-1'
+                      : 'text-ink-2 hover:text-ink-1',
+                  ].join(' ')}
+                >
+                  {option}
+                </button>
+              )
+            })}
+          </div>
           <Button
             variant="secondary"
             disabled={refreshing || !canManage}
@@ -478,635 +398,85 @@ export function PerformancePage() {
         </p>
       ) : null}
 
-      {/* ---------------------------------------------------------------- */}
-      {/* 磁盘缓存（P1）                                                    */}
-      {/* ---------------------------------------------------------------- */}
-      <PerformanceCard
-        title={t('admin.performance.disk.title')}
-        testId="performance-disk-card"
-      >
-        {statsQuery.isPending ? (
-          <SkeletonLines rows={3} testId="performance-disk-skeleton" />
-        ) : stats === undefined ? (
-          <InlineError
-            testId="performance-disk-error"
-            message={describeError(statsQuery.error)}
-            retryLabel={t('admin.performance.common.retry')}
-            onRetry={() => {
-              void statsQuery.refetch()
-            }}
-          />
-        ) : (
-          <>
-            {statsQuery.isError ? (
-              <InlineError
-                testId="performance-disk-stale"
-                message={describeError(statsQuery.error)}
-                retryLabel={t('admin.performance.common.retry')}
-                onRetry={() => {
-                  void statsQuery.refetch()
-                }}
-              />
-            ) : null}
-            <div className="flex flex-col gap-2">
-              <div className="flex flex-wrap items-center gap-3">
-                <StatusBadge variant={diskEnabled ? 'success' : 'neutral'}>
-                  {t(
-                    diskEnabled
-                      ? 'admin.performance.disk.status_enabled'
-                      : 'admin.performance.disk.status_disabled',
-                  )}
-                </StatusBadge>
-                <span className="font-mono text-meta text-ink-2">
-                  {diskPath === ''
-                    ? '—'
-                    : t('admin.performance.disk.path', { path: diskPath })}
-                </span>
-              </div>
-              <p className="font-mono text-body text-ink-2">
-                {t('admin.performance.disk.files', {
-                  count: formatCount(stats.cache_stats.file_count, locale),
-                })}
-                {' · '}
-                {t('admin.performance.disk.usage', {
-                  used: formatBytes(stats.cache_stats.total_bytes, locale),
-                  max:
-                    diskMaxMb > 0
-                      ? formatBytes(diskMaxMb * 1024 * 1024, locale)
-                      : '—',
-                })}
-              </p>
-              <div className="flex items-center gap-2">
-                <div
-                  role="progressbar"
-                  aria-label={t('admin.performance.disk.usage_label')}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={Math.round(diskPercent)}
-                  data-testid="performance-disk-usage"
-                  data-tone={diskTone}
-                  className="h-1 w-40 overflow-hidden rounded-full bg-surface-subtle"
-                >
-                  <div
-                    className={`h-full ${usageBarClass(diskTone)}`}
-                    style={{ width: `${diskPercent}%` }}
-                  />
-                </div>
-                <span className="font-mono text-meta text-ink-3">
-                  {formatDecimal(diskPercent, locale)}%
-                </span>
-              </div>
-              <p className="font-mono text-body text-ink-2">
-                {t('admin.performance.disk.threshold', {
-                  size:
-                    stats.config.threshold_mb > 0
-                      ? formatBytes(
-                          stats.config.threshold_mb * 1024 * 1024,
-                          locale,
-                        )
-                      : '—',
-                })}
-                {' · '}
-                {stats.cache_stats.last_cleared_at === null
-                  ? t('admin.performance.disk.never_cleared')
-                  : t('admin.performance.disk.last_cleared', {
-                      time: formatDateTime(
-                        stats.cache_stats.last_cleared_at,
-                        locale,
-                      ),
-                    })}
-              </p>
-            </div>
+      {sourceError !== null && sourceError !== undefined ? (
+        <div
+          data-testid="performance-source-error"
+          className="flex flex-wrap items-center gap-3 rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-body text-danger"
+          role="alert"
+        >
+          <span>{describePerformanceError(sourceError, t)}</span>
+          <Button
+            variant="ghost"
+            className="h-7 px-2 text-body"
+            disabled={sourceRefetching}
+            onClick={retrySources}
+          >
+            {t('admin.performance.common.retry')}
+          </Button>
+        </div>
+      ) : null}
 
-            {/*
-             * 空态原因必须由 config.enabled 区分：环境变量关闭与「已启用但
-             * 目录不可访问」是两种不同的运维问题，后者能通过修权限解决。
-             * 只用 cache_stats.enabled 会把两者混成同一句「未启用」。
-             */}
-            {!configEnabled ? (
-              <p className="mt-3 text-body text-ink-3">
-                {t('admin.performance.disk.empty')}
-              </p>
-            ) : !diskEnabled ? (
-              <p className="mt-3 text-body text-ink-3">
-                {t('admin.performance.disk.dir_unavailable')}
-              </p>
-            ) : null}
+      <DegradedBanner visible={sourceDown} />
 
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <Button
-                disabled={!diskEnabled || offline || diskPending || !canManage}
-                aria-describedby="performance-disk-consequence"
-                onClick={() => setDiskConfirmOpen(true)}
-              >
-                {t('admin.performance.disk.clear_button')}
-              </Button>
-              <p id="performance-disk-consequence" className="text-meta text-ink-3">
-                {t('admin.performance.disk.consequence')}
-              </p>
-            </div>
+      {overview !== undefined ? (
+        <VitalsStrip
+          vitals={overview.vitals}
+          modelSummary={models?.summary}
+          modelProbe={modelProbe}
+          sourceDown={sourceDown}
+        />
+      ) : null}
 
-            {diskOutcome !== null ? (
-              diskOutcome.kind === 'error' ? (
-                <ResultLine tone="danger" testId="performance-disk-result">
-                  {diskOutcome.message}
-                </ResultLine>
-              ) : diskOutcome.data.failed_files.length > 0 ? (
-                <ResultLine tone="warning" testId="performance-disk-result">
-                  {t('admin.performance.disk.result_partial', {
-                    count: formatCount(diskOutcome.data.deleted_count, locale),
-                    size: formatBytes(diskOutcome.data.freed_bytes, locale),
-                    failed: formatCount(
-                      diskOutcome.data.failed_files.length,
-                      locale,
-                    ),
-                  })}
-                </ResultLine>
-              ) : (
-                <ResultLine tone="success" testId="performance-disk-result">
-                  {t('admin.performance.disk.result_success', {
-                    count: formatCount(diskOutcome.data.deleted_count, locale),
-                    size: formatBytes(diskOutcome.data.freed_bytes, locale),
-                  })}
-                </ResultLine>
-              )
-            ) : null}
-          </>
-        )}
-      </PerformanceCard>
+      {models !== undefined ? (
+        <ModelPerfZone models={models} sourceDown={sourceDown} />
+      ) : null}
 
-      {/* ---------------------------------------------------------------- */}
-      {/* 运行时 GC（P1）                                                   */}
-      {/* ---------------------------------------------------------------- */}
-      <PerformanceCard
-        title={t('admin.performance.gc.title')}
-        testId="performance-gc-card"
-      >
-        {statsQuery.isPending ? (
-          <SkeletonLines rows={2} testId="performance-gc-skeleton" />
-        ) : stats === undefined ? (
-          <InlineError
-            testId="performance-gc-error"
-            message={describeError(statsQuery.error)}
-            retryLabel={t('admin.performance.common.retry')}
-            onRetry={() => {
-              void statsQuery.refetch()
-            }}
-          />
-        ) : (
-          <>
-            <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-body text-ink-2 md:grid-cols-4">
-              <p className="font-mono">
-                {t('admin.performance.gc.alloc', {
-                  size: formatBytes(stats.memory_stats.alloc_bytes, locale),
-                })}
-              </p>
-              <p className="font-mono">
-                {t('admin.performance.gc.sys', {
-                  size: formatBytes(stats.memory_stats.sys_bytes, locale),
-                })}
-              </p>
-              <p className="font-mono">
-                {t('admin.performance.gc.num_gc', {
-                  count: formatCount(stats.memory_stats.num_gc, locale),
-                })}
-              </p>
-              <p className="font-mono">
-                {t('admin.performance.gc.goroutines', {
-                  count: formatCount(stats.memory_stats.num_goroutine, locale),
-                })}
-              </p>
-            </div>
+      {overview !== undefined ? (
+        <GatewayZone
+          gateways={overview.gateways}
+          sourceDown={sourceDown}
+          localStats={stats?.memory_stats}
+        />
+      ) : null}
 
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <Button
-                disabled={offline || gcPending || !canManage}
-                aria-describedby="performance-gc-consequence"
-                onClick={() => setGcConfirmOpen(true)}
-              >
-                {t('admin.performance.gc.run_button')}
-              </Button>
-              <p id="performance-gc-consequence" className="text-meta text-ink-3">
-                {t('admin.performance.gc.note')}
-              </p>
-            </div>
+      {overview !== undefined ? (
+        <ResourcesZone resources={overview.resources} sourceDown={sourceDown} />
+      ) : null}
 
-            {gcOutcome !== null ? (
-              gcOutcome.kind === 'error' ? (
-                <ResultLine tone="danger" testId="performance-gc-result">
-                  {gcOutcome.message}
-                </ResultLine>
-              ) : (
-                <ResultLine tone="success" testId="performance-gc-result">
-                  {t('admin.performance.gc.result', {
-                    ms: formatCount(gcOutcome.data.duration_ms, locale),
-                    before: formatBytes(
-                      gcOutcome.data.heap_alloc_before,
-                      locale,
-                    ),
-                    after: formatBytes(
-                      gcOutcome.data.heap_alloc_after,
-                      locale,
-                    ),
-                  })}
-                </ResultLine>
-              )
-            ) : null}
-          </>
-        )}
-      </PerformanceCard>
+      {config !== undefined && section !== undefined ? (
+        <SettingsZone
+          section={section}
+          config={config}
+          canManage={canManage}
+          onSaved={() => {
+            void Promise.all([configQuery.refetch(), sectionQuery.refetch()])
+          }}
+        />
+      ) : null}
 
-      {/* ---------------------------------------------------------------- */}
-      {/* 应用日志文件清理（P2）                                             */}
-      {/* ---------------------------------------------------------------- */}
-      <PerformanceCard
-        title={t('admin.performance.logs.title')}
-        testId="performance-logs-card"
-      >
-        {logsQuery.isPending ? (
-          <SkeletonLines rows={3} testId="performance-logs-skeleton" />
-        ) : logs === undefined ? (
-          <InlineError
-            testId="performance-logs-error"
-            message={describeError(logsQuery.error)}
-            retryLabel={t('admin.performance.common.retry')}
-            onRetry={() => {
-              void logsQuery.refetch()
-            }}
-          />
-        ) : (
-          <>
-            {logsQuery.isError ? (
-              <InlineError
-                testId="performance-logs-stale"
-                message={describeError(logsQuery.error)}
-                retryLabel={t('admin.performance.common.retry')}
-                onRetry={() => {
-                  void logsQuery.refetch()
-                }}
-              />
-            ) : null}
-            <div className="flex flex-col gap-2">
-              <p className="font-mono text-meta text-ink-2">
-                {logs.log_dir === ''
-                  ? '—'
-                  : t('admin.performance.logs.dir', { dir: logs.log_dir })}
-              </p>
-              <p className="font-mono text-body text-ink-2">
-                {t('admin.performance.logs.files', {
-                  count: formatCount(logs.file_count, locale),
-                })}
-                {' · '}
-                {t('admin.performance.logs.total', {
-                  size: formatBytes(logs.total_size, locale),
-                })}
-                {' · '}
-                {t('admin.performance.logs.oldest', {
-                  time: formatDateTime(logs.oldest_time, locale),
-                })}
-                {' · '}
-                {t('admin.performance.logs.newest', {
-                  time: formatDateTime(logs.newest_time, locale),
-                })}
-              </p>
-            </div>
-
-            {logs.enabled ? (
-              <>
-                <div className="mt-3 flex flex-col gap-3 xl:flex-row xl:items-end xl:gap-6">
-                  <fieldset className="flex flex-col gap-1">
-                    <legend className="mb-1 text-meta font-medium text-ink-1">
-                      {t('admin.performance.logs.mode_label')}
-                    </legend>
-                    <div className="flex flex-wrap gap-3 text-body text-ink-2">
-                      <label className="flex items-center gap-1.5">
-                        <input
-                          type="radio"
-                          name="performance-log-mode"
-                          value="by_days"
-                          checked={mode === 'by_days'}
-                          onChange={() => setMode('by_days')}
-                        />
-                        {t('admin.performance.logs.mode_by_days')}
-                      </label>
-                      <label className="flex items-center gap-1.5">
-                        <input
-                          type="radio"
-                          name="performance-log-mode"
-                          value="by_count"
-                          checked={mode === 'by_count'}
-                          onChange={() => setMode('by_count')}
-                        />
-                        {t('admin.performance.logs.mode_by_count')}
-                      </label>
-                    </div>
-                  </fieldset>
-
-                  <div className="flex flex-col gap-1">
-                    <label
-                      htmlFor="performance-log-value"
-                      className="text-meta font-medium text-ink-1"
-                    >
-                      {t('admin.performance.logs.value_label')}
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <input
-                        id="performance-log-value"
-                        type="number"
-                        min={1}
-                        max={36500}
-                        step={1}
-                        value={rawValue}
-                        aria-invalid={
-                          valueValidation.error !== undefined || undefined
-                        }
-                        aria-describedby={
-                          valueValidation.error !== undefined
-                            ? 'performance-log-value-error'
-                            : undefined
-                        }
-                        onChange={(event) => {
-                          const next = event.target.value
-                          setRawValues((current) => ({
-                            ...current,
-                            [mode]: next,
-                          }))
-                        }}
-                        className="h-9 w-28 rounded-lg border border-border-default bg-surface-card px-3 font-mono text-body text-ink-1 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
-                      />
-                      <span className="text-body text-ink-3">
-                        {t(
-                          mode === 'by_days'
-                            ? 'admin.performance.logs.days_unit'
-                            : 'admin.performance.logs.count_unit',
-                        )}
-                      </span>
-                    </div>
-                    {valueValidation.error !== undefined ? (
-                      <p
-                        id="performance-log-value-error"
-                        className="text-meta text-danger"
-                      >
-                        {t(
-                          valueValidation.error === 'required'
-                            ? 'admin.performance.validation.value_required'
-                            : 'admin.performance.validation.value_range',
-                        )}
-                      </p>
-                    ) : null}
-                  </div>
-                </div>
-
-                <p
-                  data-testid="performance-logs-preview"
-                  aria-live="polite"
-                  className="mt-3 text-body text-ink-2"
-                >
-                  {cleanupPreview.count === 0
-                    ? t('admin.performance.logs.preview_none')
-                    : t('admin.performance.logs.preview', {
-                        count: formatCount(cleanupPreview.count, locale),
-                        size: formatBytes(cleanupPreview.bytes, locale),
-                      })}
-                </p>
-                <p className="text-meta text-ink-3">
-                  {t('admin.performance.logs.active_note')}
-                </p>
-
-                <div className="mt-3 flex flex-wrap items-center gap-3">
-                  <Button
-                    disabled={
-                      offline ||
-                      logsPending ||
-                      !canManage ||
-                      valueValidation.value === undefined
-                    }
-                    aria-describedby="performance-logs-consequence"
-                    onClick={() => setLogsConfirmOpen(true)}
-                  >
-                    {t('admin.performance.logs.cleanup_button')}
-                  </Button>
-                  <p
-                    id="performance-logs-consequence"
-                    className="text-meta text-ink-3"
-                  >
-                    {t('admin.performance.logs.consequence')}
-                  </p>
-                </div>
-
-                {logsOutcome !== null ? (
-                  logsOutcome.kind === 'error' ? (
-                    <ResultLine tone="danger" testId="performance-logs-result">
-                      {logsOutcome.message}
-                    </ResultLine>
-                  ) : logsOutcome.data.failed_files.length > 0 ? (
-                    <ResultLine
-                      tone="warning"
-                      testId="performance-logs-result"
-                    >
-                      {t('admin.performance.logs.result_partial', {
-                        count: formatCount(
-                          logsOutcome.data.deleted_count,
-                          locale,
-                        ),
-                        size: formatBytes(logsOutcome.data.freed_bytes, locale),
-                        failed: formatCount(
-                          logsOutcome.data.failed_files.length,
-                          locale,
-                        ),
-                      })}
-                      {logsOutcome.data.skipped_active
-                        ? ` ${t('admin.performance.logs.result_skipped')}`
-                        : ''}
-                    </ResultLine>
-                  ) : (
-                    <ResultLine tone="success" testId="performance-logs-result">
-                      {t('admin.performance.logs.result_success', {
-                        count: formatCount(
-                          logsOutcome.data.deleted_count,
-                          locale,
-                        ),
-                        size: formatBytes(logsOutcome.data.freed_bytes, locale),
-                      })}
-                      {logsOutcome.data.skipped_active
-                        ? ` ${t('admin.performance.logs.result_skipped')}`
-                        : ''}
-                    </ResultLine>
-                  )
-                ) : null}
-              </>
-            ) : (
-              <>
-                {/*
-                 * 未配置时按钮仍然渲染但禁用（六态「空态」要求）：直接隐藏
-                 * 会让运维找不到入口；aria-describedby 直接指向空态说明，
-                 * 读屏用户因此能听到禁用原因。
-                 */}
-                <p
-                  id="performance-logs-consequence"
-                  className="mt-3 text-body text-ink-3"
-                >
-                  {t('admin.performance.logs.empty')}
-                </p>
-                <div className="mt-3 flex flex-wrap items-center gap-3">
-                  <Button
-                    disabled
-                    aria-describedby="performance-logs-consequence"
-                  >
-                    {t('admin.performance.logs.cleanup_button')}
-                  </Button>
-                </div>
-              </>
-            )}
-          </>
-        )}
-      </PerformanceCard>
-
-      {/* ---------------------------------------------------------------- */}
-      {/* 最近操作（只读）                                                   */}
-      {/* ---------------------------------------------------------------- */}
-      <PerformanceCard
-        title={t('admin.performance.recent.title')}
-        testId="performance-recent-card"
-      >
-        {recentQuery.isPending ? (
-          <SkeletonLines rows={3} testId="performance-recent-skeleton" />
-        ) : recentQuery.data === undefined ? (
-          <InlineError
-            testId="performance-recent-error"
-            message={describeError(recentQuery.error)}
-            retryLabel={t('admin.performance.common.retry')}
-            onRetry={() => {
-              void recentQuery.refetch()
-            }}
-          />
-        ) : recentQuery.data.items.length === 0 ? (
-          <p className="text-body text-ink-3">
-            {t('admin.performance.recent.empty')}
-          </p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] border-collapse text-left text-body">
-              <thead>
-                <tr className="border-b border-border-hairline text-meta text-ink-3">
-                  <th scope="col" className="px-2 py-2 font-medium">
-                    {t('admin.performance.recent.time')}
-                  </th>
-                  <th scope="col" className="px-2 py-2 font-medium">
-                    {t('admin.performance.recent.actor')}
-                  </th>
-                  <th scope="col" className="px-2 py-2 font-medium">
-                    {t('admin.performance.recent.action')}
-                  </th>
-                  <th scope="col" className="px-2 py-2 font-medium">
-                    {t('admin.performance.recent.params')}
-                  </th>
-                  <th scope="col" className="px-2 py-2 font-medium">
-                    {t('admin.performance.recent.result')}
-                  </th>
-                  <th scope="col" className="px-2 py-2 font-medium">
-                    {t('admin.performance.recent.amount')}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentQuery.data.items.map((item, index) => (
-                  <tr
-                    key={`${item.time}-${index}`}
-                    data-testid="performance-recent-row"
-                    className="border-b border-border-hairline last:border-0"
-                  >
-                    <td className="whitespace-nowrap px-2 py-2 font-mono text-meta text-ink-2">
-                      {formatDateTime(item.time, locale)}
-                    </td>
-                    <td className="px-2 py-2 text-ink-2">{item.actor}</td>
-                    <td className="px-2 py-2 text-ink-2">
-                      {t(actionKey(item.action))}
-                    </td>
-                    <td className="px-2 py-2 text-ink-2">
-                      {item.mode === undefined
-                        ? '—'
-                        : t('admin.performance.recent.params_summary', {
-                            mode: t(modeKey(item.mode)),
-                            value: item.value ?? '—',
-                          })}
-                    </td>
-                    <td className="px-2 py-2">
-                      <StatusBadge
-                        variant={item.result === 'success' ? 'success' : 'danger'}
-                      >
-                        {t(
-                          item.result === 'success'
-                            ? 'admin.performance.recent.success'
-                            : 'admin.performance.recent.failed',
-                        )}
-                      </StatusBadge>
-                    </td>
-                    <td className="px-2 py-2 font-mono text-meta text-ink-2">
-                      <span>
-                        {item.action === 'system.gc.run'
-                          ? formatMilliseconds(item.duration_ms, locale)
-                          : t('admin.performance.recent.deleted', {
-                              count: formatCount(item.deleted_count, locale),
-                              size: formatBytes(item.freed_bytes, locale),
-                            })}
-                      </span>
-                      {item.failed_count > 0 ? (
-                        <span className="ml-2 text-warning">
-                          {t('admin.performance.recent.failed_count', {
-                            count: formatCount(item.failed_count, locale),
-                          })}
-                        </span>
-                      ) : null}
-                      {item.skipped_active ? (
-                        <span className="ml-2 text-ink-3">
-                          {t('admin.performance.recent.skipped_active')}
-                        </span>
-                      ) : null}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </PerformanceCard>
-
-      <DangerConfirm
-        open={diskConfirmOpen}
-        title={t('admin.performance.disk.confirm_title')}
-        description={t('admin.performance.disk.confirm_body')}
-        confirmLabel={t('admin.performance.disk.clear_button')}
-        pending={diskPending}
-        onCancel={() => setDiskConfirmOpen(false)}
-        onConfirm={() => {
-          void handleDiskClear()
-        }}
+      <MaintenanceZone
+        stats={stats}
+        statsPending={statsQuery.isPending}
+        statsError={statsQuery.error}
+        statsStale={statsQuery.isError && stats !== undefined}
+        logs={logs}
+        logsPending={logsQuery.isPending}
+        logsError={logsQuery.error}
+        logsStale={logsQuery.isError && logs !== undefined}
+        offline={offline}
+        canManage={canManage}
+        refetchStats={() => statsQuery.refetch()}
+        refetchLogs={() => logsQuery.refetch()}
+        refetchRecent={() => recentQuery.refetch()}
+        onWriteOffline={setWriteOffline}
       />
-      <DangerConfirm
-        open={gcConfirmOpen}
-        title={t('admin.performance.gc.confirm_title')}
-        description={t('admin.performance.gc.confirm_body')}
-        confirmLabel={t('admin.performance.gc.run_button')}
-        pending={gcPending}
-        onCancel={() => setGcConfirmOpen(false)}
-        onConfirm={() => {
-          void handleRunGc()
-        }}
-      />
-      <DangerConfirm
-        open={logsConfirmOpen}
-        title={t('admin.performance.logs.confirm_title')}
-        description={t('admin.performance.logs.confirm_body', {
-          count: formatCount(cleanupPreview.count, locale),
-          size: formatBytes(cleanupPreview.bytes, locale),
-          active_note: t('admin.performance.logs.active_note'),
-        })}
-        confirmLabel={t('admin.performance.logs.cleanup_button')}
-        pending={logsPending}
-        onCancel={() => setLogsConfirmOpen(false)}
-        onConfirm={() => {
-          void handleLogCleanup()
+
+      <RecentOpsZone
+        recent={recentQuery.data}
+        pending={recentQuery.isPending}
+        error={recentQuery.error}
+        retry={() => {
+          void recentQuery.refetch()
         }}
       />
     </div>

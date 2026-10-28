@@ -1,20 +1,34 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
 import { useToastStore } from '@/shared/ui/toast'
 
+import type { PerfConfig, PerfModels, PerfOverview } from './api'
 import { PerformancePage } from './performance-page'
 
 const ORIGIN = 'http://localhost:3000'
+const ISO = '2026-10-20T10:00:00Z'
 const server = setupServer()
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 afterEach(() => {
   server.resetHandlers()
+  vi.useRealTimers()
+  // `document.hidden` 在失焦用例里被改成自有属性；删掉后回落到原型 getter。
+  Reflect.deleteProperty(document, 'hidden')
   useToastStore.setState({ toasts: [] })
 })
 afterAll(() => server.close())
@@ -24,6 +38,282 @@ const MB = 1024 * 1024
 function relativeIso(daysAgo: number): string {
   return new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString()
 }
+
+/* ------------------------------------------------------------------------- *
+ * 观测端点 fixture（overview / models / config / settings section）
+ * ------------------------------------------------------------------------- */
+
+type Vital = PerfOverview['vitals'][number]
+type ModelRow = PerfModels['rows'][number]
+
+function vital(overrides: Partial<Vital> = {}): Vital {
+  return {
+    key: 'gateway.rps',
+    value: 21.44,
+    unit: 'req/s',
+    status: 'ok',
+    details: [],
+    series: [],
+    ...overrides,
+  }
+}
+
+function overviewFixture(
+  overrides: Partial<PerfOverview> = {},
+): PerfOverview {
+  return {
+    generated_at: ISO,
+    range: '1h',
+    windows: {
+      range: '1h',
+      start: '2026-10-20T09:00:00Z',
+      end: ISO,
+      step_seconds: 150,
+      points: 24,
+    },
+    sources: [
+      { name: 'prometheus', status: 'ok' },
+      { name: 'heartbeat', status: 'ok' },
+    ],
+    vitals: [
+      vital({
+        key: 'gateway.rps',
+        value: 21.44,
+        details: [
+          { key: 'p95', value: 1.84, unit: 's' },
+          { key: 'errors', value: 0.0002, unit: 'ratio' },
+        ],
+        series: [
+          [1_000, 20],
+          [1_001, 21.44],
+        ],
+      }),
+      vital({
+        key: 'db.pool',
+        value: 11,
+        unit: 'conn',
+        details: [
+          { key: 'tps', value: 342, unit: 'count' },
+          { key: 'backends', value: 11, unit: 'count' },
+          { key: 'max_backends', value: 25, unit: 'count' },
+        ],
+      }),
+      vital({
+        key: 'redis.hit_rate',
+        value: 0.962,
+        unit: 'ratio',
+        details: [
+          { key: 'ops', value: 1204, unit: 'count' },
+          { key: 'clients', value: 186, unit: 'count' },
+        ],
+      }),
+      vital({
+        key: 'host.disk',
+        value: 0.71,
+        status: 'warn',
+        unit: 'ratio',
+        details: [
+          { key: 'cpu', value: 0.38, unit: 'ratio' },
+          { key: 'mem', value: 0.62, unit: 'ratio' },
+          { key: 'disk', value: 0.71, unit: 'ratio' },
+        ],
+      }),
+    ],
+    gateways: [
+      {
+        instance_id: 'gateway-1',
+        role: 'gateway',
+        version: '1.2.3',
+        last_seen: ISO,
+        heartbeat_fresh: true,
+        metrics: {
+          p95_ms: 12.4,
+          error_rate: 0.0002,
+          inflight: 3,
+          goroutines: 214,
+          heap_mb: 340,
+        },
+        metrics_status: 'ok',
+      },
+    ],
+    resources: {
+      host: {
+        cpu: 0.38,
+        mem: 0.62,
+        disk: 0.71,
+        net_in: 1_200_000,
+        net_out: 900_000,
+      },
+      postgres: {
+        backends: 11,
+        max: 25,
+        tps: 342,
+        size_bytes: 1024 * MB,
+        lock_wait: 0.2,
+      },
+      redis: {
+        up: 1,
+        clients: 186,
+        mem_ratio: 0.4,
+        hit_rate: 0.962,
+        cmd_rate: 1204,
+      },
+    },
+    ...overrides,
+  }
+}
+
+function modelRow(overrides: Partial<ModelRow> = {}): ModelRow {
+  return {
+    model: 'claude-haiku-3-5',
+    channels: 3,
+    ttft_p50_ms: 420,
+    ttft_p95_ms: 900,
+    ttft_p50_over_30s: false,
+    ttft_p95_over_30s: false,
+    latency_p95_ms: 1800,
+    latency_p95_over_30s: false,
+    tps: 52.4,
+    samples: 1400,
+    success_rate: 0.998,
+    probe: {
+      last_tested_at: ISO,
+      ok: true,
+      runs: 3,
+      ttft_p95_ms: 800,
+      latency_p95_ms: 1700,
+      success_rate: 1,
+    },
+    uptime: 0.997,
+    status: 'normal',
+    spark: Array.from({ length: 24 }, (_, index) => 40 + index),
+    ...overrides,
+  }
+}
+
+function modelsFixture(overrides: Partial<PerfModels> = {}): PerfModels {
+  return {
+    generated_at: ISO,
+    sources: [{ name: 'probes', status: 'ok' }],
+    rows: [
+      modelRow(),
+      modelRow({
+        model: 'gpt-4o',
+        status: 'incident',
+        probe: {
+          last_tested_at: '2026-10-20T09:30:00Z',
+          ok: false,
+          runs: 3,
+          ttft_p95_ms: null,
+          latency_p95_ms: null,
+          success_rate: 0,
+        },
+        uptime: 0,
+      }),
+    ],
+    summary: { models: 2, degraded: 0, incident: 1, no_sample: 0 },
+    ...overrides,
+  }
+}
+
+function configFixture(overrides: Partial<PerfConfig> = {}): PerfConfig {
+  return {
+    generated_at: ISO,
+    schedule: {
+      enabled: true,
+      interval_hours: 6,
+      runs: 3,
+      concurrency: 2,
+      source: 'settings',
+      timezone: 'UTC',
+      next_run_at: '2026-10-20T12:00:00Z',
+      legacy_times: '',
+    },
+    env: [
+      {
+        key: 'PROMETHEUS_URL',
+        value: 'http://prometheus:9090',
+        configured: true,
+        set: true,
+        effect: 'restart',
+      },
+    ],
+    fixed: [
+      {
+        key: 'probe_timeout',
+        value: '30s',
+        unit: 'duration',
+        effect: 'code',
+      },
+    ],
+    settings_groups: [
+      {
+        id: 'channel_health',
+        tab: 'policy',
+        link: '/admin/settings?tab=policy',
+        items: [
+          {
+            key: 'rl.health_test_interval_minutes',
+            value: 5,
+            type: 'int',
+            unit: 'minutes',
+            source: 'settings',
+          },
+        ],
+      },
+    ],
+    ...overrides,
+  }
+}
+
+function settingsSectionFixture() {
+  return {
+    section: 'perf',
+    updated_at: ISO,
+    items: [
+      {
+        key: 'perf.schedule.enabled',
+        value: true,
+        type: 'bool',
+        default: false,
+        public: false,
+        secret: false,
+        dangerous: false,
+      },
+      {
+        key: 'perf.schedule.interval_hours',
+        value: 6,
+        type: 'int',
+        default: 6,
+        public: false,
+        secret: false,
+        dangerous: false,
+      },
+      {
+        key: 'perf.schedule.runs',
+        value: 3,
+        type: 'int',
+        default: 3,
+        public: false,
+        secret: false,
+        dangerous: false,
+      },
+      {
+        key: 'perf.schedule.concurrency',
+        value: 2,
+        type: 'int',
+        default: 2,
+        public: false,
+        secret: false,
+        dangerous: false,
+      },
+    ],
+  }
+}
+
+/* ------------------------------------------------------------------------- *
+ * 维护动作端点 fixture
+ * ------------------------------------------------------------------------- */
 
 function statsFixture(overrides: Record<string, unknown> = {}) {
   return {
@@ -117,35 +407,57 @@ const RECENT = {
   ],
 }
 
+/* ------------------------------------------------------------------------- *
+ * MSW 装配
+ * ------------------------------------------------------------------------- */
+
 interface Capture {
-  /** MSW handler 被调用的次数：断言没有静默重试（>1 即重试）。 */
-  calls: number
-  headers: Headers[]
-  urls: URL[]
-  bodies: string[]
+  disk: { calls: number; headers: Headers[]; urls: URL[]; bodies: string[] }
+  gc: { calls: number; headers: Headers[]; urls: URL[]; bodies: string[] }
+  cleanup: { calls: number; headers: Headers[]; urls: URL[]; bodies: string[] }
+  counts: {
+    overview: number
+    models: number
+    config: number
+    settings: number
+    stats: number
+    logs: number
+    recent: number
+  }
+  overviewUrls: URL[]
+  readHeaders: Headers[]
 }
 
-interface GetCapture {
-  stats: number
-  logs: number
-  recent: number
-  headers: Headers[]
+function emptyCapture(): Capture {
+  return {
+    disk: { calls: 0, headers: [], urls: [], bodies: [] },
+    gc: { calls: 0, headers: [], urls: [], bodies: [] },
+    cleanup: { calls: 0, headers: [], urls: [], bodies: [] },
+    counts: {
+      overview: 0,
+      models: 0,
+      config: 0,
+      settings: 0,
+      stats: 0,
+      logs: 0,
+      recent: 0,
+    },
+    overviewUrls: [],
+    readHeaders: [],
+  }
 }
 
-function installPage(options: {
-  stats?: Record<string, unknown>
-  logs?: Record<string, unknown>
-  recent?: Record<string, unknown>
-} = {}): {
-  disk: Capture
-  gc: Capture
-  cleanup: Capture
-  gets: GetCapture
-} {
-  const disk: Capture = { calls: 0, headers: [], urls: [], bodies: [] }
-  const gc: Capture = { calls: 0, headers: [], urls: [], bodies: [] }
-  const cleanup: Capture = { calls: 0, headers: [], urls: [], bodies: [] }
-  const gets: GetCapture = { stats: 0, logs: 0, recent: 0, headers: [] }
+function installPage(
+  options: {
+    overview?: PerfOverview
+    models?: PerfModels
+    config?: PerfConfig
+    stats?: Record<string, unknown>
+    logs?: Record<string, unknown>
+    recent?: Record<string, unknown>
+  } = {},
+): Capture {
+  const capture = emptyCapture()
 
   server.use(
     http.get(`${ORIGIN}/api/me`, () =>
@@ -156,25 +468,58 @@ function installPage(options: {
         permissions: ['settings:manage'],
       }),
     ),
+    http.get(`${ORIGIN}/api/performance/overview`, ({ request }) => {
+      capture.counts.overview += 1
+      const url = new URL(request.url)
+      capture.overviewUrls.push(url)
+      capture.readHeaders.push(new Headers(request.headers))
+      // 服务端回显请求窗：范围切换后断言最新响应属于新窗口。
+      const requested = url.searchParams.get('range')
+      const range =
+        requested === '15m' ||
+        requested === '1h' ||
+        requested === '6h' ||
+        requested === '24h'
+          ? requested
+          : '1h'
+      return HttpResponse.json(
+        options.overview ?? overviewFixture({ range }),
+      )
+    }),
+    http.get(`${ORIGIN}/api/performance/models`, ({ request }) => {
+      capture.counts.models += 1
+      capture.readHeaders.push(new Headers(request.headers))
+      return HttpResponse.json(options.models ?? modelsFixture())
+    }),
+    http.get(`${ORIGIN}/api/performance/config`, ({ request }) => {
+      capture.counts.config += 1
+      capture.readHeaders.push(new Headers(request.headers))
+      return HttpResponse.json(options.config ?? configFixture())
+    }),
+    http.get(`${ORIGIN}/api/settings`, ({ request }) => {
+      capture.counts.settings += 1
+      capture.readHeaders.push(new Headers(request.headers))
+      return HttpResponse.json(settingsSectionFixture())
+    }),
     http.get(`${ORIGIN}/api/performance/stats`, ({ request }) => {
-      gets.stats += 1
-      gets.headers.push(new Headers(request.headers))
+      capture.counts.stats += 1
+      capture.readHeaders.push(new Headers(request.headers))
       return HttpResponse.json(options.stats ?? statsFixture())
     }),
     http.get(`${ORIGIN}/api/performance/logs`, ({ request }) => {
-      gets.logs += 1
-      gets.headers.push(new Headers(request.headers))
+      capture.counts.logs += 1
+      capture.readHeaders.push(new Headers(request.headers))
       return HttpResponse.json(options.logs ?? logsFixture())
     }),
     http.get(`${ORIGIN}/api/performance/recent-operations`, ({ request }) => {
-      gets.recent += 1
-      gets.headers.push(new Headers(request.headers))
+      capture.counts.recent += 1
+      capture.readHeaders.push(new Headers(request.headers))
       return HttpResponse.json(options.recent ?? RECENT)
     }),
     http.delete(`${ORIGIN}/api/performance/disk-cache`, ({ request }) => {
-      disk.calls += 1
-      disk.headers.push(new Headers(request.headers))
-      disk.urls.push(new URL(request.url))
+      capture.disk.calls += 1
+      capture.disk.headers.push(new Headers(request.headers))
+      capture.disk.urls.push(new URL(request.url))
       return HttpResponse.json({
         instance_id: 'gateway-1',
         deleted_count: 12,
@@ -183,10 +528,10 @@ function installPage(options: {
       })
     }),
     http.post(`${ORIGIN}/api/performance/gc`, async ({ request }) => {
-      gc.calls += 1
-      gc.headers.push(new Headers(request.headers))
-      gc.urls.push(new URL(request.url))
-      gc.bodies.push(await request.clone().text())
+      capture.gc.calls += 1
+      capture.gc.headers.push(new Headers(request.headers))
+      capture.gc.urls.push(new URL(request.url))
+      capture.gc.bodies.push(await request.clone().text())
       return HttpResponse.json({
         instance_id: 'gateway-1',
         duration_ms: 7,
@@ -197,14 +542,14 @@ function installPage(options: {
       })
     }),
     http.delete(`${ORIGIN}/api/performance/logs`, ({ request }) => {
-      cleanup.calls += 1
-      cleanup.headers.push(new Headers(request.headers))
-      cleanup.urls.push(new URL(request.url))
+      capture.cleanup.calls += 1
+      capture.cleanup.headers.push(new Headers(request.headers))
+      capture.cleanup.urls.push(new URL(request.url))
       return HttpResponse.json({
         instance_id: 'gateway-1',
-        mode: cleanup.urls[cleanup.urls.length - 1]?.searchParams.get('mode'),
+        mode: capture.cleanup.urls.at(-1)?.searchParams.get('mode'),
         value: Number(
-          cleanup.urls[cleanup.urls.length - 1]?.searchParams.get('value'),
+          capture.cleanup.urls.at(-1)?.searchParams.get('value'),
         ),
         deleted_count: 2,
         freed_bytes: 7000,
@@ -213,12 +558,13 @@ function installPage(options: {
       })
     }),
   )
-  return { disk, gc, cleanup, gets }
+
+  return capture
 }
 
 async function renderPage() {
   await renderWithProviders(<PerformancePage />, ['common', 'admin'])
-  await screen.findByText('Instance gateway-1')
+  await screen.findAllByTestId('vital')
 }
 
 /** 打开并确认磁盘缓存清理弹窗（用户路径与页面上的真实按钮一致）。 */
@@ -243,56 +589,316 @@ async function confirmLogCleanup(user: ReturnType<typeof userEvent.setup>) {
   )
 }
 
-describe('performance page (F-08-48～F-08-50)', () => {
+function jsonProblem(code: string, status: number) {
+  return HttpResponse.json(
+    {
+      type: `https://newtg.dev/problems/${code}`,
+      title: 'Rejected',
+      status,
+    },
+    {
+      status,
+      headers: { 'Content-Type': 'application/problem+json' },
+    },
+  )
+}
+
+/* ------------------------------------------------------------------------- *
+ * 编排结构（adjudications §1）
+ * ------------------------------------------------------------------------- */
+
+describe('performance page composition', () => {
   beforeEach(() => {
     useToastStore.setState({ toasts: [] })
   })
 
-  it('renders the page header, three cards and recent operations', async () => {
+  it('renders the header, vitals, six zones and recent operations in order', async () => {
     installPage()
     await renderPage()
 
-    expect(screen.getByRole('heading', { level: 1, name: 'Performance' })).toBeTruthy()
-    expect(screen.getByText(/Actions apply to the current instance only/)).toBeTruthy()
+    expect(
+      screen.getByRole('heading', { level: 1, name: 'Performance' }),
+    ).toBeTruthy()
+    expect(
+      screen.getByText(/Actions apply to the current instance only/),
+    ).toBeTruthy()
 
+    // 范围选择器：四个窗口，默认 1h（与 fetchPerfOverview 的缺省一致）。
+    const ranges = within(
+      screen.getByRole('radiogroup', { name: 'Time range' }),
+    ).getAllByRole('radio')
+    expect(ranges.map((radio) => radio.textContent)).toEqual([
+      '15m',
+      '1h',
+      '6h',
+      '24h',
+    ])
+    expect(
+      screen.getByRole('radio', { name: '1h' }).getAttribute('aria-checked'),
+    ).toBe('true')
+
+    // 五格体检条：四格 Prometheus + 模型汇总。
+    expect(screen.getAllByTestId('vital')).toHaveLength(5)
+
+    // 模型表。
+    const modelRows = screen.getAllByTestId('model-row')
+    expect(modelRows).toHaveLength(2)
+    expect(modelRows[0]?.textContent).toContain('claude-haiku-3-5')
+
+    // 网关实例表。
+    expect(screen.getAllByTestId('gateway-row')).toHaveLength(1)
+    expect(screen.getByTestId('gateway-row').textContent).toContain(
+      'gateway-1',
+    )
+    expect(screen.queryByTestId('gateway-local')).toBeNull()
+
+    // 资源三卡。
+    expect(screen.getAllByTestId('resource-card')).toHaveLength(3)
+
+    // 运行参数区（测速表单 + 只读参数表）。
+    expect(screen.getByTestId('probe-schedule-form')).toBeTruthy()
+    expect(screen.getByTestId('settings-zone').textContent).toContain(
+      'Model performance probing',
+    )
+
+    // 维护三卡原样保留。
     const disk = screen.getByTestId('performance-disk-card')
     expect(disk.textContent).toContain('Enabled')
     expect(disk.textContent).toContain('/var/cache/newtg')
     expect(disk.textContent).toContain('1,284 files')
-    expect(disk.textContent).toContain('812.0 MB')
-    expect(disk.textContent).toContain('2.0 GB')
-    expect(disk.textContent).toContain('Threshold 256.0 MB')
-
     const progress = screen.getByRole('progressbar', {
       name: 'Disk cache usage',
     })
-    expect(progress.getAttribute('aria-valuemin')).toBe('0')
-    expect(progress.getAttribute('aria-valuemax')).toBe('100')
     expect(progress.getAttribute('aria-valuenow')).toBe('40')
     expect(progress.getAttribute('data-tone')).toBe('default')
+    expect(screen.getByTestId('performance-gc-card').textContent).toContain(
+      'GC runs 128',
+    )
+    expect(screen.getByTestId('performance-logs-card').textContent).toContain(
+      '/var/log/newtg',
+    )
 
-    const gcCard = screen.getByTestId('performance-gc-card')
-    expect(gcCard.textContent).toContain('Heap allocation 340.0 MB')
-    expect(gcCard.textContent).toContain('GC runs 128')
-    expect(gcCard.textContent).toContain('Goroutines 214')
-
-    const logsCard = screen.getByTestId('performance-logs-card')
-    expect(logsCard.textContent).toContain('/var/log/newtg')
-    expect(logsCard.textContent).toContain('The active log file is never deleted.')
-
+    // 最近操作。
     const rows = await screen.findAllByTestId('performance-recent-row')
     expect(rows).toHaveLength(2)
     expect(within(rows[0] as HTMLElement).getByText('Log cleanup')).toBeTruthy()
-    expect(
-      within(rows[0] as HTMLElement).getByText('Keep by days · 30'),
-    ).toBeTruthy()
-    expect(within(rows[0] as HTMLElement).getByText('Success')).toBeTruthy()
     expect(within(rows[1] as HTMLElement).getByText('7 ms')).toBeTruthy()
 
-    // 表头是列头，读屏按列导航依赖 scope="col"。
+    // 所有表头都是列头（读屏按列导航依赖 scope="col"）。
     for (const header of screen.getAllByRole('columnheader')) {
       expect(header.getAttribute('scope')).toBe('col')
     }
+  })
+
+  it('shows the degraded banner and empty Prometheus zones when monitoring is down', async () => {
+    installPage({
+      overview: overviewFixture({
+        sources: [
+          { name: 'prometheus', status: 'unavailable' },
+          { name: 'heartbeat', status: 'ok' },
+        ],
+      }),
+    })
+    const { container } = await (async () => {
+      const rendered = await renderWithProviders(<PerformancePage />, [
+        'common',
+        'admin',
+      ])
+      await screen.findAllByTestId('vital')
+      return rendered
+    })()
+
+    expect(screen.getByTestId('performance-degraded-banner')).toBeTruthy()
+
+    for (const key of [
+      'gateway.rps',
+      'db.pool',
+      'redis.hit_rate',
+      'host.disk',
+    ]) {
+      const cell = container.querySelector<HTMLElement>(
+        `[data-vital="${key}"]`,
+      )
+      expect(cell?.querySelector('[data-testid="vital-figure"]')?.textContent).toBe(
+        '—',
+      )
+    }
+
+    // 资源区整块退化为空态。
+    expect(screen.getByTestId('resources-unavailable')).toBeTruthy()
+    // 断线时网关区补本机进程数字。
+    expect(screen.getByTestId('gateway-local')).toBeTruthy()
+    // 模型数据与维护卡不受监控断线影响。
+    expect(screen.getAllByTestId('model-row')).toHaveLength(2)
+    expect(screen.getByTestId('performance-disk-card').textContent).toContain(
+      '1,284 files',
+    )
+    expect(screen.getByTestId('performance-gc-card').textContent).toContain(
+      'Goroutines 214',
+    )
+  })
+
+  it('treats a missing prometheus source entry as source down', async () => {
+    installPage({
+      overview: overviewFixture({
+        sources: [{ name: 'heartbeat', status: 'ok' }],
+      }),
+    })
+    await renderWithProviders(<PerformancePage />, ['common', 'admin'])
+    await screen.findAllByTestId('vital')
+
+    // 找不到 prometheus 那条不臆造数据源：按断线处理。
+    expect(screen.getByTestId('performance-degraded-banner')).toBeTruthy()
+    expect(screen.getByTestId('resources-unavailable')).toBeTruthy()
+  })
+
+  it('prefers the incident model for the fifth vital subtitle', async () => {
+    installPage()
+    const { container } = await renderWithProviders(<PerformancePage />, [
+      'common',
+      'admin',
+    ])
+    await screen.findAllByTestId('vital')
+
+    const modelCell = container.querySelector<HTMLElement>(
+      '[data-vital="models"]',
+    )
+    // incident（gpt-4o）优先于正常的 claude-haiku-3-5，即便它的探针更早。
+    expect(modelCell?.textContent).toContain('gpt-4o')
+    expect(modelCell?.textContent).not.toContain('claude-haiku-3-5')
+  })
+
+  it('does not request the new endpoints without settings:manage', async () => {
+    const capture = installPage()
+    server.use(
+      http.get(`${ORIGIN}/api/me`, () =>
+        HttpResponse.json({
+          username: 'reader',
+          role: 'admin',
+          status: 'enabled',
+          permissions: ['users:read'],
+        }),
+      ),
+    )
+    await renderWithProviders(<PerformancePage />, ['common', 'admin'])
+
+    expect(
+      await screen.findByText(
+        'Read-only: your account lacks the settings:manage permission.',
+      ),
+    ).toBeTruthy()
+    const counts = capture.counts
+    expect(Object.values(counts)).toEqual([0, 0, 0, 0, 0, 0, 0])
+  })
+
+  it('renders the desktop-only notice below 1024px without requesting anything', async () => {
+    const capture = installPage()
+    vi.spyOn(window, 'matchMedia').mockImplementation(
+      (query: string) =>
+        ({
+          matches: false,
+          media: query,
+          onchange: null,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          addListener: () => {},
+          removeListener: () => {},
+          dispatchEvent: () => false,
+        }) as unknown as MediaQueryList,
+    )
+    await renderWithProviders(<PerformancePage />, ['common', 'admin'])
+
+    expect(
+      await screen.findByText(
+        'This page is available on desktop screens (1024px and wider).',
+      ),
+    ).toBeTruthy()
+    const counts = capture.counts
+    expect(Object.values(counts)).toEqual([0, 0, 0, 0, 0, 0, 0])
+  })
+})
+
+/* ------------------------------------------------------------------------- *
+ * 轮询 / 失焦 / 范围（adjudications §3、§6）
+ * ------------------------------------------------------------------------- */
+
+describe('performance page polling', () => {
+  it('polls overview every 30s and models every 60s', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const capture = installPage()
+    const rendered = await renderWithProviders(<PerformancePage />, [
+      'common',
+      'admin',
+    ])
+    await screen.findAllByTestId('vital')
+
+    const base = { ...capture.counts }
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    expect(capture.counts.overview).toBe(base.overview + 1)
+    expect(capture.counts.models).toBe(base.models)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    expect(capture.counts.models).toBe(base.models + 1)
+
+    rendered.unmount()
+  })
+
+  it('stops every interval while the tab is hidden', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const capture = installPage()
+    const rendered = await renderWithProviders(<PerformancePage />, [
+      'common',
+      'admin',
+    ])
+    await screen.findAllByTestId('vital')
+
+    const before = { ...capture.counts }
+    Object.defineProperty(document, 'hidden', {
+      configurable: true,
+      get: () => true,
+    })
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    expect(capture.counts).toEqual(before)
+
+    rendered.unmount()
+  })
+
+  it('changes only the overview request when the range changes', async () => {
+    const capture = installPage()
+    await renderPage()
+    expect(capture.overviewUrls[0]?.searchParams.get('range')).toBe('1h')
+    const modelsBefore = capture.counts.models
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('radio', { name: '6h' }))
+
+    await waitFor(() => expect(capture.counts.overview).toBe(2))
+    expect(capture.overviewUrls.at(-1)?.searchParams.get('range')).toBe('6h')
+    expect(capture.counts.models).toBe(modelsBefore)
+    expect(
+      screen.getByRole('radio', { name: '6h' }).getAttribute('aria-checked'),
+    ).toBe('true')
+  })
+})
+
+/* ------------------------------------------------------------------------- *
+ * 维护动作（迁出后行为不变）
+ * ------------------------------------------------------------------------- */
+
+describe('maintenance actions', () => {
+  beforeEach(() => {
+    useToastStore.setState({ toasts: [] })
   })
 
   it('shows explanatory empty states and disables writes when features are off', async () => {
@@ -396,12 +1002,14 @@ describe('performance page (F-08-48～F-08-50)', () => {
     )
 
     await user.click(
-      within(dialog).getByRole('button', { name: 'Clear inactive disk cache' }),
+      within(dialog).getByRole('button', {
+        name: 'Clear inactive disk cache',
+      }),
     )
 
     await waitFor(() => expect(capture.disk.calls).toBe(1))
     expect(capture.disk.headers[0]?.get('X-Confirm-Action')).toBe('true')
-    // L5：写请求回传页面统计所属实例，实例漂移时 409 才可达。
+    // 写请求回传页面统计所属实例，实例漂移时 409 才可达。
     expect(capture.disk.urls[0]?.searchParams.get('instance_id')).toBe(
       'gateway-1',
     )
@@ -438,9 +1046,11 @@ describe('performance page (F-08-48～F-08-50)', () => {
     )
 
     const result = await screen.findByTestId('performance-disk-result')
-    await waitFor(() => expect(result.getAttribute('data-tone')).toBe('warning'))
+    await waitFor(() =>
+      expect(result.getAttribute('data-tone')).toBe('warning'),
+    )
     expect(result.textContent).toContain('2 failed')
-    // L3：partial 失败是 200 业务结果，不得静默重试（handler 只被调用一次）。
+    // partial 失败是 200 业务结果，不得静默重试。
     expect(capture.disk.calls).toBe(1)
   })
 
@@ -457,7 +1067,7 @@ describe('performance page (F-08-48～F-08-50)', () => {
 
     await waitFor(() => expect(capture.gc.calls).toBe(1))
     expect(capture.gc.headers[0]?.get('X-Confirm-Action')).toBe('true')
-    // L5：GC 按契约把实例放在 body，而不是 query。
+    // GC 按契约把实例放在 body，而不是 query。
     expect(JSON.parse(capture.gc.bodies[0] ?? '{}')).toEqual({
       instance_id: 'gateway-1',
     })
@@ -496,14 +1106,7 @@ describe('performance page (F-08-48～F-08-50)', () => {
     server.use(
       http.delete(`${ORIGIN}/api/performance/disk-cache`, () => {
         capture.disk.calls += 1
-        return HttpResponse.json(
-          {
-            type: 'https://newtg.dev/problems/instance_mismatch',
-            title: 'Instance mismatch',
-            status: 409,
-          },
-          { status: 409, headers: { 'Content-Type': 'application/problem+json' } },
-        )
+        return jsonProblem('instance_mismatch', 409)
       }),
     )
     await renderPage()
@@ -522,7 +1125,7 @@ describe('performance page (F-08-48～F-08-50)', () => {
     expect(result.textContent).toContain(
       'The target instance is not the current instance. Switch to it and try again.',
     )
-    // L3：409 是确定性业务错误，handler 只应被调用一次（无静默重试）。
+    // 409 是确定性业务错误，handler 只应被调用一次（无静默重试）。
     expect(capture.disk.calls).toBe(1)
   })
 
@@ -562,7 +1165,7 @@ describe('performance page (F-08-48～F-08-50)', () => {
     const result = await screen.findByTestId('performance-disk-result')
     expect(result.textContent).toContain('Too many requests')
     expect(result.textContent).toContain('12 seconds')
-    // L3：429 不在页内退避重发，handler 只被调用一次。
+    // 429 不在页内退避重发。
     expect(capture.disk.calls).toBe(1)
     // 三张卡仍在页面上，没有退避到整页错误。
     expect(screen.getByTestId('performance-disk-card')).toBeTruthy()
@@ -579,29 +1182,27 @@ describe('performance page (F-08-48～F-08-50)', () => {
     expect(
       await screen.findByTestId('performance-offline-snapshot'),
     ).toBeTruthy()
-    expect(screen.getByText('Offline snapshot; data may be stale.')).toBeTruthy()
+    expect(
+      screen.getByText('Offline snapshot; data may be stale.'),
+    ).toBeTruthy()
 
-    expect(
-      (screen.getByRole('button', {
-        name: 'Clear inactive disk cache',
-      }) as HTMLButtonElement).disabled,
-    ).toBe(true)
-    expect(
-      (screen.getByRole('button', {
-        name: 'Run runtime GC',
-      }) as HTMLButtonElement).disabled,
-    ).toBe(true)
-    expect(
-      (screen.getByRole('button', {
-        name: 'Clean up log files',
-      }) as HTMLButtonElement).disabled,
-    ).toBe(true)
+    for (const name of [
+      'Clear inactive disk cache',
+      'Run runtime GC',
+      'Clean up log files',
+    ]) {
+      expect(
+        (screen.getByRole('button', { name }) as HTMLButtonElement).disabled,
+      ).toBe(true)
+    }
 
     // 离线 Toast 只播报一次。
     const messages = useToastStore
       .getState()
       .toasts.map((toast) => toast.message)
-    expect(messages.filter((message) => message === 'Network connection lost.')).toHaveLength(1)
+    expect(
+      messages.filter((message) => message === 'Network connection lost.'),
+    ).toHaveLength(1)
 
     // 恢复在线后写按钮重新可用。
     window.dispatchEvent(new Event('online'))
@@ -614,11 +1215,11 @@ describe('performance page (F-08-48～F-08-50)', () => {
     )
   })
 
-  it('renders an inline error with retry when a card endpoint is rate limited', async () => {
+  it('renders an inline error with retry when the stats endpoint is rate limited', async () => {
     const capture = installPage()
     server.use(
       http.get(`${ORIGIN}/api/performance/stats`, () => {
-        capture.gets.stats += 1
+        capture.counts.stats += 1
         return HttpResponse.json(
           {
             type: 'https://newtg.dev/problems/rate_limited',
@@ -640,18 +1241,18 @@ describe('performance page (F-08-48～F-08-50)', () => {
     const error = await screen.findByTestId('performance-disk-error')
     expect(error.textContent).toContain('Too many requests')
     expect(within(error).getByRole('button', { name: 'Retry' })).toBeTruthy()
-    // L3：GET 429 同样不自动重试，handler 只被调用一次。
-    expect(capture.gets.stats).toBe(1)
-    // 其他卡照常渲染，429 没有升级成整页错误。
+    // GET 429 同样不自动重试，handler 只被调用一次。
+    expect(capture.counts.stats).toBe(1)
+    // 其他区照常渲染，429 没有升级成整页错误。
+    expect(screen.getAllByTestId('vital')).toHaveLength(5)
     expect(screen.getByTestId('performance-logs-card').textContent).toContain(
       '/var/log/newtg',
     )
-    expect((await screen.findAllByTestId('performance-recent-row')).length).toBeGreaterThan(0)
+    expect(
+      (await screen.findAllByTestId('performance-recent-row')).length,
+    ).toBeGreaterThan(0)
   })
 
-  // -------------------------------------------------------------------------
-  // M1：写操作传输失败并入离线态
-  // -------------------------------------------------------------------------
   it('enters offline (snapshot + disabled writes) when a write fails at transport level', async () => {
     const capture = installPage()
     server.use(
@@ -683,7 +1284,9 @@ describe('performance page (F-08-48～F-08-50)', () => {
     // 在线事件清除写离线态：写按钮恢复可用，快照提示消失。
     window.dispatchEvent(new Event('online'))
     await waitFor(() =>
-      expect(screen.queryByTestId('performance-offline-snapshot')).toBeNull(),
+      expect(
+        screen.queryByTestId('performance-offline-snapshot'),
+      ).toBeNull(),
     )
     await waitFor(() =>
       expect(
@@ -694,8 +1297,6 @@ describe('performance page (F-08-48～F-08-50)', () => {
     )
   })
 
-  // 定向复核 MEDIUM：写失败后三个写按钮被禁用，写成功不可达；服务端不可达
-  // 但 navigator 仍在线时也不会触发 online 事件。「刷新」GET 成功必须能解锁。
   it('recovers from the write-offline state when refresh GETs succeed', async () => {
     const capture = installPage()
     server.use(
@@ -719,13 +1320,16 @@ describe('performance page (F-08-48～F-08-50)', () => {
     ).toBe(true)
     expect(capture.disk.calls).toBe(1)
 
-    const statsBefore = capture.gets.stats
+    const statsBefore = capture.counts.stats
     await user.click(screen.getByRole('button', { name: 'Refresh' }))
 
-    // 三个 GET 都重新取数且成功。
-    await waitFor(() => expect(capture.gets.stats).toBe(statsBefore + 1))
     await waitFor(() =>
-      expect(screen.queryByTestId('performance-offline-snapshot')).toBeNull(),
+      expect(capture.counts.stats).toBe(statsBefore + 1),
+    )
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId('performance-offline-snapshot'),
+      ).toBeNull(),
     )
     for (const name of [
       'Clear inactive disk cache',
@@ -756,7 +1360,7 @@ describe('performance page (F-08-48～F-08-50)', () => {
     await confirmDiskClear(user)
     await screen.findByTestId('performance-offline-snapshot')
 
-    // 首次取数成功后才把 GET 切到传输失败，模拟「页面还在线、刷新时服务端已不可达」。
+    // 首次取数成功后才把 GET 切到传输失败。
     let failedGets = 0
     server.use(
       http.get(`${ORIGIN}/api/performance/stats`, () => {
@@ -780,24 +1384,11 @@ describe('performance page (F-08-48～F-08-50)', () => {
     ).toBe(true)
   })
 
-  // -------------------------------------------------------------------------
-  // L5：写请求钉住页面展示实例
-  // -------------------------------------------------------------------------
   it('omits instance_id when stats never loaded (no instance to pin)', async () => {
     const capture = installPage()
     server.use(
       http.get(`${ORIGIN}/api/performance/stats`, () =>
-        HttpResponse.json(
-          {
-            type: 'https://newtg.dev/problems/internal_error',
-            title: 'Internal Server Error',
-            status: 500,
-          },
-          {
-            status: 500,
-            headers: { 'Content-Type': 'application/problem+json' },
-          },
-        ),
+        jsonProblem('internal_error', 500),
       ),
     )
     await renderWithProviders(<PerformancePage />, ['common', 'admin'])
@@ -809,9 +1400,6 @@ describe('performance page (F-08-48～F-08-50)', () => {
     expect(capture.cleanup.urls[0]?.searchParams.has('instance_id')).toBe(false)
   })
 
-  // -------------------------------------------------------------------------
-  // L6：空态原因由 config.enabled 区分
-  // -------------------------------------------------------------------------
   it('explains an inaccessible cache directory when enabled but unreadable', async () => {
     installPage({
       stats: statsFixture({
@@ -831,9 +1419,7 @@ describe('performance page (F-08-48～F-08-50)', () => {
     })
     await renderPage()
 
-    expect(
-      screen.getByText('Cache directory is not accessible.'),
-    ).toBeTruthy()
+    expect(screen.getByText('Cache directory is not accessible.')).toBeTruthy()
     expect(
       screen.queryByText(/turned off by a deployment environment variable/),
     ).toBeNull()
@@ -844,9 +1430,6 @@ describe('performance page (F-08-48～F-08-50)', () => {
     ).toBe(true)
   })
 
-  // -------------------------------------------------------------------------
-  // L2：部分失败结果行也说明活动文件被跳过
-  // -------------------------------------------------------------------------
   it('shows skipped_active on a partial log-cleanup result', async () => {
     const capture = installPage()
     server.use(
@@ -868,15 +1451,14 @@ describe('performance page (F-08-48～F-08-50)', () => {
     await confirmLogCleanup(user)
 
     const result = await screen.findByTestId('performance-logs-result')
-    await waitFor(() => expect(result.getAttribute('data-tone')).toBe('warning'))
+    await waitFor(() =>
+      expect(result.getAttribute('data-tone')).toBe('warning'),
+    )
     expect(result.textContent).toContain('1 failed')
     expect(result.textContent).toContain('The active log file was skipped.')
     expect(capture.cleanup.calls).toBe(1)
   })
 
-  // -------------------------------------------------------------------------
-  // L4：确认弹窗与请求边界
-  // -------------------------------------------------------------------------
   it('does not send a request when the confirmation is cancelled', async () => {
     const capture = installPage()
     await renderPage()
@@ -919,7 +1501,9 @@ describe('performance page (F-08-48～F-08-50)', () => {
     )
     const dialog = await screen.findByRole('alertdialog')
     await user.click(
-      within(dialog).getByRole('button', { name: 'Clear inactive disk cache' }),
+      within(dialog).getByRole('button', {
+        name: 'Clear inactive disk cache',
+      }),
     )
 
     const working = await within(dialog).findByRole('button', {
@@ -929,9 +1513,11 @@ describe('performance page (F-08-48～F-08-50)', () => {
       expect((working as HTMLButtonElement).disabled).toBe(true),
     )
     expect(
-      (within(dialog).getByRole('button', {
-        name: 'Cancel',
-      }) as HTMLButtonElement).disabled,
+      (
+        within(dialog).getByRole('button', {
+          name: 'Cancel',
+        }) as HTMLButtonElement
+      ).disabled,
     ).toBe(true)
     // pending 期间不能重复提交。
     expect(capture.disk.calls).toBe(1)
@@ -944,10 +1530,10 @@ describe('performance page (F-08-48～F-08-50)', () => {
     const capture = installPage()
     await renderPage()
 
-    await waitFor(() => expect(capture.gets.recent).toBe(1))
-    expect(capture.gets.stats).toBe(1)
-    expect(capture.gets.logs).toBe(1)
-    for (const headers of capture.gets.headers) {
+    await waitFor(() =>
+      expect(capture.readHeaders).toHaveLength(7),
+    )
+    for (const headers of capture.readHeaders) {
       expect(headers.get('X-Confirm-Action')).toBeNull()
     }
   })
@@ -966,30 +1552,18 @@ describe('performance page (F-08-48～F-08-50)', () => {
     'maps %s to a localized inline message',
     async (code, message, target) => {
       const capture = installPage()
-      const problem = () =>
-        HttpResponse.json(
-          {
-            type: `https://newtg.dev/problems/${code}`,
-            title: 'Rejected',
-            status: 422,
-          },
-          {
-            status: 422,
-            headers: { 'Content-Type': 'application/problem+json' },
-          },
-        )
       if (target === 'disk') {
         server.use(
           http.delete(`${ORIGIN}/api/performance/disk-cache`, () => {
             capture.disk.calls += 1
-            return problem()
+            return jsonProblem(code, 422)
           }),
         )
       } else {
         server.use(
           http.delete(`${ORIGIN}/api/performance/logs`, () => {
             capture.cleanup.calls += 1
-            return problem()
+            return jsonProblem(code, 422)
           }),
         )
       }
@@ -1058,7 +1632,9 @@ describe('performance page (F-08-48～F-08-50)', () => {
     })
     await renderPage()
 
-    const row = (await screen.findAllByTestId('performance-recent-row'))[0] as HTMLElement
+    const row = (
+      await screen.findAllByTestId('performance-recent-row')
+    )[0] as HTMLElement
     expect(within(row).getByText('Failed')).toBeTruthy()
     expect(within(row).getByText('Active file skipped')).toBeTruthy()
     expect(within(row).getByText('2 failed')).toBeTruthy()
