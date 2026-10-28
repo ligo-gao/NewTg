@@ -3608,7 +3608,7 @@ schemas:
   # 性能页只读观测（2026-10-28 性能页改版 Task 11）。
   # 响应形状以 handlers_perf_overview.go / handlers_perf_models.go /
   # handlers_perf_config.go 的 json tag 为准：缺失的可空指标为 null，不用 0
-  # 冒充；resources 的数字字段按 spec §7.2 固定为 0。
+  # 冒充；resources 的数字字段同样可为 null（查询失败/无样本 = 未知，不是 0）。
   # 可空标量写成 type: [T, 'null']、可空对象写成 oneOf [$ref, null]（OAS 3.1）：
   # 这两种写法能让 oapi-codegen 与 openapi-typescript 都生成真正的可空类型，
   # 而 nullable: true 在 3.1 下会被 oapi-codegen 忽略。
@@ -3781,29 +3781,24 @@ schemas:
     required: [cpu, mem, disk, net_in, net_out]
     properties:
       cpu:
-        type: number
+        type: [number, 'null']
         format: double
-        nullable: true
         description: CPU 使用率（0–1）。
       mem:
-        type: number
+        type: [number, 'null']
         format: double
-        nullable: true
         description: 内存使用率（0–1）。
       disk:
-        type: number
+        type: [number, 'null']
         format: double
-        nullable: true
         description: 磁盘使用率（0–1）。
       net_in:
-        type: number
+        type: [number, 'null']
         format: double
-        nullable: true
         description: 入站流量（B/s）。
       net_out:
-        type: number
+        type: [number, 'null']
         format: double
-        nullable: true
         description: 出站流量（B/s）。
 
   PerformancePostgresResources:
@@ -3816,29 +3811,24 @@ schemas:
     required: [backends, max, tps, size_bytes, lock_wait]
     properties:
       backends:
-        type: number
+        type: [number, 'null']
         format: double
-        nullable: true
         description: 当前连接数（conn）。
       max:
-        type: number
+        type: [number, 'null']
         format: double
-        nullable: true
         description: max_connections（conn）。
       tps:
-        type: number
+        type: [number, 'null']
         format: double
-        nullable: true
         description: 事务速率（tx/s）。
       size_bytes:
-        type: number
+        type: [number, 'null']
         format: double
-        nullable: true
         description: 数据库大小（B）。
       lock_wait:
-        type: number
+        type: [number, 'null']
         format: double
-        nullable: true
         description: 锁等待（wait/s）。
 
   PerformanceRedisResources:
@@ -3851,29 +3841,24 @@ schemas:
     required: [up, clients, mem_ratio, hit_rate, cmd_rate]
     properties:
       up:
-        type: number
+        type: [number, 'null']
         format: double
-        nullable: true
         description: 可用性（1=up，0=down）；null = 未知（查询失败）。
       clients:
-        type: number
+        type: [number, 'null']
         format: double
-        nullable: true
         description: 连接数（conn）。
       mem_ratio:
-        type: number
+        type: [number, 'null']
         format: double
-        nullable: true
         description: 内存使用率（0–1）。
       hit_rate:
-        type: number
+        type: [number, 'null']
         format: double
-        nullable: true
         description: 命中率（0–1）。
       cmd_rate:
-        type: number
+        type: [number, 'null']
         format: double
-        nullable: true
         description: 命令速率（ops/s）。
 
   PerformanceModels:

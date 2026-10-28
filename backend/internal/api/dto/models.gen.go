@@ -8737,19 +8737,19 @@ type PerformanceGCResult struct {
 // 代理；未接入/断线时整区已是空态，这里只覆盖「部分查询失败」的情形。
 type PerformanceHostResources struct {
 	// Cpu CPU 使用率（0–1）。
-	Cpu float64 `json:"cpu"`
+	Cpu *float64 `json:"cpu"`
 
 	// Disk 磁盘使用率（0–1）。
-	Disk float64 `json:"disk"`
+	Disk *float64 `json:"disk"`
 
 	// Mem 内存使用率（0–1）。
-	Mem float64 `json:"mem"`
+	Mem *float64 `json:"mem"`
 
 	// NetIn 入站流量（B/s）。
-	NetIn float64 `json:"net_in"`
+	NetIn *float64 `json:"net_in"`
 
 	// NetOut 出站流量（B/s）。
-	NetOut float64 `json:"net_out"`
+	NetOut *float64 `json:"net_out"`
 }
 
 // PerformanceLogCleanupResult defines model for PerformanceLogCleanupResult.
@@ -8993,19 +8993,19 @@ type PerformanceOverviewWindowRange string
 // 代理；未接入/断线时整区已是空态，这里只覆盖「部分查询失败」的情形。
 type PerformancePostgresResources struct {
 	// Backends 当前连接数（conn）。
-	Backends float64 `json:"backends"`
+	Backends *float64 `json:"backends"`
 
 	// LockWait 锁等待（wait/s）。
-	LockWait float64 `json:"lock_wait"`
+	LockWait *float64 `json:"lock_wait"`
 
 	// Max max_connections（conn）。
-	Max float64 `json:"max"`
+	Max *float64 `json:"max"`
 
 	// SizeBytes 数据库大小（B）。
-	SizeBytes float64 `json:"size_bytes"`
+	SizeBytes *float64 `json:"size_bytes"`
 
 	// Tps 事务速率（tx/s）。
-	Tps float64 `json:"tps"`
+	Tps *float64 `json:"tps"`
 }
 
 // PerformanceRecentOperation defines model for PerformanceRecentOperation.
@@ -9050,19 +9050,19 @@ type PerformanceRecentOperations struct {
 // 代理；未接入/断线时整区已是空态，这里只覆盖「部分查询失败」的情形。
 type PerformanceRedisResources struct {
 	// Clients 连接数（conn）。
-	Clients float64 `json:"clients"`
+	Clients *float64 `json:"clients"`
 
 	// CmdRate 命令速率（ops/s）。
-	CmdRate float64 `json:"cmd_rate"`
+	CmdRate *float64 `json:"cmd_rate"`
 
 	// HitRate 命中率（0–1）。
-	HitRate float64 `json:"hit_rate"`
+	HitRate *float64 `json:"hit_rate"`
 
 	// MemRatio 内存使用率（0–1）。
-	MemRatio float64 `json:"mem_ratio"`
+	MemRatio *float64 `json:"mem_ratio"`
 
 	// Up 可用性（1=up，0=down）；null = 未知（查询失败）。
-	Up float64 `json:"up"`
+	Up *float64 `json:"up"`
 }
 
 // PerformanceResources 资源三段。整段未接入/断线时页面已是空态，这里只覆盖「部分查询失败」
