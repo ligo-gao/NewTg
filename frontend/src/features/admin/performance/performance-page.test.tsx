@@ -835,9 +835,13 @@ describe('performance page composition', () => {
     installPage()
     await renderPage()
 
-    expect(
-      screen.getByTestId('performance-last-updated').textContent,
-    ).toMatch(/^Last updated \S/)
+    // 只断言「有文本」会被 formatClock(0) 的 '—' 蒙混过关：必须等到 stats
+    // 真的落地、页头渲染出具体时钟。
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('performance-last-updated').textContent,
+      ).toMatch(/^Last updated \d{1,2}:\d{2}:\d{2}/),
+    )
   })
 
   it('prefers incident over degraded, then the latest probe among equals', async () => {
@@ -1006,12 +1010,18 @@ describe('performance page polling', () => {
     await screen.findAllByTestId('vital')
 
     const base = { ...capture.counts }
+    const clockBefore =
+      screen.getByTestId('performance-last-updated').textContent
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(30_000)
     })
     expect(capture.counts.overview).toBe(base.overview + 1)
     expect(capture.counts.models).toBe(base.models)
+    // stats 每 10s 轮询一次：30s 后页头时钟必须跟着走，停在首次值就是回归。
+    expect(
+      screen.getByTestId('performance-last-updated').textContent,
+    ).not.toBe(clockBefore)
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(30_000)
