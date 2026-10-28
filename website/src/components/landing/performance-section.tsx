@@ -19,13 +19,13 @@ const PERF_FRESH_MS = 36 * 60 * 60 * 1000;
 const PLACEHOLDER = "—";
 
 const headCell =
-  "border-b border-line px-4 py-3 text-[11.5px] font-medium whitespace-nowrap text-faint";
+  "border-b border-line px-4 py-3 text-public-caption font-medium whitespace-nowrap text-faint";
 const groupCell =
-  "border-l border-line px-4 pt-3 pb-1 text-center text-[11.5px] font-medium whitespace-nowrap text-faint";
+  "border-l border-line px-4 pt-3 pb-1 text-center text-public-caption font-medium whitespace-nowrap text-faint";
 const subCell =
-  "border-b border-line px-4 pt-0 pb-2 text-right text-[11px] font-medium whitespace-nowrap text-faint";
+  "border-b border-line px-4 pt-0 pb-2 text-right text-public-caption font-medium whitespace-nowrap text-faint";
 const bodyCell = "border-b border-line px-4 py-3.5";
-const numCell = `${bodyCell} text-right font-mono text-[12.5px] tabular-nums text-ink-2 whitespace-nowrap`;
+const numCell = `${bodyCell} text-right font-mono text-public-caption tabular-nums text-ink-2 whitespace-nowrap`;
 
 const successToneClass: Record<SuccessTone, string> = {
   good: "text-green",
@@ -63,34 +63,34 @@ export function PerformanceSection({
         <div className="mb-[18px] flex flex-wrap items-end justify-between gap-x-8 gap-y-4">
           <h2
             id="performance-title"
-            className="text-[clamp(1.75rem,3vw,2.4rem)] font-semibold leading-tight tracking-[-0.03em]"
+            className="text-public-section tracking-[-0.01em]"
           >
             {copy.performance.title}
           </h2>
-          <span className="rounded-full border border-line px-[13px] py-1 font-mono text-[11.5px] text-muted">
+          <span className="rounded-full border border-line px-[13px] py-1 font-mono text-public-caption text-muted">
             {copy.performance.windowLabel}
           </span>
         </div>
 
         {catalogStatus === "error" ? (
-          <div className="rounded-[10px] border border-dashed border-line-2 px-6 py-14 text-center text-sm text-muted">
+          <div className="rounded-[10px] border border-dashed border-line-2 px-6 py-14 text-center text-public-body text-muted">
             <p>{copy.models.loadError}</p>
             <button
               type="button"
               onClick={retry}
-              className="mt-3 text-[13px] text-cyan underline underline-offset-[3px] transition-colors hover:text-cyan-soft"
+              className="mt-3 text-public-caption text-cyan underline underline-offset-[3px] transition-colors hover:text-cyan-soft"
             >
               {copy.performance.retry}
             </button>
           </div>
         ) : !loadingCatalog && perfFeatured.length === 0 ? (
-          <div className="rounded-[10px] border border-dashed border-line-2 px-6 py-14 text-center text-sm text-muted">
+          <div className="rounded-[10px] border border-dashed border-line-2 px-6 py-14 text-center text-public-body text-muted">
             {copy.performance.empty}
           </div>
         ) : (
           <>
             {metricsStatus === "error" ? (
-              <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-line bg-bg-2 px-4 py-2.5 text-[12.5px] text-muted">
+              <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-line bg-bg-2 px-4 py-2.5 text-public-caption text-muted">
                 <span>{copy.performance.unavailable}</span>
                 <button
                   type="button"
@@ -103,7 +103,7 @@ export function PerformanceSection({
             ) : null}
 
             <div className="overflow-x-auto rounded-[10px] border border-line bg-bg-2">
-              <table className="w-full min-w-[1080px] border-collapse text-[13.5px]">
+              <table className="w-full min-w-[1080px] border-collapse text-public-caption">
                 <caption className="sr-only">{copy.performance.title}</caption>
                 <thead>
                   <tr>
@@ -180,7 +180,7 @@ export function PerformanceSection({
                             className="transition-colors hover:bg-[var(--hover-tint)]"
                           >
                             <td className={bodyCell}>
-                              <span className="font-mono text-[12.5px] text-ink">
+                              <span className="font-mono text-public-caption text-ink">
                                 {model.display_name || model.model_id}
                               </span>
                             </td>

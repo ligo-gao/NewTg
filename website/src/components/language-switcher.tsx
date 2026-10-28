@@ -50,7 +50,7 @@ export function LanguageSwitcher({
   if (compact) {
     return (
       <label
-        className={`relative inline-flex h-9 w-[52px] items-center justify-center gap-1 rounded-md border border-line-2 bg-transparent text-[12px] font-medium text-muted transition-colors hover:border-cyan-dim hover:text-ink ${className}`}
+        className={`relative inline-flex h-9 w-[52px] items-center justify-center gap-1 rounded-md border border-line-2 bg-transparent text-public-caption font-medium text-muted transition-colors hover:border-cyan-dim hover:text-ink ${className}`}
       >
         <span aria-hidden="true">{current.shortLabel}</span>
         <select
@@ -71,7 +71,7 @@ export function LanguageSwitcher({
 
   return (
     <label
-      className={`relative inline-flex h-9 items-center gap-1.5 rounded-md border border-line-2 bg-transparent pl-2 pr-6 text-[12.5px] text-muted transition-colors hover:border-cyan-dim hover:text-ink ${className}`}
+      className={`relative inline-flex h-9 items-center gap-1.5 rounded-md border border-line-2 bg-transparent pl-2 pr-6 text-public-caption text-muted transition-colors hover:border-cyan-dim hover:text-ink ${className}`}
     >
       <span className="sr-only">{label}</span>
       <svg
@@ -90,7 +90,7 @@ export function LanguageSwitcher({
         value={locale}
         onChange={handleChange}
         aria-label={label}
-        className="max-w-[110px] cursor-pointer appearance-none truncate bg-transparent pr-0 text-[12.5px] text-inherit outline-none"
+        className="max-w-[110px] cursor-pointer appearance-none truncate bg-transparent pr-0 text-public-caption text-inherit outline-none"
       >
         {LOCALES.map((item) => (
           <option key={item.code} value={item.code} className="bg-panel text-ink">

@@ -84,7 +84,7 @@ export function Breadcrumb({ items, label }: BreadcrumbProps) {
   const fold = middle.length > 1
 
   return (
-    <nav aria-label={label ?? t('public.breadcrumb.label')} className="text-meta">
+    <nav aria-label={label ?? t('public.breadcrumb.label')} className="text-public-caption">
       <ol className="flex flex-wrap items-center gap-2">
         <li>{head === undefined ? null : <ItemContent item={head} />}</li>
         <li aria-hidden="true">

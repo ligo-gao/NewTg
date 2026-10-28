@@ -122,7 +122,7 @@ export function Toolbar({
           }}
           placeholder={t('public.models.search.placeholder')}
           aria-label={t('public.models.search.label')}
-          className="h-10 w-full rounded-lg border border-border-default bg-surface-card pl-9 pr-9 text-body text-ink-1 placeholder:text-ink-3 focus:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="h-10 w-full rounded-lg border border-border-default bg-surface-card pl-9 pr-9 text-public-body text-ink-1 placeholder:text-ink-3 focus:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         />
         {draft === '' ? null : (
           <button
@@ -145,7 +145,7 @@ export function Toolbar({
         )}
       </form>
 
-      <p className="text-meta leading-5 tabular-nums text-ink-2" aria-live="polite">
+      <p className="text-public-caption tabular-nums text-ink-2" aria-live="polite">
         {t('public.models.result_count', {
           count: new Intl.NumberFormat(locale).format(resultCount),
         })}
@@ -166,7 +166,7 @@ export function Toolbar({
                 aria-pressed={selected}
                 onClick={() => onChange({ ...search, range: option.value })}
                 className={[
-                  'rounded-md px-2.5 py-0.5 text-meta font-medium leading-5 transition-colors duration-150 motion-reduce:transition-none',
+                  'rounded-md px-2.5 py-0.5 text-public-caption font-medium transition-colors duration-150 motion-reduce:transition-none',
                   selected
                     ? 'bg-surface-card text-ink-1 shadow-sm'
                     : 'text-ink-2 hover:text-ink-1',
@@ -185,7 +185,7 @@ export function Toolbar({
             onChange({ ...search, sort: event.target.value as ModelsSort })
           }
           aria-label={t('public.models.sort.label')}
-          className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-meta text-ink-1 focus:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="h-10 rounded-lg border border-border-default bg-surface-card px-2 text-public-caption text-ink-1 focus:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         >
           {SORTS.map((sort) => (
             <option key={sort} value={sort}>
@@ -220,7 +220,7 @@ export function Toolbar({
                   onChange({ ...search, view })
                 }}
                 className={[
-                  'rounded-md px-2.5 py-0.5 text-meta font-medium leading-5 transition-colors duration-150 motion-reduce:transition-none',
+                  'rounded-md px-2.5 py-0.5 text-public-caption font-medium transition-colors duration-150 motion-reduce:transition-none',
                   selected
                     ? 'bg-surface-card text-ink-1 shadow-sm'
                     : 'text-ink-2 hover:text-ink-1',
@@ -245,7 +245,7 @@ export function Toolbar({
           <button
             type="button"
             onClick={onOpenFilters}
-            className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border-default bg-surface-card px-3 text-meta font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border-default bg-surface-card px-3 text-public-caption font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
             <svg
               aria-hidden="true"

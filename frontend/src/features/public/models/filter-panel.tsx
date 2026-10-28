@@ -110,7 +110,7 @@ function FacetFieldset({
 }) {
   return (
     <fieldset className="border-t border-border-hairline py-3 first:border-t-0 first:pt-0">
-      <legend className="mb-1 text-meta font-semibold leading-5 text-ink-1">
+      <legend className="mb-1 text-public-label text-ink-1">
         {title}
       </legend>
       {children}
@@ -133,7 +133,7 @@ function CheckRow({
   return (
     <label
       className={[
-        'flex h-8 cursor-pointer items-center gap-2 rounded-md px-1 text-meta leading-5',
+        'flex h-8 cursor-pointer items-center gap-2 rounded-md px-1 text-public-caption',
         checked ? 'bg-brand-subtle text-ink-1' : 'text-ink-1 hover:bg-surface-hover',
       ].join(' ')}
     >
@@ -223,7 +223,7 @@ export function ModelFilters({
       <button
         type="button"
         onClick={() => expand(group)}
-        className="px-1 text-meta text-brand hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+        className="px-1 text-public-caption text-brand hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
       >
         {t('public.models.filters.show_more', {
           count: new Intl.NumberFormat(locale).format(hidden),
@@ -232,9 +232,9 @@ export function ModelFilters({
     ) : null
 
   return (
-    <div className="text-meta">
+    <div className="text-public-caption">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <h2 className="text-card-title font-semibold leading-6 text-ink-1">
+        <h2 className="text-public-body-strong text-ink-1">
           {t('public.models.filters.title')}
         </h2>
         <div className="flex items-center gap-2">
@@ -244,7 +244,7 @@ export function ModelFilters({
             type="button"
             onClick={() => onChange(validateModelsSearch({ view: search.view }))}
             disabled={!hasFilters}
-            className="rounded px-1 text-meta text-brand hover:underline disabled:cursor-not-allowed disabled:text-ink-3 disabled:no-underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="rounded px-1 text-public-caption text-brand hover:underline disabled:cursor-not-allowed disabled:text-ink-3 disabled:no-underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
             {t('public.models.filters.reset')}
           </button>
@@ -252,7 +252,7 @@ export function ModelFilters({
             <button
               type="button"
               onClick={onClose}
-              className="rounded px-1 text-meta text-ink-2 hover:text-ink-1 hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="rounded px-1 text-public-caption text-ink-2 hover:text-ink-1 hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             >
               {t('public.models.filters.close')}
             </button>
@@ -333,7 +333,7 @@ export function ModelFilters({
             ) : null}
           </>
         ) : (
-          <p className="rounded-lg border border-border-hairline bg-surface-subtle px-3 py-2.5 text-badge text-ink-3">
+          <p className="rounded-lg border border-border-hairline bg-surface-subtle px-3 py-2.5 text-public-caption text-ink-3">
             <strong className="font-medium text-ink-2">
               {t('public.models.filters.profile_missing')}
             </strong>{' '}
@@ -365,7 +365,7 @@ export function ModelFilters({
       </div>
 
       <div className="border-t border-border-hairline py-3">
-        <h3 className="mb-1 text-meta font-semibold leading-5 text-ink-1">
+        <h3 className="mb-1 text-public-label text-ink-1">
           {t('public.models.filters.data')}
         </h3>
         <SwitchControl

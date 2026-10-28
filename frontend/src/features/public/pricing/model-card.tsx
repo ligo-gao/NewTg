@@ -60,7 +60,7 @@ export function ModelCard({
   return (
     <article className="flex flex-col rounded-xl border border-border-default bg-surface-card p-4 transition-colors duration-150 hover:bg-surface-hover motion-reduce:transition-none">
       <div className="flex items-start justify-between gap-2">
-        <h3 className="min-w-0 text-card-title font-semibold leading-6 text-ink-1">
+        <h3 className="min-w-0 text-public-body-strong text-ink-1">
           <a href={detailHref(card.model_id)} className="hover:underline">
             <HighlightedText text={displayName} query={search} />
           </a>
@@ -77,7 +77,7 @@ export function ModelCard({
         </div>
       </div>
 
-      <div className="mt-0.5 flex min-w-0 items-center gap-1 text-meta leading-5 text-ink-2">
+      <div className="mt-0.5 flex min-w-0 items-center gap-1 text-public-caption text-ink-2">
         <span className="truncate font-mono">{card.model_id}</span>
         {card.vendor !== '' ? (
           <>
@@ -99,7 +99,7 @@ export function ModelCard({
       </div>
 
       {context !== null || card.max_output !== null ? (
-        <p className="mt-1 text-meta leading-5 tabular-nums text-ink-2">
+        <p className="mt-1 text-public-caption tabular-nums text-ink-2">
           {context === null
             ? t('public.pricing.context_unknown')
             : t('public.pricing.context', { value: context })}
@@ -152,7 +152,7 @@ export function ModelCard({
       ) : null}
 
       {card.description !== '' ? (
-        <p className="mt-2 line-clamp-2 text-meta leading-5 text-ink-2">
+        <p className="mt-2 line-clamp-2 text-public-body text-ink-2">
           {card.description}
         </p>
       ) : null}
@@ -160,7 +160,7 @@ export function ModelCard({
       <div className="mt-3 flex justify-end">
         <a
           href={detailHref(card.model_id)}
-          className="inline-flex items-center gap-1 text-meta font-medium text-brand hover:text-brand-hover hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="inline-flex items-center gap-1 text-public-caption font-medium text-brand hover:text-brand-hover hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         >
           {t('public.pricing.details')}
           <span aria-hidden="true">→</span>

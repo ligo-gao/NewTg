@@ -65,10 +65,10 @@ export function HomePage() {
       ) : !hasBuiltInSection ? (
         <section className="mx-auto flex w-full max-w-[1200px] flex-col items-start gap-4 px-4 py-16 md:px-6 md:py-24">
           <SiteBrand site={site} />
-          <p className="text-body text-ink-2">{t('public.home.empty_config')}</p>
+          <p className="text-public-body text-ink-2">{t('public.home.empty_config')}</p>
           <a
             href="/dashboard"
-            className="inline-flex h-10 items-center rounded-lg bg-brand px-4 text-body font-medium text-on-brand hover:bg-brand-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="inline-flex h-10 items-center rounded-lg bg-brand px-4 text-public-body font-medium text-on-brand hover:bg-brand-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
             {t('public.home.hero.cta_console')}
           </a>

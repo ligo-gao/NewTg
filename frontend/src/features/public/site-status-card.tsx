@@ -55,19 +55,19 @@ export function SiteStatusCard({ pollIntervalMs = 30_000 }: SiteStatusCardProps)
       aria-labelledby="site-status-title"
       className="flex flex-col gap-3 rounded-xl border border-border-hairline bg-surface-card p-5"
     >
-      <h2 id="site-status-title" className="text-card-title font-semibold text-ink-1">
+      <h2 id="site-status-title" className="text-public-body-strong text-ink-1">
         {t('public.status.title')}
       </h2>
       <div role="status" aria-live="polite" className="flex items-center gap-3">
         {state === 'checking' ? (
-          <span className="text-body text-ink-2">{t('public.status.checking')}</span>
+          <span className="text-public-body text-ink-2">{t('public.status.checking')}</span>
         ) : (
           <StatusBadge variant={STATE_VARIANT[state]}>{t(`public.status.${state}`)}</StatusBadge>
         )}
       </div>
       {state === 'unavailable' ? (
         <div className="flex items-center gap-3">
-          <p className="text-body text-ink-2">{t('public.status.unavailable_hint')}</p>
+          <p className="text-public-body text-ink-2">{t('public.status.unavailable_hint')}</p>
           <Button variant="secondary" onClick={() => void query.refetch()} disabled={query.isFetching}>
             {t('public.status.retry')}
           </Button>

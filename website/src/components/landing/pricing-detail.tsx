@@ -75,14 +75,14 @@ function ScheduleSection({
     >
       <h3
         id="pricing-detail-schedule"
-        className="mb-2.5 flex items-center gap-2 text-[12px] font-semibold text-ink"
+        className="mb-2.5 flex items-center gap-2 text-public-caption font-semibold text-ink"
       >
         {scheduleCopy.title}
-        <span className="rounded-[3px] border border-cyan/30 px-1.5 py-px font-mono text-[10px] font-normal text-cyan">
+        <span className="rounded-[3px] border border-cyan/30 px-1.5 py-px font-mono text-public-caption font-normal text-cyan">
           {scheduleCopy.badge}
         </span>
       </h3>
-      <p className="text-[11px] text-faint">
+      <p className="text-public-caption text-faint">
         {scheduleCopy.timezone}:{" "}
         <span className="font-mono text-ink-2">{schedule.timezone}</span>
       </p>
@@ -91,23 +91,23 @@ function ScheduleSection({
           <li
             key={`${window.name}-${index}`}
             data-testid="pricing-schedule-window"
-            className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-baseline gap-x-3 border-b border-dashed border-line py-1 text-[11.5px] last:border-b-0"
+            className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-baseline gap-x-3 border-b border-dashed border-line py-1 text-public-caption last:border-b-0"
           >
             <span className="truncate text-ink-2">
               {window.name || scheduleCopy.windowFallback}
             </span>
-            <span className="whitespace-nowrap font-mono text-[11px] text-faint">
+            <span className="whitespace-nowrap font-mono text-public-caption text-faint">
               {formatDays(window.days, scheduleCopy.weekdays, scheduleCopy.everyDay)}{" "}
               {window.start}–{window.end}
               {isOvernight(window) ? ` (${scheduleCopy.overnight})` : ""}
             </span>
-            <span className="font-mono text-[12px] tabular-nums text-ink">
+            <span className="font-mono text-public-caption tabular-nums text-ink">
               {scheduleCopy.multiplier.replace("{value}", formatMultiplier(window.multiplier))}
             </span>
           </li>
         ))}
       </ul>
-      <dl className="mt-2 grid gap-x-6 gap-y-1 text-[11.5px] sm:grid-cols-2">
+      <dl className="mt-2 grid gap-x-6 gap-y-1 text-public-caption sm:grid-cols-2">
         <div className="flex justify-between gap-3">
           <dt className="text-muted">{scheduleCopy.defaultMultiplier}</dt>
           <dd className="font-mono text-ink-2">
@@ -126,7 +126,7 @@ function ScheduleSection({
           </dd>
         </div>
       </dl>
-      <p className="mt-2 text-[10.5px] leading-relaxed text-faint">
+      <p className="mt-2 text-public-caption text-faint">
         {scheduleCopy.footnote.replace("{timezone}", schedule.timezone)}
       </p>
     </section>
@@ -234,9 +234,9 @@ export function PricingDetail({ model, meta, copy, display }: PricingDetailProps
       className="grid grid-cols-1 gap-x-7 gap-y-6 border-t border-line px-6 pb-6 pt-5 md:grid-cols-2 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)_minmax(0,0.95fr)]"
     >
       <section aria-labelledby="pricing-detail-register">
-        <h3 id="pricing-detail-register" className="mb-3 flex items-center gap-2 text-[12px] font-semibold text-ink">
+        <h3 id="pricing-detail-register" className="mb-3 flex items-center gap-2 text-public-caption font-semibold text-ink">
           {detailCopy.register}
-          <span className="font-mono text-[10px] font-normal text-faint">{groupTag}</span>
+          <span className="font-mono text-public-caption font-normal text-faint">{groupTag}</span>
         </h3>
         <dl className="space-y-0">
           {registerEntries.map((entry) => {
@@ -244,13 +244,13 @@ export function PricingDetail({ model, meta, copy, display }: PricingDetailProps
             return (
               <div
                 key={entry.key}
-                className="grid grid-cols-[72px_minmax(0,1fr)_auto] items-baseline gap-2.5 border-b border-dashed border-line py-1.5 text-[12px] last:border-b-0"
+                className="grid grid-cols-[72px_minmax(0,1fr)_auto] items-baseline gap-2.5 border-b border-dashed border-line py-1.5 text-public-caption last:border-b-0"
               >
                 <dt className="text-muted">{entry.label}</dt>
-                <dd className="text-right font-mono text-[13px] text-ink">
+                <dd className="text-right font-mono text-public-caption text-ink">
                   {showGroup && !model.is_free ? (
                     <>
-                      <s className="mr-1.5 text-[10.5px] text-faint">
+                      <s className="mr-1.5 text-public-caption text-faint">
                         {registerValue(entry.baseCredits, entry.request)}
                       </s>
                       <span className="text-cyan">{registerValue(entry.groupCredits, entry.request)}</span>
@@ -259,32 +259,32 @@ export function PricingDetail({ model, meta, copy, display }: PricingDetailProps
                     registerValue(shownCredits, entry.request)
                   )}
                   {display.dual && usdReference(shownCredits, entry.request) !== "" ? (
-                    <span className="ml-1.5 text-[10px] text-faint">
+                    <span className="ml-1.5 text-public-caption text-faint">
                       {usdReference(shownCredits, entry.request)}
                     </span>
                   ) : null}
                 </dd>
-                <span className="text-[10px] text-faint">
+                <span className="text-public-caption text-faint">
                   {entry.request ? copy.pricingPage.table.perCall : unitLabel}
                 </span>
               </div>
             );
           })}
         </dl>
-        <p className="mt-2.5 text-[10.5px] leading-relaxed text-faint">{detailCopy.rechargeNote}</p>
+        <p className="mt-2.5 text-public-caption text-faint">{detailCopy.rechargeNote}</p>
       </section>
 
       <section aria-labelledby="pricing-detail-estimator" className="flex flex-col gap-2.5">
         <h3
           id="pricing-detail-estimator"
-          className="mb-0.5 flex items-center gap-2 text-[12px] font-semibold text-ink"
+          className="mb-0.5 flex items-center gap-2 text-public-caption font-semibold text-ink"
         >
           {detailCopy.estimator}
-          <span className="font-mono text-[10px] font-normal text-faint">{groupTag}</span>
+          <span className="font-mono text-public-caption font-normal text-faint">{groupTag}</span>
         </h3>
         <div className="grid grid-cols-2 gap-2">
           {isPerRequest ? (
-            <label className="flex flex-col gap-1 text-[10.5px] text-muted">
+            <label className="flex flex-col gap-1 text-public-caption text-muted">
               {detailCopy.requests}
               <input
                 type="number"
@@ -292,12 +292,12 @@ export function PricingDetail({ model, meta, copy, display }: PricingDetailProps
                 step={1}
                 value={requests}
                 onChange={(event) => setRequests(Math.max(0, Number(event.target.value) || 0))}
-                className="h-8 rounded-[5px] border border-line-2 bg-panel px-2 font-mono text-[12px] text-ink"
+                className="h-8 rounded-[5px] border border-line-2 bg-panel px-2 font-mono text-public-caption text-ink"
               />
             </label>
           ) : (
             <>
-              <label className="flex flex-col gap-1 text-[10.5px] text-muted">
+              <label className="flex flex-col gap-1 text-public-caption text-muted">
                 {detailCopy.inputTokens}
                 <input
                   type="number"
@@ -307,10 +307,10 @@ export function PricingDetail({ model, meta, copy, display }: PricingDetailProps
                   onChange={(event) =>
                     setInputTokens(Math.max(0, Number(event.target.value) || 0))
                   }
-                  className="h-8 rounded-[5px] border border-line-2 bg-panel px-2 font-mono text-[12px] text-ink"
+                  className="h-8 rounded-[5px] border border-line-2 bg-panel px-2 font-mono text-public-caption text-ink"
                 />
               </label>
-              <label className="flex flex-col gap-1 text-[10.5px] text-muted">
+              <label className="flex flex-col gap-1 text-public-caption text-muted">
                 {detailCopy.outputTokens}
                 <input
                   type="number"
@@ -320,10 +320,10 @@ export function PricingDetail({ model, meta, copy, display }: PricingDetailProps
                   onChange={(event) =>
                     setOutputTokens(Math.max(0, Number(event.target.value) || 0))
                   }
-                  className="h-8 rounded-[5px] border border-line-2 bg-panel px-2 font-mono text-[12px] text-ink"
+                  className="h-8 rounded-[5px] border border-line-2 bg-panel px-2 font-mono text-public-caption text-ink"
                 />
               </label>
-              <label className="flex flex-col gap-1 text-[10.5px] text-muted">
+              <label className="flex flex-col gap-1 text-public-caption text-muted">
                 {detailCopy.cacheHit}
                 <input
                   type="number"
@@ -336,7 +336,7 @@ export function PricingDetail({ model, meta, copy, display }: PricingDetailProps
                       Math.min(100, Math.max(0, Number(event.target.value) || 0)),
                     )
                   }
-                  className="h-8 rounded-[5px] border border-line-2 bg-panel px-2 font-mono text-[12px] text-ink"
+                  className="h-8 rounded-[5px] border border-line-2 bg-panel px-2 font-mono text-public-caption text-ink"
                 />
               </label>
             </>
@@ -345,18 +345,18 @@ export function PricingDetail({ model, meta, copy, display }: PricingDetailProps
 
         <div className="rounded-[7px] border border-line-2 bg-panel px-3.5 py-3">
           <div className="flex items-baseline justify-between gap-3">
-            <span className="text-[11.5px] text-muted">{detailCopy.estimated}</span>
-            <strong className="font-mono text-[22px] font-medium tracking-[-0.02em] text-ink">
+            <span className="text-public-caption text-muted">{detailCopy.estimated}</span>
+            <strong className="font-mono text-public-subhead font-medium tracking-[-0.02em] text-ink">
               {currency}
               {formatMoneyValue(estimate.total)}
             </strong>
           </div>
           {estimateUSD !== null ? (
-            <p className="mt-0.5 text-right font-mono text-[11px] text-faint">
+            <p className="mt-0.5 text-right font-mono text-public-caption text-faint">
               ≈ ${formatMoneyValue(estimateUSD)}
             </p>
           ) : null}
-          <dl className="mt-2 grid gap-0.5 text-[11px]">
+          <dl className="mt-2 grid gap-0.5 text-public-caption">
             {isPerRequest ? (
               <>
                 <div className="flex justify-between gap-3">
@@ -399,14 +399,14 @@ export function PricingDetail({ model, meta, copy, display }: PricingDetailProps
             )}
           </dl>
         </div>
-        <p className="text-[10.5px] leading-relaxed text-faint">{detailCopy.estimatorNote}</p>
+        <p className="text-public-caption text-faint">{detailCopy.estimatorNote}</p>
       </section>
 
       <section aria-labelledby="pricing-detail-info" className="md:col-span-2 xl:col-span-1">
-        <h3 id="pricing-detail-info" className="mb-3 text-[12px] font-semibold text-ink">
+        <h3 id="pricing-detail-info" className="mb-3 text-public-caption font-semibold text-ink">
           {detailCopy.info}
         </h3>
-        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-[12px]">
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-public-caption">
           <dt className="text-muted">{copy.pricingPage.table.context}</dt>
           <dd className="text-ink-2">{formatContext(model.context_length)}</dd>
           <dt className="text-muted">{copy.pricingPage.cards.maxOutput}</dt>
@@ -427,14 +427,14 @@ export function PricingDetail({ model, meta, copy, display }: PricingDetailProps
           : null}
 
         {model.description !== null && model.description !== "" ? (
-          <p className="mt-3 text-[11.5px] leading-relaxed text-muted">{model.description}</p>
+          <p className="mt-3 text-public-caption text-muted">{model.description}</p>
         ) : null}
 
         <div className="mt-3.5 flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={copyModelID}
-            className="h-[30px] rounded-[5px] border border-line-2 px-2.5 text-[11.5px] text-ink-2 transition-colors hover:border-cyan-dim hover:text-ink"
+            className="h-[30px] rounded-[5px] border border-line-2 px-2.5 text-public-caption text-ink-2 transition-colors hover:border-cyan-dim hover:text-ink"
           >
             {detailCopy.copyId}
           </button>
@@ -443,7 +443,7 @@ export function PricingDetail({ model, meta, copy, display }: PricingDetailProps
           </span>
           <a
             href={`/pricing/${encodeURIComponent(model.model_id)}`}
-            className="text-[11.5px] text-cyan transition-colors hover:text-cyan-soft"
+            className="text-public-caption text-cyan transition-colors hover:text-cyan-soft"
           >
             {detailCopy.viewDetail}
           </a>
@@ -460,7 +460,7 @@ export function PricingDetail({ model, meta, copy, display }: PricingDetailProps
         {values.map((value) => (
           <span
             key={`${key}-${value}`}
-            className="inline-flex h-5 items-center rounded-[3px] border border-line-2 px-1.5 text-[10px] text-muted"
+            className="inline-flex h-5 items-center rounded-[3px] border border-line-2 px-1.5 text-public-caption text-muted"
           >
             {value}
           </span>

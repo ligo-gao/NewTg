@@ -3,10 +3,13 @@
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import {
+  NAV_COPY_KEY,
   ShellHeader,
   getShellCopy,
+  sectionForPath,
+  visibleNavItems,
+  type PublicNavItem,
   type ShellAccountControl,
-  type ShellCopyKey,
   type ShellLocaleOption,
   type ShellNavItem,
 } from "@newtg/public-shell";
@@ -23,26 +26,29 @@ import { usePublicStatus } from "@/lib/public-status";
 import { fetchHeaderSession, signOut, type HeaderSession } from "@/lib/session";
 import { applyTheme, readStoredTheme, storeTheme } from "@/lib/theme";
 
-/**
- * Same six entries, same order and same labels as the SPA header (both read
- * the shared shell dictionary). The static site cannot see the operator's
- * `nav.*` switches, so only the docs target is filtered — it is the one entry
- * that depends on a deployed target.
- */
-const NAV_ITEMS: readonly { key: string; labelKey: ShellCopyKey; href: string }[] = [
-  { key: "console", labelKey: "nav.console", href: "/dashboard" },
-  { key: "models", labelKey: "nav.models", href: "/models" },
-  { key: "pricing", labelKey: "nav.pricing", href: "/pricing" },
-  { key: "rankings", labelKey: "nav.rankings", href: "/rankings" },
-  { key: "about", labelKey: "nav.about", href: "/about" },
-  { key: "docs", labelKey: "nav.docs", href: "/docs" },
-];
-
 const LOCALE_OPTIONS: ShellLocaleOption[] = LOCALES.map((entry) => ({
   value: entry.code,
   label: entry.endonym,
   short: entry.shortLabel,
 }));
+
+/** `/en/pricing/` → `/pricing/`; the default locale has no prefix. */
+const LOCALE_PREFIXES = LOCALES.filter((entry) => entry.path !== "/").map(
+  (entry) => `/${entry.code}`,
+);
+
+function withoutLocalePrefix(pathname: string): string {
+  for (const prefix of LOCALE_PREFIXES) {
+    if (pathname === prefix) return "/";
+    if (pathname.startsWith(`${prefix}/`)) return pathname.slice(prefix.length);
+  }
+  return pathname;
+}
+
+/** Guest hand-off; keeps the page (and its locale) for the trip back. */
+function guestSignInHref(pathname: string): string {
+  return `${site.loginHref}?redirect=${encodeURIComponent(pathname)}`;
+}
 
 /**
  * Theme state for the shell. The pre-paint script has already set
@@ -101,7 +107,7 @@ function useHeaderSession(): HeaderSession {
 }
 
 export function SiteHeader({ copy, locale }: { copy: Copy; locale: Locale }) {
-  const { docsEnabled } = usePublicStatus();
+  const { nav, docsUrl } = usePublicStatus();
   const pathname = usePathname() ?? "/";
   const theme = useThemeControl();
   const session = useHeaderSession();
@@ -111,22 +117,27 @@ export function SiteHeader({ copy, locale }: { copy: Copy; locale: Locale }) {
   const normalized = pathname.replace(/\/$/, "") || "/";
   const onHome = normalized === (homePath.replace(/\/$/, "") || "/");
 
-  function hrefFor(href: string): string {
-    // '/pricing' is the only localized sub-route the marketing site owns.
-    return href === "/pricing"
-      ? homePath === "/"
-        ? "/pricing/"
-        : `${homePath}pricing/`
-      : href;
+  // `/pricing` is the only localized sub-route the marketing site owns.
+  function hrefFor(item: PublicNavItem): string {
+    if (item.key !== "pricing") return item.href;
+    return homePath === "/" ? "/pricing/" : `${homePath}pricing/`;
   }
 
-  const items: ShellNavItem[] = NAV_ITEMS.filter(
-    (item) => item.href !== "/docs" || docsEnabled,
+  // Which entries exist is decided by the shared resolver, not by a local
+  // array: a switch turned off in the console disappears here and in the SPA
+  // at the same time, and the guest sees the same five entries on `/` as on
+  // `/models`.
+  const section = sectionForPath(withoutLocalePrefix(normalized));
+  const items: ShellNavItem[] = visibleNavItems(
+    nav,
+    session.signedIn,
+    docsUrl,
   ).map((item) => ({
     key: item.key,
-    label: shell[item.labelKey],
-    href: hrefFor(item.href),
-    current: normalized === hrefFor(item.href).replace(/\/$/, ""),
+    label: shell[NAV_COPY_KEY[item.key]],
+    href: hrefFor(item),
+    external: item.key === "docs" ? item.external : false,
+    current: section === item.key,
   }));
 
   function changeLocale(next: string) {
@@ -144,7 +155,7 @@ export function SiteHeader({ copy, locale }: { copy: Copy; locale: Locale }) {
   const account: ShellAccountControl = session.signedIn
     ? {
         signedIn: true,
-        signInHref: site.loginHref,
+        signInHref: guestSignInHref(pathname),
         name: session.name,
         menu: [
           { key: "console", label: shell["nav.console"], href: "/dashboard" },
@@ -152,7 +163,7 @@ export function SiteHeader({ copy, locale }: { copy: Copy; locale: Locale }) {
         ],
         onSignOut: () => void signOut(homePath),
       }
-    : { signedIn: false, signInHref: site.loginHref };
+    : { signedIn: false, signInHref: guestSignInHref(pathname) };
 
   return (
     <ShellHeader

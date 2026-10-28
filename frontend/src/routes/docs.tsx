@@ -81,27 +81,27 @@ export function DocsRoute() {
     <PublicLayout activePath="/docs">
       {statusUnknown ? (
         <div className="flex flex-col items-start gap-3">
-          <h1 className="text-page-title text-ink-1">
+          <h1 className="text-public-title text-ink-1">
             {t('public.status.unavailable')}
           </h1>
-          <p className="text-body text-ink-2">{t('public.status.unavailable_hint')}</p>
+          <p className="text-public-body text-ink-2">{t('public.status.unavailable_hint')}</p>
           <button
             type="button"
             onClick={() => void status.refetch()}
-            className="text-body text-brand hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="text-public-body text-brand hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
             {t('public.status.retry')}
           </button>
         </div>
       ) : target.kind === 'unavailable' && !needsSignIn ? (
         <div className="flex flex-col items-start gap-3">
-          <h1 className="text-page-title text-ink-1">
+          <h1 className="text-public-title text-ink-1">
             {t('public.docs.unavailable')}
           </h1>
-          <p className="text-body text-ink-2">{t('public.docs.unavailable_hint')}</p>
+          <p className="text-public-body text-ink-2">{t('public.docs.unavailable_hint')}</p>
           <a
             href="/"
-            className="text-body text-brand hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="text-public-body text-brand hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
             {t('public.docs.back_home')}
           </a>
@@ -109,7 +109,7 @@ export function DocsRoute() {
       ) : (
         // Brief transient state while the replace() above takes effect; no
         // fake docs content is ever rendered.
-        <p className="text-body text-ink-3">{t('public.docs.redirecting')}</p>
+        <p className="text-public-body text-ink-3">{t('public.docs.redirecting')}</p>
       )}
     </PublicLayout>
   )

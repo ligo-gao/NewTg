@@ -31,10 +31,10 @@ export function TrustBand({ copy }: { copy: Copy }) {
                 break inside a word (CJK breaks naturally). Desktop scale is
                 unchanged.
               */}
-              <dt className="font-mono text-[clamp(1.5rem,2.4vw,2rem)] leading-[1.1] font-medium tracking-[-0.02em] text-ink tabular-nums [overflow-wrap:anywhere] hyphens-auto">
+              <dt className="font-mono text-public-figure tracking-[-0.01em] text-ink tabular-nums [overflow-wrap:anywhere] hyphens-auto">
                 {item.value}
               </dt>
-              <dd className="mt-1.5 text-[12.5px] text-muted">{item.label}</dd>
+              <dd className="mt-1.5 text-public-caption text-muted">{item.label}</dd>
             </div>
           ))}
         </dl>

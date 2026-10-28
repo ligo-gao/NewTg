@@ -13,7 +13,7 @@ const MAX_RESULTS = 24;
 
 function chipClass(active: boolean): string {
   return [
-    "h-[31px] rounded-full border px-[13px] text-[12.5px] transition-colors",
+    "h-[31px] rounded-full border px-[13px] text-public-caption transition-colors",
     active
       ? "border-cyan/45 bg-cyan/[0.07] text-cyan"
       : "border-line bg-transparent text-muted hover:border-line-2 hover:text-ink-2",
@@ -157,10 +157,10 @@ export function ModelExplorer({ copy }: { copy: Copy }) {
       <div className="mx-auto w-full max-w-[1520px] px-4 min-[621px]:px-6 wide:px-10">
         <div className="mb-[18px] flex flex-wrap items-start justify-between gap-x-8 gap-y-5">
           <div>
-            <h2 className="text-[clamp(1.75rem,3vw,2.4rem)] font-semibold leading-tight tracking-[-0.03em]">
+            <h2 className="text-public-section tracking-[-0.01em]">
               {copy.models.title}
             </h2>
-            <p className="mt-2 max-w-[34em] text-[15px] leading-[1.8] text-ink-2">{copy.models.subtitle}</p>
+            <p className="mt-2 max-w-[34em] text-public-body text-ink-2">{copy.models.subtitle}</p>
           </div>
 
           <div className="relative w-full min-[1081px]:w-[340px] min-[1081px]:flex-none">
@@ -186,7 +186,7 @@ export function ModelExplorer({ copy }: { copy: Copy }) {
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder={copy.models.searchPlaceholder}
-              className="h-[42px] w-full rounded-md border border-line-2 bg-bg-2 pl-[39px] pr-3.5 text-[13px] text-ink transition-colors placeholder:text-faint focus:border-cyan-dim"
+              className="h-[42px] w-full rounded-md border border-line-2 bg-bg-2 pl-[39px] pr-3.5 text-public-caption text-ink transition-colors placeholder:text-faint focus:border-cyan-dim"
             />
           </div>
         </div>
@@ -222,7 +222,7 @@ export function ModelExplorer({ copy }: { copy: Copy }) {
           {isDefaultView ? (
             <a
               href={site.modelsHref}
-              className="ml-auto inline-flex items-center gap-1 text-[13px] text-cyan transition-colors hover:text-cyan-soft"
+              className="ml-auto inline-flex items-center gap-1 text-public-caption text-cyan transition-colors hover:text-cyan-soft"
             >
               {copy.models.moreModels}
               <svg
@@ -238,7 +238,7 @@ export function ModelExplorer({ copy }: { copy: Copy }) {
               </svg>
             </a>
           ) : (
-            <p aria-live="polite" className="ml-auto font-mono text-xs text-faint">
+            <p aria-live="polite" className="ml-auto font-mono text-public-caption text-faint">
               <b className="font-medium text-ink-2">{shown.length}</b> {copy.models.countUnit}
             </p>
           )}
@@ -251,27 +251,27 @@ export function ModelExplorer({ copy }: { copy: Copy }) {
             ))}
           </div>
         ) : catalogStatus === "error" ? (
-          <div className="rounded-[10px] border border-dashed border-line-2 px-6 py-14 text-center text-sm text-muted">
+          <div className="rounded-[10px] border border-dashed border-line-2 px-6 py-14 text-center text-public-body text-muted">
             <p>{copy.models.loadError}</p>
             <button
               type="button"
               onClick={retry}
-              className="mt-3 text-[13px] text-cyan underline underline-offset-[3px] transition-colors hover:text-cyan-soft"
+              className="mt-3 text-public-caption text-cyan underline underline-offset-[3px] transition-colors hover:text-cyan-soft"
             >
               {copy.models.retry}
             </button>
           </div>
         ) : models.length === 0 ? (
-          <div className="rounded-[10px] border border-dashed border-line-2 px-6 py-14 text-center text-sm text-muted">
+          <div className="rounded-[10px] border border-dashed border-line-2 px-6 py-14 text-center text-public-body text-muted">
             {copy.models.emptyCatalog}
           </div>
         ) : shown.length === 0 ? (
-          <div className="rounded-[10px] border border-dashed border-line-2 px-6 py-14 text-center text-sm text-muted">
+          <div className="rounded-[10px] border border-dashed border-line-2 px-6 py-14 text-center text-public-body text-muted">
             <p>{copy.models.emptyTitle}</p>
             <button
               type="button"
               onClick={resetFilters}
-              className="mt-3 text-[13px] text-cyan underline underline-offset-[3px] transition-colors hover:text-cyan-soft"
+              className="mt-3 text-public-caption text-cyan underline underline-offset-[3px] transition-colors hover:text-cyan-soft"
             >
               {copy.models.emptyAction}
             </button>
@@ -292,7 +292,7 @@ export function ModelExplorer({ copy }: { copy: Copy }) {
         )}
 
         {truncated ? (
-          <p className="mt-3 text-[12px] text-faint">
+          <p className="mt-3 text-public-caption text-faint">
             {copy.models.truncatedNote}{" "}
             <a className="text-cyan hover:text-cyan-soft" href="/pricing">
               {copy.models.pricingLink}
@@ -308,7 +308,7 @@ export function ModelExplorer({ copy }: { copy: Copy }) {
           aria-label={copy.models.compareBar.ariaLabel}
           className="fixed inset-x-4 bottom-5 z-[70] mx-auto flex max-w-[720px] flex-wrap items-center gap-3.5 rounded-[10px] border border-line-2 bg-panel/95 px-4 py-3 panel-shadow backdrop-blur-md sm:flex-nowrap"
         >
-          <p className="mr-auto text-[13px] text-ink-2">
+          <p className="mr-auto text-public-caption text-ink-2">
             {copy.models.compareBar.selected}{" "}
             <b className="font-mono font-medium text-ink">{selected.size}</b>{" "}
             {copy.models.compareBar.unit}
@@ -319,7 +319,7 @@ export function ModelExplorer({ copy }: { copy: Copy }) {
           <button
             type="button"
             onClick={clearCompare}
-            className="px-1 py-1 text-[12.5px] text-muted transition-colors hover:text-ink"
+            className="px-1 py-1 text-public-caption text-muted transition-colors hover:text-ink"
           >
             {copy.models.compareBar.clear}
           </button>
@@ -333,7 +333,7 @@ export function ModelExplorer({ copy }: { copy: Copy }) {
         className="m-auto max-h-[min(80vh,640px)] w-[calc(100%_-_2rem)] max-w-[760px] rounded-[10px] border border-line-2 bg-panel p-0 text-ink backdrop:bg-[var(--overlay)] backdrop:backdrop-blur-[3px]"
       >
         <div className="flex items-center justify-between border-b border-line px-5 py-4">
-          <h2 id={dialogTitleId} className="text-[15px] font-semibold">
+          <h2 id={dialogTitleId} className="text-public-body font-semibold">
             {copy.models.dialog.title}
           </h2>
           <button
@@ -346,13 +346,13 @@ export function ModelExplorer({ copy }: { copy: Copy }) {
           </button>
         </div>
         <div className="max-h-[58vh] overflow-auto px-5 pb-5 pt-1">
-          <table className="w-full border-collapse text-[13px]">
+          <table className="w-full border-collapse text-public-caption">
             <caption className="sr-only">{copy.models.dialog.title}</caption>
             <thead>
               <tr>
                 <th
                   scope="col"
-                  className="border-b border-line px-2 py-2.5 text-left text-[11.5px] font-medium text-faint"
+                  className="border-b border-line px-2 py-2.5 text-left text-public-caption font-medium text-faint"
                 >
                   {copy.models.dialog.indicator}
                 </th>
@@ -360,7 +360,7 @@ export function ModelExplorer({ copy }: { copy: Copy }) {
                   <th
                     key={model.model_id}
                     scope="col"
-                    className="border-b border-line px-2 py-2.5 text-left font-mono text-xs font-medium text-faint"
+                    className="border-b border-line px-2 py-2.5 text-left font-mono text-public-caption font-medium text-faint"
                   >
                     {model.display_name || model.model_id}
                   </th>
@@ -374,7 +374,7 @@ export function ModelExplorer({ copy }: { copy: Copy }) {
                   <tr key={row.label}>
                     <th
                       scope="row"
-                      className={`px-2 py-2.5 text-left text-[11.5px] font-medium text-faint ${
+                      className={`px-2 py-2.5 text-left text-public-caption font-medium text-faint ${
                         isLastRow ? "" : "border-b border-line"
                       }`}
                     >
@@ -383,7 +383,7 @@ export function ModelExplorer({ copy }: { copy: Copy }) {
                     {selectedModels.map((model) => (
                       <td
                         key={model.model_id}
-                        className={`px-2 py-2.5 text-ink-2 ${row.mono ? "font-mono text-xs" : "text-[13px]"} ${
+                        className={`px-2 py-2.5 text-ink-2 ${row.mono ? "font-mono text-public-caption" : "text-public-caption"} ${
                           isLastRow ? "" : "border-b border-line"
                         }`}
                       >

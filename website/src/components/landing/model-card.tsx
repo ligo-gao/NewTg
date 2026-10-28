@@ -58,21 +58,21 @@ export function ModelCard({ copy, model, meta, checked, onToggle }: ModelCardPro
               className="size-1.5 shrink-0 rounded-full"
               style={{ backgroundColor: vendorColor(model.vendor) }}
             />
-            <h3 className="truncate font-mono text-sm font-medium text-ink">{displayName}</h3>
+            <h3 className="truncate font-mono text-public-body font-medium text-ink">{displayName}</h3>
           </div>
-          <p className="mt-1 truncate text-[11.5px] text-faint">{model.vendor}</p>
+          <p className="mt-1 truncate text-public-caption text-faint">{model.vendor}</p>
         </div>
         {badge || schedule ? (
           <div className="flex shrink-0 flex-wrap justify-end gap-1">
             {badge ? (
-              <span className="rounded-[4px] border border-cyan/30 px-1.5 py-px font-mono text-[10.5px] text-cyan">
+              <span className="rounded-[4px] border border-cyan/30 px-1.5 py-px font-mono text-public-caption text-cyan">
                 {badge}
               </span>
             ) : null}
             {schedule ? (
               <span
                 data-testid="schedule-badge"
-                className="rounded-[4px] border border-cyan/30 px-1.5 py-px font-mono text-[10.5px] text-cyan"
+                className="rounded-[4px] border border-cyan/30 px-1.5 py-px font-mono text-public-caption text-cyan"
               >
                 {scheduleBadge}
               </span>
@@ -84,8 +84,8 @@ export function ModelCard({ copy, model, meta, checked, onToggle }: ModelCardPro
       <dl className="grid grid-cols-2 gap-x-3.5 gap-y-3 border-t border-line pt-3.5 xwide:gap-x-3 xwide:gap-y-2.5">
         {stats.map((stat) => (
           <div key={stat.label}>
-            <dt className="text-[10.5px] leading-snug text-faint">{stat.label}</dt>
-            <dd className="mt-0.5 truncate font-mono text-[12.5px] tabular-nums text-ink-2">
+            <dt className="text-public-caption text-faint">{stat.label}</dt>
+            <dd className="mt-0.5 truncate font-mono text-public-caption tabular-nums text-ink-2">
               {stat.value}
             </dd>
           </div>
@@ -93,7 +93,7 @@ export function ModelCard({ copy, model, meta, checked, onToggle }: ModelCardPro
       </dl>
 
       <div className="flex items-center justify-between gap-2.5">
-        <label className="inline-flex cursor-pointer select-none items-center gap-[7px] text-xs text-muted">
+        <label className="inline-flex cursor-pointer select-none items-center gap-[7px] text-public-caption text-muted">
           <span className="relative inline-flex size-3.5">
             <input
               type="checkbox"
@@ -120,7 +120,7 @@ export function ModelCard({ copy, model, meta, checked, onToggle }: ModelCardPro
           {copy.models.compare}
         </label>
         <a
-          className="text-xs text-cyan transition-colors hover:text-cyan-soft"
+          className="text-public-caption text-cyan transition-colors hover:text-cyan-soft"
           href={copy.models.callHref}
           aria-label={`${copy.models.call} ${displayName}`}
         >

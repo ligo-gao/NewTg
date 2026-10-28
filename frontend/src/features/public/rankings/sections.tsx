@@ -11,7 +11,7 @@ export function SectionPlaceholder({ titleKey }: { titleKey: string }) {
   const { t } = useI18n()
   return (
     <section>
-      <h2 className="text-section font-semibold leading-6 text-ink-1">
+      <h2 className="text-public-section text-ink-1">
         {t(titleKey)}
       </h2>
       <div
@@ -22,7 +22,7 @@ export function SectionPlaceholder({ titleKey }: { titleKey: string }) {
           <div key={index} className="h-8 rounded bg-surface-subtle" />
         ))}
       </div>
-      <p className="mt-2 text-meta text-ink-2">
+      <p className="mt-2 text-public-caption text-ink-2">
         {t('public.rankings.section.accumulating')}
       </p>
     </section>

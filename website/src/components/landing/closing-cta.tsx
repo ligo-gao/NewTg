@@ -11,13 +11,13 @@ export function ClosingCta({ copy }: { copy: Copy }) {
     >
       <div className={container}>
         <div className="max-w-[780px]">
-          <h2 className="text-[clamp(2.1rem,3.8vw,3.2rem)] leading-[1.12] font-bold tracking-[-0.035em] text-balance">
+          <h2 className="text-public-section tracking-[-0.01em] text-balance">
             {copy.closing.title}
           </h2>
-          <a href={site.startHref} className="btn btn-primary mt-6 h-12 px-[26px] text-[15px]">
+          <a href={site.startHref} className="btn btn-primary mt-6 h-12 px-[26px] text-public-body">
             {copy.closing.cta}
           </a>
-          <p className="mt-3.5 text-[12px] leading-[1.6] text-faint">{copy.closing.note}</p>
+          <p className="mt-3.5 text-public-caption text-faint">{copy.closing.note}</p>
         </div>
       </div>
     </section>

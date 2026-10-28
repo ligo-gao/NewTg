@@ -46,15 +46,21 @@ const SEVEN_LANGUAGES = ['en', 'zh-CN', 'zh-TW', 'fr', 'ru', 'ja', 'vi']
 const statusOk = () =>
   http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(publicStatus(SEVEN_LANGUAGES)))
 
-const HERO = 'Every model.One endpoint.Every call metered.'
+/** 标题只有两行：前两句一行，第三句一行（行间没有换行符，靠块级 span 断行）。 */
+const HERO_LINES = ['Every model. One endpoint.', 'Every call metered.']
 
 describe('AboutPage', () => {
-  it('opens with the three-line hero and its lede', async () => {
+  it('opens with the two-line hero and its lede', async () => {
     server.use(statusOk())
 
     const { getByRole, getByText } = await renderWithProviders(<AboutPage />, ['public'])
 
-    expect(getByRole('heading', { level: 1 }).textContent).toBe(HERO)
+    const heading = getByRole('heading', { level: 1 })
+    // 三句文案压成两行：多一行就是回归（标题不得超过两行）。
+    expect(heading.children).toHaveLength(2)
+    expect(
+      Array.from(heading.children).map((line) => line.textContent),
+    ).toEqual(HERO_LINES)
     expect(getByText(/NEWTG is an AI API gateway for developers/)).toBeTruthy()
   })
 
@@ -130,7 +136,9 @@ describe('AboutPage', () => {
       expect(getByTestId('status-phase').textContent).toBe('error')
     })
 
-    expect(getByRole('heading', { level: 1 }).textContent).toBe(HERO)
+    expect(getByRole('heading', { level: 1 }).textContent).toBe(
+      HERO_LINES.join(''),
+    )
     expect(getAllByRole('heading', { level: 3 })).toHaveLength(6)
 
     // 事实行只剩 endpoints + stages 两格：语言数那一格必须随探测失败消失。

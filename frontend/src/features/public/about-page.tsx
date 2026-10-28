@@ -31,9 +31,14 @@ export function AboutPage() {
   return (
     <article className="about-wrap">
       <section className="about-hero">
+        {/* 标题固定两行：前两句合成第一行，第三句独占第二行。整题不再出现
+            三行；空格只给西文，中日文的句号之间由 CSS 收起（见 home.css）。 */}
         <h1>
-          <span>{t('public.home.hero.line1')}</span>
-          <span>{t('public.home.hero.line2')}</span>
+          <span>
+            {t('public.home.hero.line1')}
+            <span className="about-hero-title-space">{' '}</span>
+            {t('public.home.hero.line2')}
+          </span>
           <span>{t('public.home.hero.line3')}</span>
         </h1>
         <p className="lede">{t('public.about.hero.lede')}</p>

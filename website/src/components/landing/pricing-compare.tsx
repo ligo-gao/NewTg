@@ -71,7 +71,7 @@ export function PricingCompareDialog({
       <span>
         {tokenValue(credits, model)}
         {showUSD ? (
-          <small className="mt-0.5 block font-mono text-[10px] text-faint">
+          <small className="mt-0.5 block font-mono text-public-caption text-faint">
             {usdValue(credits, false)}
           </small>
         ) : null}
@@ -85,7 +85,7 @@ export function PricingCompareDialog({
       <span>
         {requestValue(credits, model)}
         {showUSD ? (
-          <small className="mt-0.5 block font-mono text-[10px] text-faint">
+          <small className="mt-0.5 block font-mono text-public-caption text-faint">
             {usdValue(credits, true)}
           </small>
         ) : null}
@@ -174,14 +174,14 @@ export function PricingCompareDialog({
       className="m-auto max-h-[min(80vh,640px)] w-[calc(100%_-_2rem)] max-w-[860px] rounded-[10px] border border-line-2 bg-panel p-0 text-ink backdrop:bg-[var(--overlay)] backdrop:backdrop-blur-[3px]"
     >
       <div className="flex items-center justify-between gap-3 border-b border-line px-[18px] py-3.5">
-        <h2 id={titleId} className="text-[14px] font-semibold">
+        <h2 id={titleId} className="text-public-body font-semibold">
           {compareCopy.title}
         </h2>
         <div className="flex items-center gap-2.5">
           <button
             type="button"
             onClick={handleClear}
-            className="text-[12px] text-muted transition-colors hover:text-ink"
+            className="text-public-caption text-muted transition-colors hover:text-ink"
           >
             {compareCopy.clear}
           </button>
@@ -196,13 +196,13 @@ export function PricingCompareDialog({
         </div>
       </div>
       <div className="max-h-[64vh] overflow-auto px-[18px] pb-[18px] pt-1">
-        <table className="w-full border-collapse text-[12.5px]">
+        <table className="w-full border-collapse text-public-caption">
           <caption className="sr-only">{compareCopy.title}</caption>
           <thead>
             <tr>
               <th
                 scope="col"
-                className="border-b border-line px-1.5 py-2.5 text-left text-[11px] font-medium text-faint"
+                className="border-b border-line px-1.5 py-2.5 text-left text-public-caption font-medium text-faint"
               >
                 {compareCopy.indicator}
               </th>
@@ -210,7 +210,7 @@ export function PricingCompareDialog({
                 <th
                   key={model.model_id}
                   scope="col"
-                  className="border-b border-line px-1.5 py-2.5 text-left font-mono text-xs font-medium text-ink"
+                  className="border-b border-line px-1.5 py-2.5 text-left font-mono text-public-caption font-medium text-ink"
                 >
                   {model.display_name || model.model_id}
                 </th>
@@ -224,7 +224,7 @@ export function PricingCompareDialog({
                 <tr key={row.key}>
                   <th
                     scope="row"
-                    className={`px-1.5 py-2.5 text-left text-[11px] font-medium text-faint ${
+                    className={`px-1.5 py-2.5 text-left text-public-caption font-medium text-faint ${
                       isLast ? "" : "border-b border-line"
                     }`}
                   >
@@ -233,7 +233,7 @@ export function PricingCompareDialog({
                   {selected.map((model) => (
                     <td
                       key={model.model_id}
-                      className={`px-1.5 py-2.5 font-mono text-xs text-ink-2 ${
+                      className={`px-1.5 py-2.5 font-mono text-public-caption text-ink-2 ${
                         isLast ? "" : "border-b border-line"
                       }`}
                     >

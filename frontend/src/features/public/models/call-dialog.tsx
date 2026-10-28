@@ -98,20 +98,20 @@ export function CallDialog({
           <div className="flex items-center gap-2">
             <span
               aria-hidden="true"
-              className="inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-surface-subtle text-badge text-ink-2"
+              className="inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-surface-subtle text-public-caption text-ink-2"
             >
               1
             </span>
-            <h3 className="text-card-title text-ink-1">
+            <h3 className="text-public-body-strong text-ink-1">
               {t('public.models.call.step_create')}
             </h3>
           </div>
-          <p className="text-meta text-ink-2">
+          <p className="text-public-body text-ink-2">
             {t('public.models.call.step_create_body')}
           </p>
           <a
             href={isLoggedIn ? '/tokens' : '/sign-in?redirect=%2Ftokens'}
-            className="inline-flex w-fit items-center rounded-md border border-border-hairline px-3 py-1 text-meta font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="inline-flex w-fit items-center rounded-md border border-border-hairline px-3 py-1 text-public-caption font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
             {isLoggedIn
               ? t('public.models.call.open_tokens')
@@ -123,11 +123,11 @@ export function CallDialog({
           <div className="flex items-center gap-2">
             <span
               aria-hidden="true"
-              className="inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-surface-subtle text-badge text-ink-2"
+              className="inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-surface-subtle text-public-caption text-ink-2"
             >
               2
             </span>
-            <h3 className="text-card-title text-ink-1">
+            <h3 className="text-public-body-strong text-ink-1">
               {t('public.models.call.step_send')}
             </h3>
           </div>
@@ -152,7 +152,7 @@ export function CallDialog({
                     tabIndex={selected ? 0 : -1}
                     onClick={() => setTab(option.tab)}
                     className={[
-                      'rounded-md px-3 py-1 text-meta font-medium leading-5',
+                      'rounded-md px-3 py-1 text-public-caption font-medium',
                       selected
                         ? 'bg-surface-card text-ink-1 shadow-sm'
                         : 'text-ink-2 hover:text-ink-1',
@@ -167,7 +167,7 @@ export function CallDialog({
 
             <div className="flex items-center gap-3">
               {kind === 'chat' ? (
-                <label className="inline-flex items-center gap-2 text-meta text-ink-2">
+                <label className="inline-flex items-center gap-2 text-public-caption text-ink-2">
                   <input
                     type="checkbox"
                     checked={stream}
@@ -180,7 +180,7 @@ export function CallDialog({
               <button
                 type="button"
                 onClick={() => void copy(code)}
-                className="rounded-md border border-border-hairline px-3 py-1 text-meta font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                className="rounded-md border border-border-hairline px-3 py-1 text-public-caption font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
               >
                 {t('public.models.call.copy')}
               </button>
@@ -195,12 +195,12 @@ export function CallDialog({
           >
             <pre
               tabIndex={0}
-              className="overflow-x-auto p-4 text-meta leading-5 text-ink-1"
+              className="overflow-x-auto p-4 text-public-caption text-ink-1"
             >
               <code>{code}</code>
             </pre>
             {target.configured ? null : (
-              <p className="border-t border-warning-line bg-warning-bg px-4 py-2 text-meta text-warning">
+              <p className="border-t border-warning-line bg-warning-bg px-4 py-2 text-public-caption text-warning">
                 {t('public.models.call.server_unset')}
               </p>
             )}
@@ -211,24 +211,24 @@ export function CallDialog({
           <div className="flex items-center gap-2">
             <span
               aria-hidden="true"
-              className="inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-surface-subtle text-badge text-ink-2"
+              className="inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-surface-subtle text-public-caption text-ink-2"
             >
               3
             </span>
-            <h3 className="text-card-title text-ink-1">
+            <h3 className="text-public-body-strong text-ink-1">
               {t('public.models.call.step_response')}
             </h3>
           </div>
           <pre
             tabIndex={0}
-            className="overflow-x-auto whitespace-pre-wrap rounded-lg border border-border-default bg-surface-subtle p-4 font-mono text-meta leading-5 text-ink-1"
+            className="overflow-x-auto whitespace-pre-wrap rounded-lg border border-border-default bg-surface-subtle p-4 font-mono text-public-caption text-ink-1"
           >
             <code>{spec.response}</code>
           </pre>
         </li>
         </ol>
 
-        <p className="mt-4 text-meta text-ink-3">
+        <p className="mt-4 text-public-caption text-ink-3">
           {t('public.models.call.note')}
         </p>
       </div>

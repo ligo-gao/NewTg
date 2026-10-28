@@ -74,30 +74,30 @@ export function PricingCard({
         <div className="flex min-w-0 items-start gap-2">
           <span aria-hidden="true" className="mt-[7px] size-1.5 shrink-0 rounded-full bg-cyan" />
           <div className="min-w-0">
-            <h3 className="truncate font-mono text-sm font-medium text-ink">{displayName}</h3>
+            <h3 className="truncate font-mono text-public-body font-medium text-ink">{displayName}</h3>
             {model.display_name && model.display_name !== model.model_id ? (
-              <span className="mt-px block truncate font-mono text-[10.5px] text-faint">
+              <span className="mt-px block truncate font-mono text-public-caption text-faint">
                 {model.model_id}
               </span>
             ) : null}
-            <p className="mt-1 truncate text-[11.5px] text-faint">{model.vendor}</p>
+            <p className="mt-1 truncate text-public-caption text-faint">{model.vendor}</p>
           </div>
         </div>
         <div className="flex shrink-0 flex-wrap justify-end gap-1">
           {model.is_free ? (
-            <span className="rounded-[3px] border border-green/35 px-1 py-px text-[9.5px] text-green">
+            <span className="rounded-[3px] border border-green/35 px-1 py-px text-public-caption text-green">
               {freeLabel}
             </span>
           ) : null}
           {isPerRequest ? (
-            <span className="rounded-[3px] border border-cyan/30 px-1 py-px text-[9.5px] text-cyan">
+            <span className="rounded-[3px] border border-cyan/30 px-1 py-px text-public-caption text-cyan">
               {copy.pricingPage.filters.perRequest}
             </span>
           ) : null}
           {tags.map((tag) => (
             <span
               key={tag}
-              className="rounded-[3px] border border-line-2 px-1 py-px text-[9.5px] text-muted"
+              className="rounded-[3px] border border-line-2 px-1 py-px text-public-caption text-muted"
             >
               {tag}
             </span>
@@ -105,7 +105,7 @@ export function PricingCard({
         </div>
       </div>
 
-      <p className="text-[11px] text-faint">
+      <p className="text-public-caption text-faint">
         {copy.pricingPage.cards.context} {formatContext(model.context_length)} ·{" "}
         {copy.pricingPage.cards.maxOutput} {formatContext(model.max_output)}
       </p>
@@ -113,8 +113,8 @@ export function PricingCard({
       <dl className="grid grid-cols-2 gap-x-2 gap-y-2 border-t border-line pt-2.5">
         {priceCells.map((cell) => (
           <div key={cell.key}>
-            <dt className="text-[10px] leading-snug text-faint">{cell.label}</dt>
-            <dd className="mt-px truncate font-mono text-[12px] tabular-nums text-ink">
+            <dt className="text-public-caption text-faint">{cell.label}</dt>
+            <dd className="mt-px truncate font-mono text-public-caption tabular-nums text-ink">
               {cell.value}
             </dd>
           </div>
@@ -122,7 +122,7 @@ export function PricingCard({
       </dl>
 
       {isGrouped ? (
-        <p className="text-[10.5px] text-faint">
+        <p className="text-public-caption text-faint">
           {copy.pricingPage.detail.group}{" "}
           <span className="font-mono text-cyan">
             {isPerRequest
@@ -135,7 +135,7 @@ export function PricingCard({
       ) : null}
 
       <div className="mt-auto flex items-center justify-between gap-2.5">
-        <label className="inline-flex cursor-pointer select-none items-center gap-[7px] text-[11.5px] text-muted">
+        <label className="inline-flex cursor-pointer select-none items-center gap-[7px] text-public-caption text-muted">
           <span className="relative inline-flex size-3.5">
             <input
               type="checkbox"
@@ -165,7 +165,7 @@ export function PricingCard({
         <button
           type="button"
           onClick={() => onOpenDetail(model)}
-          className="text-[11.5px] text-cyan transition-colors hover:text-cyan-soft"
+          className="text-public-caption text-cyan transition-colors hover:text-cyan-soft"
         >
           {copy.pricingPage.cards.detail}
         </button>

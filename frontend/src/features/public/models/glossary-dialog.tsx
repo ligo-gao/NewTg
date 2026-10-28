@@ -37,7 +37,7 @@ export function GlossaryDialog({ open, onOpenChange }: GlossaryDialogProps) {
     >
       <ul className="grid gap-2.5">
         {GLOSSARY_KEYS.map((key) => (
-          <li key={key} className="text-meta leading-6 text-ink-2">
+          <li key={key} className="text-public-body text-ink-2">
             {t(key)}
           </li>
         ))}

@@ -115,8 +115,8 @@ function MethodCard({ copy, sample, active = false, hidden = false }: MethodCard
       data-active={active ? "true" : "false"}
     >
       <div className="code-card-head flex h-[46px] items-center justify-between gap-3 border-b border-line pl-4 pr-3.5">
-        <div className="flex min-w-0 items-center gap-2.5 overflow-hidden font-mono text-xs text-muted">
-          <span className="shrink-0 rounded border border-cyan/[0.28] bg-cyan/[0.07] px-1.5 py-px text-[11px] text-cyan">
+        <div className="flex min-w-0 items-center gap-2.5 overflow-hidden font-mono text-public-caption text-muted">
+          <span className="shrink-0 rounded border border-cyan/[0.28] bg-cyan/[0.07] px-1.5 py-px text-public-caption text-cyan">
             {sample.label}
           </span>
           <span className="hidden truncate min-[621px]:inline">
@@ -131,7 +131,7 @@ function MethodCard({ copy, sample, active = false, hidden = false }: MethodCard
           tabIndex={hidden ? -1 : undefined}
           aria-label={`${copy.hero.copyLabel} ${sample.label}`}
           data-copied={result === "copied" ? "true" : undefined}
-          className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[5px] border border-line-2 px-2.5 text-xs text-muted transition-colors hover:border-cyan-dim hover:text-ink data-[copied=true]:border-green/40 data-[copied=true]:text-green"
+          className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[5px] border border-line-2 px-2.5 text-public-caption text-muted transition-colors hover:border-cyan-dim hover:text-ink data-[copied=true]:border-green/40 data-[copied=true]:text-green"
         >
           <svg
             width="12"
@@ -152,7 +152,7 @@ function MethodCard({ copy, sample, active = false, hidden = false }: MethodCard
       <div className="code-block grow" dangerouslySetInnerHTML={{ __html: sample.html }} />
 
       <div className="code-card-trace border-t border-line px-4 pb-4 pt-3.5">
-        <div className="flex items-center gap-2 font-mono text-[11.5px] text-muted">
+        <div className="flex items-center gap-2 font-mono text-public-caption text-muted">
           <span
             className="live-dot h-1.5 w-1.5 shrink-0 rounded-full bg-green"
             aria-hidden="true"
@@ -163,8 +163,8 @@ function MethodCard({ copy, sample, active = false, hidden = false }: MethodCard
         <dl className="mt-3 grid grid-cols-3 gap-3 max-[620px]:grid-cols-1 max-[620px]:gap-1.5">
           {copy.hero.trace.map((entry) => (
             <div key={entry.label}>
-              <dt className="text-[11px] leading-[1.4] text-faint">{entry.label}</dt>
-              <dd className="mt-[3px] whitespace-nowrap font-mono text-xs text-ink-2">
+              <dt className="text-public-caption text-faint">{entry.label}</dt>
+              <dd className="mt-[3px] whitespace-nowrap font-mono text-public-caption text-ink-2">
                 {entry.value}
               </dd>
             </div>
@@ -189,38 +189,10 @@ export function CodeCard({ copy, samples }: CodeCardProps) {
   // 0..count; `count` is the cloned first card used for the seamless loop.
   const [index, setIndex] = useState(0);
   const [animate, setAnimate] = useState(false);
-  const [step, setStep] = useState(0);
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const [pageHidden, setPageHidden] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(false);
-  const trackRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const track = trackRef.current;
-    if (!track) {
-      return;
-    }
-
-    const measure = () => {
-      const [first, second] = Array.from(track.children) as HTMLElement[];
-      if (!first || !second) {
-        return;
-      }
-      setStep(second.offsetLeft - first.offsetLeft);
-    };
-
-    measure();
-    if (typeof ResizeObserver === "undefined") {
-      window.addEventListener("resize", measure);
-      return () => window.removeEventListener("resize", measure);
-    }
-
-    const observer = new ResizeObserver(measure);
-    observer.observe(track);
-    Array.from(track.children).forEach((child) => observer.observe(child));
-    return () => observer.disconnect();
-  }, []);
 
   useEffect(() => {
     const query = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -293,10 +265,11 @@ export function CodeCard({ copy, samples }: CodeCardProps) {
       }}
     >
       <div
-        ref={trackRef}
         className="code-track"
         data-animate={animate && !reducedMotion ? "true" : "false"}
-        style={{ transform: `translateX(-${index * step}px)` }}
+        // Each slide is exactly one track width plus one gap, so the offset is
+        // expressed in percentages and stays correct on every resize.
+        style={{ transform: `translateX(calc(${-index} * (100% + var(--code-track-gap))))` }}
         onTransitionEnd={handleTransitionEnd}
       >
         {samples.map((sample, cardIndex) => (

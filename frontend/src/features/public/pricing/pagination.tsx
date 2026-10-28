@@ -46,7 +46,7 @@ export function Pagination({
   return (
     <nav
       aria-label={t('public.pricing.pagination_label')}
-      className="flex flex-col items-center justify-center gap-3 py-4 text-meta text-ink-2 md:flex-row"
+      className="flex flex-col items-center justify-center gap-3 py-4 text-public-caption text-ink-2 md:flex-row"
     >
       <button
         type="button"
@@ -57,7 +57,7 @@ export function Pagination({
         {t('public.pricing.page_prev')}
       </button>
 
-      <span role="status" className="px-2 font-mono tabular-nums">
+      <span role="status" className="px-2 tabular-nums">
         {t('public.pricing.page_info', {
           page,
           total: formatTotal(total, locale),
@@ -70,7 +70,7 @@ export function Pagination({
           value={pageSize}
           onChange={(event) => onPageSizeChange(Number(event.target.value))}
           aria-label={t('public.pricing.page_size')}
-          className="h-9 rounded-lg border border-border-default bg-surface-card px-2 font-mono text-meta tabular-nums text-ink-1 focus:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="h-9 rounded-lg border border-border-default bg-surface-card px-2 text-public-caption tabular-nums text-ink-1 focus:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         >
           {options.map((option) => (
             <option key={option} value={option}>

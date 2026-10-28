@@ -84,22 +84,24 @@ export function ModelHero({ entries }: ModelHeroProps) {
   ]
 
   return (
-    <section className="flex flex-col gap-5">
+    <section className="flex flex-col">
       <div className="max-w-3xl">
         <h1 className="text-public-title text-ink-1">
           {t('public.models.title')}
         </h1>
-        <p className="mt-2 text-body text-ink-2">{t('public.models.intro')}</p>
+        <p className="mt-2 max-w-[40em] text-public-body text-ink-2">
+          {t('public.models.intro')}
+        </p>
       </div>
 
-      <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-border-hairline bg-border-hairline sm:grid-cols-4">
+      <dl className="public-page-body grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-border-hairline bg-border-hairline sm:grid-cols-4">
         {stats.map((stat) => (
           <div key={stat.label} className="bg-surface-card px-4 py-3">
-            <dt className="text-meta leading-5 text-ink-3">{stat.label}</dt>
-            <dd className="mt-0.5 text-stat tabular-nums text-ink-1">
+            <dt className="text-public-caption text-ink-3">{stat.label}</dt>
+            <dd className="mt-0.5 text-public-figure tabular-nums text-ink-1">
               {stat.value}
               {stat.note === undefined ? null : (
-                <span className="mt-0.5 block truncate text-meta font-normal leading-5 text-ink-3">
+                <span className="mt-0.5 block truncate text-public-caption font-normal text-ink-3">
                   {stat.note}
                 </span>
               )}

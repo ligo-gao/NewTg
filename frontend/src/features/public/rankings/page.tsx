@@ -201,7 +201,7 @@ function RateLimitBanner({ seconds }: { seconds: number }) {
   return (
     <div
       role="status"
-      className="mt-4 rounded-lg border border-warning-line bg-warning-bg px-4 py-3 text-body text-ink-1"
+      className="mt-4 rounded-lg border border-warning-line bg-warning-bg px-4 py-3 text-public-body text-ink-1"
     >
       {t('public.rankings.rate_limited', { seconds })}
     </div>
@@ -227,11 +227,11 @@ function RankingsError({
       role="alert"
       className="rounded-lg border border-border-hairline bg-surface-card px-4 py-8 text-center"
     >
-      <p className="text-body text-ink-1">{message}</p>
+      <p className="text-public-body text-ink-1">{message}</p>
       <button
         type="button"
         onClick={onRetry}
-        className="mt-4 rounded-lg border border-border-default px-4 py-2 text-body font-medium text-ink-1 hover:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+        className="mt-4 rounded-lg border border-border-default px-4 py-2 text-public-body font-medium text-ink-1 hover:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
       >
         {t('public.rankings.retry')}
       </button>
@@ -256,16 +256,16 @@ function ColdStartGuide({
       data-testid="rankings-cold-start"
       className="rounded-xl border border-border-hairline bg-surface-card p-6 md:p-8"
     >
-      <h2 className="text-section font-semibold text-ink-1">
+      <h2 className="text-public-section text-ink-1">
         {t('public.rankings.cold_start.title')}
       </h2>
-      <p className="mt-2 max-w-[640px] text-body leading-6 text-ink-2">
+      <p className="mt-2 max-w-[640px] text-public-body text-ink-2">
         {t('public.rankings.cold_start.body', { count: data.sample_threshold })}
       </p>
       <div className="mt-5 flex flex-wrap gap-3">
         <a
           href="/pricing"
-          className="inline-flex h-10 items-center rounded-lg bg-brand px-4 text-body font-medium text-on-brand hover:bg-brand-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="inline-flex h-10 items-center rounded-lg bg-brand px-4 text-public-body font-medium text-on-brand hover:bg-brand-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         >
           {t('public.rankings.cold_start.pricing')}
         </a>
@@ -274,7 +274,7 @@ function ColdStartGuide({
             href={docsUrl}
             target={/^https?:\/\//i.test(docsUrl) ? '_blank' : undefined}
             rel={/^https?:\/\//i.test(docsUrl) ? 'noopener noreferrer' : undefined}
-            className="inline-flex h-10 items-center rounded-lg border border-border-default px-4 text-body font-medium text-ink-1 hover:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="inline-flex h-10 items-center rounded-lg border border-border-default px-4 text-public-body font-medium text-ink-1 hover:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
             {t('public.rankings.cold_start.quick_start')}
           </a>
@@ -282,7 +282,7 @@ function ColdStartGuide({
         {signupEnabled && !isLoggedIn ? (
           <a
             href="/sign-up"
-            className="inline-flex h-10 items-center rounded-lg border border-border-default px-4 text-body font-medium text-ink-1 hover:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="inline-flex h-10 items-center rounded-lg border border-border-default px-4 text-public-body font-medium text-ink-1 hover:border-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
             {t('public.rankings.cold_start.sign_up')}
           </a>
@@ -580,7 +580,7 @@ export function RankingsPage({ period, onPeriodChange }: RankingsPageProps) {
       {stale ? (
         <div
           role="status"
-          className="mt-4 rounded-lg border border-warning-line bg-warning-bg px-4 py-3 text-body text-ink-1"
+          className="mt-4 rounded-lg border border-warning-line bg-warning-bg px-4 py-3 text-public-body text-ink-1"
         >
           {t('public.rankings.delayed')}
         </div>

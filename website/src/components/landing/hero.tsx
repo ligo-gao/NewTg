@@ -21,7 +21,7 @@ export async function Hero({ copy }: { copy: Copy }) {
     >
       <div className="mx-auto grid w-full max-w-[1520px] items-center gap-14 px-4 min-[621px]:px-6 min-[1081px]:grid-cols-[1.02fr_0.98fr] wide:px-10">
         <div className="min-w-0">
-          <h1 className="rise text-[clamp(2.5rem,4.6vw,4rem)] leading-[1.08] font-bold tracking-[-0.035em] text-balance">
+          <h1 className="rise text-public-display tracking-[-0.03em] text-balance">
             {copy.hero.titleLines.map((line, index) => (
               <Fragment key={line}>
                 {index > 0 ? <br /> : null}
@@ -30,7 +30,7 @@ export async function Hero({ copy }: { copy: Copy }) {
             ))}
           </h1>
 
-          <p className="rise rise-1 mt-[18px] max-w-[34em] text-base leading-[1.85] text-ink-2">
+          <p className="rise rise-1 mt-[18px] max-w-[34em] text-public-body text-ink-2">
             {copy.hero.subtitle}
           </p>
 
@@ -41,7 +41,7 @@ export async function Hero({ copy }: { copy: Copy }) {
             <HeroDocsCta copy={copy} />
           </div>
 
-          <div className="rise rise-3 mt-5 flex flex-wrap items-center gap-x-3.5 gap-y-2 text-[12.5px] text-faint">
+          <div className="rise rise-3 mt-5 flex flex-wrap items-center gap-x-3.5 gap-y-2 text-public-caption text-faint">
             <span>{copy.hero.compatLabel}</span>
             {copy.hero.compat.map((item, index) => (
               <Fragment key={item}>
@@ -50,7 +50,7 @@ export async function Hero({ copy }: { copy: Copy }) {
                     /
                   </span>
                 ) : null}
-                <code className="font-mono text-[11.5px] text-muted">{item}</code>
+                <code className="font-mono text-public-caption text-muted">{item}</code>
               </Fragment>
             ))}
           </div>

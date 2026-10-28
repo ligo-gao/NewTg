@@ -41,8 +41,8 @@ export function PricingTable({
 
   return (
     <div className="w-full overflow-x-auto rounded-xl border border-border-default bg-surface-card">
-      <table className="w-full min-w-[1080px] border-collapse text-meta leading-5">
-        <thead className="bg-surface-subtle text-left text-meta text-ink-2">
+      <table className="w-full min-w-[1080px] border-collapse text-public-caption">
+        <thead className="bg-surface-subtle text-left text-public-label text-ink-2">
           <tr className="h-9">
             <th scope="col" aria-sort={nameSort} className="sticky left-0 z-10 bg-surface-subtle px-4 py-2">
               {t('public.pricing.table_model')}
@@ -73,7 +73,7 @@ export function PricingTable({
                 <td className="sticky left-0 z-10 bg-surface-card px-4 py-2">
                   <a
                     href={`/pricing/${encodeURIComponent(card.model_id)}`}
-                    className="inline-flex max-w-[180px] items-center truncate font-medium text-brand hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                    className="inline-flex max-w-[180px] items-center truncate text-public-body-strong text-brand hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
                     title={card.display_name === '' ? card.model_id : card.display_name}
                   >
                     <HighlightedText
@@ -89,13 +89,13 @@ export function PricingTable({
                       : t('public.pricing.mode_token')}
                   </Tag>
                 </td>
-                <td className="px-4 py-2 text-right font-mono tabular-nums text-ink-1">
+                <td className="px-4 py-2 text-right tabular-nums text-ink-1">
                   {cellValue(card.prompt_price, tokenUnit, locale)}
                 </td>
-                <td className="px-4 py-2 text-right font-mono tabular-nums text-ink-1">
+                <td className="px-4 py-2 text-right tabular-nums text-ink-1">
                   {perRequest ? '—' : cellValue(card.completion_price, tokenUnit, locale)}
                 </td>
-                <td className="px-4 py-2 text-right font-mono tabular-nums text-ink-1">
+                <td className="px-4 py-2 text-right tabular-nums text-ink-1">
                   {perRequest
                     ? '—'
                     : `${cellValue(card.cache_read_price, tokenUnit, locale)} / ${cellValue(

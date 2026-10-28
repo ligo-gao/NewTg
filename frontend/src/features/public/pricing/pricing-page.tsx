@@ -283,7 +283,7 @@ export function PricingPage({ search, onSearchChange }: PricingPageProps) {
   }
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col">
       <Breadcrumb
         items={[
           { label: shellCopy(locale)['nav.home'], path: '/' },
@@ -291,11 +291,11 @@ export function PricingPage({ search, onSearchChange }: PricingPageProps) {
         ]}
       />
 
-      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-        <h1 className="text-public-title font-semibold leading-7 text-ink-1">
+      <div className="mt-3 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+        <h1 className="text-public-title text-ink-1">
           {t('public.pricing.title')}
         </h1>
-        <p aria-live="polite" className="text-meta leading-5 tabular-nums text-ink-2">
+        <p aria-live="polite" className="text-public-caption tabular-nums text-ink-2">
           {data === undefined || vendorCount === null
             ? '—'
             : t('public.pricing.header_stats', {
@@ -309,7 +309,7 @@ export function PricingPage({ search, onSearchChange }: PricingPageProps) {
         <div
           role="region"
           aria-label={t('public.pricing.config_banner_label')}
-          className="flex items-center justify-between gap-3 rounded-lg border border-warning-line bg-warning-bg px-3 py-2 text-meta text-warning"
+          className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-warning-line bg-warning-bg px-3 py-2 text-public-caption text-warning"
         >
           <span>{t('public.pricing.config_fallback')}</span>
           <button
@@ -323,7 +323,7 @@ export function PricingPage({ search, onSearchChange }: PricingPageProps) {
         </div>
       ) : null}
 
-      <div className="grid gap-6 xl:grid-cols-[264px_minmax(0,1fr)]">
+      <div className="public-page-body grid gap-6 xl:grid-cols-[264px_minmax(0,1fr)]">
         <aside className="hidden xl:block">
           <div className="sticky top-[72px] max-h-[calc(100vh-96px)] overflow-y-auto pr-2">
             {data === undefined ? (
@@ -360,7 +360,7 @@ export function PricingPage({ search, onSearchChange }: PricingPageProps) {
             data.facets.groups.length === 0 &&
             data.facets.endpoints.length === 0 &&
             data.facets.pricing_types.length === 0 ? (
-            <p className="text-meta leading-5 text-ink-3">
+            <p className="text-public-caption text-ink-3">
               {t('public.pricing.filters_unavailable')}
             </p>
           ) : null}
@@ -459,7 +459,7 @@ export function PricingPage({ search, onSearchChange }: PricingPageProps) {
               <button
                 type="button"
                 onClick={() => onSearchChange(clearedFilters(search))}
-                className="rounded px-1.5 text-meta text-brand hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                className="rounded px-1.5 text-public-caption text-brand hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
               >
                 {t('public.pricing.reset_all')}
               </button>
@@ -552,7 +552,7 @@ function FilterChip({
       type="button"
       aria-label={removeLabel}
       onClick={onRemove}
-      className="inline-flex h-6 items-center gap-1 rounded-full bg-surface-subtle px-2 text-badge leading-5 text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+      className="inline-flex h-6 items-center gap-1 rounded-full bg-surface-subtle px-2 text-public-caption text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
     >
       <span>{label}</span>
       <span aria-hidden="true" className="text-ink-3">×</span>

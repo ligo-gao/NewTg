@@ -116,7 +116,7 @@ function ModelIdentity({ entry }: { entry: ModelEntry }) {
     <div className="model-cell min-w-0">
       <div className="model-name-row group flex min-w-0 items-center gap-1.5">
         <span
-          className="model-name truncate text-meta font-semibold leading-5 text-ink-1"
+          className="model-name truncate text-public-body-strong text-ink-1"
           title={name}
         >
           {name}
@@ -145,13 +145,13 @@ function ModelIdentity({ entry }: { entry: ModelEntry }) {
         </button>
       </div>
       {showId ? (
-        <div className="model-id break-all font-mono text-badge text-ink-3">
+        <div className="model-id break-all font-mono text-public-caption text-ink-3">
           {entry.card.model_id}
         </div>
       ) : null}
       {profileMissing ? (
         <div className="model-chips mt-1 flex flex-wrap gap-1">
-          <span className="chip plain border border-border-default px-1.5 text-badge leading-4 text-ink-3">
+          <span className="chip plain border border-border-default px-1.5 text-public-label text-ink-3">
             {t('public.models.table.profile_missing')}
           </span>
         </div>
@@ -159,14 +159,14 @@ function ModelIdentity({ entry }: { entry: ModelEntry }) {
         <div className="model-chips mt-1 flex flex-wrap gap-1">
           {entry.card.capabilities.map((capability) => (
             <span
-              className="chip border border-border-default px-1.5 text-badge leading-4 text-ink-2"
+              className="chip border border-border-default px-1.5 text-public-label text-ink-2"
               key={capability}
             >
               {capability}
             </span>
           ))}
           {entry.card.vendor !== '' ? (
-            <span className="chip plain border border-border-default px-1.5 text-badge leading-4 text-ink-3">
+            <span className="chip plain border border-border-default px-1.5 text-public-label text-ink-3">
               {entry.card.vendor}
             </span>
           ) : null}
@@ -184,16 +184,16 @@ function LatencyCell({ perf }: { perf: ModelPerformance }) {
   const { t, locale } = useI18n()
   return (
     <div className="lat-cell">
-      <span className="metric block font-mono text-meta tabular-nums text-ink-1">
+      <span className="metric block text-public-caption tabular-nums text-ink-1">
         {formatMs(perf.p50, locale)}
       </span>
       {perf.p95 !== null ? (
-        <span className="metric-sub block font-mono text-badge tabular-nums text-ink-3">
+        <span className="metric-sub block text-public-caption tabular-nums text-ink-3">
           P95 {formatMs(perf.p95, locale)}
         </span>
       ) : null}
       {perf.measure === 'latency' ? (
-        <span className="metric-sub block text-badge text-ink-3">
+        <span className="metric-sub block text-public-caption text-ink-3">
           {t('public.models.source.measure.latency')}
         </span>
       ) : null}
@@ -211,16 +211,16 @@ function PriceCell({ entry }: { entry: ModelEntry }) {
   const { price } = entry
   if (price.perCall) {
     return (
-      <div className="price-cell flex flex-col justify-center font-mono text-meta tabular-nums text-ink-1">
+      <div className="price-cell flex flex-col justify-center text-public-caption tabular-nums text-ink-1">
         <span>{formatRmb(price.input, locale) ?? '—'}</span>
-        <span className="metric-sub block text-badge text-ink-3">
+        <span className="metric-sub block text-public-caption text-ink-3">
           {t('public.pricing.price_per_call')}
         </span>
       </div>
     )
   }
   return (
-    <div className="price-cell flex items-center gap-1 font-mono text-meta tabular-nums text-ink-1">
+    <div className="price-cell flex items-center gap-1 text-public-caption tabular-nums text-ink-1">
       <span>{formatRmb(price.input, locale) ?? '—'}</span>
       <span aria-hidden="true" className="text-ink-3">
         {' · '}
@@ -239,7 +239,7 @@ export function tpsText(tps: number | null): string {
 
 function TpsCell({ perf }: { perf: ModelPerformance }) {
   return (
-    <span className="tps-cell metric font-mono text-meta tabular-nums text-ink-1">
+    <span className="tps-cell metric text-public-caption tabular-nums text-ink-1">
       {tpsText(perf.tps)}
     </span>
   )
@@ -263,12 +263,12 @@ function EvidenceCell({ entry }: { entry: ModelEntry }) {
 
   return (
     <div className="evidence-cell">
-      <span className="block text-meta text-ink-1">{source}</span>
-      <span className="metric-sub block text-badge tabular-nums text-ink-3">
+      <span className="block text-public-caption text-ink-1">{source}</span>
+      <span className="metric-sub block text-public-caption tabular-nums text-ink-3">
         {success}
       </span>
       {perf.lowSample ? (
-        <span className="metric-sub block text-badge text-warning">
+        <span className="metric-sub block text-public-caption text-warning">
           {t('public.models.source.low_sample')}
         </span>
       ) : null}
@@ -362,10 +362,10 @@ function ContextCell({ entry }: { entry: ModelEntry }) {
       : formatContextTokens(card.max_output, locale)
   return (
     <>
-      <span className="ctx-num font-mono text-meta tabular-nums text-ink-1">
+      <span className="ctx-num text-public-caption tabular-nums text-ink-1">
         {context}
       </span>
-      <span className="metric-sub block font-mono text-badge tabular-nums text-ink-3">
+      <span className="metric-sub block text-public-caption tabular-nums text-ink-3">
         {t('public.models.detail.max_output')} {output}
       </span>
     </>
@@ -472,7 +472,7 @@ function ModelTable({
 
   return (
     <div className="table-wrap relative w-full overflow-x-auto rounded-xl border border-border-default bg-surface-card">
-      <table className="register w-full min-w-[1040px] border-collapse text-meta [table-layout:fixed]">
+      <table className="register w-full min-w-[1040px] border-collapse text-public-caption [table-layout:fixed]">
         <caption className="sr-only">{t('public.models.title')}</caption>
         {/*
           每一列都写了宽度：`table-layout: fixed` 只把余量按列宽比例摊给各列，
@@ -490,7 +490,7 @@ function ModelTable({
           <col className="c-ok w-[118px]" />
           <col className="c-exp w-[40px]" />
         </colgroup>
-        <thead className="bg-surface-subtle text-left text-badge text-ink-2">
+        <thead className="bg-surface-subtle text-left text-public-label text-ink-2">
           <tr>
             <th scope="col" className="px-2 py-2">
               <span className="sr-only">{t('public.models.table.compare')}</span>
@@ -599,20 +599,20 @@ function ModelCard({ entry, actions }: { entry: ModelEntry; actions: RowActions 
           onToggleCompare={actions.onToggleCompare}
         />
         <div className="card-id min-w-0 flex-1">
-          <div className="model-name truncate text-meta font-semibold leading-5 text-ink-1">
+          <div className="model-name truncate text-public-body-strong text-ink-1">
             {name}
           </div>
           {name === id ? null : (
-            <div className="model-id break-all font-mono text-badge text-ink-3">
+            <div className="model-id break-all font-mono text-public-caption text-ink-3">
               {id}
             </div>
           )}
           {profileParts.length > 0 ? (
-            <div className="card-subline text-badge leading-4 text-ink-3">
+            <div className="card-subline text-public-caption text-ink-3">
               {profileParts.join(' · ')}
             </div>
           ) : hasProfile ? null : (
-            <div className="card-subline text-badge leading-4 text-ink-3">
+            <div className="card-subline text-public-caption text-ink-3">
               {t('public.models.table.profile_missing')}
             </div>
           )}
@@ -623,7 +623,7 @@ function ModelCard({ entry, actions }: { entry: ModelEntry; actions: RowActions 
         <div className="card-chips flex flex-wrap gap-1">
           {card.capabilities.map((capability) => (
             <span
-              className="chip border border-border-default px-1.5 text-badge leading-4 text-ink-2"
+              className="chip border border-border-default px-1.5 text-public-label text-ink-2"
               key={capability}
             >
               {capability}
@@ -634,26 +634,26 @@ function ModelCard({ entry, actions }: { entry: ModelEntry; actions: RowActions 
 
       <div className="card-metrics grid grid-cols-3 gap-2.5 border-t border-border-hairline pt-3">
         <div className="card-metric">
-          <span className="card-metric-value block font-mono text-meta tabular-nums text-ink-1">
+          <span className="card-metric-value block text-public-caption tabular-nums text-ink-1">
             {formatMs(perf.p50, locale)}
           </span>
-          <span className="card-metric-label block text-badge text-ink-3">
+          <span className="card-metric-label block text-public-caption text-ink-3">
             {latencyLabel}
           </span>
         </div>
         <div className="card-metric">
-          <span className="card-metric-value block font-mono text-meta tabular-nums text-ink-1">
+          <span className="card-metric-value block text-public-caption tabular-nums text-ink-1">
             {tpsText(perf.tps)}
           </span>
-          <span className="card-metric-label block text-badge text-ink-3">
+          <span className="card-metric-label block text-public-caption text-ink-3">
             {t('public.models.detail.tps')}
           </span>
         </div>
         <div className="card-metric card-price">
-          <span className="card-metric-value block font-mono text-meta tabular-nums text-ink-1">
+          <span className="card-metric-value block text-public-caption tabular-nums text-ink-1">
             {formatRmb(entry.price.input, locale) ?? '—'}
           </span>
-          <span className="card-metric-label block text-badge text-ink-3">
+          <span className="card-metric-label block text-public-caption text-ink-3">
             {t(
               entry.price.perCall
                 ? 'public.pricing.price_per_call'
@@ -664,14 +664,14 @@ function ModelCard({ entry, actions }: { entry: ModelEntry; actions: RowActions 
       </div>
 
       <div className="card-foot flex items-center justify-between gap-2.5 border-t border-border-hairline pt-3">
-        <span className="card-output text-badge tabular-nums text-ink-3">
+        <span className="card-output text-public-caption tabular-nums text-ink-3">
           {output === null
             ? '—'
             : `${output} ${t('public.models.detail.max_output')}`}
         </span>
         <button
           type="button"
-          className="card-detail-btn inline-flex min-h-7 items-center justify-center border border-border-default px-2 text-badge leading-none text-ink-2 hover:border-brand hover:bg-brand-subtle hover:text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="card-detail-btn inline-flex min-h-7 items-center justify-center border border-border-default px-2 text-public-caption leading-none text-ink-2 hover:border-brand hover:bg-brand-subtle hover:text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           aria-expanded={expanded}
           aria-controls={detailIdOf(id)}
           aria-label={`${
@@ -725,7 +725,7 @@ function CompareTray({
       role="region"
       aria-label={t('public.models.compare.title')}
     >
-      <span className="text-badge tabular-nums text-ink-2">
+      <span className="text-public-caption tabular-nums text-ink-2">
         {t('public.models.register.compare_count', {
           count: compareIds.length,
           max: MAX_COMPARE,
@@ -734,7 +734,7 @@ function CompareTray({
       <button
         type="button"
         onClick={onOpenCompare}
-        className="inline-flex min-h-7 items-center border border-brand bg-brand-subtle px-2 text-badge text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+        className="inline-flex min-h-7 items-center border border-brand bg-brand-subtle px-2 text-public-caption text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
       >
         {t('public.models.register.open_compare')}
       </button>

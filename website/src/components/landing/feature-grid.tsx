@@ -79,10 +79,10 @@ export function FeatureGrid({ copy }: { copy: Copy }) {
     >
       <div className={container}>
         <div className="mb-[18px]">
-          <h2 className="text-[clamp(1.75rem,3vw,2.4rem)] leading-tight font-semibold tracking-[-0.03em]">
+          <h2 className="text-public-section tracking-[-0.01em]">
             {copy.features.title}
           </h2>
-          <p className="mt-2.5 max-w-[34em] text-[14.5px] text-muted">
+          <p className="mt-2.5 max-w-[34em] text-public-body text-muted">
             {copy.features.subtitle}
           </p>
         </div>
@@ -97,10 +97,10 @@ export function FeatureGrid({ copy }: { copy: Copy }) {
                 {icons[item.icon]}
               </div>
               <div>
-                <h3 className="text-base font-semibold tracking-[-0.01em]">
+                <h3 className="text-public-body-strong tracking-[-0.01em]">
                   {item.title}
                 </h3>
-                <p className="mt-2 text-[13.5px] leading-[1.75] text-muted text-balance">
+                <p className="mt-2 text-public-caption text-muted text-balance">
                   {item.description}
                 </p>
               </div>

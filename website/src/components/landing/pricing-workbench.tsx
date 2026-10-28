@@ -117,7 +117,7 @@ function writeUrlState(state: UrlState) {
 
 function chipClass(active: boolean): string {
   return [
-    "h-7 rounded-full border px-2.5 text-[11.5px] transition-colors",
+    "h-7 rounded-full border px-2.5 text-public-caption transition-colors",
     active
       ? "border-cyan/40 bg-cyan/5 text-cyan"
       : "border-line bg-transparent text-muted hover:border-line-2 hover:text-ink-2",
@@ -551,22 +551,22 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
   }
 
   const selectClass =
-    "h-[34px] w-full rounded-[5px] border border-line-2 bg-bg-2 px-2.5 text-[12.5px] text-ink";
+    "h-[34px] w-full rounded-[5px] border border-line-2 bg-bg-2 px-2.5 text-public-caption text-ink";
   const toolbarSelectClass =
-    "h-[34px] w-auto min-w-[120px] rounded-[5px] border border-line-2 bg-bg-2 px-2.5 text-[12.5px] text-ink";
+    "h-[34px] w-auto min-w-[120px] rounded-[5px] border border-line-2 bg-bg-2 px-2.5 text-public-caption text-ink";
   const thBase =
-    "whitespace-nowrap border-b border-line bg-panel-2 px-3 py-2.5 text-left text-[11px] font-medium text-faint";
+    "whitespace-nowrap border-b border-line bg-panel-2 px-3 py-2.5 text-left text-public-caption font-medium text-faint";
   const thNum = `${thBase} text-right`;
   const cellBase = "border-b border-line px-3 py-3 align-middle";
   const priceCellClass =
-    "font-mono text-[12.5px] text-ink [font-variant-numeric:tabular-nums]";
+    "font-mono text-public-caption text-ink [font-variant-numeric:tabular-nums]";
 
   function dashNode() {
-    return <span className="font-mono text-[12.5px] text-faint">{pageCopy.table.dash}</span>;
+    return <span className="font-mono text-public-caption text-faint">{pageCopy.table.dash}</span>;
   }
 
   function freeNode() {
-    return <span className="text-[12.5px] font-medium text-green">{pageCopy.table.free}</span>;
+    return <span className="text-public-caption font-medium text-green">{pageCopy.table.free}</span>;
   }
 
   function priceNode(price: string | null, model: PricingModel) {
@@ -576,7 +576,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
     return (
       <span className={priceCellClass}>
         <span className="block">{formatCredits(price, meta, unit)}</span>
-        {usd ? <span className="block text-[10px] text-faint">{usd}</span> : null}
+        {usd ? <span className="block text-public-caption text-faint">{usd}</span> : null}
       </span>
     );
   }
@@ -586,12 +586,12 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
     if (price === null) return dashNode();
     const usd = dual ? formatUSD(price, meta, "M") : "";
     return (
-      <span className={`font-mono text-[12.5px] ${tone ? "text-cyan" : "text-ink"}`}>
+      <span className={`font-mono text-public-caption ${tone ? "text-cyan" : "text-ink"}`}>
         <span className="block">
           {formatPerRequest(price, meta)}
-          <span className="text-[10px] text-faint"> {pageCopy.table.perCall}</span>
+          <span className="text-public-caption text-faint"> {pageCopy.table.perCall}</span>
         </span>
-        {usd ? <span className="block text-[10px] text-faint">{usd}</span> : null}
+        {usd ? <span className="block text-public-caption text-faint">{usd}</span> : null}
       </span>
     );
   }
@@ -604,16 +604,16 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
       return perRequestNode(prices.input, model, true);
     }
     return (
-      <span className="block leading-[1.55]">
+      <span className="block">
         <span className="flex items-baseline justify-end gap-1">
-          <span className="text-[9.5px] text-faint">{pageCopy.table.input}</span>
-          <span className="font-mono text-[12.5px] text-cyan">
+          <span className="text-public-caption text-faint">{pageCopy.table.input}</span>
+          <span className="font-mono text-public-caption text-cyan">
             {prices.input === null ? pageCopy.table.dash : formatCredits(prices.input, meta, unit)}
           </span>
         </span>
         <span className="flex items-baseline justify-end gap-1">
-          <span className="text-[9.5px] text-faint">{pageCopy.table.output}</span>
-          <span className="font-mono text-[12.5px] text-cyan">
+          <span className="text-public-caption text-faint">{pageCopy.table.output}</span>
+          <span className="font-mono text-public-caption text-cyan">
             {prices.output === null ? pageCopy.table.dash : formatCredits(prices.output, meta, unit)}
           </span>
         </span>
@@ -628,19 +628,19 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
     return (
       <span className="mt-1 flex flex-wrap gap-1">
         {model.is_free ? (
-          <span className="rounded-[3px] border border-green/30 px-1.5 text-[9.5px] leading-[1.5] text-green">
+          <span className="rounded-[3px] border border-green/30 px-1.5 text-public-caption text-green">
             {pageCopy.table.free}
           </span>
         ) : null}
         {model.mode === "per_request" ? (
-          <span className="rounded-[3px] border border-cyan/30 px-1.5 text-[9.5px] leading-[1.5] text-cyan">
+          <span className="rounded-[3px] border border-cyan/30 px-1.5 text-public-caption text-cyan">
             {pageCopy.modeRequest}
           </span>
         ) : null}
         {model.pricing_schedule ? (
           <span
             data-testid="schedule-badge"
-            className="rounded-[3px] border border-cyan/30 px-1.5 text-[9.5px] leading-[1.5] text-cyan"
+            className="rounded-[3px] border border-cyan/30 px-1.5 text-public-caption text-cyan"
           >
             {pageCopy.schedule.badge}
           </span>
@@ -648,7 +648,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
         {tags.slice(0, 3).map((tag) => (
           <span
             key={tag}
-            className="rounded-[3px] border border-line-2 px-1.5 text-[9.5px] leading-[1.5] text-muted"
+            className="rounded-[3px] border border-line-2 px-1.5 text-public-caption text-muted"
           >
             {tag}
           </span>
@@ -664,12 +664,15 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
 
   return (
     <div data-locale={locale}>
-      <section className="pb-[30px] pt-14">
+      {/* 页头文字块 → 筛选/卡片区固定 40px：与 SPA 的模型库、排行、关于
+          三页同一距离（frontend 用 --public-head-gap 表达），四个公开页
+          的标题到内容容器不再各写各的。 */}
+      <section className="pb-[40px] pt-14">
         <div className={CONTAINER}>
-          <h1 className="text-[clamp(2.1rem,3.8vw,3.2rem)] font-bold leading-[1.12] tracking-[-0.035em]">
+          <h1 className="text-public-title tracking-[-0.02em]">
             {pageCopy.title}
           </h1>
-          <p className="mt-3.5 max-w-[46em] text-[15px] leading-[1.8] text-ink-2">
+          <p className="mt-3.5 max-w-[40em] text-public-body text-ink-2">
             {pageCopy.subtitle}
           </p>
 
@@ -677,16 +680,16 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
             <div className="grid grid-cols-2 gap-px min-[621px]:grid-cols-4">
               {stats.map((stat) => (
                 <div key={stat.label} className="bg-panel px-5 py-3.5">
-                  <span className="block font-mono text-xl font-medium tracking-[-0.02em] text-ink">
+                  <span className="block font-mono text-public-subhead font-medium tracking-[-0.02em] text-ink">
                     {stat.value}
                   </span>
-                  <span className="mt-0.5 block text-[11.5px] text-muted">{stat.label}</span>
+                  <span className="mt-0.5 block text-public-caption text-muted">{stat.label}</span>
                 </div>
               ))}
             </div>
           </div>
 
-          <div className="mt-3.5 flex flex-wrap items-start gap-x-[18px] gap-y-2 text-[11.5px] text-faint">
+          <div className="mt-3.5 flex flex-wrap items-start gap-x-[18px] gap-y-2 text-public-caption text-faint">
             {pageCopy.legend[0] ? (
               <span className="inline-flex items-center gap-1.5">
                 <i aria-hidden="true" className="size-1 shrink-0 rounded-full bg-cyan-dim" />
@@ -735,19 +738,19 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
           } rounded-lg border border-line bg-panel p-[18px] min-[1101px]:sticky min-[1101px]:top-[84px] min-[1101px]:block`}
         >
           <div className="flex items-center justify-between gap-3 border-b border-line pb-3">
-            <h2 className="text-[13px] font-semibold text-ink">{pageCopy.filters.title}</h2>
+            <h2 className="text-public-caption font-semibold text-ink">{pageCopy.filters.title}</h2>
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={clearFilters}
-                className="text-xs text-cyan transition-colors hover:text-cyan-soft"
+                className="text-public-caption text-cyan transition-colors hover:text-cyan-soft"
               >
                 {pageCopy.filters.reset}
               </button>
               <button
                 type="button"
                 onClick={() => setMobileFiltersOpen(false)}
-                className="text-xs text-cyan transition-colors hover:text-cyan-soft min-[1101px]:hidden"
+                className="text-public-caption text-cyan transition-colors hover:text-cyan-soft min-[1101px]:hidden"
               >
                 {pageCopy.filters.close}
               </button>
@@ -755,12 +758,12 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
           </div>
 
           <div className="mt-3">
-            <h3 className="mb-2 text-[11px] font-medium text-faint">{pageCopy.filters.vendors}</h3>
+            <h3 className="mb-2 text-public-caption font-medium text-faint">{pageCopy.filters.vendors}</h3>
             <div>
               {(facets?.vendors ?? []).map((vendor) => (
                 <label
                   key={vendor.value}
-                  className="flex cursor-pointer items-center gap-2 py-[3px] text-[12.5px] text-ink-2 transition-colors hover:text-ink"
+                  className="flex cursor-pointer items-center gap-2 py-[3px] text-public-caption text-ink-2 transition-colors hover:text-ink"
                 >
                   <input
                     type="checkbox"
@@ -770,14 +773,14 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
                     className="size-3.5 accent-cyan"
                   />
                   <span>{vendor.label || vendor.value}</span>
-                  <span className="ml-auto font-mono text-[11px] text-faint">{vendor.count}</span>
+                  <span className="ml-auto font-mono text-public-caption text-faint">{vendor.count}</span>
                 </label>
               ))}
             </div>
           </div>
 
           <div className="mt-3.5 border-t border-line pt-3.5">
-            <h3 className="mb-2 text-[11px] font-medium text-faint">
+            <h3 className="mb-2 text-public-caption font-medium text-faint">
               {pageCopy.filters.capabilities}
             </h3>
             <div className="flex flex-wrap gap-1.5">
@@ -796,7 +799,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
           </div>
 
           <div className="mt-3.5 border-t border-line pt-3.5">
-            <h3 className="mb-2 text-[11px] font-medium text-faint">{pageCopy.filters.context}</h3>
+            <h3 className="mb-2 text-public-caption font-medium text-faint">{pageCopy.filters.context}</h3>
             <select
               aria-label={pageCopy.filters.context}
               value={query.contexts[0] ?? "all"}
@@ -813,7 +816,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
           </div>
 
           <div className="mt-3.5 border-t border-line pt-3.5">
-            <h3 className="mb-2 text-[11px] font-medium text-faint">{pageCopy.filters.endpoint}</h3>
+            <h3 className="mb-2 text-public-caption font-medium text-faint">{pageCopy.filters.endpoint}</h3>
             <select
               aria-label={pageCopy.filters.endpoint}
               value={query.endpoints[0] ?? "all"}
@@ -830,7 +833,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
           </div>
 
           <div className="mt-3.5 border-t border-line pt-3.5">
-            <h3 className="mb-2 text-[11px] font-medium text-faint">{pageCopy.filters.mode}</h3>
+            <h3 className="mb-2 text-public-caption font-medium text-faint">{pageCopy.filters.mode}</h3>
             <select
               aria-label={pageCopy.filters.mode}
               value={query.quotaType}
@@ -865,7 +868,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
                 value={searchDraft}
                 onChange={(event) => setSearchDraft(event.target.value)}
                 placeholder={pageCopy.toolbar.searchPlaceholder}
-                className="h-[38px] w-full rounded-md border border-line-2 bg-bg-2 pl-9 pr-3 text-[13px] text-ink transition-colors placeholder:text-faint focus:border-cyan-dim"
+                className="h-[38px] w-full rounded-md border border-line-2 bg-bg-2 pl-9 pr-3 text-public-caption text-ink transition-colors placeholder:text-faint focus:border-cyan-dim"
               />
             </div>
 
@@ -916,7 +919,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
                   type="button"
                   aria-pressed={unit === value}
                   onClick={() => changeUnit(value)}
-                  className={`h-[34px] border-l border-line-2 px-2.5 text-xs transition-colors first:border-l-0 ${
+                  className={`h-[34px] border-l border-line-2 px-2.5 text-public-caption transition-colors first:border-l-0 ${
                     unit === value
                       ? "bg-[var(--head-tint)] text-ink"
                       : "text-muted hover:text-ink-2"
@@ -931,7 +934,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
               type="button"
               aria-pressed={dual}
               onClick={toggleDual}
-              className={`h-[34px] rounded-md border px-2.5 text-[11.5px] transition-colors ${
+              className={`h-[34px] rounded-md border px-2.5 text-public-caption transition-colors ${
                 dual
                   ? "border-cyan/40 bg-cyan/5 text-cyan"
                   : "border-line text-muted hover:border-line-2 hover:text-ink-2"
@@ -952,7 +955,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
                   type="button"
                   aria-pressed={view === value}
                   onClick={() => changeView(value)}
-                  className={`h-8 border-l border-line-2 px-2.5 text-xs transition-colors first:border-l-0 ${
+                  className={`h-8 border-l border-line-2 px-2.5 text-public-caption transition-colors first:border-l-0 ${
                     view === value
                       ? "bg-[var(--head-tint)] text-ink"
                       : "text-muted hover:text-ink-2"
@@ -966,7 +969,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
 
           <div className="flex flex-wrap items-center justify-between gap-3 pb-2.5 pt-3.5">
             <div>
-              <p aria-live="polite" className="font-mono text-xs text-faint">
+              <p aria-live="polite" className="font-mono text-public-caption text-faint">
                 {pageCopy.states.results.replace("{count}", String(totalSafe))}
                 <span className="text-faint"> · </span>
                 {query.group === "default"
@@ -980,7 +983,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
                   {activeChips.map((chip) => (
                     <span
                       key={chip.key}
-                      className="inline-flex h-6 items-center gap-1.5 rounded border border-line px-2 text-[11px] text-muted"
+                      className="inline-flex h-6 items-center gap-1.5 rounded border border-line px-2 text-public-caption text-muted"
                     >
                       {chip.label}
                       <button
@@ -1002,13 +1005,13 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
             fetchError ? (
               <div
                 role="alert"
-                className="rounded-lg border border-dashed border-line-2 px-6 py-14 text-center text-sm text-muted"
+                className="rounded-lg border border-dashed border-line-2 px-6 py-14 text-center text-public-body text-muted"
               >
                 <p>{pageCopy.states.error}</p>
                 <button
                   type="button"
                   onClick={() => setReload((value) => value + 1)}
-                  className="mt-3 text-[13px] text-cyan underline underline-offset-[3px] transition-colors hover:text-cyan-soft"
+                  className="mt-3 text-public-caption text-cyan underline underline-offset-[3px] transition-colors hover:text-cyan-soft"
                 >
                   {pageCopy.states.retry}
                 </button>
@@ -1023,7 +1026,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
               {fetchError ? (
                 <div
                   role="alert"
-                  className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-panel px-4 py-2.5 text-[12.5px] text-muted"
+                  className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-panel px-4 py-2.5 text-public-caption text-muted"
                 >
                   <span>{pageCopy.states.error}</span>
                   <button
@@ -1037,12 +1040,12 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
               ) : null}
 
               {items.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-line-2 px-6 py-16 text-center text-[13px] text-muted">
+                <div className="rounded-lg border border-dashed border-line-2 px-6 py-16 text-center text-public-caption text-muted">
                   <p>{pageCopy.states.empty}</p>
                   <button
                     type="button"
                     onClick={clearFilters}
-                    className="mt-3 text-[13px] text-cyan underline underline-offset-[3px] transition-colors hover:text-cyan-soft"
+                    className="mt-3 text-public-caption text-cyan underline underline-offset-[3px] transition-colors hover:text-cyan-soft"
                   >
                     {pageCopy.states.emptyAction}
                   </button>
@@ -1067,7 +1070,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
                 </div>
               ) : (
                 <div className="overflow-x-auto rounded-lg border border-line bg-panel">
-                  <table className="w-full min-w-[1060px] border-collapse text-[13px]">
+                  <table className="w-full min-w-[1060px] border-collapse text-public-caption">
                     <caption className="sr-only">{pageCopy.title}</caption>
                     <thead>
                       <tr>
@@ -1103,7 +1106,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
                         <th scope="col" className={thNum}>
                           {pageCopy.table.group}
                           {query.group !== "default" && selectedGroupRatio !== null ? (
-                            <span className="ml-1 inline-flex h-[18px] items-center rounded-[3px] border border-cyan/30 px-1.5 align-middle text-[10px] text-cyan">
+                            <span className="ml-1 inline-flex h-[18px] items-center rounded-[3px] border border-cyan/30 px-1.5 align-middle text-public-caption text-cyan">
                               {formatRatio(selectedGroupRatio)}
                             </span>
                           ) : null}
@@ -1133,21 +1136,21 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
                                     className="mt-[7px] size-[7px] flex-none rounded-full bg-cyan-dim"
                                   />
                                   <span className="min-w-0">
-                                    <span className="block text-[13px] font-semibold leading-[1.35] text-ink">
+                                    <span className="block text-public-caption font-semibold leading-[1.35] text-ink">
                                       {model.display_name || model.model_id}
                                     </span>
-                                    <span className="mt-px block font-mono text-[10.5px] text-faint">
+                                    <span className="mt-px block font-mono text-public-caption text-faint">
                                       {model.model_id}
                                     </span>
                                     {modelBadges(model)}
                                   </span>
                                 </span>
                               </td>
-                              <td className={`${cellBase} whitespace-nowrap text-[12.5px] text-ink-2`}>
+                              <td className={`${cellBase} whitespace-nowrap text-public-caption text-ink-2`}>
                                 {model.vendor}
                               </td>
                               <td
-                                className={`${cellBase} whitespace-nowrap text-right font-mono text-xs text-ink-2`}
+                                className={`${cellBase} whitespace-nowrap text-right font-mono text-public-caption text-ink-2`}
                               >
                                 {formatContext(model.context_length)}
                               </td>
@@ -1181,7 +1184,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
                               </td>
                               <td className={`${cellBase} whitespace-nowrap text-right`}>
                                 <span className="inline-flex items-center gap-1.5">
-                                  <label className="inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-faint">
+                                  <label className="inline-flex cursor-pointer items-center gap-1.5 text-public-caption text-faint">
                                     <input
                                       type="checkbox"
                                       checked={isSelected}
@@ -1249,7 +1252,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
               )}
 
               <div className="flex flex-wrap items-center justify-between gap-3 pt-4">
-                <div className="flex flex-wrap items-center gap-2 text-[11.5px] text-faint">
+                <div className="flex flex-wrap items-center gap-2 text-public-caption text-faint">
                   <span>{rangeText}</span>
                   <span aria-hidden="true">·</span>
                   <label className="inline-flex items-center gap-1.5">
@@ -1257,7 +1260,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
                     <select
                       value={query.pageSize}
                       onChange={(event) => setPageSize(Number(event.target.value))}
-                      className="h-7 rounded border border-line-2 bg-bg-2 px-1.5 text-xs text-ink"
+                      className="h-7 rounded border border-line-2 bg-bg-2 px-1.5 text-public-caption text-ink"
                     >
                       {PAGE_SIZES.map((size) => (
                         <option key={size} value={size}>
@@ -1272,13 +1275,13 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
                     type="button"
                     disabled={query.page <= 1}
                     onClick={() => goToPage(query.page - 1)}
-                    className="h-[30px] rounded-[5px] border border-line-2 px-2 text-xs text-muted transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+                    className="h-[30px] rounded-[5px] border border-line-2 px-2 text-public-caption text-muted transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {pageCopy.states.previous}
                   </button>
                   {pageNumbers.map((entry, index) =>
                     entry === "gap" ? (
-                      <span key={`gap-${index}`} className="px-1 text-xs text-faint">
+                      <span key={`gap-${index}`} className="px-1 text-public-caption text-faint">
                         …
                       </span>
                     ) : (
@@ -1287,7 +1290,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
                         type="button"
                         aria-current={entry === query.page ? "page" : undefined}
                         onClick={() => goToPage(entry)}
-                        className={`h-[30px] min-w-[30px] rounded-[5px] border px-2 font-mono text-xs transition-colors ${
+                        className={`h-[30px] min-w-[30px] rounded-[5px] border px-2 font-mono text-public-caption transition-colors ${
                           entry === query.page
                             ? "border-cyan-dim text-cyan"
                             : "border-line-2 text-muted hover:text-ink"
@@ -1301,14 +1304,14 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
                     type="button"
                     disabled={query.page >= pageCount}
                     onClick={() => goToPage(query.page + 1)}
-                    className="h-[30px] rounded-[5px] border border-line-2 px-2 text-xs text-muted transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+                    className="h-[30px] rounded-[5px] border border-line-2 px-2 text-public-caption text-muted transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {pageCopy.states.next}
                   </button>
                 </div>
               </div>
 
-              <p className="mt-4 text-[11.5px] text-faint">{pageCopy.footnote}</p>
+              <p className="mt-4 text-public-caption text-faint">{pageCopy.footnote}</p>
             </>
           )}
         </section>
@@ -1320,7 +1323,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
           aria-label={pageCopy.compare.title}
           className="fixed bottom-5 left-1/2 z-[70] flex w-[min(760px,calc(100%-32px))] -translate-x-1/2 flex-wrap items-center gap-3 rounded-[9px] border border-line-2 bg-panel px-[18px] py-[11px] panel-shadow"
         >
-          <p className="mr-auto text-[12.5px] text-ink-2">
+          <p className="mr-auto text-public-caption text-ink-2">
             {pageCopy.compare.selected}{" "}
             <b className="font-mono font-medium text-ink">{selected.size}</b>{" "}
             {pageCopy.compare.unit}
@@ -1339,7 +1342,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
           <button
             type="button"
             onClick={clearCompare}
-            className="text-xs text-muted transition-colors hover:text-ink"
+            className="text-public-caption text-muted transition-colors hover:text-ink"
           >
             {pageCopy.compare.clear}
           </button>
@@ -1372,7 +1375,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
             className="fixed inset-y-0 right-0 z-[90] w-[min(720px,100%)] overflow-y-auto border-l border-line-2 bg-bg"
           >
             <div className="sticky top-0 z-[2] flex items-center justify-between gap-3 border-b border-line bg-bg px-5 py-3.5">
-              <h2 className="text-sm font-semibold text-ink">
+              <h2 className="text-public-body font-semibold text-ink">
                 {drawerModel.display_name || drawerModel.model_id} · {pageCopy.detail.register}
               </h2>
               <button

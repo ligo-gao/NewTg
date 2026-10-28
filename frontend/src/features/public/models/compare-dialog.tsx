@@ -46,7 +46,7 @@ function RowLabel({ children }: { children: ReactNode }) {
   return (
     <th
       scope="row"
-      className="w-32 shrink-0 border-t border-border-hairline py-2 pr-3 text-left align-top text-badge font-medium text-ink-3"
+      className="w-32 shrink-0 border-t border-border-hairline py-2 pr-3 text-left align-top text-public-caption font-medium text-ink-3"
     >
       {children}
     </th>
@@ -55,7 +55,7 @@ function RowLabel({ children }: { children: ReactNode }) {
 
 function Cell({ children }: { children: ReactNode }) {
   return (
-    <td className="border-t border-border-hairline px-3 py-2 align-top text-meta tabular-nums text-ink-1">
+    <td className="border-t border-border-hairline px-3 py-2 align-top text-public-body tabular-nums text-ink-1">
       {children}
     </td>
   )
@@ -78,8 +78,8 @@ export function CompareDialog({
 
   const perCallCell = (value: number | null): ReactNode => (
     <>
-      <span className="font-mono">{formatRmb(value, locale) ?? '—'}</span>
-      <span className="block text-badge text-ink-3">
+      <span>{formatRmb(value, locale) ?? '—'}</span>
+      <span className="block text-public-caption text-ink-3">
         {t('public.pricing.price_per_call')}
       </span>
     </>
@@ -96,7 +96,7 @@ export function CompareDialog({
           <button
             type="button"
             onClick={onClear}
-            className="rounded-md border border-border-default px-3 py-1 text-meta font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className="rounded-md border border-border-default px-3 py-1 text-public-caption font-medium text-ink-1 hover:bg-surface-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           >
             {t('public.models.compare.clear')}
           </button>
@@ -104,10 +104,10 @@ export function CompareDialog({
       }
     >
       {entries.length === 0 ? (
-        <p className="text-body text-ink-2">{t('public.models.compare.empty')}</p>
+        <p className="text-public-body text-ink-2">{t('public.models.compare.empty')}</p>
       ) : (
         <>
-          <p className="mb-2 text-badge text-ink-3 md:hidden">
+          <p className="mb-2 text-public-caption text-ink-3 md:hidden">
             {t('public.models.compare.scroll_hint')}
           </p>
           <div className="overflow-x-auto">
@@ -130,10 +130,10 @@ export function CompareDialog({
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
-                          <div className="text-meta font-semibold text-ink-1">
+                          <div className="text-public-body-strong text-ink-1">
                             {displayNameOf(entry)}
                           </div>
-                          <div className="break-all font-mono text-badge font-normal text-ink-3">
+                          <div className="break-all font-mono text-public-caption font-normal text-ink-3">
                             {entry.card.model_id}
                           </div>
                         </div>
@@ -190,8 +190,8 @@ export function CompareDialog({
                         : formatContextTokens(card.max_output, locale)
                     return (
                       <Cell key={card.model_id}>
-                        <span className="font-mono">{context}</span>
-                        <span className="block text-badge text-ink-3">
+                        <span>{context}</span>
+                        <span className="block text-public-caption text-ink-3">
                           {t('public.models.detail.max_output')} {output}
                         </span>
                       </Cell>
@@ -203,7 +203,7 @@ export function CompareDialog({
                     <RowLabel>{t('public.pricing.price_per_call')}</RowLabel>
                     {entries.map((entry) => (
                       <Cell key={entry.card.model_id}>
-                        <span className="font-mono">
+                        <span>
                           {formatRmb(entry.price.input, locale) ?? '—'}
                         </span>
                       </Cell>
@@ -224,7 +224,7 @@ export function CompareDialog({
                           {entry.price.perCall ? (
                             perCallCell(entry.price.input)
                           ) : (
-                            <span className="font-mono">
+                            <span>
                               {formatRmb(entry.price.input, locale) ?? '—'}
                             </span>
                           )}
@@ -241,7 +241,7 @@ export function CompareDialog({
                       </RowLabel>
                       {entries.map((entry) => (
                         <Cell key={entry.card.model_id}>
-                          <span className="font-mono">
+                          <span>
                             {entry.price.perCall
                               ? '—'
                               : (formatRmb(entry.price.output, locale) ?? '—')}
@@ -255,16 +255,16 @@ export function CompareDialog({
                   <RowLabel>{t('public.models.table.latency')}</RowLabel>
                   {entries.map((entry) => (
                     <Cell key={entry.card.model_id}>
-                      <span className="font-mono">
+                      <span>
                         {formatMs(entry.perf.p50, locale)}
                       </span>
                       {entry.perf.p95 === null ? null : (
-                        <span className="block font-mono text-badge text-ink-3">
+                        <span className="block text-public-caption text-ink-3">
                           P95 {formatMs(entry.perf.p95, locale)}
                         </span>
                       )}
                       {entry.perf.measure === 'latency' ? (
-                        <span className="block text-badge text-ink-3">
+                        <span className="block text-public-caption text-ink-3">
                           {t('public.models.source.measure.latency')}
                         </span>
                       ) : null}

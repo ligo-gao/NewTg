@@ -113,14 +113,14 @@ function tpsValue(tps: number | null): string {
 function Kv({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-3">
-      <dt className="text-badge text-ink-3">{label}</dt>
-      <dd className="font-mono text-meta tabular-nums text-ink-1">{value}</dd>
+      <dt className="text-public-caption text-ink-3">{label}</dt>
+      <dd className="text-public-body tabular-nums text-ink-1">{value}</dd>
     </div>
   )
 }
 
 const ACTION_CLASS =
-  'inline-flex min-h-7 items-center justify-center border border-border-default px-2 text-badge leading-none text-ink-2 hover:border-brand hover:bg-brand-subtle hover:text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border-default disabled:hover:bg-transparent disabled:hover:text-ink-2'
+  'inline-flex min-h-7 items-center justify-center border border-border-default px-2 text-public-caption leading-none text-ink-2 hover:border-brand hover:bg-brand-subtle hover:text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border-default disabled:hover:bg-transparent disabled:hover:text-ink-2'
 
 export function ModelDetail({
   entry,
@@ -240,7 +240,7 @@ export function ModelDetail({
       className="grid gap-5 px-4 py-4 md:grid-cols-2 xl:grid-cols-4"
     >
       <div className="flex min-w-0 flex-col gap-1">
-        <h4 className="text-badge font-medium text-ink-3">
+        <h4 className="text-public-caption font-medium text-ink-3">
           {t('public.models.detail.window', { window: windowLabel })}
         </h4>
         {perf.hasData ? (
@@ -264,20 +264,20 @@ export function ModelDetail({
               />
             </dl>
             {perf.source === 'test' && perf.samples > 0 ? (
-              <p className="text-badge leading-4 text-ink-3">
+              <p className="text-public-caption text-ink-3">
                 {t('public.models.detail.probe_note', { count })}
               </p>
             ) : null}
           </>
         ) : (
-          <p className="text-meta text-ink-2">
+          <p className="text-public-caption text-ink-2">
             {t('public.models.detail.no_samples')}
           </p>
         )}
       </div>
 
       <div className="flex min-w-0 flex-col gap-1">
-        <h4 className="text-badge font-medium text-ink-3">
+        <h4 className="text-public-caption font-medium text-ink-3">
           {t('public.models.detail.block_price')}
         </h4>
         <dl className="grid gap-1">
@@ -314,21 +314,21 @@ export function ModelDetail({
           />
         </dl>
         {entry.price.perCall ? null : (
-          <p className="text-badge leading-4 text-ink-3">
+          <p className="text-public-caption text-ink-3">
             {t('public.models.detail.price_note')}
           </p>
         )}
       </div>
 
       <div className="flex min-w-0 flex-col gap-1">
-        <h4 className="text-badge font-medium text-ink-3">
+        <h4 className="text-public-caption font-medium text-ink-3">
           {t('public.models.detail.block_access')}
         </h4>
-        <pre className="overflow-x-auto border border-border-default bg-surface-subtle p-2 text-badge leading-5 text-ink-1">
+        <pre className="overflow-x-auto border border-border-default bg-surface-subtle p-2 text-public-caption text-ink-1">
           <code>{snippet}</code>
         </pre>
         {target.configured ? null : (
-          <p className="text-badge leading-4 text-warning">
+          <p className="text-public-caption text-warning">
             {t('public.models.call.server_unset')}
           </p>
         )}
@@ -365,23 +365,23 @@ export function ModelDetail({
       </div>
 
       <div className="flex min-w-0 flex-col gap-1">
-        <h4 className="text-badge font-medium text-ink-3">
+        <h4 className="text-public-caption font-medium text-ink-3">
           {t('public.models.detail.block_notes')}
         </h4>
-        <p className="text-meta leading-5 text-ink-2">
+        <p className="text-public-caption text-ink-2">
           {t('public.models.detail.notes_window', { window: windowLabel })}
         </p>
         {profileLine === '' ? null : (
-          <p className="text-meta leading-5 text-ink-2">{profileLine}</p>
+          <p className="text-public-caption text-ink-2">{profileLine}</p>
         )}
 
-        <p className="mt-1 text-meta leading-5 text-ink-2">
+        <p className="mt-1 text-public-caption text-ink-2">
           {card.description === '' ? '—' : card.description}
         </p>
 
         {detail.isPending ? (
           <p
-            className="text-meta text-ink-3"
+            className="text-public-caption text-ink-3"
             role="status"
             aria-label={t('public.models.detail.loading')}
           >
@@ -391,13 +391,13 @@ export function ModelDetail({
 
         {detail.isError ? (
           <div className="grid gap-1">
-            <p className="text-meta text-ink-2" role="alert">
+            <p className="text-public-caption text-ink-2" role="alert">
               {t('public.models.detail.failed')}
             </p>
             <button
               type="button"
               onClick={() => void detail.refetch()}
-              className="w-fit border border-border-default px-2 text-badge text-ink-2 hover:border-brand hover:text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="w-fit border border-border-default px-2 text-public-caption text-ink-2 hover:border-brand hover:text-brand focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             >
               {t('public.models.detail.retry')}
             </button>

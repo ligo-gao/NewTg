@@ -159,7 +159,7 @@ export function CustomHomeHtml({ html }: CustomHomeHtmlProps) {
     >
       <div
         ref={ref}
-        className="text-body leading-[22px] text-ink-2 [&_a]:text-brand [&_a:hover]:underline [&_h1]:text-public-title [&_h1]:font-semibold [&_h1]:text-ink-1 [&_p]:mt-3 [&_strong]:font-semibold [&_strong]:text-ink-1"
+        className="max-w-[40em] text-public-body text-ink-2 [&_a]:text-brand [&_a:hover]:underline [&_h1]:text-public-title [&_h1]:font-semibold [&_h1]:text-ink-1 [&_p]:mt-3 [&_strong]:font-semibold [&_strong]:text-ink-1"
         dangerouslySetInnerHTML={{ __html: safe }}
       />
     </section>

@@ -53,7 +53,7 @@ function FacetGroup({
   const id = useId()
   return (
     <div role="group" aria-labelledby={id} className="border-t border-border-hairline py-3 first:border-t-0 first:pt-0">
-      <h3 id={id} className="mb-1 text-meta font-semibold leading-5 text-ink-1">
+      <h3 id={id} className="mb-1 text-public-label text-ink-1">
         {title}
       </h3>
       {children}
@@ -84,7 +84,7 @@ function OptionRow({
     <label
       aria-disabled={disabled ? true : undefined}
       className={[
-        'flex h-8 cursor-pointer items-center gap-2 rounded-md px-1 text-meta leading-5',
+        'flex h-8 cursor-pointer items-center gap-2 rounded-md px-1 text-public-caption',
         checked ? 'bg-brand-subtle text-ink-1' : 'text-ink-1 hover:bg-surface-hover',
         disabled ? 'cursor-not-allowed text-ink-3 opacity-60' : '',
       ]
@@ -163,7 +163,7 @@ export function PricingFacetPanel({ facets, value, onChange }: PricingFacetPanel
   const quotaName = useId()
 
   if (facets === undefined) {
-    return <p className="text-meta leading-5 text-ink-3">{t('public.pricing.filters_unavailable')}</p>
+    return <p className="text-public-caption text-ink-3">{t('public.pricing.filters_unavailable')}</p>
   }
 
   const vendors = facets.vendors
@@ -223,16 +223,16 @@ export function PricingFacetPanel({ facets, value, onChange }: PricingFacetPanel
   const hasFilters = activeFilterCount(value) > 0
 
   return (
-    <div className="text-meta">
+    <div className="text-public-caption">
       <div className="mb-2 flex items-center justify-between">
-        <h2 className="text-card-title font-semibold leading-6 text-ink-1">
+        <h2 className="text-public-body-strong text-ink-1">
           {t('public.pricing.filters')}
         </h2>
         <button
           type="button"
           onClick={() => onChange(clearedFilters(value))}
           disabled={!hasFilters}
-          className="rounded px-1 text-meta text-brand hover:underline disabled:cursor-not-allowed disabled:text-ink-3 disabled:no-underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="rounded px-1 text-public-caption text-brand hover:underline disabled:cursor-not-allowed disabled:text-ink-3 disabled:no-underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         >
           {t('public.pricing.reset')}
         </button>
@@ -247,7 +247,7 @@ export function PricingFacetPanel({ facets, value, onChange }: PricingFacetPanel
               type="button"
               onClick={() => onChange({ ...value, p: 1, vendor: '' })}
               disabled={selectedVendors.length === 0}
-              className="mb-1 rounded px-1 text-meta text-brand hover:underline disabled:cursor-not-allowed disabled:text-ink-3 disabled:no-underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="mb-1 rounded px-1 text-public-caption text-brand hover:underline disabled:cursor-not-allowed disabled:text-ink-3 disabled:no-underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             >
               {t('public.pricing.all_vendors')}
             </button>
@@ -270,7 +270,7 @@ export function PricingFacetPanel({ facets, value, onChange }: PricingFacetPanel
                 type="button"
                 aria-expanded={false}
                 onClick={() => setShowAllVendors(true)}
-                className="px-1 text-meta text-brand hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                className="px-1 text-public-caption text-brand hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
               >
                 {t('public.pricing.show_more', {
                   count: new Intl.NumberFormat(locale).format(hiddenVendorCount),
@@ -334,7 +334,7 @@ export function PricingFacetPanel({ facets, value, onChange }: PricingFacetPanel
                   <span className="inline-flex items-center gap-1.5">
                     {group.label === '' ? group.value : group.label}
                     {ratio === null ? null : (
-                      <span className="font-mono text-meta text-ink-2 tabular-nums">{ratio}</span>
+                      <span className="text-public-caption text-ink-2 tabular-nums">{ratio}</span>
                     )}
                   </span>
                 </OptionRow>
@@ -415,7 +415,7 @@ export function PricingFilterSheet({
             onApply(draft)
             onOpenChange(false)
           }}
-          className="h-11 w-full rounded-lg bg-brand px-4 text-body font-medium text-white hover:bg-brand-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="h-11 w-full rounded-lg bg-brand px-4 text-public-body font-medium text-white hover:bg-brand-hover focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         >
           {t('public.pricing.apply_filters')}
         </button>

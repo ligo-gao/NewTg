@@ -44,8 +44,8 @@ function SpecItem({ label, value }: { label: string; value: string | null }) {
   if (value === null || value === '') return null
   return (
     <div className="flex flex-col gap-0.5">
-      <dt className="text-meta leading-[18px] text-ink-2">{label}</dt>
-      <dd className="text-body leading-[22px] text-ink-1">{value}</dd>
+      <dt className="text-public-caption text-ink-2">{label}</dt>
+      <dd className="text-public-body text-ink-1">{value}</dd>
     </div>
   )
 }
@@ -207,13 +207,13 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
       <div className="flex flex-col gap-2">
         <a
           href="/pricing"
-          className="inline-flex items-center gap-1 self-start text-meta text-brand hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="inline-flex items-center gap-1 self-start text-public-caption text-brand hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         >
           <span aria-hidden="true">←</span>
           {t('public.pricing.detail.back')}
         </a>
         <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-public-title font-semibold leading-7 text-ink-1">
+          <h1 className="text-public-title text-ink-1">
             {displayName}
           </h1>
           <button
@@ -237,7 +237,7 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
             <Tag variant="success">{t('public.pricing.free')}</Tag>
           ) : null}
         </div>
-        <p className="font-mono text-meta leading-5 text-ink-2">{detail.model_id}</p>
+        <p className="font-mono text-public-caption text-ink-2">{detail.model_id}</p>
         {detail.capabilities.length > 0 ? (
           <div className="flex flex-wrap gap-1">
             {detail.capabilities.map((capability) => (
@@ -258,7 +258,7 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
       ) : null}
 
       <section aria-labelledby="pricing-detail-price" className="flex flex-col gap-2">
-        <h2 id="pricing-detail-price" className="text-section font-semibold leading-6 text-ink-1">
+        <h2 id="pricing-detail-price" className="text-public-section text-ink-1">
           {t('public.pricing.detail.price_title')}
         </h2>
         <div className="rounded-xl border border-border-default bg-surface-card p-4">
@@ -273,15 +273,15 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
       </section>
 
       <section aria-labelledby="pricing-detail-performance" className="flex flex-col gap-2">
-        <h2 id="pricing-detail-performance" className="text-section font-semibold leading-6 text-ink-1">
+        <h2 id="pricing-detail-performance" className="text-public-section text-ink-1">
           {t('public.perf.title')}
         </h2>
         <div className="rounded-xl border border-border-default bg-surface-card p-4">
           <dl className="grid grid-cols-2 gap-4 md:grid-cols-4">
             {performanceStats.map((stat) => (
               <div key={stat.key} className="flex flex-col gap-0.5">
-                <dt className="text-meta leading-[18px] text-ink-2">{stat.label}</dt>
-                <dd className="text-body leading-[22px] tabular-nums text-ink-1">
+                <dt className="text-public-caption text-ink-2">{stat.label}</dt>
+                <dd className="text-public-body tabular-nums text-ink-1">
                   {stat.value}
                 </dd>
               </div>
@@ -305,12 +305,12 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
 
       {detail.group_prices.length > 0 ? (
         <section aria-labelledby="pricing-detail-groups" className="flex flex-col gap-2">
-          <h2 id="pricing-detail-groups" className="text-section font-semibold leading-6 text-ink-1">
+          <h2 id="pricing-detail-groups" className="text-public-section text-ink-1">
             {t('public.pricing.detail.group_prices')}
           </h2>
           <div className="overflow-x-auto rounded-xl border border-border-default">
-            <table className="w-full min-w-[760px] text-meta">
-              <thead className="bg-surface-subtle text-left text-meta text-ink-2">
+            <table className="w-full min-w-[760px] text-public-caption">
+              <thead className="bg-surface-subtle text-left text-public-label text-ink-2">
                 <tr className="h-9">
                   <th scope="col" className="px-3">{t('public.pricing.detail.group')}</th>
                   <th scope="col" className="px-3 text-right">{t('public.pricing.detail.ratio')}</th>
@@ -333,19 +333,19 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
                       <td className="px-3 text-ink-1">
                         {price.group}
                       </td>
-                      <td className="px-3 text-right font-mono tabular-nums text-ink-2">
+                      <td className="px-3 text-right tabular-nums text-ink-2">
                         {formatRatio(price.ratio) ?? '—'}
                       </td>
-                      <td className="px-3 text-right font-mono tabular-nums text-ink-1">
+                      <td className="px-3 text-right tabular-nums text-ink-1">
                         {formatCredit(price.prompt, locale)}
                       </td>
-                      <td className="px-3 text-right font-mono tabular-nums text-ink-1">
+                      <td className="px-3 text-right tabular-nums text-ink-1">
                         {formatCredit(price.completion, locale)}
                       </td>
-                      <td className="px-3 text-right font-mono tabular-nums text-ink-1">
+                      <td className="px-3 text-right tabular-nums text-ink-1">
                         {formatCredit(price.cache_read, locale)}
                       </td>
-                      <td className="px-3 text-right font-mono tabular-nums text-ink-1">
+                      <td className="px-3 text-right tabular-nums text-ink-1">
                         {formatCredit(price.cache_write, locale)}
                       </td>
                       <td className="px-3 text-ink-2">
@@ -365,7 +365,7 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
       {detail.endpoints.length > 0 || detail.tags.length > 0 ? (
         <section className="flex flex-col gap-2">
           {detail.endpoints.length > 0 ? (
-            <div className="flex flex-wrap items-center gap-2 text-meta text-ink-2">
+            <div className="flex flex-wrap items-center gap-2 text-public-caption text-ink-2">
               <span className="font-medium text-ink-1">{t('public.pricing.detail.endpoints')}</span>
               {detail.endpoints.map((endpoint) => (
                 <Tag key={endpoint} variant="neutral">{endpointLabel(endpoint, t)}</Tag>
@@ -373,7 +373,7 @@ export function PricingDetailPage({ modelId }: PricingDetailPageProps) {
             </div>
           ) : null}
           {detail.tags.length > 0 ? (
-            <div className="flex flex-wrap items-center gap-2 text-meta text-ink-2">
+            <div className="flex flex-wrap items-center gap-2 text-public-caption text-ink-2">
               <span className="font-medium text-ink-1">{t('public.pricing.detail.tags')}</span>
               {detail.tags.map((tag) => (
                 <Tag key={tag} variant="neutral">{tag}</Tag>
