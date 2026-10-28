@@ -50,8 +50,8 @@ export interface LineChartSeries {
   tableLabel?: string
   /**
    * `[x, value]`；x 是 epoch 毫秒，组件按数值定位而不是分桶。value 为
-   * `null` 表示该点没有有限值（例如越过 30s 的分位）：折线在 null 处断开，
-   * 数据表显示 `—`，tooltip/刻度与 y 域都忽略它。
+   * `null` 表示该点没有有限值（例如越过 30s 的分位）：折线在 null 处断开。
+   * 未列入 `overAt` 的 null 点才显示 `—`；y 域始终忽略这些点。
    */
   points: readonly [number, number | null][]
   /** 该序列里「已知 ≥30s、但无有限值」的 x 集合；点仍为 null（断线），

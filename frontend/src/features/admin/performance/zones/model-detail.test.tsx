@@ -135,6 +135,8 @@ describe('ModelDetail', () => {
     // 第二个桶的 p95 越过 30s：折线断开，但读数是已知下界 `>30s` 而非 `—`。
     expect(rows[2]?.textContent).toContain('>30s')
     expect(rows[2]?.textContent).not.toContain('—')
+    // over 只属于 p95：p50 在同一点仍是有限读数，误传 overAt 会让这里多一个 >30s。
+    expect(rows[2]?.textContent).toContain('420')
     expect(rows[2]?.textContent).toContain('12')
     // 两侧的有限点照常渲染。
     expect(rows[1]?.textContent).toContain('910')

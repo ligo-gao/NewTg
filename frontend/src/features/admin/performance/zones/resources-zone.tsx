@@ -101,7 +101,10 @@ export function ResourcesZone({ resources, sourceDown }: ResourcesZoneProps) {
   // null（未知）不是故障：不渲染徽标。只有明确的 1/0 才给出 up/down。
   const redisUp = redis.up === null ? null : redis.up > 0
   // 这三行是「每秒」量：单位来自词典（en `/s`、zh `/秒`），不硬编码。
+  // 未知（`—`）不能再挂单位——「带单位的未知」会被读成一个数值。
   const perSecond = t('admin.performance.common.per_second')
+  const withPerSecond = (text: string): string =>
+    text === '—' ? text : `${text}${perSecond}`
 
   const hostRows: ResourceRow[] = [
     { label: t('admin.performance.resources.cpu'), value: formatPercent(host.cpu) },
@@ -112,11 +115,11 @@ export function ResourcesZone({ resources, sourceDown }: ResourcesZoneProps) {
     },
     {
       label: t('admin.performance.resources.net_in'),
-      value: `${formatBytes(host.net_in, locale)}${perSecond}`,
+      value: withPerSecond(formatBytes(host.net_in, locale)),
     },
     {
       label: t('admin.performance.resources.net_out'),
-      value: `${formatBytes(host.net_out, locale)}${perSecond}`,
+      value: withPerSecond(formatBytes(host.net_out, locale)),
     },
   ]
 
@@ -157,7 +160,7 @@ export function ResourcesZone({ resources, sourceDown }: ResourcesZoneProps) {
     },
     {
       label: t('admin.performance.resources.cmd_rate'),
-      value: `${formatCount(redis.cmd_rate, locale)}${perSecond}`,
+      value: withPerSecond(formatCount(redis.cmd_rate, locale)),
     },
   ]
 

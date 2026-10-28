@@ -413,6 +413,22 @@ describe('ModelPerfZone', () => {
     expect(within(empty).queryByText('No samples yet')).toBeNull()
   })
 
+  it('prefers the metrics-store copy when both sources are unavailable', async () => {
+    await renderZone({
+      rows: [],
+      sources: [
+        { name: 'perfmetrics', status: 'unavailable' },
+        { name: 'probes', status: 'unavailable' },
+      ],
+    })
+
+    const empty = screen.getByTestId('models-empty')
+    // 优先级钉死：两段判断对调会让这条用例失败。
+    expect(within(empty).getByText('Metrics store unavailable')).toBeTruthy()
+    expect(within(empty).queryByText('Probe results unavailable')).toBeNull()
+    expect(within(empty).queryByText('No samples yet')).toBeNull()
+  })
+
   it('keeps the plain no-samples copy when both sources are healthy', async () => {
     await renderZone({ rows: [] })
 

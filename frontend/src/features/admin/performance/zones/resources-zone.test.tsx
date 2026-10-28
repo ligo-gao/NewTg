@@ -138,6 +138,21 @@ describe('ResourcesZone', () => {
     expect(within(card('redis')).queryByTestId('status-badge')).toBeNull()
   })
 
+  it('leaves an unknown rate as — without appending the per-second unit', async () => {
+    await renderZone({
+      resources: {
+        ...RESOURCES,
+        host: { ...RESOURCES.host, net_in: null },
+      },
+    })
+
+    const label = within(card('host')).getByText('Network in')
+    const value = label.parentElement?.querySelector('dd')
+    // 未知不是「每秒 0」：单位必须一起消失，否则 `—/s` 会被读成一个读数。
+    expect(value?.textContent).toBe('—')
+    expect(value?.textContent).not.toContain('/s')
+  })
+
   it('marks Redis up with a success badge that carries both colour and text', async () => {
     await renderZone()
 
