@@ -57,7 +57,7 @@ type entry struct {
 	unit   string
 }
 
-// catalog 是冻结白名单。值里的正则竖线是 PromQL 语法（如 `4xx|5xx`），
+// catalog 是冻结白名单。值里的正则竖线是 PromQL 语法（如 `tmpfs|overlay`），
 // 不是 Markdown 表格的转义。
 var catalog = map[string]entry{
 	NameGatewayRPS: {
@@ -69,7 +69,9 @@ var catalog = map[string]entry{
 		unit:   "s",
 	},
 	NameGatewayErrorRate: {
-		promQL: `sum(rate(newtg_http_requests_total{service="gateway",status_class=~"4xx|5xx"}[5m])) / clamp_min(sum(rate(newtg_http_requests_total{service="gateway"}[5m])), 1e-9)`,
+		// 页面文案、DTO 注释与告警规则都叫「5xx」，查询就必须只数 5xx；
+		// 曾误写成 `4xx|5xx`，让前端把「4xx+5xx 占比」标成 5xx。
+		promQL: `sum(rate(newtg_http_requests_total{service="gateway",status_class="5xx"}[5m])) / clamp_min(sum(rate(newtg_http_requests_total{service="gateway"}[5m])), 1e-9)`,
 		unit:   "ratio",
 	},
 	NameGatewayInflight: {
@@ -108,23 +110,31 @@ var catalog = map[string]entry{
 		unit:   "ops/s",
 	},
 	NameHostCPU: {
-		promQL: `1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))`,
+		// 外层 max 不可省：`avg by (instance)` 每个 target 返回一条序列，
+		// 而 QueryRange 会把多条序列摊平成一条交错的时间轴（见文件头警告）。
+		// 先按 instance 求平均、再跨实例取最大值，才是一条可消费的标量曲线。
+		promQL: `max(1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])))`,
 		unit:   "ratio",
 	},
 	NameHostMem: {
-		promQL: `1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes`,
+		// 与 host.cpu 同理：内存是逐 target 的序列，必须外层 max 收成标量。
+		promQL: `max(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)`,
 		unit:   "ratio",
 	},
 	NameHostDisk: {
-		promQL: `1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay",mountpoint="/"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay",mountpoint="/"}`,
+		// 保留 fstype/mountpoint 过滤，外层同样要 max 才能跨 target 收成标量。
+		promQL: `max(1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay",mountpoint="/"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay",mountpoint="/"})`,
 		unit:   "ratio",
 	},
 	NameHostNetIn: {
-		promQL: `sum(rate(node_network_receive_bytes_total{device!="lo"}[5m]))`,
+		// 排除虚拟网卡：Docker 主机上同一份流量会同时记在 veth、docker0/br-*
+		// 和物理网卡上，只筛 lo 会把流量重复累加数倍。
+		promQL: `sum(rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br-.*|virbr.*"}[5m]))`,
 		unit:   "B/s",
 	},
 	NameHostNetOut: {
-		promQL: `sum(rate(node_network_transmit_bytes_total{device!="lo"}[5m]))`,
+		// 与 host.net_in 同口径：必须排除虚拟网卡，否则出口流量被放大。
+		promQL: `sum(rate(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br-.*|virbr.*"}[5m]))`,
 		unit:   "B/s",
 	},
 	NamePGBackends: {
@@ -132,7 +142,9 @@ var catalog = map[string]entry{
 		unit:   "conn",
 	},
 	NamePGMaxBackends: {
-		promQL: `pg_settings_max_connections`,
+		// 每个 target 各有一条 pg_settings_max_connections，未经聚合会被
+		// QueryRange 摊平成多条序列；max 取所有实例里最宽松的上限。
+		promQL: `max(pg_settings_max_connections)`,
 		unit:   "conn",
 	},
 	NamePGTPS: {
@@ -170,7 +182,9 @@ var catalog = map[string]entry{
 		unit:   "MB",
 	},
 	NameGatewayByInstanceErrorRate: {
-		promQL: `sum by (instance) (rate(newtg_http_requests_total{service="gateway",status_class=~"4xx|5xx"}[5m])) / clamp_min(sum by (instance) (rate(newtg_http_requests_total{service="gateway"}[5m])), 1e-9)`,
+		// 与全局 gateway.error_rate 同口径：只数 5xx，否则副本错误率同样是
+		// 「4xx+5xx」的冒充值。
+		promQL: `sum by (instance) (rate(newtg_http_requests_total{service="gateway",status_class="5xx"}[5m])) / clamp_min(sum by (instance) (rate(newtg_http_requests_total{service="gateway"}[5m])), 1e-9)`,
 		unit:   "ratio",
 	},
 }

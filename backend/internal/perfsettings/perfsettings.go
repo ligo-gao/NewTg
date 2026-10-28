@@ -121,8 +121,17 @@ func (r *Reader) Settings(_ time.Time) Settings {
 		usable++
 	}
 	if interval, ok := settingread.Int(r.reader, settingPerfIntervalHours, log); ok {
-		settings.IntervalHours = int(interval)
-		usable++
+		// settingread.Int 把 0 视为合法值（其它设置里 0 是「禁用」），但
+		// interval_hours=0 在本包等价于「继续用每日时刻表」。若照常计入
+		// usable，Source 会声称 settings，而 worker 实际跑的是 legacy times。
+		// 因此 0 按不可用处理：回落 env（Settings 的 IntervalHours 保持默认 0）。
+		if interval > 0 {
+			settings.IntervalHours = int(interval)
+			usable++
+		} else {
+			log.Warn("worker: perf schedule interval_hours must be positive; falling back to env times",
+				"value", interval)
+		}
 	}
 	if runs, ok := settingread.Int(r.reader, settingPerfRuns, log); ok {
 		settings.Runs = int(runs)

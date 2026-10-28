@@ -50,10 +50,18 @@ type Config struct {
 // 调用方永远不判空，降级只体现在 Available() 与 ErrUnavailable 上。
 type Client struct {
 	baseURL string
-	ttl     time.Duration
-	http    *http.Client
-	cache   *ttlCache
-	labels  *labelCache
+	// authUser/authPass 来自 PROMETHEUS_URL 的 userinfo（反向代理 basic auth）。
+	// 它们不留在 baseURL 里：请求 URL 会被 *url.Error 原样回显，凭据一旦
+	// 进了 URL，连接失败的错误串就会把口令带进日志。hasAuth 区分「空口令」
+	// 与「未配置凭据」。
+	authUser string
+	authPass string
+	hasAuth  bool
+	timeout  time.Duration
+	ttl      time.Duration
+	http     *http.Client
+	cache    *ttlCache
+	labels   *labelCache
 	// flights / labelFlights 把同键的并发查询合并成一次上游请求：一次页面
 	// 刷新会并发发 27 条查询，多管理员同时打开页面时同一查询会被重复请求，
 	// 命中同一个 TTL 桶也照样打到 Prometheus。缓存只能救「已经完成」的请求，
@@ -76,9 +84,33 @@ func New(cfg Config) *Client {
 	if now == nil {
 		now = time.Now
 	}
+	// baseURL 只保留 scheme/host/path：请求 URL 由 baseURL 直接拼上
+	// queryRangePath，遗留的 `?`/`#` 会破坏路径；userinfo 留在 URL 里则会被
+	// *url.Error 回显到错误串。凭据改由 fetchResult 的 SetBasicAuth 发送。
+	baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+	var authUser, authPass string
+	var hasAuth bool
+	if baseURL != "" {
+		if parsed, err := url.Parse(baseURL); err == nil {
+			if parsed.User != nil {
+				authUser = parsed.User.Username()
+				authPass, _ = parsed.User.Password()
+				hasAuth = true
+			}
+			parsed.User = nil
+			parsed.RawQuery = ""
+			parsed.ForceQuery = false
+			parsed.Fragment = ""
+			baseURL = strings.TrimRight(parsed.String(), "/")
+		}
+	}
 	return &Client{
-		baseURL: strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/"),
-		ttl:     ttl,
+		baseURL:  baseURL,
+		authUser: authUser,
+		authPass: authPass,
+		hasAuth:  hasAuth,
+		timeout:  timeout,
+		ttl:      ttl,
 		http: &http.Client{
 			Timeout: timeout,
 			// Proxy 必须为 nil：部署环境常设 HTTP(S)_PROXY，默认 Transport 会把
@@ -139,7 +171,12 @@ func (c *Client) QueryRange(ctx context.Context, name string, start, end time.Ti
 		return cloneSamples(call.samples), nil
 	}
 
-	samples, err := c.fetch(ctx, name, promQL, start, end, step)
+	// 上游请求不继承 leader 的 ctx 取消：同键的 follower 共享这次查询，
+	// 某个调用者（通常是发起页面刷新的 HTTP 请求）断开不应让其余人一起
+	// 失败。只保留超时，避免请求无限挂起。
+	fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.timeout)
+	defer cancel()
+	samples, err := c.fetch(fetchCtx, name, promQL, start, end, step)
 	if err == nil {
 		c.cache.put(key, samples)
 	}
@@ -186,7 +223,10 @@ func (c *Client) QueryRangeLabeled(ctx context.Context, name string, start, end 
 		return cloneLabeled(call.labeled), nil
 	}
 
-	series, err := c.fetchLabeled(ctx, name, promQL, start, end, step)
+	// 与 QueryRange 同理：上游查询只受超时约束，不随 leader 的取消而中断。
+	fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.timeout)
+	defer cancel()
+	series, err := c.fetchLabeled(fetchCtx, name, promQL, start, end, step)
 	if err == nil {
 		c.labels.put(key, series)
 	}
@@ -219,6 +259,11 @@ func (c *Client) fetchResult(ctx context.Context, name, promQL string, start, en
 		return apiResponse{}, fmt.Errorf("perfquery: %s: %w", name, err)
 	}
 	req.Header.Set("Accept", "application/json")
+	if c.hasAuth {
+		// 凭据走 Authorization 头而不是 URL userinfo：net/http 会在错误里
+		// 保留请求 URL（含 userinfo），SetBasicAuth 则不会进入 *url.Error。
+		req.SetBasicAuth(c.authUser, c.authPass)
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {

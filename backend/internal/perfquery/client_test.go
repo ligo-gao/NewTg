@@ -328,6 +328,110 @@ func TestNewTrimsTrailingSlash(t *testing.T) {
 	}
 }
 
+// TestQueryRangeUserinfoBecomesBasicAuth 钉住 PROMETHEUS_URL 支持
+// http://user:pass@host 的反代 basic auth：凭据必须变成 Authorization 头
+// 发出去（而不是留在请求 URL 里），路径仍必须是 query_range。
+func TestQueryRangeUserinfoBecomesBasicAuth(t *testing.T) {
+	type seenAuth struct {
+		user, pass string
+		ok         bool
+		path       string
+	}
+	seen := make(chan seenAuth, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		seen <- seenAuth{user: user, pass: pass, ok: ok, path: r.URL.Path}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, matrixBody)
+	}))
+	defer srv.Close()
+
+	withAuth := strings.Replace(srv.URL, "http://", "http://promuser:prompass@", 1)
+	c := New(Config{BaseURL: withAuth})
+	start := time.Unix(1761000000, 0)
+	if _, err := c.QueryRange(context.Background(), NameGatewayRPS, start, start.Add(time.Minute), time.Minute); err != nil {
+		t.Fatalf("QueryRange: %v", err)
+	}
+
+	got := <-seen
+	if !got.ok || got.user != "promuser" || got.pass != "prompass" {
+		t.Fatalf("Authorization = (%q, %q, %v), want promuser/prompass", got.user, got.pass, got.ok)
+	}
+	if got.path != "/api/v1/query_range" {
+		t.Fatalf("path = %q, want /api/v1/query_range（userinfo 不得污染路径）", got.path)
+	}
+}
+
+// TestQueryRangeTransportErrorDoesNotLeakUserinfo 钉住错误串纪律：
+// 凭据改走 Authorization 后，*url.Error 里的请求 URL 不再含 userinfo，
+// 连接失败（反代宕机等）也不会把口令写进日志。
+func TestQueryRangeTransportErrorDoesNotLeakUserinfo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	withAuth := strings.Replace(srv.URL, "http://", "http://leakuser:leakpass@", 1)
+	srv.Close() // 地址真实存在但已不可连接，失败发生在传输层
+
+	c := New(Config{BaseURL: withAuth, Timeout: time.Second})
+	start := time.Unix(1761000000, 0)
+	_, err := c.QueryRange(context.Background(), NameGatewayRPS, start, start.Add(time.Minute), time.Minute)
+	if err == nil {
+		t.Fatal("连接已关闭的地址应返回错误")
+	}
+	if strings.Contains(err.Error(), "leakuser") || strings.Contains(err.Error(), "leakpass") {
+		t.Fatalf("错误信息泄露了 userinfo: %v", err)
+	}
+}
+
+// TestQueryRangeLeaderCancelDoesNotFailFollowers 钉住 in-flight 合并的取消
+// 语义：leader 的调用方（发起页面刷新的 HTTP 请求）断开时，上游查询仍应
+// 跑完并把结果交给 follower，而不是让所有等待者一起失败。
+func TestQueryRangeLeaderCancelDoesNotFailFollowers(t *testing.T) {
+	rec, url, arrived, release := blockingProm(t, matrixBody)
+	client := New(Config{BaseURL: url, Now: fixedNow(time.Unix(1761000200, 0))})
+
+	start := time.Unix(1761000000, 0)
+	end := time.Unix(1761000180, 0)
+	step := time.Minute
+	key := cacheKey(NameGatewayRPS, start.Truncate(client.ttl), end.Truncate(client.ttl), step)
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	defer cancelLeader()
+
+	var leaderErr, followerErr error
+	var followerSamples []Sample
+	leaderDone := make(chan struct{})
+	go func() {
+		defer close(leaderDone)
+		_, leaderErr = client.QueryRange(leaderCtx, NameGatewayRPS, start, end, step)
+	}()
+	<-arrived // leader 的请求已经打到上游
+
+	followerDone := make(chan struct{})
+	go func() {
+		defer close(followerDone)
+		followerSamples, followerErr = client.QueryRange(context.Background(), NameGatewayRPS, start, end, step)
+	}()
+	waitForFlightWaiters(t, client.flights, key, 1)
+
+	// leader 的调用方放弃；上游查询必须不受影响。
+	cancelLeader()
+	close(release)
+	<-leaderDone
+	<-followerDone
+
+	if followerErr != nil {
+		t.Fatalf("follower 被 leader 的取消连带失败: %v", followerErr)
+	}
+	if len(followerSamples) != 3 {
+		t.Fatalf("follower 样本数 = %d, want 3", len(followerSamples))
+	}
+	if leaderErr != nil {
+		t.Fatalf("leader 自身也不应因调用方取消而失败: %v", leaderErr)
+	}
+	if rec.count() != 1 {
+		t.Fatalf("上游收到 %d 个请求, want 1（合并后只发一次）", rec.count())
+	}
+}
+
 // labeledMatrixBody 是两条带 instance 的序列（乱序返回）+ 一条无 instance
 // 的序列：后者必须被丢弃，前者各自按时间升序。
 const labeledMatrixBody = `{"status":"success","data":{"resultType":"matrix","result":[` +

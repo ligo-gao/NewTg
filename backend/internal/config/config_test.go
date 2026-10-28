@@ -367,6 +367,9 @@ func TestPrometheusConfig(t *testing.T) {
 	}{
 		{"非 http scheme", "PROMETHEUS_URL", "ftp://prometheus:9090"},
 		{"缺 host", "PROMETHEUS_URL", "http://"},
+		{"带查询串", "PROMETHEUS_URL", "http://prometheus:9090/?x=1"},
+		{"只有查询串标记", "PROMETHEUS_URL", "http://prometheus:9090/?"},
+		{"带 fragment", "PROMETHEUS_URL", "http://prometheus:9090/#top"},
 		{"非数字超时", "PROMETHEUS_TIMEOUT", "soon"},
 		{"超时为零", "PROMETHEUS_TIMEOUT", "0s"},
 		{"超时超过 60s", "PROMETHEUS_TIMEOUT", "61s"},
@@ -401,6 +404,29 @@ func TestPrometheusURLValidationDoesNotLeakCredentials(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "PROMETHEUS_URL") {
 		t.Fatalf("错误信息应指明变量名: %v", err)
+	}
+}
+
+// TestPrometheusURLValidationRejectsQueryAndFragment 钉住拼接安全：客户端
+// 把该地址直接拼上 /api/v1/query_range，原值自带 ?query 或 #fragment 会让
+// 请求路径错乱。错误信息同样不回显原值（查询串里可能藏凭据）。
+func TestPrometheusURLValidationRejectsQueryAndFragment(t *testing.T) {
+	for _, raw := range []string{
+		"http://prometheus:9090/?secret_token=abc",
+		"http://prometheus:9090/#/dashboard?secret_token=abc",
+	} {
+		setRequired(t)
+		t.Setenv("PROMETHEUS_URL", raw)
+		_, err := Load()
+		if err == nil {
+			t.Fatalf("PROMETHEUS_URL=%q 应返回错误", raw)
+		}
+		if strings.Contains(err.Error(), "secret_token") || strings.Contains(err.Error(), "abc") {
+			t.Fatalf("错误信息泄露了 URL 细节: %v", err)
+		}
+		if !strings.Contains(err.Error(), "PROMETHEUS_URL") {
+			t.Fatalf("错误信息应指明变量名: %v", err)
+		}
 	}
 }
 

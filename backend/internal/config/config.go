@@ -469,6 +469,12 @@ func (c *Config) Validate() error {
 		if parsed.Host == "" {
 			return fmt.Errorf("config: invalid PROMETHEUS_URL: missing host")
 		}
+		// 客户端把该地址直接拼成 `baseURL + /api/v1/query_range?...`：原值若自带
+		// `?query` 或 `#fragment`，查询串会把 API 路径吞进参数，整页指标永远
+		// unknown。与其运行期静默错乱，不如启动期拒绝。错误信息仍不回显原值。
+		if parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+			return fmt.Errorf("config: invalid PROMETHEUS_URL: must not contain a query string or fragment")
+		}
 	}
 	if c.PrometheusTimeout <= 0 || c.PrometheusTimeout > 60*time.Second {
 		return fmt.Errorf("config: PROMETHEUS_TIMEOUT %v out of range (0s, 60s]", c.PrometheusTimeout)

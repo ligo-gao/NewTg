@@ -81,6 +81,53 @@ func TestSettingsUsesPersistedValues(t *testing.T) {
 	}
 }
 
+// TestSettingsZeroIntervalIsUnusable 钉住 interval_hours=0 的语义：0 表示
+// 「继续用每日时刻表」，不是「来自 settings 的可用值」。若照常计入 usable，
+// Source 会声称 settings，而 worker 实际跑的是 legacy times。
+func TestSettingsZeroIntervalIsUnusable(t *testing.T) {
+	reader := fakeReader{"perf.schedule.interval_hours": json.RawMessage("0")}
+	r := newWithReader(reader, testDefaults(), discardLogger())
+	got := r.Settings(time.Now())
+
+	if got.Source != "env" {
+		t.Fatalf("Source = %q, want env（0 必须按不可用回落）", got.Source)
+	}
+	if got.IntervalHours != 0 {
+		t.Fatalf("IntervalHours = %d, want 0", got.IntervalHours)
+	}
+	if got.LegacyTimes != "00:00,12:00" {
+		t.Fatalf("LegacyTimes = %q, want env times", got.LegacyTimes)
+	}
+
+	schedule, _ := r.Schedule(time.Now())
+	if _, ok := schedule.(modelperf.DailyTimes); !ok {
+		t.Fatalf("Schedule() = %T, want modelperf.DailyTimes when interval is 0", schedule)
+	}
+}
+
+// TestSettingsZeroIntervalWithOtherPersistedIsMixed 验证 0 不会把整组
+// setting 判成 settings：其它三键生效、interval 回落 env → mixed 才诚实。
+func TestSettingsZeroIntervalWithOtherPersistedIsMixed(t *testing.T) {
+	reader := fakeReader{
+		"perf.schedule.enabled":        json.RawMessage("false"),
+		"perf.schedule.interval_hours": json.RawMessage("0"),
+		"perf.schedule.runs":           json.RawMessage("5"),
+		"perf.schedule.concurrency":    json.RawMessage("4"),
+	}
+	r := newWithReader(reader, testDefaults(), discardLogger())
+	got := r.Settings(time.Now())
+
+	if got.Source != "mixed" {
+		t.Fatalf("Source = %q, want mixed（interval=0 不算生效自 settings）", got.Source)
+	}
+	if got.Enabled || got.IntervalHours != 0 || got.Runs != 5 || got.Concurrency != 4 {
+		t.Fatalf("unexpected values: %+v", got)
+	}
+	if got.LegacyTimes != "00:00,12:00" {
+		t.Fatalf("LegacyTimes = %q, want env times", got.LegacyTimes)
+	}
+}
+
 func TestSettingsLegacyTimesEmptyInIntervalMode(t *testing.T) {
 	// interval>0 → LegacyTimes 清空；interval 缺失/为 0 → 保留 env 时刻表。
 	interval := newWithReader(
