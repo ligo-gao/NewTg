@@ -604,7 +604,7 @@ func TestConfigWarnMasksSecretSettingRaw(t *testing.T) {
 }
 
 // TestConfigEnvRowsCoverSnapshot 钉住 env[] 的行集与形态：顺序固定、恰好
-// 16 行（PerfMetricsDSNSet 不占行）、METRICS_TOKEN 只有 configured/set、
+// 18 行（PerfMetricsDSNSet 不占行）、METRICS_TOKEN 只有 configured/set、
 // 没有 value 键，set 用来区分「按默认值跑」与「部署者显式配置」。
 func TestConfigEnvRowsCoverSnapshot(t *testing.T) {
 	env := map[string]string{
@@ -625,10 +625,12 @@ func TestConfigEnvRowsCoverSnapshot(t *testing.T) {
 		"PERF_METRICS_RETENTION_DAYS",
 		"PROMETHEUS_URL",
 		"PROMETHEUS_TIMEOUT",
+		"PROMETHEUS_CACHE_TTL",
 		"PERF_SCHEDULE_TIMEZONE",
 		"DISK_CACHE_ENABLED",
 		"DISK_CACHE_PATH",
 		"LOG_DIR",
+		"LOG_FILE_PATTERN",
 		"DISK_CACHE_MAX_MB",
 		"DISK_CACHE_THRESHOLD_MB",
 	}
@@ -668,8 +670,10 @@ func TestConfigEnvRowsCoverSnapshot(t *testing.T) {
 		"PERF_METRICS_FLUSH_INTERVAL": "5m0s",
 		"PERF_METRICS_RETENTION_DAYS": "400",
 		"PROMETHEUS_TIMEOUT":          "5s",
+		"PROMETHEUS_CACHE_TTL":        "15s",
 		"PERF_SCHEDULE_TIMEZONE":      "Asia/Shanghai",
 		"DISK_CACHE_ENABLED":          "false",
+		"LOG_FILE_PATTERN":            "newtg-*.log",
 		"DISK_CACHE_MAX_MB":           "0",
 		"DISK_CACHE_THRESHOLD_MB":     "0",
 	}
@@ -694,6 +698,53 @@ func TestConfigEnvRowsCoverSnapshot(t *testing.T) {
 	if !pathRow.Configured || !pathRow.Set || pathRow.Value == nil || *pathRow.Value != "/var/cache/tg" {
 		t.Errorf("DISK_CACHE_PATH row = %+v, want configured+set with the env value", pathRow)
 	}
+}
+
+// TestConfigEnvRowsPrometheusCacheTTLAndLogFilePattern：两个新增行的口径与
+// DB_MAX_OPEN_CONNS 一致——显式设置时展示部署值且 set=true；未设置时展示
+// 内置默认、set=false、configured=true（「实际生效值」而不是「是否设置」）。
+func TestConfigEnvRowsPrometheusCacheTTLAndLogFilePattern(t *testing.T) {
+	t.Run("显式设置", func(t *testing.T) {
+		mux := newPerfConfigMux(t, perfsettings.New(nil, perfConfigTestDefaults(), testLogger()), nil, map[string]string{
+			"PROMETHEUS_CACHE_TTL": "30s",
+			"LOG_FILE_PATTERN":     "app-*.log",
+		})
+		_, resp := getPerfConfig(t, mux)
+
+		for key, want := range map[string]string{
+			"PROMETHEUS_CACHE_TTL": "30s",
+			"LOG_FILE_PATTERN":     "app-*.log",
+		} {
+			row := findPerfConfigEnvRow(t, resp.Env, key)
+			if row.Value == nil || *row.Value != want {
+				t.Errorf("%s value = %v, want %q（部署值）", key, row.Value, want)
+			}
+			if !row.Set || !row.Configured {
+				t.Errorf("%s = %+v, want set=true configured=true", key, row)
+			}
+		}
+	})
+
+	t.Run("未设置走默认", func(t *testing.T) {
+		mux := newPerfConfigMux(t, perfsettings.New(nil, perfConfigTestDefaults(), testLogger()), nil, nil)
+		_, resp := getPerfConfig(t, mux)
+
+		for key, want := range map[string]string{
+			"PROMETHEUS_CACHE_TTL": "15s",
+			"LOG_FILE_PATTERN":     "newtg-*.log",
+		} {
+			row := findPerfConfigEnvRow(t, resp.Env, key)
+			if row.Value == nil || *row.Value != want {
+				t.Errorf("%s value = %v, want %q（内置默认）", key, row.Value, want)
+			}
+			if row.Set {
+				t.Errorf("%s set = true, want false（部署者未设置）", key)
+			}
+			if !row.Configured {
+				t.Errorf("%s configured = false, want true（默认值非空）", key)
+			}
+		}
+	})
 }
 
 // TestConfigFixedRowsAreFrozen 钉住 C 类四条：key/value/unit/effect 全表

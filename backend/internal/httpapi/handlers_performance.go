@@ -300,13 +300,17 @@ type PerfEnvSnapshot struct {
 	PrometheusURL            string
 	// PrometheusTimeout 保留原始字符串（如 "5s"）：Task 10 原样展示部署值，
 	// 而不是把它渲染成纳秒或 Go duration 的另一种拼写。
-	PrometheusTimeout    string
+	PrometheusTimeout string
+	// PrometheusCacheTTL 保留原始字符串，与 PrometheusTimeout 同口径：页面
+	// 展示部署者写的 "30s"，而不是 time.Duration 的另一种拼写。
+	PrometheusCacheTTL   string
 	PerfScheduleTimezone string
 	// ProbeTimeout 是代码内置的测速单次上限（C 类），同样供 Task 10 展示。
 	ProbeTimeout         time.Duration
 	DiskCacheEnabled     bool
 	DiskCachePath        string
 	LogDir               string
+	LogFilePattern       string
 	DiskCacheMaxMB       int
 	DiskCacheThresholdMB int
 }
@@ -326,11 +330,13 @@ func (h *PerformanceHandlers) envSnapshot() PerfEnvSnapshot {
 		PerfMetricsRetentionDays: parseEnvIntOrDefault(h.geten("PERF_METRICS_RETENTION_DAYS"), 400),
 		PrometheusURL:            redactedEnvURL(h.geten("PROMETHEUS_URL")),
 		PrometheusTimeout:        strings.TrimSpace(h.geten("PROMETHEUS_TIMEOUT")),
+		PrometheusCacheTTL:       strings.TrimSpace(h.geten("PROMETHEUS_CACHE_TTL")),
 		PerfScheduleTimezone:     strings.TrimSpace(h.geten("PERF_SCHEDULE_TIMEZONE")),
 		ProbeTimeout:             perfProbeTimeout,
 		DiskCacheEnabled:         parseEnvBool(h.geten("DISK_CACHE_ENABLED")),
 		DiskCachePath:            strings.TrimSpace(h.geten("DISK_CACHE_PATH")),
 		LogDir:                   strings.TrimSpace(h.geten("LOG_DIR")),
+		LogFilePattern:           strings.TrimSpace(h.geten("LOG_FILE_PATTERN")),
 		DiskCacheMaxMB:           parseEnvIntOrDefault(h.geten("DISK_CACHE_MAX_MB"), 0),
 		DiskCacheThresholdMB:     parseEnvIntOrDefault(h.geten("DISK_CACHE_THRESHOLD_MB"), 0),
 	}
@@ -340,8 +346,16 @@ func (h *PerformanceHandlers) envSnapshot() PerfEnvSnapshot {
 	if snapshot.PrometheusTimeout == "" {
 		snapshot.PrometheusTimeout = "5s"
 	}
+	// 与 config.Load 的默认值同源（backend/internal/config/config.go 的
+	// PROMETHEUS_CACHE_TTL=15s）：页面展示实际生效值，不是「是否设置」。
+	if snapshot.PrometheusCacheTTL == "" {
+		snapshot.PrometheusCacheTTL = "15s"
+	}
 	if snapshot.PerfScheduleTimezone == "" {
 		snapshot.PerfScheduleTimezone = "Asia/Shanghai"
+	}
+	if snapshot.LogFilePattern == "" {
+		snapshot.LogFilePattern = defaultLogFilePattern
 	}
 	return snapshot
 }
@@ -400,25 +414,22 @@ type performanceConfig struct {
 }
 
 // config 读取 D3-01 冻结的环境变量。取值走 envSnapshot()，与 Task 10 的
-// 运行参数视图共享同一次读取；LOG_FILE_PATTERN 与 INSTANCE_ID 不在 B 类
-// 清单里，单独读取。
+// 运行参数视图共享同一次读取；只有 INSTANCE_ID 不在 B 类清单里，单独读取。
 func (h *PerformanceHandlers) config() performanceConfig {
 	snapshot := h.envSnapshot()
-	cfg := performanceConfig{
+	return performanceConfig{
 		diskCacheEnabled: snapshot.DiskCacheEnabled,
 		diskCachePath:    snapshot.DiskCachePath,
 		diskCacheMaxMB:   int64(snapshot.DiskCacheMaxMB),
 		diskCacheThresh:  int64(snapshot.DiskCacheThresholdMB),
 		logDir:           snapshot.LogDir,
-		logFilePattern:   strings.TrimSpace(h.geten("LOG_FILE_PATTERN")),
+		// LOG_FILE_PATTERN 已在快照里按「实际生效值」补好默认（defaultLogFilePattern），
+		// 这里不再单独读取，避免同一请求两次 os.Getenv 给出不同答案。
+		logFilePattern: snapshot.LogFilePattern,
 		// 与逐副本心跳共用同一解析（INSTANCE_ID → hostname → "unknown"），
 		// 避免性能页与实例表对「当前实例」给出不同答案。
 		instanceID: ResolveInstanceID(h.geten, h.host),
 	}
-	if cfg.logFilePattern == "" {
-		cfg.logFilePattern = defaultLogFilePattern
-	}
-	return cfg
 }
 
 func parseEnvBool(raw string) bool {

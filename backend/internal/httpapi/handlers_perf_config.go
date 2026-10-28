@@ -234,7 +234,7 @@ func (h *PerformanceHandlers) perfConfigSchedule(now time.Time) *perfConfigSched
 // ProbeTimeout 是 C 类代码常量（不是环境变量），只在 fixed[] 出现，
 // 因此不在这里占用一行。
 func (h *PerformanceHandlers) perfConfigEnvRows(snapshot PerfEnvSnapshot) []perfConfigEnvRow {
-	rows := make([]perfConfigEnvRow, 0, 16)
+	rows := make([]perfConfigEnvRow, 0, 20)
 	addString := func(key, value string) {
 		rows = append(rows, perfConfigEnvRow{
 			Key:        key,
@@ -264,10 +264,12 @@ func (h *PerformanceHandlers) perfConfigEnvRows(snapshot PerfEnvSnapshot) []perf
 	addInt("PERF_METRICS_RETENTION_DAYS", snapshot.PerfMetricsRetentionDays)
 	addString("PROMETHEUS_URL", snapshot.PrometheusURL)
 	addString("PROMETHEUS_TIMEOUT", snapshot.PrometheusTimeout)
+	addString("PROMETHEUS_CACHE_TTL", snapshot.PrometheusCacheTTL)
 	addString("PERF_SCHEDULE_TIMEZONE", snapshot.PerfScheduleTimezone)
 	addBool("DISK_CACHE_ENABLED", snapshot.DiskCacheEnabled)
 	addString("DISK_CACHE_PATH", snapshot.DiskCachePath)
 	addString("LOG_DIR", snapshot.LogDir)
+	addString("LOG_FILE_PATTERN", snapshot.LogFilePattern)
 	addInt("DISK_CACHE_MAX_MB", snapshot.DiskCacheMaxMB)
 	addInt("DISK_CACHE_THRESHOLD_MB", snapshot.DiskCacheThresholdMB)
 	return rows
