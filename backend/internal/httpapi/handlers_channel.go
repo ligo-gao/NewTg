@@ -1244,6 +1244,19 @@ func (h *ChannelHandler) buildPatch(ctx context.Context, v *validator, existing 
 	if requiresBaseURL(ct) && (baseURL == nil || strings.TrimSpace(*baseURL) == "") {
 		v.add("base_url", "base_url is required for this channel type")
 	}
+	// base_url 决定已存密钥的发往地址：只持 channels:manage 的管理员改地址后，
+	// 「测试连通」与健康体检都会把解封后的真实密钥发到新地址（凭据外带），
+	// 所以改地址与写凭据同级。控制台整表回传时地址未变，不受影响。
+	nextBaseURL := ""
+	if baseURL != nil {
+		nextBaseURL = strings.TrimSpace(*baseURL)
+	}
+	if normalizeChannelBaseURL(nextBaseURL) != normalizeChannelBaseURL(channelBaseURL(existing)) {
+		if apiErr := h.sensitiveWriteError(ctx,
+			"base_url changes require the channels:manage_sensitive permission"); apiErr != nil {
+			return store.ChannelPatch{}, apiErr
+		}
+	}
 
 	models := decodeStringSlice(existing.SupportedModels)
 	if req.SupportedModels != nil {
@@ -3363,6 +3376,13 @@ func (h *ChannelHandler) checkSensitiveWriteFields(ctx context.Context, credenti
 	if !credentialsPresent && !taskPluginKeyPresent && !taskExtendPluginKeysPresent {
 		return nil
 	}
+	return h.sensitiveWriteError(ctx,
+		"credential fields require the channels:manage_sensitive permission")
+}
+
+// sensitiveWriteError 把 CheckPermission 的结果映射成字段级写门的固定
+// problem：403 的文案由调用方给出（不含字段值），401/500 与 authorize 同口径。
+func (h *ChannelHandler) sensitiveWriteError(ctx context.Context, detail string) *apiError {
 	err := CheckPermission(ctx, h.access, PermChannelsManageSensitive)
 	switch {
 	case err == nil:
@@ -3378,21 +3398,12 @@ func (h *ChannelHandler) checkSensitiveWriteFields(ctx context.Context, credenti
 		// 不把 DB 故障伪装成 403（与 authorize 同口径）。
 		return internalAPIError()
 	default:
-		return sensitiveFieldForbiddenError()
-	}
-}
-
-// sensitiveFieldForbiddenError 是字段级授权拒绝的固定 problem。
-//
-// 类型沿用 security-02 §2.6.1 的 field_not_writable：调用者通过了功能级
-// channels:manage，但没有该字段分区的门 channels:manage_sensitive。文案固定、
-// 不含字段名或字段值，避免错误体/访问日志回显请求内容（可能含密钥）。
-func sensitiveFieldForbiddenError() *apiError {
-	return &apiError{
-		Status: http.StatusForbidden,
-		Type:   problemTypeFieldNotWritable,
-		Title:  "Field not writable",
-		Detail: "credential fields require the channels:manage_sensitive permission",
+		return &apiError{
+			Status: http.StatusForbidden,
+			Type:   problemTypeFieldNotWritable,
+			Title:  "Field not writable",
+			Detail: detail,
+		}
 	}
 }
 

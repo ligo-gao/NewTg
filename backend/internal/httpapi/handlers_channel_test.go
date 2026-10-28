@@ -18,6 +18,7 @@ import (
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/channelhealth"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 )
 
@@ -3223,4 +3224,47 @@ func TestChannelSensitiveFieldsWithElevatedPermission(t *testing.T) {
 			t.Fatalf("task_extend_plugin_keys = %v，期望 [kling]", resp.TaskExtendPluginKeys)
 		}
 	})
+}
+
+// P1-2 加固：base_url 决定已存密钥发往哪里。只持 channels:manage 的管理员
+// 先 PATCH 改地址、再点「测试连通」（只需 channels:manage），服务端就会解封
+// 真实密钥发到新地址；健康体检还会周期性重放。改地址因此必须与写凭据同级，
+// 否则「换地址要重填密钥」在 fetch-models 里单点封堵没有意义。
+func TestChannelPatchBaseURLChangeRequiresSensitivePermission(t *testing.T) {
+	env := newChannelTestEnv(t, ChannelHandlerOptions{})
+	baseURL := "https://api.example.com"
+	seeded := seedChannel(t, env, func(ch *store.Channel) { ch.BaseURL = &baseURL })
+
+	body := map[string]any{
+		"expected_version": seeded.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		"base_url":         "https://attacker.example.com",
+	}
+	rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body),
+		channelAdminPrincipal(rbac.PermChannelsManage))
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d，期望 403（body=%s）", rr.Code, rr.Body.String())
+	}
+	if env.store.updateCalls != 0 {
+		t.Fatalf("越权改地址仍写库（updateCalls=%d）", env.store.updateCalls)
+	}
+}
+
+// 控制台保存时整表回传：地址没变的 PATCH 不能被敏感门挡住，否则只有
+// channels:manage 的管理员改个备注都做不到。
+func TestChannelPatchUnchangedBaseURLKeepsManageOnlyWritable(t *testing.T) {
+	env := newChannelTestEnv(t, ChannelHandlerOptions{})
+	baseURL := "https://api.example.com"
+	seeded := seedChannel(t, env, func(ch *store.Channel) { ch.BaseURL = &baseURL })
+
+	body := map[string]any{
+		"expected_version": seeded.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		// 尾斜杠/大小写差异不算改地址。
+		"base_url": "https://API.Example.com/",
+		"remark":   "ops note",
+	}
+	rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", body),
+		channelAdminPrincipal(rbac.PermChannelsManage))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d，期望 200（body=%s）", rr.Code, rr.Body.String())
+	}
 }
