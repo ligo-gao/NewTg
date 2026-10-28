@@ -108,6 +108,61 @@ func TestFetchChannelModelsRequiresKey(t *testing.T) {
 	}
 }
 
+// 表单里换了 base_url 却留空 api_key 时，绝不能把库里解出来的密钥发到新地址：
+// 那是「凭渠道编辑权限把已存密钥外带到任意 host」的通道（SSRF + 凭据外泄）。
+// 必须要求显式提供 api_key，且不能真的发起探测。
+func TestFetchChannelModelsRejectsStoredKeyForDifferentBaseURL(t *testing.T) {
+	lister := &fakeChannelModelLister{models: []string{"claude-sonnet-4-5"}}
+	env := newChannelTestEnv(t, ChannelHandlerOptions{ModelLister: lister})
+	baseURL := "https://api.anthropic.com"
+	ch := seedChannel(t, env, func(c *store.Channel) {
+		c.Type = string(contract.ChannelTypeAnthropic)
+		c.BaseURL = &baseURL
+		c.Credentials = mustSealCredentials(t, env.sealer, ChannelCredentials{APIKey: "sk-stored"})
+	})
+
+	rr := serveWithPrincipal(t, env.mux,
+		jsonReq(t, http.MethodPost, "/api/channels/fetch-models", map[string]any{
+			"channel_id": ch.ID,
+			"base_url":   "https://attacker.example.com",
+		}),
+		channelAdminPrincipal(),
+	)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if lister.calls != 0 {
+		t.Fatalf("lister called %d times; stored key must not reach a different base_url", lister.calls)
+	}
+}
+
+// 同一 base_url（仅尾斜杠/大小写差异）仍然复用库里的密钥：编辑渠道改名时
+// 不该逼用户重新粘贴密钥。
+func TestFetchChannelModelsReusesStoredKeyForSameBaseURL(t *testing.T) {
+	lister := &fakeChannelModelLister{models: []string{"claude-sonnet-4-5"}}
+	env := newChannelTestEnv(t, ChannelHandlerOptions{ModelLister: lister})
+	baseURL := "https://api.anthropic.com"
+	ch := seedChannel(t, env, func(c *store.Channel) {
+		c.Type = string(contract.ChannelTypeAnthropic)
+		c.BaseURL = &baseURL
+		c.Credentials = mustSealCredentials(t, env.sealer, ChannelCredentials{APIKey: "sk-stored"})
+	})
+
+	rr := serveWithPrincipal(t, env.mux,
+		jsonReq(t, http.MethodPost, "/api/channels/fetch-models", map[string]any{
+			"channel_id": ch.ID,
+			"base_url":   "https://API.Anthropic.com/",
+		}),
+		channelAdminPrincipal(),
+	)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if lister.got.APIKey != "sk-stored" {
+		t.Fatalf("lister api_key = %q, want stored key", lister.got.APIKey)
+	}
+}
+
 func TestFetchChannelModelsRequiresSensitivePermission(t *testing.T) {
 	env := newChannelTestEnv(t, ChannelHandlerOptions{ModelLister: &fakeChannelModelLister{}})
 	principal := &auth.Principal{UserID: testRegularID, Role: "user"}

@@ -1947,7 +1947,12 @@ func (h *ChannelHandler) handleFetchModels(w http.ResponseWriter, r *http.Reques
 
 	apiKey := strings.TrimSpace(req.Credentials.APIKey)
 	apiVersion := strings.TrimSpace(req.Credentials.APIVersion)
-	if (apiKey == "" || apiVersion == "") && ch != nil {
+	// 只有表单 base_url 与渠道库里的地址一致时，才复用库里解密出的密钥。
+	// 否则任何持 channels:sensitive 的管理员都能把已存密钥发到任意 host
+	// （凭据外带 + SSRF）；换地址时必须显式重新提供 api_key。
+	reuseStored := ch != nil &&
+		normalizeChannelBaseURL(channelBaseURL(ch)) == normalizeChannelBaseURL(baseURL)
+	if (apiKey == "" || apiVersion == "") && reuseStored {
 		if creds, ok := h.existingCredentials(ch); ok {
 			if apiKey == "" {
 				apiKey = strings.TrimSpace(creds.APIKey)
@@ -1958,7 +1963,11 @@ func (h *ChannelHandler) handleFetchModels(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	if apiKey == "" {
-		writeAPIError(w, validationError("credentials.api_key", "api_key is required"))
+		message := "api_key is required"
+		if ch != nil && !reuseStored {
+			message = "api_key is required when base_url differs from the channel's stored base_url"
+		}
+		writeAPIError(w, validationError("credentials.api_key", message))
 		return
 	}
 
@@ -2806,6 +2815,31 @@ func validateBaseURL(raw string) string {
 		return "base_url must not contain userinfo"
 	}
 	return ""
+}
+
+// channelBaseURL 返回渠道库里存的 base_url（nil 视为空串）。
+func channelBaseURL(ch *store.Channel) string {
+	if ch == nil || ch.BaseURL == nil {
+		return ""
+	}
+	return strings.TrimSpace(*ch.BaseURL)
+}
+
+// normalizeChannelBaseURL 把 base_url 归一成可比较的形式：去尾部斜杠、
+// scheme 与 host 小写。只用于同进程内的「是不是同一个上游」比较，不改变
+// 真正发给上游的地址（路径大小写仍然敏感）。
+func normalizeChannelBaseURL(raw string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if trimmed == "" {
+		return ""
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil || u.Host == "" {
+		return trimmed
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+	return strings.TrimRight(u.String(), "/")
 }
 
 func validateSupportedModels(v *validator, in []string) ([]string, []byte) {
