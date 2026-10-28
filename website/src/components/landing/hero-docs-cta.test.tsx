@@ -13,6 +13,8 @@ function mockStatus(overrides: Partial<PublicStatusState> = {}) {
     status: { nav: { docs: { enabled: true } }, site: { docs_url: "https://docs.newtg.ai" } },
     loading: false,
     error: undefined,
+    nav: { docs: { enabled: true } },
+    docsUrl: "https://docs.newtg.ai",
     docsEnabled: true,
     ...overrides,
   });

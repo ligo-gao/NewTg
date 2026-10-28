@@ -11,6 +11,7 @@ import { useI18n, type Locale } from '@/shared/lib/i18n-context'
 
 import {
   currentSearch,
+  sectionForPath,
   signInHref,
   visibleNavItems,
   type PublicNavItem,
@@ -51,12 +52,16 @@ function toShellItems(
   copy: ReturnType<typeof shellCopy>,
   activePath?: string,
 ): ShellNavItem[] {
+  // 高亮按「所属分区」而不是路径全等：`/pricing/<id>` 仍属于定价、
+  // `/models/<id>` 仍属于模型库。旧的 `activePath === item.href` 会让
+  // 模型详情页上一个导航项都不亮。
+  const active = activePath === undefined ? null : sectionForPath(activePath)
   return items.map((item) => ({
     key: item.key,
     label: copy[NAV_COPY_KEY[item.key]],
     href: item.href,
     external: item.external,
-    current: activePath === item.href,
+    current: active === item.key,
   }))
 }
 

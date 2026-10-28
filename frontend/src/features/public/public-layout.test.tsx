@@ -73,8 +73,10 @@ describe('PublicLayout shell (F-09-34/37)', () => {
     expect(nav.textContent).not.toContain('Home')
     // rankings.enabled=false — hidden without leaving an empty slot.
     expect(nav.textContent).not.toContain('Rankings')
-    // console.require_auth is locked true and this visitor is a guest.
-    expect(nav.textContent).not.toContain('Console')
+    // 控制台入口对访客也显示（2026-10-28 决定）：受保护的是 /dashboard 本身。
+    expect(within(nav).getByRole('link', { name: 'Console' }).getAttribute('href')).toBe(
+      '/dashboard',
+    )
 
     const about = within(nav).getByRole('link', { name: 'About' })
     expect(about.getAttribute('href')).toBe('/about')

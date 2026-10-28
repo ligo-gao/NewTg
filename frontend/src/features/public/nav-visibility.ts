@@ -1,128 +1,43 @@
 import { useQueryClient } from '@tanstack/react-query'
 
 import {
+  NAV_COPY_KEY,
+  PUBLIC_NAV_HREFS,
+  PUBLIC_NAV_ORDER,
+  isExternalHref,
+  isNavEntryVisible,
+  isSafePublicHref,
+  navEntryOf,
+  sectionForPath,
+  visibleNavItems,
+} from '@newtg/public-shell'
+import type { PublicNavKey, PublicNavItem, PublicNavSwitches } from '@newtg/public-shell'
+
+import {
   PUBLIC_STATUS_QUERY_KEY,
-  type PublicNav,
-  type PublicNavEntry,
   type PublicStatus,
 } from '@/lib/public-status'
 
 /**
- * F-09-34 navigation visibility (modules-09 C3).
+ * SPA side of the public navigation.
  *
- * Single source of truth for the seven public nav entries. The header, the
- * mobile drawer and the route guard helpers below all consume this module, so
- * "is this entry visible" cannot drift between them.
+ * The rules themselves live in `@newtg/public-shell` (`nav.ts`) because the
+ * marketing site renders the same header and must resolve the same list. This
+ * module only adds what is SPA-specific: the cached status reader and the
+ * sign-in hand-off the router uses.
  */
-export type PublicNavKey =
-  | 'home'
-  | 'console'
-  | 'models'
-  | 'pricing'
-  | 'rankings'
-  | 'docs'
-  | 'about'
-
-export interface PublicNavItem {
-  key: PublicNavKey
-  href: string
-  /** True only for `nav.docs` when the target is an absolute http(s) URL. */
-  external: boolean
+export {
+  NAV_COPY_KEY,
+  PUBLIC_NAV_HREFS,
+  PUBLIC_NAV_ORDER,
+  isExternalHref,
+  isNavEntryVisible,
+  isSafePublicHref,
+  navEntryOf,
+  sectionForPath,
+  visibleNavItems,
 }
-
-// 品牌标就是首页入口；头部不再单列 home。
-// 排序：控制台在首位，其后是模型库、定价、排行、关于；文档未参与本次排序，
-// 保持它在原顺序中的相对位置，落在最后。
-export const PUBLIC_NAV_ORDER: readonly PublicNavKey[] = [
-  'console',
-  'models',
-  'pricing',
-  'rankings',
-  'about',
-  'docs',
-]
-
-export const PUBLIC_NAV_HREFS: Record<PublicNavKey, string> = {
-  home: '/',
-  console: '/dashboard',
-  models: '/models',
-  pricing: '/pricing',
-  rankings: '/rankings',
-  docs: '/docs',
-  about: '/about',
-}
-
-/**
- * Missing keys keep the documented defaults (F-09-34 异常流程: enabled=true,
- * require_auth=false). `console` is the exception — its `require_auth` is
- * locked to true server-side, so a missing value must not expose the console
- * entry to guests.
- */
-export function navEntryOf(
-  nav: PublicNav | undefined,
-  key: PublicNavKey,
-): Required<PublicNavEntry> {
-  const entry = nav?.[key]
-  return {
-    enabled: entry?.enabled ?? true,
-    require_auth: entry?.require_auth ?? key === 'console',
-  }
-}
-
-/**
- * Absolute `http(s)` targets open in a new tab; a same-site relative path (for
- * example `/guide`) is navigated in place (F-09-38 分支流程, allowed by the
- * backend URL validation).
- */
-export function isExternalHref(href: string): boolean {
-  return /^https?:\/\//i.test(href)
-}
-
-/**
- * Client-side mirror of the server URL rule (F-09-38 数据字段表: reject
- * `javascript:`/`data:` and protocol-relative targets). The server validates
- * on write, but a stale or hand-edited row must never become an `<a href>` or
- * `window.location` target in a visitor's browser.
- */
-export function isSafePublicHref(href: string | undefined): boolean {
-  const value = (href ?? '').trim()
-  if (isExternalHref(value)) return true
-  return value.startsWith('/') && !value.startsWith('//') && !value.startsWith('/\\')
-}
-
-/**
- * `enabled && (!require_auth || isLoggedIn)` — the frozen derived rule from
- * F-09-34. `nav.docs` additionally requires a non-empty `site.docs_url`
- * (logical AND, F-09-38). A `require_auth` entry is silently *not rendered*
- * rather than rendered-then-redirected; no lock icon leaks its existence.
- */
-export function isNavEntryVisible(
-  nav: PublicNav | undefined,
-  key: PublicNavKey,
-  isLoggedIn: boolean,
-  docsUrl?: string,
-): boolean {
-  const entry = navEntryOf(nav, key)
-  if (!entry.enabled) return false
-  if (entry.require_auth && !isLoggedIn) return false
-  if (key === 'docs' && !isSafePublicHref(docsUrl)) return false
-  return true
-}
-
-/** Visible entries in render order; never leaves an empty slot. */
-export function visibleNavItems(
-  nav: PublicNav | undefined,
-  isLoggedIn: boolean,
-  docsUrl?: string,
-): PublicNavItem[] {
-  const items: PublicNavItem[] = []
-  for (const key of PUBLIC_NAV_ORDER) {
-    if (!isNavEntryVisible(nav, key, isLoggedIn, docsUrl)) continue
-    const href = key === 'docs' ? (docsUrl ?? '').trim() : PUBLIC_NAV_HREFS[key]
-    items.push({ key, href, external: key === 'docs' && isExternalHref(href) })
-  }
-  return items
-}
+export type { PublicNavKey, PublicNavItem }
 
 /**
  * Console-side Docs visibility (spec §4): the Help → Docs entry exists only
@@ -157,10 +72,8 @@ export function currentSearch(): string {
 /**
  * Direct-link guard helper (F-09-34/F-09-35).
  *
- * Returns the redirect target for a disabled/`require_auth` public route, or
- * `null` when the current visitor may stay. Routing itself is wired in the
- * next wave (pricing/rankings routes do not exist yet); this pure helper is
- * what those route guards will call from `beforeLoad`.
+ * Returns the redirect target for a disabled or auth-gated public route, or
+ * `null` when the current visitor may stay.
  *
  * - `enabled=false` for the section → silent redirect to `/` (F-09-35:
  *   disabled public pages are not a 401 and no sign-in prompt is rendered).
@@ -170,24 +83,13 @@ export function currentSearch(): string {
 export function publicRouteGuardRedirect(
   pathname: string,
   search: string,
-  nav: PublicNav | undefined,
-  isLoggedIn: boolean,
+  nav: PublicNavSwitches | undefined,
+  signedIn: boolean,
 ): string | null {
   const key = sectionForPath(pathname)
   if (key === null) return null
   const entry = navEntryOf(nav, key)
   if (!entry.enabled) return '/'
-  if (entry.require_auth && !isLoggedIn) return signInHref(pathname, search)
-  return null
-}
-
-/** Maps a public pathname to its nav section; unknown paths are unguarded. */
-export function sectionForPath(pathname: string): PublicNavKey | null {
-  if (pathname === '/') return 'home'
-  if (pathname === '/models' || pathname.startsWith('/models/')) return 'models'
-  if (pathname === '/pricing' || pathname.startsWith('/pricing/')) return 'pricing'
-  if (pathname === '/rankings' || pathname.startsWith('/rankings/')) return 'rankings'
-  if (pathname === '/docs') return 'docs'
-  if (pathname === '/about' || pathname.startsWith('/about/')) return 'about'
+  if (entry.require_auth && !signedIn) return signInHref(pathname, search)
   return null
 }

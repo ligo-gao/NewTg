@@ -26,6 +26,24 @@ export {
 } from './copy'
 export type { ShellCopy, ShellCopyKey, ShellLocale } from './copy'
 
+export {
+  NAV_COPY_KEY,
+  PUBLIC_NAV_HREFS,
+  PUBLIC_NAV_ORDER,
+  isExternalHref,
+  isNavEntryVisible,
+  isSafePublicHref,
+  navEntryOf,
+  sectionForPath,
+  visibleNavItems,
+} from './nav'
+export type {
+  PublicNavEntryState,
+  PublicNavItem,
+  PublicNavKey,
+  PublicNavSwitches,
+} from './nav'
+
 export type {
   ShellAccountControl,
   ShellBrand,

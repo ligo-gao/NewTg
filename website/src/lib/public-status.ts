@@ -1,22 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
-
-/** `PublicNavItem` from `GET /api/status`; only the docs flag is consumed here. */
-export interface PublicStatusNavItem {
-  enabled?: boolean;
-  require_auth?: boolean;
-}
+import { isNavEntryVisible, type PublicNavSwitches } from "@newtg/public-shell";
 
 /**
- * The subset of the `GET /api/status` payload the marketing site reads. The
- * endpoint is same-origin and never cached, so the docs entry can follow the
- * live deployment settings.
+ * The subset of `GET /api/status` the marketing site reads.
+ *
+ * `nav` is the same switch block the SPA consumes; the header resolves its
+ * entries through `visibleNavItems()` from `@newtg/public-shell`, so both apps
+ * answer "which entries exist" with one function instead of two lists.
  */
 export interface PublicStatus {
-  nav?: {
-    docs?: PublicStatusNavItem;
-  };
+  nav?: PublicNavSwitches;
   site?: {
     docs_url?: string;
   };
@@ -26,20 +21,22 @@ export interface PublicStatusState {
   status: PublicStatus | undefined;
   loading: boolean;
   error: Error | undefined;
+  /** Server nav switches; `undefined` means "not loaded yet" → documented defaults. */
+  nav: PublicNavSwitches | undefined;
+  /** Trimmed `site.docs_url`; empty string when unconfigured. */
+  docsUrl: string;
   /** Whether the docs entry point is configured and enabled. */
   docsEnabled: boolean;
 }
 
 /**
  * Docs are reachable only when the nav entry is not disabled and the backend
- * exposes a non-empty `site.docs_url`. A dead docs link is worse than one that
- * briefly lags the settings, so anything unproven defaults to hidden.
+ * exposes a safe, non-empty `site.docs_url`. A dead docs link is worse than one
+ * that briefly lags the settings, so anything unproven defaults to hidden.
+ * The rule itself is the shared one — no second copy to drift.
  */
 export function resolveDocsEnabled(status: PublicStatus | undefined): boolean {
-  if (!status) return false;
-  const navEnabled = status.nav?.docs?.enabled !== false;
-  const docsUrl = status.site?.docs_url;
-  return navEnabled && typeof docsUrl === "string" && docsUrl.trim() !== "";
+  return isNavEntryVisible(status?.nav, "docs", false, status?.site?.docs_url);
 }
 
 /** Fetches the public site status once on mount. */
@@ -86,6 +83,8 @@ export function usePublicStatus(): PublicStatusState {
     status,
     loading,
     error,
+    nav: status?.nav,
+    docsUrl: (status?.site?.docs_url ?? "").trim(),
     docsEnabled: !loading && error === undefined && resolveDocsEnabled(status),
   };
 }

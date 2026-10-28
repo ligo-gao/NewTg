@@ -5,6 +5,7 @@ import {
   isSafePublicHref,
   navEntryOf,
   publicRouteGuardRedirect,
+  sectionForPath,
   signInHref,
   visibleNavItems,
 } from './nav-visibility'
@@ -105,6 +106,33 @@ describe('nav visibility matrix (TC-F-09-34-01)', () => {
       about: { enabled: false, require_auth: false },
     }
     expect(visibleNavItems(off, true, 'https://docs.example.com')).toEqual([])
+  })
+
+  it('shows the console entry to guests while other guarded entries stay hidden', () => {
+    // 2026-10-28 决定：控制台入口四个公开页对访客一致显示，守卫在 /dashboard。
+    expect(visibleNavItems(FULL_NAV, false, 'https://docs.example.com').map((i) => i.key)).toEqual([
+      'console',
+      'models',
+      'pricing',
+      'rankings',
+      'about',
+      'docs',
+    ])
+
+    // 其余条目的 require_auth 语义不变。
+    const guarded = { ...FULL_NAV, about: { enabled: true, require_auth: true } }
+    expect(visibleNavItems(guarded, false).map((i) => i.key)).not.toContain('about')
+    expect(visibleNavItems(guarded, true).map((i) => i.key)).toContain('about')
+  })
+
+  it('maps detail paths to their nav section', () => {
+    expect(sectionForPath('/pricing/gpt-4o')).toBe('pricing')
+    expect(sectionForPath('/models/')).toBe('models')
+    expect(sectionForPath('/about')).toBe('about')
+    expect(sectionForPath('/')).toBe('home')
+    expect(sectionForPath('/announcements/9')).toBeNull()
+    // 控制台自己渲染控制台布局，不经过公开头部。
+    expect(sectionForPath('/dashboard')).toBeNull()
   })
 })
 

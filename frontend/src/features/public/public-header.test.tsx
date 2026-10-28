@@ -107,7 +107,10 @@ describe('PublicHeader (F-09-34)', () => {
     )
 
     const nav = within(await findByRole('navigation', { name: 'Main navigation' }))
+    // 控制台对访客也显示（2026-10-28 决定）：受保护的是 /dashboard 本身，
+    // 入口在四个公开页上是同一份菜单。
     expect([...nav.queryAllByRole('link')].map((link) => link.textContent)).toEqual([
+      'Console',
       'Models',
       'Pricing',
       'Rankings',
@@ -116,7 +119,7 @@ describe('PublicHeader (F-09-34)', () => {
     ])
   })
 
-  it('adds the console entry once a session exists', async () => {
+  it('keeps the console entry for guests and signed-in visitors alike', async () => {
     server.use(
       http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(PUBLIC_STATUS)),
       http.get(`${ORIGIN}/api/me`, () => HttpResponse.json({ id: 1, username: 'ada' })),
@@ -137,9 +140,26 @@ describe('PublicHeader (F-09-34)', () => {
       'About',
       'API Docs',
     ])
+    expect(links[0]?.getAttribute('href')).toBe('/dashboard')
     expect(links.at(-1)?.getAttribute('href')).toBe('https://docs.example.com')
     // No sign-up CTA in the header for any session state.
     expect(queryByRole('link', { name: 'Get started free' })).toBeNull()
+  })
+
+  it('highlights the section, not the exact path, on detail routes', async () => {
+    guest()
+
+    const { findByRole } = await renderWithProviders(
+      <PublicHeader activePath="/pricing/gpt-4o" />,
+      ['public'],
+    )
+
+    const nav = within(await findByRole('navigation', { name: 'Main navigation' }))
+    // /pricing/<id> 属于定价分区；旧的全等比较会让一个导航项都不亮。
+    expect(nav.getByRole('link', { name: 'Pricing' }).getAttribute('aria-current')).toBe(
+      'page',
+    )
+    expect(nav.getByRole('link', { name: 'Models' }).getAttribute('aria-current')).toBeNull()
   })
 
   it('omits a disabled nav entry without leaving a gap', async () => {

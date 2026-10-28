@@ -2,20 +2,41 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { copy } from "@/config/copy";
-import { usePublicStatus, type PublicStatusState } from "@/lib/public-status";
+import { usePublicStatus } from "@/lib/public-status";
 import { SiteHeader } from "./site-header";
 
 vi.mock("@/lib/public-status", () => ({ usePublicStatus: vi.fn() }));
 
+// The marketing header reads the routed path; pin it per test so the active
+// entry and the sign-in hand-off are deterministic.
+const route = vi.hoisted(() => ({ pathname: "/" }));
+vi.mock("next/navigation", () => ({ usePathname: () => route.pathname }));
+
 const usePublicStatusMock = vi.mocked(usePublicStatus);
 
-function mockStatus(overrides: Partial<PublicStatusState> = {}) {
+/** The switch block a default deployment reports. */
+const ALL_ON = {
+  console: { enabled: true, require_auth: true },
+  models: { enabled: true, require_auth: false },
+  pricing: { enabled: true, require_auth: false },
+  rankings: { enabled: true, require_auth: false },
+  docs: { enabled: true, require_auth: false },
+  about: { enabled: true, require_auth: false },
+};
+
+function mockStatus(
+  {
+    nav = ALL_ON,
+    docsUrl = "https://docs.newtg.ai",
+  }: { nav?: typeof ALL_ON; docsUrl?: string } = {},
+) {
   usePublicStatusMock.mockReturnValue({
-    status: { nav: { docs: { enabled: true } }, site: { docs_url: "https://docs.newtg.ai" } },
+    status: { nav, site: { docs_url: docsUrl } },
     loading: false,
     error: undefined,
-    docsEnabled: true,
-    ...overrides,
+    nav,
+    docsUrl,
+    docsEnabled: docsUrl.trim() !== "",
   });
 }
 
@@ -39,6 +60,7 @@ beforeEach(() => {
   usePublicStatusMock.mockReset();
   mockStatus();
   mockAccount({}, 401);
+  route.pathname = "/";
 });
 
 afterEach(() => {
@@ -92,16 +114,19 @@ describe("SiteHeader", () => {
     );
   });
 
-  it("shows the docs link when the status reports docs configured", () => {
-    mockStatus({ docsEnabled: true });
+  it("shows the docs link at the operator's docs target", () => {
+    mockStatus({ docsUrl: "https://docs.newtg.ai" });
     render(<SiteHeader copy={copy} locale="zh-CN" />);
 
-    const docsLink = screen.getByRole("link", { name: "接口文档" });
-    expect(docsLink).toHaveAttribute("href", "/docs");
+    const docsLink = screen.getByRole("link", { name: /接口文档/ });
+    // Same rule as the SPA: the entry points at `site.docs_url` itself, and an
+    // absolute target opens in a new tab.
+    expect(docsLink).toHaveAttribute("href", "https://docs.newtg.ai");
+    expect(docsLink).toHaveAttribute("target", "_blank");
   });
 
   it("hides the docs link when docs are not configured", () => {
-    mockStatus({ docsEnabled: false });
+    mockStatus({ docsUrl: "" });
     render(<SiteHeader copy={copy} locale="zh-CN" />);
 
     expect(screen.queryByRole("link", { name: "接口文档" })).not.toBeInTheDocument();
@@ -110,7 +135,7 @@ describe("SiteHeader", () => {
 
   it("hides the docs link in the mobile menu too", async () => {
     const user = userEvent.setup();
-    mockStatus({ docsEnabled: false });
+    mockStatus({ docsUrl: "" });
     render(<SiteHeader copy={copy} locale="zh-CN" />);
 
     await user.click(screen.getByRole("button", { name: "打开导航菜单" }));
@@ -123,14 +148,70 @@ describe("SiteHeader", () => {
   });
 
   it("hides the docs link when the status request fails", () => {
-    mockStatus({
+    usePublicStatusMock.mockReturnValue({
       status: undefined,
-      docsEnabled: false,
+      loading: false,
       error: new Error("status request failed: 500"),
+      nav: undefined,
+      docsUrl: "",
+      docsEnabled: false,
     });
     render(<SiteHeader copy={copy} locale="zh-CN" />);
 
     expect(screen.queryByRole("link", { name: "接口文档" })).not.toBeInTheDocument();
+    // 其余五项仍在：状态探测失败不等于导航消失。
+    expect(screen.getByRole("link", { name: "控制台" })).toBeInTheDocument();
+  });
+
+  it("shows the same five entries to a guest as the SPA header", () => {
+    mockStatus({ docsUrl: "" });
+    render(<SiteHeader copy={copy} locale="zh-CN" />);
+
+    const nav = screen.getByRole("navigation", { name: "主导航" });
+    expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual([
+      "控制台",
+      "模型库",
+      "定价",
+      "排行",
+      "关于",
+    ]);
+    expect(screen.getByRole("link", { name: "控制台" })).toHaveAttribute(
+      "href",
+      "/dashboard",
+    );
+  });
+
+  it("follows a switch the console turned off", () => {
+    mockStatus({
+      nav: { ...ALL_ON, models: { enabled: false, require_auth: false } },
+    });
+    render(<SiteHeader copy={copy} locale="zh-CN" />);
+
+    expect(screen.queryByRole("link", { name: "模型库" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "排行" })).toBeInTheDocument();
+  });
+
+  it("marks the current section, including the localization prefix", () => {
+    route.pathname = "/en/pricing/";
+    render(<SiteHeader copy={copy} locale="en" />);
+
+    expect(screen.getByRole("link", { name: "Pricing" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(screen.getByRole("link", { name: "Models" })).not.toHaveAttribute(
+      "aria-current",
+    );
+  });
+
+  it("hands a guest back to the current page after sign-in", () => {
+    route.pathname = "/pricing/";
+    render(<SiteHeader copy={copy} locale="zh-CN" />);
+
+    expect(screen.getByRole("link", { name: "登录" })).toHaveAttribute(
+      "href",
+      `/sign-in?redirect=${encodeURIComponent("/pricing/")}`,
+    );
   });
 
   it("shows the display name instead of the sign-in link when a session exists", async () => {
