@@ -1,10 +1,11 @@
-# NewTG edge（Caddy）——HTTP :80 预演 + 自签 HTTPS :443。
-# TLS 证书由 Caddy internal CA 签发；浏览器首次访问需接受证书警告。
+# NewTG edge（Caddy）——HTTP :80 只做 HTTPS 跳转与自探活 + 内部 CA 签发的 HTTPS :8443。
+# 证书是文件证书（/etc/caddy/certs），续期流程见 deploy/ops/runbooks/edge-tls.md。
 # 净室声明：本文件全新编写。
 {
 	# 无管理 API 暴露面。
 	admin off
-	# 保留 HTTP :80；显式 :443 站点使用 tls internal，不做自动跳转。
+	# :80 的跳转由下面的站点自行声明（P2-8：对所有 Host 强制 HTTPS），
+	# 关闭自动跳转以免与显式 redir 重复注入。
 	auto_https disable_redirects
 }
 
@@ -110,9 +111,25 @@
 }
 
 :80 {
-	@ip host 10.211.55.5
-	redir @ip https://10.211.55.5:8443{uri} permanent
-	import newtg_site
+	# P2-8：:80 不再提供任何明文页面/接口，只保留两个入口：
+	#   1) /healthz —— 容器健康检查（deploy/docker-compose.yml 的 edge
+	#      healthcheck 用镜像自带 nc 探测）。它同时证明「edge 能到达
+	#      gateway」；只探端口开放会把「网关全挂」误报成健康。
+	#      这是与 HTTPS 完全相同的公开探针，明文复制不增加暴露面。
+	#   2) 其余一切 —— 301 到同一 Host 的 HTTPS:8443。
+	# 旧配置只对 10.211.55.5 跳转，其它 Host（含 DNS 名、别名 IP）继续在
+	# :80 明文服务整站，等于 HTTPS 只是「可选」。
+	@edge_health path /healthz
+	handle @edge_health {
+		reverse_proxy gateway:3000 {
+			import reverse_gateway
+		}
+	}
+	handle {
+		# {http.request.host} 不带端口：客户端从宿主 8080 进来时也会跳到
+		# https://<host>:8443，而不是 https://<host>:8080:8443。
+		redir https://{http.request.host}:8443{uri} permanent
+	}
 }
 
 :8443 {

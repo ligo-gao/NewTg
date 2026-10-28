@@ -56,7 +56,7 @@
 | 4.4 | `TRUSTED_PROXIES` | 检查环境 | 非空且不是 `0.0.0.0/0`（生产） | B | |
 | 4.5 | `PUBLIC_BASE_URL` | `curl $PUBLIC_BASE_URL/api/status` | 200；OAuth/支付回调可拼接 | B | |
 | 4.6 | `METRICS_TOKEN` | 检查环境；`curl -H 'Authorization: Bearer …' :8006/metrics` | 已设置；未设置时 `/metrics` 不启动 | B | |
-| 4.7 | TLS 证书 | `openssl s_client -connect <host>:443` | 链有效；剩余有效期 ≥30 天 | B（真实环境） | |
+| 4.7 | TLS 证书 | `openssl s_client -connect <host>:443`；内网 edge 见 `edge-tls.md` §2 | 链有效；剩余有效期 ≥30 天 | B（真实环境） | |
 | 4.8 | 主密钥轮换预案 | 轮换演练记录 | 多副本一致；灰度期不轮换 | O | |
 | 4.9 | 配置冻结 | 变更记录 | 灰度窗口无非兼容配置变更 | B | |
 

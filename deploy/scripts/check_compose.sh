@@ -18,6 +18,8 @@
 #      R-56/R-61：日志库迁移预建 12 个月分区并清除旧授权（运行期 worker 无 DDL 权限）。
 #   j. W10-N10/N11（R-W10-01）：DB_RETENTION_DSN 只给 worker 且角色为
 #      newtg_retention（不得复用 app 凭据）。
+#   k. P2-8：Caddy :80 对所有 Host 强制跳转 HTTPS（不得按 Host 白名单放行
+#      明文）；edge 用镜像自带的 nc 自探活 /healthz，且不引入 wget。
 #
 # 渲染所需口令在脚本内以哑值兜底（shell 环境优先于 deploy/.env），因此本脚本
 # 不依赖、也不创建 deploy/.env，可直接在 CI 中运行。
@@ -241,6 +243,32 @@ if [ -n "$sse_home" ] && [ -n "$sse_public" ] && [ -n "$api_block" ] \
   ok "Caddy SSE 路由先于 /api/*（不压缩）"
 else
   bad "Caddy 的 /api/home/live-feed 与 /api/public/live-feed 必须声明在 /api/* 之前"
+fi
+
+# --- P2-8：edge 强制 HTTPS 与自探活 ---------------------------------------
+# :80 只允许两件事：把任何 Host 重定向到 HTTPS，以及回答容器健康检查用的
+# /healthz。旧配置只跳 10.211.55.5，其它 Host 继续在 :80 明文服务整站。
+if grep -Fq 'redir https://{http.request.host}:8443{uri} permanent' "$caddyfile"; then
+  ok "Caddy :80 对所有 Host 强制跳转 HTTPS:8443"
+else
+  bad "Caddy :80 必须对所有 Host 跳转（redir https://{http.request.host}:8443{uri} permanent）"
+fi
+if grep -Eq 'redir[[:space:]]+@[a-z_]+[[:space:]]+https://' "$caddyfile"; then
+  bad "Caddy :80 不得再按 Host 白名单跳转（其余 Host 会退回明文服务）"
+else
+  ok "Caddy :80 不再按 Host 白名单跳转"
+fi
+# 容器镜像里没有 curl/openssl（caddy:2-alpine），健康检查用 busybox nc；
+# R-07 同时禁止 wget（上面的全局断言已覆盖）。
+edge_hc="$(q '.services.edge.healthcheck.test // [] | join(" ")')"
+case "$edge_hc" in
+  *"/healthz"*"nc "*) ok "edge healthcheck 经 nc 探测 /healthz：$edge_hc" ;;
+  *) bad "edge 缺少健康检查或未用 nc 探测 /healthz（实际：${edge_hc:-<空>}）" ;;
+esac
+if [ "$(q '.services.gateway.depends_on.edge // "absent"')" = "absent" ]; then
+  ok "gateway 不反向依赖 edge"
+else
+  bad "gateway 不得依赖 edge（会形成启动环）"
 fi
 
 edge_pub="$(q '.services.edge.ports[0].published // ""')"

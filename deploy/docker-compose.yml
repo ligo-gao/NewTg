@@ -81,6 +81,16 @@ services:
       - "8443:8443"
     environment:
       TLS_MIN_VERSION: "${TLS_MIN_VERSION:-1.2}"
+    # P2-8：edge 自探活。目标是明文 :80 的 /healthz——它经 Caddy 反向代理到
+    # gateway，因此同时覆盖「Caddy 在听」与「Caddy 能到达网关」两件事。
+    # R-07：运行镜像没有 wget，healthcheck 不得依赖它；caddy:2-alpine 也没有
+    # curl/openssl，所以用 busybox nc 发一个最小 HTTP/1.1 请求并匹配状态码。
+    healthcheck:
+      test: ["CMD-SHELL", "printf 'GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n' | nc -w 3 127.0.0.1 80 | head -1 | grep -q ' 200 '"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 15s
     command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
     volumes:
       - "./edge/Caddyfile:/etc/caddy/Caddyfile:ro"
