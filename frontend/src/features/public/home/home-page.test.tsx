@@ -424,6 +424,41 @@ describe('stats cache and base URL (F-09-04/05)', () => {
       url: 'https://your-gateway.example.com/v1',
       placeholder: true,
     })
+    // 自建部署最常见的地址是私网：访客根本调不到，必须落到占位符而不是
+    // 把内网拓扑印在首页「接入指引」里。
+    for (const address of [
+      'http://127.0.0.1:3000',
+      'http://10.211.55.5:8080',
+      'http://192.168.1.10:3000',
+      'http://172.16.31.9',
+      'http://169.254.169.254',
+      'http://[fd00::1]:3000',
+    ]) {
+      expect(buildBaseUrl(address)).toEqual({
+        url: 'https://your-gateway.example.com/v1',
+        placeholder: true,
+      })
+    }
+  })
+
+  it('omits canonical and og:url when server_address is not publicly reachable', async () => {
+    document.head
+      .querySelectorAll('link[rel="canonical"], meta[property="og:url"]')
+      .forEach((node) => node.remove())
+
+    useHandlers(
+      status({
+        site: {
+          ...status().site,
+          server_address: 'http://10.211.55.5:8080',
+        },
+      }),
+    )
+    await renderWithProviders(<HomePage />, ['public'])
+    await waitFor(() => expect(document.title).toBe('Acme Gateway'))
+
+    expect(document.head.querySelector('link[rel="canonical"]')).toBeNull()
+    expect(document.head.querySelector('meta[property="og:url"]')).toBeNull()
   })
 
   it('never puts a real credential into a code sample', () => {

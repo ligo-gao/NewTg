@@ -156,3 +156,25 @@ describe('callSample', () => {
     expect(plain).not.toContain('stream=True')
   })
 })
+
+// 自建部署的 server_address 常常是私网地址：样例里贴出来等于把访客引到
+// 一个他们永远调不通的端点，同时把内网拓扑印在公开页上。
+describe('sampleTarget reachability', () => {
+  it.each([
+    'http://127.0.0.1:3000',
+    'http://10.211.55.5:8080',
+    'http://192.168.1.10:3000',
+    'http://169.254.169.254',
+    'http://[fd00::1]:3000',
+    'http://user:pass@gateway.example.com',
+  ])('treats %s as unconfigured', (address) => {
+    expect(sampleTarget(address)).toEqual({ baseUrl: '', configured: false })
+  })
+
+  it('keeps a public address, path prefix included', () => {
+    expect(sampleTarget('https://gateway.example.com/openai/')).toEqual({
+      baseUrl: 'https://gateway.example.com/openai',
+      configured: true,
+    })
+  })
+})

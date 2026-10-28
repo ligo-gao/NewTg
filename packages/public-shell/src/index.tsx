@@ -15,7 +15,7 @@ export { ShellBrandMark } from './brand'
 export { ShellLanguageControl } from './language-control'
 export { ShellThemeButton } from './theme-control'
 export { FRIEND_LINKS } from './friend-links'
-export { publicApiEndpoint } from './url'
+export { publicApiEndpoint, publicBaseUrl } from './url'
 
 export {
   COPY_BY_LOCALE,

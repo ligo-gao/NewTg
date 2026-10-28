@@ -1,3 +1,4 @@
+import { publicApiEndpoint } from '@newtg/public-shell'
 import { useState } from 'react'
 
 import { useI18n } from '@/shared/lib/i18n-context'
@@ -20,11 +21,11 @@ export interface BaseUrlResult {
  * documented placeholder and the UI shows a grey hint instead of blocking.
  */
 export function buildBaseUrl(serverAddress: string | undefined): BaseUrlResult {
-  const raw = (serverAddress ?? '').trim().replace(/\/+$/, '')
-  if (!/^https?:\/\//i.test(raw)) {
+  const url = publicApiEndpoint(serverAddress)
+  if (url === '') {
     return { url: PLACEHOLDER_BASE_URL, placeholder: true }
   }
-  return { url: `${raw}/v1`, placeholder: false }
+  return { url, placeholder: false }
 }
 
 type SampleLang = 'curl' | 'python' | 'node'

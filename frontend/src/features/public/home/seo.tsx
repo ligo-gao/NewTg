@@ -1,3 +1,4 @@
+import { publicBaseUrl } from '@newtg/public-shell'
 import { useEffect } from 'react'
 
 import type { PublicSite } from '@/lib/public-status'
@@ -89,8 +90,10 @@ export function PublicSeo({ site }: PublicSeoProps) {
     site?.seo?.description?.trim() || t('public.home.seo.description')
   const image =
     safeHttpUrl(site?.seo?.og_image_url) ?? safeHttpUrl(site?.logo_url) ?? null
-  const origin = safeHttpUrl(site?.server_address)
-  const canonical = origin === null ? null : `${origin.replace(/\/+$/, '')}/`
+  // 内网/回环地址不出现在 canonical 与 og:url 里：爬虫拿到的是死地址，
+  // 访客也就顺带看到了内网拓扑。
+  const origin = publicBaseUrl(site?.server_address)
+  const canonical = origin === '' ? null : `${origin}/`
 
   useEffect(() => {
     const head = document.head

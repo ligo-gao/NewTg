@@ -7,6 +7,8 @@
  * - 密钥永远是占位符 `<YOUR_TOKEN>`，任何形似真实令牌的串都不进入前端。
  */
 
+import { publicBaseUrl } from '@newtg/public-shell'
+
 export type SampleTab = 'openai' | 'anthropic' | 'gemini'
 
 export interface SampleTarget {
@@ -16,7 +18,8 @@ export interface SampleTarget {
 }
 
 export function sampleTarget(serverAddress: string | undefined): SampleTarget {
-  const value = (serverAddress ?? '').trim()
+  // 私网/回环地址访客调不通，贴进样例只会把人引到死路，还会泄露内网拓扑。
+  const value = publicBaseUrl(serverAddress)
   return { baseUrl: value, configured: value !== '' }
 }
 

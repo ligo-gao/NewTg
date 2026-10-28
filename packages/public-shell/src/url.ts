@@ -25,46 +25,79 @@ function isPrivateIPv4(host: string): boolean {
   return false;
 }
 
-/** IPv4 dotted form of an IPv4-mapped IPv6 host (`::ffff:7f00:1`). */
-function mappedIPv4(host: string): string | null {
-  const match = /^::ffff:(.+)$/.exec(host);
-  if (!match) return null;
-  const tail = match[1] ?? '';
-  if (tail.includes('.')) return tail;
-  const groups = tail.split(':');
-  if (groups.length !== 2) return null;
-  const hi = Number.parseInt(groups[0] ?? '', 16);
-  const lo = Number.parseInt(groups[1] ?? '', 16);
-  if (Number.isNaN(hi) || Number.isNaN(lo)) return null;
+/** Expand an IPv6 literal (brackets already stripped) into eight hextets. */
+function expandIPv6(host: string): number[] | null {
+  const halves = host.split('::');
+  if (halves.length > 2) return null;
+  const parseGroups = (part: string): number[] | null => {
+    if (part === '') return [];
+    const groups: number[] = [];
+    for (const group of part.split(':')) {
+      if (!/^[0-9a-f]{1,4}$/.test(group)) return null;
+      groups.push(Number.parseInt(group, 16));
+    }
+    return groups;
+  };
+  const head = parseGroups(halves[0] ?? '');
+  const tail = halves.length === 2 ? parseGroups(halves[1] ?? '') : [];
+  if (head === null || tail === null) return null;
+  if (halves.length === 1) return head.length === 8 ? head : null;
+  const missing = 8 - head.length - tail.length;
+  if (missing < 0) return null;
+  return [...head, ...new Array<number>(missing).fill(0), ...tail];
+}
+
+/** Dotted IPv4 for the last two hextets of an IPv6 address. */
+function dottedFromHextets(hi: number, lo: number): string {
   return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
 }
 
 function isPrivateIPv6(host: string): boolean {
-  const mapped = mappedIPv4(host);
-  if (mapped) return isPrivateIPv4(mapped);
-  if (host === '::' || host === '::1') return true;
-  if (/^f[cd][0-9a-f]{2}:/.test(host)) return true; // fc00::/7 unique-local
-  if (/^fe[89ab][0-9a-f]:/.test(host)) return true; // fe80::/10 link-local
+  const hextets = expandIPv6(host);
+  if (hextets === null) return false;
+  if (hextets.every((hextet) => hextet === 0)) return true; // ::
+  if (hextets.slice(0, 7).every((hextet) => hextet === 0) && hextets[7] === 1) {
+    return true; // ::1
+  }
+  if ((hextets[0]! & 0xfe00) === 0xfc00) return true; // fc00::/7 unique-local
+  if ((hextets[0]! & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  // IPv4-mapped (::ffff:a.b.c.d) and IPv4-compatible (::a.b.c.d) forms: the
+  // embedded IPv4 sits in the last two hextets.
+  if (hextets.slice(0, 5).every((hextet) => hextet === 0) && hextets[5] === 0xffff) {
+    return isPrivateIPv4(dottedFromHextets(hextets[6]!, hextets[7]!));
+  }
+  if (hextets.slice(0, 6).every((hextet) => hextet === 0)) {
+    return isPrivateIPv4(dottedFromHextets(hextets[6]!, hextets[7]!));
+  }
+  // NAT64 well-known prefix 64:ff9b::/96 and 6to4 2002::/16 embed an IPv4.
+  if (hextets[0] === 0x0064 && hextets[1] === 0xff9b &&
+    hextets.slice(2, 6).every((hextet) => hextet === 0)) {
+    return isPrivateIPv4(dottedFromHextets(hextets[6]!, hextets[7]!));
+  }
+  if (hextets[0] === 0x2002) {
+    return isPrivateIPv4(dottedFromHextets(hextets[1]!, hextets[2]!));
+  }
   return false;
 }
 
 function isUnreachableHost(hostname: string): boolean {
-  // WHATWG URL keeps the brackets around IPv6 literals.
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  // WHATWG URL keeps the brackets around IPv6 literals; a trailing dot is the
+  // same name to a resolver (`localhost.` still resolves to loopback).
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '');
   if (host === '' || host === 'localhost' || host.endsWith('.localhost')) return true;
   if (host.includes(':')) return isPrivateIPv6(host);
   return isPrivateIPv4(host);
 }
 
 /**
- * `serverAddress` → the copyable OpenAI-compatible base URL, or `""` when the
- * address is not something a public visitor could call.
+ * `serverAddress` → the operator's base URL without a trailing slash, or `""`
+ * when the address is not something a public visitor could call.
  *
- * Preserves a path prefix (`https://host/openai` → `https://host/openai/v1`);
- * query and fragment are rejected because appending `/v1` after them would
- * produce a different URL than the operator configured.
+ * Preserves a path prefix (`https://host/openai`); query and fragment are
+ * rejected because appending `/v1` after them would produce a different URL
+ * than the operator configured.
  */
-export function publicApiEndpoint(serverAddress: string | undefined | null): string {
+export function publicBaseUrl(serverAddress: string | undefined | null): string {
   const raw = (serverAddress ?? '').trim().replace(/\/+$/, '');
   if (!/^https?:\/\//i.test(raw)) return '';
 
@@ -79,5 +112,14 @@ export function publicApiEndpoint(serverAddress: string | undefined | null): str
   if (url.search !== '' || url.hash !== '') return '';
   if (isUnreachableHost(url.hostname)) return '';
 
-  return `${raw}/v1`;
+  return raw;
+}
+
+/**
+ * `serverAddress` → the copyable OpenAI-compatible base URL (`"/v1"` appended),
+ * or `""` when the address is not publicly reachable.
+ */
+export function publicApiEndpoint(serverAddress: string | undefined | null): string {
+  const base = publicBaseUrl(serverAddress);
+  return base === '' ? '' : `${base}/v1`;
 }

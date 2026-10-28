@@ -269,7 +269,14 @@ describe("SiteFooter", () => {
     "http://100.64.0.1",
     "http://0.0.0.0:3000",
     "http://[fd00::1]:3000",
+    // 压缩写法的 ULA / 映射地址 / 尾点 localhost 都是同一类泄露。
+    // （注意 [fc::1] 展开是 00fc:…，不是 ULA；ULA 首段必须是 fc00–fdff。）
+    "http://[fc00::1]",
+    "http://[fdff::1]",
     "http://[::ffff:127.0.0.1]:3000",
+    "http://[::ffff:a00:1]",
+    "http://[64:ff9b::a00:1]",
+    "http://localhost.:3000",
     // userinfo 会把凭据印到公开页面上。
     "http://user:pass@gateway.example.com",
     "10.0.0.1:8080",
