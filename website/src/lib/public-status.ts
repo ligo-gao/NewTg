@@ -53,55 +53,88 @@ export function resolveDocsEnabled(status: PublicStatus | undefined): boolean {
   return isNavEntryVisible(status?.nav, "docs", false, status?.site?.docs_url);
 }
 
+interface StatusSnapshot {
+  status: PublicStatus | undefined;
+  error: Error | undefined;
+  loading: boolean;
+}
+
+const INITIAL_SNAPSHOT: StatusSnapshot = { status: undefined, error: undefined, loading: true };
+
+/**
+ * 页面级共享状态。header、footer、hero CTA 同时挂载时只发一次
+ * `GET /api/status`；成功或失败都留在这个模块里，直到整页卸载。
+ * 请求不再随单个消费者卸载而中止——同页的其他消费者还在用它。
+ */
+let snapshot: StatusSnapshot = INITIAL_SNAPSHOT;
+let inflight: Promise<void> | null = null;
+const listeners = new Set<() => void>();
+
+function publish(next: StatusSnapshot): void {
+  snapshot = next;
+  listeners.forEach((listener) => listener());
+}
+
+function loadStatus(): void {
+  if (inflight !== null || !snapshot.loading) return;
+
+  inflight = fetch("/api/status", {
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+    credentials: "omit",
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new Error(`status request failed: ${response.status}`);
+      }
+      return (await response.json()) as PublicStatus;
+    })
+    .then((data) => {
+      publish({ status: data, error: undefined, loading: false });
+    })
+    .catch((cause: unknown) => {
+      publish({
+        status: undefined,
+        error: cause instanceof Error ? cause : new Error(String(cause)),
+        loading: false,
+      });
+    })
+    .finally(() => {
+      inflight = null;
+    });
+}
+
+/** 测试用：清空模块级缓存，让下一个用例从「未加载」开始。 */
+export function resetPublicStatusCache(): void {
+  snapshot = INITIAL_SNAPSHOT;
+  inflight = null;
+}
+
 /** Fetches the public site status once on mount. */
 export function usePublicStatus(): PublicStatusState {
-  const [status, setStatus] = useState<PublicStatus | undefined>(undefined);
-  const [error, setError] = useState<Error | undefined>(undefined);
-  const [loading, setLoading] = useState(true);
+  const [state, setState] = useState<StatusSnapshot>(() => snapshot);
 
   useEffect(() => {
-    const controller = new AbortController();
-    let active = true;
-
-    async function load() {
-      try {
-        const response = await fetch("/api/status", {
-          cache: "no-store",
-          headers: { Accept: "application/json" },
-          credentials: "omit",
-          signal: controller.signal,
-        });
-        if (!response.ok) {
-          throw new Error(`status request failed: ${response.status}`);
-        }
-        const data = (await response.json()) as PublicStatus;
-        if (!active) return;
-        setStatus(data);
-      } catch (cause) {
-        if (!active) return;
-        setError(cause instanceof Error ? cause : new Error(String(cause)));
-      } finally {
-        if (active) setLoading(false);
-      }
-    }
-
-    void load();
-
+    // 首次渲染与 effect 之间快照可能已更新（另一个消费者先挂载并拿到了响应）。
+    setState(snapshot);
+    const listener = () => setState(snapshot);
+    listeners.add(listener);
+    loadStatus();
     return () => {
-      active = false;
-      controller.abort();
+      listeners.delete(listener);
     };
   }, []);
 
   return {
-    status,
-    loading,
-    error,
-    nav: status?.nav,
-    docsUrl: (status?.site?.docs_url ?? "").trim(),
-    docsEnabled: !loading && error === undefined && resolveDocsEnabled(status),
-    statusPageUrl: (status?.site?.status_page_url ?? "").trim(),
-    serverAddress: (status?.site?.server_address ?? "").trim(),
-    siteTitle: (status?.site?.title ?? "").trim(),
+    status: state.status,
+    loading: state.loading,
+    error: state.error,
+    nav: state.status?.nav,
+    docsUrl: (state.status?.site?.docs_url ?? "").trim(),
+    docsEnabled:
+      !state.loading && state.error === undefined && resolveDocsEnabled(state.status),
+    statusPageUrl: (state.status?.site?.status_page_url ?? "").trim(),
+    serverAddress: (state.status?.site?.server_address ?? "").trim(),
+    siteTitle: (state.status?.site?.title ?? "").trim(),
   };
 }

@@ -8,6 +8,7 @@ import {
   isLocale,
   localeInfo,
 } from "@/config/locales";
+import { languageAlternates } from "@/lib/alternates";
 
 export const dynamicParams = false;
 
@@ -30,7 +31,10 @@ export async function generateMetadata({ params }: LocalePricingProps): Promise<
   return {
     title: pageCopy.meta.title,
     description: pageCopy.meta.description,
-    alternates: { canonical },
+    alternates: {
+      canonical,
+      languages: languageAlternates("pricing"),
+    },
     openGraph: {
       type: "website",
       siteName: "NEWTG",

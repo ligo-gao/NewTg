@@ -24,7 +24,8 @@ const PROBE_TIMEOUT_MS = 1500;
  * 3. 匿名且显式选过 → 按本地选择跳转；从没选过 → 保持当前 URL（分享链接不被劫持）；
  * 4. 失败/超时 → 保持当前 URL，永不阻塞渲染。
  *
- * 顺带按路径设置 `<html lang>`：静态导出无法在构建期按 URL 改根元素。
+ * 顺带按路径兜底设置 `<html lang>`：静态导出时两个根布局已经输出正确的
+ * 语言，这里只覆盖同一文档内跨语言跳转（正常情况下切换语言是整页导航）。
  */
 export function LocalePreferenceRoute() {
   const pathname = usePathname() ?? "";

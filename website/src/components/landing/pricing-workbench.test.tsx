@@ -137,8 +137,20 @@ describe("PricingWorkbench", () => {
     expect(screen.getByText("DALL·E 3")).toBeInTheDocument();
     expect(screen.getAllByText("¥2.50").length).toBeGreaterThan(0);
     expect(screen.getByText("个模型")).toBeInTheDocument();
+    expect(screen.getByText(/共 30 个模型/)).toBeInTheDocument();
     expect(screen.getByText("60s")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not bake a zero model count into the pre-hydration markup", () => {
+    // 静态导出时 fetch 尚未发生：这一帧会原样写进 out/pricing/index.html。
+    fetchMock.mockReturnValue(new Promise(() => undefined));
+    renderWorkbench();
+
+    expect(screen.queryByText(/共 0 个模型/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(new RegExp(getCopy("zh-CN").pricingPage.states.loading)),
+    ).toBeInTheDocument();
   });
 
   it("collapses the secondary pricing rules behind a closed summary", async () => {

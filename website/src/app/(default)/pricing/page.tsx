@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { PricingPage } from "@/components/landing/pricing-page";
 import { getCopy } from "@/config/copy";
 import { site } from "@/config/site";
+import { languageAlternates } from "@/lib/alternates";
 
 const copy = getCopy("zh-CN");
 const pageCopy = copy.pricingPage;
@@ -9,7 +10,10 @@ const pageCopy = copy.pricingPage;
 export const metadata: Metadata = {
   title: pageCopy.meta.title,
   description: pageCopy.meta.description,
-  alternates: { canonical: "/pricing/" },
+  alternates: {
+    canonical: "/pricing/",
+    languages: languageAlternates("pricing"),
+  },
   openGraph: {
     type: "website",
     siteName: site.name,

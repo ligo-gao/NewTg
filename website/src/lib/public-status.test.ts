@@ -1,6 +1,6 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resolveDocsEnabled, usePublicStatus } from "./public-status";
+import { resetPublicStatusCache, resolveDocsEnabled, usePublicStatus } from "./public-status";
 
 const fetchMock = vi.fn();
 
@@ -13,6 +13,8 @@ function jsonResponse(body: unknown, ok = true, status = 200): Response {
 }
 
 beforeEach(() => {
+  // 缓存是模块级的，测试之间必须显式清空，否则后一个用例拿不到自己的响应。
+  resetPublicStatusCache();
   fetchMock.mockReset();
   vi.stubGlobal("fetch", fetchMock);
 });
@@ -115,5 +117,43 @@ describe("usePublicStatus", () => {
 
     expect(result.current.error?.message).toContain("503");
     expect(result.current.docsEnabled).toBe(false);
+  });
+
+  it("shares one /api/status request across every consumer on the page", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        nav: { docs: { enabled: true } },
+        site: { docs_url: "https://docs.newtg.ai" },
+      }),
+    );
+
+    // header、footer、hero CTA 在首页同时挂载；三个 hook 只允许打一次接口。
+    const header = renderHook(() => usePublicStatus());
+    const footer = renderHook(() => usePublicStatus());
+    const hero = renderHook(() => usePublicStatus());
+
+    await waitFor(() => expect(header.result.current.loading).toBe(false));
+    await waitFor(() => expect(footer.result.current.loading).toBe(false));
+    await waitFor(() => expect(hero.result.current.loading).toBe(false));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(footer.result.current.docsEnabled).toBe(true);
+    expect(hero.result.current.docsEnabled).toBe(true);
+  });
+
+  it("reuses the settled response for consumers mounted later", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ nav: { docs: { enabled: true } }, site: { docs_url: "" } }),
+    );
+
+    const first = renderHook(() => usePublicStatus());
+    await waitFor(() => expect(first.result.current.loading).toBe(false));
+    first.unmount();
+
+    const second = renderHook(() => usePublicStatus());
+
+    expect(second.result.current.loading).toBe(false);
+    expect(second.result.current.status).toBeDefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

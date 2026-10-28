@@ -22,6 +22,7 @@ bun run dev --port 3100      # 3000 端口可能被网关占用
 
 - `website/out/` 挂载到 edge 容器的 `/srv/marketing`
 - Caddy 用 `@marketing_home` 接管 `/`、`/en/`、`/zh-TW/`、`/fr/`、`/ru/`、`/ja/`、`/vi/`，并用 `@marketing_assets` 接管 `/_next/*`、`/icon.svg`、`/og.png`
+- `out/robots.txt` 与 `out/sitemap.xml` 由 `src/app/robots.ts`、`src/app/sitemap.ts` 生成；edge 的 `@marketing_assets` 需把这两个路径一并纳入才会对外生效（当前 Caddyfile 尚未包含）
 - 其余路径继续落到控制台 SPA（`/srv/web`），所以 `/sign-in`、`/dashboard`、`/pricing`、`/docs` 等保持原路径不变
 - 官网里的「登录 / 免费开始使用 / 控制台 / 文档」分别指向 `/sign-in`、`/sign-up`、`/dashboard`、`/docs`
 
@@ -49,7 +50,8 @@ cd deploy && docker compose up -d --force-recreate --no-deps gateway worker
 - 导航右侧（移动端为顶栏紧凑码 + 抽屉内完整选择器）的语言选择器跳转到对应路由，并把选择写入 `localStorage` 的 `newtg-locale`
 - 文案在 `src/config/copy/<locale>.ts`；`Copy` 接口强制所有语言的字段一致，漏翻会编译失败
 - `next.config.ts` 开启 `trailingSlash`，每种语言导出为 `out/<locale>/index.html`
-- 页面内联脚本在首帧前把 `html lang` 修正为当前语言
+- `<html lang>` 由路由的根布局在构建期写入：`(default)/layout.tsx` 用默认语言，`(localized)/[locale]/layout.tsx` 用路由参数；不再依赖水合后的脚本
+- `alternates.languages` 为每个页面输出完整 hreflang（含 `x-default`）；`/robots.txt` 与 `/sitemap.xml` 由 `src/app/robots.ts`、`src/app/sitemap.ts` 生成
 - 当前 7 套文案由本次实现提供；上线前建议由母语者校对 fr / ru / ja / vi / zh-TW
 
 ## 定价页
@@ -78,11 +80,14 @@ cd deploy && docker compose up -d --force-recreate --no-deps gateway worker
 ```
 src/
   app/
-    layout.tsx          # 字体、metadata、OG
-    page.tsx            # 首页
-    pricing/page.tsx    # /pricing
-    [locale]/page.tsx   # /<locale>/
-    [locale]/pricing/page.tsx  # /<locale>/pricing/
+    (default)/layout.tsx        # 默认语言根布局：字体、metadata、OG、`html lang`
+    (default)/page.tsx          # 首页
+    (default)/pricing/page.tsx  # /pricing
+    (localized)/[locale]/layout.tsx          # 按路由参数写 `html lang`
+    (localized)/[locale]/page.tsx            # /<locale>/
+    (localized)/[locale]/pricing/page.tsx    # /<locale>/pricing/
+    robots.ts           # /robots.txt
+    sitemap.ts          # /sitemap.xml（含 hreflang）
     globals.css         # 设计 token、按钮、shiki 覆盖、动效
   components/landing/
     site-header.tsx     # 固定毛玻璃导航（客户端）

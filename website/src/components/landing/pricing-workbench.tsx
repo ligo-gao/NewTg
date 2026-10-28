@@ -453,6 +453,13 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
   const facets = catalog?.facets;
   const total = catalog ? Number(catalog.total) : 0;
   const totalSafe = Number.isFinite(total) && total > 0 ? total : 0;
+  // 静态导出的首帧没有 catalog（数据要等客户端请求）。若此时写 "共 0 个模型"，
+  // 这个 0 会被原样固化进 out/pricing/index.html，所以加载中只显示加载文案。
+  const resultsText = catalog
+    ? pageCopy.states.results.replace("{count}", String(totalSafe))
+    : fetchError
+      ? pageCopy.table.dash
+      : pageCopy.states.loading;
   const pageCount = Math.max(1, Math.ceil(totalSafe / query.pageSize));
   const effectiveView: ViewMode = forceCards ? "cards" : view;
   const display = useMemo<PricingDisplay>(
@@ -972,7 +979,7 @@ export function PricingWorkbench({ copy, locale }: { copy: Copy; locale: Locale 
           <div className="flex flex-wrap items-center justify-between gap-3 pb-2.5 pt-3.5">
             <div>
               <p aria-live="polite" className="font-mono text-public-caption text-faint">
-                {pageCopy.states.results.replace("{count}", String(totalSafe))}
+                {resultsText}
                 <span className="text-faint"> · </span>
                 {query.group === "default"
                   ? `${pageCopy.toolbar.groupPrefix}default`

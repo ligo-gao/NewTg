@@ -89,7 +89,10 @@
 		root * /srv/marketing
 		file_server
 	}
-	@marketing_assets path /_next/* /icon.svg /og.png /index.html
+	# 营销站的站点级元数据（P2-19）：robots.txt 与 sitemap.xml 由 Next 静态导出
+	# 生成在 marketing 根目录。不放进这里会落到下面的 SPA 兜底，返回控制台
+	# 的 index.html，爬虫拿到一页 HTML 当 robots.txt。
+	@marketing_assets path /_next/* /icon.svg /og.png /index.html /robots.txt /sitemap.xml
 	handle @marketing_assets {
 		encode gzip zstd
 		root * /srv/marketing
