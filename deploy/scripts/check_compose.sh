@@ -349,6 +349,23 @@ else
   bad "日志库迁移缺少 12 个月分区预建（R-56）"
 fi
 
+# --- j. pg-backup 只清理自己的临时转储（不碰 GFS 归档） -------------------
+# deploy/ops/backup/backup.sh 的产物是 newtg-<ts>[-label]-main.dump，其 GFS
+# 保留（hourly 48h / daily 30d / monthly 12m）依赖这些文件存在。compose 的
+# 一次性备份若沿用同一前缀再做 mtime 清理，就会把生产归档当过期临时文件删掉，
+# 且无法恢复。因此它必须用独立前缀，且 find 只能匹配该前缀。
+if grep -Fq 'newtg-adhoc-' "$compose" &&
+   grep -Fq -- "-name 'newtg-adhoc-*.dump'" "$compose"; then
+  ok "pg-backup 以 newtg-adhoc-* 命名转储，且只清理同前缀文件"
+else
+  bad "pg-backup 必须以 newtg-adhoc-* 命名转储，且 find 只匹配 newtg-adhoc-*.dump"
+fi
+if grep -Fq -- "-name 'newtg-*.dump'" "$compose"; then
+  bad "pg-backup 的清理模式 newtg-*.dump 会删除 ops/backup 的 GFS 归档"
+else
+  ok "pg-backup 清理模式不会匹配 GFS 归档（newtg-<ts>-main.dump）"
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "check_compose: FAIL" >&2
   exit 1

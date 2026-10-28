@@ -115,6 +115,10 @@ services:
       RUN_MODE: gateway
       # 迁移由一次性 migrate 服务以 newtg_migrate 执行；运行时账号无 DDL。
       DB_MIGRATE_ON_START: "false"
+      # Go 软内存上限：让 GC 在 cgroup 硬杀（GATEWAY_MEM_LIMIT）之前先加压。
+      # 默认取 2g 天花板的 80%；调整 GATEWAY_MEM_LIMIT 时必须同步调整本值，
+      # 否则软上限可能高于容器上限而失效（Go 允许 MiB/GiB 后缀）。
+      GOMEMLIMIT: "${GATEWAY_GOMEMLIMIT:-1600MiB}"
       METRICS_ADDR: ":8006"
       METRICS_TOKEN: "${METRICS_TOKEN:-}"
     depends_on:
@@ -173,6 +177,8 @@ services:
       RUN_MODE: worker
       DB_MIGRATE_ON_START: "false"
       NODE_NAME: "${NODE_NAME:-newtg}-worker"
+      # 同 gateway：软上限先于 cgroup 硬杀生效；随 WORKER_MEM_LIMIT 同步调整。
+      GOMEMLIMIT: "${WORKER_GOMEMLIMIT:-1600MiB}"
       # W10-N10/N11：保留/维护主体的日志库 DSN。只授 worker（gateway 不执行
       # DROP/DELETE）；与 app DSN 角色/口令独立，缺失时保留任务 fail-closed。
       DB_RETENTION_DSN: "postgres://newtg_retention:${POSTGRES_RETENTION_PASSWORD:?set POSTGRES_RETENTION_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_LOGS_DB:-newtg_logs}?sslmode=${DATABASE_TLS:-disable}"
@@ -264,21 +270,26 @@ services:
 
   # 按需备份（只读角色 newtg_backup）：
   #   docker compose --profile ops run --rm pg-backup
-  # 只做一次性转储 + 本地保留天数清理（P2-7）：调度与 GFS 保留属生产策略，
-  # 见 deploy/ops/backup/README.md（systemd timer / 外部调度），本服务不排期。
+  # 只做一次性转储 + 清理**自己的**旧转储（P2-7）。调度与 GFS 保留属生产
+  # 策略，见 deploy/ops/backup/README.md（systemd timer / 外部调度），本服务
+  # 不排期。
+  #
+  # 前缀必须是 newtg-adhoc-*：ops/backup/backup.sh 产出的 GFS 归档叫
+  # newtg-<ts>[-label]-main.dump，daily 30 天 / monthly 12 个月都靠它们。
+  # 沿用同一前缀再做 mtime 清理，就会把生产归档当过期临时文件删掉。
   pg-backup:
     image: postgres:16-alpine
     profiles: ["ops"]
     environment:
       PGPASSWORD: "${POSTGRES_BACKUP_PASSWORD:?set POSTGRES_BACKUP_PASSWORD in deploy/.env}"
-      # 本地转储保留天数；生产按 platform-08 §3.2 的 GFS 策略另行配置。
+      # 只作用于 newtg-adhoc-*：GFS 保留按 platform-08 §3.2 另行配置。
       BACKUP_RETENTION_DAYS: "${BACKUP_RETENTION_DAYS:-14}"
     volumes:
       - "./backups:/backups"
     command:
       - "sh"
       - "-c"
-      - "pg_dump -h postgres -U newtg_backup -d ${POSTGRES_DB:-newtg} -Fc -f /backups/newtg-$$(date +%Y%m%d%H%M%S).dump && find /backups -maxdepth 1 -name 'newtg-*.dump' -mtime +$${BACKUP_RETENTION_DAYS} -delete"
+      - "set -eu; ts=$$(date -u +%Y%m%dT%H%M%SZ); pg_dump -h postgres -U newtg_backup -d ${POSTGRES_DB:-newtg} -Fc -f /backups/newtg-adhoc-$$ts.dump && find /backups -maxdepth 1 -name 'newtg-adhoc-*.dump' -mtime +$${BACKUP_RETENTION_DAYS} -delete"
     depends_on:
       postgres:
         condition: service_healthy
