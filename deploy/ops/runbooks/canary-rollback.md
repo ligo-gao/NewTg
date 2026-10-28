@@ -162,7 +162,15 @@ kubectl -n newtg rollout undo deployment/gateway
 回滚后检查：
 
 1. `kubectl rollout status` 完成，所有 Pod Ready；
-2. `/readyz` 200。**R3 是精确相等**：`schema_migrations.version == 二进制内置的期望版本` 且 `dirty=false`（`backend/internal/platform/health.go`）。回滚到旧二进制后，若库已 expand 到更新的版本，必须先执行对应的 `down` 迁移把版本退回旧二进制期望的值（注意 `down` 可能丢数据），否则 Pod 不会 Ready。
+2. `/readyz` 200。**R3 是精确相等**：`schema_migrations.version == 二进制内置的期望版本` 且 `dirty=false`（`backend/internal/platform/health.go`）。回滚到旧二进制后，若库已 expand 到更新的版本，Pod 不会 Ready。处置只有两条：
+   - **回退迁移**（P6 保证本次只有 expand 段，`down` 应可执行）。运行镜像**不含** `golang-migrate` CLI（`RUN_MODE=migrate` 只做 up），须在堡垒机用同一发布版本的迁移目录执行，且必须用 `newtg_migrate`（唯一 DDL 角色）：
+     ```bash
+     migrate -path backend/migrations -database "$MAIN_DSN" down 1
+     migrate -path backend/migrations -database "$MAIN_DSN" version   # 断言 = 旧二进制期望版本
+     ```
+     逐版本回退，直到 `version` 精确等于旧二进制的 `ExpectedSchemaVersion`。`down` 可能丢数据；若残留 `dirty=true`，先按 platform-04 §7 处置（`migrate force <version>` 或从转储恢复）。
+   - **从转储恢复**（§2 步骤 1 的 `newtg-<ts>-prerelease-main.dump`，先 `ops/backup/verify.sh`）。适用于 `down` 不可执行或已产生破坏型变更；代价是丢失备份之后的写入。
+
    platform-07 §5.5 里「期望版本 ≥ 最低需求」只是**未实现的假设**（U-07-5），不能按它判断当前行为。
 3. 5xx 回到基线，A3/A5/A6/A16/A19 消除；
 4. `deploy/ops/loadtest/ledger_check.sh` 全局断言通过（余额/流水）；
