@@ -1,6 +1,11 @@
 import { PublicFooter } from '@/features/public/public-footer'
 import { useI18n } from '@/shared/lib/i18n-context'
 
+// 法人页沿用 auth frame 与共享页脚：frame 负责视口高度与页面背景，
+// 这里不再自己写 min-h-screen。
+import '@/styles/shell-fonts.css'
+import '@/styles/auth-hall.css'
+
 import { LEGAL_LAST_UPDATED } from './legal-meta'
 
 export interface LegalPageProps {
@@ -62,7 +67,9 @@ export function LegalPage({ doc }: LegalPageProps) {
     doc === 'terms' ? t('auth.legal.terms_title') : t('auth.legal.privacy_title')
 
   return (
-    <div className="min-h-screen bg-surface-card text-ink-1">
+    // 高度与背景都由 frame 统一提供：内容区由 `.auth-hall-frame > main`
+    // 吃掉剩余高度，短文档的页脚才会贴在视口底部而不是停在屏幕中间。
+    <div className="auth-hall-frame text-ink-1" data-surface="card">
       <header className="border-b border-border-hairline px-6 py-4">
         <div className="mx-auto flex max-w-[960px] items-center justify-between">
           <span className="text-body font-semibold">{t('auth.shell.brand')}</span>

@@ -43,4 +43,21 @@ describe('LegalPage', () => {
         .getAttribute('href'),
     ).toBe('/legal/terms')
   })
+
+  it('uses the shared auth frame so a short document keeps the footer at the viewport bottom', async () => {
+    const result = await renderWithProviders(<LegalPage doc="privacy" />, [
+      'common',
+      'auth',
+    ])
+
+    const footer = await result.findByRole('contentinfo')
+    const frame = result.container.querySelector('.auth-hall-frame')
+    // 内层不再自己 min-h-screen：高度只由 frame 一份来源分配，短文档的
+    // 页脚才会被内容区的 flex:1 推到视口底部，而不是停在屏幕中间。
+    expect(frame).not.toBeNull()
+    expect(result.container.querySelector('.min-h-screen')).toBeNull()
+    expect(frame?.querySelector('main#main')).not.toBeNull()
+    // 页脚是 frame 的最后一个直接子节点，背景也由 frame 覆盖到底。
+    expect(frame?.lastElementChild).toBe(footer)
+  })
 })

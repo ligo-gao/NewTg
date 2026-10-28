@@ -28,6 +28,10 @@ beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 beforeEach(() => {
   server.use(
     http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(STATUS_BODY)),
+    // AuthHallShell 的共享页脚会探测会话；访客答案 401，页面不展示它。
+    http.get(`${ORIGIN}/api/me`, () =>
+      HttpResponse.json({ type: 'unauthorized', title: 'Unauthorized' }, { status: 401 }),
+    ),
   )
 })
 afterEach(() => server.resetHandlers())

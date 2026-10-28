@@ -2,9 +2,8 @@ import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
+import { DocsPage } from '@/features/public/docs-page'
 import { renderWithProviders } from '@/test-support/providers'
-
-import { DocsRoute } from './docs'
 
 const ORIGIN = 'http://localhost:3000'
 
@@ -22,7 +21,7 @@ describe('/docs page states (F-09-38)', () => {
     )
 
     const { findByText, queryByText, findByRole } = await renderWithProviders(
-      <DocsRoute />,
+      <DocsPage />,
       ['public'],
     )
 

@@ -147,10 +147,14 @@ export function SignInPage({
   const site = siteTitle ?? t('auth.shell.brand')
   const passwordLoginEnabled =
     statusQuery.data?.auth.password_login_enabled ?? true
+  // 与 public-header 同一口径：缓存里有快照就继续用，后台刷新失败不回退成
+  // 致命错误；只有「失败且从未拿到数据」才阻断（此时无法判断 Turnstile）。
+  const statusUnavailable =
+    statusQuery.isError && statusQuery.data === undefined
 
   return (
     <AuthHallShell title={t('auth.sign_in.title', { site })}>
-      {statusQuery.isError ? (
+      {statusUnavailable ? (
         // Without status we cannot know whether Turnstile is required; the
         // form would submit a guaranteed-403 request in the enabled case, so
         // fail visibly instead of guessing "disabled".

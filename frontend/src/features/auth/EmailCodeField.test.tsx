@@ -31,6 +31,11 @@ beforeEach(() => {
         default_language: 'en',
       }),
     ),
+    // 字段本身不探测会话；保留访客答案，防止将来嵌进 auth shell 时出现
+    // 未处理请求。
+    http.get(`${ORIGIN}/api/me`, () =>
+      HttpResponse.json({ type: 'unauthorized', title: 'Unauthorized' }, { status: 401 }),
+    ),
   )
 })
 afterEach(() => server.resetHandlers())

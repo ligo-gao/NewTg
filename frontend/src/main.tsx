@@ -8,14 +8,12 @@ import { router } from '@/app/router'
 
 import '@/styles/tokens.css'
 import '@/styles/tailwind.css'
-// Self-hosted Inter + Noto Sans SC: the same files the marketing site serves,
-// so the shared header renders identical glyphs on both origins.
-import '@/styles/shell-fonts.css'
-// Shared public header/footer (packages/public-shell). Loaded before home.css
-// so a page-level rule can still win when it needs to.
+// Shared public header/footer (packages/public-shell). This is the only
+// route-independent CSS above the layouts: page-level styles (home.css,
+// auth-hall.css) and the self-hosted shell fonts are imported by the layout
+// that actually renders them, so the auth entry no longer downloads the
+// homepage bundle and the console downloads neither.
 import '@newtg/public-shell/styles.css'
-import '@/styles/home.css'
-import '@/styles/auth-hall.css'
 
 const rootElement = document.getElementById('root')
 

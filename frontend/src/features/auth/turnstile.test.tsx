@@ -2,7 +2,7 @@ import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
 import { act, waitFor } from '@testing-library/react'
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { resetTurnstileLoader, type TurnstileRenderOptions } from '@/lib/turnstile'
 import { renderWithProviders } from '@/test-support/providers'
@@ -20,6 +20,10 @@ const LOGIN_URL = `${ORIGIN}/api/auth/login`
 const server = setupServer()
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
+beforeEach(() => {
+  // 注册/找回密码页走 AuthHallShell，共享页脚要探测会话；访客答案 401。
+  server.use(guestMe())
+})
 afterEach(() => {
   server.resetHandlers()
   delete window.turnstile

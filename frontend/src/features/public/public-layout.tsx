@@ -1,5 +1,10 @@
 import type { ReactNode } from 'react'
 
+// 公开页专属样式随布局一起按需加载：登录/注册等 auth 路由不经过这里，
+// 因此不会再下载 57KB 的 home.css。
+import '@/styles/shell-fonts.css'
+import '@/styles/home.css'
+
 import { PublicFooter } from './public-footer'
 import { PublicHeader } from './public-header'
 

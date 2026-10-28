@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { docsDisabled, docsNeedsSignIn, resolveDocsTarget } from './docs'
+import { docsDisabled, docsNeedsSignIn, resolveDocsTarget } from '@/features/public/docs-page'
 
 describe('/docs ruling (F-09-38)', () => {
   it('accepts absolute http(s) and single-slash relative targets', () => {

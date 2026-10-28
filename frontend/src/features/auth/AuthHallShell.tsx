@@ -1,5 +1,10 @@
 import type { ReactNode } from 'react'
 
+// Auth 页面的样式只从这里进入：公开页的 home.css 不再随登录页下载。
+// 自托管字体仍需要——共享页脚与 .ps-shell 与公开页用同一套 Inter / Noto。
+import '@/styles/shell-fonts.css'
+import '@/styles/auth-hall.css'
+
 import { PublicFooter } from '@/features/public/public-footer'
 import { useI18n } from '@/shared/lib/i18n-context'
 

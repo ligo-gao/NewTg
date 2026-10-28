@@ -1,5 +1,6 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
+import { QueryClient } from '@tanstack/react-query'
 import userEvent from '@testing-library/user-event'
 import { waitFor, within } from '@testing-library/react'
 import {
@@ -14,6 +15,7 @@ import {
 } from 'vitest'
 
 import { clearLoginEncryptionKeyCache } from '@/lib/password-encryption'
+import { PUBLIC_STATUS_QUERY_KEY } from '@/lib/public-status'
 import { generateLoginKey } from '@/test-support/crypto'
 import { renderWithProviders } from '@/test-support/providers'
 
@@ -291,6 +293,38 @@ describe('SignInPage submit path', () => {
     await waitFor(() => {
       expect(onNavigate).toHaveBeenCalledWith('/dashboard')
     })
+  })
+
+  it('keeps the form when a status refresh fails but a cached snapshot exists', async () => {
+    // 与 public-header 同一口径：只有「失败且没有任何缓存」才阻断。
+    // 预置一份可用快照，再让挂载后的刷新失败；页面必须继续渲染表单。
+    const client = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, refetchOnWindowFocus: false, staleTime: 0 },
+      },
+    })
+    client.setQueryData(PUBLIC_STATUS_QUERY_KEY, PUBLIC_STATUS)
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () =>
+        HttpResponse.json({ title: 'unavailable' }, { status: 500 }),
+      ),
+    )
+
+    const result = await renderWithProviders(
+      <SignInPage onNavigate={() => {}} />,
+      ['common', 'auth'],
+      { client },
+    )
+
+    expect(await result.findByLabelText('Username or email')).toBeTruthy()
+
+    // 等后台刷新真正落到 error（数据仍在缓存里），再做断言。
+    await waitFor(() => {
+      expect(client.getQueryState(PUBLIC_STATUS_QUERY_KEY)?.status).toBe('error')
+    })
+    expect(client.getQueryState(PUBLIC_STATUS_QUERY_KEY)?.data).toBeDefined()
+    expect(result.queryByText('Could not load sign-in settings.')).toBeNull()
+    expect(result.getByLabelText('Username or email')).toBeTruthy()
   })
 
   it('shows a retryable panel when public status is unavailable', async () => {

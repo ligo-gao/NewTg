@@ -14,16 +14,33 @@
 /* The shared footer follows the hall instead of living inside it: the split
    layout keeps a full viewport height and grows with its content, so the page
    scrolls normally and the two never overlap. `.auth-hall` therefore stays
-   `min-height` (never a fixed `height`), and the frame lets it size itself. */
+   `min-height` (never a fixed `height`), and the frame lets it size itself.
+
+   The frame owns the page background as well: `.ps-footer` is transparent, so
+   without it the strip under the hall/footer falls back to the document
+   canvas and shows a seam in both themes. */
 .auth-hall-frame {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
   min-height: 100dvh;
+  background: var(--home-paper);
 }
 
 .auth-hall-frame > .auth-hall {
   flex: 1 0 auto;
+}
+
+/* 法人页等非 hall 内容同样由 frame 分配高度：main 吃掉剩余空间，
+   页脚被推到视口底部（短文档也不再停在屏幕中间）。 */
+.auth-hall-frame > main {
+  flex: 1 0 auto;
+}
+
+/* 法人页此前用 bg-surface-card；frame 的背景是无层级规则，会盖过 Tailwind
+   utility，因此这里用显式变体保留原来的卡片底色。 */
+.auth-hall-frame[data-surface='card'] {
+  background: var(--surface-card);
 }
 
 .auth-hall {

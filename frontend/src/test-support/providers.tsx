@@ -13,24 +13,36 @@ import { I18nProvider, loadDictionary, type DictionaryModule } from '@/app/provi
  * suites assert English copy. Pin it explicitly instead of relying on stored
  * state, because several suites clear localStorage in their own `beforeEach`.
  */
+/**
+ * 需要预置缓存或观察查询状态的用例可以传入自己的 client（例如验证
+ * 「有缓存 + 刷新失败」仍然可用）；不传时每个测试仍拿到全新的缓存。
+ */
+export interface RenderWithProvidersOptions {
+  client?: QueryClient
+}
+
 export async function renderWithProviders(
   ui: ReactNode,
   modules: readonly DictionaryModule[] = ['common'],
-): Promise<RenderResult> {
+  options: RenderWithProvidersOptions = {},
+): Promise<RenderResult & { client: QueryClient }> {
   await Promise.all(modules.map((module) => loadDictionary('en', module)))
 
-  const client = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false, refetchOnWindowFocus: false, staleTime: 0 },
-      mutations: { retry: 0 },
-    },
-  })
+  const client =
+    options.client ??
+    new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, refetchOnWindowFocus: false, staleTime: 0 },
+        mutations: { retry: 0 },
+      },
+    })
 
-  return render(
+  const result = render(
     <QueryClientProvider client={client}>
       <I18nProvider locale="en" modules={modules}>
         {ui}
       </I18nProvider>
     </QueryClientProvider>,
   )
+  return Object.assign(result, { client })
 }

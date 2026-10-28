@@ -2,7 +2,7 @@ import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
 import userEvent from '@testing-library/user-event'
 import { waitFor } from '@testing-library/react'
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
 
@@ -10,9 +10,32 @@ import { SetupWizard } from './SetupWizard'
 
 const ORIGIN = 'http://localhost:3000'
 
+/** 未初始化站点的状态：/setup 向导本身不读它，共享页脚会读。 */
+const PUBLIC_STATUS = {
+  system_initialized: false,
+  auth: {
+    signup_enabled: true,
+    password_login_enabled: true,
+    email_verification_required: false,
+    turnstile: { enabled: false, site_key: '' },
+  },
+  password_login_encryption_enabled: false,
+  languages: ['en'],
+  default_language: 'en',
+}
+
 const server = setupServer()
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
+beforeEach(() => {
+  // AuthHallShell 同时挂载共享页脚：补上它读的两个接口，避免 MSW 未处理告警。
+  server.use(
+    http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(PUBLIC_STATUS)),
+    http.get(`${ORIGIN}/api/me`, () =>
+      HttpResponse.json({ type: 'unauthorized', title: 'Unauthorized' }, { status: 401 }),
+    ),
+  )
+})
 afterEach(() => server.resetHandlers())
 afterAll(() => server.close())
 

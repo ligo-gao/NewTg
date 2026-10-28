@@ -1,6 +1,6 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
 
@@ -11,6 +11,14 @@ const ORIGIN = 'http://localhost:3000'
 const server = setupServer()
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
+beforeEach(() => {
+  // AuthHallShell 的共享页脚会探测会话；访客答案 401，页面不展示它。
+  server.use(
+    http.get(`${ORIGIN}/api/me`, () =>
+      HttpResponse.json({ type: 'unauthorized', title: 'Unauthorized' }, { status: 401 }),
+    ),
+  )
+})
 afterEach(() => server.resetHandlers())
 afterAll(() => server.close())
 
