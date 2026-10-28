@@ -1,3 +1,5 @@
+import { useId } from 'react'
+
 import type { SettingsSectionResponse } from '@/features/admin/settings/api'
 import { useI18n } from '@/shared/lib/i18n-context'
 import type { TranslateFn } from '@/shared/lib/i18n-context'
@@ -5,7 +7,8 @@ import { StatusBadge } from '@/shared/ui/status-badge'
 
 import type { PerfConfig } from '../api'
 import { formatCount } from '../utils'
-import { ProbeScheduleForm } from './probe-schedule-form'
+import { ZoneRail } from './primitives'
+import { ProbeScheduleForm, SCHEDULE_KEYS } from './probe-schedule-form'
 
 /**
  * 「运行参数」区（Task 17 / adjudications §4–§5）。
@@ -83,7 +86,7 @@ function settingValueText(item: SettingItem, locale: string): string {
   if (typeof item.value === 'string') {
     return item.value === '' ? '—' : item.value
   }
-  if (typeof item.value === 'boolean') return String(item.value)
+  // 布尔值由 SettingValue 提前分流成开/关徽标，走不到这里。
   return JSON.stringify(item.value)
 }
 
@@ -269,6 +272,7 @@ export function SettingsZone({
   onRunNow,
 }: SettingsZoneProps) {
   const { t, locale } = useI18n()
+  const titleId = useId()
 
   const envRows: ParamRow[] = config.env.map((row) => ({
     label: paramLabel(row.key, t),
@@ -284,12 +288,27 @@ export function SettingsZone({
     effect: t('admin.performance.settings.effect_code'),
   }))
 
+  // 副标题的规模 = 本区四个测速键里实际存在于 section 的项数（部署未装配
+  // 调度器时少一些）。缺失的键在表单里本来就是只读，不能算「可在线编辑」。
+  const presentSectionKeys = new Set(section.items.map((item) => item.key))
+  const editableCount = SCHEDULE_KEYS.filter((key) =>
+    presentSectionKeys.has(key),
+  ).length
+
   return (
     <section
       data-testid="settings-zone"
-      aria-label={t('admin.performance.settings.title')}
+      aria-labelledby={titleId}
       className="space-y-4"
     >
+      <ZoneRail
+        titleId={titleId}
+        title={t('admin.performance.settings.title')}
+        sub={t('admin.performance.settings.rail_sub', {
+          count: editableCount,
+        })}
+        note={t('admin.performance.settings.rail_note')}
+      />
       <ProbeScheduleForm
         section={section}
         config={config}
@@ -313,7 +332,7 @@ export function SettingsZone({
       >
         <header>
           <h3 className="text-card-title font-semibold leading-[22px] text-ink-1">
-            {t('admin.performance.settings.readonly')}
+            {t('admin.performance.settings.readonly_title')}
           </h3>
           <p className="mt-1 max-w-[72ch] text-meta text-ink-3">
             {t('admin.performance.settings.readonly_note')}

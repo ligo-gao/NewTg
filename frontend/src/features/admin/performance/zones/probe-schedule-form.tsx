@@ -50,6 +50,9 @@ const NUMERIC_KEYS: readonly ScheduleKey[] = [
 /** 四个键在环境变量层的家族名；页脚说明按整条节奏措辞，不逐键展开。 */
 const SCHEDULE_ENV_CODE = 'PERF_SCHEDULE_*'
 
+/** 开关错误文案的 id；开关与文案互相引用，读屏才能把错误读出来。 */
+const ENABLED_ERROR_ID = 'probe-schedule-enabled-error'
+
 type Draft = Partial<Record<ScheduleKey, string | boolean>>
 type FieldErrors = Partial<Record<ScheduleKey, string>>
 
@@ -365,12 +368,13 @@ export function ProbeScheduleForm({
     onSaved()
   }
 
-  const nextRun =
-    schedule.enabled && schedule.next_run_at !== null
-      ? t('admin.performance.settings.next_run', {
+  const nextRun = !schedule.enabled
+    ? t('admin.performance.settings.next_run_disabled')
+    : schedule.next_run_at === null
+      ? t('admin.performance.settings.next_run_unknown')
+      : t('admin.performance.settings.next_run', {
           time: formatDateTime(schedule.next_run_at, locale),
         })
-      : t('admin.performance.settings.next_run_disabled')
 
   const sourceKind = sourceKindOf(schedule, itemByKey)
   const source = SOURCE_COPY[sourceKind]
@@ -437,6 +441,11 @@ export function ProbeScheduleForm({
               role="switch"
               aria-checked={switchChecked()}
               aria-invalid={fieldErrors['perf.schedule.enabled'] !== undefined}
+              aria-describedby={
+                fieldErrors['perf.schedule.enabled'] === undefined
+                  ? undefined
+                  : ENABLED_ERROR_ID
+              }
               disabled={
                 disabled || !itemByKey.has('perf.schedule.enabled')
               }
@@ -449,7 +458,7 @@ export function ProbeScheduleForm({
           </div>
         </div>
         {fieldErrors['perf.schedule.enabled'] !== undefined ? (
-          <p className="text-meta text-danger">
+          <p id={ENABLED_ERROR_ID} className="text-meta text-danger">
             {fieldErrors['perf.schedule.enabled']}
           </p>
         ) : null}

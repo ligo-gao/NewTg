@@ -340,6 +340,51 @@ describe('ProbeScheduleForm', () => {
 
     expect(await screen.findByText('Must be at most 5.')).toBeTruthy()
     expect(numberInput('Runs per round').value).toBe('9')
+    // TextField 自带 error 段落关联：错误文案要能被读屏读到。
+    const describedBy = numberInput('Runs per round').getAttribute(
+      'aria-describedby',
+    )
+    expect(describedBy).not.toBeNull()
+    expect(document.getElementById(describedBy as string)?.textContent).toBe(
+      'Must be at most 5.',
+    )
+  })
+
+  it('links the enabled switch to its error text and drops the link once cleared', async () => {
+    installSave(() =>
+      HttpResponse.json(
+        {
+          type: 'https://newtg.dev/problems/validation_failed',
+          title: 'Validation failed',
+          errors: [
+            {
+              field: 'perf.schedule.enabled',
+              message: 'The schedule cannot be turned off.',
+            },
+          ],
+        },
+        { status: 422 },
+      ),
+    )
+    await renderForm()
+
+    const toggle = screen.getByRole('switch')
+    expect(toggle.getAttribute('aria-describedby')).toBeNull()
+
+    fireEvent.click(toggle)
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    const message = await screen.findByText(
+      'The schedule cannot be turned off.',
+    )
+    expect(message.id).toBe('probe-schedule-enabled-error')
+    expect(toggle.getAttribute('aria-describedby')).toBe(
+      'probe-schedule-enabled-error',
+    )
+
+    // 再次改动该字段会清掉错误，关联也要随之撤销。
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-describedby')).toBeNull()
   })
 
   it('renders the server-provided next run time without client arithmetic', async () => {
@@ -362,26 +407,56 @@ describe('ProbeScheduleForm', () => {
     expect(screen.getByTestId('probe-next-run').textContent).toBe('Disabled')
   })
 
+  it('reports an unknown next run when the schedule is enabled without a timestamp', async () => {
+    await renderForm({
+      config: config({
+        schedule: schedule({ enabled: true, next_run_at: null }),
+      }),
+    })
+
+    // 启用但没有时间戳 ≠ 已停用：调度器算不出下一次运行。
+    const footer = screen.getByTestId('probe-next-run')
+    expect(footer.textContent).toBe(
+      'Next run: unknown — check the probe interval.',
+    )
+    expect(footer.textContent).not.toBe('Disabled')
+  })
+
   it.each([
     [
       'settings',
       'This page',
       'Running on values saved on this page; PERF_SCHEDULE_* no longer applies.',
+      ['Environment variables', 'Mixed sources'],
+    ],
+    [
+      'env',
+      'Environment variables',
+      'Not saved on this page yet; currently running from PERF_SCHEDULE_*: every 12 h (—) · 3 runs · 2 concurrent. Saving once makes this page authoritative.',
+      ['This page', 'Mixed sources'],
     ],
     [
       'mixed',
       'Mixed sources',
       'Some values come from this page, others from environment variables; saving once makes this page authoritative.',
+      ['This page', 'Environment variables'],
     ],
-  ] as const)('maps source %s to its badge and note', async (source, badge, note) => {
-    await renderForm({
-      config: config({ schedule: schedule({ source }) }),
-    })
+  ] as const)(
+    'maps source %s to its badge and note',
+    async (source, badge, note, absentBadges) => {
+      await renderForm({
+        config: config({ schedule: schedule({ source }) }),
+      })
 
-    const footer = screen.getByTestId('probe-source')
-    expect(footer.textContent).toContain(badge)
-    expect(footer.textContent).toContain(note)
-  })
+      const footer = screen.getByTestId('probe-source')
+      expect(footer.textContent).toContain(badge)
+      expect(footer.textContent).toContain(note)
+      // 三态徽标互斥：另两句徽标文案不能同时出现。
+      for (const absent of absentBadges) {
+        expect(footer.textContent).not.toContain(absent)
+      }
+    },
+  )
 
   it('disables a field that is absent from the section and labels it read-only', async () => {
     await renderForm({
@@ -477,11 +552,14 @@ describe('SettingsZone', () => {
     },
   ]
 
-  async function renderZone(overrides: Partial<PerfConfig> = {}) {
+  async function renderZone(
+    overrides: Partial<PerfConfig> = {},
+    zoneSection: SettingsSectionResponse = section(),
+  ) {
     const onSaved = vi.fn()
     const view = await renderWithProviders(
       <SettingsZone
-        section={section()}
+        section={zoneSection}
         config={config({ settings_groups: GROUPS, ...overrides })}
         canManage
         onSaved={onSaved}
@@ -594,5 +672,92 @@ describe('SettingsZone', () => {
     expect(within(fixed).getByText('30s')).toBeTruthy()
     expect(within(fixed).getByText('Default')).toBeTruthy()
     expect(within(fixed).getByText('Code change required')).toBeTruthy()
+  })
+
+  it('renders the zone rail as the visible heading with the editable key count', async () => {
+    await renderZone()
+
+    const heading = screen.getByRole('heading', { name: 'Runtime settings' })
+    expect(heading.tagName).toBe('H2')
+    // 区块的无障碍名来自这个可见标题，而不是另一份重复文案。
+    expect(
+      screen.getByTestId('settings-zone').getAttribute('aria-labelledby'),
+    ).toBe(heading.id)
+    expect(screen.getByText('4 editable online')).toBeTruthy()
+    expect(
+      screen.getByText(
+        'Saved values are written to the config center; every replica applies them within 5 minutes, no restart required.',
+      ),
+    ).toBeTruthy()
+  })
+
+  it('counts only the schedule keys that exist in the section', async () => {
+    await renderZone(
+      {},
+      section(
+        savedItems().filter(
+          (entry) => entry.key !== 'perf.schedule.concurrency',
+        ),
+      ),
+    )
+
+    expect(screen.getByText('3 editable online')).toBeTruthy()
+  })
+
+  it('localises the cache-ttl and log-pattern rows in server order', async () => {
+    await renderZone({
+      env: [
+        {
+          key: 'PROMETHEUS_TIMEOUT',
+          value: '5s',
+          configured: true,
+          set: true,
+          effect: 'restart',
+        },
+        {
+          key: 'PROMETHEUS_CACHE_TTL',
+          value: '15s',
+          configured: true,
+          set: true,
+          effect: 'restart',
+        },
+        {
+          key: 'LOG_DIR',
+          value: '/var/log/newtg',
+          configured: true,
+          set: true,
+          effect: 'restart',
+        },
+        {
+          key: 'LOG_FILE_PATTERN',
+          value: 'newtg-*.log',
+          configured: true,
+          set: true,
+          effect: 'restart',
+        },
+      ],
+    })
+
+    // 只读区有专用标题，不再复用表单里的「只读」徽标文案。
+    expect(
+      screen.getByRole('heading', {
+        name: 'Deployment parameters (read-only)',
+      }),
+    ).toBeTruthy()
+
+    const env = screen.getByTestId('settings-env-table')
+    const labels = within(env)
+      .getAllByRole('rowheader')
+      .map((cell) => cell.textContent)
+    // 顺序即服务端顺序：新增两行紧跟各自的邻居，不靠前端特判。
+    expect(labels).toEqual([
+      'Monitoring query timeout',
+      'Monitoring query cache',
+      'Log directory',
+      'Log file pattern',
+    ])
+    // 原始键名出现即说明语言键没命中。
+    expect(within(env).queryByText('PROMETHEUS_CACHE_TTL')).toBeNull()
+    expect(within(env).queryByText('LOG_FILE_PATTERN')).toBeNull()
   })
 })
