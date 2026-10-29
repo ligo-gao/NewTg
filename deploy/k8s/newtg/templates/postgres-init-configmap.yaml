@@ -1,0 +1,19 @@
+# initdb 脚本：与 compose 共用同一份 SQL 真源（deploy/postgres-init/）。
+# Helm 只能读 chart 目录内的文件，所以这里放的是副本——由 `make chart-sync-init`
+# 从源目录复制，**不要手改**。verify.sh 会断言两边逐字节一致，改了源文件忘了
+# 同步会直接红。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: newtg-postgres-init
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "postgres") | nindent 4 }}
+data:
+  # 只在空数据卷的 initdb 阶段执行一次：建四个最小权限角色、日志库、指标库。
+  10-roles.sql: |
+    {{- .Files.Get "files/postgres-init/10-roles.sql" | nindent 4 }}
+  20-databases.sql: |
+    {{- .Files.Get "files/postgres-init/20-databases.sql" | nindent 4 }}
+  30-metrics-db.sql: |
+    {{- .Files.Get "files/postgres-init/30-metrics-db.sql" | nindent 4 }}

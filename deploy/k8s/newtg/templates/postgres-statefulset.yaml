@@ -1,0 +1,135 @@
+# PostgreSQL 16：独立数据节点上的单实例 StatefulSet。
+# 不用云托管 PG 是因为「数据库放在不同服务器上」是这套部署的硬要求之一；
+# 单副本 + PDB minAvailable:1 + 独立数据盘是它的可用性边界（不做自动主从）。
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "postgres") | nindent 4 }}
+spec:
+  serviceName: postgres
+  replicas: 1
+  podManagementPolicy: OrderedReady
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "newtg.labels" (dict "root" . "role" "postgres") | nindent 8 }}
+      annotations:
+        checksum/initdb: {{ include (print $.Template.BasePath "/postgres-init-configmap.yaml") . | sha256sum }}
+    spec:
+      # 数据库关闭要等检查点落盘；30s 默认值在写入压力下会变成强制 kill。
+      terminationGracePeriodSeconds: 120
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.postgres.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.postgres.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        # postgres:16-alpine 里的 postgres 用户 uid/gid 都是 70。
+        runAsUser: 70
+        runAsGroup: 70
+        # 数据卷由 kubelet 以 fsGroup 授权给 70，否则 initdb 写不进去。
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # 连接上限是集群级预算：gateway HPA 上限 8 × DB_MAX_OPEN_CONNS 25
+          # = 200，再加 worker/migrate 与运维会话，256 是平台基线。
+          args:
+            - "-c"
+            - "max_connections={{ .Values.postgres.maxConnections }}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            # postgres 需要 SETUID/SETGID 才能从 root 降权？不需要——镜像
+            # 直接以 70 启动；capabilities 全丢后仍能正常 initdb 与监听。
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            # 引导超级用户：只在 initdb 建库/建角色时使用，不当应用身份。
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.user | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.database | quote }}
+            # 四个应用角色口令：只被 initdb 里的 psql \getenv 读取。
+            {{- range $k := list "POSTGRES_APP_PASSWORD" "POSTGRES_MIGRATE_PASSWORD" "POSTGRES_BACKUP_PASSWORD" "POSTGRES_RETENTION_PASSWORD" }}
+            - name: {{ $k }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secrets.existingSecret }}
+                  key: {{ $k }}
+            {{- end }}
+            - name: POSTGRES_LOGS_DB
+              value: {{ .Values.postgres.logsDatabase | quote }}
+            - name: POSTGRES_METRICS_DB
+              value: {{ .Values.postgres.metricsDatabase | quote }}
+            # 数据目录放进卷内子目录：卷根可能有 lost+found，initdb 要求空目录。
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          # pg_isready 只问「能不能连」，不查数据完整性——就绪判定要快。
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: initdb
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+      volumes:
+        - name: initdb
+          configMap:
+            name: newtg-postgres-init
+            defaultMode: 0444
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "newtg.labels" (dict "root" . "role" "postgres") | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # 必填：本地盘 StorageClass（每台数据节点一块盘）。
+        storageClassName: {{ required "storageClass.data 必填（PG/Redis 的本地盘 StorageClass）" .Values.storageClass.data }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.storage.size }}

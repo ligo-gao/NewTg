@@ -75,6 +75,30 @@ redis:
     # 预创建，键：ca.crt（私有 CA）、tls.crt / tls.key（服务端证书）。
     existingSecret: newtg-redis-tls
 
+postgres:
+  image: postgres:16-alpine
+  storage:
+    size: 50Gi
+  # 连接上限是集群级预算：gateway 8 副本 × DB_MAX_OPEN_CONNS 25 = 200，
+  # 再加 worker/migrate 与运维会话。低于 200 就要先降 HPA 上限。
+  maxConnections: 256
+  # 库名与用户名不是密钥，但必须与 Secret 里的四个 DSN 对得上：
+  # 改这里就要同步改 DATABASE_URL / DB_LOGS_DSN / PERF_METRICS_DSN。
+  user: newtg
+  database: newtg
+  logsDatabase: newtg_logs
+  metricsDatabase: newtg_metrics
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      # PG 的内存里 shared_buffers 只占一部分，上限给到 2Gi 留出排序/哈希空间。
+      memory: 2Gi
+  # 数据节点通常打污点独占：让 PG 落在专用机器上，不被应用 Pod 抢 CPU/IO。
+  nodeSelector: {}
+  tolerations: []
+
 storageClass:
   data: "" # 必填：PG/Redis 的本地盘 StorageClass
 

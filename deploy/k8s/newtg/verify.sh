@@ -16,9 +16,19 @@ OUT="$(mktemp)"
 trap 'rm -f "$OUT"' EXIT
 
 "$HELM" lint "$CHART" -f "$CHART/values-ci.yaml"
+
+# initdb SQL 的唯一真源是 deploy/postgres-init/；chart 里那份是 `make
+# chart-sync-init` 的复制物。改了源文件忘记同步，会在这里红。
+if ! diff -r "$ROOT/deploy/postgres-init" "$CHART/files/postgres-init" >/dev/null; then
+  echo "verify: deploy/k8s/newtg/files/postgres-init 与 deploy/postgres-init 不一致，跑 make chart-sync-init" >&2
+  diff -r "$ROOT/deploy/postgres-init" "$CHART/files/postgres-init" >&2 || true
+  exit 1
+fi
+
 "$HELM" template newtg "$CHART" -f "$CHART/values-ci.yaml" >"$OUT"
 
-python3 - "$OUT" <<'PY'
+python3 - "$OUT" "$ROOT/deploy/postgres-init" <<'PY'
+import pathlib
 import sys
 import yaml
 
@@ -166,6 +176,29 @@ for d in docs:
 cert = find("Certificate", "newtg-tls")["spec"]
 assert cert["dnsNames"] == ["app.example.com"], cert["dnsNames"]
 assert cert["secretName"] == main["spec"]["tls"][0]["secretName"], cert["secretName"]
+
+# --- PostgreSQL -------------------------------------------------------------
+pg = find("StatefulSet", "postgres")["spec"]
+assert pg["serviceName"] == "postgres"
+assert pg["replicas"] == 1
+assert pg["podManagementPolicy"] == "OrderedReady"
+pgc = pg["template"]["spec"]["containers"][0]
+# 连接上限必须和 HPA 的连接预算对得上，否则扩容会把 PG 打到 max_connections。
+assert "max_connections=256" in pgc["args"], pgc["args"]
+vct = pg["volumeClaimTemplates"]
+assert len(vct) == 1, len(vct)
+assert vct[0]["spec"]["storageClassName"] == "local-path", vct[0]["spec"]
+pgsvc = find("Service", "postgres")["spec"]
+assert pgsvc["clusterIP"] == "None", pgsvc  # headless
+assert [(p["name"], p["port"]) for p in pgsvc["ports"]] == [("postgres", 5432)]
+assert find("PodDisruptionBudget", "postgres")["spec"]["minAvailable"] == 1
+
+init = find("ConfigMap", "newtg-postgres-init")["data"]
+assert set(init) == {"10-roles.sql", "20-databases.sql", "30-metrics-db.sql"}, set(init)
+# 渲染结果必须与真源逐字节相同：缩进/块标量写错会让 initdb 静默不建角色。
+for name, body in init.items():
+    src = pathlib.Path(sys.argv[2], name).read_text()
+    assert body == src, f"{name} 渲染结果与 deploy/postgres-init/{name} 不一致"
 
 print(f"ok: {len(docs)} docs")
 PY

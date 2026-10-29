@@ -1,0 +1,14 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: postgres
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "postgres") | nindent 4 }}
+spec:
+  # 单副本数据库：任何一次驱逐都意味着停机，节点排空必须由人决定。
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+      app.kubernetes.io/instance: {{ .Release.Name }}

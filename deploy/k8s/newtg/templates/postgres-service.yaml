@@ -1,0 +1,19 @@
+# headless：StatefulSet 的稳定网络标识。DSN 里的 host 就是 postgres。
+# clusterIP: None 意味着没有 Service 级负载均衡——单实例不需要，也不会让
+# 客户端缓存到陈旧端点。
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "postgres") | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
