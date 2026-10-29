@@ -1,5 +1,6 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
+import userEvent from '@testing-library/user-event'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { renderWithProviders } from '@/test-support/providers'
@@ -107,5 +108,71 @@ describe('SignUpPage status gate', () => {
 
     const link = await result.findByRole('link', { name: /Sign in to/ })
     expect(link.getAttribute('href')).toBe('/sign-in')
+  })
+})
+
+describe('SignUpPage submit errors', { timeout: 20000 }, () => {
+  async function fillForm() {
+    // Typing six fields through the real event pipeline is slower than the
+    // 5s default; the timer delay adds nothing to what these cases assert.
+    const user = userEvent.setup({ delay: null })
+    const result = await renderWithProviders(
+      <SignUpPage onNavigate={() => {}} />,
+      ['common', 'auth'],
+    )
+
+    await user.type(await result.findByLabelText('Username'), 'tomleo02')
+    await user.type(result.getByLabelText('Email'), 'fresh@example.com')
+    await user.type(result.getByLabelText('Verification code'), '123456')
+    await user.type(result.getByLabelText('Password'), 'Str0ngPass!2026')
+    await user.type(result.getByLabelText('Confirm password'), 'Str0ngPass!2026')
+    await user.click(result.getByRole('checkbox'))
+    return { user, result }
+  }
+
+  it('explains an expired verification code instead of the generic failure', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(statusBody(true))),
+      http.post(`${ORIGIN}/api/auth/register`, () =>
+        HttpResponse.json(
+          {
+            type: 'https://newtg.dev/problems/bad_request',
+            title: 'Invalid or expired verification code',
+            status: 400,
+          },
+          { status: 400 },
+        ),
+      ),
+    )
+
+    const { user, result } = await fillForm()
+    await user.click(result.getByRole('button', { name: 'Create account' }))
+
+    expect(
+      await result.findByText(
+        'The verification code is invalid or has expired. Request a new one.',
+      ),
+    ).toBeTruthy()
+  })
+
+  it('keeps the generic message for other 400s', async () => {
+    server.use(
+      http.get(`${ORIGIN}/api/status`, () => HttpResponse.json(statusBody(true))),
+      http.post(`${ORIGIN}/api/auth/register`, () =>
+        HttpResponse.json(
+          {
+            type: 'https://newtg.dev/problems/bad_request',
+            title: 'Password is too weak or has been compromised',
+            status: 400,
+          },
+          { status: 400 },
+        ),
+      ),
+    )
+
+    const { user, result } = await fillForm()
+    await user.click(result.getByRole('button', { name: 'Create account' }))
+
+    expect(await result.findByText('Registration failed. Please try again.')).toBeTruthy()
   })
 })

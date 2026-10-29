@@ -163,6 +163,14 @@ export function SignUpPage({
         setFormError(t('auth.sign_up.disabled'))
       } else if (caught instanceof ApiError && caught.status === 422) {
         setFormError(t('auth.sign_up.domain_not_allowed'))
+      } else if (
+        caught instanceof ApiError &&
+        caught.status === 400 &&
+        caught.title === 'Invalid or expired verification code'
+      ) {
+        // 400 也可能是弱口令等服务端校验；只有验证码这一条有明确文案，
+        // 其余仍走通用兜底，避免把口令问题误报成验证码问题。
+        setFormError(t('auth.sign_up.invalid_code'))
       } else {
         setFormError(t('auth.sign_up.error'))
       }
