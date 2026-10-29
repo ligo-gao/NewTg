@@ -804,5 +804,50 @@
       "hint": "保存済みエンドポイントへ固定のサンプルイベントを送信します。有効化スイッチとイベント購読には左右されません。",
       "offline": "オフラインです。接続を確認して再試行してください。"
     }
+  },
+  "smtp": {
+    "test": {
+      "button": "接続テスト",
+      "testing": "テスト中…",
+      "retry_in": "再試行（{seconds}s）",
+      "hint": "保存済みの設定でサーバーアドレス、TLS、ログイン、送信者を順に確認します。メールは送信しません。",
+      "configured_required": "テストする前にサーバーアドレスと送信者アドレスを保存してください。",
+      "not_configured": "先に SMTP サーバーアドレスと送信者アドレスを保存してください。",
+      "rate_limited": "接続テストの回数が多すぎます。しばらくしてから再試行してください。",
+      "offline": "ネットワークがオフラインです。接続を確認して再試行してください。",
+      "failed": "テスト失敗：{reason}",
+      "failed_at": "「{stage}」で停止：{reason}",
+      "success": "SMTP 設定は利用可能です。メールは送信されていません。",
+      "steps_label": "接続テストの手順",
+      "code": "コード {code}",
+      "stage": {
+        "dns": "DNS 解決",
+        "connect": "接続",
+        "tls": "TLS",
+        "greeting": "サーバー応答",
+        "auth": "ログイン",
+        "mail_from": "送信者チェック"
+      },
+      "status": {
+        "passed": "成功",
+        "failed": "失敗",
+        "skipped": "スキップ"
+      },
+      "reason": {
+        "config_incomplete": "設定が不完全です。サーバーアドレスと送信者アドレスが必要です。",
+        "dns_not_found": "サーバーアドレスを解決できません。綴りを確認してください。",
+        "dns_error": "DNS 参照に失敗しました。",
+        "connect_timeout": "接続がタイムアウトしました。ファイアウォールがポートを遮断している可能性があります。",
+        "connect_refused": "接続が拒否されました。ポートと暗号化方式を確認してください。",
+        "connect_failed": "TCP 接続を確立できません。",
+        "tls_cert_invalid": "TLS 証明書の検証に失敗しました。",
+        "tls_failed": "TLS ハンドシェイクに失敗しました。暗号化方式とポートを確認してください。",
+        "starttls_unsupported": "サーバーが STARTTLS を提供していません。SSL または none を使用してください。",
+        "greeting_failed": "SMTP の応答がありません。このポートは SMTP ではない可能性があります。",
+        "auth_failed": "ログインに失敗しました。アカウントとパスワードを確認してください。",
+        "auth_unsupported": "サーバーが AUTH に対応していません。暗号化方式を確認するか、強制 AUTH を無効にしてください。",
+        "mail_from_rejected": "送信者が拒否されました。送信者アドレスがこのアカウントのものか確認してください。"
+      }
+    }
   }
 }

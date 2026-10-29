@@ -91,7 +91,7 @@ export interface SectionConfig {
    * `/api/settings/test/webhook`; keeping it declarative means one card can
    * carry the shape without the shell knowing about notify.webhook.
    */
-  testKind?: 'webhook'
+  testKind?: 'webhook' | 'smtp'
 }
 
 export interface TabConfig {
@@ -235,7 +235,8 @@ const AUTH: SectionConfig = {
       hintKey: hint('auth.password_login_enabled'),
     }),
     toggle('auth.mfa.admin_required', label('auth.mfa.admin_required')),
-    toggle('auth.mfa.admin_hardware_required', label('auth.mfa.admin_hardware_required')),
+    // R-04：auth.mfa.admin_hardware_required（硬件密钥）本期不实现，已从 UI 移除；
+    // 注册表默认 false，保留键位以便显式关闭。
     toggle('auth.email_verification_required', label('auth.email_verification_required'), {
       hintKey: hint('auth.email_verification_required'),
     }),
@@ -549,6 +550,9 @@ const NOTIFY_SMTP: SectionConfig = {
   id: 'notify.smtp',
   titleKey: 'settings.section.notify_smtp',
   descriptionKey: 'settings.section_description.notify_smtp',
+  // The probe reads the saved snapshot and never sends mail, so it works
+  // before the channel is enabled anywhere else.
+  testKind: 'smtp',
   fields: [
     text('notify.smtp.host', label('notify.smtp.host'), { maxLength: 256 }),
     number('notify.smtp.port', label('notify.smtp.port'), { min: 1, max: 65_535 }),

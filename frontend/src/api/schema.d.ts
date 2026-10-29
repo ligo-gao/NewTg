@@ -411,9 +411,12 @@ export interface paths {
         put?: never;
         /**
          * 口令登录（可选前端加密与 2FA 挑战）
-         * @description 口令通过后：未启用 2FA 直接建立会话（200 AuthSessionResponse）；
-         *     已启用返回 200 Pending2FAResponse（ticket 5 分钟），需再调用
-         *     POST /api/auth/2fa/challenge。连续 5 次失败锁定 15 分钟（双桶
+         * @description 口令通过后：未启用 2FA（且非未绑定管理员）直接建立会话
+         *     （200 AuthSessionResponse）；已启用返回 200 Pending2FAResponse
+         *     （pending_2fa，ticket 5 分钟），需再调用 POST /api/auth/2fa/challenge；
+         *     未绑定 TOTP 的管理员（auth.mfa.admin_required=true）返回
+         *     mfa_enrollment_required（ticket 10 分钟），只能用于
+         *     POST /api/auth/2fa/enroll/*。连续 5 次失败锁定 15 分钟（双桶
          *     Redis 计数）；封禁账号 401。所有失败（含解密失败）响应一致，防 oracle。
          */
         post: operations["login"];
@@ -439,6 +442,72 @@ export interface paths {
          *     码并发提交只有一次成功）。成功 200 + 会话 Cookie。
          */
         post: operations["submitTwoFAChallenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/2fa/enroll/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 生成 TOTP 种子与 otpauth URI（强制绑定引导第一步）
+         * @description 不写任何状态，可反复调用刷新二维码。ticket 缺失/过期/已消费 → 400
+         *     two_factor_ticket_invalid；非管理员票据 403；已绑定 409；无口令账号
+         *     403；按 IP 限流 429。
+         */
+        post: operations["setupMFAEnrollment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/2fa/enroll/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 校验 TOTP 并生成备用码（尚不启用）
+         * @description 验证通过后把密文种子与备用码哈希暂存 10 分钟，返回一次性备用码明文；
+         *     此时 totp_enabled 仍为 false，必须再调用 confirm。验证码错误计入
+         *     IP+用户名失败桶与 ticket 失败次数（第 5 次作废票据）。
+         */
+        post: operations["enableMFAEnrollment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/2fa/enroll/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 确认已保存备用码、启用 TOTP 并签发会话
+         * @description backup_codes_confirmed 必须为 true，否则 400 且 totp_enabled 不变。
+         *     成功后原子写入 totp_enabled=true、消费 ticket、下发会话与 CSRF Cookie；
+         *     并发确认只有一次成功（其余 409/400）。
+         */
+        post: operations["confirmMFAEnrollment"];
         delete?: never;
         options?: never;
         head?: never;
@@ -729,9 +798,10 @@ export interface paths {
         put?: never;
         post?: never;
         /**
-         * 硬删除账号并匿名化 PII（无宽限）
-         * @description 全量再认证通过后：吊销全部会话 → PII 匿名化（历史记录改
-         *     deleted_{id}）→ 硬删除 users/api_tokens 行 → 失效令牌缓存。成功 204。
+         * 硬删除账号（无宽限）
+         * @description 全量再认证通过后：吊销全部会话 → 硬删除 users/api_tokens 行 →
+         *     失效令牌缓存。成功 204。audit_logs 为 append-only，历史审计行保留
+         *     操作发生时的用户名快照，由保留期作业按整行清理（不做运行时改写）。
          *     管理员账号必须先被降权（403）；再认证失败 403 reauth_required。
          *     账号行已不存在时 404（PRD 的「幂等」指重复删除不产生额外副作用）。
          */
@@ -1543,8 +1613,9 @@ export interface paths {
         post?: never;
         /**
          * 删除用户（前置条件：已封禁）
-         * @description 目标必须已是 disabled，否则 409。硬删 + PII 匿名化（历史记录改
-         *     deleted_{id}）。不能删除自己（400）。成功 204。
+         * @description 目标必须已是 disabled，否则 409。硬删（audit_logs 为 append-only，
+         *     历史行保留操作时的用户名快照，由保留期作业整行清理）。不能删除自己
+         *     （400）。成功 204。
          */
         delete: operations["deleteUser"];
         options?: never;
@@ -3483,6 +3554,38 @@ export interface paths {
          *     样例 payload 不是事件契约（业务 payload 归模块 01/03/04）。
          */
         post: operations["testWebhookSettings"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/test/smtp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 分阶段探测已保存的 SMTP 配置
+         * @description 配置取自**已保存**的 `notify.smtp.*` 快照；请求体为空。依次执行
+         *     DNS 解析、TCP 连接、TLS（`ssl` 直连 / `starttls` 协商 / `none` 记为跳过）、
+         *     SMTP 问候、AUTH（无凭证且未强制 AUTH 时跳过）、`MAIL FROM`；任一步失败
+         *     立即停止，`steps` 因此只包含已执行的阶段。
+         *
+         *     **不进入 DATA、不发送任何邮件。** 探测结果始终是 200：`ok=false` 是
+         *     探测结论而不是 HTTP 错误。失败阶段回传固定枚举 `reason` 与服务器数字码
+         *     `smtp_code`，绝不回传服务器原文（SMTP 的 5xx 文本常回显地址，属 PII）。
+         *
+         *     host 或发件地址为空 → 422
+         *     `type=https://newtg.dev/problems/smtp_not_configured`（补齐后可重试）。
+         *     限流 3 次/分钟/管理员。审计动作 `settings.test_smtp`，detail 仅
+         *     host/port/ok/stage/reason/smtp_code，不含账号、发件地址或密码。
+         */
+        post: operations["testSMTPConnection"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6463,6 +6566,13 @@ export interface components {
             group_tags?: string[] | null;
             rate_limit?: number | null;
             auto_ban: boolean;
+            /**
+             * @description 渠道级私网出站 opt-in（R-01 / security-04 §2.4）。false（默认）时
+             *     该渠道的 base_url 与重定向目标不得落在 RFC1918/ULA/loopback/
+             *     link-local；true 仅放行 RFC1918/ULA，loopback 与云元数据地址仍拒绝。
+             *     切换该值需要 channels:manage_sensitive 权限并写审计。
+             */
+            allow_private_network: boolean;
             test_model?: string | null;
             remark?: string | null;
             tag?: string | null;
@@ -7633,16 +7743,23 @@ export interface components {
         };
         Pending2FAResponse: {
             /**
-             * @description 判别字段；客户端据此跳转 2FA challenge 页。
+             * @description 判别字段。`pending_2fa`：已启用 2FA，客户端跳转 challenge 页。
+             *     `mfa_enrollment_required`：管理员尚未绑定 TOTP 且
+             *     auth.mfa.admin_required=true，客户端跳转强制绑定引导页。
              * @enum {string}
              */
-            status: "pending_2fa";
-            /** @description 一次性 ticket（5 分钟），只能兑换一次正式会话；不包含用户身份。 */
+            status: "pending_2fa" | "mfa_enrollment_required";
+            /**
+             * @description 一次性 ticket；`pending_2fa` 为 5 分钟（兑换正式会话），
+             *     `mfa_enrollment_required` 为 10 分钟（只能用于
+             *     POST /api/auth/2fa/enroll/*）。不包含用户身份。
+             */
             ticket: string;
         };
         /**
-         * @description 口令通过后二选一：未启用 2FA 直接建会话（AuthSessionResponse）；已启用
-         *     返回 pending_2fa + ticket，客户端再调用 POST /api/auth/2fa/challenge。
+         * @description 口令通过后二选一：未启用 2FA（且非未绑定管理员）直接建会话
+         *     （AuthSessionResponse）；已启用返回 pending_2fa + ticket；
+         *     未绑定管理员返回 mfa_enrollment_required + ticket（R-04）。
          *     用 oneOf 而非可空分支，是为了让生成的类型系统强制前端处理两条路径。
          */
         LoginResponse: components["schemas"]["AuthSessionResponse"] | components["schemas"]["Pending2FAResponse"];
@@ -7660,6 +7777,37 @@ export interface components {
              * @enum {string}
              */
             type?: "totp" | "backup";
+        };
+        MFAEnrollTicketRequest: {
+            /** @description login 响应中的 mfa_enrollment_required ticket。 */
+            ticket: string;
+        };
+        TwoFASetupResponse: {
+            /** @description base32 TOTP 种子，仅本次响应出现；已启用时再调用返回 409。 */
+            secret: string;
+            /**
+             * Format: uri
+             * @description otpauth:// URI，供前端渲染二维码。
+             */
+            otpauth_url: string;
+        };
+        MFAEnrollEnableRequest: {
+            ticket: string;
+            /** @description setup 响应中的 base32 种子。 */
+            secret: string;
+            /** @description 验证器当前的 6 位码。 */
+            code: string;
+        };
+        MFAEnrollBackupCodesResponse: {
+            /** @enum {string} */
+            status: "backup_codes_ready";
+            /** @description 8 组备用码明文，仅本次响应出现；服务端只存 argon2id 哈希。 */
+            backup_codes: string[];
+        };
+        MFAEnrollConfirmRequest: {
+            ticket: string;
+            /** @description 必须为 true；未确认已保存备用码时不得启用 TOTP。 */
+            backup_codes_confirmed: boolean;
         };
         /**
          * @description 恒返回 204——邮箱存在与否响应完全一致（防枚举）；存在时投递一次性
@@ -7859,9 +8007,10 @@ export interface components {
             new_password: string;
         };
         /**
-         * @description DELETE /api/account 是硬删除 + PII 匿名化（R-04 无宽限），成功 204。
-         *     再认证失败 403 reauth_required；账号行已不存在时 404（重复删除不产生
-         *     额外副作用，但不是 204 成功态）。
+         * @description DELETE /api/account 是硬删除（R-04 无宽限），成功 204。audit_logs 为
+         *     append-only，历史审计行保留操作发生时的用户名快照，由保留期作业整行
+         *     清理。再认证失败 403 reauth_required；账号行已不存在时 404（重复删除
+         *     不产生额外副作用，但不是 204 成功态）。
          */
         DeleteAccountRequest: {
             /** @description 必须与当前用户名逐字一致。 */
@@ -7944,15 +8093,6 @@ export interface components {
             channel: components["schemas"]["NotificationChannel"];
             /** @enum {boolean} */
             sent: true;
-        };
-        TwoFASetupResponse: {
-            /** @description base32 TOTP 种子，仅本次响应出现；已启用时再调用返回 409。 */
-            secret: string;
-            /**
-             * Format: uri
-             * @description otpauth:// URI，供前端渲染二维码。
-             */
-            otpauth_url: string;
         };
         TwoFAEnableRequest: {
             /** @description 上一步 setup 返回的 secret（服务端校验 32 位 base32 / 20 字节）。 */
@@ -10665,6 +10805,36 @@ export interface components {
             ok: boolean;
             /** @description 目标 HTTP 状态码原样回传（3xx 不跟随）。 */
             status_code: number;
+        };
+        /** @description POST /api/settings/test/smtp 结果中的一个阶段。 */
+        SMTPTestStep: {
+            /**
+             * @description 执行阶段；数组顺序即执行顺序。
+             * @enum {string}
+             */
+            stage: "dns" | "connect" | "tls" | "greeting" | "auth" | "mail_from";
+            /**
+             * @description skipped 仅用于 tls（encryption=none）与 auth（无凭证且未强制 AUTH）。
+             * @enum {string}
+             */
+            status: "passed" | "failed" | "skipped";
+            /**
+             * @description 失败分类（仅 status=failed 时出现）；固定枚举，绝不透传服务器原文。
+             * @enum {string}
+             */
+            reason?: "config_incomplete" | "dns_not_found" | "dns_error" | "connect_timeout" | "connect_refused" | "connect_failed" | "tls_cert_invalid" | "tls_failed" | "starttls_unsupported" | "greeting_failed" | "auth_failed" | "auth_unsupported" | "mail_from_rejected";
+            /** @description 服务器数字码（如 535/550），仅 status=failed 且服务器有应答时出现；不含文本。 */
+            smtp_code?: number;
+        };
+        /**
+         * @description POST /api/settings/test/smtp 的响应。探测不投递邮件；`ok=false` 是探测
+         *     结论，HTTP 状态仍为 200。
+         */
+        SMTPTestResult: {
+            /** @description 是否走到 MAIL FROM 且服务器接受。 */
+            ok: boolean;
+            /** @description 已执行的阶段按执行顺序返回；失败即停止，后续阶段不出现。 */
+            steps: components["schemas"]["SMTPTestStep"][];
         };
         /**
          * @description POST /api/settings/notify-webhook:resume 的响应。恢复只清除运行时状态
@@ -13484,6 +13654,93 @@ export interface operations {
             503: components["responses"]["Error503"];
         };
     };
+    setupMFAEnrollment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MFAEnrollTicketRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TwoFASetupResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            429: components["responses"]["Error429"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    enableMFAEnrollment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MFAEnrollEnableRequest"];
+            };
+        };
+        responses: {
+            /** @description 验证码通过，备用码只在此响应出现 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MFAEnrollBackupCodesResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            429: components["responses"]["Error429"];
+            503: components["responses"]["Error503"];
+        };
+    };
+    confirmMFAEnrollment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MFAEnrollConfirmRequest"];
+            };
+        };
+        responses: {
+            /** @description 已启用 2FA 并建立会话 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthSessionResponse"];
+                };
+            };
+            400: components["responses"]["Error400"];
+            403: components["responses"]["Error403"];
+            409: components["responses"]["Error409"];
+            429: components["responses"]["Error429"];
+            503: components["responses"]["Error503"];
+        };
+    };
     requestPasswordReset: {
         parameters: {
             query?: never;
@@ -13917,7 +14174,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description 账号已删除并匿名化 */
+            /** @description 账号已删除 */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -15387,7 +15644,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description 已删除并匿名化 */
+            /** @description 已删除 */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -19127,6 +19384,62 @@ export interface operations {
             };
             /** @description 连接失败或超时（未收到 HTTP 响应，固定文案） */
             504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    testSMTPConnection: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+                 *     Authorization: Bearer 路径豁免（无 CSRF 风险）。
+                 */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 探测完成（成功与否由 `ok` / `steps` 表达） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SMTPTestResult"];
+                };
+            };
+            401: components["responses"]["Error401"];
+            403: components["responses"]["Error403"];
+            /** @description 保存的 SMTP 配置缺 host 或发件地址，无可探测对象 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            429: components["responses"]["Error429"];
+            /** @description 服务端内部错误（如密钥解封失败）；响应为固定文案，不泄露内部细节 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description 探测器未装配；响应为固定文案 */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

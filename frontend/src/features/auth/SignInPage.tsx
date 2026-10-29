@@ -22,6 +22,12 @@ import { TurnstileWidget } from './TurnstileWidget'
 export interface SignInPageProps {
   /** Sanitized `?redirect=` target from the route. */
   redirect?: string
+  /**
+   * `?reason=` marker from the route. `mfa_enrollment_required` means an
+   * administrator session was refused until TOTP enrollment completes (R-04)
+   * and the only way forward is signing in again.
+   */
+  reason?: string
   /** Injected by the route (and by tests) to keep this component router-free. */
   onNavigate?: (destination: string) => void
   siteTitle?: string
@@ -63,10 +69,12 @@ function signInErrorMessage(error: unknown, t: TranslateFn): string {
  */
 export function SignInPage({
   redirect,
+  reason,
   onNavigate = defaultNavigate,
   siteTitle,
 }: SignInPageProps) {
   const { t } = useI18n()
+  const mfaEnrollmentRequired = reason === 'mfa_enrollment_required'
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | undefined>(undefined)
@@ -79,15 +87,19 @@ export function SignInPage({
   const turnstile = statusQuery.data?.auth.turnstile
   const turnstileEnabled = turnstile?.enabled ?? false
 
-  // An authenticated visitor must never see the sign-in form again.
+  // An authenticated visitor must never see the sign-in form again. The
+  // exception is the forced MFA-enrollment re-login: the old session cookie is
+  // still valid and `GET /api/me` is whitelisted, so redirecting to the
+  // dashboard would land straight back on the 403 wall.
   const meQuery = useQuery(meQueryOptions())
   const alreadyNavigated = useRef(false)
   useEffect(() => {
+    if (mfaEnrollmentRequired) return
     if (meQuery.data !== undefined && !alreadyNavigated.current) {
       alreadyNavigated.current = true
       onNavigate('/dashboard')
     }
-  }, [meQuery.data, onNavigate])
+  }, [meQuery.data, onNavigate, mfaEnrollmentRequired])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
@@ -110,11 +122,19 @@ export function SignInPage({
       )
 
       if ('status' in data) {
+        // R-04：管理员未绑定 TOTP 时服务端不发会话，只给一次性绑定票据；
+        // 必须先去引导页完成绑定，而不是走「验证已有 TOTP」的挑战页。
+        // 生成状态字面量尚未包含新值（schema.d.ts 未更新），按字符串比较。
+        const status: string = data.status
+        const target =
+          status === 'mfa_enrollment_required'
+            ? '/two-factor-enroll'
+            : '/two-factor-challenge'
         const params = new URLSearchParams({ ticket: data.ticket })
         if (redirect !== undefined && redirect !== '') {
           params.set('redirect', redirect)
         }
-        onNavigate(`/two-factor-challenge?${params.toString()}`)
+        onNavigate(`${target}?${params.toString()}`)
         return
       }
 
@@ -154,6 +174,13 @@ export function SignInPage({
 
   return (
     <AuthHallShell title={t('auth.sign_in.title', { site })}>
+      {mfaEnrollmentRequired ? (
+        <div className="mb-[22px]">
+          <FormAlert tone="warning">
+            {t('auth.sign_in.mfa_enrollment_required')}
+          </FormAlert>
+        </div>
+      ) : null}
       {statusUnavailable ? (
         // Without status we cannot know whether Turnstile is required; the
         // form would submit a guaranteed-403 request in the enabled case, so

@@ -804,5 +804,50 @@
       "hint": "會對已儲存的端點傳送固定範例事件；不受啟用開關與事件訂閱影響。",
       "offline": "網路已中斷，請檢查連線後再試。"
     }
+  },
+  "smtp": {
+    "test": {
+      "button": "測試連線",
+      "testing": "正在測試…",
+      "retry_in": "重試（{seconds}s）",
+      "hint": "依已儲存的設定逐步檢查伺服器位址、TLS、登入與寄件者；不會寄送郵件。",
+      "configured_required": "請先儲存伺服器位址與寄件位址再測試。",
+      "not_configured": "請先儲存 SMTP 伺服器位址與寄件位址。",
+      "rate_limited": "連線測試過於頻繁，請稍後重試。",
+      "offline": "網路已中斷，請檢查連線後重試。",
+      "failed": "測試失敗：{reason}",
+      "failed_at": "卡在「{stage}」：{reason}",
+      "success": "SMTP 設定可用；未寄送任何郵件。",
+      "steps_label": "連線測試步驟",
+      "code": "代碼 {code}",
+      "stage": {
+        "dns": "DNS 解析",
+        "connect": "連線伺服器",
+        "tls": "TLS 加密",
+        "greeting": "伺服器問候",
+        "auth": "身分驗證",
+        "mail_from": "寄件者檢查"
+      },
+      "status": {
+        "passed": "通過",
+        "failed": "失敗",
+        "skipped": "略過"
+      },
+      "reason": {
+        "config_incomplete": "設定不完整：需要伺服器位址與寄件位址。",
+        "dns_not_found": "伺服器位址無法解析，請檢查拼寫。",
+        "dns_error": "DNS 查詢失敗。",
+        "connect_timeout": "連線逾時，可能被防火牆攔截。",
+        "connect_refused": "連線被拒絕，請檢查連接埠與加密方式。",
+        "connect_failed": "無法建立 TCP 連線。",
+        "tls_cert_invalid": "TLS 憑證驗證失敗。",
+        "tls_failed": "TLS 握手失敗，請檢查加密方式與連接埠。",
+        "starttls_unsupported": "伺服器未提供 STARTTLS，請改用 SSL 或 none。",
+        "greeting_failed": "未收到 SMTP 問候，此連接埠可能不是 SMTP。",
+        "auth_failed": "驗證失敗，請檢查帳號與密碼。",
+        "auth_unsupported": "伺服器不支援 AUTH，請檢查加密方式或關閉強制 AUTH。",
+        "mail_from_rejected": "寄件者被拒，請檢查寄件位址是否屬於此帳號。"
+      }
+    }
   }
 }

@@ -207,6 +207,24 @@ describe('SignInPage submit path', () => {
     })
   })
 
+  it('routes an mfa_enrollment_required response to the enrollment page (R-04)', async () => {
+    server.use(
+      http.get(KEY_URL, () => HttpResponse.json({ enabled: false })),
+      http.post(LOGIN_URL, () =>
+        HttpResponse.json({ status: 'mfa_enrollment_required', ticket: 'enroll-7' }),
+      ),
+    )
+
+    const onNavigate = vi.fn()
+    await submitSignIn('/profile', onNavigate)
+
+    await waitFor(() => {
+      expect(onNavigate).toHaveBeenCalledWith(
+        '/two-factor-enroll?ticket=enroll-7&redirect=%2Fprofile',
+      )
+    })
+  })
+
   it('forces a password change when the session is restricted', async () => {
     server.use(
       http.get(KEY_URL, () => HttpResponse.json({ enabled: false })),
@@ -350,6 +368,54 @@ describe('SignInPage submit path', () => {
 
     failing = false
     await user.click(result.getByRole('button', { name: 'Retry' }))
+    expect(await result.findByLabelText('Username or email')).toBeTruthy()
+  })
+})
+
+describe('SignInPage MFA re-login prompt (R-04)', () => {
+  const PROMPT =
+    'Your security policy requires administrators to sign in again and finish setting up two-factor authentication.'
+
+  it('renders the policy prompt when reason=mfa_enrollment_required', async () => {
+    const result = await renderWithProviders(
+      <SignInPage reason="mfa_enrollment_required" onNavigate={() => {}} />,
+      ['common', 'auth'],
+    )
+
+    const alert = await result.findByRole('alert')
+    expect(alert.textContent).toContain(PROMPT)
+  })
+
+  it('does not render the prompt without the reason marker', async () => {
+    const result = await renderWithProviders(<SignInPage onNavigate={() => {}} />, [
+      'common',
+      'auth',
+    ])
+
+    await result.findByLabelText('Username or email')
+    expect(result.queryByText(PROMPT)).toBeNull()
+  })
+
+  it('keeps the form for an existing session instead of bouncing to the dashboard', async () => {
+    // The unbound administrator still holds a valid session cookie, and
+    // GET /api/me is whitelisted: without suppressing the auto-redirect the
+    // prompt would be instantly replaced by /dashboard and its 403s.
+    server.use(
+      http.get(`${ORIGIN}/api/me`, () =>
+        HttpResponse.json({ username: 'admin', role: 'admin', status: 'enabled' }),
+      ),
+    )
+
+    const onNavigate = vi.fn()
+    const result = await renderWithProviders(
+      <SignInPage reason="mfa_enrollment_required" onNavigate={onNavigate} />,
+      ['common', 'auth'],
+    )
+
+    await waitFor(() => {
+      expect(result.client.getQueryState(['me'])?.status).toBe('success')
+    })
+    expect(onNavigate).not.toHaveBeenCalled()
     expect(await result.findByLabelText('Username or email')).toBeTruthy()
   })
 })

@@ -161,3 +161,86 @@ describe('global auth failure handling (web-00 §9.6)', () => {
     expect(calls).toBe(1)
   })
 })
+
+describe('MFA enrollment required handling (R-04)', () => {
+  const mfaProblem = () =>
+    parseProblem({
+      status: 403,
+      body: {
+        type: 'https://newtg.dev/problems/mfa_enrollment_required',
+        title: 'Forbidden',
+        detail: 'Enroll in two-factor authentication to continue',
+      },
+    })
+
+  it('clears the me cache and redirects exactly once for concurrent 403s', async () => {
+    const client = createQueryClient()
+    client.setQueryData(['me'], { username: 'admin', role: 'admin' })
+    const mfaEnrollmentRequired = vi.fn()
+    setAuthFailureHandlers({ mfaEnrollmentRequired })
+
+    await Promise.allSettled([
+      client.fetchQuery({
+        queryKey: ['admin-users', 'page'],
+        queryFn: async () => {
+          throw mfaProblem()
+        },
+      }),
+      client.fetchQuery({
+        queryKey: ['admin-channels', 'page'],
+        queryFn: async () => {
+          throw mfaProblem()
+        },
+      }),
+    ])
+
+    // A burst of 403s must collapse into a single navigation; the cached
+    // identity must not survive as if the session were still usable.
+    expect(mfaEnrollmentRequired).toHaveBeenCalledTimes(1)
+    expect(client.getQueryState(['me'])).toBeUndefined()
+  })
+
+  it('does not react to an ordinary 403', async () => {
+    const client = createQueryClient()
+    client.setQueryData(['me'], { username: 'admin', role: 'admin' })
+    const mfaEnrollmentRequired = vi.fn()
+    setAuthFailureHandlers({ mfaEnrollmentRequired })
+
+    await expect(
+      client.fetchQuery({
+        queryKey: ['admin-users', 'page'],
+        queryFn: async () => {
+          throw parseProblem({ status: 403 })
+        },
+      }),
+    ).rejects.toThrow()
+
+    expect(mfaEnrollmentRequired).not.toHaveBeenCalled()
+    expect(client.getQueryState(['me'])?.data).toBeDefined()
+  })
+
+  it('does not redirect again from the sign-in page itself', async () => {
+    const previous = `${location.pathname}${location.search}`
+    window.history.replaceState({}, '', '/sign-in?reason=mfa_enrollment_required')
+    try {
+      const client = createQueryClient()
+      client.setQueryData(['me'], { username: 'admin', role: 'admin' })
+      const mfaEnrollmentRequired = vi.fn()
+      setAuthFailureHandlers({ mfaEnrollmentRequired })
+
+      await expect(
+        client.fetchQuery({
+          queryKey: ['status-widget'],
+          queryFn: async () => {
+            throw mfaProblem()
+          },
+        }),
+      ).rejects.toThrow()
+
+      // The landing page's own requests must not bounce back onto it.
+      expect(mfaEnrollmentRequired).not.toHaveBeenCalled()
+    } finally {
+      window.history.replaceState({}, '', previous)
+    }
+  })
+})

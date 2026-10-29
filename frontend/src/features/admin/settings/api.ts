@@ -202,6 +202,53 @@ export interface WebhookTestResult {
  * `Retry-After` on 429 reaches callers via `ApiError`.
  */
 export async function testWebhook(signal?: AbortSignal): Promise<WebhookTestResult> {
+  const response = await postSettingsTest('/api/settings/test/webhook', signal)
+  if (!response.ok) throw await normalizeError(response)
+  return (await response.json()) as WebhookTestResult
+}
+
+/** One SMTP stage; `steps` is ordered by execution and stops at the first failure. */
+export interface SMTPTestStep {
+  stage: 'dns' | 'connect' | 'tls' | 'greeting' | 'auth' | 'mail_from'
+  status: 'passed' | 'failed' | 'skipped'
+  /** Fixed server-side enum; never raw SMTP text. */
+  reason?: string
+  /** Numeric SMTP reply code (e.g. 535/550), when the server replied. */
+  smtp_code?: number
+}
+
+/** Response of `POST /api/settings/test/smtp`. */
+export interface SMTPTestResult {
+  /** Reached MAIL FROM and the server accepted it. */
+  ok: boolean
+  steps: SMTPTestStep[]
+}
+
+/**
+ * Probes the **saved** `notify.smtp.*` snapshot stage by stage.
+ *
+ * The probe never enters DATA, so no mail is delivered. A failed probe is
+ * still HTTP 200 with `ok=false`; only 422 (not configured), 429 (rate
+ * limited), 5xx and transport failures throw.
+ */
+export async function testSMTP(signal?: AbortSignal): Promise<SMTPTestResult> {
+  const response = await postSettingsTest('/api/settings/test/smtp', signal)
+  if (!response.ok) throw await normalizeError(response)
+  return (await response.json()) as SMTPTestResult
+}
+
+/**
+ * Shared POST for the administrator-only settings probes (webhook / SMTP).
+ *
+ * Transport handling mirrors `features/admin/notifications/api.ts`:
+ * - a `TypeError` from `fetch` is a transport failure, normalized to a
+ *   status-0 Problem so the panel's offline branch is reachable;
+ * - an `AbortError` is rethrown unchanged (an unmount/cancel is not a failure);
+ * - `403 csrf_failed` refreshes the session cookie via `GET /api/me` and
+ *   replays exactly once with the re-read token.
+ * `Retry-After` on 429 reaches callers via `ApiError`.
+ */
+async function postSettingsTest(path: string, signal?: AbortSignal): Promise<Response> {
   const headers = new Headers({ Accept: 'application/json' })
   const csrfToken = getCsrfToken()
   if (csrfToken !== undefined) headers.set(CSRF_HEADER, csrfToken)
@@ -215,7 +262,7 @@ export async function testWebhook(signal?: AbortSignal): Promise<WebhookTestResu
 
   const dispatch = async (): Promise<Response> => {
     try {
-      return await fetch(apiUrl('/api/settings/test/webhook'), init)
+      return await fetch(apiUrl(path), init)
     } catch (error) {
       // 调用方主动取消不是传输失败，必须原样抛出让 React Query 丢弃结果。
       if (error instanceof DOMException && error.name === 'AbortError') throw error
@@ -238,8 +285,7 @@ export async function testWebhook(signal?: AbortSignal): Promise<WebhookTestResu
     response = await dispatch()
   }
 
-  if (!response.ok) throw await normalizeError(response)
-  return (await response.json()) as WebhookTestResult
+  return response
 }
 
 /** Payment settings compliance status for the current administrator. */

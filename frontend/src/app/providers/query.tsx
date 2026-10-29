@@ -8,7 +8,11 @@ import { useState, type ReactNode } from 'react'
 
 import { ApiError, type ApiErrorKind } from '@/api/errors'
 
-import { reportServerError, isUnauthorizedError } from './auth-failures'
+import {
+  isMfaEnrollmentRequired,
+  isUnauthorizedError,
+  reportServerError,
+} from './auth-failures'
 
 /**
  * Web-00 §5.4 retry policy: one backing-off attempt for transient failures,
@@ -40,11 +44,18 @@ function shouldRetryQuery(failureCount: number, error: unknown): boolean {
 export function createQueryClient(): QueryClient {
   const client: QueryClient = new QueryClient({
     // Cache-level error hooks (v5): every query/mutation failure passes through
-    // here, which is where the global 401 / forced-password-change landings
-    // live. They are wired on the caches rather than per-call so a forgotten
-    // handler in one feature cannot leave the user staring at a generic error.
+    // here, which is where the global 401 / forced-password-change /
+    // forced-MFA-enrollment landings live. They are wired on the caches rather
+    // than per-call so a forgotten handler in one feature cannot leave the user
+    // staring at a generic error.
     queryCache: new QueryCache({
       onError: (error, query) => {
+        if (isMfaEnrollmentRequired(error)) {
+          // The cached identity belongs to a session the server refuses to
+          // use until enrollment completes: drop it instead of leaving
+          // guards/feature headers reading an unusable admin identity.
+          client.removeQueries({ queryKey: ['me'] })
+        }
         if (isUnauthorizedError(error) && query.queryKey[0] !== 'me') {
           // A dead session must not stay cached as an identity: guards and
           // feature headers read `['me']` directly, and refetching it here
@@ -56,6 +67,9 @@ export function createQueryClient(): QueryClient {
     }),
     mutationCache: new MutationCache({
       onError: (error) => {
+        if (isMfaEnrollmentRequired(error)) {
+          client.removeQueries({ queryKey: ['me'] })
+        }
         if (isUnauthorizedError(error)) {
           void client.invalidateQueries({ queryKey: ['me'], refetchType: 'none' })
         }

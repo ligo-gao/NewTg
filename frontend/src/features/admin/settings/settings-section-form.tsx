@@ -15,7 +15,9 @@ import {
   fetchSettingsSection,
   fieldErrorsOf,
   saveSettingsSection,
+  testSMTP,
   testWebhook,
+  type SMTPTestStep,
   type SettingsItem,
 } from './api'
 import type { FieldConfig, SectionConfig } from './sections'
@@ -623,6 +625,20 @@ export function SettingsSectionForm({
   const webhookUrlConfigured =
     typeof storedWebhookUrl === 'string' && storedWebhookUrl.trim() !== ''
 
+  // Same rule as the backend's Configured(): host plus a sender address.
+  // `from_email` falls back to `username` server-side, so an empty
+  // from_email with a saved username is still testable.
+  const storedSMTPSetting = (key: string): string => {
+    const entry = itemByKey.get(key)
+    if (entry === undefined) return ''
+    const value = baselineValue(entry)
+    return typeof value === 'string' ? value.trim() : ''
+  }
+  const smtpConfigured =
+    storedSMTPSetting('notify.smtp.host') !== '' &&
+    (storedSMTPSetting('notify.smtp.from_email') !== '' ||
+      storedSMTPSetting('notify.smtp.username') !== '')
+
   return (
     <section
       data-testid={`settings-section-${config.id}`}
@@ -715,6 +731,9 @@ export function SettingsSectionForm({
                 disabled={saving}
                 urlConfigured={webhookUrlConfigured}
               />
+            ) : null}
+            {config.testKind === 'smtp' && !readOnly ? (
+              <SMTPTestPanel disabled={saving} configured={smtpConfigured} />
             ) : null}
             <div className="flex items-center justify-end gap-2">
               {dirty && !readOnly ? (
@@ -909,6 +928,182 @@ function WebhookTestPanel({ disabled, urlConfigured }: WebhookTestPanelProps) {
         </Button>
       </div>
       {result !== null ? <FormAlert tone={result.tone}>{result.message}</FormAlert> : null}
+    </div>
+  )
+}
+
+interface SMTPTestPanelProps {
+  disabled: boolean
+  /** Saved host plus sender address; the probe reads the saved snapshot. */
+  configured: boolean
+}
+
+interface SMTPOutcome {
+  tone: TestTone
+  message: string
+  steps?: SMTPTestStep[]
+}
+
+/**
+ * "Test connection" action for the SMTP section.
+ *
+ * The backend probes the **saved** configuration stage by stage and stops at
+ * the first failure, so the returned `steps` show exactly where the
+ * connection broke. It never enters DATA: no mail is delivered, and a failed
+ * probe is still HTTP 200 with `ok=false`.
+ */
+function SMTPTestPanel({ disabled, configured }: SMTPTestPanelProps) {
+  const { t } = useI18n()
+  const countdown = useCountdown()
+  const [running, setRunning] = useState(false)
+  const [outcome, setOutcome] = useState<SMTPOutcome | null>(null)
+  // Abort the in-flight probe when the card unmounts (tab switch,
+  // navigation); a 15 s probe must not outlive its reader.
+  const inFlight = useRef<AbortController | null>(null)
+
+  useEffect(() => () => inFlight.current?.abort(), [])
+
+  // Server enums are frozen, but unknown values fall back to the raw token:
+  // a future stage/reason must still be diagnosable instead of rendering a
+  // missing-key placeholder.
+  function lookup(prefix: string, value: string): string {
+    const key = `${prefix}.${value}`
+    const text = t(key)
+    return text === key ? value : text
+  }
+  const stageLabel = (stage: string) => lookup('settings.smtp.test.stage', stage)
+  const reasonLabel = (reason: string) => lookup('settings.smtp.test.reason', reason)
+  const statusLabel = (status: string) => lookup('settings.smtp.test.status', status)
+
+  const blocked = disabled || running || countdown.running || !configured
+
+  async function run(): Promise<void> {
+    const controller = new AbortController()
+    inFlight.current?.abort()
+    inFlight.current = controller
+    setRunning(true)
+    setOutcome(null)
+    try {
+      const response = await testSMTP(controller.signal)
+      if (controller.signal.aborted) return
+      const failed = response.steps.find((step) => step.status === 'failed')
+      if (response.ok) {
+        setOutcome({
+          tone: 'success',
+          message: t('settings.smtp.test.success'),
+          steps: response.steps,
+        })
+      } else {
+        setOutcome({
+          tone: 'danger',
+          message:
+            failed === undefined
+              ? t('settings.smtp.test.failed', { reason: '' })
+              : t('settings.smtp.test.failed_at', {
+                  stage: stageLabel(failed.stage),
+                  reason:
+                    failed.reason === undefined || failed.reason === ''
+                      ? ''
+                      : reasonLabel(failed.reason),
+                }),
+          steps: response.steps,
+        })
+      }
+    } catch (error) {
+      // A deliberate cancel is not a result; the unmount path must stay silent.
+      if (error instanceof DOMException && error.name === 'AbortError') return
+      if (error instanceof ApiError) {
+        if (error.kind === 'rate_limited') {
+          // Server-declared window; never invent a duration.
+          const seconds = error.retry_after ?? 60
+          countdown.start(seconds)
+          setOutcome({ tone: 'warning', message: t('settings.smtp.test.rate_limited') })
+        } else if (error.status === 422) {
+          setOutcome({
+            tone: 'danger',
+            message: error.type.endsWith('/smtp_not_configured')
+              ? t('settings.smtp.test.not_configured')
+              : t('settings.smtp.test.failed', { reason: error.detail ?? error.title }),
+          })
+        } else if (error.kind === 'offline') {
+          setOutcome({ tone: 'danger', message: t('settings.smtp.test.offline') })
+        } else {
+          setOutcome({
+            tone: 'danger',
+            message: t('settings.smtp.test.failed', { reason: error.detail ?? error.title }),
+          })
+        }
+      } else {
+        setOutcome({
+          tone: 'danger',
+          message: t('settings.smtp.test.failed', {
+            reason: error instanceof Error ? error.message : String(error),
+          }),
+        })
+      }
+    } finally {
+      if (inFlight.current === controller) {
+        inFlight.current = null
+        setRunning(false)
+      }
+    }
+  }
+
+  const label = countdown.running
+    ? t('settings.smtp.test.retry_in', { seconds: countdown.seconds })
+    : running
+      ? t('settings.smtp.test.testing')
+      : t('settings.smtp.test.button')
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p id="smtp-test-hint" className="text-meta text-ink-3">
+          {configured
+            ? t('settings.smtp.test.hint')
+            : t('settings.smtp.test.configured_required')}
+        </p>
+        <Button
+          variant="secondary"
+          onClick={() => void run()}
+          disabled={blocked}
+          aria-describedby="smtp-test-hint"
+        >
+          {label}
+        </Button>
+      </div>
+      {outcome !== null ? <FormAlert tone={outcome.tone}>{outcome.message}</FormAlert> : null}
+      {outcome?.steps !== undefined && outcome.steps.length > 0 ? (
+        <ol
+          className="flex flex-col gap-1 text-meta text-ink-2"
+          aria-label={t('settings.smtp.test.steps_label')}
+        >
+          {outcome.steps.map((step) => (
+            <li key={step.stage} className="flex flex-wrap items-center gap-2">
+              <span
+                className={
+                  step.status === 'passed'
+                    ? 'text-success'
+                    : step.status === 'failed'
+                      ? 'text-danger'
+                      : 'text-ink-3'
+                }
+              >
+                {statusLabel(step.status)}
+              </span>
+              <span className="text-ink-1">{stageLabel(step.stage)}</span>
+              {step.reason !== undefined && step.reason !== '' ? (
+                <span>{reasonLabel(step.reason)}</span>
+              ) : null}
+              {step.smtp_code !== undefined && step.smtp_code !== 0 ? (
+                <span className="text-ink-3">
+                  {t('settings.smtp.test.code', { code: step.smtp_code })}
+                </span>
+              ) : null}
+            </li>
+          ))}
+        </ol>
+      ) : null}
     </div>
   )
 }

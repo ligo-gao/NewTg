@@ -569,7 +569,8 @@
       "trigger_already_running": "The task is already running or queued.",
       "trigger_forbidden": "You do not have permission to trigger this task.",
       "trigger_unavailable_worker": "No worker instance is online, so this task cannot be triggered."
-    }},
+    }
+  },
   "notification_templates": {
     "entry": {
       "title": "Notification templates",
@@ -802,6 +803,51 @@
       "url_required": "Save an endpoint URL before sending a test.",
       "hint": "Sends a fixed sample event to the saved endpoint. Independent of the enable switch and event subscription.",
       "offline": "You are offline. Check your connection and try again."
+    }
+  },
+  "smtp": {
+    "test": {
+      "button": "Test connection",
+      "testing": "Testing…",
+      "retry_in": "Retry ({seconds}s)",
+      "hint": "Checks the saved server address, TLS, sign-in and sender step by step; no email is sent.",
+      "configured_required": "Save the server address and sender address before testing.",
+      "not_configured": "Save the SMTP server address and sender address first.",
+      "rate_limited": "Connection tests are too frequent; try again shortly.",
+      "offline": "Network is offline; check the connection and retry.",
+      "failed": "Test failed: {reason}",
+      "failed_at": "Stopped at \"{stage}\": {reason}",
+      "success": "SMTP configuration is usable. No email was sent.",
+      "steps_label": "Connection test steps",
+      "code": "Code {code}",
+      "stage": {
+        "dns": "DNS lookup",
+        "connect": "Connect",
+        "tls": "TLS",
+        "greeting": "Server greeting",
+        "auth": "Sign-in",
+        "mail_from": "Sender check"
+      },
+      "status": {
+        "passed": "Passed",
+        "failed": "Failed",
+        "skipped": "Skipped"
+      },
+      "reason": {
+        "config_incomplete": "Configuration is incomplete: server address and sender address are required.",
+        "dns_not_found": "The server address does not resolve. Check the spelling.",
+        "dns_error": "DNS lookup failed.",
+        "connect_timeout": "Connection timed out; a firewall may be blocking the port.",
+        "connect_refused": "Connection refused. Check the port and encryption mode.",
+        "connect_failed": "Could not open a TCP connection.",
+        "tls_cert_invalid": "TLS certificate validation failed.",
+        "tls_failed": "TLS handshake failed. Check the encryption mode and port.",
+        "starttls_unsupported": "The server does not offer STARTTLS. Use SSL or none.",
+        "greeting_failed": "No SMTP greeting; this port may not speak SMTP.",
+        "auth_failed": "Sign-in failed. Check the account and password.",
+        "auth_unsupported": "The server does not support AUTH. Check the encryption mode or turn off forced AUTH.",
+        "mail_from_rejected": "The sender was rejected. Check that the sender address belongs to this account."
+      }
     }
   }
 }

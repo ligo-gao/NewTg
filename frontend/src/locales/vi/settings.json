@@ -804,5 +804,50 @@
       "hint": "Gửi một sự kiện mẫu cố định tới điểm cuối đã lưu; không phụ thuộc công tắc bật và đăng ký sự kiện.",
       "offline": "Bạn đang ngoại tuyến. Kiểm tra kết nối và thử lại."
     }
+  },
+  "smtp": {
+    "test": {
+      "button": "Kiểm tra kết nối",
+      "testing": "Đang kiểm tra…",
+      "retry_in": "Thử lại ({seconds}s)",
+      "hint": "Kiểm tra lần lượt địa chỉ máy chủ, TLS, đăng nhập và người gửi đã lưu; không gửi email.",
+      "configured_required": "Hãy lưu địa chỉ máy chủ và địa chỉ người gửi trước khi kiểm tra.",
+      "not_configured": "Hãy lưu địa chỉ máy chủ SMTP và địa chỉ người gửi trước.",
+      "rate_limited": "Kiểm tra kết nối quá thường xuyên; vui lòng thử lại sau.",
+      "offline": "Mạng đang ngoại tuyến; hãy kiểm tra kết nối và thử lại.",
+      "failed": "Kiểm tra thất bại: {reason}",
+      "failed_at": "Dừng tại “{stage}”: {reason}",
+      "success": "Cấu hình SMTP khả dụng. Không có email nào được gửi.",
+      "steps_label": "Các bước kiểm tra kết nối",
+      "code": "Mã {code}",
+      "stage": {
+        "dns": "Phân giải DNS",
+        "connect": "Kết nối",
+        "tls": "TLS",
+        "greeting": "Chào của máy chủ",
+        "auth": "Đăng nhập",
+        "mail_from": "Kiểm tra người gửi"
+      },
+      "status": {
+        "passed": "Đạt",
+        "failed": "Lỗi",
+        "skipped": "Bỏ qua"
+      },
+      "reason": {
+        "config_incomplete": "Cấu hình chưa đầy đủ: cần địa chỉ máy chủ và địa chỉ người gửi.",
+        "dns_not_found": "Không phân giải được địa chỉ máy chủ. Hãy kiểm tra chính tả.",
+        "dns_error": "Truy vấn DNS thất bại.",
+        "connect_timeout": "Kết nối quá thời gian; tường lửa có thể đang chặn cổng.",
+        "connect_refused": "Kết nối bị từ chối. Hãy kiểm tra cổng và chế độ mã hóa.",
+        "connect_failed": "Không thể mở kết nối TCP.",
+        "tls_cert_invalid": "Xác thực chứng chỉ TLS thất bại.",
+        "tls_failed": "Bắt tay TLS thất bại. Hãy kiểm tra chế độ mã hóa và cổng.",
+        "starttls_unsupported": "Máy chủ không hỗ trợ STARTTLS. Hãy dùng SSL hoặc none.",
+        "greeting_failed": "Không có lời chào SMTP; cổng này có thể không phải SMTP.",
+        "auth_failed": "Đăng nhập thất bại. Hãy kiểm tra tài khoản và mật khẩu.",
+        "auth_unsupported": "Máy chủ không hỗ trợ AUTH. Hãy kiểm tra chế độ mã hóa hoặc tắt AUTH bắt buộc.",
+        "mail_from_rejected": "Người gửi bị từ chối. Hãy kiểm tra địa chỉ người gửi có thuộc tài khoản này không."
+      }
+    }
   }
 }

@@ -804,5 +804,50 @@
       "hint": "Envoie un événement d'exemple fixe au point de terminaison enregistré. Indépendant de l'activation et des abonnements.",
       "offline": "Vous êtes hors ligne. Vérifiez votre connexion et réessayez."
     }
+  },
+  "smtp": {
+    "test": {
+      "button": "Tester la connexion",
+      "testing": "Test en cours…",
+      "retry_in": "Réessayer ({seconds} s)",
+      "hint": "Vérifie pas à pas l'adresse du serveur, TLS, la connexion et l'expéditeur enregistrés ; aucun e-mail n'est envoyé.",
+      "configured_required": "Enregistrez l'adresse du serveur et l'adresse d'expédition avant de tester.",
+      "not_configured": "Enregistrez d'abord l'adresse du serveur SMTP et l'adresse d'expédition.",
+      "rate_limited": "Les tests de connexion sont trop fréquents ; réessayez bientôt.",
+      "offline": "Le réseau est hors ligne ; vérifiez la connexion et réessayez.",
+      "failed": "Échec du test : {reason}",
+      "failed_at": "Bloqué à « {stage} » : {reason}",
+      "success": "La configuration SMTP est utilisable. Aucun e-mail envoyé.",
+      "steps_label": "Étapes du test de connexion",
+      "code": "Code {code}",
+      "stage": {
+        "dns": "Résolution DNS",
+        "connect": "Connexion",
+        "tls": "TLS",
+        "greeting": "Accueil du serveur",
+        "auth": "Authentification",
+        "mail_from": "Vérification de l'expéditeur"
+      },
+      "status": {
+        "passed": "Réussi",
+        "failed": "Échec",
+        "skipped": "Ignoré"
+      },
+      "reason": {
+        "config_incomplete": "Configuration incomplète : l'adresse du serveur et l'adresse d'expédition sont requises.",
+        "dns_not_found": "L'adresse du serveur ne se résout pas. Vérifiez l'orthographe.",
+        "dns_error": "La résolution DNS a échoué.",
+        "connect_timeout": "Délai de connexion dépassé ; un pare-feu bloque peut-être le port.",
+        "connect_refused": "Connexion refusée. Vérifiez le port et le mode de chiffrement.",
+        "connect_failed": "Impossible d’ouvrir une connexion TCP.",
+        "tls_cert_invalid": "La validation du certificat TLS a échoué.",
+        "tls_failed": "La poignée de main TLS a échoué. Vérifiez le mode de chiffrement et le port.",
+        "starttls_unsupported": "Le serveur ne propose pas STARTTLS. Utilisez SSL ou none.",
+        "greeting_failed": "Pas d'accueil SMTP ; ce port n'est peut-être pas SMTP.",
+        "auth_failed": "L'authentification a échoué. Vérifiez le compte et le mot de passe.",
+        "auth_unsupported": "Le serveur ne prend pas en charge AUTH. Vérifiez le mode de chiffrement ou désactivez l'AUTH forcée.",
+        "mail_from_rejected": "L'expéditeur a été refusé. Vérifiez que l'adresse appartient à ce compte."
+      }
+    }
   }
 }

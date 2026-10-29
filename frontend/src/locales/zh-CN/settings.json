@@ -804,5 +804,50 @@
       "hint": "将向已保存的端点发送一条固定样例事件；不受启用开关与事件订阅影响。",
       "offline": "网络已断开，请检查连接后重试。"
     }
+  },
+  "smtp": {
+    "test": {
+      "button": "测试连接",
+      "testing": "正在测试…",
+      "retry_in": "重试（{seconds}s）",
+      "hint": "按已保存的配置逐步检查服务器地址、TLS、登录与发件人；不会发送邮件。",
+      "configured_required": "请先保存服务器地址与发件地址再测试。",
+      "not_configured": "请先保存 SMTP 服务器地址与发件地址。",
+      "rate_limited": "连接测试过于频繁，请稍后重试。",
+      "offline": "网络已断开，请检查连接后重试。",
+      "failed": "测试失败：{reason}",
+      "failed_at": "卡在“{stage}”：{reason}",
+      "success": "SMTP 配置可用；未发送任何邮件。",
+      "steps_label": "连接测试步骤",
+      "code": "代码 {code}",
+      "stage": {
+        "dns": "DNS 解析",
+        "connect": "连接服务器",
+        "tls": "TLS 加密",
+        "greeting": "服务器问候",
+        "auth": "身份认证",
+        "mail_from": "发件人检查"
+      },
+      "status": {
+        "passed": "通过",
+        "failed": "失败",
+        "skipped": "跳过"
+      },
+      "reason": {
+        "config_incomplete": "配置不完整：需要服务器地址与发件地址。",
+        "dns_not_found": "服务器地址无法解析，请检查拼写。",
+        "dns_error": "DNS 查询失败。",
+        "connect_timeout": "连接超时，可能被防火墙拦截。",
+        "connect_refused": "连接被拒绝，请检查端口与加密方式。",
+        "connect_failed": "无法建立 TCP 连接。",
+        "tls_cert_invalid": "TLS 证书校验失败。",
+        "tls_failed": "TLS 握手失败，请检查加密方式与端口。",
+        "starttls_unsupported": "服务器未提供 STARTTLS，请改用 SSL 或 none。",
+        "greeting_failed": "未收到 SMTP 问候，该端口可能不是 SMTP。",
+        "auth_failed": "认证失败，请检查账号与密码。",
+        "auth_unsupported": "服务器不支持 AUTH，请检查加密方式或关闭强制 AUTH。",
+        "mail_from_rejected": "发件人被拒，请检查发件地址是否属于该账号。"
+      }
+    }
   }
 }

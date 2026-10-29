@@ -56,6 +56,7 @@ function makeChannel(overrides: Partial<Channel> = {}): Channel {
     group_tags: null,
     rate_limit: null,
     auto_ban: false,
+    allow_private_network: false,
     test_model: null,
     remark: null,
     tag: null,

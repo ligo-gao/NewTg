@@ -20,6 +20,7 @@ import { Route as SetupRouteImport } from './routes/setup'
 import { Route as SignInRouteImport } from './routes/sign-in'
 import { Route as SignUpRouteImport } from './routes/sign-up'
 import { Route as TwoFactorChallengeRouteImport } from './routes/two-factor-challenge'
+import { Route as TwoFactorEnrollRouteImport } from './routes/two-factor-enroll'
 import { Route as ConsoleAdminRouteImport } from './routes/_console/admin'
 import { Route as ConsoleAuditLogsRouteImport } from './routes/_console/audit-logs'
 import { Route as ConsoleModelConfigRouteImport } from './routes/_console/model-config'
@@ -117,6 +118,11 @@ const SignUpRoute = SignUpRouteImport.update({
 const TwoFactorChallengeRoute = TwoFactorChallengeRouteImport.update({
   id: '/two-factor-challenge',
   path: '/two-factor-challenge',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TwoFactorEnrollRoute = TwoFactorEnrollRouteImport.update({
+  id: '/two-factor-enroll',
+  path: '/two-factor-enroll',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ConsoleAdminRoute = ConsoleAdminRouteImport.update({
@@ -368,6 +374,7 @@ export interface FileRoutesByFullPath {
   '/sign-in': typeof SignInRoute
   '/sign-up': typeof SignUpRoute
   '/two-factor-challenge': typeof TwoFactorChallengeRoute
+  '/two-factor-enroll': typeof TwoFactorEnrollRoute
   '/admin': typeof ConsoleAdminRouteWithChildren
   '/audit-logs': typeof ConsoleAuditLogsRoute
   '/model-config': typeof ConsoleModelConfigRoute
@@ -424,6 +431,7 @@ export interface FileRoutesByTo {
   '/sign-in': typeof SignInRoute
   '/sign-up': typeof SignUpRoute
   '/two-factor-challenge': typeof TwoFactorChallengeRoute
+  '/two-factor-enroll': typeof TwoFactorEnrollRoute
   '/audit-logs': typeof ConsoleAuditLogsRoute
   '/model-config': typeof ConsoleModelConfigRoute
   '/orders': typeof ConsoleOrdersRoute
@@ -481,6 +489,7 @@ export interface FileRoutesById {
   '/sign-in': typeof SignInRoute
   '/sign-up': typeof SignUpRoute
   '/two-factor-challenge': typeof TwoFactorChallengeRoute
+  '/two-factor-enroll': typeof TwoFactorEnrollRoute
   '/_console/admin': typeof ConsoleAdminRouteWithChildren
   '/_console/audit-logs': typeof ConsoleAuditLogsRoute
   '/_console/model-config': typeof ConsoleModelConfigRoute
@@ -539,6 +548,7 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/sign-up'
     | '/two-factor-challenge'
+    | '/two-factor-enroll'
     | '/admin'
     | '/audit-logs'
     | '/model-config'
@@ -595,6 +605,7 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/sign-up'
     | '/two-factor-challenge'
+    | '/two-factor-enroll'
     | '/audit-logs'
     | '/model-config'
     | '/orders'
@@ -651,6 +662,7 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/sign-up'
     | '/two-factor-challenge'
+    | '/two-factor-enroll'
     | '/_console/admin'
     | '/_console/audit-logs'
     | '/_console/model-config'
@@ -709,6 +721,7 @@ export interface RootRouteChildren {
   SignInRoute: typeof SignInRoute
   SignUpRoute: typeof SignUpRoute
   TwoFactorChallengeRoute: typeof TwoFactorChallengeRoute
+  TwoFactorEnrollRoute: typeof TwoFactorEnrollRoute
   Errors401Route: typeof Errors401Route
   Errors403Route: typeof Errors403Route
   Errors404Route: typeof Errors404Route
@@ -799,6 +812,13 @@ declare module '@tanstack/react-router' {
       path: '/two-factor-challenge'
       fullPath: '/two-factor-challenge'
       preLoaderRoute: typeof TwoFactorChallengeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/two-factor-enroll': {
+      id: '/two-factor-enroll'
+      path: '/two-factor-enroll'
+      fullPath: '/two-factor-enroll'
+      preLoaderRoute: typeof TwoFactorEnrollRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_console/admin': {
@@ -1214,6 +1234,7 @@ const rootRouteChildren: RootRouteChildren = {
   SignInRoute: SignInRoute,
   SignUpRoute: SignUpRoute,
   TwoFactorChallengeRoute: TwoFactorChallengeRoute,
+  TwoFactorEnrollRoute: TwoFactorEnrollRoute,
   Errors401Route: Errors401Route,
   Errors403Route: Errors403Route,
   Errors404Route: Errors404Route,

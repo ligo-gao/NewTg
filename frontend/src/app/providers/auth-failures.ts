@@ -1,14 +1,18 @@
 import { ApiError } from '@/api/errors'
 
 /**
- * Global handling for the two credential-plane failures web-00 §9.6/§9.4 freeze
- * as navigation events rather than page-local errors:
+ * Global handling for the credential-plane failures web-00 §9.6/§9.4 freeze as
+ * navigation events rather than page-local errors:
  *
  * - a runtime 401 outside the `['me']` session probe means the session expired
  *   or was revoked → invalidate `['me']` and land on `/401` with a return path;
  * - a `403 password_change_required` means the session is restricted to the
  *   change-password flow (temporary password) → hard navigation to
  *   `/security?force=password`.
+ * - a `403 mfa_enrollment_required` means an already-signed-in administrator
+ *   is not TOTP-enrolled (R-04) → discard the cached identity and send them to
+ *   sign-in with `?reason=mfa_enrollment_required`, where they re-authenticate
+ *   and receive an enrollment ticket.
  *
  * The navigation functions are injectable so the router can use SPA navigation
  * in production while tests can observe the calls without patching jsdom's
@@ -20,7 +24,16 @@ export interface AuthFailureHandlers {
   unauthorized: (path: string) => void
   /** A restricted session tried to reach a blocked endpoint. */
   passwordChangeRequired: () => void
+  /** An unbound administrator session tried to reach a blocked endpoint. */
+  mfaEnrollmentRequired: () => void
 }
+
+/**
+ * Landing page for the forced MFA-enrollment re-login. The marker is what makes
+ * the sign-in page explain why the user was thrown out of the console.
+ */
+export const MFA_ENROLLMENT_REQUIRED_REDIRECT =
+  '/sign-in?reason=mfa_enrollment_required'
 
 function currentPath(): string {
   if (typeof location === 'undefined') return '/'
@@ -47,6 +60,16 @@ export function isForcedPasswordChangePath(
   )
 }
 
+/**
+ * True when the browser is already on a page that belongs to the forced
+ * MFA-enrollment flow. Both pages keep issuing their own requests
+ * (`/api/status`, `/api/me` and the ticket-scoped enrollment calls); a 403 from
+ * one of their widgets must not bounce them onto themselves forever.
+ */
+export function isMfaEnrollmentLandingPath(pathname: string): boolean {
+  return pathname === '/sign-in' || pathname === '/two-factor-enroll'
+}
+
 const defaultHandlers: AuthFailureHandlers = {
   unauthorized: (path) => {
     window.location.assign(`/401?redirect=${encodeURIComponent(path)}`)
@@ -64,6 +87,18 @@ const defaultHandlers: AuthFailureHandlers = {
     // console state alive, and the reload re-runs route consumers against the
     // server-enforced whitelist.
     window.location.assign('/security?force=password')
+  },
+  mfaEnrollmentRequired: () => {
+    // The sign-in page is the destination; re-entering it would loop.
+    if (
+      typeof location !== 'undefined' &&
+      isMfaEnrollmentLandingPath(location.pathname)
+    ) {
+      return
+    }
+    // Hard navigation: the cached console state belongs to an unusable
+    // session, and the re-login must start from a clean document.
+    window.location.assign(MFA_ENROLLMENT_REQUIRED_REDIRECT)
   },
 }
 
@@ -110,6 +145,13 @@ export function takeUnauthorizedRequestId(): string | undefined {
 let lastUnauthorizedAt = Number.NEGATIVE_INFINITY
 const UNAUTHORIZED_DEBOUNCE_MS = 2000
 
+/**
+ * One-shot latch for the forced MFA-enrollment landing. A console page mounts
+ * several queries at once and an unbound administrator makes every one of them
+ * answer `403 mfa_enrollment_required`; only the first may navigate.
+ */
+let mfaEnrollmentRedirectIssued = false
+
 export function setAuthFailureHandlers(
   next: Partial<AuthFailureHandlers> | undefined,
 ): void {
@@ -120,6 +162,7 @@ export function setAuthFailureHandlers(
 export function resetAuthFailureHandlers(): void {
   handlers = { ...defaultHandlers }
   lastUnauthorizedAt = Number.NEGATIVE_INFINITY
+  mfaEnrollmentRedirectIssued = false
 }
 
 export function isUnauthorizedError(error: unknown): error is ApiError {
@@ -135,11 +178,46 @@ export function isPasswordChangeRequired(error: unknown): boolean {
 }
 
 /**
+ * The backend's single refusal for an administrator session that is not
+ * TOTP-enrolled (R-04). Accept the bare token, a URI suffix, or a namespaced
+ * form so a future problem-type prefix cannot silently disable the landing.
+ */
+export function isMfaEnrollmentRequired(error: unknown): error is ApiError {
+  if (!(error instanceof ApiError) || error.status !== 403) return false
+  return (
+    error.type === 'mfa_enrollment_required' ||
+    error.type.endsWith('/mfa_enrollment_required') ||
+    error.type.endsWith(':mfa_enrollment_required')
+  )
+}
+
+/**
+ * Reports the forced MFA-enrollment landing at most once per document. The
+ * sign-in and enrollment pages are excluded: they issue their own requests and
+ * must never bounce onto themselves.
+ */
+export function reportMfaEnrollmentRequired(): void {
+  if (mfaEnrollmentRedirectIssued) return
+  if (
+    typeof location !== 'undefined' &&
+    isMfaEnrollmentLandingPath(location.pathname)
+  ) {
+    return
+  }
+  mfaEnrollmentRedirectIssued = true
+  handlers.mfaEnrollmentRequired()
+}
+
+/**
  * Query/mutation error hook. `queryKey` distinguishes the public session
  * probe: a 401 from `GET /api/me` is the *guest* signal (web-00 §9.2) and must
  * never bounce a visitor off a public page.
  */
 export function reportServerError(error: unknown, queryKey: readonly unknown[]): void {
+  if (isMfaEnrollmentRequired(error)) {
+    reportMfaEnrollmentRequired()
+    return
+  }
   if (isPasswordChangeRequired(error)) {
     handlers.passwordChangeRequired()
     return

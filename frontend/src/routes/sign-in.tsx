@@ -9,10 +9,14 @@ function navigateTo(destination: string): void {
 
 export interface SignInSearch {
   redirect?: string
+  reason?: string
 }
 
 function validateSignInSearch(search: Record<string, unknown>): SignInSearch {
-  return typeof search.redirect === 'string' ? { redirect: search.redirect } : {}
+  const result: SignInSearch = {}
+  if (typeof search.redirect === 'string') result.redirect = search.redirect
+  if (typeof search.reason === 'string') result.reason = search.reason
+  return result
 }
 
 export const Route = createFileRoute('/sign-in')({
@@ -23,6 +27,6 @@ export const Route = createFileRoute('/sign-in')({
 })
 
 function SignInRoute() {
-  const { redirect } = Route.useSearch()
-  return <SignInPage redirect={redirect} onNavigate={navigateTo} />
+  const { redirect, reason } = Route.useSearch()
+  return <SignInPage redirect={redirect} reason={reason} onNavigate={navigateTo} />
 }

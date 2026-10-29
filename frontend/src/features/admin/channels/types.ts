@@ -30,6 +30,11 @@ export interface Channel {
   group_tags: string[] | null
   rate_limit: number | null
   auto_ban: boolean
+  /**
+   * R-01：渠道级私网出站 opt-in。默认 false；开启后仅放行 RFC1918/ULA，
+   * loopback 与云元数据地址仍被拒绝，且切换需要 channels:manage_sensitive。
+   */
+  allow_private_network: boolean
   test_model: string | null
   remark: string | null
   tag: string | null
@@ -153,6 +158,7 @@ export interface CreateChannelInput {
   weight?: number
   rate_limit?: number | null
   auto_ban?: boolean
+  allow_private_network?: boolean
   test_model?: string | null
   remark?: string | null
   tag?: string | null
@@ -172,12 +178,20 @@ export interface UpdateChannelInput {
   weight?: number
   rate_limit?: number | null
   auto_ban?: boolean
+  allow_private_network?: boolean
   test_model?: string | null
   remark?: string | null
   tag?: string | null
   status?: 1 | 2
   /** 绑定/解绑上游账号；`null` 显式解除绑定。 */
   upstream_account_id?: number | null
+  /**
+   * R-11 步进再认证因子。改 base_url / upstream_account_id /
+   * allow_private_network 时必须现场提交口令（已启用 TOTP 时另需 totp_code）；
+   * 5 分钟再认证窗口内可省略。只在发起 PATCH 时随请求走，绝不缓存。
+   */
+  password?: string
+  totp_code?: string
 }
 
 export interface BatchOperationResult {

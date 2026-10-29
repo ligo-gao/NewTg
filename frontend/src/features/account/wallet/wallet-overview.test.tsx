@@ -15,6 +15,7 @@ beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 afterEach(() => {
   server.resetHandlers()
   globalThis.localStorage?.clear()
+  vi.useRealTimers()
 })
 afterAll(() => server.close())
 
@@ -599,6 +600,12 @@ describe('WalletOverview', () => {
   })
 
   it('renders the wide wallet chart with a localised image label', async () => {
+    // 图表把服务端桶铺到「今天」为止的 7 天骨架上（fillBucketSpine 默认取
+    // Date.now()）。夹具日期是固定的，不钉住时钟的话断言迟早会随真实日期漂移：
+    // 夹具落在窗口外时 stray 桶会把骨架撑成 8 个点。只假 Date，保留真定时器
+    // 以免影响 user-event / msw。
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-23T12:00:00Z'))
     installWallet()
     const { getByTestId } = await renderOverview()
 

@@ -1,5 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
-import { useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from 'react'
 
 import { ApiError } from '@/api/errors'
 import { useI18n } from '@/shared/lib/i18n-context'
@@ -154,6 +161,7 @@ interface ChannelFormState {
   weight: string
   rateLimit: string
   autoBan: boolean
+  allowPrivateNetwork: boolean
   testModel: string
   remark: string
   tag: string
@@ -173,6 +181,7 @@ type FieldKey =
   | 'weight'
   | 'rateLimit'
   | 'autoBan'
+  | 'allowPrivateNetwork'
   | 'testModel'
   | 'remark'
   | 'tag'
@@ -195,6 +204,7 @@ function initialForm(channel?: Channel): ChannelFormState {
       weight: '1',
       rateLimit: '',
       autoBan: true,
+      allowPrivateNetwork: false,
       testModel: '',
       remark: '',
       tag: '',
@@ -217,6 +227,7 @@ function initialForm(channel?: Channel): ChannelFormState {
     weight: String(channel.weight),
     rateLimit: channel.rate_limit === null ? '' : String(channel.rate_limit),
     autoBan: channel.auto_ban,
+    allowPrivateNetwork: channel.allow_private_network,
     testModel: channel.test_model ?? '',
     remark: channel.remark ?? '',
     tag: channel.tag ?? '',
@@ -347,6 +358,20 @@ function ChannelForm({
   const [versionConflict, setVersionConflict] = useState<string | null>(null)
   const [reloading, setReloading] = useState(false)
   const [reloadError, setReloadError] = useState<string | null>(null)
+  // R-11 step-up reauthentication. The backend answers a base_url /
+  // upstream_account_id / allow_private_network change with 403
+  // reauth_required; the factors are collected inline so the administrator's
+  // edits survive the retry. Kept in local state (never in the form payload)
+  // and cleared as soon as the save succeeds.
+  const [reauthRequired, setReauthRequired] = useState(false)
+  const [reauthPassword, setReauthPassword] = useState('')
+  const [reauthTotp, setReauthTotp] = useState('')
+  const [reauthError, setReauthError] = useState<string | null>(null)
+  const reauthPasswordRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    if (reauthRequired) reauthPasswordRef.current?.focus()
+  }, [reauthRequired])
   // One Idempotency-Key per create intent: retrying the same payload replays
   // it, and any edit changes the signature so the next submit mints a new key.
   const createIntent = useRef<{ signature: string; key: string } | null>(null)
@@ -560,6 +585,7 @@ function ChannelForm({
       weight: parseInteger(form.weight) ?? 1,
       rate_limit: parseInteger(form.rateLimit),
       auto_ban: form.autoBan,
+      allow_private_network: form.allowPrivateNetwork,
       test_model: form.testModel.trim() === '' ? null : form.testModel.trim(),
       remark: form.remark.trim() === '' ? null : form.remark.trim(),
       tag: form.tag.trim() === '' ? null : form.tag.trim(),
@@ -579,6 +605,7 @@ function ChannelForm({
       weight: parseInteger(form.weight) ?? 1,
       rate_limit: parseInteger(form.rateLimit),
       auto_ban: form.autoBan,
+      allow_private_network: form.allowPrivateNetwork,
       test_model: form.testModel.trim() === '' ? null : form.testModel.trim(),
       remark: form.remark.trim() === '' ? null : form.remark.trim(),
       tag: form.tag.trim() === '' ? null : form.tag.trim(),
@@ -597,6 +624,11 @@ function ChannelForm({
         }
       }
       input.credentials = credentials
+    }
+    // R-11: the step-up factors ride along only when the server asked for them.
+    if (reauthRequired) {
+      if (reauthPassword !== '') input.password = reauthPassword
+      if (reauthTotp.trim() !== '') input.totp_code = reauthTotp.trim()
     }
     return input
   }
@@ -634,6 +666,9 @@ function ChannelForm({
         if (!touched.has('weight')) next.weight = freshForm.weight
         if (!touched.has('rateLimit')) next.rateLimit = freshForm.rateLimit
         if (!touched.has('autoBan')) next.autoBan = freshForm.autoBan
+        if (!touched.has('allowPrivateNetwork')) {
+          next.allowPrivateNetwork = freshForm.allowPrivateNetwork
+        }
         if (!touched.has('testModel')) next.testModel = freshForm.testModel
         if (!touched.has('remark')) next.remark = freshForm.remark
         if (!touched.has('tag')) next.tag = freshForm.tag
@@ -675,6 +710,10 @@ function ChannelForm({
         })
       } else if (baseline !== undefined) {
         await updateChannel(baseline.id, buildUpdateInput(baseline))
+        setReauthRequired(false)
+        setReauthPassword('')
+        setReauthTotp('')
+        setReauthError(null)
         useToastStore.getState().push({
           tone: 'success',
           message: t('common.channels.toast.saved'),
@@ -691,6 +730,12 @@ function ChannelForm({
           // reloaded every retry would fail identically, so Save is disabled
           // and this alert offers the only way forward.
           setVersionConflict(error.detail ?? t('common.channels.errors.conflict'))
+        } else if (isConflictType(error, 'reauth_required')) {
+          // R-11: the edit touched a protected target and the 5-minute window
+          // is closed. Nothing was written; ask for the factor inline so the
+          // same submit can be retried as-is.
+          setReauthRequired(true)
+          setReauthError(error.detail ?? error.title)
         } else {
           const serverFields = fieldErrorsOf(error)
           if (serverFields.length > 0) {
@@ -755,6 +800,57 @@ function ChannelForm({
           {formError}
         </p>
       )}
+
+      {reauthRequired ? (
+        <div className="flex flex-col gap-3 rounded-lg border border-border-default bg-surface-subtle px-3 py-3">
+          <p className="text-body font-medium text-ink-1">
+            {t('common.channels.form.reauthTitle')}
+          </p>
+          <p className="text-meta text-ink-3">
+            {t('common.channels.form.reauthHint')}
+          </p>
+          {reauthError === null ? null : (
+            <p role="alert" className="text-meta text-danger">
+              {reauthError}
+            </p>
+          )}
+          <Field
+            id={`${formId}-reauth-password`}
+            label={t('common.channels.form.reauthPassword')}
+          >
+            <input
+              id={`${formId}-reauth-password`}
+              ref={reauthPasswordRef}
+              type="password"
+              autoComplete="current-password"
+              value={reauthPassword}
+              onChange={(event) => {
+                setReauthPassword(event.target.value)
+              }}
+              disabled={submitting}
+              className={INPUT_CLASSES}
+            />
+          </Field>
+          <Field
+            id={`${formId}-reauth-totp`}
+            label={t('common.channels.form.reauthTotp')}
+            hint={t('common.channels.form.reauthTotpHint')}
+          >
+            <input
+              id={`${formId}-reauth-totp`}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              value={reauthTotp}
+              onChange={(event) => {
+                setReauthTotp(event.target.value)
+              }}
+              disabled={submitting}
+              className={INPUT_CLASSES}
+            />
+          </Field>
+        </div>
+      ) : null}
 
       {detailRefetchFailed === true && versionConflict === null ? (
         // Non-fatal: the form stays mounted with the cached detail, but a
@@ -1152,6 +1248,28 @@ function ChannelForm({
           />
           {t('common.channels.form.autoBan')}
         </label>
+
+        <div>
+          <label className="flex items-center gap-2 text-body text-ink-1">
+            <input
+              id={idFor('allowPrivateNetwork')}
+              type="checkbox"
+              checked={form.allowPrivateNetwork}
+              onChange={(event) => {
+                patch('allowPrivateNetwork', event.target.checked)
+              }}
+              disabled={submitting}
+              aria-describedby={idFor('allowPrivateNetwork') + '-hint'}
+            />
+            {t('common.channels.form.allowPrivateNetwork')}
+          </label>
+          <p
+            id={idFor('allowPrivateNetwork') + '-hint'}
+            className="mt-1 text-caption text-ink-3"
+          >
+            {t('common.channels.form.allowPrivateNetworkHint')}
+          </p>
+        </div>
 
         <Field
           id={idFor('testModel')}

@@ -1033,4 +1033,195 @@ describe('ChannelMutateSheet', () => {
       within(dialog).getByText('Model gpt-4 is not allowed.'),
     ).toBeTruthy()
   })
+
+  it('sends allow_private_network only after the administrator opts in', async () => {
+    const user = userEvent.setup()
+    const created = makeChannel({ id: 9, name: 'private-upstream' })
+    const requests = installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels') {
+        return jsonResponse(makeListResponse([]))
+      }
+      if (request.method === 'POST' && request.url.pathname === '/api/channels') {
+        return jsonResponse(created, 201)
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(<ChannelListPage />)
+    await screen.findByText('No channels yet')
+    await user.click(screen.getByRole('button', { name: 'New Channel' }))
+
+    const dialog = await screen.findByRole('dialog')
+    await user.type(within(dialog).getByLabelText('Name'), 'private-upstream')
+    await user.type(within(dialog).getByLabelText('API key'), 'sk-private-1234')
+    await user.type(within(dialog).getByLabelText('Supported models'), 'gpt-4{enter}')
+    const toggle = within(dialog).getByLabelText('Allow private-network upstreams') as HTMLInputElement
+    expect(toggle.checked).toBe(false)
+    await user.click(toggle)
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(findRequest(requests, 'POST', '/api/channels')).toBeDefined()
+    })
+    const post = findRequest(requests, 'POST', '/api/channels')
+    expect((post?.body as { allow_private_network?: boolean }).allow_private_network).toBe(true)
+  })
+
+  it('preloads the stored opt-in and clears it on edit', async () => {
+    const user = userEvent.setup()
+    const detail = makeChannel({
+      id: 41,
+      name: 'private-upstream',
+      allow_private_network: true,
+    })
+    const requests = installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels/41') {
+        return jsonResponse(detail)
+      }
+      if (request.method === 'PATCH' && request.url.pathname === '/api/channels/41') {
+        return jsonResponse(detail)
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(
+      <ChannelMutateSheet
+        open
+        mode="edit"
+        channelId={41}
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    const toggle = (await within(dialog).findByLabelText(
+      'Allow private-network upstreams',
+    )) as HTMLInputElement
+    expect(toggle.checked).toBe(true)
+    await user.click(toggle)
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(findRequest(requests, 'PATCH', '/api/channels/41')).toBeDefined()
+    })
+    const patch = findRequest(requests, 'PATCH', '/api/channels/41')
+    expect((patch?.body as { allow_private_network?: boolean }).allow_private_network).toBe(false)
+  })
+
+  // R-11：改 base_url / upstream_account_id / allow_private_network 要走步进
+  // 再认证。后端回 403 reauth_required 时表单不得丢改动，必须就地收集口令
+  // 后原样重试；口令与 TOTP 只出现在请求体里，绝不能被记住或回显。
+  it('collects a step-up password after 403 reauth_required and retries the same edit', async () => {
+    const user = userEvent.setup()
+    const detail = makeChannel({
+      id: 51,
+      name: 'step-up',
+      credentials_masked: { api_key: 'sk-…5151' },
+      credentials_set: true,
+    })
+    const patches: Array<Record<string, unknown>> = []
+    let attempts = 0
+    installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels/51') {
+        return jsonResponse(detail)
+      }
+      if (request.method === 'PATCH' && request.url.pathname === '/api/channels/51') {
+        attempts += 1
+        const body = request.body as Record<string, unknown>
+        patches.push(body)
+        if (attempts === 1) {
+          return problemResponse(403, {
+            type: 'https://newtg.dev/problems/reauth_required',
+            title: 'Re-authentication required',
+            detail: 'Confirm your password to change the upstream target.',
+          })
+        }
+        return jsonResponse(detail)
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(
+      <ChannelMutateSheet
+        open
+        mode="edit"
+        channelId={51}
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    const nameInput = (await within(dialog).findByLabelText('Name')) as HTMLInputElement
+    await user.clear(nameInput)
+    await user.type(nameInput, 'step-up-renamed')
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    // The server's explanation is surfaced, and the panel offers the factor
+    // inputs — without dropping the edit that triggered the 403.
+    expect(
+      await within(dialog).findByText(
+        'Confirm your password to change the upstream target.',
+      ),
+    ).toBeTruthy()
+    expect(nameInput.value).toBe('step-up-renamed')
+    expect(patches[0]?.password).toBeUndefined()
+    expect(patches[0]?.totp_code).toBeUndefined()
+
+    await user.type(within(dialog).getByLabelText('Password'), 'correct-horse')
+    await user.type(within(dialog).getByLabelText('TOTP code'), '123456')
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(attempts).toBe(2)
+    })
+    expect(patches[1]).toMatchObject({
+      name: 'step-up-renamed',
+      password: 'correct-horse',
+      totp_code: '123456',
+      expected_version: detail.version,
+    })
+  })
+
+  it('does not ask for a step-up factor on ordinary validation failures', async () => {
+    const user = userEvent.setup()
+    const detail = makeChannel({
+      id: 52,
+      name: 'plain-validation',
+      credentials_masked: { api_key: 'sk-…5252' },
+      credentials_set: true,
+    })
+    installFetch((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/channels/52') {
+        return jsonResponse(detail)
+      }
+      if (request.method === 'PATCH' && request.url.pathname === '/api/channels/52') {
+        return problemResponse(422, {
+          type: 'https://newtg.dev/problems/validation_failed',
+          title: 'Validation failed',
+          detail: 'the note is too long',
+        })
+      }
+      return problemResponse(404, { type: 'about:blank', title: 'not found' })
+    })
+
+    renderWithProviders(
+      <ChannelMutateSheet
+        open
+        mode="edit"
+        channelId={52}
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    await within(dialog).findByLabelText('API key')
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    expect(await within(dialog).findByText('the note is too long')).toBeTruthy()
+    expect(within(dialog).queryByLabelText('Password')).toBeNull()
+    expect(within(dialog).queryByLabelText('TOTP code')).toBeNull()
+  })
 })
