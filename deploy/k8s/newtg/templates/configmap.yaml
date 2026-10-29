@@ -22,8 +22,10 @@ data:
 
   # 迁移由一次性 Job 承担（Task 5），任何常驻进程都不许自己迁移。
   DB_MIGRATE_ON_START: "false"
-  # 与 HPA 的 maxReplicas 联动：8 副本 × 25 连接仍在 PG 的 max_connections 之内。
-  DB_MAX_OPEN_CONNS: "25"
+  # 每个进程实际开的连接是「所有池之和」：gateway = 主库 + 日志库 + 指标库(5)，
+  # worker 再多一个保留池。8 副本 × (2×8+5) + 3×8 = 192，256 的基线才留得住
+  # 迁移、备份与运维会话的余量。改这个值必须重算 max_connections。
+  DB_MAX_OPEN_CONNS: "8"
 
   SHUTDOWN_GRACE_SECONDS: "30"
 

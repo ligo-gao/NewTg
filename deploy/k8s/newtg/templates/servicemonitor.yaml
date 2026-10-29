@@ -26,4 +26,33 @@ spec:
         credentials:
           name: {{ .Values.secrets.existingSecret }}
           key: METRICS_TOKEN
+---
+# worker 单独一个 ServiceMonitor：它的指标反映计费兜底与保留任务是否在跑，
+# 恰恰是最需要告警的一类。注意还要在 networkPolicy.monitoringNamespace
+# 里放开 :8006，否则 target 一律 down。
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: newtg-worker
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "worker") | nindent 4 }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ include "newtg.namespace" . }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: worker
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ .Values.secrets.existingSecret }}
+          key: METRICS_TOKEN
 {{- end }}

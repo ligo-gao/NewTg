@@ -101,6 +101,11 @@ spec:
                   mountPath: /work
                 - name: tmp
                   mountPath: /tmp
+                # BACKUP_*_DSN 用 sslmode=verify-full，需要这份 CA 校服务端证书。
+                - name: postgres-ca
+                  mountPath: /etc/ssl/postgres/ca.crt
+                  subPath: ca.crt
+                  readOnly: true
           volumes:
             - name: scripts
               configMap:
@@ -110,5 +115,11 @@ spec:
               emptyDir: {}
             - name: tmp
               emptyDir: {}
+            - name: postgres-ca
+              secret:
+                secretName: {{ $.Values.postgres.tls.existingSecret }}
+                items:
+                  - key: ca.crt
+                    path: ca.crt
 {{- end }}
 {{- end }}

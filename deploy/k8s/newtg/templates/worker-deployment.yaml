@@ -1,5 +1,6 @@
 # worker：后台调度角色（性能实测、节假日同步、日志/审计保留）。
-# 它不接外部流量，所以没有 Service：对外可见的只有 :8006 上的探针。
+# 它不接外部流量，唯一的对外端口是 :8006 的指标/探针，由 worker Service
+# 暴露给 Prometheus 抓取。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -77,9 +78,11 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
+          # liveness 只看进程：DB/Redis 抖动时让它重启，只是把「连不上库」
+          # 升级成「单副本 worker 反复重启」，计费兜底与保留任务一起停摆。
           livenessProbe:
             httpGet:
-              path: /readyz
+              path: /healthz
               port: metrics
             periodSeconds: 20
             timeoutSeconds: 3
@@ -91,10 +94,20 @@ spec:
               mountPath: /etc/ssl/redis/ca.crt
               subPath: ca.crt
               readOnly: true
+            - name: postgres-ca
+              mountPath: /etc/ssl/postgres/ca.crt
+              subPath: ca.crt
+              readOnly: true
       volumes:
         - name: redis-ca
           secret:
             secretName: {{ .Values.redis.tls.existingSecret }}
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: postgres-ca
+          secret:
+            secretName: {{ .Values.postgres.tls.existingSecret }}
             items:
               - key: ca.crt
                 path: ca.crt

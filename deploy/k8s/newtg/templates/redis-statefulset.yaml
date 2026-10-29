@@ -32,6 +32,16 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      # 数据节点池通常打污点独占：没有 tolerance 时 Redis 会一直 Pending，
+      # 而 redis 无端点意味着 gateway/worker 的 readiness 全红、整站不可用。
+      {{- with .Values.redis.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.redis.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         # redis:7-alpine 的 redis 用户 uid/gid 都是 999。

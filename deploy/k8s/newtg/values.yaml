@@ -22,8 +22,10 @@ gateway:
       # 内存上限是 OOM 保护而非预留；连接数上限由 DB_MAX_OPEN_CONNS 控制。
       memory: 1Gi
   autoscaling:
-    # maxReplicas 与 DB_MAX_OPEN_CONNS=25 绑定：8×25=200，再加上 worker 与
-    # migrate 仍低于 PG 的 max_connections 基线 256。改这里必须同时改那边。
+    # 连接预算按「每个副本所有连接池之和」算，不是按一个池：
+    # gateway 每副本 = 主库 X + 日志库 X + 指标库 5；worker = 3X（多一个保留池）。
+    # 8×(2×8+5) + 3×8 = 192 ≤ max_connections 256，余量给迁移/备份/运维会话。
+    # 改 X 或改 maxReplicas 都要重算，verify.sh 会拦住低估的取值。
     enabled: true
     minReplicas: 2
     maxReplicas: 8
@@ -84,13 +86,17 @@ redis:
   tls:
     # 预创建，键：ca.crt（私有 CA）、tls.crt / tls.key（服务端证书）。
     existingSecret: newtg-redis-tls
+  # 数据节点通常打污点独占：Redis 与 PG 各占一台，不与应用 Pod 抢 CPU/IO。
+  # 只配 PG 而漏掉这里，给 data-redis 打污点后 Redis 会直接 Pending。
+  nodeSelector: {}
+  tolerations: []
 
 postgres:
   image: postgres:16-alpine
   storage:
     size: 50Gi
-  # 连接上限是集群级预算：gateway 8 副本 × DB_MAX_OPEN_CONNS 25 = 200，
-  # 再加 worker/migrate 与运维会话。低于 200 就要先降 HPA 上限。
+  # 连接上限是集群级预算，算式见 gateway.autoscaling 的注释：
+  # 8×(2×8+5) + 3×8 = 192，256 是平台基线（含 superuser 保留位）。
   maxConnections: 256
   # 库名与用户名不是密钥，但必须与 Secret 里的四个 DSN 对得上：
   # 改这里就要同步改 DATABASE_URL / DB_LOGS_DSN / PERF_METRICS_DSN。
@@ -108,6 +114,10 @@ postgres:
   # 数据节点通常打污点独占：让 PG 落在专用机器上，不被应用 Pod 抢 CPU/IO。
   nodeSelector: {}
   tolerations: []
+  tls:
+    # 跨机部署时应用↔PG 走节点网络：不开 TLS 等于把口令与全部业务行交给
+    # 同网段的任何人。键：ca.crt、tls.crt / tls.key（SAN 必须含 DNS:postgres）。
+    existingSecret: newtg-postgres-tls
 
 storageClass:
   data: "" # 必填：PG/Redis 的本地盘 StorageClass
@@ -145,3 +155,6 @@ networkPolicy:
   enabled: true
   ingressNamespace: ingress-nginx
   nodeCIDR: "" # 必填：kubelet 探针来源网段，缺项会让探针被 CNI 拦掉
+  # 监控命名空间（kube-prometheus-stack 的所在命名空间）。留空表示不放开
+  # :8006 入站——此时即使 monitoring.enabled=true，抓取也会被默认拒绝。
+  monitoringNamespace: ""

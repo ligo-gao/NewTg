@@ -1,6 +1,14 @@
 # 数据库迁移：一次性 Job，用 newtg_migrate 身份跑主库、日志库、指标库的 schema。
-# 作为 Helm hook 在 install/upgrade 前执行；同时打上 Argo CD 的 sync-wave，
-# 两个工具都认。
+# 作为 Helm hook 在 install 之后、upgrade 之前执行；同时打上 Argo CD 的
+# sync-wave，两个工具都认。
+#
+# 为什么是 post-install 而不是 pre-install：pre-install 在 Helm 提交任何
+# 资源之前运行，空集群上 PG 的 StatefulSet/Service 还不存在，Job 只会
+# "connection refused"，而 backoffLimit: 0 让整个 release 一次就判失败。
+# post-install 时资源已提交但不保证就绪，因此 Job 自带等库的 initContainer。
+#
+# 升级时顺序不变：旧版本的 gateway 仍在跑（这正是滚动升级的意义），迁移
+# 先落地，再由 /readyz 的迁移版本检查决定新 Pod 能否接流量。
 #
 # 为什么必须是独立身份：应用身份 newtg_app 不该持有 DDL 权限，而迁移需要。
 # 因此本 Job 读的是 MIGRATE_* 键，与 gateway/worker 的 DATABASE_URL 不同源。
@@ -12,10 +20,11 @@ metadata:
   labels:
     {{- include "newtg.labels" (dict "root" . "role" "migrate") | nindent 4 }}
   annotations:
-    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook": post-install,pre-upgrade
     "helm.sh/hook-weight": "-5"
     "helm.sh/hook-delete-policy": before-hook-creation
-    "argocd.argoproj.io/sync-wave": "-1"
+    # 数据层是 wave 0，迁移必须排在它之后，否则同样连不上库。
+    "argocd.argoproj.io/sync-wave": "1"
 spec:
   # 迁移失败不重试：重试只会把「schema 半迁移」放大成多轮并发 DDL。
   # 失败就停下来，让人看清是哪一步。
@@ -38,6 +47,23 @@ spec:
         runAsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        # 用 PG 镜像自带的 pg_isready 等库可连：StatefulSet 刚提交时 SQL 还没
+        # 跑完，直接连库只会在 initdb 的临时实例上失败。
+        - name: wait-for-postgres
+          image: {{ .Values.postgres.image }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h postgres -p 5432 -q; do
+                echo "waiting for postgres..."; sleep 2
+              done
       containers:
         - name: migrate
           image: {{ include "newtg.image" (dict "root" . "repo" .Values.image.gateway) }}
@@ -85,3 +111,16 @@ spec:
               memory: 128Mi
             limits:
               memory: 512Mi
+          volumeMounts:
+            # DSN 里的 sslmode=verify-full 要靠这个 CA 校服务端证书。
+            - name: postgres-ca
+              mountPath: /etc/ssl/postgres/ca.crt
+              subPath: ca.crt
+              readOnly: true
+      volumes:
+        - name: postgres-ca
+          secret:
+            secretName: {{ .Values.postgres.tls.existingSecret }}
+            items:
+              - key: ca.crt
+                path: ca.crt

@@ -1,0 +1,17 @@
+# 命名空间不放进 chart：`helm install --create-namespace` 会先建同名命名空间，
+# 随后提交清单里的 Namespace 对象时 409（`namespaces "newtg" already exists`）；
+# 反过来手工先建又没有 Helm 归属元数据，会在 existingResourceConflict 处被拒。
+# 因此它由运维在安装前单独 apply——PSA 标签也就不会随 chart 回收。
+#
+#   kubectl apply -f deploy/k8s/newtg/namespace.yaml
+#   helm upgrade --install newtg deploy/k8s/newtg -n newtg -f my-values.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: newtg
+  labels:
+    app.kubernetes.io/part-of: newtg
+    # platform-03 ART-1：PSA baseline，Pod 一律非 root、丢弃全部 capability。
+    # 改命名空间名时要同步改 values.namespace 与 helm 的 -n 参数。
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: baseline

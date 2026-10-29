@@ -67,7 +67,9 @@ spec:
         - protocol: TCP
           port: 80
 ---
-# 应用 → 数据层：只有 gateway / worker / migrate 能连 PG 与 Redis。
+# 应用 → 数据层：只有 gateway / worker / migrate / backup 能连 PG 与 Redis。
+# backup 少了这条，三层 CronJob 会「跑过但连不上库」——备份看起来在跑，
+# 桶里却什么都没有，且只有 Job 日志能看出来。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -89,7 +91,7 @@ spec:
             matchExpressions:
               - key: app.kubernetes.io/name
                 operator: In
-                values: ["gateway", "worker", "migrate"]
+                values: ["gateway", "worker", "migrate", "backup"]
       ports:
         - protocol: TCP
           port: 5432
@@ -169,4 +171,32 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+---
+{{- if .Values.networkPolicy.monitoringNamespace }}
+# Prometheus → gateway/worker 的指标端口。没有这条，默认拒绝会让所有
+# target 变成 down：指标看起来是「应用没暴露」，实际是被 CNI 拦了。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-monitoring
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "networkpolicy") | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: ["gateway", "worker"]
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.monitoringNamespace }}
+      ports:
+        - protocol: TCP
+          port: 8006
+{{- end }}
 {{- end }}

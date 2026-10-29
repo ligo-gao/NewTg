@@ -16,3 +16,13 @@ backup:
     region: us-east-1
 networkPolicy:
   nodeCIDR: 10.0.20.0/24
+  # 让监控放行规则真的渲染出来，verify.sh 才能断言它存在。
+  monitoringNamespace: monitoring
+redis:
+  # 数据节点污点独占是真实部署的常态；这里一并渲染，断言钉住。
+  nodeSelector:
+    newtg.io/pool: data-redis
+  tolerations:
+    - key: newtg.io/data
+      operator: Exists
+      effect: NoSchedule

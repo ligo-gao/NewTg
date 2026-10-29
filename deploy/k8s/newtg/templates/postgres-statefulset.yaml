@@ -50,11 +50,21 @@ spec:
         - name: postgres
           image: {{ .Values.postgres.image }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          # 连接上限是集群级预算：gateway HPA 上限 8 × DB_MAX_OPEN_CONNS 25
-          # = 200，再加 worker/migrate 与运维会话，256 是平台基线。
+          # 连接上限是集群级预算：gateway HPA 上限 8 ×（每副本 2×8+5 个连接）
+          # + worker 3×8 = 192，256 是平台基线。改一处就要重算另一处。
           args:
             - "-c"
             - "max_connections={{ .Values.postgres.maxConnections }}"
+            # 跨机部署必须开 TLS：节点网络上抓到的就是口令与全部业务数据。
+            # 证书由 cert-manager 或手工签发，SAN 必须含 DNS:postgres。
+            - "-c"
+            - "ssl=on"
+            - "-c"
+            - "ssl_cert_file=/etc/postgres/tls/tls.crt"
+            - "-c"
+            - "ssl_key_file=/etc/postgres/tls/tls.key"
+            - "-c"
+            - "ssl_ca_file=/etc/postgres/tls/ca.crt"
           securityContext:
             allowPrivilegeEscalation: false
             # postgres 需要 SETUID/SETGID 才能从 root 降权？不需要——镜像
@@ -116,11 +126,19 @@ spec:
             - name: initdb
               mountPath: /docker-entrypoint-initdb.d
               readOnly: true
+            - name: tls
+              mountPath: /etc/postgres/tls
+              readOnly: true
       volumes:
         - name: initdb
           configMap:
             name: newtg-postgres-init
             defaultMode: 0444
+        - name: tls
+          secret:
+            secretName: {{ .Values.postgres.tls.existingSecret }}
+            # PG 拒绝 group/other 可读的私钥；0640 + fsGroup 70 是它能接受的最小权限。
+            defaultMode: 0640
   volumeClaimTemplates:
     - metadata:
         name: data

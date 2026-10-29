@@ -35,7 +35,7 @@ fi
 # 监控默认关：另渲染一份开着的结果，断言 ServiceMonitor 真的会渲染出来。
 "$HELM" template newtg "$CHART" -f "$CHART/values-ci.yaml" --set monitoring.enabled=true >"$OUT.mon"
 
-python3 - "$OUT" "$ROOT/deploy/postgres-init" <<'PY'
+python3 - "$OUT" "$ROOT/deploy/postgres-init" "$CHART" <<'PY'
 import pathlib
 import sys
 import yaml
@@ -53,9 +53,9 @@ def find(kind, name=None):
     raise AssertionError(f"missing {kind} {name or ''}")
 
 
-assert ("Namespace", "newtg") in kinds, kinds
-ns = find("Namespace", "newtg")
-assert ns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "baseline"
+assert ("Namespace", "newtg") not in kinds, "Namespace 不该由 chart 渲染"
+# 命名空间带着 PSA 标签单独 apply，chart 里没有它，所以在这里查源文件。
+assert "pod-security.kubernetes.io/enforce: baseline" in pathlib.Path(sys.argv[3], "namespace.yaml").read_text()
 
 # --- gateway 工作负载 -------------------------------------------------------
 cfg = find("ConfigMap", "newtg-config")
@@ -93,8 +93,7 @@ assert pdb["maxUnavailable"] == 1, pdb["maxUnavailable"]
 
 hpa = find("HorizontalPodAutoscaler", "gateway")["spec"]
 assert hpa["minReplicas"] == 2 and hpa["maxReplicas"] == 8, hpa
-# 副本上限 × 每副本连接上限 必须留出 worker/migrate 的余量（PG 基线 256）。
-assert hpa["maxReplicas"] * int(cfg["data"]["DB_MAX_OPEN_CONNS"]) <= 200
+# 连接预算（每副本所有连接池之和）由文件末尾的评审门禁统一核算。
 
 # --- worker 与 migrate ------------------------------------------------------
 wk = find("Deployment", "worker")["spec"]
@@ -112,7 +111,7 @@ assert all(h["spec"]["scaleTargetRef"]["name"] != "worker" for h in hpas), "work
 
 job = find("Job", "newtg-migrate")
 assert "pre-upgrade" in job["metadata"]["annotations"]["helm.sh/hook"], job["metadata"]["annotations"]
-assert job["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "-1"
+assert job["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "1"
 assert job["spec"]["backoffLimit"] == 0, job["spec"]["backoffLimit"]
 assert job["spec"]["template"]["spec"]["restartPolicy"] == "Never"
 jc = job["spec"]["template"]["spec"]["containers"][0]
@@ -256,7 +255,7 @@ assert {8080, 80} <= {p["port"] for p in fe_np["ingress"][0]["ports"]}
 
 data_np = by_name["allow-app-to-data"]["spec"]
 srcs = data_np["ingress"][0]["from"][0]["podSelector"]["matchExpressions"][0]["values"]
-assert set(srcs) == {"gateway", "worker", "migrate"}, srcs
+assert set(srcs) == {"gateway", "worker", "migrate", "backup"}, srcs
 # newtg_app 以外的身份不该出现在数据层的入站来源里（例如 frontend）。
 assert "frontend" not in srcs
 
@@ -297,9 +296,108 @@ import yaml
 
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
 sm = [d for d in docs if d.get("kind") == "ServiceMonitor"]
-assert len(sm) == 1, len(sm)
-ep = sm[0]["spec"]["endpoints"][0]
-assert ep["port"] == "metrics" and ep["path"] == "/metrics", ep
-assert ep["authorization"]["credentials"]["key"] == "METRICS_TOKEN", ep
-print("ok: ServiceMonitor 渲染且带 METRICS_TOKEN 鉴权")
+assert len(sm) == 2, len(sm)
+for each in sm:
+    ep = each["spec"]["endpoints"][0]
+    assert ep["port"] == "metrics" and ep["path"] == "/metrics", ep
+    assert ep["authorization"]["credentials"]["key"] == "METRICS_TOKEN", ep
+print("ok: ServiceMonitor（gateway + worker）渲染且带 METRICS_TOKEN 鉴权")
 PY2
+
+# --- 整分支评审的修复门禁 -----------------------------------------------------
+# 这些断言对应评审里的 Critical / Important 条目，每一条都描述一种「本地
+# helm template 通过、真上集群才炸」的情形，因此必须在这里钉死。
+python3 - "$OUT" "$OUT.mon" <<'PY3'
+import sys
+import yaml
+
+main = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+mon = [d for d in yaml.safe_load_all(open(sys.argv[2])) if d]
+fails = []
+
+
+def check(cond, msg):
+    if not cond:
+        fails.append(msg)
+
+
+def find(docs, kind, name=None):
+    for d in docs:
+        if d.get("kind") != kind:
+            continue
+        if name is None or d["metadata"]["name"] == name:
+            return d
+    return None
+
+
+# 1) Namespace 不能由 chart 渲染：`--create-namespace` 先建同名命名空间，
+#    随后提交清单里的 Namespace 对象会 409；反过来手工建又没有 helm 归属
+#    元数据，会在 existingResourceConflict 处被拒。它必须留在 chart 之外。
+check(find(main, "Namespace") is None,
+      "chart 不该渲染 Namespace（会与 --create-namespace / 归属检查冲突）；见 deploy/k8s/newtg/namespace.yaml")
+
+# 2) 首次 install 时 PG 还不存在：pre-install hook 必然连不上库。
+job = find(main, "Job", "newtg-migrate")
+hook = job["metadata"]["annotations"]["helm.sh/hook"]
+check("post-install" in hook, f"migrate 必须 post-install 才有 PG 可连：{hook}")
+check("pre-install" not in hook, f"migrate 不能 pre-install：{hook}")
+init = job["spec"]["template"]["spec"].get("initContainers") or []
+check(any("pg_isready" in " ".join(c.get("command", [])) for c in init),
+      "migrate 需要等 PG 可连的 initContainer（post-install 时 StatefulSet 刚提交）")
+
+# 3) 备份 Pod 必须能连数据层，否则三层备份一次都不会成功。
+np_src = find(main, "NetworkPolicy", "allow-app-to-data")["spec"]["ingress"][0]["from"][0]["podSelector"]["matchExpressions"][0]["values"]
+check("backup" in np_src, f"NetworkPolicy 漏了 backup，CronJob 连不上 PG：{np_src}")
+
+# 4) 跨机 PG 必须 TLS（spec D4）：服务端开 ssl，客户端挂 CA。
+pg = find(main, "StatefulSet", "postgres")["spec"]["template"]["spec"]
+pgc = pg["containers"][0]
+args = " ".join(pgc["args"])
+check("ssl=on" in args, f"postgres 未开 TLS：{args}")
+check("ssl_cert_file=" in args and "ssl_key_file=" in args and "ssl_ca_file=" in args, args)
+check(any("tls" in m["name"] for m in pgc["volumeMounts"]), pgc["volumeMounts"])
+gw = find(main, "Deployment", "gateway")["spec"]["template"]["spec"]["containers"][0]
+check(any(m.get("mountPath", "").startswith("/etc/ssl/postgres") for m in gw.get("volumeMounts") or []),
+      "gateway 没挂 PG CA，DSN 无法用 sslmode=verify-full")
+
+# 5) 连接预算必须按「每进程所有池之和」算：gateway 主库+日志库+指标库(5)，
+#    worker 再多一个保留池。只按一个池算会低估约 2 倍。
+cfg = find(main, "ConfigMap", "newtg-config")["data"]
+x = int(cfg["DB_MAX_OPEN_CONNS"])
+hpa = find(main, "HorizontalPodAutoscaler", "gateway")["spec"]
+pg_max = int(find(main, "StatefulSet", "postgres")["spec"]["template"]["spec"]["containers"][0]["args"][1].split("=")[1])
+budget = hpa["maxReplicas"] * (2 * x + 5) + 3 * x
+check(budget <= pg_max, f"连接预算超了：{budget} > {pg_max}（X={x}，含保留池）")
+
+# 6) 指标端口要能从 Prometheus 命名空间进来，否则 ServiceMonitor 全是 down。
+prom = [n for n in main if n.get("kind") == "NetworkPolicy"
+        and any(s.get("namespaceSelector", {}).get("matchLabels", {}).get("kubernetes.io/metadata.name") == "monitoring"
+                for r in n["spec"].get("ingress") or [] for s in r.get("from") or [])]
+check(prom and any(8006 in {p["port"] for r in p["spec"]["ingress"] for p in r.get("ports") or []} for p in prom),
+      "没有放行 Prometheus → :8006 的 NetworkPolicy，ServiceMonitor 抓不到")
+
+# 7) Redis 必须能按 values 钉到数据节点：只给 PG 有 nodeSelector 时，给
+#    data-redis 打污点后 Redis 直接 Pending。
+rs = find(main, "StatefulSet", "redis")["spec"]["template"]["spec"]
+check(rs.get("nodeSelector"), "redis 没有 nodeSelector，无法钉到数据节点")
+check(rs.get("tolerations"), "redis 没有 tolerations，数据节点打污点后直接 Pending")
+
+# 8) worker 的指标端口要能被发现：Service + 独立 ServiceMonitor。
+wsvc = find(main, "Service", "worker")
+check(wsvc and any(p["name"] == "metrics" for p in wsvc["spec"]["ports"]), "worker 缺 metrics Service")
+sms = [d for d in mon if d.get("kind") == "ServiceMonitor"]
+check(any(s["spec"]["selector"]["matchLabels"].get("app.kubernetes.io/name") == "worker" for s in sms),
+      "没有 worker 的 ServiceMonitor，worker 指标采集不到")
+
+# 9) liveness 不许查依赖：单副本 worker 被 DB 抖动重启会停掉计费兜底。
+wc = find(main, "Deployment", "worker")["spec"]["template"]["spec"]["containers"][0]
+check(wc["livenessProbe"]["httpGet"]["path"] == "/healthz",
+      f"worker liveness 该探 /healthz：{wc['livenessProbe']['httpGet']['path']}")
+
+if fails:
+    print("verify: 修复门禁未通过", file=sys.stderr)
+    for f in fails:
+        print(f"  - {f}", file=sys.stderr)
+    sys.exit(1)
+print(f"ok: 评审门禁 {9} 条")
+PY3

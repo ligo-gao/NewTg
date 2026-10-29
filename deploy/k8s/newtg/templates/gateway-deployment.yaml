@@ -107,10 +107,20 @@ spec:
               mountPath: /etc/ssl/redis/ca.crt
               subPath: ca.crt
               readOnly: true
+            - name: postgres-ca
+              mountPath: /etc/ssl/postgres/ca.crt
+              subPath: ca.crt
+              readOnly: true
       volumes:
         - name: redis-ca
           secret:
             secretName: {{ .Values.redis.tls.existingSecret }}
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: postgres-ca
+          secret:
+            secretName: {{ .Values.postgres.tls.existingSecret }}
             items:
               - key: ca.crt
                 path: ca.crt
