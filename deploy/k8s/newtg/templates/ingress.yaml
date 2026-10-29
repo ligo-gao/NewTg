@@ -1,0 +1,115 @@
+{{- $host := required "ingress.host 必填（与 publicBaseURL 的 host 一致）" .Values.ingress.host -}}
+# 拆成两个 Ingress 的原因：ingress-nginx 的注解作用在整个 Ingress 上，不能按
+# path 分别设置。SSE 需要关缓冲 + 3600s 超时，而普通 API 不需要（关缓冲会让
+# 小响应也逐帧下发）；因此按「流式路径」与「默认路径」分成两个对象，nginx 把
+# 两者的 location 合并进同一个 server 块，按最长前缀选路。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: newtg-stream
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "gateway") | nindent 4 }}
+  annotations:
+    # SSE：缓冲会让 token 攒到缓冲区满才下发，长超时阻止 60s 后被切断。
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # 多模态中转的上限是 32MiB（maxRelayBodyBytes），默认 1m 会先把它拦成 413。
+    nginx.ingress.kubernetes.io/proxy-body-size: "48m"
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls:
+    - hosts:
+        - {{ $host }}
+      secretName: {{ .Values.ingress.tlsSecretName }}
+  rules:
+    - host: {{ $host }}
+      http:
+        paths:
+          - path: /v1
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  name: http
+          - path: /v1beta
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  name: http
+          - path: /pg
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  name: http
+          - path: /api/home/live-feed
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  name: http
+          - path: /api/public/live-feed
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: newtg
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "gateway") | nindent 4 }}
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "48m"
+    # 不设 proxy-next-upstream / non_idempotent：中继请求被重放会让上游
+    # 重复计费。宁可让一次超时失败，也不让请求被悄悄重发（Review Focus 4）。
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls:
+    - hosts:
+        - {{ $host }}
+      secretName: {{ .Values.ingress.tlsSecretName }}
+  rules:
+    - host: {{ $host }}
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  name: http
+          - path: /readyz
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  name: http
+          - path: /healthz
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  name: http
+          # 兜底：控制台 SPA 与官网静态文件都在 frontend 里。
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  name: http

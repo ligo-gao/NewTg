@@ -128,5 +128,44 @@ assert [(p["name"], p["port"], p["targetPort"]) for p in fsvc["ports"]] == [("ht
 fpdb = find("PodDisruptionBudget", "frontend")["spec"]
 assert fpdb["maxUnavailable"] == 1, fpdb["maxUnavailable"]
 
+# --- Ingress 与证书 ---------------------------------------------------------
+def ingress_paths(doc):
+    out = []
+    for rule in doc["spec"]["rules"]:
+        for p in rule["http"]["paths"]:
+            out.append((p["path"], p["backend"]["service"]["name"], p["backend"]["service"]["port"]["name"]))
+    return out
+
+
+main = find("Ingress", "newtg")
+stream = find("Ingress", "newtg-stream")
+mpaths = ingress_paths(main)
+spaths = ingress_paths(stream)
+assert ("/", "frontend", "http") in mpaths, mpaths
+assert ("/api", "gateway", "http") in mpaths, mpaths
+
+# SSE 路径必须关缓冲并给足超时，否则 token 会攒到缓冲区满才下发、60s 被切断。
+sann = stream["metadata"]["annotations"]
+assert sann["nginx.ingress.kubernetes.io/proxy-buffering"] == "off", sann
+assert sann["nginx.ingress.kubernetes.io/proxy-read-timeout"] == "3600", sann
+assert sann["nginx.ingress.kubernetes.io/proxy-send-timeout"] == "3600", sann
+assert {"/v1", "/v1beta", "/pg"} <= {p for p, svc, port in spaths if svc == "gateway"}, spaths
+
+for ing in (main, stream):
+    assert ing["spec"]["tls"][0]["secretName"], ing["metadata"]["name"]
+    assert ing["spec"]["ingressClassName"] == "nginx"
+    assert ing["spec"]["rules"][0]["host"] == "app.example.com"
+
+# Review Focus 4：中继请求绝不能被重放（重复计费）。任何注解都不许打开重试。
+for d in docs:
+    for k, v in (d.get("metadata", {}).get("annotations") or {}).items():
+        assert k not in ("nginx.ingress.kubernetes.io/proxy-next-upstream",
+                         "nginx.ingress.kubernetes.io/app-root"), {k: v}
+        assert "non_idempotent" not in str(v), {k: v}
+
+cert = find("Certificate", "newtg-tls")["spec"]
+assert cert["dnsNames"] == ["app.example.com"], cert["dnsNames"]
+assert cert["secretName"] == main["spec"]["tls"][0]["secretName"], cert["secretName"]
+
 print(f"ok: {len(docs)} docs")
 PY

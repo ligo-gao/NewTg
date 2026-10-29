@@ -1,0 +1,18 @@
+{{- if .Values.certificate.enabled }}
+# cert-manager 签发：TLS Secret 由控制器写入 ingress.tlsSecretName，
+# 与 Ingress 的 tls.secretName 同名。DNS-01 不占用 80/443。
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ .Release.Name }}-tls
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "tls") | nindent 4 }}
+spec:
+  secretName: {{ .Values.ingress.tlsSecretName }}
+  dnsNames:
+    - {{ required "ingress.host 必填（与 publicBaseURL 的 host 一致）" .Values.ingress.host }}
+  issuerRef:
+    name: {{ required "certificate.issuerRef.name 必填" .Values.certificate.issuerRef.name }}
+    kind: {{ .Values.certificate.issuerRef.kind }}
+{{- end }}
