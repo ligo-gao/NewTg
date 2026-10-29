@@ -7,6 +7,10 @@
 	# :80 的跳转由下面的站点自行声明（P2-8：对所有 Host 强制 HTTPS），
 	# 关闭自动跳转以免与显式 redir 重复注入。
 	auto_https disable_redirects
+	# R-02：不要开启 servers.trusted_proxies。未配置时 Caddy 用直连对端地址
+	# **覆盖** X-Forwarded-For，客户端自带的伪造值到不了网关；一旦把客户端
+	# 地址列为可信，Caddy 就改为**追加**到伪造链尾，信任边界只剩后端的
+	# 「从右向左取第一个不可信地址」。edge 是本站最外层，没有上游代理可信任。
 }
 
 # gateway 上游组：轮询 + 主动健康检查（/readyz 是唯一「可服务」判据，GC-6）。

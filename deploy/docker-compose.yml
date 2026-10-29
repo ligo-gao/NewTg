@@ -21,7 +21,9 @@ x-app-env: &app-env
   LOG_LEVEL: "${LOG_LEVEL:-info}"
   LOG_FORMAT: "${LOG_FORMAT:-json}"
   TZ: "${TZ:-UTC}"
-  # 空 = 不信任 X-Forwarded-*；生产须显式填 edge 所在网段（禁止 0.0.0.0/0）。
+  # R-02：必须填 edge 的单个地址（本文件固定为 172.28.0.10/32），否则所有请求
+  # 的客户端 IP 都是 edge 容器地址，IP 级防护全局失效。只信单个地址，禁止
+  # 0.0.0.0/0 与整个网段。空值仅用于本地调试。
   TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
   # 公开基址（可逗号分隔多个 origin）。空时回退到 setup 向导写入的
   # site.server_address；两者都空表示邮件相关功能禁用（不是启动失败）。
@@ -85,8 +87,10 @@ services:
     # gateway，因此同时覆盖「Caddy 在听」与「Caddy 能到达网关」两件事。
     # R-07：运行镜像没有 wget，healthcheck 不得依赖它；caddy:2-alpine 也没有
     # curl/openssl，所以用 busybox nc 发一个最小 HTTP/1.1 请求并匹配状态码。
+    # 必须让 stdin 活到响应到达：printf 结束时管道 EOF，busybox nc 会立刻关连接，
+    # Caddy 在反向代理返回前就判定客户端取消并回 499，探针会一直假失败。
     healthcheck:
-      test: ["CMD-SHELL", "printf 'GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n' | nc -w 3 127.0.0.1 80 | head -1 | grep -q ' 200 '"]
+      test: ["CMD-SHELL", "{ printf 'GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n'; sleep 1; } | nc -w 3 127.0.0.1 80 | head -1 | grep -q ' 200 '"]
       interval: 30s
       timeout: 6s
       retries: 3
@@ -103,7 +107,10 @@ services:
       gateway:
         condition: service_healthy
     networks:
-      - frontend
+      frontend:
+        # R-02：固定地址，供后端 TRUSTED_PROXIES 精确信任（见文件末尾 frontend
+        # 的 ipam）。改动此地址必须同步 deploy/.env 的 TRUSTED_PROXIES。
+        ipv4_address: 172.28.0.10
 
   # 管理 API + 中继；2 副本用于验证无状态（不设 container_name，避免与副本数冲突）。
   gateway:
@@ -318,8 +325,14 @@ volumes:
 
 networks:
   # 对外入口面：edge ↔ gateway / web。
+  # R-02：固定子网，edge 才能拿到稳定的 172.28.0.10，供后端 TRUSTED_PROXIES
+  # 以 /32 精确信任（网络/地址变更需 docker compose down 后重建，见 runbook）。
+  # 子网特意避开本机既有的 172.17-172.25 段（bridge 及各项目网络）。
   frontend:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
   # 数据面：gateway / worker / migrate ↔ postgres / redis；internal 禁外网出站。
   backend:
     driver: bridge
