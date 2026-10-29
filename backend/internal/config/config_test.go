@@ -547,3 +547,15 @@ func TestDemoEnabledEffectiveValue(t *testing.T) {
 		t.Fatal("nil 读取面必须按关闭处理")
 	}
 }
+
+// RedisURLCAPath 与 RedisURL() 同源约定：调用时读 REDIS_TLS_CA，不参与 Load。
+func TestRedisURLCAPathReadsEnvAtCallTime(t *testing.T) {
+	t.Setenv("REDIS_TLS_CA", "/etc/ssl/redis-ca.pem")
+	if got := (&Config{}).RedisURLCAPath(); got != "/etc/ssl/redis-ca.pem" {
+		t.Fatalf("RedisURLCAPath() = %q, want /etc/ssl/redis-ca.pem", got)
+	}
+	t.Setenv("REDIS_TLS_CA", "")
+	if got := (&Config{}).RedisURLCAPath(); got != "" {
+		t.Fatalf("empty env → %q, want empty", got)
+	}
+}

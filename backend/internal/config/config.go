@@ -412,6 +412,10 @@ func (c *Config) RedisURL() string {
 	return c.redisURL
 }
 
+// RedisURLCAPath 返回 Redis 私有 CA 的 PEM 路径；调用时读取 REDIS_TLS_CA，
+// 与 RedisURL() 读 REDIS_TLS 同源（不参与 Load）。空值表示只用系统根证书。
+func (c *Config) RedisURLCAPath() string { return os.Getenv("REDIS_TLS_CA") }
+
 // MainDSN 返回主库 DSN。DATABASE_TLS 是 compose 插值变量，应用只消费拼好的
 // DATABASE_URL——已含 sslmode 时原样透传。
 func (c *Config) MainDSN() string {
