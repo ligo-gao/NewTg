@@ -105,5 +105,28 @@ assert jenv["DB_MIGRATE_ON_START"]["value"] == "false"
 assert jenv["DATABASE_URL"]["valueFrom"]["secretKeyRef"]["key"] == "MIGRATE_DATABASE_URL"
 assert jenv["DB_LOGS_DSN"]["valueFrom"]["secretKeyRef"]["key"] == "MIGRATE_DB_LOGS_DSN"
 
+# --- frontend ---------------------------------------------------------------
+fe = find("Deployment", "frontend")["spec"]
+assert fe["replicas"] == 2, fe["replicas"]
+fpod = fe["template"]["spec"]
+fspread = fpod["topologySpreadConstraints"][0]
+assert fspread["whenUnsatisfiable"] == "DoNotSchedule", fspread
+fc = fpod["containers"][0]
+assert "newtg/frontend" in fc["image"], fc["image"]
+# 镜像监听 8080，Service 对外 80：两个数字写反就是全站 502。
+assert fc["ports"][0]["containerPort"] == 8080, fc["ports"]
+assert fc["ports"][0]["name"] == "http"
+assert fpod["securityContext"]["runAsUser"] == 101
+assert fc["securityContext"]["readOnlyRootFilesystem"] is True
+# 存活探针不得依赖后端，否则 gateway 滚动会连带重启前端。
+assert fc["livenessProbe"]["httpGet"]["path"] == "/robots.txt"
+assert any(v["name"] == "tmp" and "emptyDir" in v for v in fpod["volumes"])
+
+fsvc = find("Service", "frontend")["spec"]
+assert [(p["name"], p["port"], p["targetPort"]) for p in fsvc["ports"]] == [("http", 80, "http")], fsvc["ports"]
+
+fpdb = find("PodDisruptionBudget", "frontend")["spec"]
+assert fpdb["maxUnavailable"] == 1, fpdb["maxUnavailable"]
+
 print(f"ok: {len(docs)} docs")
 PY

@@ -42,6 +42,16 @@ worker:
     limits:
       memory: 512Mi
 
+frontend:
+  replicas: 2
+  # 只做静态文件与 SPA 回落，CPU/内存都很低；请求压力落在 gateway 上。
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
 publicBaseURL: "" # 必填：唯一 origin，如 https://app.example.com
 trustedProxies: "" # 必填：ingress-nginx 控制器所在 Pod 网段，禁止 0.0.0.0/0
 
