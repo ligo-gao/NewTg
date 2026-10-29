@@ -200,5 +200,23 @@ for name, body in init.items():
     src = pathlib.Path(sys.argv[2], name).read_text()
     assert body == src, f"{name} 渲染结果与 deploy/postgres-init/{name} 不一致"
 
+# --- Redis ------------------------------------------------------------------
+rd = find("StatefulSet", "redis")["spec"]
+assert rd["serviceName"] == "redis" and rd["replicas"] == 1
+rc = rd["template"]["spec"]["containers"][0]
+cmd = " ".join(rc["args"])
+assert "--port 0" in cmd, cmd            # 明文端口必须关掉
+assert "--tls-port 6379" in cmd, cmd
+assert "--appendonly yes" in cmd, cmd
+# 口令只能是变量引用；字面量口令会泄漏进 kubectl describe 与 PodSpec。
+assert '--requirepass "$REDIS_PASSWORD"' in cmd, cmd
+assert rc["env"][0]["valueFrom"]["secretKeyRef"]["key"] == "REDIS_PASSWORD"
+assert len(rd["volumeClaimTemplates"]) == 1
+assert rd["volumeClaimTemplates"][0]["spec"]["storageClassName"] == "local-path"
+rsvc = find("Service", "redis")["spec"]
+assert rsvc["clusterIP"] == "None", rsvc
+assert [(p["name"], p["port"]) for p in rsvc["ports"]] == [("redis", 6379)]
+assert find("PodDisruptionBudget", "redis")["spec"]["minAvailable"] == 1
+
 print(f"ok: {len(docs)} docs")
 PY

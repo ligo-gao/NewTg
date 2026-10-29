@@ -71,6 +71,16 @@ certificate:
     kind: ClusterIssuer
 
 redis:
+  image: redis:7-alpine
+  storage:
+    size: 10Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      # 会话/限流/缓存/锁全在这里，占用随在线用户增长。
+      memory: 1Gi
   tls:
     # 预创建，键：ca.crt（私有 CA）、tls.crt / tls.key（服务端证书）。
     existingSecret: newtg-redis-tls

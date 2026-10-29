@@ -1,0 +1,132 @@
+# Redis 7：会话 / 限流 / 缓存 / 分布式锁 / pub-sub 的独立实例，AOF 持久化。
+#
+# 只开 TLS 端口：明文 6379 用 --port 0 关掉，避免「忘了配 rediss:// 也能连上」
+# 这种把口令与 token 明文传在节点网络里的降级路径。
+#
+# 口令通过环境变量注入、在 sh 里展开：redis-server 本身不做变量替换，直接写
+# --requirepass "$REDIS_PASSWORD" 会变成字面量；而把明文写进 args 又会出现在
+# kubectl describe / PodSpec 里。
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "redis") | nindent 4 }}
+spec:
+  serviceName: redis
+  replicas: 1
+  podManagementPolicy: OrderedReady
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "newtg.labels" (dict "root" . "role" "redis") | nindent 8 }}
+    spec:
+      # 关闭时要写完 AOF；60s 远大于一次 fsync。
+      terminationGracePeriodSeconds: 60
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        # redis:7-alpine 的 redis 用户 uid/gid 都是 999。
+        runAsUser: 999
+        runAsGroup: 999
+        # 证书卷按 fsGroup 授权，否则 0440 的私钥 uid 999 读不到。
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: {{ .Values.redis.image }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          command: ["sh", "-c"]
+          args:
+            - >-
+              exec redis-server
+              --port 0
+              --tls-port 6379
+              --tls-cert-file /etc/redis/tls/tls.crt
+              --tls-key-file /etc/redis/tls/tls.key
+              --tls-ca-cert-file /etc/redis/tls/ca.crt
+              --tls-auth-clients no
+              --requirepass "$REDIS_PASSWORD"
+              --appendonly yes
+              --dir /data
+          ports:
+            - name: redis
+              containerPort: 6379
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: REDIS_PASSWORD
+          # 探针走 TLS + 口令，实测的是「应用能不能这样连」，而不是「端口在听」。
+          startupProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - redis-cli --tls --cacert /etc/redis/tls/ca.crt -a "$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - redis-cli --tls --cacert /etc/redis/tls/ca.crt -a "$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - redis-cli --tls --cacert /etc/redis/tls/ca.crt -a "$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tls
+              mountPath: /etc/redis/tls
+              readOnly: true
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ .Values.redis.tls.existingSecret }}
+            # 私钥只需 redis 用户（fsGroup 999）可读。
+            defaultMode: 0440
+            items:
+              - key: ca.crt
+                path: ca.crt
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "newtg.labels" (dict "root" . "role" "redis") | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ required "storageClass.data 必填（PG/Redis 的本地盘 StorageClass）" .Values.storageClass.data }}
+        resources:
+          requests:
+            storage: {{ .Values.redis.storage.size }}
