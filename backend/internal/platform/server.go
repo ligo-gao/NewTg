@@ -67,7 +67,7 @@ func runGateway(ctx context.Context, cfg *config.Config, conn connectors) error 
 	if err != nil {
 		return fmt.Errorf("gateway: open db: %w", err)
 	}
-	// 日志库与主库分开建连：审计/PII 匿名化在日志库，不与业务事务抢连接。
+	// 日志库与主库分开建连：审计写入/查询在日志库，不与业务事务抢连接。
 	logsDB, err := conn.openLogsDB(ctx, cfg)
 	if err != nil {
 		// 正在返回打开日志库的主错误；清理主库的失败不覆盖它。
@@ -349,6 +349,7 @@ func mountRelayRoutes(mux *http.ServeMux, cfg *config.Config, db Resource, logsS
 		Billing:         billingFactory,
 		ModelStatus:     modelStatus,
 		Config:          settings,
+		Egress:          channelEgressGuard(settings),
 		GroupConfigured: pricingRepo.GroupConfigured,
 		TrustedProxies:  cfg.TrustedProxies,
 		// /pg/* 会话路径的分组回源：与 /api/status 的 usable_groups 同口径。

@@ -101,6 +101,9 @@ type ChannelPatch struct {
 	//   UpstreamAccountIDSet=true 且 UpstreamAccountID=nil → 清空归属（SQL NULL）。
 	UpstreamAccountIDSet bool
 	UpstreamAccountID    *int64
+
+	// AllowPrivateNetwork 是渠道私网出站 opt-in（R-01）；nil = 不修改。
+	AllowPrivateNetwork *bool
 }
 
 // BatchResult 对应 modules-06 F-06-02 的 {succeeded:[id], failed:[{id,reason}]}。
@@ -129,7 +132,7 @@ func NewChannelRepo(db *sql.DB) *ChannelRepo { return &ChannelRepo{db: db} }
 const channelColumns = `id, name, type, base_url, credentials, supported_models, group_tags,
 	model_mapping, weight, priority, rate_limit, status, auto_ban, test_model, remark, tag,
 	fail_count, auto_disabled_reason, last_test_at, last_test_result, created_at, updated_at,
-	task_plugin_key, task_extend_plugin_keys, upstream_account_id`
+	task_plugin_key, task_extend_plugin_keys, upstream_account_id, allow_private_network`
 
 // scanRow 抽象 *sql.Row / *sql.Rows 的共同 Scan 方法。
 type scanRow interface {
@@ -162,6 +165,7 @@ func scanChannel(row scanRow) (*Channel, error) {
 		&ch.ModelMapping, &ch.Weight, &ch.Priority, &rateLim, &ch.Status, &ch.AutoBan,
 		&testMod, &remark, &tag, &ch.FailCount, &reason, &lastAt, &lastRes,
 		&ch.CreatedAt, &ch.UpdatedAt, &taskPluginKey, &taskExtend, &upstreamAccountID,
+		&ch.AllowPrivateNetwork,
 	)
 	if err != nil {
 		return nil, err
@@ -308,14 +312,15 @@ func (r *ChannelRepo) Create(ctx context.Context, ch *Channel) (*Channel, error)
 	row := r.db.QueryRowContext(ctx, `INSERT INTO channels
 		(name, type, base_url, credentials, supported_models, group_tags, model_mapping,
 		 weight, priority, rate_limit, status, auto_ban, test_model, remark, tag, auto_disabled_reason,
-		 task_plugin_key, task_extend_plugin_keys, upstream_account_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+		 task_plugin_key, task_extend_plugin_keys, upstream_account_id, allow_private_network)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
 		RETURNING `+channelColumns,
 		ch.Name, ch.Type, nullableString(ch.BaseURL), ch.Credentials, ch.SupportedModels,
 		nullableBytes(ch.GroupTags), ch.ModelMapping, ch.Weight, ch.Priority,
 		nullableInt32(ch.RateLimit), ch.Status, ch.AutoBan, nullableString(ch.TestModel),
 		nullableString(ch.Remark), nullableString(ch.Tag), nullableString(ch.AutoDisabledReason),
-		nullableString(ch.TaskPluginKey), ch.TaskExtendPluginKeys, nullableInt64(ch.UpstreamAccountID))
+		nullableString(ch.TaskPluginKey), ch.TaskExtendPluginKeys, nullableInt64(ch.UpstreamAccountID),
+		ch.AllowPrivateNetwork)
 
 	out, err := scanChannel(row)
 	if isUniqueViolation(err) {
@@ -410,6 +415,9 @@ func (r *ChannelRepo) Update(ctx context.Context, id int64, patch ChannelPatch, 
 	}
 	if patch.UpstreamAccountIDSet {
 		add("upstream_account_id = $%d", nullableInt64(patch.UpstreamAccountID))
+	}
+	if patch.AllowPrivateNetwork != nil {
+		add("allow_private_network = $%d", *patch.AllowPrivateNetwork)
 	}
 
 	if len(sets) == 0 {

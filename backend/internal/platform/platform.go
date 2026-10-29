@@ -24,8 +24,8 @@ type Resource interface {
 // 生产实现只做一次转发，行为与直接调用完全一致。
 type connectors interface {
 	openDB(ctx context.Context, cfg *config.Config) (Resource, error)
-	// openLogsDB 打开日志库（audit_logs/usage_logs）；gateway 角色的审计与
-	// PII 匿名化依赖它，缺失属启动错误。
+	// openLogsDB 打开日志库（audit_logs/usage_logs）；gateway 角色的审计
+	// 写入与查询依赖它，缺失属启动错误。
 	openLogsDB(ctx context.Context, cfg *config.Config) (Resource, error)
 	openRedis(cfg *config.Config) (Resource, error)
 	runMigrate(ctx context.Context, cfg *config.Config) error

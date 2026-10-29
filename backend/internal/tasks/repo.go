@@ -54,6 +54,9 @@ type ChannelTarget struct {
 	// 的新查询形状读取。
 	Status int
 	Type   string
+	// AllowPrivateNetwork 是渠道级私网出站 opt-in（channels.allow_private_network，
+	// R-01）：MJ 提交等任务面出站据此给 context 打标。
+	AllowPrivateNetwork bool
 }
 
 const insertTaskSQL = `
@@ -221,7 +224,7 @@ func (r *Repo) list(ctx context.Context, f ListFilter, userID int64) ([]Task, in
 // 命中；@> 走 jsonb_path_ops GIN 索引。group 为空表示调用方没有分组上下文，
 // 只按 NULL/通配处理（不追加 group_tags 条件会放宽可见性，故显式分支）。
 const selectChannelSQL = `
-	SELECT id, base_url, credentials, model_mapping
+	SELECT id, base_url, credentials, model_mapping, allow_private_network
 	FROM channels
 	WHERE status = 1
 	  AND (task_plugin_key = $1 OR task_extend_plugin_keys @> jsonb_build_array($1::text))
@@ -245,10 +248,13 @@ func (r *Repo) GetChannel(ctx context.Context, id int64) (*ChannelTarget, error)
 		mapping []byte
 		status  int
 		typ     string
+
+		allowPrivate bool
 	)
 	err := r.db.QueryRowContext(ctx,
-		`SELECT base_url, credentials, model_mapping, status, type FROM channels WHERE id = $1`, id).
-		Scan(&baseURL, &cred, &mapping, &status, &typ)
+		`SELECT base_url, credentials, model_mapping, status, type, allow_private_network
+		 FROM channels WHERE id = $1`, id).
+		Scan(&baseURL, &cred, &mapping, &status, &typ, &allowPrivate)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrChannelNotFound
 	}
@@ -257,7 +263,7 @@ func (r *Repo) GetChannel(ctx context.Context, id int64) (*ChannelTarget, error)
 	}
 	out := &ChannelTarget{
 		ID: id, BaseURL: strings.TrimSpace(baseURL.String), Credentials: cred,
-		Status: status, Type: typ,
+		Status: status, Type: typ, AllowPrivateNetwork: allowPrivate,
 	}
 	if len(mapping) > 0 {
 		if err := json.Unmarshal(mapping, &out.ModelMapping); err != nil {
@@ -278,16 +284,21 @@ func (r *Repo) SelectChannel(ctx context.Context, pluginKey, model, group string
 		baseURL sql.NullString
 		cred    []byte
 		mapping []byte
+
+		allowPrivate bool
 	)
 	err := r.db.QueryRowContext(ctx, selectChannelSQL, pluginKey, model, group).
-		Scan(&id, &baseURL, &cred, &mapping)
+		Scan(&id, &baseURL, &cred, &mapping, &allowPrivate)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrChannelNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("tasks: select channel: %w", err)
 	}
-	out := &ChannelTarget{ID: id, BaseURL: strings.TrimSpace(baseURL.String), Credentials: cred}
+	out := &ChannelTarget{
+		ID: id, BaseURL: strings.TrimSpace(baseURL.String), Credentials: cred,
+		AllowPrivateNetwork: allowPrivate,
+	}
 	if len(mapping) > 0 {
 		if err := json.Unmarshal(mapping, &out.ModelMapping); err != nil {
 			// model_mapping 是不可信的渠道配置；解析失败视为「无映射」会让上游

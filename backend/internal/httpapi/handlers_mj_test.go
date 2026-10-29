@@ -32,6 +32,7 @@ import (
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/egress"
 	"newtg/gateway/internal/mj"
 	"newtg/gateway/internal/ratelimit"
 	"newtg/gateway/internal/tasks"
@@ -340,10 +341,11 @@ func newMJTestEnvFull(t *testing.T, store *fakeMJStore, channels *fakeMJChannels
 	}
 	env := &mjTestEnv{store: store, channels: channels, upstream: upstream, sealer: sealer}
 	handler := NewMJHandler(MJHandlerConfig{
-		Store:    store,
-		Channels: channels,
-		Sealer:   sealer,
-		Tokens:   tokens,
+		Store:     store,
+		Channels:  channels,
+		Sealer:    sealer,
+		Tokens:    tokens,
+		Submitter: mjTestSubmitter(upstream),
 		Billing: func(rc *contract.RelayContext) contract.BillingSession {
 			// 快照在会话创建时冻结（此后引擎不再改 rc），记录指针即可。
 			env.mu.Lock()
@@ -894,6 +896,7 @@ func TestMJUploadSettlementFailureKeepsHoldAndMarksPending(t *testing.T) {
 			return recorder
 		},
 		Config:      mjConfigured(nil),
+		Submitter:   mjTestSubmitter(upstream),
 		ImageSigner: mj.NewImageSigner("mj-handler-test-key"),
 		Uint64N:     func(uint64) uint64 { return 0 },
 	})
@@ -978,6 +981,7 @@ func TestMJRateLimitRejectsBeforeChannelAndBilling(t *testing.T) {
 	tokens, key42, _ := newMJTokens()
 	handler := NewMJHandler(MJHandlerConfig{
 		Store: store, Channels: channels, Sealer: sealer, Tokens: tokens,
+		Submitter: mjTestSubmitter(upstream),
 		Billing: func(*contract.RelayContext) contract.BillingSession {
 			t.Fatalf("rate-limited request must not construct a billing session")
 			return nil
@@ -1262,6 +1266,7 @@ func TestMJSubmitUsesStandardRateLimitBuckets(t *testing.T) {
 		Store: store, Channels: channels, Sealer: sealer, Tokens: tokens,
 		Billing: func(*contract.RelayContext) contract.BillingSession { return newTaskBillingRecorder() },
 		Config:  config, RateLimiter: limiter,
+		Submitter:   mjTestSubmitter(upstream),
 		ImageSigner: mj.NewImageSigner("mj-handler-test-key"),
 		Uint64N:     func(uint64) uint64 { return 0 },
 	})
@@ -1363,6 +1368,84 @@ func TestMJPlusOnlyWithoutPlusChannelIsForbidden(t *testing.T) {
 	if upstream.calls() != 0 || len(store.insertedRows()) != 0 || env.recorderCount() != 0 {
 		t.Fatalf("plus capability rejection must be zero-cost")
 	}
+}
+
+// TestMJHandlerRejectsPrivateChannelWithoutOptIn 覆盖 R-01 在 MJ 提交链路的
+// 默认拒绝：生产默认客户端出站前拦截，请求不触达上游。
+//
+// opt-in 只放行 RFC1918/ULA；loopback（httptest 的 127.0.0.1）即使开启也
+// 必须拒绝，这里一并锁定。私网放行本身由 egress 单测覆盖。
+func TestMJHandlerRejectsPrivateChannelWithoutOptIn(t *testing.T) {
+	cases := []struct {
+		name     string
+		optIn    bool
+		wantCode int
+		wantHits int
+	}{
+		{"默认拒绝 loopback", false, http.StatusBadGateway, 0},
+		{"loopback 即使 opt-in 也拒绝", true, http.StatusBadGateway, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeMJStore()
+			upstream := newMJUpstream(t, `{"code":1,"result":"mj_up_1"}`)
+			sealer := NewSecretSealer("mj-handler-test-key")
+			normal, cand := sealedMJChannel(t, sealer, 10, mj.ChannelTypeMidjourney,
+				upstream.server.URL, mjAllModels(), 10)
+			normal.AllowPrivateNetwork = tc.optIn
+			channels := &fakeMJChannels{
+				channels:   map[int64]*tasks.ChannelTarget{10: normal},
+				candidates: []tasks.MJChannelCandidate{cand},
+			}
+			tokens, key42, _ := newMJTokens()
+			env := &mjTestEnv{store: store, channels: channels, upstream: upstream, sealer: sealer}
+			handler := NewMJHandler(MJHandlerConfig{
+				Store: store, Channels: channels, Sealer: sealer, Tokens: tokens,
+				Billing: func(*contract.RelayContext) contract.BillingSession { return newTaskBillingRecorder() },
+				Config:  mjConfigured(nil),
+				// 刻意不注入 Submitter：走生产默认的 R-01 加固客户端。
+				ImageSigner: mj.NewImageSigner("mj-handler-test-key"),
+				Uint64N:     func(uint64) uint64 { return 0 },
+			})
+			mux := http.NewServeMux()
+			handler.Register(mux, RelayAuth(tokens, fakeTaskAccess{}, nil))
+			env.mux = mux
+			env.defaultAuthorization = "Bearer " + key42
+
+			rec := serveMJ(t, env, newMJRequest(t, http.MethodPost, "/mj/submit/imagine", `{"prompt":"cat"}`))
+			if rec.Code != tc.wantCode {
+				t.Fatalf("status = %d，期望 %d（body=%s）", rec.Code, tc.wantCode, rec.Body.String())
+			}
+			if got := upstream.calls(); got != tc.wantHits {
+				t.Fatalf("上游命中 %d 次，期望 %d", got, tc.wantHits)
+			}
+		})
+	}
+}
+
+// mjTestSubmitter 返回指向假上游的提交客户端。
+//
+// R-01 起提交客户端默认经 egress 加固（拒绝 loopback/私网），httptest 的
+// 127.0.0.1 目标必须显式注入 srv.Client()；出站策略本身由 egress 单测与
+// TestMJHandlerRejectsPrivateChannelWithoutOptIn 覆盖。
+func mjTestSubmitter(upstream *mjUpstream) *mj.SubmitClient {
+	if upstream == nil {
+		// 用例自建 httptest 上游（如并发阻塞），直接用允许 loopback 的测试运输层。
+		return mj.NewSubmitClient(mjTestHTTPClient())
+	}
+	client := *upstream.server.Client()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return mj.NewSubmitClient(&client)
+}
+
+// mjTestHTTPClient 返回允许 loopback 的 HTTP 客户端，仅供测试环境使用。
+//
+// 生产默认客户端（NewSubmitClient(nil)）经 R-01 加固，会拒绝 httptest 的
+// 127.0.0.1；需要真实出站的用例必须显式注入本客户端或 srv.Client()。
+// 拒绝语义由 TestMJHandlerRejectsPrivateChannelWithoutOptIn 覆盖。
+func mjTestHTTPClient() *http.Client {
+	guard := egress.NewGuard(egress.Policy{Mode: egress.ModeOff})
+	return &http.Client{Transport: guard.HardenTransport(nil)}
 }
 
 // cancellingSubmitter 在返回成功前取消请求上下文，模拟「上游已受理、客户端

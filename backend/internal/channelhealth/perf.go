@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/egress"
 	"newtg/gateway/internal/relay/adapters"
 	"newtg/gateway/internal/relay/ir"
 	"newtg/gateway/internal/store"
@@ -192,6 +193,10 @@ func (p *PerfRunner) run(ctx context.Context, ch *store.Channel, model string) P
 
 	runCtx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
+	// R-01：与体检/目录同口径，用同一份渠道级私网 opt-in。
+	if ch.AllowPrivateNetwork {
+		runCtx = egress.WithAllowPrivateNetwork(runCtx)
+	}
 
 	start := time.Now()
 	resp, err := p.client.Do(httpReq.WithContext(runCtx))

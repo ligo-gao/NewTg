@@ -15,6 +15,7 @@ import (
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/egress"
 	"newtg/gateway/internal/relay"
 	"newtg/gateway/internal/relay/adapters"
 	"newtg/gateway/internal/relay/crossproto"
@@ -448,7 +449,12 @@ func (h *RelayHandler) handleMessagesCountTokens(w http.ResponseWriter, r *http.
 	}
 	client := h.client
 	if client == nil {
-		client = newRelayHTTPClient()
+		client = newRelayHTTPClient(egress.NewGuard(egress.ChannelPolicy(h.config)))
+	}
+	// R-01：与 chat 执行层同口径，count-tokens 也是一次真实出站。
+	if assignment.AllowPrivateNetwork {
+		upstreamReq = upstreamReq.WithContext(
+			egress.WithAllowPrivateNetwork(upstreamReq.Context()))
 	}
 	resp, err := client.Do(upstreamReq)
 	if err != nil {

@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"newtg/gateway/internal/egress"
 )
 
 // 上游提交客户端（W8/MJ-a2）。
@@ -77,6 +79,9 @@ type SubmitConfig struct {
 	APIKey  string
 	// HTTP 为空时使用客户端构造时的默认客户端。
 	HTTP *http.Client
+	// AllowPrivateNetwork 对应 channels.allow_private_network（R-01）：
+	// 只放宽 egress 的 RFC1918/ULA 限制，loopback/元数据/保留段仍拒绝。
+	AllowPrivateNetwork bool
 }
 
 // SubmitClient 是上游提交执行器，可并发使用。
@@ -91,14 +96,24 @@ type SubmitClient struct {
 // 自己的 *http.Client，但仍应在假上游里断言没有二次请求。
 func NewSubmitClient(client *http.Client) *SubmitClient {
 	if client == nil {
+		// R-01：默认客户端经统一出站执行器加固（禁用代理、拨号期地址校验）。
+		// 渠道面策略：不套域名清单/端口白名单，私网由单渠道 opt-in 决定。
+		guard := egress.NewGuard(egress.ChannelPolicy(nil))
 		client = &http.Client{
-			Timeout: SubmitTimeout,
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
+			Timeout:       SubmitTimeout,
+			Transport:     guard.HardenTransport(nil),
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		}
 	}
 	return &SubmitClient{client: client}
+}
+
+// withChannelEgress 给一次上游请求打上渠道级私网 opt-in 标记（R-01）。
+func withChannelEgress(ctx context.Context, cfg SubmitConfig) context.Context {
+	if cfg.AllowPrivateNetwork {
+		return egress.WithAllowPrivateNetwork(ctx)
+	}
+	return ctx
 }
 
 // Submit 把一次归一化提交发送到 `{base}/mj/<endpoint>`。
@@ -129,6 +144,7 @@ func (c *SubmitClient) Submit(ctx context.Context, cfg SubmitConfig, endpoint En
 	// 双保险：即使注入的客户端没有 Timeout，也按冻结值约束本次提交。
 	reqCtx, cancel := context.WithTimeout(ctx, SubmitTimeout)
 	defer cancel()
+	reqCtx = withChannelEgress(reqCtx, cfg)
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, base+"/mj/"+string(endpoint), bytes.NewReader(body))
 	if err != nil {
 		return nil, &Error{Code: CodeUnknownError, Description: DescriptionUpstreamError, Status: http.StatusBadGateway}
@@ -243,6 +259,7 @@ func (c *SubmitClient) Query(ctx context.Context, cfg SubmitConfig, mjID string)
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, QueryTimeout)
 	defer cancel()
+	reqCtx = withChannelEgress(reqCtx, cfg)
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, base+"/mj/task/"+mjID+"/fetch", nil)
 	if err != nil {
 		return nil, &Error{Code: CodeUnknownError, Description: DescriptionUpstreamError, Status: http.StatusBadGateway}
@@ -298,6 +315,7 @@ func (c *SubmitClient) ImageSeed(ctx context.Context, cfg SubmitConfig, mjID str
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, ImageSeedTimeout)
 	defer cancel()
+	reqCtx = withChannelEgress(reqCtx, cfg)
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, base+"/mj/task/"+mjID+"/image-seed", nil)
 	if err != nil {
 		return nil, &Error{Code: CodeUnknownError, Description: DescriptionUpstreamError, Status: http.StatusBadGateway}

@@ -113,7 +113,7 @@ func TestChannelPatchClearsAutoDisabledReasonIntegration(t *testing.T) {
 	db := openChannelPatchTestDB(t)
 	sealer := NewSecretSealer(testSealerMaster)
 	h := NewChannelHandler(store.NewChannelRepo(db), newFakeUserAccess(), sealer,
-		ChannelHandlerOptions{Idempotency: NewMemoryIdempotencyStore()})
+		ChannelHandlerOptions{Idempotency: NewMemoryIdempotencyStore(), Egress: testEgressGuard()})
 	mux := http.NewServeMux()
 	h.Register(mux)
 

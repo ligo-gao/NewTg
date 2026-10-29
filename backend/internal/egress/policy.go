@@ -28,6 +28,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"time"
 
@@ -132,11 +133,23 @@ func settingDefault(key string) any {
 	return nil
 }
 
+// isNilConfig 同时识别 nil 接口与「接口非 nil、底层指针为 nil」的配置源。
+//
+// 平台层常把可能为 nil 的 *configcenter.Center 直接塞进 ConfigReader；只看
+// cfg == nil 会漏掉 typed nil，进而在 cfg.Get 上崩溃。
+func isNilConfig(cfg ConfigReader) bool {
+	if cfg == nil {
+		return true
+	}
+	value := reflect.ValueOf(cfg)
+	return value.Kind() == reflect.Ptr && value.IsNil()
+}
+
 // PolicyFromConfig 从 sec.ssrf.* 读取策略。缺失/损坏的键回退到注册表
 // 默认值；任何无法识别的枚举都按更严的方向解释（allowlist / basic）。
 func PolicyFromConfig(cfg ConfigReader) Policy {
 	policy := DefaultPolicy()
-	if cfg == nil {
+	if isNilConfig(cfg) {
 		return policy
 	}
 
@@ -203,6 +216,46 @@ func PolicyFromConfig(cfg ConfigReader) Policy {
 		}
 	}
 	return policy
+}
+
+// ChannelPolicy 返回渠道出站的策略（R-01）。
+//
+// 与 webhook/插件/模型目录三个调用面不同，渠道面有三条冻结差异：
+//
+//   - 不套用域名清单：上游地址由管理员逐个填写，allowlist 无法穷举；
+//   - 不限制端口：自建上游（vLLM/SGLang/Ollama 等）端口不可枚举，
+//     白名单只会迫使管理员乱开端口；
+//   - 不接受 `sec.ssrf.mode=off`：关闭策略等于给管理员会话一个任意内网
+//     探测原语，而管理员浏览器本来就已能访问管理端。basic 是下限。
+//
+// 私网默认拒绝；单渠道 opt-in 走 WithAllowPrivateNetwork，只放宽
+// RFC1918/ULA，loopback/link-local/元数据/CGNAT/保留段永不放行。
+func ChannelPolicy(cfg ConfigReader) Policy {
+	policy := PolicyFromConfig(cfg)
+	if policy.Mode == ModeOff {
+		policy.Mode = ModeBasic
+	}
+	policy.DomainMode = DomainAll
+	policy.DomainList = nil
+	policy.AllowPrivateIP = false
+	policy.AllowAnyPort = true
+	return policy
+}
+
+// channelOptInKey 是「该渠道已由管理员显式开启内网访问」的 context 标记。
+type channelOptInKey struct{}
+
+// WithAllowPrivateNetwork 标记本请求所属渠道允许访问私网地址。
+//
+// 调用方（中继执行层、体检/测速/目录探测）只在 channels.allow_private_network
+// 为真时设置；标记只放宽 RFC1918/ULA，其它地址分类不受影响。
+func WithAllowPrivateNetwork(ctx context.Context) context.Context {
+	return context.WithValue(ctx, channelOptInKey{}, true)
+}
+
+func allowPrivateNetwork(ctx context.Context) bool {
+	enabled, _ := ctx.Value(channelOptInKey{}).(bool)
+	return enabled
 }
 
 // Guard 是策略的执行器，可并发使用。
@@ -339,8 +392,9 @@ func (g *Guard) validateHostIPs(ctx context.Context, host string) error {
 	if err != nil {
 		return err
 	}
+	allowPrivate := g.policy.AllowPrivateIP || allowPrivateNetwork(ctx)
 	for _, ip := range ips {
-		if g.ipBlocked(ip) {
+		if g.ipBlocked(ip, allowPrivate) {
 			return fmt.Errorf("%w: address is not permitted", ErrBlocked)
 		}
 	}
@@ -381,8 +435,9 @@ func (g *Guard) DialContext(ctx context.Context, network, address string) (net.C
 		return nil, err
 	}
 	if g.policy.Mode != ModeOff && !g.domainAllowsPrivateOverride(host) {
+		allowPrivate := g.policy.AllowPrivateIP || allowPrivateNetwork(ctx)
 		for _, ip := range ips {
-			if g.ipBlocked(ip) {
+			if g.ipBlocked(ip, allowPrivate) {
 				return nil, fmt.Errorf("%w: address is not permitted", ErrBlocked)
 			}
 		}
@@ -456,6 +511,36 @@ func (g *Guard) NewClient(opts ClientOptions) *http.Client {
 	return client
 }
 
+// HardenTransport 返回 base 的加固副本：安装 guard 的拨号器并清除代理。
+//
+// 为什么不是 NewClient：中继/体检的客户端各有自己的连接池与超时语义
+// （500/100、ResponseHeaderTimeout 1800s、Client.Timeout=0），换成
+// NewClient 会把流式请求压到固定的整体超时里。这里只替换「地址校验」
+// 这一个环节，其余参数原样保留。
+//
+// 代理必须清除：有代理时 DialContext 看到的只是代理地址，策略校验对象
+// 与实际连接对象分离，等于没有校验。需要代理的部署应后续实现
+// sec.ssrf.upstream_proxy，由受信代理承担防护（见 R-01 风险说明）。
+//
+// 返回的是副本（Clone 保证独立连接池），不修改调用方传入的 transport；
+// base 为 nil 时返回一套安全默认值。
+func (g *Guard) HardenTransport(base *http.Transport) *http.Transport {
+	var transport *http.Transport
+	if base != nil {
+		transport = base.Clone()
+	} else {
+		transport = &http.Transport{
+			ForceAttemptHTTP2:   true,
+			MaxIdleConns:        100,
+			IdleConnTimeout:     90 * time.Second,
+			TLSHandshakeTimeout: g.policy.ConnectTimeout,
+		}
+	}
+	transport.Proxy = nil
+	transport.DialContext = g.DialContext
+	return transport
+}
+
 func normalizeHost(host string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
 }
@@ -474,17 +559,18 @@ func domainMatches(pattern, host string) bool {
 	return host == pattern
 }
 
-// ipBlocked 实现 §2 的地址分类。调用方已处理 allowlist 覆盖。
-func (g *Guard) ipBlocked(ip net.IP) bool {
+// ipBlocked 实现 §2 的地址分类。allowPrivate 由全局策略或单渠道 opt-in
+// 决定，只影响 RFC1918/ULA；调用方已处理 allowlist 覆盖。
+func (g *Guard) ipBlocked(ip net.IP, allowPrivate bool) bool {
 	if ip == nil {
 		return true
 	}
 	if ip.IsLoopback() {
 		return !g.policy.AllowLoopback
 	}
-	// allow_private_ip 放行 RFC1918/ULA，但 loopback（上面）、link-local、
-	// 元数据、CGNAT/保留段仍然拒绝。
-	if g.policy.AllowPrivateIP {
+	// allow_private_ip / 单渠道 opt-in 放行 RFC1918/ULA，但 loopback
+	// （上面）、link-local、元数据、CGNAT/保留段仍然拒绝。
+	if allowPrivate {
 		if isMetadataIP(ip) {
 			return true
 		}

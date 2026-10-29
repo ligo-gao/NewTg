@@ -13,7 +13,10 @@ import (
 // **同一个** RelayAuth 实例与同一份 trustedProxies 解析结果：复制一份配置
 // 会让两条路径在代理信任策略上悄悄分叉。
 func (h *RelayHandler) AuthMiddleware() func(http.Handler) http.Handler {
-	return RelayAuthWithRecorder(h.tokens, h.access, h.trustedProxies, h.refusals, h.log)
+	// R-03：复用已有的 RateLimiter 装配点。生产注入的 *ratelimit.Limiter
+	// 同时实现失败桶；只实现 Allow 的测试 fake 返回 nil，即跳过 R-03。
+	return relayAuthWithGuard(h.tokens, h.access, h.trustedProxies, h.refusals, h.log,
+		authFailureLimiterOf(h.rateLimiter))
 }
 
 // Register 把 /v1 路由挂到 mux；鉴权中间件只包裹这些端点（管理面不经过它）。

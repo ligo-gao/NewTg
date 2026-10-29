@@ -32,7 +32,7 @@ func TestQueryClientFetchesUpstreamTask(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewSubmitClient(nil)
+	client := NewSubmitClient(upstreamClient(server))
 	result, mjErr := client.Query(context.Background(), SubmitConfig{
 		BaseURL: server.URL + "/", APIKey: "channel-key",
 	}, "mj_1")
@@ -85,7 +85,7 @@ func TestQueryClientFoldsErrorsWithoutLeakingBody(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer server.Close()
-			_, mjErr := NewSubmitClient(nil).Query(context.Background(),
+			_, mjErr := NewSubmitClient(upstreamClient(server)).Query(context.Background(),
 				SubmitConfig{BaseURL: server.URL, APIKey: "k"}, "mj_1")
 			if mjErr == nil {
 				t.Fatalf("expected error")
@@ -107,7 +107,7 @@ func TestQueryClientRejectsInvalidIDWithoutUpstreamCall(t *testing.T) {
 		atomic.AddInt32(&calls, 1)
 	}))
 	defer server.Close()
-	_, mjErr := NewSubmitClient(nil).Query(context.Background(),
+	_, mjErr := NewSubmitClient(upstreamClient(server)).Query(context.Background(),
 		SubmitConfig{BaseURL: server.URL, APIKey: "k"}, "../etc/passwd")
 	if mjErr == nil || mjErr.Description != DescriptionInvalidID {
 		t.Fatalf("invalid id error = %+v", mjErr)
@@ -127,7 +127,7 @@ func TestQueryClientDoesNotFollowRedirects(t *testing.T) {
 		http.Redirect(w, &http.Request{}, second.URL+"/steal", http.StatusFound)
 	}))
 	defer first.Close()
-	_, mjErr := NewSubmitClient(nil).Query(context.Background(),
+	_, mjErr := NewSubmitClient(upstreamClient(first)).Query(context.Background(),
 		SubmitConfig{BaseURL: first.URL, APIKey: "k"}, "mj_1")
 	if mjErr == nil {
 		t.Fatalf("redirect must be a failure (禁重定向)")
@@ -144,7 +144,7 @@ func TestImageSeedPassesThroughUpstreamBody(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":1,"description":"","result":["seed-value"]}`))
 	}))
 	defer server.Close()
-	body, mjErr := NewSubmitClient(nil).ImageSeed(context.Background(),
+	body, mjErr := NewSubmitClient(upstreamClient(server)).ImageSeed(context.Background(),
 		SubmitConfig{BaseURL: server.URL, APIKey: "channel-key"}, "mj_1")
 	if mjErr != nil {
 		t.Fatalf("ImageSeed: %v", mjErr)
@@ -173,7 +173,7 @@ func TestImageSeedRejectsNonJSONAndHTTPErrors(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer server.Close()
-			if _, mjErr := NewSubmitClient(nil).ImageSeed(context.Background(),
+			if _, mjErr := NewSubmitClient(upstreamClient(server)).ImageSeed(context.Background(),
 				SubmitConfig{BaseURL: server.URL, APIKey: "k"}, "mj_1"); mjErr == nil {
 				t.Fatalf("expected error")
 			}

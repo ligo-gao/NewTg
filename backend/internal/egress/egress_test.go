@@ -7,8 +7,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -555,4 +557,146 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestChannelPolicyIsAlwaysOnAndIgnoresWebhookControls 覆盖渠道面策略的
+// 冻结语义：渠道面不接受 `sec.ssrf.mode=off`，不套用域名清单，不限制端口
+// （自建上游端口不可枚举），私网默认拒绝。
+// typedNilReader 模拟「接口非 nil、底层指针为 nil」的配置中心。
+type typedNilReader struct{}
+
+func (*typedNilReader) Get(string) (json.RawMessage, bool) { panic("must not be called") }
+
+func TestPolicyFromConfigToleratesTypedNilReader(t *testing.T) {
+	var cfg *typedNilReader
+	policy := PolicyFromConfig(cfg)
+	if policy.Mode != DefaultPolicy().Mode {
+		t.Fatalf("mode = %q，typed-nil 配置源应回落到默认值", policy.Mode)
+	}
+}
+
+func TestChannelPolicyIsAlwaysOnAndIgnoresWebhookControls(t *testing.T) {
+	policy := ChannelPolicy(mapConfig{
+		KeyMode:       "off",
+		KeyDomainMode: "allowlist",
+		KeyDomainList: []string{"api.openai.com"},
+	})
+	if policy.Mode != ModeBasic {
+		t.Fatalf("渠道面不允许关闭 SSRF 策略：mode = %q", policy.Mode)
+	}
+	if policy.DomainMode != DomainAll {
+		t.Fatalf("渠道面不套用域名清单：domain_mode = %q", policy.DomainMode)
+	}
+	if !policy.AllowAnyPort {
+		t.Fatal("渠道面必须放开端口：自建上游端口不可枚举")
+	}
+	if policy.AllowPrivateIP {
+		t.Fatal("渠道面私网默认必须拒绝（仅单渠道 opt-in 可放行）")
+	}
+
+	// strict 仍然生效：https-only。
+	strict := ChannelPolicy(mapConfig{KeyMode: "strict"})
+	if strict.Mode != ModeStrict {
+		t.Fatalf("渠道面应保留配置的 strict 强度：mode = %q", strict.Mode)
+	}
+}
+
+// TestAllowPrivateNetworkOptIn 覆盖单渠道 opt-in 的地址边界：RFC1918/ULA
+// 放行，loopback / link-local / 元数据 / CGNAT / 保留段任何开关都不放行。
+func TestAllowPrivateNetworkOptIn(t *testing.T) {
+	ctx := WithAllowPrivateNetwork(context.Background())
+	guard := NewGuard(ChannelPolicy(nil)).WithResolver(staticResolver{
+		"upstream.internal": {net.ParseIP("10.1.2.3")},
+		"metadata.internal": {net.ParseIP("169.254.169.254")},
+		"loop.internal":     {net.ParseIP("127.0.0.1")},
+		"cgnat.internal":    {net.ParseIP("100.64.1.1")},
+	}.resolve)
+
+	// opt-in 后 RFC1918 放行；端口不设白名单。
+	if _, err := guard.ValidateURL(ctx, "http://upstream.internal:8080/v1/models"); err != nil {
+		t.Fatalf("opt-in 应放行 RFC1918 目标：%v", err)
+	}
+	// 没有 opt-in 时拒绝。
+	if _, err := guard.ValidateURL(context.Background(), "http://upstream.internal:8080/v1"); !errors.Is(err, ErrBlocked) {
+		t.Fatalf("未 opt-in 应拒绝私网目标：%v", err)
+	}
+	for name, raw := range map[string]string{
+		"元数据":      "http://metadata.internal/v1",
+		"loopback": "http://loop.internal:8080/v1",
+		"CGNAT":    "http://cgnat.internal:8080/v1",
+	} {
+		if _, err := guard.ValidateURL(ctx, raw); !errors.Is(err, ErrBlocked) {
+			t.Fatalf("opt-in 也不得放行%s目标：%v", name, err)
+		}
+	}
+}
+
+// TestDialContextHonorsAllowPrivateNetworkOptIn 断言拨号期与保存期使用同一
+// 分类：opt-in 时拨号被放行到已校验的 IP，未 opt-in 时在拨号前拒绝。
+func TestDialContextHonorsAllowPrivateNetworkOptIn(t *testing.T) {
+	guard := NewGuard(ChannelPolicy(nil)).WithResolver(staticResolver{
+		"upstream.internal": {net.ParseIP("10.1.2.3")},
+	}.resolve)
+
+	// 未 opt-in：拨号前拒绝，且不触达网络。
+	dialed := ""
+	guard.dialer = &net.Dialer{Timeout: 50 * time.Millisecond, Control: func(_, address string, _ syscall.RawConn) error {
+		dialed = address
+		return errors.New("stop before connect")
+	}}
+	if _, err := guard.DialContext(context.Background(), "tcp", "upstream.internal:8080"); !errors.Is(err, ErrBlocked) {
+		t.Fatalf("未 opt-in 应在拨号前拒绝：%v", err)
+	}
+	if dialed != "" {
+		t.Fatalf("未 opt-in 不得发起连接，实际拨号到 %q", dialed)
+	}
+
+	// opt-in：不再按地址拒绝，拨号目标是解析并校验过的 IP。
+	guard.dialer = &net.Dialer{Timeout: 50 * time.Millisecond, Control: func(_, address string, _ syscall.RawConn) error {
+		dialed = address
+		return errors.New("stop before connect")
+	}}
+	if _, err := guard.DialContext(WithAllowPrivateNetwork(context.Background()), "tcp", "upstream.internal:8080"); errors.Is(err, ErrBlocked) {
+		t.Fatalf("opt-in 后不应按地址拒绝：%v", err)
+	}
+	if dialed != "10.1.2.3:8080" {
+		t.Fatalf("拨号目标应为校验过的 IP，实际 %q", dialed)
+	}
+}
+
+// TestHardenTransportDisablesProxyAndKeepsPooling 覆盖渠道客户端加固：
+// 代理必须清除（否则 DialContext 只看到代理地址），连接池与超时原样保留，
+// 且不修改调用方传入的 transport。
+func TestHardenTransportDisablesProxyAndKeepsPooling(t *testing.T) {
+	guard := NewGuard(ChannelPolicy(nil))
+	base := &http.Transport{
+		Proxy: func(*http.Request) (*url.URL, error) {
+			return url.Parse("http://127.0.0.1:3128")
+		},
+		MaxIdleConns:        500,
+		MaxIdleConnsPerHost: 100,
+	}
+
+	hardened := guard.HardenTransport(base)
+	if hardened == base {
+		t.Fatal("HardenTransport 必须返回副本，不得原地修改调用方 transport")
+	}
+	if base.Proxy == nil {
+		t.Fatal("不得修改调用方传入的 transport")
+	}
+	if hardened.Proxy != nil {
+		t.Fatal("加固后的 transport 必须禁用代理")
+	}
+	if hardened.MaxIdleConns != 500 || hardened.MaxIdleConnsPerHost != 100 {
+		t.Fatalf("必须保留连接池参数：%+v", hardened)
+	}
+	if hardened.DialContext == nil {
+		t.Fatal("必须安装 guard 的 DialContext")
+	}
+
+	// nil 输入也要得到一个可用的加固 transport。
+	fallback := guard.HardenTransport(nil)
+	if fallback == nil || fallback.Proxy != nil || fallback.DialContext == nil {
+		t.Fatalf("nil transport 应返回加固后的默认 transport：%+v", fallback)
+	}
 }

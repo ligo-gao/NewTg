@@ -230,6 +230,12 @@ type twoFATestEnv struct {
 // 其余四个端点挂在 SessionAuth → CSRF → OriginReferer 链之后。
 func newTwoFATestEnv(t *testing.T) *twoFATestEnv {
 	t.Helper()
+	return newTwoFATestEnvWithConfig(t, nil)
+}
+
+// newTwoFATestEnvWithConfig 允许注入 auth.* 设置（R-04 的 admin_required）。
+func newTwoFATestEnvWithConfig(t *testing.T, cfg mapConfig) *twoFATestEnv {
+	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
 	t.Cleanup(func() { _ = rdb.Close() })
@@ -243,6 +249,7 @@ func newTwoFATestEnv(t *testing.T) *twoFATestEnv {
 		Sessions:      sessions,
 		EncryptionKey: twoFATestEncryptionKey,
 		Audit:         audit.New(auditExec),
+		Config:        cfg,
 		Now:           func() time.Time { return twoFATestNow },
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})

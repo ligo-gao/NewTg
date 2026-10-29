@@ -14,7 +14,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -1521,6 +1520,23 @@ func (h *authHandlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R-04：管理员必须绑定 TOTP（auth.mfa.admin_required 默认 true）。未绑定时
+	// 不签发完整会话——否则「强制开启 MFA」只是一个可被绕过的前端提示。返回
+	// scope=enroll 的一次性票据（10 分钟），前端进入强制绑定引导页；绑定完成
+	// 后由确认端点签发正式会话。普通用户与 admin_required=false 不受影响。
+	if user.Role == rbac.RoleAdmin && h.boolConfig("auth.mfa.admin_required", true) {
+		ticket, err := h.createPending2FAEnroll(ctx, user.ID)
+		if err != nil {
+			h.log.Error("create mfa enrollment ticket failed", "error", err)
+			h.auditLogin(r, user, "failed", "session_unavailable")
+			h.writeServiceUnavailable(w, "Login is temporarily unavailable")
+			return
+		}
+		h.auditLogin(r, user, "success", "mfa_enrollment_required")
+		writeJSON(w, http.StatusOK, pending2FAResponse{Status: "mfa_enrollment_required", Ticket: ticket})
+		return
+	}
+
 	if err := h.startSession(ctx, w, r, user); err != nil {
 		h.log.Error("create session failed", "error", err)
 		h.auditLogin(r, user, "failed", "session_unavailable")
@@ -1671,16 +1687,13 @@ func clearSessionCookies(w http.ResponseWriter) {
 
 // createPending2FA 写 pending_2fa:{ticket}（5 分钟），不建立正式会话。
 func (h *authHandlers) createPending2FA(ctx context.Context, userID int64) (string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("httpapi: generate 2fa ticket: %w", err)
-	}
-	ticket := base64.RawURLEncoding.EncodeToString(buf)
-	if err := h.rdb.Set(ctx, "pending_2fa:"+ticket,
-		strconv.FormatInt(userID, 10), pending2FATTL).Err(); err != nil {
-		return "", fmt.Errorf("httpapi: store 2fa ticket: %w", err)
-	}
-	return ticket, nil
+	return createTwoFATicket(ctx, h.rdb, twoFATicketKeyPrefix, userID, pending2FATTL)
+}
+
+// createPending2FAEnroll 写 scope=enroll 的强制绑定票据（10 分钟），
+// 不建立正式会话（R-04）。票据只能用于 /api/auth/2fa/enroll/*。
+func (h *authHandlers) createPending2FAEnroll(ctx context.Context, userID int64) (string, error) {
+	return createTwoFATicket(ctx, h.rdb, twoFAEnrollTicketKeyPrefix, userID, pending2FAEnrollTTL)
 }
 
 // dummyPasswordHash 是未知用户/无口令用户登录时用于时序对齐的哈希。

@@ -122,6 +122,7 @@ func TestChannelMetricsEndpointIntegration(t *testing.T) {
 
 	h := NewChannelHandler(store.NewChannelRepo(mainDB), newFakeUserAccess(), sealer,
 		ChannelHandlerOptions{
+			Egress:      testEgressGuard(),
 			Idempotency: NewMemoryIdempotencyStore(),
 			Metrics:     store.NewChannelMetricsRepo(logsDB),
 			Redis:       rdb,
@@ -189,6 +190,7 @@ func TestChannelTestRateLimitIntegration(t *testing.T) {
 	tester := &fakeChannelTester{latency: 5}
 	h := NewChannelHandler(store.NewChannelRepo(mainDB), newFakeUserAccess(), sealer,
 		ChannelHandlerOptions{
+			Egress:      testEgressGuard(),
 			Idempotency: NewMemoryIdempotencyStore(),
 			Redis:       rdb,
 			Tester:      tester.test,

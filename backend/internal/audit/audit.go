@@ -115,6 +115,11 @@ const (
 	// 密钥、路径、query 与响应体原文都不得进入审计。
 	ActionSettingsTestWebhook = "settings.test_webhook"
 
+	// ActionSettingsTestSMTP 是 POST /api/settings/test/smtp 的审计。detail
+	// 只允许 host/port/ok/阶段分类/数字码：账号、发件地址、密码与服务器
+	// 原文都不得进入审计。
+	ActionSettingsTestSMTP = "settings.test_smtp"
+
 	// ActionSettingsWebhookResume 是 POST /api/settings/notify-webhook:resume
 	// 的审计（modules-08 F-08-20「恢复推送」）。暂停是运行时状态而非设置值，
 	// 但恢复是管理员对出站通道的显式操作，必须可追溯。detail 只允许
@@ -270,6 +275,22 @@ const (
 	// 动作名按 W11 冻结口径 `channel.credentials_reveal`（设计文档 §2.10 的
 	// detail 文案为 credentials_revealed，本实现以冻结口径为准并登记差异）。
 	ActionChannelCredentialsReveal = "channel.credentials_reveal"
+
+	// R-11 渠道目标变更的步进再认证（security-04 §2.4；补 M4/M5 的凭据外带链）。
+	//
+	// 三个动作各自独立，便于检索「谁改了目标」「谁在猜口令」「哪个渠道的存量
+	// 密钥被复用发往上游」：
+	//   - target_change：base_url / upstream_account_id / allow_private_network
+	//     变更成功（再认证已通过）；
+	//   - reauth_failed：目标变更被步进认证拒绝（未提交因子、口令/TOTP 错误、
+	//     锁定或门不可用）；
+	//   - credentials_reuse：fetch-models 复用库中已存密钥（仅在同一 base_url
+	//     且再认证窗口内）。
+	// detail 只允许 channel_id / target / reason 这类枚举与标识，**绝不记录
+	// 因子内容、base_url 值或密钥**。
+	ActionChannelTargetChange     = "channel.target_change"
+	ActionChannelReauthFailed     = "channel.reauth_failed"
+	ActionChannelCredentialsReuse = "channel.credentials_reuse"
 )
 
 // categoryLogin 等是 audit_logs.category 的 CHECK 白名单（platform-01 §5 R3）。
@@ -336,6 +357,7 @@ var actionCategories = map[string]string{
 
 	ActionSettingsUpdate:        categoryOperation,
 	ActionSettingsTestWebhook:   categoryOperation,
+	ActionSettingsTestSMTP:      categoryOperation,
 	ActionSettingsWebhookResume: categoryOperation,
 	// 支付设置合规确认是管理配置的前置授权动作，归 operation。
 	ActionSettingsPaymentComplianceConfirmed: categoryOperation,
@@ -401,6 +423,9 @@ var actionCategories = map[string]string{
 	ActionChannelUpdate:            categoryOperation,
 	ActionChannelDelete:            categoryOperation,
 	ActionChannelCredentialsReveal: categoryOperation,
+	ActionChannelTargetChange:      categoryOperation,
+	ActionChannelReauthFailed:      categoryOperation,
+	ActionChannelCredentialsReuse:  categoryOperation,
 
 	ActionUpstreamAccountCreate:  categoryOperation,
 	ActionUpstreamAccountUpdate:  categoryOperation,

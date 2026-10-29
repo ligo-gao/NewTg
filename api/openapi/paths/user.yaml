@@ -279,10 +279,11 @@ paths:
     delete:
       tags: [user]
       operationId: deleteAccount
-      summary: 硬删除账号并匿名化 PII（无宽限）
+      summary: 硬删除账号（无宽限）
       description: |
-        全量再认证通过后：吊销全部会话 → PII 匿名化（历史记录改
-        deleted_{id}）→ 硬删除 users/api_tokens 行 → 失效令牌缓存。成功 204。
+        全量再认证通过后：吊销全部会话 → 硬删除 users/api_tokens 行 →
+        失效令牌缓存。成功 204。audit_logs 为 append-only，历史审计行保留
+        操作发生时的用户名快照，由保留期作业按整行清理（不做运行时改写）。
         管理员账号必须先被降权（403）；再认证失败 403 reauth_required。
         账号行已不存在时 404（PRD 的「幂等」指重复删除不产生额外副作用）。
       security:
@@ -298,7 +299,7 @@ paths:
               $ref: '../schemas/user.yaml#/schemas/DeleteAccountRequest'
       responses:
         '204':
-          description: 账号已删除并匿名化
+          description: 账号已删除
         '400':
           $ref: '../components/responses.yaml#/responses/Error400'
         '401':

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/billing"
+	"newtg/gateway/internal/clientip"
 	"newtg/gateway/internal/store"
 	"newtg/gateway/internal/tokenstore"
 )
@@ -336,9 +338,82 @@ func tokenLookupRejected(err error) bool {
 func RelayAuthWithRecorder(tokenStore auth.TokenLookup, access UserAccessStore,
 	trustedProxies []netip.Prefix, recorder RefusalRecorder, log *slog.Logger,
 ) func(http.Handler) http.Handler {
+	return relayAuthWithGuard(tokenStore, access, trustedProxies, recorder, log, nil)
+}
+
+// relayAuthWithGuard 是 RelayAuth 链的完整实现，额外接收 R-03 的预认证失败
+// 限流器（guard）。guard 为 nil 时行为与历史完全一致（测试/降级装配）。
+//
+// R-03 的两个挂点（顺序即语义）：
+//   - **进入鉴权之前**：若 clientIP 已在超限锁定期，直接 429，不提取/哈希
+//     令牌、不查库；
+//   - **令牌校验失败之后**：RecordAuthFailure(clientIP)，达到 60 次/IP/分钟
+//     即锁 10 分钟。成功请求不计数也不清零。
+//
+// 限流器自身的任何错误都 fail-open（记 WARN 后继续原流程）：这是全仓唯一
+// 允许 fail-open 的限流点，可用性优先；错误绝不能把正常请求变成 500。
+func relayAuthWithGuard(tokenStore auth.TokenLookup, access UserAccessStore,
+	trustedProxies []netip.Prefix, recorder RefusalRecorder, log *slog.Logger,
+	guard RelayAuthFailureLimiter,
+) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			writeErr := writeRelayErrorForRequest(r)
+			logger := log
+			if logger == nil {
+				logger = slog.Default()
+			}
+
+			// R-03 预认证闸门：在提取/哈希令牌、查库之前先看 IP 失败桶。
+			// 命中锁定直接 429——这也是「不查库、不算哈希」的实现位置。
+			var authFailureIP string
+			if guard != nil {
+				if ip, ok := relayAuthClientIP(r, trustedProxies); ok {
+					authFailureIP = ip
+					// Redis 故障时必须**快速** fail-open：go-redis 默认会重试多次，
+					// 不设上限会让每个 /v1 请求在故障期白等数秒。250ms 远大于
+					// 正常 PTTL 往返，又是可用性可接受的等待上限。
+					checkCtx, cancel := context.WithTimeout(r.Context(), relayAuthFailureCheckTimeout)
+					blocked, retryAfter, err := guard.AuthFailureBlocked(checkCtx, ip)
+					cancel()
+					switch {
+					case err != nil:
+						// fail-open：限流器故障不得把请求变成 500，也不得改变 401 语义。
+						logger.Warn("relay auth failure limiter unavailable; fail-open", "error", err)
+					case blocked:
+						seconds := retrySeconds(retryAfter)
+						w.Header().Set("Retry-After", seconds)
+						logger.Info("relay auth failure limit exceeded",
+							"client_ip", ip, "retry_after_s", seconds)
+						// 429 与 401 可区分，但文案与普通限流一致，不泄露
+						// 「因为认证失败被锁」这一触发原因。
+						writeErr(w, http.StatusTooManyRequests, "", "rate_limit_exceeded",
+							"rate limit exceeded; retry in "+seconds+"s")
+						return
+					}
+				}
+			}
+
+			// recordAuthFailure 记录一次确定的令牌校验失败。
+			//
+			// 只覆盖「凭证存在但不可用」：缺凭证（客户端配置错误）、
+			// tokenStore 未装配、用户状态存储故障、用户已删除/被封禁都不算
+			// 撞库信号，记录会把基础设施/配置问题算到客户端 IP 头上。
+			// 成功路径不调用它——成功既不计数也不清零。
+			recordAuthFailure := func() {
+				if authFailureIP == "" {
+					return
+				}
+				// 与 recordPreRelayRefusal 同口径：客户端提前断开也不跳过计数，
+				// 否则攻击者可以用「发完即断」绕过失败桶。2s 上限防止慢 Redis
+				// 拖住拒绝响应。
+				ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Second)
+				defer cancel()
+				if err := guard.RecordAuthFailure(ctx, authFailureIP); err != nil {
+					logger.Warn("relay auth failure not recorded; fail-open", "error", err)
+				}
+			}
+
 			// reject 写出拒绝响应，再记录一条 auth 阶段的拒绝行。
 			// userID==0 表示「无法说明是谁」（令牌根本没解析出来）。
 			// requestId 在拒绝时才生成：成功的请求不该为一次用不上的熵读取付费。
@@ -378,6 +453,7 @@ func RelayAuthWithRecorder(tokenStore auth.TokenLookup, access UserAccessStore,
 				return
 			}
 			if key == "" {
+				recordAuthFailure()
 				reject(http.StatusUnauthorized, "", "invalid token", 0, nil)
 				return
 			}
@@ -394,6 +470,7 @@ func RelayAuthWithRecorder(tokenStore auth.TokenLookup, access UserAccessStore,
 				//   - 其它错误（Redis/DB 故障，fail-closed 成 401）在协议上
 				//     不可区分，记成 refused 会把存储故障说成用户请求的问题。
 				if tokenLookupRejected(err) {
+					recordAuthFailure()
 					reject(http.StatusUnauthorized, "", "invalid token", 0, nil)
 					return
 				}
@@ -401,6 +478,7 @@ func RelayAuthWithRecorder(tokenStore auth.TokenLookup, access UserAccessStore,
 				return
 			}
 			if !tokenUsable(meta, time.Now()) {
+				recordAuthFailure()
 				tokenID := meta.ID
 				reject(http.StatusUnauthorized, "", "invalid token", meta.UserID, &tokenID)
 				return
@@ -414,6 +492,7 @@ func RelayAuthWithRecorder(tokenStore auth.TokenLookup, access UserAccessStore,
 			if err != nil {
 				// 已删除用户 → 401（身份失效），与坏令牌同语义；其余存储故障 500。
 				if errors.Is(err, store.ErrUserNotFound) {
+					// R-03：令牌本身已解析成功，不是撞库信号，不计入失败桶。
 					tokenID := meta.ID
 					reject(http.StatusUnauthorized, "", "invalid token", meta.UserID, &tokenID)
 					return
@@ -575,26 +654,15 @@ func isModelsPath(path string) bool {
 //
 // 非法条目被忽略而不是放宽：宁可少信任一个代理（退回 RemoteAddr），
 // 也不把无法解析的字符串当成「信任所有」。空配置返回 nil。
+//
+// 解析口径必须与 internal/clientip 完全一致（R-02）：单一 IP 归一化为
+// /32（IPv4）或 /128（IPv6），并拒绝 0.0.0.0/0、::/0 与过宽前缀（IPv4 < /8、
+// IPv6 < /16）。本函数曾自带一份不带宽度校验的实现，导致 RelayAuth 的令牌
+// IP 白名单路径比限流/审计路径更宽松——配置成 /0 时，任意客户端都能自带
+// XFF 冒充 allow_ips 里的地址。现在直接复用同一解析器，避免再次漂移。
 func parseTrustedProxies(raw string) []netip.Prefix {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
-	out := make([]netip.Prefix, 0, 4)
-	for _, part := range strings.Split(raw, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		if prefix, err := netip.ParsePrefix(part); err == nil {
-			out = append(out, prefix.Masked())
-			continue
-		}
-		if addr, err := netip.ParseAddr(part); err == nil {
-			out = append(out, netip.PrefixFrom(addr.Unmap(), addr.Unmap().BitLen()))
-		}
-	}
-	return out
+	prefixes, _ := clientip.Parse(raw)
+	return prefixes
 }
 
 // tokenIPAllowed 判定客户端 IP 是否满足令牌的 allow_ips 白名单。

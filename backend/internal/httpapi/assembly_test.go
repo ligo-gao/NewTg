@@ -90,8 +90,6 @@ func gatewayDepsForTest(t *testing.T) (GatewayDeps, *redis.Client) {
 		SetupStore:              newFakeSetupStore(),
 		SelfRepo:                newFakeSelfRepo(),
 		AccountRepo:             newAccountTestRepo(),
-		AccountAnonymizer:       &accountTestAnonymizer{},
-		UserAnonymizer:          &fakePIIAnonymizer{},
 		AccountReauth: auth.NewReauthGate(rdb, auth.ReauthMaterialFunc(
 			func(context.Context, int64) (*auth.ReauthMaterial, error) {
 				return nil, auth.ErrReauthRequired
@@ -182,7 +180,7 @@ func TestBuildGatewayRouterMountsChannelRoutes(t *testing.T) {
 		newFakeChannelStore(),
 		newFakeUserAccess(),
 		NewSecretSealer("assembly-test-credential-key"),
-		ChannelHandlerOptions{},
+		ChannelHandlerOptions{Egress: testEgressGuard()},
 	)
 	rt, err := BuildGatewayRouter(deps)
 	if err != nil {
@@ -249,7 +247,6 @@ func TestBuildGatewayRouterFailsFast(t *testing.T) {
 			d.EmailSender = &resetTestSender{}
 		}, "PUBLIC_BASE_URL"},
 		{"缺令牌服务", func(d *GatewayDeps) { d.TokenService = nil }, "TokenService"},
-		{"缺日志库与匿名化器", func(d *GatewayDeps) { d.AccountAnonymizer = nil; d.LogDB = nil }, "LogDB"},
 		{"缺自助 Repo", func(d *GatewayDeps) { d.SelfRepo = nil }, "SelfRepo"},
 	}
 	for _, tc := range cases {

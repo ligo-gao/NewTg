@@ -95,6 +95,14 @@ func TestBuildSubmitBodyPointerSemantics(t *testing.T) {
 	})
 }
 
+// upstreamClient 返回指向 httptest 上游的客户端，并保留生产默认的禁重定向策略
+// （srv.Client() 自身会跟随 302，R-01 前后都不允许）。
+func upstreamClient(srv *httptest.Server) *http.Client {
+	c := *srv.Client()
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &c
+}
+
 func TestSubmitSendsPathHeaderAndParsesResponse(t *testing.T) {
 	var gotPath, gotSecret, gotBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -107,7 +115,7 @@ func TestSubmitSendsPathHeaderAndParsesResponse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewSubmitClient(nil)
+	client := NewSubmitClient(upstreamClient(server))
 	resp, err := client.Submit(context.Background(), SubmitConfig{BaseURL: server.URL, APIKey: "channel-key"},
 		EndpointImagine, imagineNormalized("a cat"))
 	if err != nil {
@@ -136,7 +144,7 @@ func TestSubmitParsesArrayResultForUpload(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewSubmitClient(nil)
+	client := NewSubmitClient(upstreamClient(server))
 	n := &NormalizedSubmit{Endpoint: EndpointUploadDiscord, Action: ActionUpload, Model: "mj_upload",
 		Base64Array: []string{"aGk="}}
 	resp, err := client.Submit(context.Background(), SubmitConfig{BaseURL: server.URL, APIKey: "k"},
@@ -156,7 +164,7 @@ func TestSubmitRejectsBadUpstreamResponses(t *testing.T) {
 			_, _ = w.Write([]byte(strings.Repeat("x", MaxSubmitResponseBytes+1)))
 		}))
 		defer server.Close()
-		client := NewSubmitClient(nil)
+		client := NewSubmitClient(upstreamClient(server))
 		_, err := client.Submit(context.Background(), SubmitConfig{BaseURL: server.URL}, EndpointImagine, imagineNormalized("x"))
 		if err == nil || err.Description != DescriptionUpstreamResponseTooLarge {
 			t.Fatalf("error = %+v, want %s", err, DescriptionUpstreamResponseTooLarge)
@@ -169,7 +177,7 @@ func TestSubmitRejectsBadUpstreamResponses(t *testing.T) {
 			_, _ = w.Write([]byte("<html>internal address 10.0.0.1</html>"))
 		}))
 		defer server.Close()
-		client := NewSubmitClient(nil)
+		client := NewSubmitClient(upstreamClient(server))
 		_, err := client.Submit(context.Background(), SubmitConfig{BaseURL: server.URL}, EndpointImagine, imagineNormalized("x"))
 		if err == nil || err.Description != DescriptionUpstreamError {
 			t.Fatalf("error = %+v, want %s", err, DescriptionUpstreamError)
@@ -182,7 +190,7 @@ func TestSubmitRejectsBadUpstreamResponses(t *testing.T) {
 			_, _ = w.Write([]byte(`{"code":1,"result":"mj_up_1"}`))
 		}))
 		defer server.Close()
-		client := NewSubmitClient(nil)
+		client := NewSubmitClient(upstreamClient(server))
 		_, err := client.Submit(context.Background(), SubmitConfig{BaseURL: server.URL}, EndpointImagine, imagineNormalized("x"))
 		if err == nil || err.Description != DescriptionUpstreamError {
 			t.Fatalf("error = %+v, want %s", err, DescriptionUpstreamError)
@@ -194,7 +202,7 @@ func TestSubmitRejectsBadUpstreamResponses(t *testing.T) {
 			_, _ = w.Write([]byte(`{"code":1,"result":["ok",{"bad":true}]}`))
 		}))
 		defer server.Close()
-		client := NewSubmitClient(nil)
+		client := NewSubmitClient(upstreamClient(server))
 		_, err := client.Submit(context.Background(), SubmitConfig{BaseURL: server.URL}, EndpointUploadDiscord,
 			&NormalizedSubmit{Endpoint: EndpointUploadDiscord, Action: ActionUpload, Model: "mj_upload", Base64Array: []string{"aGk="}})
 		if err == nil || err.Description != DescriptionUpstreamBadResponse {
@@ -207,7 +215,7 @@ func TestSubmitRejectsBadUpstreamResponses(t *testing.T) {
 			_, _ = w.Write([]byte(`{"description":"no code"}`))
 		}))
 		defer server.Close()
-		client := NewSubmitClient(nil)
+		client := NewSubmitClient(upstreamClient(server))
 		_, err := client.Submit(context.Background(), SubmitConfig{BaseURL: server.URL}, EndpointImagine, imagineNormalized("x"))
 		if err == nil || err.Description != DescriptionUpstreamBadResponse {
 			t.Fatalf("error = %+v, want %s", err, DescriptionUpstreamBadResponse)
@@ -225,7 +233,7 @@ func TestSubmitDoesNotFollowRedirects(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewSubmitClient(nil)
+	client := NewSubmitClient(upstreamClient(server))
 	_, err := client.Submit(context.Background(), SubmitConfig{BaseURL: server.URL}, EndpointImagine, imagineNormalized("x"))
 	if err == nil || err.Description != DescriptionUpstreamError {
 		t.Fatalf("error = %+v, want %s", err, DescriptionUpstreamError)

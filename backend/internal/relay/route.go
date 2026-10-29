@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/egress"
 	"newtg/gateway/internal/relay/adapters"
 	"newtg/gateway/internal/relay/ir"
 	"newtg/gateway/internal/relay/usage"
@@ -773,6 +774,13 @@ func ExecuteAttempts(ctx context.Context, rc *contract.RelayContext, deps RouteD
 			// 适配器拿不到 ctx（契约 §3.1 的 BuildRequest 无 ctx 参数），执行层负责
 			// 把本轮 context 绑到请求上；否则客户端取消无法中止上游调用。
 			httpReq = httpReq.WithContext(ctx)
+			// R-01：私网 opt-in 是**渠道级**事实，只能由执行层按本轮真正解析出的
+			// assignment 打标；egress 在拨号期据此放宽 RFC1918/ULA（loopback/
+			// 元数据/CGNAT/保留段仍拒绝）。适配器不参与，也不能伪造。
+			if assignment.AllowPrivateNetwork {
+				httpReq = httpReq.WithContext(
+					egress.WithAllowPrivateNetwork(httpReq.Context()))
+			}
 
 			resp, doErr := client.Do(httpReq)
 			if doErr != nil {

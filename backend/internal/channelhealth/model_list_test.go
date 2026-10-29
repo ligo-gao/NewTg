@@ -36,7 +36,7 @@ func TestModelListerAcceptsBaseURLWithV1Suffix(t *testing.T) {
 
 			for _, suffix := range []string{"/v1", "/v1/"} {
 				gotPaths = nil
-				models, err := NewModelLister().List(context.Background(), ModelListRequest{
+				models, err := NewModelLister(server.Client()).List(context.Background(), ModelListRequest{
 					ChannelType: tc.typ,
 					BaseURL:     server.URL + suffix,
 					APIKey:      "sk-test",
@@ -66,7 +66,7 @@ func TestModelListerOpenAICompatible(t *testing.T) {
 	}))
 	defer server.Close()
 
-	lister := NewModelLister()
+	lister := NewModelLister(server.Client())
 	models, err := lister.List(context.Background(), ModelListRequest{
 		ChannelType: contract.ChannelTypeOpenAI,
 		BaseURL:     server.URL,
@@ -104,7 +104,7 @@ func TestModelListerAnthropicPaginates(t *testing.T) {
 	}))
 	defer server.Close()
 
-	lister := NewModelLister()
+	lister := NewModelLister(server.Client())
 	models, err := lister.List(context.Background(), ModelListRequest{
 		ChannelType: contract.ChannelTypeAnthropic,
 		BaseURL:     server.URL,
@@ -139,7 +139,7 @@ func TestModelListerGeminiStripsPrefixAndPaginates(t *testing.T) {
 	}))
 	defer server.Close()
 
-	lister := NewModelLister()
+	lister := NewModelLister(server.Client())
 	models, err := lister.List(context.Background(), ModelListRequest{
 		ChannelType: contract.ChannelTypeGemini,
 		BaseURL:     server.URL,
@@ -362,7 +362,7 @@ func TestSuggestVendor(t *testing.T) {
 }
 
 func TestModelListerRejectsUnsupportedTypes(t *testing.T) {
-	lister := NewModelLister()
+	lister := NewModelLister(nil)
 	_, err := lister.List(context.Background(), ModelListRequest{
 		ChannelType: contract.ChannelTypeTaskPlugin,
 		BaseURL:     "https://example.com",
@@ -374,7 +374,7 @@ func TestModelListerRejectsUnsupportedTypes(t *testing.T) {
 }
 
 func TestModelListerRequiresKeyAndAzureVersion(t *testing.T) {
-	lister := NewModelLister()
+	lister := NewModelLister(nil)
 	_, err := lister.List(context.Background(), ModelListRequest{
 		ChannelType: contract.ChannelTypeOpenAI,
 		BaseURL:     "https://api.openai.com",

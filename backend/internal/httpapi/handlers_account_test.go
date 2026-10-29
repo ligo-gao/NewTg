@@ -234,30 +234,6 @@ func (s *accountTestReauthSource) ReauthMaterial(_ context.Context, userID int64
 	return &copied, nil
 }
 
-type anonymizeCall struct {
-	UserID   int64
-	Username string
-}
-
-type accountTestAnonymizer struct {
-	mu    sync.Mutex
-	calls []anonymizeCall
-	err   error
-}
-
-func (a *accountTestAnonymizer) AnonymizeUser(_ context.Context, userID int64, anonymizedUsername string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.calls = append(a.calls, anonymizeCall{UserID: userID, Username: anonymizedUsername})
-	return a.err
-}
-
-func (a *accountTestAnonymizer) snapshot() []anonymizeCall {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return append([]anonymizeCall(nil), a.calls...)
-}
-
 type notifTestCall struct {
 	Channel string
 	Target  string
@@ -327,7 +303,6 @@ type accountTestEnv struct {
 	handler  *AccountHandlers
 	repo     *accountTestRepo
 	auditEx  *accountAuditExec
-	anon     *accountTestAnonymizer
 	source   *accountTestReauthSource
 	sender   *accountTestNotifSender
 	mr       *miniredis.Miniredis
@@ -359,7 +334,6 @@ func newAccountTestEnvWithConfig(t *testing.T, config mapConfig) *accountTestEnv
 	repo := newAccountTestRepo()
 	sessions := auth.NewSessionManager(rdb, []byte(testSessionSecret))
 	auditEx := &accountAuditExec{}
-	anon := &accountTestAnonymizer{}
 	sender := &accountTestNotifSender{}
 	source := &accountTestReauthSource{
 		repo:      repo,
@@ -367,17 +341,16 @@ func newAccountTestEnvWithConfig(t *testing.T, config mapConfig) *accountTestEnv
 	}
 
 	env := &accountTestEnv{
-		t: t, repo: repo, auditEx: auditEx, anon: anon, source: source,
+		t: t, repo: repo, auditEx: auditEx, source: source,
 		sender: sender, mr: mr, rdb: rdb, sessions: sessions,
 		mfaCode: "123456",
 	}
 
 	handler, err := NewAccountHandlers(AccountHandlerConfig{
-		Repo:       repo,
-		Redis:      rdb,
-		Sessions:   sessions,
-		Audit:      audit.New(auditEx),
-		Anonymizer: anon,
+		Repo:     repo,
+		Redis:    rdb,
+		Sessions: sessions,
+		Audit:    audit.New(auditEx),
 		// 假源已返回解密后的明文 secret；测试用它验证「启用 MFA 必须给第二因子」，
 		// 无需真实 TOTP 算法。生产装配注入 auth.VerifyTOTP。
 		ReauthUsers: source,
@@ -582,11 +555,6 @@ func TestAccountDeleteHardDeleteTerminalState(t *testing.T) {
 		}
 	}
 
-	calls := env.anon.snapshot()
-	if len(calls) != 1 || calls[0].UserID != user.ID || calls[0].Username != fmt.Sprintf("deleted_%d", user.ID) {
-		t.Fatalf("PII 匿名化调用 = %+v，期望 [{user=%d username=deleted_%d}]", calls, user.ID, user.ID)
-	}
-
 	details := env.auditEx.snapshot()
 	if len(details) != 1 {
 		t.Fatalf("审计事件数量 = %d，期望 1", len(details))
@@ -691,8 +659,8 @@ func TestAccountDeleteUsernameMismatch(t *testing.T) {
 	if env.repo.users[user.ID] == nil {
 		t.Fatal("用户名不匹配不得删除用户")
 	}
-	if len(env.anon.snapshot()) != 0 || len(env.auditEx.snapshot()) != 0 {
-		t.Fatal("用户名不匹配不得触发匿名化或审计写入")
+	if len(env.auditEx.snapshot()) != 0 {
+		t.Fatal("用户名不匹配不得触发审计写入")
 	}
 }
 
@@ -773,8 +741,8 @@ func TestAccountDeleteIdempotentNotFound(t *testing.T) {
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d，期望 404（body=%q）", rr.Code, rr.Body.String())
 	}
-	if len(env.anon.snapshot()) != 0 {
-		t.Fatal("404 时不得触发匿名化")
+	if len(env.auditEx.snapshot()) != 0 {
+		t.Fatal("404 时不得写审计")
 	}
 }
 
@@ -1275,7 +1243,6 @@ func TestNewAccountHandlersRequiresDependencies(t *testing.T) {
 		Repo:          newAccountTestRepo(),
 		Redis:         rdb,
 		Sessions:      auth.NewSessionManager(sessRDB, []byte(testSessionSecret)),
-		Anonymizer:    &accountTestAnonymizer{},
 		SessionSecret: []byte(testSessionSecret),
 		Config:        mapConfig{},
 		ReauthUsers: &accountTestReauthSource{
@@ -1291,7 +1258,6 @@ func TestNewAccountHandlersRequiresDependencies(t *testing.T) {
 		{"缺 Sessions", func(c *AccountHandlerConfig) { c.Sessions = nil }},
 		{"缺仓储", func(c *AccountHandlerConfig) { c.Repo = nil }},
 		{"缺再认证源", func(c *AccountHandlerConfig) { c.ReauthUsers = nil }},
-		{"缺 PII 匿名化", func(c *AccountHandlerConfig) { c.Anonymizer = nil }},
 		{"缺 SessionSecret", func(c *AccountHandlerConfig) { c.SessionSecret = nil }},
 		{"缺 Config", func(c *AccountHandlerConfig) { c.Config = nil }},
 	}

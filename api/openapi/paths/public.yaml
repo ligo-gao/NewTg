@@ -171,9 +171,12 @@ paths:
       operationId: login
       summary: 口令登录（可选前端加密与 2FA 挑战）
       description: |
-        口令通过后：未启用 2FA 直接建立会话（200 AuthSessionResponse）；
-        已启用返回 200 Pending2FAResponse（ticket 5 分钟），需再调用
-        POST /api/auth/2fa/challenge。连续 5 次失败锁定 15 分钟（双桶
+        口令通过后：未启用 2FA（且非未绑定管理员）直接建立会话
+        （200 AuthSessionResponse）；已启用返回 200 Pending2FAResponse
+        （pending_2fa，ticket 5 分钟），需再调用 POST /api/auth/2fa/challenge；
+        未绑定 TOTP 的管理员（auth.mfa.admin_required=true）返回
+        mfa_enrollment_required（ticket 10 分钟），只能用于
+        POST /api/auth/2fa/enroll/*。连续 5 次失败锁定 15 分钟（双桶
         Redis 计数）；封禁账号 401。所有失败（含解密失败）响应一致，防 oracle。
       security: []
       requestBody:
@@ -256,6 +259,110 @@ paths:
             application/problem+json:
               schema:
                 $ref: '../components/problem.yaml#/schemas/Problem'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  # R-04 管理员强制 MFA 绑定。三条端点都以 login 返回的 enroll ticket 为唯一
+  # 凭据（不要求会话 Cookie、不读 CSRF），ticket 在 confirm 阶段一次性消费。
+  /api/auth/2fa/enroll/setup:
+    post:
+      tags: [public]
+      operationId: setupMFAEnrollment
+      summary: 生成 TOTP 种子与 otpauth URI（强制绑定引导第一步）
+      description: |
+        不写任何状态，可反复调用刷新二维码。ticket 缺失/过期/已消费 → 400
+        two_factor_ticket_invalid；非管理员票据 403；已绑定 409；无口令账号
+        403；按 IP 限流 429。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/public.yaml#/schemas/MFAEnrollTicketRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/user.yaml#/schemas/TwoFASetupResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/auth/2fa/enroll/enable:
+    post:
+      tags: [public]
+      operationId: enableMFAEnrollment
+      summary: 校验 TOTP 并生成备用码（尚不启用）
+      description: |
+        验证通过后把密文种子与备用码哈希暂存 10 分钟，返回一次性备用码明文；
+        此时 totp_enabled 仍为 false，必须再调用 confirm。验证码错误计入
+        IP+用户名失败桶与 ticket 失败次数（第 5 次作废票据）。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/public.yaml#/schemas/MFAEnrollEnableRequest'
+      responses:
+        '200':
+          description: 验证码通过，备用码只在此响应出现
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/public.yaml#/schemas/MFAEnrollBackupCodesResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '503':
+          $ref: '../components/responses.yaml#/responses/Error503'
+
+  /api/auth/2fa/enroll/confirm:
+    post:
+      tags: [public]
+      operationId: confirmMFAEnrollment
+      summary: 确认已保存备用码、启用 TOTP 并签发会话
+      description: |
+        backup_codes_confirmed 必须为 true，否则 400 且 totp_enabled 不变。
+        成功后原子写入 totp_enabled=true、消费 ticket、下发会话与 CSRF Cookie；
+        并发确认只有一次成功（其余 409/400）。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../schemas/public.yaml#/schemas/MFAEnrollConfirmRequest'
+      responses:
+        '200':
+          description: 已启用 2FA 并建立会话
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/public.yaml#/schemas/AuthSessionResponse'
+        '400':
+          $ref: '../components/responses.yaml#/responses/Error400'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '409':
+          $ref: '../components/responses.yaml#/responses/Error409'
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
         '503':
           $ref: '../components/responses.yaml#/responses/Error503'
 

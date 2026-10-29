@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/egress"
 	"newtg/gateway/internal/relay/adapters"
 	"newtg/gateway/internal/relay/ir"
 	"newtg/gateway/internal/store"
@@ -178,6 +179,10 @@ func (p *Prober) Probe(ctx context.Context, ch *store.Channel, model string) Pro
 
 	probeCtx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
+	// R-01：渠道级私网 opt-in 只放宽 egress 的 RFC1918/ULA 分类。
+	if ch.AllowPrivateNetwork {
+		probeCtx = egress.WithAllowPrivateNetwork(probeCtx)
+	}
 	start := time.Now()
 	resp, err := p.client.Do(httpReq.WithContext(probeCtx))
 	if err != nil {

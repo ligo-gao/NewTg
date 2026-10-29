@@ -226,10 +226,8 @@ type AdminUserRepo interface {
 // UserHandlerConfig 是用户端点的装配输入。Repo 与 DB 二选一（Repo 优先）；
 // Sessions/Redis 必填：封禁/重置必须在 Redis 不可用时 fail-closed。
 //
-// PII 匿名化：Anonymizer 与 LogDB 二选一；生产必须提供 LogDB（audit_logs 在
-// 日志库），单测注入假实现。二者都缺失属于装配错误——管理端删除与自助删除
-// 必须同样把 audit_logs.username 改写为 deleted_{id}，不能在删除成功后静默
-// 保留真实用户名。
+// 删除不对 audit_logs 做 UPDATE：该表是 append-only，运行时账号只有
+// SELECT/INSERT；历史用户名由保留期作业按整行清理。
 type UserHandlerConfig struct {
 	DB       *sql.DB
 	Repo     AdminUserRepo
@@ -237,10 +235,6 @@ type UserHandlerConfig struct {
 	Redis    *redis.Client
 	Authz    *rbac.AuthzMiddleware
 	Audit    *audit.Logger
-	// LogDB 是日志库连接（audit_logs 所在库），用于删除后的 PII 匿名化。
-	LogDB *sql.DB
-	// Anonymizer 覆盖默认的 SQLPIIAnonymizer（测试接缝）。
-	Anonymizer PIIAnonymizer
 	// PasswordChecker 用于创建用户时的弱口令/泄露筛查（零值即启用内置词表）。
 	PasswordChecker auth.CompromisedPasswordChecker
 	Logger          *slog.Logger
@@ -248,14 +242,13 @@ type UserHandlerConfig struct {
 
 // UserHandlers 持有用户管理端点依赖，可并发使用。
 type UserHandlers struct {
-	repo       AdminUserRepo
-	sessions   *auth.SessionManager
-	rdb        *redis.Client
-	authz      *rbac.AuthzMiddleware
-	audit      *audit.Logger
-	anonymizer PIIAnonymizer
-	checker    auth.CompromisedPasswordChecker
-	log        *slog.Logger
+	repo     AdminUserRepo
+	sessions *auth.SessionManager
+	rdb      *redis.Client
+	authz    *rbac.AuthzMiddleware
+	audit    *audit.Logger
+	checker  auth.CompromisedPasswordChecker
+	log      *slog.Logger
 }
 
 // 字段级（BOPLA）动作登记。ActionName 是「控制器/动作」维度的稳定标识，
@@ -293,26 +286,18 @@ func NewUserHandlers(cfg UserHandlerConfig) (*UserHandlers, error) {
 		// 字段层是端点契约的一部分，不能因为装配方没启用管理面 RBAC 而失效。
 		authz = rbac.NewAuthzMiddleware()
 	}
-	anonymizer := cfg.Anonymizer
-	if anonymizer == nil {
-		if cfg.LogDB == nil {
-			return nil, errors.New("httpapi: user deletion requires Anonymizer or LogDB for PII anonymization")
-		}
-		anonymizer = NewSQLPIIAnonymizer(cfg.LogDB)
-	}
 	log := cfg.Logger
 	if log == nil {
 		log = slog.Default()
 	}
 	h := &UserHandlers{
-		repo:       repo,
-		sessions:   cfg.Sessions,
-		rdb:        cfg.Redis,
-		authz:      authz,
-		audit:      cfg.Audit,
-		anonymizer: anonymizer,
-		checker:    cfg.PasswordChecker,
-		log:        log,
+		repo:     repo,
+		sessions: cfg.Sessions,
+		rdb:      cfg.Redis,
+		authz:    authz,
+		audit:    cfg.Audit,
+		checker:  cfg.PasswordChecker,
+		log:      log,
 	}
 	h.registerPolicies()
 	return h, nil
@@ -1016,16 +1001,11 @@ func (h *UserHandlers) handleDeleteUser(w http.ResponseWriter, r *http.Request) 
 		h.writeServiceUnavailable(w, "revoke sessions for delete", err)
 		return
 	}
-	// 与自助删除（handlers_account.go 的 handleDeleteAccount）保持同一顺序与
-	// 语义：先匿名化日志库（audit_logs.username → deleted_{id}），再硬删 users
-	// 行。跨库没有分布式事务，匿名化失败必须 503 并保留账号——绝不能出现
-	// 「账号已消失、历史审计仍是真名」的终态。users.email 随 users 行物理删除，
-	// 保留面（wallet_transactions/orders）没有 email 列。
-	anonymized := fmt.Sprintf("deleted_%d", id)
-	if err := h.anonymizer.AnonymizeUser(r.Context(), id, anonymized); err != nil {
-		h.writeServiceUnavailable(w, "anonymize retained records for delete", err)
-		return
-	}
+	// audit_logs 是 append-only：运行时账号 newtg_app 只有 SELECT/INSERT，
+	// 刻意没有 UPDATE。因此删除不再改写历史审计行——审计里的用户名是操作
+	// 发生时的历史事实，PII 清理由保留期作业按整行删除（newtg_retention 持有
+	// DELETE）。users.email 随 users 行物理删除，保留面（wallet_transactions/
+	// orders）没有 email 列。
 	deleted, err := h.repo.DeleteUser(r.Context(), id)
 	if err != nil {
 		h.writeUserRepoError(w, "delete user", err)
@@ -1033,12 +1013,11 @@ func (h *UserHandlers) handleDeleteUser(w http.ResponseWriter, r *http.Request) 
 	}
 	// 令牌行已删除；广播让中继侧缓存立即失效（GC-11），与自助删除同口径。
 	h.invalidateTokenCache(r.Context(), deleted.TokenIDs)
-	// 流水/订单/日志按 GC-4 保留；它们只存 user_id，不含用户名/邮箱。审计里
-	// 记录匿名化后的 handle，让删除事件仍可追溯而不复述 PII。
+	// 流水/订单/日志按 GC-4 保留；它们只存 user_id，不含用户名/邮箱。审计事件
+	// 只记被删用户 id，不复述 PII。
 	h.auditEvent(r, audit.ActionUserDelete, p.UserID, map[string]any{
-		"deleted_user_id":     deleted.ID,
-		"anonymized_username": anonymized,
-		"tokens_deleted":      deleted.TokensDeleted,
+		"deleted_user_id": deleted.ID,
+		"tokens_deleted":  deleted.TokensDeleted,
 	}, nil, nil, http.StatusNoContent)
 	w.WriteHeader(http.StatusNoContent)
 }

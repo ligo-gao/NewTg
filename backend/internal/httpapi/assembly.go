@@ -97,16 +97,11 @@ type GatewayDeps struct {
 	Logger        *slog.Logger
 
 	// 可选覆盖/测试缝隙。nil 时由 DB 构造 SQL 实现。
-	Repo              AuthRepo
-	Permissions       rbac.PermissionLoader
-	SetupStore        SetupStore
-	SelfRepo          SelfRepo
-	AccountRepo       AccountRepo
-	AccountAnonymizer PIIAnonymizer
-	// UserAnonymizer 是管理端删除的 PII 匿名化测试接缝；生产留 nil 由 LogDB
-	// 构造 SQLPIIAnonymizer。与 AccountAnonymizer 分开命名，避免把自助删除的
-	// 依赖误当作管理端删除已接线。
-	UserAnonymizer PIIAnonymizer
+	Repo           AuthRepo
+	Permissions    rbac.PermissionLoader
+	SetupStore     SetupStore
+	SelfRepo       SelfRepo
+	AccountRepo    AccountRepo
 	AccountReauth  *auth.ReauthGate
 	VerifyTOTP     auth.TOTPVerifier
 	TwoFARepo      TwoFARepo
@@ -592,6 +587,9 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		// 性能页 config 端：生效节奏与 A 类设置当前值。
 		PerfSchedule:   deps.PerfSchedule,
 		PerfSettingGet: deps.PerfSettingGet,
+		// R-04：管理员 MFA 绑定状态兜底（SessionAuth 之后、CSRF 之前）。
+		// Repo/DB 都缺失时构造为 nil，中间件透传（纯内存装配）。
+		MFAEnrollment: newMFAEnrollmentPolicy(deps.TwoFARepo, deps.DB, deps.Config),
 	})
 	if err != nil {
 		return nil, err
@@ -669,7 +667,10 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 			// F-08-20 测试事件：与投递进程共用同一配置快照与 Sealer，
 			// 保证「测试通过」意味着真实投递的签名/目标配置可用。
 			Webhook: notify.NewWebhookSender(deps.Config, deps.Sealer),
-			Redis:   deps.Redis,
+			// SMTP 分阶段探测：与投递用同一快照与 Sealer，测试通过即表示
+			// 通知邮件的握手/认证/发件人配置可用。
+			SMTP:  notify.NewSMTPSender(deps.Config, deps.Sealer),
+			Redis: deps.Redis,
 			// modules-08 §3.4：支付设置 Tab 的首次进入合规确认。持久化载体
 			// 是 users.payment_compliance_confirmed_at（per-admin），审计面
 			// 仍由 audit_logs 承担 who/when。
@@ -880,11 +881,9 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	account, err := NewAccountHandlers(AccountHandlerConfig{
 		DB:                 deps.DB,
 		Repo:               deps.AccountRepo,
-		LogDB:              deps.LogDB,
 		Redis:              deps.Redis,
 		Sessions:           deps.Sessions,
 		Audit:              deps.Audit,
-		Anonymizer:         deps.AccountAnonymizer,
 		Config:             deps.Config,
 		EncryptionKey:      deps.CredentialEncryptionKey,
 		SessionSecret:      deps.SessionSecret,
@@ -907,6 +906,7 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 		Issuer:        readConfigString(deps.Config, "site.title"),
 		Limiter:       limiter,
 		Audit:         deps.Audit,
+		Config:        deps.Config,
 		Logger:        deps.Logger,
 	})
 	if err != nil {
@@ -917,8 +917,6 @@ func BuildGatewayRouter(deps GatewayDeps) (*Router, error) {
 	users, err := NewUserHandlers(UserHandlerConfig{
 		DB:              deps.DB,
 		Repo:            deps.AdminUserRepo,
-		LogDB:           deps.LogDB,
-		Anonymizer:      deps.UserAnonymizer,
 		Sessions:        deps.Sessions,
 		Redis:           deps.Redis,
 		Authz:           deps.Authz,
@@ -1117,7 +1115,6 @@ func (d GatewayDeps) validate() error {
 		add(d.AdminGroupRepo == nil, "AdminGroupRepo or DB")
 		add(d.AccountReauth == nil, "AccountReauth or DB")
 	}
-	add(d.AccountAnonymizer == nil && d.LogDB == nil, "LogDB or AccountAnonymizer")
 
 	// 权限装载器：Authz 存在时必须有权威来源，否则 nil Permissions 会被
 	// 解释成 DB NULL=FULL。NewRouter 也会校验，这里提前给出装配错误。

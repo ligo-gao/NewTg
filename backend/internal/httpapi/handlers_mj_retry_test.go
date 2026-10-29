@@ -97,7 +97,7 @@ func TestMJSubmitMatrixSingleAttemptAndRefund(t *testing.T) {
 			},
 			wantStatus: http.StatusTooManyRequests,
 			wantDesc:   mj.DescriptionGroupSaturated,
-			client:     mj.NewSubmitClient(nil),
+			client:     mjTestSubmitter(nil),
 		},
 		{
 			name: "code 24 sensitive word -> 400 single attempt",
@@ -106,7 +106,7 @@ func TestMJSubmitMatrixSingleAttemptAndRefund(t *testing.T) {
 			},
 			wantStatus: http.StatusBadRequest,
 			wantDesc:   mj.DescriptionSensitiveWord,
-			client:     mj.NewSubmitClient(nil),
+			client:     mjTestSubmitter(nil),
 		},
 	}
 	for _, tc := range cases {

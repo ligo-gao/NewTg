@@ -143,6 +143,55 @@ func TestResolveTrustBoundary(t *testing.T) {
 	}
 }
 
+// TestConfigureFailSafeOnEmptyOrInvalid 覆盖 R-02 的 fail-safe 要求：
+// TRUSTED_PROXIES 为空、只有空白/逗号、或全部条目畸形（含 /0）时，必须
+// 「谁都不信」——退回直连 peer，而不是因为配置写错就把 XFF 当成可信来源。
+func TestConfigureFailSafeOnEmptyOrInvalid(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{"空串", ""},
+		{"只有空白与逗号", " ,  ,\t"},
+		{"全部畸形条目", "not-an-ip, 10.0.0.0/33, 2001:db8::/129"},
+		{"IPv4 默认路由", "0.0.0.0/0"},
+		{"IPv6 默认路由", "::/0"},
+		{"过宽网段", "172.28.0.0/7"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_ = Configure(tc.raw)
+			t.Cleanup(func() { _ = Configure("") })
+
+			// 直连 peer 特意选内网地址：若配置被错误地当成「可信」，它会
+			// 立刻采信下面伪造的 XFF。
+			req := httptest.NewRequest(http.MethodGet, "/api/whatever", nil)
+			req.RemoteAddr = "10.0.0.2:1234"
+			req.Header.Set("X-Forwarded-For", "203.0.113.7")
+			if got := ClientIP(req); got != "10.0.0.2" {
+				t.Fatalf("TRUSTED_PROXIES=%q 时 ClientIP = %q，期望回退直连 peer 10.0.0.2", tc.raw, got)
+			}
+		})
+	}
+}
+
+// TestConfigureKeepsValidEntriesOnMixedInput 验证部分条目畸形时的口径：
+// 合法条目照常生效（信任范围只缩小不放大），同时返回错误供装配方记录 WARN。
+func TestConfigureKeepsValidEntriesOnMixedInput(t *testing.T) {
+	_ = Configure("")
+	t.Cleanup(func() { _ = Configure("") })
+
+	if err := Configure("172.28.0.10/32, not-an-ip"); err == nil {
+		t.Fatal("混合畸形条目必须返回错误（装配方据此告警）")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/whatever", nil)
+	req.RemoteAddr = "172.28.0.10:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.7")
+	if got := ClientIP(req); got != "203.0.113.7" {
+		t.Fatalf("合法条目应生效：ClientIP = %q，期望 XFF 客户端 203.0.113.7", got)
+	}
+}
+
 // 防回归：EnvVar 必须与 config.Config 读取的变量名一致。
 func TestEnvVarName(t *testing.T) {
 	if strings.TrimSpace(EnvVar) != "TRUSTED_PROXIES" {

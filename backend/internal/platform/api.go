@@ -553,11 +553,15 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 	}
 	channelRevealGate := auth.NewReauthGate(rdb, revealSource, auth.VerifyTOTP)
 
+	// 渠道出站的统一执行器（R-01）：中继、手工测试、体检、测速、目录拉取
+	// 共用同一份策略。手工测试/体检/测速/目录四个客户端从这里派生。
+	channelEgress := channelEgressGuard(center)
+
 	// 模型性能测速：与体检/手工测试共用同一出站客户端与凭据解封面，不新增
 	// 第二套上游策略。30s 覆盖「建连 + 整段生成」（R-M4-14 的例外口径）。
 	perfRunner, err := channelhealth.NewPerfRunner(channelhealth.ProberConfig{
 		Opener:  channelSealer,
-		Client:  httpapi.NewChannelProbeClient(),
+		Client:  httpapi.NewChannelProbeClient(channelEgress),
 		Timeout: 30 * time.Second,
 	})
 	if err != nil {
@@ -573,7 +577,8 @@ func newGatewayAPI(ctx context.Context, cfg *config.Config, db, logsDB *sql.DB,
 		store.NewTokenRepo(db),
 		channelSealer,
 		httpapi.ChannelHandlerOptions{
-			Tester:        httpapi.NewChannelConnectivityTester(channelSealer, nil),
+			Tester:        httpapi.NewChannelConnectivityTester(channelSealer, httpapi.NewChannelProbeClient(channelEgress)),
+			Egress:        channelEgress,
 			Idempotency:   httpapi.NewRedisIdempotencyStore(rdb),
 			ProbeReporter: attemptReporter,
 			// 手工测试与体检共用 rl.health 阈值（复核 M-6）：同一配置中心快照。

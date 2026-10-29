@@ -481,6 +481,10 @@ type ChannelAssignment struct {
 	// 适配器/计费/日志都无需感知。执行层每轮从 assignment 直接读取，
 	// 保证「本轮真正使用的渠道」的开关值就是判定用的值（R-M4-01 C）。
 	AutoBan bool
+	// AllowPrivateNetwork 是渠道级私网出站 opt-in（channels.allow_private_network，
+	// R-01）。与 AutoBan 同理不写入 RelayContext：适配器/计费/日志无需感知，
+	// 执行层只在本轮发起请求前用它给 context 打上 egress 标记。
+	AllowPrivateNetwork bool
 }
 
 // WithChannel 一次性写渠道组（唯一写入方：执行层，每轮重试重写，relay-01 §7.4）。

@@ -39,7 +39,7 @@ func startChannelHealthWorker(parent context.Context, cfg *config.Config, db, lo
 		Opener: httpapi.NewSecretSealer(cfg.CredentialEncryptionKey),
 		// 与中继/手工测试同一 transport（不新增出站策略）；整体超时由
 		// Prober 的默认值 15s 控制（R-M4-14）。
-		Client: httpapi.NewChannelProbeClient(),
+		Client: httpapi.NewChannelProbeClient(channelEgressGuard(center)),
 	})
 	if err != nil {
 		return nil, err

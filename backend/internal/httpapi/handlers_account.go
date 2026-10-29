@@ -4,7 +4,7 @@
 //
 //	DELETE /api/account                     {confirm_username,password,totp_code?}
 //	                                        → 硬删除 users/api_tokens/认证族附属行 +
-//	                                          吊销会话 + 保留面 PII 匿名化；403 reauth_required
+//	                                          吊销会话；403 reauth_required
 //	PUT    /api/email                       {new_email,code,current_password,totp_code?}
 //	GET    /api/notification-preferences
 //	PUT    /api/notification-preferences    稀疏 JSON 合并
@@ -15,7 +15,7 @@
 //	db, _ := sql.Open("pgx", cfg.DatabaseURL)
 //	logs, _ := sql.Open("pgx", cfg.DBLogsDSN)
 //	h, err := NewAccountHandlers(AccountHandlerConfig{
-//	    DB: db, LogDB: logs, Redis: cfg.Redis, Sessions: cfg.Sessions,
+//	    DB: db, Redis: cfg.Redis, Sessions: cfg.Sessions,
 //	    Audit: audit.New(logs), EncryptionKey: cfg.CredentialEncryptionKey,
 //	    SessionSecret: []byte(cfg.SessionSecret), NotificationSender: sender,
 //	})
@@ -30,11 +30,12 @@
 //     只交给校验器，绝不落日志/审计/响应。
 //   - 删除是硬删除（GC-4 / R-04，无 30 天宽限期）：users 行与 api_tokens 行物理
 //     消失，同名可重新注册；wallet_transactions / orders / usage_logs 保留以维持
-//     对账，audit_logs.username 改写为 deleted_{id}（users.email 随行一起消失）。
+//     对账。audit_logs 是 append-only，历史用户名保持操作发生时的快照，由保留期
+//     作业按整行清理（users.email 随行一起消失）。
 //   - 审计只记事件与结果，绝不记录口令、TOTP、验证码或新邮箱明文（PII 最小化：
 //     审计保留 12 个月，地址本身不是安全事件所需的追溯信息）。
-//   - 任何基础设施故障（Redis/DB/匿名化失败）都 fail-closed（503），绝不在
-//     「会话未吊销」或「PII 未匿名化」的半状态下返回成功。
+//   - 任何基础设施故障（Redis/DB 失败）都 fail-closed（503），绝不在「会话未
+//     吊销」的半状态下返回成功。
 package httpapi
 
 import (
@@ -111,13 +112,6 @@ type AccountRepo interface {
 	NotificationPreferences(ctx context.Context, userID int64) (json.RawMessage, error)
 	// UpdateNotificationPreferences 写入合并后的完整 JSON 对象。
 	UpdateNotificationPreferences(ctx context.Context, userID int64, prefs json.RawMessage) error
-}
-
-// PIIAnonymizer 对保留面（日志库 audit_logs）做删除后的 PII 匿名化。
-// 主库里保留的钱包流水/订单没有 username/email 列，无需改写；audit_logs.username
-// 是唯一留存的操作者名快照（platform-01 §5）。
-type PIIAnonymizer interface {
-	AnonymizeUser(ctx context.Context, userID int64, anonymizedUsername string) error
 }
 
 // NotificationTestSender 是「发送测试消息」的专用接缝（真实渠道实现属模块 08）。
@@ -280,28 +274,6 @@ func (r *SQLAccountRepo) UpdateNotificationPreferences(ctx context.Context, user
 	return nil
 }
 
-// SQLPIIAnonymizer 对日志库 audit_logs 做删除后的匿名化。
-//
-// 只改 username：审计行的 user_id/时间/ip 是合规追溯所需的 who/when/where，
-// 用户名快照替换为 deleted_{id} 后仍可对账。users.email 随 users 行物理删除，
-// 保留面没有 email 列（wallet_transactions/orders/platform-01 §11/§10）。
-type SQLPIIAnonymizer struct{ db *sql.DB }
-
-// NewSQLPIIAnonymizer 构造匿名化器。db 必须是日志库连接（audit_logs 所在库）。
-func NewSQLPIIAnonymizer(db *sql.DB) *SQLPIIAnonymizer { return &SQLPIIAnonymizer{db: db} }
-
-// AnonymizeUser 把该用户全部历史审计行的 username 快照改写为 deleted_{id}。
-func (a *SQLPIIAnonymizer) AnonymizeUser(ctx context.Context, userID int64, anonymizedUsername string) error {
-	if a == nil || a.db == nil {
-		return errors.New("httpapi: PII anonymizer is not configured")
-	}
-	if _, err := a.db.ExecContext(ctx,
-		`UPDATE audit_logs SET username = $2 WHERE user_id = $1`, userID, anonymizedUsername); err != nil {
-		return fmt.Errorf("httpapi: anonymize audit rows for user %d: %w", userID, err)
-	}
-	return nil
-}
-
 // SQLAccountReauthSource 实现 auth.ReauthUserSource：读取口令哈希，并在 MFA
 // 启用时用 CREDENTIAL_ENCRYPTION_KEY 解密 TOTP 种子后交给 ReauthGate。
 // 解密失败返回 error（fail-closed），绝不把损坏密文当作空 secret 放行。
@@ -362,22 +334,18 @@ func (s *SQLAccountReauthSource) ReauthMaterial(ctx context.Context, userID int6
 //
 // 再认证门：Reauth 可直接注入（测试/复用既有实例）；否则由 ReauthUsers 或
 // 「DB + EncryptionKey」构造 SQLAccountReauthSource，并注入 auth.VerifyTOTP。
-// PII 匿名化：Anonymizer 与 LogDB 二选一；生产必须提供 LogDB（审计表在日志库），
-// 单测注入假实现。二者都缺失属于装配错误——不能在删除成功后静默跳过匿名化。
+//
+// 删除不再对日志库 audit_logs 做 UPDATE：该表是 append-only，运行时账号只有
+// SELECT/INSERT。历史用户名由保留期作业按整行清理。
 type AccountHandlerConfig struct {
 	DB   *sql.DB
 	Repo AccountRepo
-
-	// LogDB 是日志库连接（audit_logs 所在库），用于删除后的 PII 匿名化。
-	LogDB *sql.DB
 
 	Redis    *redis.Client
 	Sessions *auth.SessionManager
 
 	// Audit 为 nil 时不写审计（仅测试；生产必须接线）。
 	Audit *audit.Logger
-	// Anonymizer 覆盖默认的 SQLPIIAnonymizer（测试接缝）。
-	Anonymizer PIIAnonymizer
 
 	// Config 是 configcenter.Center 的读取面；换绑邮箱复用注册路径的域名
 	// 白名单（auth.email_domain_restrict_enabled / auth.email_domain_allowlist，
@@ -402,16 +370,15 @@ type AccountHandlerConfig struct {
 
 // AccountHandlers 持有账号生命周期端点依赖，可并发使用。
 type AccountHandlers struct {
-	repo       AccountRepo
-	rdb        *redis.Client
-	sessions   *auth.SessionManager
-	reauth     *auth.ReauthGate
-	anonymizer PIIAnonymizer
-	audit      *audit.Logger
-	codes      *emailCodeStore
-	sender     NotificationTestSender
-	config     ConfigReader
-	log        *slog.Logger
+	repo     AccountRepo
+	rdb      *redis.Client
+	sessions *auth.SessionManager
+	reauth   *auth.ReauthGate
+	audit    *audit.Logger
+	codes    *emailCodeStore
+	sender   NotificationTestSender
+	config   ConfigReader
+	log      *slog.Logger
 }
 
 // NewAccountHandlers 构造账号生命周期处理器。缺少必需依赖时返回 error，
@@ -462,29 +429,20 @@ func NewAccountHandlers(cfg AccountHandlerConfig) (*AccountHandlers, error) {
 		gate = auth.NewReauthGate(cfg.Redis, source, verify)
 	}
 
-	anonymizer := cfg.Anonymizer
-	if anonymizer == nil {
-		if cfg.LogDB == nil {
-			return nil, errors.New("httpapi: account deletion requires Anonymizer or LogDB for PII anonymization")
-		}
-		anonymizer = NewSQLPIIAnonymizer(cfg.LogDB)
-	}
-
 	log := cfg.Logger
 	if log == nil {
 		log = slog.Default()
 	}
 	return &AccountHandlers{
-		repo:       repo,
-		rdb:        cfg.Redis,
-		sessions:   cfg.Sessions,
-		reauth:     gate,
-		anonymizer: anonymizer,
-		audit:      cfg.Audit,
-		codes:      newEmailCodeStore(cfg.Redis, cfg.SessionSecret),
-		sender:     cfg.NotificationSender,
-		config:     cfg.Config,
-		log:        log,
+		repo:     repo,
+		rdb:      cfg.Redis,
+		sessions: cfg.Sessions,
+		reauth:   gate,
+		audit:    cfg.Audit,
+		codes:    newEmailCodeStore(cfg.Redis, cfg.SessionSecret),
+		sender:   cfg.NotificationSender,
+		config:   cfg.Config,
+		log:      log,
 	}, nil
 }
 
@@ -518,13 +476,13 @@ type accountDeleteRequest struct {
 	TOTPCode        string `json:"totp_code"`
 }
 
-// handleDeleteAccount 实现 F-01-17：全量再认证 → 吊销全部会话 → PII 匿名化 →
-// 硬删除（users/api_tokens/认证族附属行）→ 失效令牌缓存 → 审计。
+// handleDeleteAccount 实现 F-01-17：全量再认证 → 吊销全部会话 → 硬删除
+// （users/api_tokens/认证族附属行）→ 失效令牌缓存 → 审计。
 //
-// 顺序理由：跨 Redis/主库/日志库没有分布式事务，任何一步失败都不会返回成功，
-// 已完成的步骤按 fail-closed 方向保留（例如会话已吊销但匿名化失败时账号仍在，
-// 用户可重新登录后重试）；但绝不会出现「账号已消失、历史审计仍带真名」的终态，
-// 因为匿名化先于 users 行删除。
+// 顺序理由：跨 Redis/主库没有分布式事务，任何一步失败都不会返回成功，已完成
+// 的步骤按 fail-closed 方向保留（例如会话已吊销但硬删除失败时账号仍在，用户
+// 可重新登录后重试）。audit_logs 是 append-only，删除不再改写历史审计行；
+// 历史用户名由保留期作业按整行清理。
 func (h *AccountHandlers) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.principal(w, r)
 	if !ok {
@@ -582,11 +540,9 @@ func (h *AccountHandlers) handleDeleteAccount(w http.ResponseWriter, r *http.Req
 		h.writeUnavailable(w, "Revoke sessions before account deletion", err)
 		return
 	}
-	anonymized := fmt.Sprintf("deleted_%d", p.UserID)
-	if err := h.anonymizer.AnonymizeUser(ctx, p.UserID, anonymized); err != nil {
-		h.writeUnavailable(w, "Anonymize retained records before account deletion", err)
-		return
-	}
+	// audit_logs 是 append-only（运行时账号只有 SELECT/INSERT），因此删除不再
+	// 改写历史审计行。审计里的用户名是操作发生时的历史事实；PII 清理由保留期
+	// 作业按整行删除（newtg_retention 持有 DELETE）。
 	tokenIDs, err := h.repo.DeleteAccount(ctx, p.UserID)
 	if errors.Is(err, ErrAccountNotFound) {
 		writeProblem(w, http.StatusNotFound, problemTypeNotFoundSelf, "Not Found")
@@ -602,12 +558,11 @@ func (h *AccountHandlers) handleDeleteAccount(w http.ResponseWriter, r *http.Req
 	if err := auth.ClearReauthWindow(ctx, h.rdb, p.UserID); err != nil {
 		h.log.Error("clear reauth window after account deletion failed", "user_id", p.UserID, "error", err)
 	}
-	// 删除事件是唯一保留真实用户名的审计行（who/when/ip 供合规追溯）；历史行
-	// 已在上一步改写为 deleted_{id}。
+	// 删除事件记录操作者与目标（who/when/ip 供合规追溯）；历史审计行保留
+	// 操作发生时的用户名，按保留期整行清理。
 	h.auditEvent(r, audit.ActionUserDelete, p.UserID, rec.Username, map[string]any{
-		"label":           "account_deleted",
-		"tokens_deleted":  len(tokenIDs),
-		"anonymized_name": anonymized,
+		"label":          "account_deleted",
+		"tokens_deleted": len(tokenIDs),
 	}, http.StatusNoContent)
 	// 删号成功后浏览器侧的会话 Cookie 已无对应服务端会话，必须显式清除；
 	// Clear-Site-Data 同时清空前端存储（TC-I-06 固定三项）。

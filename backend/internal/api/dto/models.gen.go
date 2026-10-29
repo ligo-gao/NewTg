@@ -663,6 +663,21 @@ func (e LogsByKeyItemStatus) Valid() bool {
 	}
 }
 
+// Defines values for MFAEnrollBackupCodesResponseStatus.
+const (
+	BackupCodesReady MFAEnrollBackupCodesResponseStatus = "backup_codes_ready"
+)
+
+// Valid indicates whether the value is a known member of the MFAEnrollBackupCodesResponseStatus enum.
+func (e MFAEnrollBackupCodesResponseStatus) Valid() bool {
+	switch e {
+	case BackupCodesReady:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for MarketplaceHomeSchemaVersion.
 const (
 	MarketplaceHomeSchemaVersionN1 MarketplaceHomeSchemaVersion = 1
@@ -1682,12 +1697,15 @@ func (e PaymentMethodCreateRequestProvider) Valid() bool {
 
 // Defines values for Pending2FAResponseStatus.
 const (
-	Pending2fa Pending2FAResponseStatus = "pending_2fa"
+	MfaEnrollmentRequired Pending2FAResponseStatus = "mfa_enrollment_required"
+	Pending2fa            Pending2FAResponseStatus = "pending_2fa"
 )
 
 // Valid indicates whether the value is a known member of the Pending2FAResponseStatus enum.
 func (e Pending2FAResponseStatus) Valid() bool {
 	switch e {
+	case MfaEnrollmentRequired:
+		return true
 	case Pending2fa:
 		return true
 	default:
@@ -2820,6 +2838,108 @@ func (e ResponsesObjectStatus) Valid() bool {
 	case ResponsesObjectStatusIncomplete:
 		return true
 	case ResponsesObjectStatusQueued:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SMTPTestStepReason.
+const (
+	AuthFailed          SMTPTestStepReason = "auth_failed"
+	AuthUnsupported     SMTPTestStepReason = "auth_unsupported"
+	ConfigIncomplete    SMTPTestStepReason = "config_incomplete"
+	ConnectFailed       SMTPTestStepReason = "connect_failed"
+	ConnectRefused      SMTPTestStepReason = "connect_refused"
+	ConnectTimeout      SMTPTestStepReason = "connect_timeout"
+	DnsError            SMTPTestStepReason = "dns_error"
+	DnsNotFound         SMTPTestStepReason = "dns_not_found"
+	GreetingFailed      SMTPTestStepReason = "greeting_failed"
+	MailFromRejected    SMTPTestStepReason = "mail_from_rejected"
+	StarttlsUnsupported SMTPTestStepReason = "starttls_unsupported"
+	TlsCertInvalid      SMTPTestStepReason = "tls_cert_invalid"
+	TlsFailed           SMTPTestStepReason = "tls_failed"
+)
+
+// Valid indicates whether the value is a known member of the SMTPTestStepReason enum.
+func (e SMTPTestStepReason) Valid() bool {
+	switch e {
+	case AuthFailed:
+		return true
+	case AuthUnsupported:
+		return true
+	case ConfigIncomplete:
+		return true
+	case ConnectFailed:
+		return true
+	case ConnectRefused:
+		return true
+	case ConnectTimeout:
+		return true
+	case DnsError:
+		return true
+	case DnsNotFound:
+		return true
+	case GreetingFailed:
+		return true
+	case MailFromRejected:
+		return true
+	case StarttlsUnsupported:
+		return true
+	case TlsCertInvalid:
+		return true
+	case TlsFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SMTPTestStepStage.
+const (
+	Auth     SMTPTestStepStage = "auth"
+	Connect  SMTPTestStepStage = "connect"
+	Dns      SMTPTestStepStage = "dns"
+	Greeting SMTPTestStepStage = "greeting"
+	MailFrom SMTPTestStepStage = "mail_from"
+	Tls      SMTPTestStepStage = "tls"
+)
+
+// Valid indicates whether the value is a known member of the SMTPTestStepStage enum.
+func (e SMTPTestStepStage) Valid() bool {
+	switch e {
+	case Auth:
+		return true
+	case Connect:
+		return true
+	case Dns:
+		return true
+	case Greeting:
+		return true
+	case MailFrom:
+		return true
+	case Tls:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SMTPTestStepStatus.
+const (
+	SMTPTestStepStatusFailed  SMTPTestStepStatus = "failed"
+	SMTPTestStepStatusPassed  SMTPTestStepStatus = "passed"
+	SMTPTestStepStatusSkipped SMTPTestStepStatus = "skipped"
+)
+
+// Valid indicates whether the value is a known member of the SMTPTestStepStatus enum.
+func (e SMTPTestStepStatus) Valid() bool {
+	switch e {
+	case SMTPTestStepStatusFailed:
+		return true
+	case SMTPTestStepStatusPassed:
+		return true
+	case SMTPTestStepStatusSkipped:
 		return true
 	default:
 		return false
@@ -6268,7 +6388,12 @@ type ChangePasswordRequest struct {
 // （R-M4-05），非秘密；空值序列化为 null。自动禁用的展示时间复用
 // `updated_at`（不新增 auto_disabled_at 列），UI 文案为「最近更新」。
 type Channel struct {
-	AutoBan bool `json:"auto_ban"`
+	// AllowPrivateNetwork 渠道级私网出站 opt-in（R-01 / security-04 §2.4）。false（默认）时
+	// 该渠道的 base_url 与重定向目标不得落在 RFC1918/ULA/loopback/
+	// link-local；true 仅放行 RFC1918/ULA，loopback 与云元数据地址仍拒绝。
+	// 切换该值需要 channels:manage_sensitive 权限并写审计。
+	AllowPrivateNetwork bool `json:"allow_private_network"`
+	AutoBan             bool `json:"auto_ban"`
 
 	// AutoDisabledReason 自动禁用原因的稳定 code（R-M4-05）：
 	// channel_upstream_error / channel_auth_error / channel_keyword /
@@ -6756,9 +6881,10 @@ type CreatedToken struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// DeleteAccountRequest DELETE /api/account 是硬删除 + PII 匿名化（R-04 无宽限），成功 204。
-// 再认证失败 403 reauth_required；账号行已不存在时 404（重复删除不产生
-// 额外副作用，但不是 204 成功态）。
+// DeleteAccountRequest DELETE /api/account 是硬删除（R-04 无宽限），成功 204。audit_logs 为
+// append-only，历史审计行保留操作发生时的用户名快照，由保留期作业整行
+// 清理。再认证失败 403 reauth_required；账号行已不存在时 404（重复删除
+// 不产生额外副作用，但不是 204 成功态）。
 type DeleteAccountRequest struct {
 	// ConfirmUsername 必须与当前用户名逐字一致。
 	ConfirmUsername string `json:"confirm_username"`
@@ -7326,8 +7452,9 @@ type LoginRequest struct {
 	TurnstileToken *string `json:"turnstile_token,omitempty"`
 }
 
-// LoginResponse 口令通过后二选一：未启用 2FA 直接建会话（AuthSessionResponse）；已启用
-// 返回 pending_2fa + ticket，客户端再调用 POST /api/auth/2fa/challenge。
+// LoginResponse 口令通过后二选一：未启用 2FA（且非未绑定管理员）直接建会话
+// （AuthSessionResponse）；已启用返回 pending_2fa + ticket；
+// 未绑定管理员返回 mfa_enrollment_required + ticket（R-04）。
 // 用 oneOf 而非可空分支，是为了让生成的类型系统强制前端处理两条路径。
 type LoginResponse struct {
 	union json.RawMessage
@@ -7385,6 +7512,39 @@ type LogsByKeyItemStatus string
 // LogsByKeyPage 无分页/总数/筛选的信封；固定最近 1000 条，按 created_at DESC, id DESC。
 type LogsByKeyPage struct {
 	Items []LogsByKeyItem `json:"items"`
+}
+
+// MFAEnrollBackupCodesResponse defines model for MFAEnrollBackupCodesResponse.
+type MFAEnrollBackupCodesResponse struct {
+	// BackupCodes 8 组备用码明文，仅本次响应出现；服务端只存 argon2id 哈希。
+	BackupCodes []string                           `json:"backup_codes"`
+	Status      MFAEnrollBackupCodesResponseStatus `json:"status"`
+}
+
+// MFAEnrollBackupCodesResponseStatus defines model for MFAEnrollBackupCodesResponse.Status.
+type MFAEnrollBackupCodesResponseStatus string
+
+// MFAEnrollConfirmRequest defines model for MFAEnrollConfirmRequest.
+type MFAEnrollConfirmRequest struct {
+	// BackupCodesConfirmed 必须为 true；未确认已保存备用码时不得启用 TOTP。
+	BackupCodesConfirmed bool   `json:"backup_codes_confirmed"`
+	Ticket               string `json:"ticket"`
+}
+
+// MFAEnrollEnableRequest defines model for MFAEnrollEnableRequest.
+type MFAEnrollEnableRequest struct {
+	// Code 验证器当前的 6 位码。
+	Code string `json:"code"`
+
+	// Secret setup 响应中的 base32 种子。
+	Secret string `json:"secret"`
+	Ticket string `json:"ticket"`
+}
+
+// MFAEnrollTicketRequest defines model for MFAEnrollTicketRequest.
+type MFAEnrollTicketRequest struct {
+	// Ticket login 响应中的 mfa_enrollment_required ticket。
+	Ticket string `json:"ticket"`
 }
 
 // MJTaskListRequest defines model for MJTaskListRequest.
@@ -8539,14 +8699,20 @@ type PaymentMethodList struct {
 
 // Pending2FAResponse defines model for Pending2FAResponse.
 type Pending2FAResponse struct {
-	// Status 判别字段；客户端据此跳转 2FA challenge 页。
+	// Status 判别字段。`pending_2fa`：已启用 2FA，客户端跳转 challenge 页。
+	// `mfa_enrollment_required`：管理员尚未绑定 TOTP 且
+	// auth.mfa.admin_required=true，客户端跳转强制绑定引导页。
 	Status Pending2FAResponseStatus `json:"status"`
 
-	// Ticket 一次性 ticket（5 分钟），只能兑换一次正式会话；不包含用户身份。
+	// Ticket 一次性 ticket；`pending_2fa` 为 5 分钟（兑换正式会话），
+	// `mfa_enrollment_required` 为 10 分钟（只能用于
+	// POST /api/auth/2fa/enroll/*）。不包含用户身份。
 	Ticket string `json:"ticket"`
 }
 
-// Pending2FAResponseStatus 判别字段；客户端据此跳转 2FA challenge 页。
+// Pending2FAResponseStatus 判别字段。`pending_2fa`：已启用 2FA，客户端跳转 challenge 页。
+// `mfa_enrollment_required`：管理员尚未绑定 TOTP 且
+// auth.mfa.admin_required=true，客户端跳转强制绑定引导页。
 type Pending2FAResponseStatus string
 
 // PerformanceCacheStats defines model for PerformanceCacheStats.
@@ -10950,6 +11116,40 @@ type ResponsesObjectObject string
 
 // ResponsesObjectStatus defines model for ResponsesObject.Status.
 type ResponsesObjectStatus string
+
+// SMTPTestResult POST /api/settings/test/smtp 的响应。探测不投递邮件；`ok=false` 是探测
+// 结论，HTTP 状态仍为 200。
+type SMTPTestResult struct {
+	// Ok 是否走到 MAIL FROM 且服务器接受。
+	Ok bool `json:"ok"`
+
+	// Steps 已执行的阶段按执行顺序返回；失败即停止，后续阶段不出现。
+	Steps []SMTPTestStep `json:"steps"`
+}
+
+// SMTPTestStep POST /api/settings/test/smtp 结果中的一个阶段。
+type SMTPTestStep struct {
+	// Reason 失败分类（仅 status=failed 时出现）；固定枚举，绝不透传服务器原文。
+	Reason *SMTPTestStepReason `json:"reason,omitempty"`
+
+	// SmtpCode 服务器数字码（如 535/550），仅 status=failed 且服务器有应答时出现；不含文本。
+	SmtpCode *int `json:"smtp_code,omitempty"`
+
+	// Stage 执行阶段；数组顺序即执行顺序。
+	Stage SMTPTestStepStage `json:"stage"`
+
+	// Status skipped 仅用于 tls（encryption=none）与 auth（无凭证且未强制 AUTH）。
+	Status SMTPTestStepStatus `json:"status"`
+}
+
+// SMTPTestStepReason 失败分类（仅 status=failed 时出现）；固定枚举，绝不透传服务器原文。
+type SMTPTestStepReason string
+
+// SMTPTestStepStage 执行阶段；数组顺序即执行顺序。
+type SMTPTestStepStage string
+
+// SMTPTestStepStatus skipped 仅用于 tls（encryption=none）与 auth（无凭证且未强制 AUTH）。
+type SMTPTestStepStatus string
 
 // SelfSettings GET /api/self 与 PUT /api/self/setting 的响应。updated_at 是下一次写入
 // 必须携带的乐观锁令牌——同一行的资料变更也会推进它。
@@ -14005,6 +14205,13 @@ type ConfirmPaymentComplianceParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// TestSMTPConnectionParams defines parameters for TestSMTPConnection.
+type TestSMTPConnectionParams struct {
+	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
+	// Authorization: Bearer 路径豁免（无 CSRF 风险）。
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
 // TestWebhookSettingsParams defines parameters for TestWebhookSettings.
 type TestWebhookSettingsParams struct {
 	// XCSRFToken 条件必带：Cookie 会话路径的非安全方法（POST/PUT/PATCH/DELETE）必须发送；
@@ -14980,6 +15187,15 @@ type UpdateAnnouncementJSONRequestBody = AnnouncementWriteInput
 
 // SubmitTwoFAChallengeJSONRequestBody defines body for SubmitTwoFAChallenge for application/json ContentType.
 type SubmitTwoFAChallengeJSONRequestBody = TwoFAChallengeRequest
+
+// ConfirmMFAEnrollmentJSONRequestBody defines body for ConfirmMFAEnrollment for application/json ContentType.
+type ConfirmMFAEnrollmentJSONRequestBody = MFAEnrollConfirmRequest
+
+// EnableMFAEnrollmentJSONRequestBody defines body for EnableMFAEnrollment for application/json ContentType.
+type EnableMFAEnrollmentJSONRequestBody = MFAEnrollEnableRequest
+
+// SetupMFAEnrollmentJSONRequestBody defines body for SetupMFAEnrollment for application/json ContentType.
+type SetupMFAEnrollmentJSONRequestBody = MFAEnrollTicketRequest
 
 // RequestEmailCodeJSONRequestBody defines body for RequestEmailCode for application/json ContentType.
 type RequestEmailCodeJSONRequestBody = EmailCodeRequest

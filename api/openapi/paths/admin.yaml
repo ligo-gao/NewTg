@@ -183,8 +183,9 @@ paths:
       x-required-permission: users:delete
       summary: 删除用户（前置条件：已封禁）
       description: |
-        目标必须已是 disabled，否则 409。硬删 + PII 匿名化（历史记录改
-        deleted_{id}）。不能删除自己（400）。成功 204。
+        目标必须已是 disabled，否则 409。硬删（audit_logs 为 append-only，
+        历史行保留操作时的用户名快照，由保留期作业整行清理）。不能删除自己
+        （400）。成功 204。
       security:
         - sessionCookie: []
       parameters:
@@ -192,7 +193,7 @@ paths:
         - $ref: '../components/params.yaml#/parameters/CSRFToken'
       responses:
         '204':
-          description: 已删除并匿名化
+          description: 已删除
         '400':
           $ref: '../components/responses.yaml#/responses/Error400'
         '401':
@@ -3869,6 +3870,74 @@ paths:
                 $ref: '../components/problem.yaml#/schemas/Problem'
         '504':
           description: 连接失败或超时（未收到 HTTP 响应，固定文案）
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+
+  # 通知渠道 · SMTP 分阶段配置探测。
+  #
+  # 与 Webhook 测试的分工：Webhook 真的发一次 HTTP 请求；SMTP 只做到
+  # MAIL FROM，不进入 DATA、不投递邮件。steps 按执行顺序返回，遇到失败即停，
+  # 因此数组长度随失败阶段变化——前端按顺序渲染即可说明「卡在第几步」。
+  /api/settings/test/smtp:
+    post:
+      tags: [admin]
+      operationId: testSMTPConnection
+      x-required-permission: settings:manage
+      summary: 分阶段探测已保存的 SMTP 配置
+      description: |
+        配置取自**已保存**的 `notify.smtp.*` 快照；请求体为空。依次执行
+        DNS 解析、TCP 连接、TLS（`ssl` 直连 / `starttls` 协商 / `none` 记为跳过）、
+        SMTP 问候、AUTH（无凭证且未强制 AUTH 时跳过）、`MAIL FROM`；任一步失败
+        立即停止，`steps` 因此只包含已执行的阶段。
+
+        **不进入 DATA、不发送任何邮件。** 探测结果始终是 200：`ok=false` 是
+        探测结论而不是 HTTP 错误。失败阶段回传固定枚举 `reason` 与服务器数字码
+        `smtp_code`，绝不回传服务器原文（SMTP 的 5xx 文本常回显地址，属 PII）。
+
+        host 或发件地址为空 → 422
+        `type=https://newtg.dev/problems/smtp_not_configured`（补齐后可重试）。
+        限流 3 次/分钟/管理员。审计动作 `settings.test_smtp`，detail 仅
+        host/port/ok/stage/reason/smtp_code，不含账号、发件地址或密码。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '../components/params.yaml#/parameters/CSRFToken'
+      responses:
+        '200':
+          description: 探测完成（成功与否由 `ok` / `steps` 表达）
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/admin.yaml#/schemas/SMTPTestResult'
+        '401':
+          $ref: '../components/responses.yaml#/responses/Error401'
+        '403':
+          $ref: '../components/responses.yaml#/responses/Error403'
+        '422':
+          description: 保存的 SMTP 配置缺 host 或发件地址，无可探测对象
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+              examples:
+                not_configured:
+                  value:
+                    type: https://newtg.dev/problems/smtp_not_configured
+                    title: SMTP is not configured
+                    status: 422
+                    detail: configure notify.smtp.host and notify.smtp.from_email before testing
+        '429':
+          $ref: '../components/responses.yaml#/responses/Error429'
+        '500':
+          description: 服务端内部错误（如密钥解封失败）；响应为固定文案，不泄露内部细节
+          content:
+            application/problem+json:
+              schema:
+                $ref: '../components/problem.yaml#/schemas/Problem'
+        '503':
+          description: 探测器未装配；响应为固定文案
           content:
             application/problem+json:
               schema:

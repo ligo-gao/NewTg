@@ -21,6 +21,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -37,6 +38,7 @@ import (
 
 	"newtg/gateway/internal/audit"
 	"newtg/gateway/internal/auth"
+	"newtg/gateway/internal/rbac"
 )
 
 // 2FA Redis 键与阈值。ticket 键名与 handlers_auth.go 的 createPending2FA 逐字一致。
@@ -44,6 +46,14 @@ const (
 	twoFATicketKeyPrefix = "pending_2fa:"
 	twoFAFailKeyPrefix   = "pending_2fa:fail:"
 	twoFATOTPUsedPrefix  = "2fa:totp:used:"
+
+	// R-04：强制绑定票据与登录挑战共用同一套签发/单次消费机制，但落在独立
+	// 键空间（scope=enroll）。两个键空间隔离意味着登录票据不能拿来调用绑定
+	// 端点，绑定票据也不能拿来兑换登录挑战。
+	twoFAEnrollTicketKeyPrefix = "pending_2fa:enroll:"
+	// twoFAEnrollCodesPrefix 保存「已验证验证码、尚未确认备用码」的中间态。
+	// 使用 enroll-codes 而不是 enroll: 前缀，避免与票据键空间嵌套。
+	twoFAEnrollCodesPrefix = "pending_2fa:enroll-codes:"
 
 	// twoFAMaxFailures：同一 ticket 连续失败 5 次即作废（F-01-08/09 共享计数）。
 	twoFAMaxFailures = 5
@@ -55,11 +65,38 @@ const (
 	twoFAMaxCodeRunes = 32
 )
 
+// pending2FAEnrollTTL 是强制绑定票据/TOTP 中间态的存活时间（R-04：10 分钟）。
+// 比登录挑战的 5 分钟长：管理员需要在手机与浏览器之间完成扫码、验证与
+// 备用码保存三步，5 分钟过紧。
+const pending2FAEnrollTTL = 10 * time.Minute
+
 // problemTypeTwoFATicketInvalid 是 ticket 类失败的专用 type（控制器裁决）：
 // 前端必须能把「ticket 失效、需要重新登录」与「刚输错一位验证码、可就地重试」
 // 区分开；两者都用 bad_request 会把首次误输直接弹到过期页。错误码只描述
 // ticket 状态，不区分「不存在/过期/已消费」（避免 ticket 存在性探测）。
 const problemTypeTwoFATicketInvalid = "https://newtg.dev/problems/two_factor_ticket_invalid"
+
+// problemTypeMFARequiredForAdmin 是 R-04 第 3 条：admin_required=true 时
+// 管理员不允许自助关闭 TOTP。与「未绑定管理员」的 mfa_enrollment_required
+// 分开：前端据此提示「管理员必须保留 MFA」，而不是再次引导绑定。
+const problemTypeMFARequiredForAdmin = "https://newtg.dev/problems/mfa_required_for_admin"
+
+// adminMFARequired 读取 auth.mfa.admin_required。配置缺失按注册表默认 true：
+// 强制绑定是安全默认值，只有运营显式关闭才回落到旧行为。
+func (h *TwoFAHandlers) adminMFARequired() bool {
+	if h.config == nil {
+		return true
+	}
+	raw, ok := h.config.Get("auth.mfa.admin_required")
+	if !ok {
+		return true
+	}
+	var v bool
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return true
+	}
+	return v
+}
 
 // twoFAAuditLimitedKeyPrefix 限制「认证面限流拒绝」审计的写入频率：challenge
 // 是未认证端点，攻击者可无限重放触发 429；若不限频，每条拒绝都写日志库就
@@ -264,6 +301,9 @@ type TwoFAConfig struct {
 	Limiter *LoginLimiter
 	// Audit 为 nil 时不写审计（未装配日志库的测试/开发环境）。
 	Audit *audit.Logger
+	// Config 读取 auth.mfa.admin_required（R-04）。nil 时按注册表默认值 true，
+	// 即管理员必须已绑定 TOTP。
+	Config ConfigReader
 
 	// 以下为测试接缝；生产留 nil 即使用 auth 的默认实现。
 	VerifyPassword func(hash, plain string) bool
@@ -279,6 +319,7 @@ type TwoFAHandlers struct {
 	cipher         *auth.SecretCipher
 	limiter        *LoginLimiter
 	audit          *audit.Logger
+	config         ConfigReader
 	verifyPassword func(hash, plain string) bool
 	now            func() time.Time
 	issuer         string
@@ -332,6 +373,7 @@ func NewTwoFAHandlers(cfg TwoFAConfig) (*TwoFAHandlers, error) {
 		cipher:         cipher,
 		limiter:        limiter,
 		audit:          cfg.Audit,
+		config:         cfg.Config,
 		verifyPassword: verify,
 		now:            now,
 		issuer:         issuer,
@@ -362,6 +404,11 @@ type TwoFARouteRegistrar interface {
 //	Register2FARoutes(rt.mux, rt.protected, twoFA)
 func Register2FARoutes(public, protected TwoFARouteRegistrar, h *TwoFAHandlers) {
 	public.Handle("POST /api/auth/2fa/challenge", http.HandlerFunc(h.HandleChallenge))
+	// R-04 强制绑定：登录只返回 scope=enroll 票据、不建立会话，所以这三个
+	// 端点必须挂在公开 mux 上，以 ticket 为唯一凭据（不接受客户端声明的身份）。
+	public.Handle("POST /api/auth/2fa/enroll/setup", http.HandlerFunc(h.HandleEnrollSetup))
+	public.Handle("POST /api/auth/2fa/enroll/enable", http.HandlerFunc(h.HandleEnrollEnable))
+	public.Handle("POST /api/auth/2fa/enroll/confirm", http.HandlerFunc(h.HandleEnrollConfirm))
 	protected.Handle("POST /api/2fa/setup", http.HandlerFunc(h.HandleSetup))
 	protected.Handle("POST /api/2fa/enable", http.HandlerFunc(h.HandleEnable))
 	protected.Handle("POST /api/2fa/disable", http.HandlerFunc(h.HandleDisable))
@@ -498,6 +545,18 @@ func (h *TwoFAHandlers) HandleDisable(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusConflict, authProblemConflict, "Two-factor authentication is not enabled")
 		return
 	}
+	// R-04 第 3 条：管理员必须保留 MFA。在口令确认之前拒绝，避免把无效
+	// 口令也计进登录失败桶，也不给「先试探口令」的机会。审计要记录被拒的
+	// 移除尝试（安全事件），detail 只放原因不含任何凭据。
+	if user.Role == rbac.RoleAdmin && h.adminMFARequired() {
+		h.auditEventWithResult(r, audit.ActionAuth2FADisable, user, "failed", map[string]any{
+			"label": "2fa_disabled", "factor": "totp", "change": "remove",
+			"reason": "mfa_required_for_admin",
+		})
+		writeProblem(w, http.StatusForbidden, problemTypeMFARequiredForAdmin,
+			"Two-factor authentication is required for administrator accounts")
+		return
+	}
 	if !h.confirmPassword(w, r, user) {
 		return
 	}
@@ -550,6 +609,319 @@ func (h *TwoFAHandlers) HandleRegenerateBackupCodes(w http.ResponseWriter, r *ht
 		"change": "reset", "backup_codes_count": len(plain),
 	})
 	writeJSON(w, http.StatusOK, twoFABackupCodesResponse{TOTPEnabled: true, BackupCodes: plain})
+}
+
+// ---------------------------------------------------------------------------
+// 强制绑定（R-04，scope=enroll）
+// ---------------------------------------------------------------------------
+
+// twoFAEnrollTicketRequest 是 setup/enable 的 ticket 信封。
+type twoFAEnrollTicketRequest struct {
+	Ticket string `json:"ticket"`
+}
+
+// twoFAEnrollEnableRequest 在 ticket 之外携带与既有 enable 相同的 secret/code。
+type twoFAEnrollEnableRequest struct {
+	Ticket string `json:"ticket"`
+	Secret string `json:"secret"`
+	Code   string `json:"code"`
+}
+
+// twoFAEnrollConfirmRequest 要求显式的备用码确认（R-04 第 4 条）：用户只有在
+// 看到并保存备用码之后才把 totp_enabled 置为 true，避免「已启用但无恢复码」。
+type twoFAEnrollConfirmRequest struct {
+	Ticket               string `json:"ticket"`
+	BackupCodesConfirmed bool   `json:"backup_codes_confirmed"`
+}
+
+// twoFAEnrollCodesResponse 是 enable 阶段的响应：备用码明文只出现这一次。
+type twoFAEnrollCodesResponse struct {
+	Status      string   `json:"status"`
+	BackupCodes []string `json:"backup_codes"`
+}
+
+// twoFAEnrollPending 是「验证码已通过、等待确认备用码」的中间态。
+// BackupCodes 只存 argon2id 哈希；SecretEnc 与正式落库同口径（AES-256-GCM）。
+type twoFAEnrollPending struct {
+	SecretEnc   string   `json:"secret_enc"`
+	BackupCodes []string `json:"backup_codes"`
+}
+
+// HandleEnrollSetup 生成 TOTP secret 与 otpauth URI，不写任何状态。
+// 凭据是 scope=enroll 的一次性 ticket；票据在确认阶段才消费，因此用户
+// 可以反复刷新二维码/重试验证码。
+func (h *TwoFAHandlers) HandleEnrollSetup(w http.ResponseWriter, r *http.Request) {
+	if !h.enrollThrottle(w, r) {
+		return
+	}
+	var req twoFAEnrollTicketRequest
+	if err := readAuthJSON(r, &req); err != nil {
+		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request body")
+		return
+	}
+	user, ok := h.enrollUser(r.Context(), w, strings.TrimSpace(req.Ticket))
+	if !ok {
+		return
+	}
+	if user.PasswordHash == "" {
+		// 与既有 enable 同口径：没有口令就无法在 disable 时做二次确认，
+		// 会制造「开得掉、关不了」的状态。
+		writeProblem(w, http.StatusForbidden, authProblemForbidden,
+			"Set a password before enabling two-factor authentication")
+		return
+	}
+	secret, err := auth.GenerateTOTPSecret()
+	if err != nil {
+		h.log.Error("generate totp secret failed", "user_id", user.ID, "error", err)
+		h.writeUnavailable(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, twoFASetupResponse{
+		Secret:     secret,
+		OTPAuthURL: twoFAProvisioningURL(h.issuer, user.Username, secret),
+	})
+}
+
+// HandleEnrollEnable 验证 {secret,code} 并生成备用码，但**不**写 users 表。
+// 备用码哈希与密文种子暂存在 Redis（10 分钟），确认阶段才一次性落库。
+func (h *TwoFAHandlers) HandleEnrollEnable(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if !h.enrollThrottle(w, r) {
+		return
+	}
+	var req twoFAEnrollEnableRequest
+	if err := readAuthJSON(r, &req); err != nil {
+		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request body")
+		return
+	}
+	ticket := strings.TrimSpace(req.Ticket)
+	secret := strings.ToUpper(strings.TrimSpace(req.Secret))
+	code := strings.TrimSpace(req.Code)
+	if !auth.ValidateTOTPSecret(secret) || len([]rune(code)) > twoFAMaxCodeRunes {
+		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid two-factor parameters")
+		return
+	}
+	user, ok := h.enrollUser(ctx, w, ticket)
+	if !ok {
+		return
+	}
+	if !auth.VerifyTOTP(secret, code, h.now()) {
+		// 与登录挑战同口径：错误码计入 IP+用户名失败桶，并累计 ticket 失败次数。
+		if err := h.limiter.Record(ctx, clientIP(r), user.Username, false); err != nil {
+			h.log.Error("record mfa enrollment limiter failure failed", "user_id", user.ID, "error", err)
+			h.writeLimiterFailure(w, err)
+			return
+		}
+		h.rejectEnroll(ctx, w, ticket, "Incorrect verification code")
+		return
+	}
+	if err := h.limiter.Record(ctx, clientIP(r), user.Username, true); err != nil {
+		h.log.Error("reset mfa enrollment limiter failed", "user_id", user.ID, "error", err)
+		h.writeLimiterFailure(w, err)
+		return
+	}
+	plain, hashes, err := auth.GenerateBackupCodes(8)
+	if err != nil {
+		h.log.Error("generate backup codes failed", "user_id", user.ID, "error", err)
+		h.writeUnavailable(w)
+		return
+	}
+	secretEnc, err := h.cipher.Encrypt(secret)
+	if err != nil {
+		h.log.Error("encrypt totp secret failed", "user_id", user.ID, "error", err)
+		h.writeUnavailable(w)
+		return
+	}
+	payload, err := json.Marshal(twoFAEnrollPending{SecretEnc: secretEnc, BackupCodes: hashes})
+	if err != nil {
+		h.log.Error("marshal mfa enrollment pending state failed", "user_id", user.ID, "error", err)
+		h.writeUnavailable(w)
+		return
+	}
+	if err := h.rdb.Set(ctx, twoFAEnrollCodesPrefix+ticket, payload, pending2FAEnrollTTL).Err(); err != nil {
+		h.log.Error("store mfa enrollment pending state failed", "user_id", user.ID, "error", err)
+		h.writeUnavailable(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, twoFAEnrollCodesResponse{Status: "backup_codes_ready", BackupCodes: plain})
+}
+
+// HandleEnrollConfirm 在用户确认已保存备用码后原子启用 TOTP、消费票据并签发
+// 正式会话（绑定完成后前端直接进入控制台）。
+func (h *TwoFAHandlers) HandleEnrollConfirm(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if !h.enrollThrottle(w, r) {
+		return
+	}
+	var req twoFAEnrollConfirmRequest
+	if err := readAuthJSON(r, &req); err != nil {
+		writeProblem(w, http.StatusBadRequest, authProblemBadRequest, "Invalid request body")
+		return
+	}
+	if !req.BackupCodesConfirmed {
+		// R-04 第 4 条：没有显式确认不得置 totp_enabled=true。
+		writeProblem(w, http.StatusBadRequest, authProblemBadRequest,
+			"Confirm that you have saved the backup codes")
+		return
+	}
+	ticket := strings.TrimSpace(req.Ticket)
+	user, ok := h.enrollUser(ctx, w, ticket)
+	if !ok {
+		return
+	}
+	raw, err := h.rdb.Get(ctx, twoFAEnrollCodesPrefix+ticket).Result()
+	if errors.Is(err, redis.Nil) {
+		writeEnrollTicketInvalid(w)
+		return
+	}
+	if err != nil {
+		h.log.Error("read mfa enrollment pending state failed", "user_id", user.ID, "error", err)
+		h.writeUnavailable(w)
+		return
+	}
+	var pending twoFAEnrollPending
+	if err := json.Unmarshal([]byte(raw), &pending); err != nil {
+		h.log.Error("corrupt mfa enrollment pending state", "user_id", user.ID, "error", err)
+		h.writeUnavailable(w)
+		return
+	}
+	applied, err := h.repo.EnableTwoFA(ctx, user.ID, pending.SecretEnc, pending.BackupCodes)
+	if err != nil {
+		h.log.Error("persist mfa enrollment failed", "user_id", user.ID, "error", err)
+		h.writeUnavailable(w)
+		return
+	}
+	if !applied {
+		// 并发确认：另一个请求已经写入。返回 409 让客户端重新登录。
+		writeProblem(w, http.StatusConflict, authProblemConflict, "Two-factor authentication is already enabled")
+		return
+	}
+	consumed, err := h.consumeEnrollTicket(ctx, ticket, strconv.FormatInt(user.ID, 10))
+	if err != nil {
+		h.log.Error("consume mfa enrollment ticket failed", "user_id", user.ID, "error", err)
+		h.writeUnavailable(w)
+		return
+	}
+	if !consumed {
+		// 另有请求先消费了票据（并已启用）；2FA 已生效，客户端重新登录即可。
+		writeEnrollTicketInvalid(w)
+		return
+	}
+	if err := h.rdb.Del(ctx, twoFAEnrollCodesPrefix+ticket).Err(); err != nil {
+		h.log.Warn("delete mfa enrollment pending state failed", "error", err)
+	}
+	h.afterTwoFAChange(w, r, user.ID)
+	if err := h.startTwoFASession(ctx, w, r, user); err != nil {
+		h.log.Error("create session after mfa enrollment failed", "user_id", user.ID, "error", err)
+		h.writeUnavailable(w)
+		return
+	}
+	h.auditEvent(r, audit.ActionAuth2FAEnable, user, map[string]any{
+		"label": "2fa_enabled", "factor": "totp", "change": "add",
+		"backup_codes_count": len(pending.BackupCodes), "enforced": true,
+	})
+	writeJSON(w, http.StatusOK, authSessionResponse{User: twoFAUserView(user)})
+}
+
+// enrollThrottle 是所有绑定端点的限流前置检查。ticket 是未认证凭据，
+// 必须与登录挑战共用 IP 失败桶。
+func (h *TwoFAHandlers) enrollThrottle(w http.ResponseWriter, r *http.Request) bool {
+	if err := h.limiter.Check(r.Context(), clientIP(r), ""); err != nil {
+		h.writeLimiterFailure(w, err)
+		return false
+	}
+	return true
+}
+
+// enrollUser 解析 allowlist 内的 enroll 票据并加载用户行。票据是唯一身份来源：
+// 不接受请求体里的 user_id/username。票据不存在/过期/已消费统一 400，
+// 不给探测信道。
+func (h *TwoFAHandlers) enrollUser(ctx context.Context, w http.ResponseWriter, ticket string) (*TwoFAUser, bool) {
+	if !validTwoFATicket(ticket) {
+		writeEnrollTicketInvalid(w)
+		return nil, false
+	}
+	rawUserID, err := h.rdb.Get(ctx, twoFAEnrollTicketKeyPrefix+ticket).Result()
+	if errors.Is(err, redis.Nil) {
+		writeEnrollTicketInvalid(w)
+		return nil, false
+	}
+	if err != nil {
+		h.log.Error("read mfa enrollment ticket failed", "error", err)
+		h.writeUnavailable(w)
+		return nil, false
+	}
+	userID, err := strconv.ParseInt(rawUserID, 10, 64)
+	if err != nil {
+		h.log.Error("corrupt mfa enrollment ticket", "error", err)
+		h.writeUnavailable(w)
+		return nil, false
+	}
+	user, err := h.repo.FindUserByID(ctx, userID)
+	if err != nil {
+		h.log.Error("find user for mfa enrollment failed", "user_id", userID, "error", err)
+		h.writeUnavailable(w)
+		return nil, false
+	}
+	if user == nil || user.Status != "enabled" {
+		writeEnrollTicketInvalid(w)
+		return nil, false
+	}
+	// 只允许管理员走强制绑定端点：普通用户即便拿到票据也应按既有会话端点绑定。
+	if user.Role != rbac.RoleAdmin {
+		writeProblem(w, http.StatusForbidden, authProblemForbidden,
+			"Two-factor enrollment is required for administrators only")
+		return nil, false
+	}
+	if user.TOTPEnabled {
+		writeProblem(w, http.StatusConflict, authProblemConflict,
+			"Two-factor authentication is already enabled")
+		return nil, false
+	}
+	return user, true
+}
+
+// rejectEnroll 累计 ticket 失败次数；第 5 次整体作废票据与中间态。
+func (h *TwoFAHandlers) rejectEnroll(ctx context.Context, w http.ResponseWriter, ticket, title string) {
+	n, err := twoFAFailScript.Run(ctx, h.rdb,
+		[]string{twoFAFailKeyPrefix + ticket},
+		strconv.FormatInt(pending2FAEnrollTTL.Milliseconds(), 10),
+	).Int64()
+	if err != nil {
+		h.log.Error("record mfa enrollment failure failed", "error", err)
+		h.writeUnavailable(w)
+		return
+	}
+	if n >= twoFAMaxFailures {
+		_ = h.rdb.Del(ctx,
+			twoFAEnrollTicketKeyPrefix+ticket,
+			twoFAEnrollCodesPrefix+ticket,
+			twoFAFailKeyPrefix+ticket).Err()
+		w.Header().Set("Retry-After", "5")
+		writeProblem(w, http.StatusTooManyRequests, authProblemTooManyRequests,
+			"Too many verification attempts; please sign in again")
+		return
+	}
+	writeProblem(w, http.StatusBadRequest, authProblemBadRequest, title)
+}
+
+// consumeEnrollTicket 原子单次消费 enroll 票据（复用 challenge 的 Lua 脚本）。
+func (h *TwoFAHandlers) consumeEnrollTicket(ctx context.Context, ticket, rawUserID string) (bool, error) {
+	n, err := twoFAConsumeTicketScript.Run(ctx, h.rdb,
+		[]string{twoFAEnrollTicketKeyPrefix + ticket, twoFAFailKeyPrefix + ticket},
+		rawUserID,
+	).Int64()
+	if err != nil {
+		return false, fmt.Errorf("httpapi: consume mfa enrollment ticket: %w", err)
+	}
+	return n == 1, nil
+}
+
+// writeEnrollTicketInvalid 是绑定票据类失败的唯一出口（与登录挑战同一
+// problem type，前端可复用「重新登录」的终态处理）。
+func writeEnrollTicketInvalid(w http.ResponseWriter) {
+	writeProblem(w, http.StatusBadRequest, problemTypeTwoFATicketInvalid,
+		"Invalid or expired verification ticket")
 }
 
 // ---------------------------------------------------------------------------
@@ -881,8 +1253,22 @@ func (h *TwoFAHandlers) startTwoFASession(ctx context.Context, w http.ResponseWr
 	return nil
 }
 
-func (h *TwoFAHandlers) discardTicket(ctx context.Context, ticket string) {
-	// best-effort：ticket 本身有 5 分钟 TTL；失败时写日志而不是让已成功的
+// createTwoFATicket 签发一次性票据：base64url(32 bytes) 为 ticket，
+// Redis 值为 user_id。登录挑战（scope=login）与强制绑定（scope=enroll）
+// 共用同一形状，只靠 prefix 隔离键空间。
+func createTwoFATicket(ctx context.Context, rdb *redis.Client, prefix string, userID int64, ttl time.Duration) (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("httpapi: generate 2fa ticket: %w", err)
+	}
+	ticket := base64.RawURLEncoding.EncodeToString(buf)
+	if err := rdb.Set(ctx, prefix+ticket, strconv.FormatInt(userID, 10), ttl).Err(); err != nil {
+		return "", fmt.Errorf("httpapi: store 2fa ticket: %w", err)
+	}
+	return ticket, nil
+}
+
+func (h *TwoFAHandlers) discardTicket(ctx context.Context, ticket string) { // best-effort：ticket 本身有 5 分钟 TTL；失败时写日志而不是让已成功的
 	// 挑战返回错误（码已被核销/重放防护，残留 ticket 不可再利用同一凭据）。
 	if err := h.rdb.Del(ctx, twoFATicketKeyPrefix+ticket, twoFAFailKeyPrefix+ticket).Err(); err != nil {
 		h.log.Error("discard 2fa ticket failed", "error", err)
@@ -933,6 +1319,12 @@ func (h *TwoFAHandlers) afterTwoFAChange(w http.ResponseWriter, r *http.Request,
 // auditEvent 写 2FA 审计（best-effort：日志库独立且无跨库事务，失败只记日志）。
 // detail 只放状态与计数，绝不含 secret / 备用码明文。
 func (h *TwoFAHandlers) auditEvent(r *http.Request, action string, user *TwoFAUser, detail map[string]any) {
+	h.auditEventWithResult(r, action, user, "", detail)
+}
+
+// auditEventWithResult 同 auditEvent，但显式记录 result（success/failed）。
+// R-04 的「管理员关闭被拒」必须在审计中可检索，不能只留在 detail 里。
+func (h *TwoFAHandlers) auditEventWithResult(r *http.Request, action string, user *TwoFAUser, result string, detail map[string]any) {
 	if h.audit == nil {
 		return
 	}
@@ -945,6 +1337,7 @@ func (h *TwoFAHandlers) auditEvent(r *http.Request, action string, user *TwoFAUs
 		Action:    action,
 		Actor:     user.ID,
 		Username:  user.Username,
+		Result:    result,
 		IP:        clientIP(r),
 		UserAgent: r.UserAgent(),
 		Method:    r.Method,

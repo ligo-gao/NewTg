@@ -27,6 +27,7 @@ import (
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/channelhealth"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/egress"
 	"newtg/gateway/internal/store"
 )
 
@@ -444,9 +445,12 @@ type ChannelResponse struct {
 	TaskExtendPluginKeys []string `json:"task_extend_plugin_keys"`
 	// 上游账号归属（上游用量对账设计 §4.1）；nil 序列化为 null（未归属）。
 	UpstreamAccountID *int64 `json:"upstream_account_id"`
-	CreatedAt         string `json:"created_at"`
-	UpdatedAt         string `json:"updated_at"`
-	Version           string `json:"version"` // R-P8：derived updated_at（RFC3339Nano UTC）
+	// AllowPrivateNetwork 是该渠道的私网出站 opt-in（R-01）。回显它是为了
+	// 让控制台能展示/再次提交开关状态；base_url 本身按既有契约不回显。
+	AllowPrivateNetwork bool   `json:"allow_private_network"`
+	CreatedAt           string `json:"created_at"`
+	UpdatedAt           string `json:"updated_at"`
+	Version             string `json:"version"` // R-P8：derived updated_at（RFC3339Nano UTC）
 
 	CredentialsMasked *ChannelCredentialsMasked `json:"credentials_masked,omitempty"`
 	CredentialsSet    *bool                     `json:"credentials_set,omitempty"`
@@ -506,6 +510,9 @@ type createChannelRequest struct {
 	TaskExtendPluginKeys json.RawMessage `json:"task_extend_plugin_keys"`
 	// 上游账号归属（上游用量对账设计 §4.1）：null/缺省 = 未归属。
 	UpstreamAccountID *int64 `json:"upstream_account_id"`
+	// AllowPrivateNetwork 是该渠道的私网出站 opt-in（R-01）；缺省 false。
+	// 置 true 需要 channels:manage_sensitive。
+	AllowPrivateNetwork *bool `json:"allow_private_network"`
 }
 
 type updateChannelRequest struct {
@@ -530,6 +537,14 @@ type updateChannelRequest struct {
 	TaskExtendPluginKeys json.RawMessage `json:"task_extend_plugin_keys"`
 	// 上游账号归属：RawMessage 区分「缺省」（不修改）与 `null`（清空归属）。
 	UpstreamAccountID json.RawMessage `json:"upstream_account_id"`
+	// 私网出站 opt-in（R-01）：缺省 = 不修改；改值需要 channels:manage_sensitive。
+	AllowPrivateNetwork *bool `json:"allow_private_network"`
+	// R-11 步进再认证因子：改 base_url / upstream_account_id /
+	// allow_private_network 时必须现场提交口令（已启用 TOTP 时另需 totp_code）；
+	// 5 分钟再认证窗口内可省略（ReauthGate.Authorize 的空因子分支）。
+	// 用指针区分「未提交」与「提交了空串」：空串会照常进入因子校验并失败。
+	Password *string `json:"password"`
+	TOTPCode *string `json:"totp_code"`
 }
 
 type batchStatusRequest struct {
@@ -608,6 +623,9 @@ type ChannelHandlerOptions struct {
 	// Logger 记录幂等 finalize 失败等不可返回给客户端的内部错误；
 	// nil 时使用 slog.Default()（不得静默丢弃错误）。
 	Logger *slog.Logger
+	// Egress 是渠道出站的 SSRF 执行器（R-01 双闸的第一闸）。nil 时按
+	// Config 构造渠道面策略（fail-closed：私网默认拒绝）。
+	Egress *egress.Guard
 }
 
 // ChannelHandler 持有渠道端点依赖。字段不导出，phase 8B 通过构造函数注入。
@@ -629,6 +647,7 @@ type ChannelHandler struct {
 	performance   store.ModelPerformanceStore
 	now           func() time.Time
 	log           *slog.Logger
+	egress        *egress.Guard
 }
 
 // NewChannelHandler 构造 handler。
@@ -652,9 +671,17 @@ func NewChannelHandler(channels ChannelStore, access UserAccessStore, sealer *Se
 	if now == nil {
 		now = time.Now
 	}
+	egressGuard := opts.Egress
+	if egressGuard == nil {
+		egressGuard = egress.NewGuard(egress.ChannelPolicy(opts.Config))
+	}
 	modelLister := opts.ModelLister
 	if modelLister == nil {
-		modelLister = channelhealth.NewModelLister()
+		// 目录拉取与被中继/体检共用同一份加固 transport（不新建第二套出站
+		// 路径）；单次请求仍由 30s 上限兜底。
+		listerClient := NewChannelProbeClient(egressGuard)
+		listerClient.Timeout = 30 * time.Second
+		modelLister = channelhealth.NewModelLister(listerClient)
 	}
 	return &ChannelHandler{
 		channels:      channels,
@@ -674,6 +701,7 @@ func NewChannelHandler(channels ChannelStore, access UserAccessStore, sealer *Se
 		performance:   opts.Performance,
 		now:           now,
 		log:           logger,
+		egress:        egressGuard,
 	}
 }
 
@@ -940,6 +968,14 @@ func (h *ChannelHandler) createChannel(r *http.Request) (int, []byte, bool) {
 	if apiErr := h.checkSensitiveWriteFields(r.Context(), req.Credentials != nil, req.TaskPluginKey != nil, req.TaskExtendPluginKeys != nil); apiErr != nil {
 		return errorResponse(apiErr)
 	}
+	// R-01：私网 opt-in 是「把已存/新建凭据发往内网」的授权，与写凭据同级。
+	// 只在置 true 时要求敏感权限；false 是默认值，不额外限制。
+	if req.AllowPrivateNetwork != nil && *req.AllowPrivateNetwork {
+		if apiErr := h.sensitiveWriteError(r.Context(),
+			"allow_private_network requires the channels:manage_sensitive permission"); apiErr != nil {
+			return errorResponse(apiErr)
+		}
+	}
 
 	v := &validator{}
 	ch, apiErr := h.channelFromCreate(r.Context(), v, &req)
@@ -987,6 +1023,7 @@ func (h *ChannelHandler) channelFromCreate(ctx context.Context, v *validator, re
 		v.add("type", "unknown channel type")
 	}
 
+	allowPrivate := req.AllowPrivateNetwork != nil && *req.AllowPrivateNetwork
 	var baseURL *string
 	rawBase := ""
 	if req.BaseURL != nil {
@@ -995,6 +1032,8 @@ func (h *ChannelHandler) channelFromCreate(ctx context.Context, v *validator, re
 	if rawBase != "" {
 		if msg := validateBaseURL(rawBase); msg != "" {
 			v.add("base_url", msg)
+		} else if fe := h.validateEgressBaseURL(ctx, rawBase, allowPrivate); fe != nil {
+			v.addFields([]fieldError{*fe})
 		} else {
 			baseURL = &rawBase
 		}
@@ -1108,6 +1147,7 @@ func (h *ChannelHandler) channelFromCreate(ctx context.Context, v *validator, re
 		TaskPluginKey:        pluginKey,
 		TaskExtendPluginKeys: extendKeys,
 		UpstreamAccountID:    req.UpstreamAccountID,
+		AllowPrivateNetwork:  allowPrivate,
 	}, nil
 }
 
@@ -1170,6 +1210,17 @@ func (h *ChannelHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R-11：目标变更（地址 / 上游账号归属 / 私网 opt-in）是「已存密钥发往
+	// 哪里」的变更，必须在写库前过步进再认证。判定用**生效值**而不是「字段
+	// 是否出现」：控制台整表回传时未变的地址不受影响（见
+	// TestChannelPatchUnchangedBaseURLKeepsManageOnlyWritable）。
+	target := channelTargetChange(existing, patch)
+	if target != "" {
+		if !h.authorizeChannelTargetChange(w, r, existing.ID, target, req.Password, req.TOTPCode) {
+			return
+		}
+	}
+
 	updated, err := h.channels.Update(r.Context(), id, patch, expected)
 	if err != nil {
 		writeAPIError(w, storeErrorResponse(err))
@@ -1181,6 +1232,14 @@ func (h *ChannelHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		"fields":              changedChannelFields(&req),
 		"credentials_written": patch.Credentials != nil,
 	})
+	// R-11：目标变更单独成一条 action，便于检索「谁把凭据指向了哪里」。
+	// detail 只记目标类别，不记地址值与任何因子。
+	if target != "" {
+		h.writeChannelAuditEvent(r, audit.ActionChannelTargetChange, http.StatusOK, "success", map[string]any{
+			"channel_id": updated.ID,
+			"target":     target,
+		})
+	}
 	resp, err := h.detailResponse(updated)
 	if err != nil {
 		writeAPIError(w, internalAPIError())
@@ -1216,6 +1275,21 @@ func (h *ChannelHandler) buildPatch(ctx context.Context, v *validator, existing 
 		patch.Type = &typeStr
 	}
 
+	// R-01：opt-in 的生效值决定本次 base_url 校验的分类。改值本身是敏感操作
+	// （开启 = 允许凭据发往内网），与改 base_url 同门；关闭也走同一门，避免
+	// 「悄悄关掉」在审计里不可见。
+	allowPrivate := existing.AllowPrivateNetwork
+	if req.AllowPrivateNetwork != nil {
+		allowPrivate = *req.AllowPrivateNetwork
+		patch.AllowPrivateNetwork = req.AllowPrivateNetwork
+		if *req.AllowPrivateNetwork != existing.AllowPrivateNetwork {
+			if apiErr := h.sensitiveWriteError(ctx,
+				"allow_private_network changes require the channels:manage_sensitive permission"); apiErr != nil {
+				return store.ChannelPatch{}, apiErr
+			}
+		}
+	}
+
 	baseURL := existing.BaseURL
 	if req.BaseURL != nil {
 		if isJSONNull(req.BaseURL) {
@@ -1234,6 +1308,8 @@ func (h *ChannelHandler) buildPatch(ctx context.Context, v *validator, existing 
 					baseURL = nil
 				} else if msg := validateBaseURL(raw); msg != "" {
 					v.add("base_url", msg)
+				} else if fe := h.validateEgressBaseURL(ctx, raw, allowPrivate); fe != nil {
+					v.addFields([]fieldError{*fe})
 				} else {
 					patch.BaseURL = &raw
 					baseURL = &raw
@@ -1527,6 +1603,119 @@ func (h *ChannelHandler) buildPatch(ctx context.Context, v *validator, existing 
 	return patch, nil
 }
 
+// channelTargetChange 判定本次 PATCH 是否改变了「已存密钥发往哪里」，
+// 返回受保护的目标类别（base_url / upstream_account_id / allow_private_network），
+// 未变时返回空串。
+//
+// 用生效值与库中值比较，而不是看字段是否出现：控制台保存时整表回传，
+// 未变的地址不应触发步进再认证。三类目标都受 R-11 保护：
+//   - base_url 决定解封后的密钥发往哪个 host；
+//   - upstream_account_id 换成另一套上游凭据；
+//   - allow_private_network 把目标从公网扩到内网（R-01 opt-in）。
+//
+// 优先级固定（base_url > upstream_account_id > allow_private_network），
+// 一次请求同时改多个时审计只记最敏感的一项，避免一条事件带多个目标类别。
+func channelTargetChange(existing *store.Channel, patch store.ChannelPatch) string {
+	if patch.BaseURLSet {
+		next := ""
+		if patch.BaseURL != nil {
+			next = strings.TrimSpace(*patch.BaseURL)
+		}
+		if normalizeChannelBaseURL(next) != normalizeChannelBaseURL(channelBaseURL(existing)) {
+			return "base_url"
+		}
+	}
+	if patch.UpstreamAccountIDSet && !sameOptionalInt64(patch.UpstreamAccountID, existing.UpstreamAccountID) {
+		return "upstream_account_id"
+	}
+	if patch.AllowPrivateNetwork != nil && *patch.AllowPrivateNetwork != existing.AllowPrivateNetwork {
+		return "allow_private_network"
+	}
+	return ""
+}
+
+func sameOptionalInt64(a, b *int64) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+// authorizeChannelTargetChange 是 R-11 的步进再认证门。
+//
+// 语义（security-04 §2.4）：
+//   - 门缺失 → 503 fail-closed，绝不退化成「仅权限」；
+//   - 提交了非空因子 → 现场校验口令（+ 已启用时的 TOTP），成功写 5 分钟窗口；
+//   - 未提交因子 → 沿用窗口；窗口关闭时 403 reauth_required；
+//   - 锁定 → 429 + Retry-After；基础设施故障 → 503。
+//
+// 任何拒绝都写一条 channel.reauth_failed 审计（detail 只有 channel_id /
+// target / reason 枚举，不含因子与地址值）。
+func (h *ChannelHandler) authorizeChannelTargetChange(w http.ResponseWriter, r *http.Request, channelID int64, target string, password, totpCode *string) bool {
+	if h.reauth == nil {
+		h.log.Error("channel target change has no reauth gate configured",
+			"channel_id", channelID, "target", target)
+		w.Header().Set("Retry-After", "5")
+		writeProblem(w, http.StatusServiceUnavailable, authProblemServiceUnavailable,
+			"Step-up authentication is temporarily unavailable")
+		h.writeChannelAuditEvent(r, audit.ActionChannelReauthFailed, http.StatusServiceUnavailable, "failed", map[string]any{
+			"channel_id": channelID,
+			"target":     target,
+			"reason":     "reauth_unavailable",
+		})
+		return false
+	}
+	factor := auth.ReauthFactor{}
+	if password != nil {
+		factor.Password = *password
+	}
+	if totpCode != nil {
+		factor.TOTPCode = *totpCode
+	}
+	if err := h.reauth.Authorize(r.Context(), actorID(r), factor); err != nil {
+		status, reason := channelReauthFailure(err)
+		h.writeChannelAuditEvent(r, audit.ActionChannelReauthFailed, status, "failed", map[string]any{
+			"channel_id": channelID,
+			"target":     target,
+			"reason":     reason,
+		})
+		writeReauthFailure(w, err)
+		return false
+	}
+	return true
+}
+
+// channelReauthFailure 把 ReauthGate 的错误映射为审计用的状态码与稳定 reason。
+// HTTP 响应本身仍由 writeReauthFailure 统一生成（与账号面同口径）。
+func channelReauthFailure(err error) (int, string) {
+	var locked *auth.ReauthLockedError
+	switch {
+	case errors.As(err, &locked):
+		return http.StatusTooManyRequests, "reauth_locked"
+	case errors.Is(err, auth.ErrReauthRequired):
+		return http.StatusForbidden, "reauth_required"
+	default:
+		return http.StatusServiceUnavailable, "reauth_unavailable"
+	}
+}
+
+// channelReauthWindowOpen 判断调用者的 5 分钟再认证窗口是否仍然打开。
+//
+// 用于 fetch-models 的存量密钥复用：窗口关闭或门缺失（fail-closed）都视为
+// 不可复用，调用方必须显式重新输入密钥。空因子不会消耗失败计数。
+func (h *ChannelHandler) channelReauthWindowOpen(ctx context.Context, userID int64) bool {
+	if h.reauth == nil {
+		return false
+	}
+	if err := h.reauth.Authorize(ctx, userID, auth.ReauthFactor{}); err != nil {
+		if !errors.Is(err, auth.ErrReauthRequired) {
+			h.log.Warn("channel reauth window check failed; treating as closed", "error", err)
+		}
+		return false
+	}
+	return true
+}
+
 // changedChannelFields 返回 PATCH 载荷中出现过的字段名（审计用）。
 //
 // 刻意**排除 credentials**：凭据值（及其密文/掩码/长度）永不进入审计，
@@ -1557,6 +1746,7 @@ func changedChannelFields(req *updateChannelRequest) []string {
 	add(req.TaskPluginKey != nil, "task_plugin_key")
 	add(req.TaskExtendPluginKeys != nil, "task_extend_plugin_keys")
 	add(req.UpstreamAccountID != nil, "upstream_account_id")
+	add(req.AllowPrivateNetwork != nil, "allow_private_network")
 	return fields
 }
 
@@ -1951,9 +2141,23 @@ func (h *ChannelHandler) handleFetchModels(w http.ResponseWriter, r *http.Reques
 	if baseURL == "" && ch != nil && ch.BaseURL != nil {
 		baseURL = strings.TrimSpace(*ch.BaseURL)
 	}
+	// 只有「表单地址就是库里已保存地址」时才继承该渠道的私网 opt-in；
+	// 换地址等于换目标，必须按默认（拒绝私网）校验。
+	reuseStoredBase := ch != nil &&
+		normalizeChannelBaseURL(channelBaseURL(ch)) == normalizeChannelBaseURL(baseURL)
+	allowPrivate := reuseStoredBase && ch.AllowPrivateNetwork
 	if baseURL != "" {
 		if message := validateBaseURL(baseURL); message != "" {
 			writeAPIError(w, validationError("base_url", message))
+			return
+		}
+		if fe := h.validateEgressBaseURL(r.Context(), baseURL, allowPrivate); fe != nil {
+			writeAPIError(w, &apiError{
+				Status: http.StatusUnprocessableEntity,
+				Type:   problemTypeValidationFailed,
+				Title:  "Validation failed",
+				Fields: []fieldError{*fe},
+			})
 			return
 		}
 	}
@@ -1963,32 +2167,51 @@ func (h *ChannelHandler) handleFetchModels(w http.ResponseWriter, r *http.Reques
 	// 只有表单 base_url 与渠道库里的地址一致时，才复用库里解密出的密钥。
 	// 否则任何持 channels:sensitive 的管理员都能把已存密钥发到任意 host
 	// （凭据外带 + SSRF）；换地址时必须显式重新提供 api_key。
-	reuseStored := ch != nil &&
-		normalizeChannelBaseURL(channelBaseURL(ch)) == normalizeChannelBaseURL(baseURL)
+	//
+	// R-11 追加第二道条件：同一地址下复用存量密钥还要求调用者的再认证窗口
+	// 仍然打开（5 分钟内刚通过口令/TOTP）。否则「改地址要重填密钥」的单点
+	// 封堵可以用「不改地址、直接点获取模型」绕过——存量密钥照样会被发往
+	// 上游。窗口关闭时要求显式重新输入 api_key。
+	sameStoredBase := reuseStoredBase
+	reuseStored := sameStoredBase && h.channelReauthWindowOpen(r.Context(), actorID(r))
+	reusedFields := make([]string, 0, 2)
 	if (apiKey == "" || apiVersion == "") && reuseStored {
 		if creds, ok := h.existingCredentials(ch); ok {
 			if apiKey == "" {
 				apiKey = strings.TrimSpace(creds.APIKey)
+				reusedFields = append(reusedFields, "api_key")
 			}
 			if apiVersion == "" {
 				apiVersion = strings.TrimSpace(creds.APIVersion)
+				reusedFields = append(reusedFields, "api_version")
 			}
 		}
 	}
 	if apiKey == "" {
 		message := "api_key is required"
-		if ch != nil && !reuseStored {
+		switch {
+		case ch != nil && !sameStoredBase:
 			message = "api_key is required when base_url differs from the channel's stored base_url"
+		case ch != nil && !reuseStored:
+			message = "api_key is required: reauthenticate to reuse the channel's stored credential"
 		}
 		writeAPIError(w, validationError("credentials.api_key", message))
 		return
 	}
+	if len(reusedFields) > 0 {
+		// R-11：存量密钥复用单独成一条 action（detail 只记字段名）。
+		h.writeChannelAuditEvent(r, audit.ActionChannelCredentialsReuse, http.StatusOK, "success", map[string]any{
+			"channel_id": ch.ID,
+			"fields":     reusedFields,
+		})
+	}
 
 	infos, err := h.modelLister.ListDetailed(r.Context(), channelhealth.ModelListRequest{
-		ChannelType: channelType,
-		BaseURL:     baseURL,
-		APIKey:      apiKey,
-		APIVersion:  apiVersion,
+		ChannelType:         channelType,
+		BaseURL:             baseURL,
+		APIKey:              apiKey,
+		APIVersion:          apiVersion,
+		AllowPrivateNetwork: allowPrivate,
 	})
 	if err != nil {
 		if errors.Is(err, channelhealth.ErrModelListUnsupported) ||
@@ -2618,6 +2841,7 @@ func channelToResponse(ch *store.Channel) (ChannelResponse, error) {
 		TaskPluginKey:        ch.TaskPluginKey,
 		TaskExtendPluginKeys: extendKeys,
 		UpstreamAccountID:    ch.UpstreamAccountID,
+		AllowPrivateNetwork:  ch.AllowPrivateNetwork,
 		CreatedAt:            formatChannelTime(ch.CreatedAt),
 		UpdatedAt:            version,
 		Version:              version,
@@ -2813,9 +3037,12 @@ func requiresBaseURL(t contract.ChannelType) bool {
 	return ok
 }
 
-// validateBaseURL 是保存期的基础校验（协议/主机/userinfo/长度）。
-// 完整的 SSRF 策略（私网段、端口白名单、域名三态）属 security-04 的
-// EgressGuard.ValidateURL，不在本任务实现；这里不解析 DNS、不回显 IP。
+// validateBaseURL 是保存期的基础形状校验（协议/主机/userinfo/长度）。
+//
+// 它只回答「是不是一个像样的 URL」，不解析 DNS、不回显 IP。地址分类由
+// validateEgressBaseURL 交给 egress.Guard（R-01），两者组成保存期的一道
+// 闸；拨号期还有第二道（egress.Guard.DialContext），保存期校验被绕过或
+// DNS 改指向时仍会拒绝。
 func validateBaseURL(raw string) string {
 	if len(raw) > maxBaseURLBytes {
 		return "base_url must be at most 512 characters"
@@ -2828,6 +3055,42 @@ func validateBaseURL(raw string) string {
 		return "base_url must not contain userinfo"
 	}
 	return ""
+}
+
+// egressValidateTimeout 是保存期地址解析的上限。DNS 卡住不能把「保存渠道」
+// 拖成不可用：超时按 unresolvable 拒绝，管理员可稍后重试。
+const egressValidateTimeout = 5 * time.Second
+
+// validateEgressBaseURL 是保存期的出站策略校验（R-01 的第一闸）。
+//
+// 与拨号期使用同一个 egress.Guard：形状 → 解析全部 A/AAAA → 逐地址分类。
+// 私网默认拒绝，allowPrivate 只放宽 RFC1918/ULA（loopback/链路本地/元数据/
+// CGNAT/保留段永不放行）。错误以稳定前缀区分，便于控制台给出针对性引导：
+//   - base_url_invalid：形状不合法（由 validateBaseURL 先拦）；
+//   - base_url_blocked：目标地址被策略拒绝；
+//   - base_url_unresolvable：主机解析不到。
+func (h *ChannelHandler) validateEgressBaseURL(ctx context.Context, raw string, allowPrivate bool) *fieldError {
+	if h.egress == nil {
+		// 未装配执行器时不返回「通过」的假安全感：调用方由构造函数保证
+		// 非 nil，这里只为防御程序化构造的零值。
+		return nil
+	}
+	if allowPrivate {
+		ctx = egress.WithAllowPrivateNetwork(ctx)
+	}
+	ctx, cancel := context.WithTimeout(ctx, egressValidateTimeout)
+	defer cancel()
+	if _, err := h.egress.ValidateURL(ctx, raw); err != nil {
+		switch {
+		case errors.Is(err, egress.ErrUnresolved):
+			return &fieldError{Field: "base_url", Message: "base_url_unresolvable: host did not resolve"}
+		case errors.Is(err, egress.ErrBlocked):
+			return &fieldError{Field: "base_url", Message: "base_url_blocked: target address is not permitted by the outbound policy"}
+		default:
+			return &fieldError{Field: "base_url", Message: "base_url_blocked: target could not be validated"}
+		}
+	}
+	return nil
 }
 
 // channelBaseURL 返回渠道库里存的 base_url（nil 视为空串）。

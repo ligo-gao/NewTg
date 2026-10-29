@@ -216,9 +216,10 @@ schemas:
         type: string
         description: 已启用 2FA 时必填。
     description: |
-      DELETE /api/account 是硬删除 + PII 匿名化（R-04 无宽限），成功 204。
-      再认证失败 403 reauth_required；账号行已不存在时 404（重复删除不产生
-      额外副作用，但不是 204 成功态）。
+      DELETE /api/account 是硬删除（R-04 无宽限），成功 204。audit_logs 为
+      append-only，历史审计行保留操作发生时的用户名快照，由保留期作业整行
+      清理。再认证失败 403 reauth_required；账号行已不存在时 404（重复删除
+      不产生额外副作用，但不是 204 成功态）。
 
   ChangeEmailRequest:
     type: object

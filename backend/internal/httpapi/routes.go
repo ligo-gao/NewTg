@@ -170,6 +170,9 @@ type RouterConfig struct {
 	// nil 且 DB 非 nil 时由 store.NewUserGroupsRepo(DB) 构造；两者都为空时
 	// 该字段恒为空数组（纯内存装配的单元测试）。
 	UserGroups UsableGroupLookup
+	// MFAEnrollment 是 R-04 管理员 MFA 强制绑定的兜底判定。nil 时中间件透传
+	// （纯内存单测）；生产装配必须提供，以覆盖「开关打开时已有管理员会话」。
+	MFAEnrollment *MFAEnrollmentPolicy
 }
 
 // Router 是管理面根路由：公开认证端点直接注册，其余 /api/* 走
@@ -621,8 +624,16 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 	rt.mux.HandleFunc("POST /api/logout", h.handleLogout)
 
 	// 受保护子树：所有未显式登记的 /api/* 必须先通过认证链。顺序冻结为
-	// SessionAuth → CSRF → OriginRefererCheck（Task 4/5 评审裁决）。
-	protected := Protect(cfg.Sessions, cfg.TokenStore, cfg.PublicBaseURL)(rt.protected)
+	// SessionAuth → RequireMFAEnrolled → CSRF → OriginRefererCheck（Task 4/5
+	// 评审裁决；R-04 把 MFA 绑定兜底插在认证之后、CSRF 之前——被拦截的请求
+	// 不应先泄露 CSRF 校验结果）。
+	protected := SessionAuth(cfg.Sessions, cfg.TokenStore)(
+		RequireMFAEnrolled(cfg.MFAEnrollment)(
+			CSRF(cfg.Sessions)(
+				OriginRefererCheck(parseAllowedOrigins(cfg.PublicBaseURL))(rt.protected),
+			),
+		),
+	)
 	rt.mux.Handle("/api/", protected)
 
 	return rt, nil

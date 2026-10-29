@@ -23,6 +23,7 @@ import (
 	"newtg/gateway/internal/billing/pricing"
 	"newtg/gateway/internal/channelhealth"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/egress"
 	"newtg/gateway/internal/metrics"
 	"newtg/gateway/internal/plugin"
 	"newtg/gateway/internal/relay"
@@ -182,9 +183,14 @@ type RelayHandlerOptions struct {
 	// ModelStatus 是派发前的模型停用检查（R-84）；nil 时跳过（测试/降级）。
 	// 生产由 platform 注入 store.NewPricingRepo(DB)。
 	ModelStatus RelayModelStatusStore
-	// Client 是上游 HTTP 客户端；nil 时按 relay-01 §11.1 超时构造。
+	// Client 是上游 HTTP 客户端；nil 时按 relay-01 §11.1 超时构造，
+	// 并经 Egress 加固（代理禁用、拨号期地址校验）。
 	// 测试用 httptest.Server.Client() 注入，以复用其 TLS/连接配置。
 	Client *http.Client
+	// Egress 是渠道出站的 SSRF 执行器（R-01）。nil 时按 Config 构造渠道面
+	// 策略（ChannelPolicy：域名清单/端口白名单不适用、off 收紧为 basic）。
+	// 注入 Client 时本字段不参与——调用方自带的客户端即出站策略本身。
+	Egress *egress.Guard
 	// Dispatch 是渠道类型 → 适配器分派；nil 时使用 adapters.Dispatch。
 	// 测试注入 fake StreamAdapter 以覆盖 soft/hard 流错误等上游难以复现的路径。
 	Dispatch func(contract.ChannelType) (contract.Adapter, error)
@@ -294,9 +300,13 @@ func NewRelayHandler(opts RelayHandlerOptions) *RelayHandler {
 	if opts.Sealer == nil {
 		panic("httpapi: NewRelayHandler requires a credential sealer (GC-8)")
 	}
+	guard := opts.Egress
+	if guard == nil {
+		guard = egress.NewGuard(egress.ChannelPolicy(opts.Config))
+	}
 	client := opts.Client
 	if client == nil {
-		client = newRelayHTTPClient()
+		client = newRelayHTTPClient(guard)
 	}
 	billing := opts.Billing
 	if billing == nil {
@@ -729,6 +739,8 @@ func (h *RelayHandler) resolveChannel(ctx context.Context, rc *contract.RelayCon
 		// M4-a：渠道级自动禁用开关随整组投影进执行层。每次 Get 都是当前
 		// 行值，因此管理员在请求进行中关闭 auto_ban 最多影响下一轮解析。
 		AutoBan: ch.AutoBan,
+		// R-01：私网 opt-in 与 auto_ban 同口径——随整组投影、每轮取当前行值。
+		AllowPrivateNetwork: ch.AllowPrivateNetwork,
 	}, nil
 }
 
@@ -2508,18 +2520,23 @@ func usageHasFact(u contract.Usage) bool {
 // 在 handler 构造期创建一次并跨请求复用：Transport 持有连接池，
 // §11.1 的 500 / 每主机 100 上限只有在长期复用时才有意义（与 relay 包
 // defaultRouteClient 同口径）。测试通过 RelayHandlerOptions.Client 注入。
-func newRelayHTTPClient() *http.Client {
+func newRelayHTTPClient(guard *egress.Guard) *http.Client {
 	return &http.Client{
-		Transport: newRelayTransport(),
+		Transport: newRelayTransport(guard),
 		// relay-01 §6.3：3xx 视为上游异常，不跟随重定向（避免凭据被转发）。
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		// Client.Timeout 保持 0：整体读取默认禁用（§11.1）。
 	}
 }
 
-func newRelayTransport() *http.Transport {
-	return &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+// newRelayTransport 返回按 relay-01 §11.1 调好连接池的 transport，再交给
+// egress 加固：代理必须禁用（有代理时 DialContext 只看到代理地址，地址校验
+// 形同虚设），拨号改为解析一次、校验全部候选 IP、拨校验过的 IP（R-01）。
+func newRelayTransport(guard *egress.Guard) *http.Transport {
+	if guard == nil {
+		guard = egress.NewGuard(egress.ChannelPolicy(nil))
+	}
+	return guard.HardenTransport(&http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   relayDialTimeout,
 			KeepAlive: 30 * time.Second,
@@ -2531,7 +2548,7 @@ func newRelayTransport() *http.Transport {
 		TLSHandshakeTimeout:   relayTLSHandshakeTimeout,
 		ExpectContinueTimeout: relayExpectContinueTimeout,
 		ResponseHeaderTimeout: relayResponseHeaderTimeout,
-	}
+	})
 }
 
 // ---------- 渠道连通性测试（真实实现） ----------
@@ -2625,9 +2642,9 @@ func channelTestErrorClass(err error) string {
 // 与中继/手工测试共用 newRelayTransport（relay-01 §11.1 的连接池与超时策略），
 // 不新增第二套出站路径；整体超时由每次探测的 ctx 控制（体检 15s，R-M4-14），
 // 因此这里不设置 Client.Timeout（长连接池需要跨探测复用）。
-func NewChannelProbeClient() *http.Client {
+func NewChannelProbeClient(guard *egress.Guard) *http.Client {
 	return &http.Client{
-		Transport: newRelayTransport(),
+		Transport: newRelayTransport(guard),
 		// 3xx 视为上游异常，不跟随重定向（避免凭据被转发到第三方）。
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
@@ -2645,9 +2662,11 @@ func NewChannelProbeClient() *http.Client {
 // 返回值是 phase 8A 的 ChannelTester 签名（latencyMS, error）。
 func NewChannelConnectivityTester(sealer *SecretSealer, client *http.Client) ChannelTester {
 	if client == nil {
+		// 生产装配必须显式注入与被体检/中继共用的加固客户端；这里只是
+		// 兜底，仍按渠道策略 fail-closed（私网默认拒绝），不退回裸 transport。
 		client = &http.Client{
 			Timeout:       channelTestTimeout,
-			Transport:     newRelayTransport(),
+			Transport:     newRelayTransport(nil),
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		}
 	}

@@ -70,7 +70,9 @@ func TestFetchChannelModelsUsesFormValues(t *testing.T) {
 
 func TestFetchChannelModelsEditUsesStoredCredentials(t *testing.T) {
 	lister := &fakeChannelModelLister{models: []string{"claude-sonnet-4-5"}}
-	env := newChannelTestEnv(t, ChannelHandlerOptions{ModelLister: lister})
+	// R-11：复用存量密钥要求再认证窗口打开；本用例验证「窗口内仍可复用」。
+	env, gate, _ := newChannelReauthEnv(t, ChannelHandlerOptions{ModelLister: lister})
+	openChannelReauthWindow(t, gate)
 	baseURL := "https://api.anthropic.com"
 	ch := seedChannel(t, env, func(c *store.Channel) {
 		c.Type = string(contract.ChannelTypeAnthropic)
@@ -140,7 +142,10 @@ func TestFetchChannelModelsRejectsStoredKeyForDifferentBaseURL(t *testing.T) {
 // 不该逼用户重新粘贴密钥。
 func TestFetchChannelModelsReusesStoredKeyForSameBaseURL(t *testing.T) {
 	lister := &fakeChannelModelLister{models: []string{"claude-sonnet-4-5"}}
-	env := newChannelTestEnv(t, ChannelHandlerOptions{ModelLister: lister})
+	// R-11：同一地址 + 再认证窗口内才允许复用（窗口外见
+	// TestFetchChannelModelsStoredKeyReuseRequiresReauthWindow）。
+	env, gate, _ := newChannelReauthEnv(t, ChannelHandlerOptions{ModelLister: lister})
+	openChannelReauthWindow(t, gate)
 	baseURL := "https://api.anthropic.com"
 	ch := seedChannel(t, env, func(c *store.Channel) {
 		c.Type = string(contract.ChannelTypeAnthropic)

@@ -318,18 +318,18 @@ func TestAccountIntegrationDeleteHardDeleteAndAnonymize(t *testing.T) {
 			t.Fatalf("%s 仍有 %d 行", table, n)
 		}
 	}
-	// 保留面：钱包流水仍在（对账），审计用户名已匿名化。
+	// 保留面：钱包流水仍在（对账）；audit_logs 是 append-only，历史用户名
+	// 保持操作发生时的快照（PII 由保留期作业按整行清理）。
 	if n := accountCount(t, env.db, `SELECT count(*) FROM wallet_transactions WHERE user_id = $1`, created.ID); n == 0 {
 		t.Fatal("wallet_transactions 必须保留")
 	}
-	anonymized := "deleted_" + accountItoa(created.ID)
-	var oldAuditUser string
+	var auditUser string
 	if err := env.logs.QueryRow(`SELECT username FROM audit_logs
-		WHERE user_id = $1 AND detail->>'action' = 'login'`, created.ID).Scan(&oldAuditUser); err != nil {
-		t.Fatalf("query anonymized audit row: %v", err)
+		WHERE user_id = $1 AND detail->>'action' = 'login'`, created.ID).Scan(&auditUser); err != nil {
+		t.Fatalf("query audit row: %v", err)
 	}
-	if oldAuditUser != anonymized {
-		t.Fatalf("审计 username = %q，期望 %q", oldAuditUser, anonymized)
+	if auditUser != username {
+		t.Fatalf("审计 username = %q，期望保持原快照 %q", auditUser, username)
 	}
 	// 删除事件保留 who/when/ip（真实用户名 + 请求 IP/UA）。detail.action 由
 	// 审计 writer 注入冻结动作名 user.delete，人读标签在 detail.label。

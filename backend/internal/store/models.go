@@ -145,9 +145,13 @@ type Channel struct {
 	// UpstreamAccountID 是渠道归属的上游账号（upstream_accounts.id，
 	// 上游用量对账设计 §4.1）；NULL = 未归属。归属是历史事实：迁移只追加可空
 	// 列，已有渠道默认不归属，删除仍被引用的账号由 FK RESTRICT 拒绝。
-	UpstreamAccountID *int64    `gorm:"column:upstream_account_id"`
-	CreatedAt         time.Time `gorm:"column:created_at"`
-	UpdatedAt         time.Time `gorm:"column:updated_at"`
+	UpstreamAccountID *int64 `gorm:"column:upstream_account_id"`
+	// AllowPrivateNetwork 是该渠道的私网出站 opt-in（R-01 / security-04 §2.4）。
+	// 默认 false：渠道目标仍受 egress 地址分类约束；为 true 时只放宽
+	// RFC1918/ULA，loopback/链路本地/云元数据/CGNAT/保留段永不放行。
+	AllowPrivateNetwork bool      `gorm:"column:allow_private_network"`
+	CreatedAt           time.Time `gorm:"column:created_at"`
+	UpdatedAt           time.Time `gorm:"column:updated_at"`
 }
 
 // TableName 返回 GORM 表名。

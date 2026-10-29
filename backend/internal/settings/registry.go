@@ -402,7 +402,9 @@ func buildRegistry() []Setting {
 		def("auth.email_domain_allowlist", "auth", TypeList, []any{},
 			element(validateDomain), validate(maxItems(100, "auth.email_domain_allowlist"))),
 		def("auth.mfa.admin_required", "auth", TypeBool, true),
-		def("auth.mfa.admin_hardware_required", "auth", TypeBool, true),
+		// R-04：硬件密钥（WebAuthn 安全密钥）本期不实现，默认关闭并在管理台
+		// 隐藏；保留键位避免已写入的配置在注册表校验时被判为未知项。
+		def("auth.mfa.admin_hardware_required", "auth", TypeBool, false),
 		def("auth.passkey.enabled", "auth", TypeBool, false, public()),
 		def("auth.passkey.rp_name", "auth", TypeString, "", maxLen(64)),
 		def("auth.passkey.rp_id", "auth", TypeString, "", maxLen(253),

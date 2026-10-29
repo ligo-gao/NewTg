@@ -60,35 +60,6 @@ type fakeWalletTx struct {
 	ReferenceID  string
 }
 
-// fakePIIAnonymizer 记录管理端删除时的匿名化调用（顺序与参数由用例断言）。
-type fakePIIAnonymizer struct {
-	mu    sync.Mutex
-	calls []struct {
-		UserID   int64
-		Username string
-	}
-	err error
-}
-
-func (f *fakePIIAnonymizer) AnonymizeUser(_ context.Context, userID int64, username string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.err != nil {
-		return f.err
-	}
-	f.calls = append(f.calls, struct {
-		UserID   int64
-		Username string
-	}{userID, username})
-	return nil
-}
-
-func (f *fakePIIAnonymizer) count() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.calls)
-}
-
 type fakeAdminRepo struct {
 	mu         sync.Mutex
 	users      map[int64]*AdminUserRecord
@@ -717,8 +688,6 @@ type adminTestEnv struct {
 	users    *UserHandlers
 	groups   *GroupHandlers
 	router   http.Handler
-	// anonymizer 记录管理端删除时的 PII 匿名化调用。
-	anonymizer *fakePIIAnonymizer
 }
 
 func newAdminTestEnv(t *testing.T) *adminTestEnv {
@@ -731,12 +700,11 @@ func newAdminTestEnv(t *testing.T) *adminTestEnv {
 	repo := newFakeAdminRepo()
 	capture := &adminAuditCapture{}
 	authz := rbac.NewAuthzMiddleware()
-	anon := &fakePIIAnonymizer{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	users, err := NewUserHandlers(UserHandlerConfig{
 		Repo: repo, Sessions: sessions, Redis: rdb, Authz: authz,
-		Audit: audit.New(capture), Anonymizer: anon, Logger: logger,
+		Audit: audit.New(capture), Logger: logger,
 	})
 	if err != nil {
 		t.Fatalf("NewUserHandlers: %v", err)
@@ -755,7 +723,6 @@ func newAdminTestEnv(t *testing.T) *adminTestEnv {
 	return &adminTestEnv{
 		t: t, mr: mr, rdb: rdb, sessions: sessions, repo: repo,
 		audit: capture, authz: authz, users: users, groups: groups, router: mux,
-		anonymizer: anon,
 	}
 }
 
@@ -1330,41 +1297,10 @@ func TestUsersDeleteRules(t *testing.T) {
 	if env.repo.tokenStatus(1) != "" {
 		t.Fatal("删除后令牌未清理")
 	}
-	// 审计记录匿名化 handle，且不含用户名以外的 PII。
+	// 审计仍记录被删用户 id；不得依赖改写 audit_logs 才能完成删除。
 	captured := env.audit.concatenatedArgs()
-	if !strings.Contains(captured, fmt.Sprintf("deleted_%d", user.ID)) {
-		t.Fatalf("审计缺少匿名化 handle：%q", captured)
-	}
-	// B1：删除必须先对日志库做 PII 匿名化（deleted_{id}），再硬删 users 行。
-	env.anonymizer.mu.Lock()
-	calls := append([]struct {
-		UserID   int64
-		Username string
-	}(nil), env.anonymizer.calls...)
-	env.anonymizer.mu.Unlock()
-	if len(calls) != 1 {
-		t.Fatalf("PII 匿名化调用次数 = %d，期望 1", len(calls))
-	}
-	if calls[0].UserID != user.ID || calls[0].Username != fmt.Sprintf("deleted_%d", user.ID) {
-		t.Fatalf("PII 匿名化参数 = (%d, %q)，期望 (%d, deleted_%d)",
-			calls[0].UserID, calls[0].Username, user.ID, user.ID)
-	}
-}
-
-// TestUsersDeleteAnonymizerFailureFailsClosed 覆盖 B1 的失败语义：日志库匿名化
-// 失败必须 503 且保留 users 行（与自助删除同口径），绝不允许「账号已删除、
-// 历史审计仍带真名」的终态。
-func TestUsersDeleteAnonymizerFailureFailsClosed(t *testing.T) {
-	env := newAdminTestEnv(t)
-	user := env.repo.addUser(AdminUserRecord{Username: "alice", Status: "disabled"})
-	env.anonymizer.err = errors.New("logs db down")
-
-	rr := env.request(fullAdmin(), http.MethodDelete, fmt.Sprintf("/api/users/%d", user.ID), nil)
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("匿名化失败 status = %d，期望 503（body=%q）", rr.Code, rr.Body.String())
-	}
-	if _, err := env.repo.GetUser(context.Background(), user.ID); err != nil {
-		t.Fatalf("匿名化失败后用户不得被删除：err=%v", err)
+	if !strings.Contains(captured, "deleted_user_id") {
+		t.Fatalf("审计缺少 deleted_user_id：%q", captured)
 	}
 }
 
@@ -1879,7 +1815,6 @@ func TestUsersResetPasswordFailsClosedWhenMarkerUnavailable(t *testing.T) {
 	sessions := auth.NewSessionManager(rdb, []byte(testSessionSecret))
 	h, err := NewUserHandlers(UserHandlerConfig{
 		Repo: repo, Sessions: sessions, Redis: broken, Authz: rbac.NewAuthzMiddleware(),
-		Anonymizer: &fakePIIAnonymizer{},
 	})
 	if err != nil {
 		t.Fatalf("NewUserHandlers: %v", err)

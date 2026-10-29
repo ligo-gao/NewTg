@@ -144,6 +144,18 @@ func TestParseTrustedProxies(t *testing.T) {
 	}
 }
 
+// TestParseTrustedProxiesRejectsBroadPrefixes 覆盖 R-02：RelayAuth 的令牌 IP
+// 白名单判定必须与 internal/clientip 共用同一套 fail-safe 口径。0.0.0.0/0、
+// ::/0 或过宽前缀一旦被接受，任意客户端都能自带 XFF 冒充 allow_ips 里的地址，
+// 令牌的 IP 白名单形同虚设。
+func TestParseTrustedProxiesRejectsBroadPrefixes(t *testing.T) {
+	for _, raw := range []string{"0.0.0.0/0", "::/0", "172.28.0.0/7", "2001:db8::/15", "not-an-ip"} {
+		if got := parseTrustedProxies(raw); len(got) != 0 {
+			t.Fatalf("parseTrustedProxies(%q) = %v，期望空集（畸形/过宽条目不得生效）", raw, got)
+		}
+	}
+}
+
 // ---------- 鉴权阶段的拒绝行（失败排障：401/403 的 requestId 可查） ----------
 
 // authRefusalRequestID 从响应头取 requestId：消息里的 `(requestId: …)` 与

@@ -774,20 +774,77 @@ schemas:
     properties:
       status:
         type: string
-        enum: [pending_2fa]
-        description: 判别字段；客户端据此跳转 2FA challenge 页。
+        enum: [pending_2fa, mfa_enrollment_required]
+        description: |
+          判别字段。`pending_2fa`：已启用 2FA，客户端跳转 challenge 页。
+          `mfa_enrollment_required`：管理员尚未绑定 TOTP 且
+          auth.mfa.admin_required=true，客户端跳转强制绑定引导页。
       ticket:
         type: string
-        description: 一次性 ticket（5 分钟），只能兑换一次正式会话；不包含用户身份。
+        description: |
+          一次性 ticket；`pending_2fa` 为 5 分钟（兑换正式会话），
+          `mfa_enrollment_required` 为 10 分钟（只能用于
+          POST /api/auth/2fa/enroll/*）。不包含用户身份。
 
   LoginResponse:
     oneOf:
       - $ref: '#/schemas/AuthSessionResponse'
       - $ref: '#/schemas/Pending2FAResponse'
     description: |
-      口令通过后二选一：未启用 2FA 直接建会话（AuthSessionResponse）；已启用
-      返回 pending_2fa + ticket，客户端再调用 POST /api/auth/2fa/challenge。
+      口令通过后二选一：未启用 2FA（且非未绑定管理员）直接建会话
+      （AuthSessionResponse）；已启用返回 pending_2fa + ticket；
+      未绑定管理员返回 mfa_enrollment_required + ticket（R-04）。
       用 oneOf 而非可空分支，是为了让生成的类型系统强制前端处理两条路径。
+
+  # R-04 强制绑定（scope=enroll）。凭据是登录响应里的 ticket，不是会话 Cookie。
+  MFAEnrollTicketRequest:
+    type: object
+    additionalProperties: false
+    required: [ticket]
+    properties:
+      ticket:
+        type: string
+        description: login 响应中的 mfa_enrollment_required ticket。
+
+  MFAEnrollEnableRequest:
+    type: object
+    additionalProperties: false
+    required: [ticket, secret, code]
+    properties:
+      ticket:
+        type: string
+      secret:
+        type: string
+        description: setup 响应中的 base32 种子。
+      code:
+        type: string
+        pattern: '^[0-9]{6}$'
+        description: 验证器当前的 6 位码。
+
+  MFAEnrollConfirmRequest:
+    type: object
+    additionalProperties: false
+    required: [ticket, backup_codes_confirmed]
+    properties:
+      ticket:
+        type: string
+      backup_codes_confirmed:
+        type: boolean
+        description: 必须为 true；未确认已保存备用码时不得启用 TOTP。
+
+  MFAEnrollBackupCodesResponse:
+    type: object
+    additionalProperties: false
+    required: [status, backup_codes]
+    properties:
+      status:
+        type: string
+        enum: [backup_codes_ready]
+      backup_codes:
+        type: array
+        items:
+          type: string
+        description: 8 组备用码明文，仅本次响应出现；服务端只存 argon2id 哈希。
 
   LoginRequest:
     type: object

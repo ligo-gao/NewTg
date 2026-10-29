@@ -97,6 +97,7 @@ func openRevealIntegrationEnv(t *testing.T) *revealIntegrationEnv {
 	sealer := NewSecretSealer(testSealerMaster)
 	h := NewChannelHandler(store.NewChannelRepo(mainDB), newFakeUserAccess(), sealer,
 		ChannelHandlerOptions{
+			Egress:      testEgressGuard(),
 			Idempotency: NewMemoryIdempotencyStore(),
 			Redis:       rdb,
 			Reauth:      gate,

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/egress"
 	"newtg/gateway/internal/relay/adapters"
 )
 
@@ -34,6 +35,9 @@ type ModelListRequest struct {
 	BaseURL     string
 	APIKey      string
 	APIVersion  string
+	// AllowPrivateNetwork 对应 channels.allow_private_network（R-01）：
+	// 只放宽 egress 的 RFC1918/ULA 限制，loopback/元数据/保留段仍拒绝。
+	AllowPrivateNetwork bool
 }
 
 // ModelInfo 是上游模型目录里的一条模型事实。所有字段只来自上游声明，
@@ -82,15 +86,21 @@ type ModelLister struct {
 	client *http.Client
 }
 
-func NewModelLister() *ModelLister {
-	return &ModelLister{
-		client: &http.Client{
-			Timeout: 30 * time.Second,
+// NewModelLister 构造目录拉取器。client 为 nil 时使用按渠道策略加固的
+// 默认客户端（fail-closed：私网默认拒绝）；生产注入与被中继/体检共用的
+// 同一份加固客户端，避免出现第二套出站策略。
+func NewModelLister(client *http.Client) *ModelLister {
+	if client == nil {
+		guard := egress.NewGuard(egress.ChannelPolicy(nil))
+		client = &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: guard.HardenTransport(nil),
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
-		},
+		}
 	}
+	return &ModelLister{client: client}
 }
 
 const (
@@ -115,6 +125,10 @@ func (l *ModelLister) List(ctx context.Context, req ModelListRequest) ([]string,
 // ListDetailed 返回上游声明的模型及其可信元数据（已按 ID 去重、保持上游
 // 顺序）。
 func (l *ModelLister) ListDetailed(ctx context.Context, req ModelListRequest) ([]ModelInfo, error) {
+	// R-01：渠道级私网 opt-in 只影响 egress 的地址分类。
+	if req.AllowPrivateNetwork {
+		ctx = egress.WithAllowPrivateNetwork(ctx)
+	}
 	key := strings.TrimSpace(req.APIKey)
 	if key == "" {
 		return nil, fmt.Errorf("%w: api key is required", ErrModelListConfig)

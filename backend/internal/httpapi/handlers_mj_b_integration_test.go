@@ -237,7 +237,7 @@ func TestMJBPollDriverSettlesOnceOnRealDB(t *testing.T) {
 			}
 			driver, err := NewMJPollDriver(MJPollDriverConfig{
 				Store: repo, Channels: repo, Sealer: sealer,
-				Client: mj.NewSubmitClient(nil), Settler: settler,
+				Client: mj.NewSubmitClient(upstream.Client()), Settler: settler,
 				RetentionDays: func() int64 { return 30 },
 			})
 			if err != nil {
@@ -297,7 +297,7 @@ func TestMJBPollDriverConcurrentSingleSettlementOnRealDB(t *testing.T) {
 	}
 	driver, err := NewMJPollDriver(MJPollDriverConfig{
 		Store: repo, Channels: repo, Sealer: sealer,
-		Client: mj.NewSubmitClient(nil), Settler: settler,
+		Client: mj.NewSubmitClient(upstream.Client()), Settler: settler,
 	})
 	if err != nil {
 		t.Fatalf("NewMJPollDriver: %v", err)

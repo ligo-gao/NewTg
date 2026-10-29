@@ -12,6 +12,12 @@ const (
 	TokenKeyPrefix = "rateLimit:token:"
 	// B12：per-user 全站桶（阈值 rl.user_global_rpm，仅中继栈）。
 	UserGlobalKeyPrefix = "rateLimit:v2:user:GR:"
+	// R-03：预认证失败计数桶（60 次失败/IP/分钟）。键里只有客户端 IP，
+	// 因为请求尚未解析出任何身份；IPv6 地址自带冒号，键不做二次拆分。
+	AuthFailureKeyPrefix = "authFailure:v1:ip:"
+	// R-03：超限锁（10 分钟）。与计数键分开，以便计数按分钟滚动、锁按
+	// 10 分钟持续——否则计数器过期会提前解锁。
+	AuthFailureLockKeyPrefix = "authFailure:v1:lock:ip:"
 )
 
 // UserKey 构造 B10 桶键：rateLimit:<userID>。
@@ -27,4 +33,14 @@ func TokenKey(tokenID int64) string {
 // UserGlobalKey 构造 B12 桶键：rateLimit:v2:user:GR:<userID>。
 func UserGlobalKey(userID int64) string {
 	return UserGlobalKeyPrefix + strconv.FormatInt(userID, 10)
+}
+
+// AuthFailureKey 构造 R-03 失败计数键：authFailure:v1:ip:<clientIP>。
+func AuthFailureKey(clientIP string) string {
+	return AuthFailureKeyPrefix + clientIP
+}
+
+// AuthFailureLockKey 构造 R-03 超限锁键：authFailure:v1:lock:ip:<clientIP>。
+func AuthFailureLockKey(clientIP string) string {
+	return AuthFailureLockKeyPrefix + clientIP
 }

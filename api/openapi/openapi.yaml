@@ -64,6 +64,12 @@ paths:
     $ref: './paths/public.yaml#/paths/~1api~1auth~1login'
   /api/auth/2fa/challenge:
     $ref: './paths/public.yaml#/paths/~1api~1auth~12fa~1challenge'
+  /api/auth/2fa/enroll/setup:
+    $ref: './paths/public.yaml#/paths/~1api~1auth~12fa~1enroll~1setup'
+  /api/auth/2fa/enroll/enable:
+    $ref: './paths/public.yaml#/paths/~1api~1auth~12fa~1enroll~1enable'
+  /api/auth/2fa/enroll/confirm:
+    $ref: './paths/public.yaml#/paths/~1api~1auth~12fa~1enroll~1confirm'
   /api/auth/password-reset/request:
     $ref: './paths/public.yaml#/paths/~1api~1auth~1password-reset~1request'
   /api/auth/password-reset/validate:
@@ -351,6 +357,9 @@ paths:
   # 通知渠道 · 测试 Webhook 事件（modules-08 F-08-20）。
   /api/settings/test/webhook:
     $ref: './paths/admin.yaml#/paths/~1api~1settings~1test~1webhook'
+  # 通知渠道 · SMTP 分阶段配置探测（只握手，不投递）。
+  /api/settings/test/smtp:
+    $ref: './paths/admin.yaml#/paths/~1api~1settings~1test~1smtp'
   # 通知渠道 · 恢复自动暂停的 Webhook 推送（modules-08 F-08-20）。
   /api/settings/notify-webhook:resume:
     $ref: './paths/admin.yaml#/paths/~1api~1settings~1notify-webhook:resume'

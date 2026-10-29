@@ -39,6 +39,8 @@ type SMTPSender struct {
 	sealer SecretOpener
 	// DialTimeout 是连接/读写超时；零值用 10s。
 	DialTimeout time.Duration
+	// ProbeTimeout 是配置探测（Probe）单阶段超时；零值用 5s。
+	ProbeTimeout time.Duration
 }
 
 // NewSMTPSender 构造发送器。cfg 为 nil 时 Configured 恒 false（等价未配置）。
@@ -67,6 +69,14 @@ func (s *SMTPSender) Configured(_ context.Context) bool {
 		return false
 	}
 	return settings.Host != "" && settings.FromEmail != ""
+}
+
+// Target 返回探测目标的主机与端口，供审计 detail 使用。它只暴露管理员
+// 自填的主机名与端口号，不返回账号、发件地址或密码。密钥无法解封时
+// settings() 仍带回已读到的 host/port，审计因此不受影响。
+func (s *SMTPSender) Target() (host string, port int) {
+	settings, _ := s.settings()
+	return settings.Host, settings.Port
 }
 
 // Send 投递一封纯文本邮件，返回生成的 Message-ID（供退信关联）。

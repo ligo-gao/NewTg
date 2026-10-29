@@ -223,6 +223,8 @@ type authTestOptions struct {
 	signupGrantAlert func(ctx context.Context, userID int64, ip string)
 	// userGroups 是 GET /api/status usable_groups 的测试接缝。
 	userGroups UsableGroupLookup
+	// mfa 是 R-04 强制绑定中间件的测试接缝；nil 时按未启用装配。
+	mfa *MFAEnrollmentPolicy
 }
 
 type authTestEnv struct {
@@ -268,6 +270,7 @@ func newAuthTestEnv(t *testing.T, cfg mapConfig, opts authTestOptions) *authTest
 		Audit:            opts.audit,
 		SignupGrantAlert: opts.signupGrantAlert,
 		UserGroups:       opts.userGroups,
+		MFAEnrollment:    opts.mfa,
 	})
 	if err != nil {
 		t.Fatalf("NewRouter: %v", err)
@@ -858,7 +861,12 @@ func TestEmailCodeStoreOneTimeAndAttempts(t *testing.T) {
 
 // TestAuthLoginSuccessRoleFromDB 覆盖 ruling 3：会话角色只能来自 DB 行。
 func TestAuthLoginSuccessRoleFromDB(t *testing.T) {
-	env := newAuthTestEnv(t, nil, authTestOptions{})
+	// R-04 之后未绑定 TOTP 的管理员登录默认进入强制绑定流程；本用例只验证
+	// 「会话角色来自 DB」，因此显式关闭强制绑定以保留旧路径（admin_required=false
+	// 分支本身由 mfa_enrollment_test.go 覆盖）。
+	env := newAuthTestEnv(t, mapConfig{
+		"auth.mfa.admin_required": configBool(false),
+	}, authTestOptions{})
 	stored := env.repo.add(UserRecord{
 		Username: "admin", Email: "admin@example.com",
 		Role: rbac.RoleAdmin, PasswordHash: authTestPasswordHash(),

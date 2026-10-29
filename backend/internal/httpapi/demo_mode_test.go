@@ -1001,8 +1001,11 @@ func newDemoMJEnv(t *testing.T, cfg fakeMJConfig, perIP int64) *demoMJEnv {
 		RateLimiter: ratelimit.New(rdb),
 		ImageSigner: mj.NewImageSigner("mj-handler-test-key"),
 		Querier:     querier,
-		Now:         func() time.Time { return time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC) },
-		Uint64N:     func(uint64) uint64 { return 0 },
+		// R-01：默认提交客户端走 egress 加固，会拒绝 httptest 的 loopback；
+		// 测试注入假上游的客户端，与其它 MJ 测试同口径。
+		Submitter: mj.NewSubmitClient(upstream.server.Client()),
+		Now:       func() time.Time { return time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC) },
+		Uint64N:   func(uint64) uint64 { return 0 },
 	})
 	mux := http.NewServeMux()
 	handler.Register(mux, RelayAuth(tokens, fakeTaskAccess{}, nil))

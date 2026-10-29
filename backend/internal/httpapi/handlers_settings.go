@@ -58,7 +58,11 @@ type SettingsHandlerConfig struct {
 	// Webhook 是 POST /api/settings/test/webhook 的发送器接缝
 	// （生产 *notify.WebhookSender）。nil 时端点返回 503。
 	Webhook WebhookTester
-	// Redis 是测试 Webhook 的管理员限流桶；nil 时 fail-open（只读探测口径）。
+	// SMTP 是 POST /api/settings/test/smtp 的探测器接缝
+	// （生产 *notify.SMTPSender）。nil 时端点返回 503。
+	SMTP SMTPProber
+	// Redis 是测试 Webhook / SMTP 的管理员限流桶；nil 时 fail-open
+	// （只读探测口径）。
 	Redis *redis.Client
 	// Compliance 是支付设置合规确认的持久化接缝；nil 时不挂载
 	// /api/settings/payment-compliance（纯设置单测装配）。
@@ -87,6 +91,7 @@ type SettingsHandlers struct {
 	idem            IdempotencyStore
 	log             *slog.Logger
 	webhook         WebhookTester
+	smtp            SMTPProber
 	rdb             *redis.Client
 	compliance      PaymentComplianceStore
 }
@@ -101,6 +106,10 @@ var settingsReadAction = rbac.AuthzAction{ResourceKind: "settings", ActionName: 
 // 请求体（配置从已保存快照读取），空 Fields 仍必须登记：RBAC 对任何写方法
 // 的未登记动作都失败关闭（security-02 §2.6.1 规则 6）。
 var settingsTestWebhookAction = rbac.AuthzAction{ResourceKind: "settings", ActionName: "test_webhook"}
+
+// settingsTestSMTPAction 是测试 SMTP 的字段级写策略键。与 test_webhook 同理：
+// 没有请求体，但写方法必须登记（RBAC 对未登记写动作失败关闭）。
+var settingsTestSMTPAction = rbac.AuthzAction{ResourceKind: "settings", ActionName: "test_smtp"}
 
 // settingsResumeWebhookAction 是恢复 Webhook 推送的写策略键。端点没有请求体，
 // 与 test_webhook 一样登记空字段集（RBAC 对未登记写动作失败关闭）。
@@ -140,6 +149,7 @@ func NewSettingsHandlers(cfg SettingsHandlerConfig) (*SettingsHandlers, error) {
 		log = slog.Default()
 	}
 	authz.SetWritePolicy(settingsTestWebhookAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{}})
+	authz.SetWritePolicy(settingsTestSMTPAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{}})
 	authz.SetWritePolicy(settingsResumeWebhookAction, &rbac.FieldPolicy{Fields: map[string]*rbac.FieldPolicy{}})
 	// 合规确认只接受一个字段；文本值本身在 handler 里做精确比对。
 	authz.SetWritePolicy(settingsPaymentComplianceAction, &rbac.FieldPolicy{
@@ -148,7 +158,7 @@ func NewSettingsHandlers(cfg SettingsHandlerConfig) (*SettingsHandlers, error) {
 	return &SettingsHandlers{
 		service: cfg.Service, authz: authz, authzConfigured: cfg.Authz != nil,
 		audit: cfg.Audit, idem: idem, log: log,
-		webhook: cfg.Webhook, rdb: cfg.Redis, compliance: cfg.Compliance,
+		webhook: cfg.Webhook, smtp: cfg.SMTP, rdb: cfg.Redis, compliance: cfg.Compliance,
 	}, nil
 }
 
@@ -171,6 +181,10 @@ func (h *SettingsHandlers) Register(mux *http.ServeMux) {
 	// 审计动作独立于 settings.update，便于区分「改配置」与「探测端点」。
 	mux.Handle("POST /api/settings/test/webhook",
 		h.authz.Handler(rbac.PermSettingsManage, settingsTestWebhookAction)(http.HandlerFunc(h.handleTestWebhook)))
+	// SMTP 分阶段探测：只读握手（不投递邮件），因此也走 settings:manage
+	// 写策略登记——阶段结果是对运维配置的显式探测动作。
+	mux.Handle("POST /api/settings/test/smtp",
+		h.authz.Handler(rbac.PermSettingsManage, settingsTestSMTPAction)(http.HandlerFunc(h.handleTestSMTP)))
 	// 恢复自动暂停的 Webhook 推送（F-08-20）。与测试端点同为 settings:manage：
 	// 它改变的是出站投递状态，不是普通设置值，但仍属于设置管理面。
 	mux.Handle("POST /api/settings/notify-webhook:resume",

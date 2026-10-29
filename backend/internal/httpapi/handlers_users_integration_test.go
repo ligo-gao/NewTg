@@ -146,7 +146,6 @@ func newAdminIntegrationEnv(t *testing.T) *adminIntegrationEnv {
 
 	users, err := NewUserHandlers(UserHandlerConfig{
 		Repo: repo, Sessions: sessions, Redis: rdb, Authz: authz, Logger: logger,
-		Anonymizer: NewSQLPIIAnonymizer(logsDB),
 	})
 	if err != nil {
 		t.Fatalf("NewUserHandlers: %v", err)
@@ -634,9 +633,10 @@ func TestIntegrationAdminDeleteCascadesDependents(t *testing.T) {
 	}
 }
 
-// TestIntegrationAdminDeleteAnonymizesAuditLogs 覆盖 B1：管理端删除必须与自助
-// 删除一致，把日志库 audit_logs.username 快照改写为 deleted_{id}，再硬删 users。
-func TestIntegrationAdminDeleteAnonymizesAuditLogs(t *testing.T) {
+// TestIntegrationAdminDeleteKeepsAuditSnapshot 覆盖 R-05：audit_logs 是
+// append-only（运行时账号只有 SELECT/INSERT），删除必须成功且历史审计行的
+// 用户名快照保持不变——PII 由保留期作业按整行清理，而不是运行时 UPDATE。
+func TestIntegrationAdminDeleteKeepsAuditSnapshot(t *testing.T) {
 	env := newAdminIntegrationEnv(t)
 	user := createIntegrationUser(t, env.repo, "default")
 	t.Cleanup(func() { _, _ = env.logsDB.Exec(`DELETE FROM audit_logs WHERE user_id = $1`, user.ID) })
@@ -657,10 +657,10 @@ func TestIntegrationAdminDeleteAnonymizesAuditLogs(t *testing.T) {
 	var stored string
 	if err := env.logsDB.QueryRow(`SELECT username FROM audit_logs WHERE user_id = $1 ORDER BY id DESC LIMIT 1`,
 		user.ID).Scan(&stored); err != nil {
-		t.Fatalf("read anonymized audit row: %v", err)
+		t.Fatalf("read audit row: %v", err)
 	}
-	if want := fmt.Sprintf("deleted_%d", user.ID); stored != want {
-		t.Fatalf("audit_logs.username = %q，期望 %q", stored, want)
+	if stored != user.Username {
+		t.Fatalf("audit_logs.username = %q，期望保持原快照 %q", stored, user.Username)
 	}
 }
 

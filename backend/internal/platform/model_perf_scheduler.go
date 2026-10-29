@@ -57,7 +57,7 @@ func newModelPerfScheduler(cfg *config.Config, db *sql.DB, rdb *redis.Client,
 	// 上游策略。
 	runner, err := channelhealth.NewPerfRunner(channelhealth.ProberConfig{
 		Opener:  httpapi.NewSecretSealer(cfg.CredentialEncryptionKey),
-		Client:  httpapi.NewChannelProbeClient(),
+		Client:  httpapi.NewChannelProbeClient(channelEgressGuard(center)),
 		Timeout: perfProbeTimeout,
 	})
 	if err != nil {

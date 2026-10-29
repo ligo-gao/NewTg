@@ -18,6 +18,7 @@ import (
 	"newtg/gateway/internal/auth"
 	"newtg/gateway/internal/channelhealth"
 	"newtg/gateway/internal/contract"
+	"newtg/gateway/internal/egress"
 	"newtg/gateway/internal/rbac"
 	"newtg/gateway/internal/store"
 )
@@ -286,6 +287,9 @@ func (f *fakeChannelStore) Update(_ context.Context, id int64, patch store.Chann
 	if patch.UpstreamAccountIDSet {
 		c.UpstreamAccountID = patch.UpstreamAccountID
 	}
+	if patch.AllowPrivateNetwork != nil {
+		c.AllowPrivateNetwork = *patch.AllowPrivateNetwork
+	}
 	c.UpdatedAt = time.Now().UTC()
 	f.items[id] = c
 	return cloneChannel(c), nil
@@ -452,6 +456,15 @@ type channelTestEnv struct {
 	idem    IdempotencyStore
 }
 
+// testEgressGuard 是渠道 handler 测试的出站执行器：关闭地址分类。
+//
+// 保存期校验（R-01）会真实解析主机并按地址拒绝，而单测的目标是表单逻辑，
+// 用的是不存在的假域名与 httptest loopback。出站策略本身由 egress 单测与
+// 本文件的 TestChannelCreateRejectsBlockedBaseURL 覆盖。
+func testEgressGuard() *egress.Guard {
+	return egress.NewGuard(egress.Policy{Mode: egress.ModeOff})
+}
+
 func newChannelTestEnv(t *testing.T, opts ChannelHandlerOptions) *channelTestEnv {
 	t.Helper()
 	cs := newFakeChannelStore()
@@ -459,6 +472,9 @@ func newChannelTestEnv(t *testing.T, opts ChannelHandlerOptions) *channelTestEnv
 	sealer := NewSecretSealer(testSealerMaster)
 	if opts.Idempotency == nil {
 		opts.Idempotency = NewMemoryIdempotencyStore()
+	}
+	if opts.Egress == nil {
+		opts.Egress = testEgressGuard()
 	}
 	h := NewChannelHandler(cs, ua, sealer, opts)
 	mux := http.NewServeMux()
@@ -638,8 +654,9 @@ func TestChannelListPaginationAndFilters(t *testing.T) {
 		"fail_count": true, "auto_disabled_reason": true,
 		"last_test_at": true, "last_test_result": true,
 		"task_plugin_key": true, "task_extend_plugin_keys": true,
-		"upstream_account_id": true,
-		"created_at":          true, "updated_at": true, "version": true,
+		"upstream_account_id":   true,
+		"allow_private_network": true,
+		"created_at":            true, "updated_at": true, "version": true,
 	}
 	for _, item := range envelope.Items {
 		for key := range item {
@@ -1010,6 +1027,63 @@ func TestChannelSupportedModelsRejectInvalidModelNames(t *testing.T) {
 // TestChannelCreateRejectsModelMappingKeyOutsideSupportedModels 覆盖 F-06-10：
 // model_mapping 的每个键都是客户端可见别名，必须同时出现在 supported_models
 // 中；否则 /v1/models 会宣告一个永远无法路由的模型（finding 3 的服务端闸门）。
+// TestChannelCreateEgressBaseURLGate 覆盖 R-01 保存期出站校验：
+// 私网/loopback/link-local 默认拒；opt-in 只放行 RFC1918/ULA。
+func TestChannelCreateEgressBaseURLGate(t *testing.T) {
+	cases := []struct {
+		name     string
+		baseURL  string
+		optIn    bool
+		wantCode int
+		wantBody string
+	}{
+		{"私网默认拒绝", "http://192.168.1.10:8080", false, http.StatusUnprocessableEntity, "base_url_blocked"},
+		{"loopback 默认拒绝", "http://127.0.0.1:8080", false, http.StatusUnprocessableEntity, "base_url_blocked"},
+		{"私网 opt-in 放行", "http://192.168.1.10:8080", true, http.StatusCreated, ""},
+		{"ULA opt-in 放行", "http://[fd00::1]:8080", true, http.StatusCreated, ""},
+		{"loopback opt-in 仍拒绝", "http://127.0.0.1:8080", true, http.StatusUnprocessableEntity, "base_url_blocked"},
+		{"IPv6 loopback opt-in 仍拒绝", "http://[::1]:8080", true, http.StatusUnprocessableEntity, "base_url_blocked"},
+		{"云元数据 opt-in 仍拒绝", "http://169.254.169.254/latest/meta-data", true, http.StatusUnprocessableEntity, "base_url_blocked"},
+		{"十六进制 IP 形式", "http://0x7f000001:8080", true, http.StatusUnprocessableEntity, "base_url"},
+		{"十进制 IP 形式", "http://2130706433:8080", true, http.StatusUnprocessableEntity, "base_url"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newChannelTestEnv(t, ChannelHandlerOptions{
+				Egress:      egress.NewGuard(egress.ChannelPolicy(nil)),
+				Idempotency: NewMemoryIdempotencyStore(),
+			})
+			env.access.set(testAdminID, "admin",
+				[]string{PermChannelsRead, PermChannelsManage, PermChannelsManageSensitive}, "enabled")
+			extra := map[string]any{"base_url": tc.baseURL}
+			if tc.optIn {
+				extra["allow_private_network"] = true
+			}
+			rr := createChannelForBinding(t, env, channelCreateBody("openai", extra))
+			if rr.Code != tc.wantCode {
+				t.Fatalf("status = %d，期望 %d（body=%s）", rr.Code, tc.wantCode, rr.Body.String())
+			}
+			if tc.wantBody != "" && !strings.Contains(rr.Body.String(), tc.wantBody) {
+				t.Fatalf("body 未包含 %q：%s", tc.wantBody, rr.Body.String())
+			}
+			if tc.wantCode != http.StatusCreated && env.store.createCalls != 0 {
+				t.Fatalf("校验失败仍写库：createCalls = %d", env.store.createCalls)
+			}
+			if tc.wantCode == http.StatusCreated {
+				env.store.mu.Lock()
+				var created *store.Channel
+				for _, ch := range env.store.items {
+					created = ch
+				}
+				env.store.mu.Unlock()
+				if created == nil || created.AllowPrivateNetwork != tc.optIn {
+					t.Fatalf("落库 allow_private_network = %+v，期望 %v", created, tc.optIn)
+				}
+			}
+		})
+	}
+}
+
 func TestChannelCreateRejectsModelMappingKeyOutsideSupportedModels(t *testing.T) {
 	base := func(mapping map[string]any) map[string]any {
 		return map[string]any{
@@ -2161,12 +2235,14 @@ func TestChannelPatchTypeChangeRequiresNewCredentials(t *testing.T) {
 	})
 
 	t.Run("完整 azure 凭据 → 200 且密文更新", func(t *testing.T) {
-		env := newChannelTestEnv(t, ChannelHandlerOptions{})
+		// R-11：base_url 由空变为 azureBase 属于目标变更，需现场口令。
+		env, _, _ := newChannelReauthEnv(t, ChannelHandlerOptions{})
 		seeded := seedChannel(t, env, nil)
 		rr := serveWithPrincipal(t, env.mux, jsonReq(t, http.MethodPatch, "/api/channels/1", map[string]any{
 			"expected_version": seeded.UpdatedAt.UTC().Format(time.RFC3339Nano),
 			"type":             "azure_openai",
 			"base_url":         azureBase,
+			"password":         revealPassword,
 			"credentials": map[string]any{
 				"api_key":     "sk-new-azure-5678",
 				"deployment":  "dep-1",

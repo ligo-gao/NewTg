@@ -22,6 +22,7 @@ schemas:
       - weight
       - supported_models
       - auto_ban
+      - allow_private_network
       - fail_count
       - task_extend_plugin_keys
       - created_at
@@ -65,6 +66,13 @@ schemas:
         nullable: true
       auto_ban:
         type: boolean
+      allow_private_network:
+        type: boolean
+        description: |
+          渠道级私网出站 opt-in（R-01 / security-04 §2.4）。false（默认）时
+          该渠道的 base_url 与重定向目标不得落在 RFC1918/ULA/loopback/
+          link-local；true 仅放行 RFC1918/ULA，loopback 与云元数据地址仍拒绝。
+          切换该值需要 channels:manage_sensitive 权限并写审计。
       test_model:
         type: string
         nullable: true
@@ -2820,6 +2828,59 @@ schemas:
         minimum: 0
         description: 目标 HTTP 状态码原样回传（3xx 不跟随）。
     description: POST /api/settings/test/webhook 的响应；测试样例非事件契约。
+
+  SMTPTestStep:
+    type: object
+    additionalProperties: false
+    required: [stage, status]
+    properties:
+      stage:
+        type: string
+        enum: [dns, connect, tls, greeting, auth, mail_from]
+        description: 执行阶段；数组顺序即执行顺序。
+      status:
+        type: string
+        enum: [passed, failed, skipped]
+        description: skipped 仅用于 tls（encryption=none）与 auth（无凭证且未强制 AUTH）。
+      reason:
+        type: string
+        enum:
+          - config_incomplete
+          - dns_not_found
+          - dns_error
+          - connect_timeout
+          - connect_refused
+          - connect_failed
+          - tls_cert_invalid
+          - tls_failed
+          - starttls_unsupported
+          - greeting_failed
+          - auth_failed
+          - auth_unsupported
+          - mail_from_rejected
+        description: 失败分类（仅 status=failed 时出现）；固定枚举，绝不透传服务器原文。
+      smtp_code:
+        type: integer
+        minimum: 0
+        description: 服务器数字码（如 535/550），仅 status=failed 且服务器有应答时出现；不含文本。
+    description: POST /api/settings/test/smtp 结果中的一个阶段。
+
+  SMTPTestResult:
+    type: object
+    additionalProperties: false
+    required: [ok, steps]
+    properties:
+      ok:
+        type: boolean
+        description: 是否走到 MAIL FROM 且服务器接受。
+      steps:
+        type: array
+        description: 已执行的阶段按执行顺序返回；失败即停止，后续阶段不出现。
+        items:
+          $ref: '#/schemas/SMTPTestStep'
+    description: |
+      POST /api/settings/test/smtp 的响应。探测不投递邮件；`ok=false` 是探测
+      结论，HTTP 状态仍为 200。
 
   WebhookResumeResult:
     type: object

@@ -491,8 +491,9 @@ func (h *MJHandler) handleSubmit(w http.ResponseWriter, r *http.Request, endpoin
 
 	// 单次尝试，不重试（relay-05 §6.2）。
 	resp, mjErr := h.client.Submit(r.Context(), mj.SubmitConfig{
-		BaseURL: channel.BaseURL,
-		APIKey:  apiKey,
+		BaseURL:             channel.BaseURL,
+		APIKey:              apiKey,
+		AllowPrivateNetwork: channel.AllowPrivateNetwork,
 	}, endpoint, normalized)
 	if mjErr != nil {
 		writeMJError(w, mjErr)
