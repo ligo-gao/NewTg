@@ -19,6 +19,8 @@ TEST_DB_DSN     ?= postgres://newtg:newtg@localhost:5432/newtg_test?sslmode=disa
 TEST_LOGS_DB_DSN ?= postgres://newtg:newtg@localhost:5432/newtg_logs?sslmode=disable
 TEST_REDIS_ADDR ?= localhost:6379
 IMAGE          ?= newtg/gateway:dev
+FRONTEND_IMAGE ?= newtg/frontend:dev
+BACKUP_IMAGE   ?= newtg/backup:dev
 # 本机架构镜像的目标平台：arm64 主机显式 `make image PLATFORM=linux/arm64`（2026-10-18 业主裁决 U-02-5）
 PLATFORM       ?= linux/amd64
 # 工具链版本由 CI 变量注入固定（2026-10-18 业主裁决 U-02-6），禁止 @latest；
@@ -34,7 +36,9 @@ include scripts/openapi.env
         migrate-up migrate-down migrate-version migrate-create migrate-verify \
         web-install web-dev web-typecheck web-lint web-test web-build web-copy-guards \
         api-bundle api-gen api-lint api-validate api-check check-openapi-layout \
-        image image-multiarch compose-up compose-down dev clean
+        image image-multiarch frontend-image backup-image \
+        chart-lint chart-template chart-sync-init \
+        compose-up compose-down dev clean
 
 help: ## 列出全部目标（默认目标）
 	@grep -hE '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | sort | awk -F':.*## ' '{printf "%-22s %s\n",$$1,$$2}'
@@ -143,6 +147,26 @@ image: ## 构建本机架构镜像（PLATFORM 默认 linux/amd64；上下文=仓
 
 image-multiarch: ## 多架构构建并推送（发布用；上下文=仓根）
 	docker buildx build --platform linux/amd64,linux/arm64 -f $(BACKEND)/Dockerfile -t $(IMAGE) --push .
+
+frontend-image: ## 构建前端镜像（控制台 + 官网；上下文=仓根）
+	docker build --platform $(PLATFORM) -f frontend/Dockerfile -t $(FRONTEND_IMAGE) .
+
+backup-image: ## 构建备份工具镜像（pg_dump + age + aws-cli）
+	docker build -f deploy/ops/backup/Dockerfile -t $(BACKUP_IMAGE) deploy/ops/backup
+
+# --- K8s chart ---------------------------------------------------------------
+# helm 由 scripts/install-helm.sh 装到仓库内的 .tools/bin，不进系统 PATH。
+chart-lint: ## helm lint + 渲染结构断言（CI 门禁）
+	bash deploy/k8s/newtg/verify.sh
+
+chart-template: ## 渲染 chart 清单到 stdout（调试用）
+	.tools/bin/helm template newtg deploy/k8s/newtg -f deploy/k8s/newtg/values-ci.yaml
+
+chart-sync-init: ## 把 initdb SQL 与 backup.sh 同步进 chart（改源文件后必跑）
+	rm -rf deploy/k8s/newtg/files/postgres-init deploy/k8s/newtg/files/backup
+	mkdir -p deploy/k8s/newtg/files/postgres-init deploy/k8s/newtg/files/backup
+	cp deploy/postgres-init/*.sql deploy/k8s/newtg/files/postgres-init/
+	cp deploy/ops/backup/backup.sh deploy/k8s/newtg/files/backup/
 
 compose-up: ## 起 PG + Redis + gateway + worker
 	docker compose -f deploy/docker-compose.yml up -d --build
