@@ -218,5 +218,47 @@ assert rsvc["clusterIP"] == "None", rsvc
 assert [(p["name"], p["port"]) for p in rsvc["ports"]] == [("redis", 6379)]
 assert find("PodDisruptionBudget", "redis")["spec"]["minAvailable"] == 1
 
+# --- NetworkPolicy ----------------------------------------------------------
+nps = [d for d in docs if d.get("kind") == "NetworkPolicy"]
+assert len(nps) >= 5, len(nps)
+by_name = {n["metadata"]["name"]: n for n in nps}
+
+deny = by_name["default-deny-ingress"]["spec"]
+assert deny["podSelector"] == {}, deny["podSelector"]
+assert deny["policyTypes"] == ["Ingress"]
+
+# Review Focus 3 的钉子：kubelet 探针必须有一个明确的节点网段来源。
+cidrs = [r["ipBlock"]["cidr"]
+         for n in nps for rule in n["spec"].get("ingress") or []
+         for r in rule.get("from") or [] if "ipBlock" in r]
+assert cidrs == ["10.0.20.0/24"], cidrs
+# 入站侧绝不能有「整网放行」；0.0.0.0/0 只允许出现在 worker 的出站规则里。
+for n in nps:
+    for rule in n["spec"].get("ingress") or []:
+        for r in rule.get("from") or []:
+            assert r.get("ipBlock", {}).get("cidr") != "0.0.0.0/0", n["metadata"]["name"]
+
+gw_np = by_name["allow-ingress-controller"]["spec"]
+sel = gw_np["ingress"][0]["from"][0]["namespaceSelector"]["matchLabels"]
+assert sel["kubernetes.io/metadata.name"] == "ingress-nginx", sel
+assert 3000 in {p["port"] for p in gw_np["ingress"][0]["ports"]}
+
+fe_np = by_name["allow-ingress-controller-to-frontend"]["spec"]
+assert {8080, 80} <= {p["port"] for p in fe_np["ingress"][0]["ports"]}
+
+data_np = by_name["allow-app-to-data"]["spec"]
+srcs = data_np["ingress"][0]["from"][0]["podSelector"]["matchExpressions"][0]["values"]
+assert set(srcs) == {"gateway", "worker", "migrate"}, srcs
+# newtg_app 以外的身份不该出现在数据层的入站来源里（例如 frontend）。
+assert "frontend" not in srcs
+
+wk_np = by_name["worker-egress"]["spec"]
+assert wk_np["policyTypes"] == ["Egress"]
+eg = wk_np["egress"]
+assert any("ipBlock" in t and t["ipBlock"]["cidr"] == "0.0.0.0/0"
+           for rule in eg for t in rule["to"]), eg
+# 有 Egress 策略就必须显式放行 DNS，否则 worker 解析不了任何域名。
+assert any(53 in {p["port"] for p in rule["ports"]} for rule in eg), eg
+
 print(f"ok: {len(docs)} docs")
 PY

@@ -1,0 +1,172 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $nodeCIDR := required "networkPolicy.nodeCIDR 必填（kubelet 探针来源网段；缺项会让所有探针被 CNI 拦掉）" .Values.networkPolicy.nodeCIDR }}
+{{- $ingressNS := .Values.networkPolicy.ingressNamespace }}
+# 入站默认拒绝：命名空间内所有 Pod、所有端口先全部关掉，再按以下四条开洞。
+# 这是一组「只有明确写出来的流量能进来」的规则，不是补充规则——少了任何一条，
+# 对应的路径就是 100% 不可达。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "networkpolicy") | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# ingress-nginx → gateway:3000、frontend。客户端 IP 的真实性依赖这条链路：
+# 只有控制器能进，TRUSTED_PROXIES 才只需要信任控制器网段。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-controller
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "gateway") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ingressNS }}
+      ports:
+        - protocol: TCP
+          port: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-controller-to-frontend
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "frontend") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ingressNS }}
+      ports:
+        # 8080 是容器端口；80 是 Service 端口。不同 CNI 在 DNAT 前后匹配，
+        # 两个都列，避免换 CNI 就整站 503（多开一个端口没有实际暴露面：
+        # 来源仍然只有控制器）。
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 80
+---
+# 应用 → 数据层：只有 gateway / worker / migrate 能连 PG 与 Redis。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-to-data
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "postgres") | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: ["postgres", "redis"]
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: ["gateway", "worker", "migrate"]
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6379
+---
+# kubelet 探针：直接连 Pod IP，不经过 Service，因此按容器端口放行。
+# 来源必须收敛到节点网段（nodeCIDR），不能是 0.0.0.0/0。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kubelet-probes
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "networkpolicy") | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: {{ $nodeCIDR }}
+      ports:
+        - protocol: TCP
+          port: 3000
+        - protocol: TCP
+          port: 8006
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6379
+---
+# worker 的出站是唯一被限制的：它需要公网 443（节假日数据源、上游探测），
+# 但不需要别的。gateway 的出站（上游模型）不设策略——上游域名由管理员在
+# 运行时配置，写死网段只会把正常调用挡掉。
+#
+# 注意：一旦给 worker 加了 Egress 策略，DNS 与同命名空间的数据层就必须
+# 显式放行，否则它是「只剩 443 可用」而不是「443 被放行」。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker-egress
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "worker") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: worker
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6379
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
