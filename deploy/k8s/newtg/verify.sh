@@ -13,7 +13,7 @@ if [ ! -x "$HELM" ]; then
 fi
 
 OUT="$(mktemp)"
-trap 'rm -f "$OUT"' EXIT
+trap 'rm -f "$OUT" "$OUT.mon"' EXIT
 
 "$HELM" lint "$CHART" -f "$CHART/values-ci.yaml"
 
@@ -24,8 +24,16 @@ if ! diff -r "$ROOT/deploy/postgres-init" "$CHART/files/postgres-init" >/dev/nul
   diff -r "$ROOT/deploy/postgres-init" "$CHART/files/postgres-init" >&2 || true
   exit 1
 fi
+# 备份脚本同理：唯一真源在 deploy/ops/backup/。
+if ! diff "$ROOT/deploy/ops/backup/backup.sh" "$CHART/files/backup/backup.sh" >/dev/null; then
+  echo "verify: deploy/k8s/newtg/files/backup/backup.sh 与 deploy/ops/backup/backup.sh 不一致，跑 make chart-sync-init" >&2
+  diff "$ROOT/deploy/ops/backup/backup.sh" "$CHART/files/backup/backup.sh" >&2 || true
+  exit 1
+fi
 
 "$HELM" template newtg "$CHART" -f "$CHART/values-ci.yaml" >"$OUT"
+# 监控默认关：另渲染一份开着的结果，断言 ServiceMonitor 真的会渲染出来。
+"$HELM" template newtg "$CHART" -f "$CHART/values-ci.yaml" --set monitoring.enabled=true >"$OUT.mon"
 
 python3 - "$OUT" "$ROOT/deploy/postgres-init" <<'PY'
 import pathlib
@@ -261,4 +269,37 @@ assert any("ipBlock" in t and t["ipBlock"]["cidr"] == "0.0.0.0/0"
 assert any(53 in {p["port"] for p in rule["ports"]} for rule in eg), eg
 
 print(f"ok: {len(docs)} docs")
+
+# --- 备份与监控 -------------------------------------------------------------
+cronjobs = {d["metadata"]["name"]: d for d in docs if d.get("kind") == "CronJob"}
+assert set(cronjobs) == {"newtg-backup-hourly", "newtg-backup-daily", "newtg-backup-monthly"}, set(cronjobs)
+for name, cj in cronjobs.items():
+    jc = cj["spec"]["jobTemplate"]["spec"]
+    c = jc["template"]["spec"]["containers"][0]
+    benv = {e["name"]: e for e in c["env"]}
+    # 主库与日志库各一份：日志库不可静默跳过。
+    assert benv["NEWTG_MAIN_DSN"]["valueFrom"]["secretKeyRef"]["key"] == "BACKUP_DATABASE_URL", name
+    assert benv["NEWTG_LOGS_DSN"]["valueFrom"]["secretKeyRef"]["key"] == "BACKUP_DB_LOGS_DSN", name
+    assert benv["LABEL"]["value"] == name.split("-")[-1], name
+    # 没有接收者就是把明文数据库倒进对象存储。
+    assert benv["AGE_RECIPIENT"]["value"], name
+    assert jc["backoffLimit"] == 1
+    assert cj["spec"]["concurrencyPolicy"] == "Forbid"
+    assert c["securityContext"]["readOnlyRootFilesystem"] is True
+
+# 默认不渲染 ServiceMonitor：没装 CRD 的集群会整份 chart 装不上。
+assert "ServiceMonitor" not in {d.get("kind") for d in docs}, "默认不该渲染 ServiceMonitor"
 PY
+
+python3 - "$OUT.mon" <<'PY2'
+import sys
+import yaml
+
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+sm = [d for d in docs if d.get("kind") == "ServiceMonitor"]
+assert len(sm) == 1, len(sm)
+ep = sm[0]["spec"]["endpoints"][0]
+assert ep["port"] == "metrics" and ep["path"] == "/metrics", ep
+assert ep["authorization"]["credentials"]["key"] == "METRICS_TOKEN", ep
+print("ok: ServiceMonitor 渲染且带 METRICS_TOKEN 鉴权")
+PY2

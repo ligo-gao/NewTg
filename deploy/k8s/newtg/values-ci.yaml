@@ -8,6 +8,8 @@ ingress:
 storageClass:
   data: local-path
 backup:
+  image: registry.example.com/newtg/backup:ci
+  ageRecipient: age1exampleexampleexampleexampleexampleexample
   s3:
     endpoint: https://minio.example.com
     bucket: newtg-backup

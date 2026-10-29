@@ -114,11 +114,29 @@ storageClass:
 
 backup:
   enabled: true
+  # 必填：含 pg_dump / psql / age / aws-cli 的镜像。
+  # deploy/ops/backup/Dockerfile 就是为它准备的。
+  image: ""
+  # 必填：age 接收者公钥。公钥可以入库，私钥（L1 材料）绝不入库。
+  ageRecipient: ""
   s3:
-    endpoint: ""
+    endpoint: "" # MinIO 等自建 S3 填这里；AWS 官方服务留空
     bucket: ""
     region: ""
+    # 只授 PutObject：备份 Job 删不了任何对象，保留期由桶的生命周期规则执行。
     credentialsSecret: newtg-backup-s3
+  # GFS 三层。保留天数（2 天 / 30 天 / 12 个月）写在桶的生命周期规则里，
+  # 不写在 Job 里——Job 没有 DeleteObject 权限，写在这里只会是谎话。
+  tiers:
+    hourly:
+      schedule: "5 * * * *"
+      deadlineSeconds: 1800
+    daily:
+      schedule: "15 2 * * *"
+      deadlineSeconds: 3600
+    monthly:
+      schedule: "45 3 1 * *"
+      deadlineSeconds: 7200
 
 monitoring:
   enabled: false

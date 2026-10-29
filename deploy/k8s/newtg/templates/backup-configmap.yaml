@@ -1,0 +1,43 @@
+# 备份用的两个脚本：
+#   backup.sh     —— 仓库里的唯一实现（deploy/ops/backup/backup.sh 的副本，
+#                    由 make chart-sync-init 同步，verify.sh 断言逐字节一致）
+#   entrypoint.sh —— K8s 专属的薄封装：跑一次备份 + 上传 S3。保留期由桶的
+#                    生命周期规则执行，Job 只持有 PutObject 权限、删不了东西。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: newtg-backup-scripts
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "backup") | nindent 4 }}
+data:
+  backup.sh: |
+    {{- .Files.Get "files/backup/backup.sh" | nindent 4 }}
+  entrypoint.sh: |
+    set -eu
+    umask 077
+
+    : "${AGE_RECIPIENT:?AGE_RECIPIENT 未设置（values.backup.ageRecipient）}"
+    : "${S3_BUCKET:?S3_BUCKET 未设置（values.backup.s3.bucket）}"
+    : "${LABEL:?LABEL 未设置}"
+
+    out=/work/dumps
+    mkdir -p "$out"
+
+    # 主库与日志库各一份，age 产生端加密，明文不落盘。
+    /scripts/backup.sh --out-dir "$out" --label "$LABEL" --encrypt-recipient "$AGE_RECIPIENT"
+
+    # 时间戳取 UTC，对象键自带层级，便于生命周期规则按前缀与日期判断。
+    ts="$(date -u +%Y/%m/%d/%H%M%SZ)"
+    dest="s3://${S3_BUCKET}/${LABEL}/${ts}"
+
+    for f in "$out"/*; do
+      echo "[backup] upload $f"
+      if [ -n "${AWS_ENDPOINT_URL:-}" ]; then
+        aws s3 cp "$f" "${dest}/$(basename "$f")" --endpoint-url "$AWS_ENDPOINT_URL"
+      else
+        aws s3 cp "$f" "${dest}/$(basename "$f")"
+      fi
+    done
+
+    echo "[backup] OK"

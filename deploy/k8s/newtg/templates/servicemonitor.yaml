@@ -1,0 +1,29 @@
+{{- if .Values.monitoring.enabled }}
+# 可选：kube-prometheus-stack 存在时才创建。指标端点同样用 METRICS_TOKEN
+# 做 Bearer 鉴权，与 chart 里其他消费方共用同一个键。
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: newtg-gateway
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "gateway") | nindent 4 }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ include "newtg.namespace" . }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ .Values.secrets.existingSecret }}
+          key: METRICS_TOKEN
+{{- end }}

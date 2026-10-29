@@ -1,0 +1,114 @@
+{{- if .Values.backup.enabled }}
+{{- $image := required "backup.image 必填（含 pg_dump/psql/age/aws-cli 的镜像，见 deploy/ops/backup/Dockerfile）" .Values.backup.image }}
+{{- $recipient := required "backup.ageRecipient 必填（age 接收者公钥）" .Values.backup.ageRecipient }}
+{{- $bucket := required "backup.s3.bucket 必填" .Values.backup.s3.bucket }}
+# 三层 GFS 备份：每小时 / 每天 / 每月各一个 CronJob，共用同一份脚本与产物布局。
+# 每层都同时备份主库与日志库（DB_LOGS_DSN 不可静默跳过）。
+#
+# 保留期不在这里实现：备份凭据只有 PutObject 权限（删不了对象），删除由桶的
+# 生命周期规则按前缀执行——拿得到删权限的凭据才是更大的风险。
+{{- range $tier, $cfg := .Values.backup.tiers }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: newtg-backup-{{ $tier }}
+  namespace: {{ include "newtg.namespace" $ }}
+  labels:
+    {{- include "newtg.labels" (dict "root" $ "role" "backup") | nindent 4 }}
+spec:
+  schedule: {{ $cfg.schedule | quote }}
+  # 上一层没跑完就不再起下一层：两路 pg_dump 同时压同一个库，既拖慢库也
+  # 让产物时间戳更难对账。
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: {{ $cfg.deadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            {{- include "newtg.labels" (dict "root" $ "role" "backup") | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          {{- with $.Values.image.pullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 70
+            runAsGroup: 70
+            fsGroup: 70
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              image: {{ $image }}
+              imagePullPolicy: {{ $.Values.image.pullPolicy }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              command: ["/bin/sh", "/scripts/entrypoint.sh"]
+              env:
+                - name: LABEL
+                  value: {{ $tier | quote }}
+                # 只读根文件系统：aws-cli 需要一处可写的 HOME 放临时凭据文件。
+                - name: HOME
+                  value: /tmp
+                - name: TMPDIR
+                  value: /tmp
+                - name: AGE_RECIPIENT
+                  value: {{ $recipient | quote }}
+                - name: S3_BUCKET
+                  value: {{ $bucket | quote }}
+                - name: AWS_ENDPOINT_URL
+                  value: {{ $.Values.backup.s3.endpoint | quote }}
+                - name: AWS_DEFAULT_REGION
+                  value: {{ $.Values.backup.s3.region | quote }}
+                # 只读角色 newtg_backup：备份进程不该有能力改数据。
+                - name: NEWTG_MAIN_DSN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $.Values.secrets.existingSecret }}
+                      key: BACKUP_DATABASE_URL
+                - name: NEWTG_LOGS_DSN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $.Values.secrets.existingSecret }}
+                      key: BACKUP_DB_LOGS_DSN
+              # S3 凭据是独立 Secret（与业务密钥分开轮换）。
+              envFrom:
+                - secretRef:
+                    name: {{ required "backup.s3.credentialsSecret 必填" $.Values.backup.s3.credentialsSecret }}
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  memory: 1Gi
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                # pg_dump 的中间文件；只读根文件系统下必须显式给可写目录。
+                - name: work
+                  mountPath: /work
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: scripts
+              configMap:
+                name: newtg-backup-scripts
+                defaultMode: 0555
+            - name: work
+              emptyDir: {}
+            - name: tmp
+              emptyDir: {}
+{{- end }}
+{{- end }}
