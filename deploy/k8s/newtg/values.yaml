@@ -12,6 +12,23 @@ image:
   pullPolicy: IfNotPresent
   pullSecrets: []
 
+gateway:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      # 内存上限是 OOM 保护而非预留；连接数上限由 DB_MAX_OPEN_CONNS 控制。
+      memory: 1Gi
+  autoscaling:
+    # maxReplicas 与 DB_MAX_OPEN_CONNS=25 绑定：8×25=200，再加上 worker 与
+    # migrate 仍低于 PG 的 max_connections 基线 256。改这里必须同时改那边。
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70
+
 publicBaseURL: "" # 必填：唯一 origin，如 https://app.example.com
 trustedProxies: "" # 必填：ingress-nginx 控制器所在 Pod 网段，禁止 0.0.0.0/0
 
@@ -29,6 +46,11 @@ certificate:
   issuerRef:
     name: letsencrypt-dns
     kind: ClusterIssuer
+
+redis:
+  tls:
+    # 预创建，键：ca.crt（私有 CA）、tls.crt / tls.key（服务端证书）。
+    existingSecret: newtg-redis-tls
 
 storageClass:
   data: "" # 必填：PG/Redis 的本地盘 StorageClass

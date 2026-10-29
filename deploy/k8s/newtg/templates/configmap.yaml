@@ -1,0 +1,58 @@
+# 非敏感运行参数。密钥全部在预创建的 Secret 里，见 README 的键清单。
+# 这里的每一项都对 gateway 与 worker 生效；RUN_MODE 由各工作负载单独给，
+# 因为同一个二进制靠它切换角色。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: newtg-config
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "config") | nindent 4 }}
+data:
+  APP_ENV: "production"
+  LOG_LEVEL: "info"
+  LOG_FORMAT: "json"
+  TZ: "UTC"
+
+  # 唯一对外 origin；CORS 不启用，前端与网关同源。
+  PUBLIC_BASE_URL: {{ required "publicBaseURL 必填（唯一 origin）" .Values.publicBaseURL | quote }}
+  # 只信 ingress-nginx 控制器进来的流量。禁止 0.0.0.0/0：那等于让
+  # X-Forwarded-For 完全由客户端决定，IP 级防护与来源隐匿全部失效。
+  TRUSTED_PROXIES: {{ required "trustedProxies 必填（ingress-nginx Pod 网段，禁止 0.0.0.0/0）" .Values.trustedProxies | quote }}
+
+  # 迁移由一次性 Job 承担（Task 5），任何常驻进程都不许自己迁移。
+  DB_MIGRATE_ON_START: "false"
+  # 与 HPA 的 maxReplicas 联动：8 副本 × 25 连接仍在 PG 的 max_connections 之内。
+  DB_MAX_OPEN_CONNS: "25"
+
+  SHUTDOWN_GRACE_SECONDS: "30"
+
+  # Redis 一律 rediss；私有 CA 挂在 /etc/ssl/redis/ca.crt（见 gateway-deployment）。
+  REDIS_TLS: "on"
+  REDIS_TLS_CA: "/etc/ssl/redis/ca.crt"
+
+  METRICS_ADDR: ":8006"
+
+  PERF_METRICS_ENABLED: "true"
+  PERF_METRICS_FLUSH_INTERVAL: "5m"
+  PERF_METRICS_RETENTION_DAYS: "400"
+
+  # 性能页的生效值回退来源，必须与 worker 用同一份，否则页面显示的时间
+  # 与实际调度不一致（perfsettings.Reader：DB 设置优先，env 仅作基线）。
+  PERF_SCHEDULE_ENABLED: "true"
+  PERF_SCHEDULE_TIMES: "00:00,12:00"
+  PERF_SCHEDULE_TIMEZONE: "Asia/Shanghai"
+  PERF_SCHEDULE_RUNS: "3"
+  PERF_SCHEDULE_CONCURRENCY: "2"
+
+  # 空 URL 是合法降级态（性能页显示「未接入」）；TIMEOUT/CACHE_TTL 写成
+  # 0 或负值不是关掉功能，而是进程起不来。
+  PROMETHEUS_URL: ""
+  PROMETHEUS_TIMEOUT: "5s"
+  PROMETHEUS_CACHE_TTL: "15s"
+
+  HOLIDAY_SYNC_ENABLED: "true"
+  HOLIDAY_SYNC_URL_TEMPLATE: "https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/%d.json"
+
+  # 空值 → 用 Pod 名，多副本下日志与指标可区分来源。
+  NODE_NAME: ""

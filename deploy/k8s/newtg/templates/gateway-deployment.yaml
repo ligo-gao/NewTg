@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "gateway") | nindent 4 }}
+spec:
+  # HPA 开启后 replicas 由 HPA 管理，这里只作为初始值与 HPA 关闭时的值。
+  replicas: {{ .Values.gateway.replicas }}
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # 先起新 Pod 再停旧 Pod：滚动期间可用副本数永不下降，配合 readiness
+      # 探针（/readyz）保证流量不落到尚未就绪的实例上。
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "newtg.labels" (dict "root" . "role" "gateway") | nindent 8 }}
+      annotations:
+        # 配置变更时滚动重启：环境变量只在容器创建时读取。
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # 大于 SHUTDOWN_GRACE_SECONDS(30)，给进程留出排空在途请求的时间；
+      # 反过来会让 kubelet 在优雅退出完成前杀掉容器。
+      terminationGracePeriodSeconds: 35
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+              app.kubernetes.io/instance: {{ .Release.Name }}
+      containers:
+        - name: gateway
+          image: {{ include "newtg.image" (dict "root" . "repo" .Values.image.gateway) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 3000
+            - name: metrics
+              containerPort: 8006
+          env:
+            - name: RUN_MODE
+              value: gateway
+            # 只注入本角色真正用到的密钥键，不整份 secretRef：POSTGRES_* 这类
+            # 集群内建库口令与 Redis 服务端口令不该出现在应用进程里。
+            {{- range $k := list "DATABASE_URL" "DB_LOGS_DSN" "PERF_METRICS_DSN" "DB_RETENTION_DSN" "REDIS_URL" "SESSION_SECRET" "CREDENTIAL_ENCRYPTION_KEY" "METRICS_TOKEN" }}
+            - name: {{ $k }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secrets.existingSecret }}
+                  key: {{ $k }}
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: newtg-config
+          # startupProbe 给冷启动（连接池、缓存预热）留 60s；就绪后
+          # /readyz 才决定是否接流量，/healthz 只看进程本身，不查依赖——
+          # 依赖抖动不该让 kubelet 杀掉本来健康的实例。
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 12
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+          volumeMounts:
+            - name: redis-ca
+              mountPath: /etc/ssl/redis/ca.crt
+              subPath: ca.crt
+              readOnly: true
+      volumes:
+        - name: redis-ca
+          secret:
+            secretName: {{ .Values.redis.tls.existingSecret }}
+            items:
+              - key: ca.crt
+                path: ca.crt

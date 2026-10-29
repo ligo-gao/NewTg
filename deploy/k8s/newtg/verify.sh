@@ -39,5 +39,44 @@ assert ("Namespace", "newtg") in kinds, kinds
 ns = find("Namespace", "newtg")
 assert ns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "baseline"
 
+# --- gateway 工作负载 -------------------------------------------------------
+cfg = find("ConfigMap", "newtg-config")
+# 信任链只能收紧：0.0.0.0/0 等于让 X-Forwarded-For 由客户端决定。
+assert cfg["data"]["TRUSTED_PROXIES"] not in ("0.0.0.0/0", "*"), cfg["data"]["TRUSTED_PROXIES"]
+assert cfg["data"]["DB_MIGRATE_ON_START"] == "false"
+
+gw = find("Deployment", "gateway")["spec"]
+assert gw["replicas"] == 2, gw["replicas"]
+pod = gw["template"]["spec"]
+assert pod["terminationGracePeriodSeconds"] == 35, pod["terminationGracePeriodSeconds"]
+assert pod["securityContext"]["runAsNonRoot"] is True
+spread = pod["topologySpreadConstraints"][0]
+assert spread["topologyKey"] == "kubernetes.io/hostname"
+assert spread["whenUnsatisfiable"] == "DoNotSchedule"
+
+c = pod["containers"][0]
+assert c["readinessProbe"]["httpGet"]["path"] == "/readyz"
+assert c["livenessProbe"]["httpGet"]["path"] == "/healthz"
+assert c["securityContext"]["allowPrivilegeEscalation"] is False
+assert c["securityContext"]["capabilities"]["drop"] == ["ALL"]
+env = {e["name"]: e for e in c["env"]}
+assert env["RUN_MODE"]["value"] == "gateway"
+# 应用进程只拿自己用的键；建库口令留在 PG 侧。
+secret_keys = {e["valueFrom"]["secretKeyRef"]["key"] for e in c["env"] if "valueFrom" in e}
+assert not any(k.startswith("POSTGRES_") for k in secret_keys), secret_keys
+assert {"DATABASE_URL", "DB_LOGS_DSN", "REDIS_URL", "METRICS_TOKEN"} <= secret_keys, secret_keys
+
+svc = find("Service", "gateway")["spec"]
+assert svc["type"] == "ClusterIP"
+assert {(p["name"], p["port"]) for p in svc["ports"]} >= {("http", 3000), ("metrics", 8006)}
+
+pdb = find("PodDisruptionBudget", "gateway")["spec"]
+assert pdb["maxUnavailable"] == 1, pdb["maxUnavailable"]
+
+hpa = find("HorizontalPodAutoscaler", "gateway")["spec"]
+assert hpa["minReplicas"] == 2 and hpa["maxReplicas"] == 8, hpa
+# 副本上限 × 每副本连接上限 必须留出 worker/migrate 的余量（PG 基线 256）。
+assert hpa["maxReplicas"] * int(cfg["data"]["DB_MAX_OPEN_CONNS"]) <= 200
+
 print(f"ok: {len(docs)} docs")
 PY
