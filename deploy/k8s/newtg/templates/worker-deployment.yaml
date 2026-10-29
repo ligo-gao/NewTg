@@ -1,0 +1,100 @@
+# worker：后台调度角色（性能实测、节假日同步、日志/审计保留）。
+# 它不接外部流量，所以没有 Service：对外可见的只有 :8006 上的探针。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "worker") | nindent 4 }}
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  revisionHistoryLimit: 3
+  strategy:
+    # Recreate 而不是 RollingUpdate：新旧 worker 并存会同时跑同一时刻的
+    # 调度任务（探测重复计费、同步重复拉取）。先停后起，接受一次短暂中断。
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: worker
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "newtg.labels" (dict "root" . "role" "worker") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 35
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: {{ include "newtg.image" (dict "root" . "repo" .Values.image.gateway) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: metrics
+              containerPort: 8006
+          env:
+            - name: RUN_MODE
+              value: worker
+            - name: NODE_NAME
+              value: {{ .Values.worker.nodeName | quote }}
+            {{- range $k := list "DATABASE_URL" "DB_LOGS_DSN" "PERF_METRICS_DSN" "DB_RETENTION_DSN" "REDIS_URL" "SESSION_SECRET" "CREDENTIAL_ENCRYPTION_KEY" "METRICS_TOKEN" }}
+            - name: {{ $k }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secrets.existingSecret }}
+                  key: {{ $k }}
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: newtg-config
+          # worker 没有业务端口：就绪/存活都落在指标服务上。两者的区别在
+          # 依赖：/readyz 反映 Redis/PG 可达，/healthz 只反映进程。
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            periodSeconds: 5
+            failureThreshold: 12
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          volumeMounts:
+            - name: redis-ca
+              mountPath: /etc/ssl/redis/ca.crt
+              subPath: ca.crt
+              readOnly: true
+      volumes:
+        - name: redis-ca
+          secret:
+            secretName: {{ .Values.redis.tls.existingSecret }}
+            items:
+              - key: ca.crt
+                path: ca.crt

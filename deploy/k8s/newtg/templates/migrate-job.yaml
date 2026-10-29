@@ -1,0 +1,87 @@
+# 数据库迁移：一次性 Job，用 newtg_migrate 身份跑主库、日志库、指标库的 schema。
+# 作为 Helm hook 在 install/upgrade 前执行；同时打上 Argo CD 的 sync-wave，
+# 两个工具都认。
+#
+# 为什么必须是独立身份：应用身份 newtg_app 不该持有 DDL 权限，而迁移需要。
+# 因此本 Job 读的是 MIGRATE_* 键，与 gateway/worker 的 DATABASE_URL 不同源。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: newtg-migrate
+  namespace: {{ include "newtg.namespace" . }}
+  labels:
+    {{- include "newtg.labels" (dict "root" . "role" "migrate") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+    "argocd.argoproj.io/sync-wave": "-1"
+spec:
+  # 迁移失败不重试：重试只会把「schema 半迁移」放大成多轮并发 DDL。
+  # 失败就停下来，让人看清是哪一步。
+  backoffLimit: 0
+  # 卡在锁等待上时不要让整个 helm upgrade 永久挂起；超时按失败处理。
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        {{- include "newtg.labels" (dict "root" . "role" "migrate") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: {{ include "newtg.image" (dict "root" . "repo" .Values.image.gateway) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: RUN_MODE
+              value: migrate
+            - name: DB_MIGRATE_ON_START
+              value: "false"
+            # 迁移身份的三个 DSN：Secret 里单独一组 MIGRATE_* 键。
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: MIGRATE_DATABASE_URL
+            - name: DB_LOGS_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: MIGRATE_DB_LOGS_DSN
+            - name: PERF_METRICS_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: MIGRATE_PERF_METRICS_DSN
+            # 以下三项不参与迁移，只是 config.Load 的必填校验项：
+            # 缺了进程根本走不到迁移。
+            {{- range $k := list "REDIS_URL" "SESSION_SECRET" "CREDENTIAL_ENCRYPTION_KEY" }}
+            - name: {{ $k }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secrets.existingSecret }}
+                  key: {{ $k }}
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: newtg-config
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi

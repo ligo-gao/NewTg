@@ -78,5 +78,32 @@ assert hpa["minReplicas"] == 2 and hpa["maxReplicas"] == 8, hpa
 # 副本上限 × 每副本连接上限 必须留出 worker/migrate 的余量（PG 基线 256）。
 assert hpa["maxReplicas"] * int(cfg["data"]["DB_MAX_OPEN_CONNS"]) <= 200
 
+# --- worker 与 migrate ------------------------------------------------------
+wk = find("Deployment", "worker")["spec"]
+assert wk["replicas"] == 1, wk["replicas"]
+# 多副本 worker 会重复跑同一时刻的调度任务。
+assert wk["strategy"]["type"] == "Recreate", wk["strategy"]
+wpod = wk["template"]["spec"]
+assert wpod["terminationGracePeriodSeconds"] == 35
+wc = wpod["containers"][0]
+wenv = {e["name"]: e.get("value") for e in wc["env"]}
+assert wenv["RUN_MODE"] == "worker"
+assert wc["readinessProbe"]["httpGet"]["path"] == "/readyz"
+hpas = [d for d in docs if d.get("kind") == "HorizontalPodAutoscaler"]
+assert all(h["spec"]["scaleTargetRef"]["name"] != "worker" for h in hpas), "worker 不该有 HPA"
+
+job = find("Job", "newtg-migrate")
+assert "pre-upgrade" in job["metadata"]["annotations"]["helm.sh/hook"], job["metadata"]["annotations"]
+assert job["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "-1"
+assert job["spec"]["backoffLimit"] == 0, job["spec"]["backoffLimit"]
+assert job["spec"]["template"]["spec"]["restartPolicy"] == "Never"
+jc = job["spec"]["template"]["spec"]["containers"][0]
+jenv = {e["name"]: e for e in jc["env"]}
+assert jenv["RUN_MODE"]["value"] == "migrate"
+assert jenv["DB_MIGRATE_ON_START"]["value"] == "false"
+# 迁移必须用 newtg_migrate 身份：应用身份的 DSN 不该出现在 Job 里。
+assert jenv["DATABASE_URL"]["valueFrom"]["secretKeyRef"]["key"] == "MIGRATE_DATABASE_URL"
+assert jenv["DB_LOGS_DSN"]["valueFrom"]["secretKeyRef"]["key"] == "MIGRATE_DB_LOGS_DSN"
+
 print(f"ok: {len(docs)} docs")
 PY

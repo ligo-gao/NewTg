@@ -29,6 +29,19 @@ gateway:
     maxReplicas: 8
     targetCPUUtilizationPercentage: 70
 
+worker:
+  # 单副本 + Recreate：后台调度（性能探测、节假日同步、保留任务）不是幂等
+  # 多实例安全的，两个 worker 会重复跑同一时刻的任务。扩容前先让它幂等。
+  replicas: 1
+  # 写进 NODE_NAME：日志/指标里要能区分角色。
+  nodeName: worker
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
 publicBaseURL: "" # 必填：唯一 origin，如 https://app.example.com
 trustedProxies: "" # 必填：ingress-nginx 控制器所在 Pod 网段，禁止 0.0.0.0/0
 
