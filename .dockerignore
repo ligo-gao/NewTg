@@ -1,7 +1,9 @@
-# 镜像构建上下文 = 仓库根（backend/Dockerfile 需要 THIRD_PARTY_NOTICES.md）。
+# 镜像构建上下文 = 仓库根（backend/Dockerfile 需要 THIRD_PARTY_NOTICES.md，
+# frontend/Dockerfile 需要 frontend/ + website/ + packages/public-shell）。
 # 为什么在仓根裁剪：上下文越大，daemon 收到的数据越多，且 deploy/.env（本地
-# 密钥）等敏感文件会进入构建会话。Dockerfile 只 COPY backend/ 与 notices，
-# 这里再把无关目录排除，保证构建输入可复现且不携带秘密。
+# 密钥）等敏感文件会进入构建会话。这里把无关目录排除，保证构建输入可复现且
+# 不携带秘密。注意 deploy/ 必须整体排除：frontend 镜像用的 nginx.conf 放在
+# frontend/ 里，正是为了不把 deploy/.env 卷进构建上下文。
 .git
 .github
 .claude
@@ -11,8 +13,14 @@ api
 demos
 deploy
 docs
-frontend
 new-api-deploy
+# 前端/官网本地产物与依赖：镜像内重新安装、重新构建。
+frontend/node_modules
+frontend/dist
+website/node_modules
+website/out
+website/.next
+packages/public-shell/node_modules
 # Go 构建产物与测试文件：测试不参与镜像构建，排除后层缓存也不随测试改动失效。
 backend/bin
 backend/coverage.out
