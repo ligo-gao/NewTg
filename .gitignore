@@ -45,3 +45,6 @@ website/.next/
 website/out/
 website/next-env.d.ts
 website/*.tsbuildinfo
+
+# 仓库内工具链（helm 等），由 scripts/install-helm.sh 安装
+.tools/

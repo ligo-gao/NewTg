@@ -1,0 +1,50 @@
+# NEW TG chart values。
+# 密钥一律不在 chart 内生成：所有 Secret 由集群外预创建，chart 只引用名字。
+# 必填项留空串，模板里用 required 强制填，缺项直接渲染失败而不是带默认值上线。
+
+namespace: newtg
+
+image:
+  registry: "" # 必填：镜像仓库地址，如 registry.example.com
+  gateway: newtg/gateway
+  frontend: newtg/frontend
+  tag: dev
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+publicBaseURL: "" # 必填：唯一 origin，如 https://app.example.com
+trustedProxies: "" # 必填：ingress-nginx 控制器所在 Pod 网段，禁止 0.0.0.0/0
+
+secrets:
+  # 预创建，键清单见 README。chart 绝不渲染 Secret。
+  existingSecret: newtg-secrets
+
+ingress:
+  className: nginx
+  host: "" # 必填：与 publicBaseURL 的 host 一致
+  tlsSecretName: newtg-tls
+
+certificate:
+  enabled: true
+  issuerRef:
+    name: letsencrypt-dns
+    kind: ClusterIssuer
+
+storageClass:
+  data: "" # 必填：PG/Redis 的本地盘 StorageClass
+
+backup:
+  enabled: true
+  s3:
+    endpoint: ""
+    bucket: ""
+    region: ""
+    credentialsSecret: newtg-backup-s3
+
+monitoring:
+  enabled: false
+
+networkPolicy:
+  enabled: true
+  ingressNamespace: ingress-nginx
+  nodeCIDR: "" # 必填：kubelet 探针来源网段，缺项会让探针被 CNI 拦掉

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: newtg
+description: NEW TG 多机分离部署（gateway / worker / frontend / PostgreSQL / Redis）
+type: application
+version: 0.1.0
+appVersion: "dev"

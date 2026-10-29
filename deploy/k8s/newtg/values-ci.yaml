@@ -1,0 +1,16 @@
+# 仅供 `helm lint` / `helm template` 与 verify.sh 使用；真实部署不要用这份。
+image:
+  registry: registry.example.com
+publicBaseURL: https://app.example.com
+trustedProxies: 10.244.3.0/27
+ingress:
+  host: app.example.com
+storageClass:
+  data: local-path
+backup:
+  s3:
+    endpoint: https://minio.example.com
+    bucket: newtg-backup
+    region: us-east-1
+networkPolicy:
+  nodeCIDR: 10.0.20.0/24
